@@ -1,0 +1,103 @@
+---
+# Local development stack for Reimagina.
+#
+# Services:
+#   postgres   — PostgreSQL 16 + PostGIS 3.4
+#   pgbouncer  — Connection pooler (transaction mode) — apps connect here
+#   martin     — Vector tile server — frontend connects here for MVT tiles
+#
+# Quick start:
+#   cp infra/env/.env.example .env          # fill in passwords
+#   docker compose -f infra/docker/docker-compose.yml up -d
+#   # Run migrations against postgres directly (not via pgbouncer):
+#   DATABASE_URL=$DATABASE_URL_DIRECT alembic upgrade head
+
+name: reimagina
+
+services:
+
+  # ── PostgreSQL + PostGIS ────────────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-reimagina}
+      POSTGRES_USER:     ${POSTGRES_USER:-reimagina_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Exposed for direct admin access (DBeaver, QGIS, migration runner).
+      # Application code must use pgbouncer:5432, not this port.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reimagina_app} -d ${POSTGRES_DB:-reimagina}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── PgBouncer (transaction mode) ────────────────────────────────────────────
+  # Apps connect to pgbouncer:5432. PgBouncer multiplexes onto a small pool
+  # of real Postgres connections — keeps Postgres backend count low under load.
+  #
+  # Transaction mode is compatible with all app code that uses SET LOCAL
+  # (not SET) for session variables and does not use LISTEN/NOTIFY.
+  # For LISTEN/NOTIFY (SSE job status), connect directly via DATABASE_URL_DIRECT.
+  pgbouncer:
+    image: bitnami/pgbouncer:1.23.1
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRESQL_HOST:     postgres
+      POSTGRESQL_PORT:     5432
+      POSTGRESQL_DATABASE: ${POSTGRES_DB:-reimagina}
+      POSTGRESQL_USERNAME: ${POSTGRES_USER:-reimagina_app}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGBOUNCER_POOL_MODE:         transaction
+      PGBOUNCER_MAX_CLIENT_CONN:   200
+      PGBOUNCER_DEFAULT_POOL_SIZE: 20
+      PGBOUNCER_SERVER_RESET_QUERY: "DISCARD ALL"
+      # Silence noisy connect/disconnect logs in dev
+      PGBOUNCER_LOG_CONNECTIONS:    0
+      PGBOUNCER_LOG_DISCONNECTIONS: 0
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Martin vector tile server ───────────────────────────────────────────────
+  # Serves MVT tiles from serving_geo.get_tile().
+  # Connects directly to Postgres (bypasses PgBouncer) — martin manages its own
+  # connection pool and the tile function is stateless/STABLE.
+  #
+  # Tile URL: http://localhost:3000/get_tile/{z}/{x}/{y}
+  # With filter: http://localhost:3000/get_tile/{z}/{x}/{y}?type_slug=building
+  # Catalog: http://localhost:3000/catalog
+  # TileJSON: http://localhost:3000/get_tile
+  martin:
+    image: ghcr.io/maplibre/martin:v0.14.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Martin connects directly to Postgres for low-latency tile generation.
+      DATABASE_URL: ${DATABASE_URL_DIRECT:?DATABASE_URL_DIRECT is required}
+    volumes:
+      - ./martin.yaml:/config.yaml:ro
+    command: ["--config", "/config.yaml"]
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

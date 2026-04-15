@@ -1,0 +1,1 @@
+"""DuckDB + spatial storage adapter."""

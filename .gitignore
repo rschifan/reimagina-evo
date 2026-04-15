@@ -1,0 +1,95 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.env/
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checkers
+.mypy_cache/
+.pytype/
+.pyre/
+
+# ── DuckDB ───────────────────────────────────────────────────────────────────
+*.duckdb
+*.duckdb.wal
+
+# ── Local data ───────────────────────────────────────────────────────────────
+data/local/
+data/bronze/
+data/silver/
+data/*.parquet
+data/*.gpkg
+data/*.geojson
+data/*.tif
+data/*.tiff
+data/*.csv
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+infra/env/.env
+!.env.example
+!infra/env/.env.example
+
+# ── Node / TypeScript ────────────────────────────────────────────────────────
+node_modules/
+.npm/
+*.tsbuildinfo
+.next/
+.nuxt/
+.output/
+packages/ts/**/dist/
+apps/web/.next/
+
+# ── IDE / editors ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ── Docker volumes ───────────────────────────────────────────────────────────
+infra/docker/volumes/
+
+# ── Local tooling installs ───────────────────────────────────────────────────
+.tools/
+
+# ── Dated backup snapshots ───────────────────────────────────────────────────
+[0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+
+# ── Misc ─────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*.orig
+.hypothesis/
