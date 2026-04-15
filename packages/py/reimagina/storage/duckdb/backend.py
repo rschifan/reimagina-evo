@@ -1,0 +1,76 @@
+"""DuckDB + spatial storage backend wiring."""
+from __future__ import annotations
+
+from .migrations import run_duckdb_migrations
+from .repositories import (
+    DuckDBAOIRepository,
+    DuckDBExploreReader,
+    DuckDBFeatureRepository,
+    DuckDBFileAssetRepository,
+    DuckDBObservationRepository,
+    DuckDBOverlapRepository,
+    DuckDBServingReader,
+    DuckDBSourceCatalogRepository,
+)
+from ..capabilities import StorageCapabilities
+
+
+class DuckDBStorageBackend:
+    name = "duckdb"
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def capabilities(self) -> StorageCapabilities:
+        return StorageCapabilities(
+            backend_name="duckdb",
+            supports_triggers=False,
+            supports_materialized_views=False,
+            supports_spatial_index=True,
+            supports_partial_indexes=False,
+        )
+
+    def run_migrations(self) -> None:
+        run_duckdb_migrations(self.connection)
+
+    def verify_required_relations(self, relations: list[str]) -> dict[str, bool]:
+        checks: dict[str, bool] = {}
+        for relation in relations:
+            schema_name, object_name = relation.split(".", 1)
+            row = self.connection.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.tables
+                    UNION ALL
+                    SELECT table_schema AS schema_name, table_name AS object_name FROM information_schema.views
+                ) rels
+                WHERE schema_name = ? AND object_name = ?
+                """,
+                [schema_name, object_name],
+            ).fetchone()
+            checks[relation] = bool(row and row[0] > 0)
+        return checks
+
+    def catalog_repo(self) -> DuckDBSourceCatalogRepository:
+        return DuckDBSourceCatalogRepository(self.connection)
+
+    def feature_repo(self) -> DuckDBFeatureRepository:
+        return DuckDBFeatureRepository(self.connection)
+
+    def observation_repo(self) -> DuckDBObservationRepository:
+        return DuckDBObservationRepository(self.connection)
+
+    def file_asset_repo(self) -> DuckDBFileAssetRepository:
+        return DuckDBFileAssetRepository(self.connection)
+
+    def aoi_repo(self) -> DuckDBAOIRepository:
+        return DuckDBAOIRepository(self.connection)
+
+    def overlap_repo(self) -> DuckDBOverlapRepository:
+        return DuckDBOverlapRepository(self.connection)
+
+    def serving_reader(self) -> DuckDBServingReader:
+        return DuckDBServingReader(self.connection)
+
+    def explore_reader(self) -> DuckDBExploreReader:
+        return DuckDBExploreReader(self.connection)

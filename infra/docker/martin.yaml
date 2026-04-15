@@ -1,0 +1,36 @@
+---
+# Martin tile server configuration — https://maplibre.org/martin/
+# Version: martin 0.14+
+
+listen_addresses: '0.0.0.0:3000'
+
+# Keep idle connections alive; matches PgBouncer server_idle_timeout
+keep_alive: 75
+
+# Match available CPU cores; martin is async/Tokio-based so this is I/O threads
+worker_processes: 8
+
+postgres:
+  - connection_string: ${DATABASE_URL}
+
+    # Internal martin connection pool — martin manages this itself, bypassing
+    # PgBouncer. Pool size = worker_processes × 2 is a safe starting point.
+    pool_size: 16
+
+    # Only expose objects in serving_geo — keeps the tile catalog clean.
+    # Function sources (serving_geo.get_tile) are auto-discovered because their
+    # signature matches (z int, x int, y int, query_params json) RETURNS bytea.
+    # Table sources are disabled; use the function source for all tile access so
+    # zoom-level filtering and geometry simplification are always applied.
+    auto_publish:
+      from_schemas:
+        - serving_geo
+      tables:
+        publish: false
+      functions:
+        publish: true
+
+# Tile cache headers — CDN/browser caching for static-ish datasets.
+# Adjust max_age based on ingestion frequency (lower for frequently updated data).
+sprites: {}
+fonts: {}
