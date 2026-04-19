@@ -11,30 +11,54 @@ Run locally with:
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+import contextlib
+import os
+from collections.abc import AsyncIterator, Iterable
 
+import psycopg2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import deps, errors
+from .middleware import RequestIdMiddleware
 from .routers import aois, features, health, indicators, tiles
 
 
-DEFAULT_DEV_ORIGINS: tuple[str, ...] = (
-    "http://localhost:5173",   # Vite dev server
-    "http://localhost:8000",   # API's own OpenAPI page
-)
+def _cors_origins_from_env() -> list[str]:
+    """Parse REIMAGINA_API_CORS_ORIGINS (comma-separated) or fall back to dev."""
+    raw = os.environ.get("REIMAGINA_API_CORS_ORIGINS")
+    if raw is None:
+        return ["http://localhost:5173", "http://localhost:8000"]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def create_app(
     *,
-    allow_origins: Iterable[str] = DEFAULT_DEV_ORIGINS,
+    allow_origins: Iterable[str] | None = None,
+    initialise_pool: bool = True,
 ) -> FastAPI:
-    """Build a FastAPI app with all read-side routers mounted.
+    """Build a FastAPI app with routers, middleware, and exception handlers.
 
-    Kept as a factory (rather than a module-level singleton) so tests can
-    construct isolated app instances with their own CORS / DSN overrides
-    without touching a global.
+    `allow_origins=None` reads from REIMAGINA_API_CORS_ORIGINS (comma-
+    separated) and falls back to the dev hosts. Tests can force a specific
+    list in-process.
+
+    `initialise_pool=False` skips the lifespan hook that creates the
+    process-wide Postgres pool — useful for unit tests that exercise the
+    app factory without a live database.
     """
+    resolved_origins = list(allow_origins) if allow_origins is not None else _cors_origins_from_env()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if initialise_pool:
+            deps.initialise_pool()
+        try:
+            yield
+        finally:
+            if initialise_pool:
+                deps.shutdown_pool()
+
     app = FastAPI(
         title="reimagina API",
         version="0.1.0",
@@ -43,14 +67,25 @@ def create_app(
             "Exposes curated indicator results, AOI summaries, spatial "
             "feature inventories, and the tile source manifest."
         ),
+        lifespan=lifespan,
     )
+
+    # Order matters: request-id needs to wrap everything so exception
+    # handlers can pick it off `request.state`. CORS wraps request-id so
+    # preflight requests still carry the id on the response.
+    app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(allow_origins),
+        allow_origins=resolved_origins,
         allow_methods=["GET", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-Id"],
         allow_credentials=False,
     )
+
+    app.add_exception_handler(psycopg2.Error, errors.psycopg_error_handler)
+    app.add_exception_handler(Exception, errors.unhandled_error_handler)
+
     app.include_router(health.router)
     app.include_router(indicators.router)
     app.include_router(aois.router)

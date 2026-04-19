@@ -25,11 +25,13 @@ from reimagina.indicators.compactness import compute_block_compactness
 def client(conn):
     """FastAPI TestClient wired to reuse the per-test connection.
 
-    The API dep normally opens its own psycopg2 connection; here we pin it
-    to the transaction the test is already using so seed data is visible
-    to route handlers and nothing committed leaks to the DB.
+    The API dep normally checks a connection out of the process-wide
+    pool; here we pin it to the transaction the test is already using so
+    seed data is visible to route handlers and nothing committed leaks to
+    the DB. `initialise_pool=False` skips creating a real pool since
+    every `get_db_conn` call is intercepted by the override.
     """
-    app = create_app()
+    app = create_app(initialise_pool=False)
 
     def _override_conn():
         yield conn
@@ -66,10 +68,41 @@ def seeded_block_with_compactness(conn):
     return {"block_id": block_id, "slug": "urban_form_block_compactness"}
 
 
-def test_health_reports_db_reachable(client):
+def test_liveness_always_returns_ok(client):
+    """Liveness must not touch the DB and must always be 200."""
+    response = client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_readiness_reports_db_reachable(client):
+    """Readiness probes the DB; reachable case."""
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["db"] == "reachable"
+
+
+def test_health_alias_matches_readiness_shape(client):
+    """Legacy /health alias keeps the pre-split response shape."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "db": "reachable"}
+    payload = response.json()
+    assert set(payload.keys()) == {"status", "db"}
+
+
+def test_every_response_carries_request_id(client):
+    response = client.get("/health/live")
+    assert "x-request-id" in {k.lower() for k in response.headers}
+
+
+def test_incoming_request_id_is_echoed_back(client):
+    response = client.get(
+        "/health/live",
+        headers={"X-Request-Id": "test-trace-123"},
+    )
+    assert response.headers["X-Request-Id"] == "test-trace-123"
 
 
 def test_list_indicators_returns_seeded_catalog(client, conn):
@@ -223,6 +256,57 @@ def test_values_downloads_404_on_unknown_slug(client, conn):
     for ext in ("csv", "geojson", "parquet"):
         response = client.get(f"/indicators/does_not_exist/values.{ext}")
         assert response.status_code == 404, ext
+
+
+def test_list_values_rejects_negative_limit_with_422(client, conn):
+    seed_catalog(conn)
+    response = client.get(
+        "/indicators/urban_form_block_compactness/values?limit=-1"
+    )
+    assert response.status_code == 422
+
+
+def test_list_values_rejects_huge_limit_with_422(client, conn):
+    seed_catalog(conn)
+    response = client.get(
+        "/indicators/urban_form_block_compactness/values?limit=999999999"
+    )
+    assert response.status_code == 422
+
+
+def test_features_endpoint_rejects_zero_limit_with_422(client):
+    response = client.get("/features?limit=0")
+    assert response.status_code == 422
+
+
+def test_aoi_summaries_rejects_malformed_uuid_with_422(client):
+    """UUID-typed path parameter → 422 before any DB round trip."""
+    response = client.get("/aois/not-a-uuid/summaries")
+    assert response.status_code == 422
+    body = response.json()
+    # FastAPI uses the standard 'detail' key for validation errors.
+    assert "detail" in body
+
+
+def test_csv_download_rejects_zero_limit_with_422(
+    client, seeded_block_with_compactness
+):
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values.csv?limit=0"
+    )
+    assert response.status_code == 422
+
+
+def test_csv_download_respects_limit_override(
+    client, seeded_block_with_compactness
+):
+    # Only one row exists; limit=1 still returns it.
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values.csv?limit=1"
+    )
+    assert response.status_code == 200
+    lines = response.text.splitlines()
+    assert len(lines) == 2  # header + 1 row
 
 
 def test_tile_sources_returns_manifest(client):
