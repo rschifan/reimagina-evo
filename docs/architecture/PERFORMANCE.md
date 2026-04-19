@@ -117,6 +117,45 @@ working set fits in memory on any reasonable dev box. Budgets follow the
 normal CI variance has headroom but genuine regressions (e.g. a plan flip to
 sequential scan) will trip the budget.
 
+## Baseline numbers — Layer 2 first indicator (Apr 2026)
+
+Captured on the same Cuauhtémoc + full-CDMX dataset as Layer 1, running
+`urban_form_block_compactness` (Polsby-Popper) end-to-end through the CLI
+on PostgreSQL 17 + PostGIS 3.4.
+
+Compute + rollup + AOI summary:
+
+| Step | Scope | Rows | Wall-clock |
+|---|---|---|---|
+| `indicators compute --slug urban_form_block_compactness` | 66 789 blocks CDMX-wide | 66 789 | 5.9 s |
+| `indicators rollup --source-type block --target-type ageb` | 153 AGEBs covered by populated `feature_overlap` pairs | 153 | 8.0 s |
+| `indicators aoi-summary --aoi-id <Cuauhtémoc> --slug urban_form_block_compactness` | 3 020 features weighted, 3 006 usable, 14 prorated | 1 | <0.5 s |
+
+Cuauhtémoc block-compactness (weighted-mean): **0.636** (ratio_0_1).
+
+CDMX-wide block-level distribution:
+
+| Quantile | Value |
+|---|---|
+| min   | 0.026 |
+| p05   | 0.223 |
+| p50   | 0.583 |
+| p95   | 0.780 |
+| max   | 1.000 |
+
+Cuauhtémoc AGEB-grain rollup spread (weighted-mean of child block values
+per AGEB): bottom three 0.423–0.431 (irregular historic street patterns),
+top three 0.757–0.760 (more-planned grids).
+
+Plan shape of the rollup SELECT: `Nested Loop` over
+`feature_overlap_target_idx` into `indicator_result.ir_base_slug_idx`, no
+sequential scans on either `feature_overlap` or `indicator_result`.
+
+If a regression pushes any of these numbers into a different ballpark
+(e.g. full CDMX compute over 20 s, or AOI summary taking seconds
+instead of <0.5 s), re-run EXPLAIN and check whether the partial unique
+indexes on `indicator_result` are still selected.
+
 ## Benchmark rules
 
 - Benchmark the **real serving contract** whenever possible.

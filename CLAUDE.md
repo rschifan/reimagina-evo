@@ -95,7 +95,8 @@ Current `serving_geo` read surface (what API/workers consume):
 
 - `serving_geo.feature_v` + role/type projections (`admin_v`, `blocks`, …)
 - `serving_geo.get_tile()` (Martin-backed MVT path)
-- `serving_geo.aoi_summary_v` (cached AOI-level indicator values; rows appear once the Layer 2 worker lands)
+- `serving_geo.current_indicator_v` (Layer 2 read path; status='current' only, joined with catalog metadata)
+- `serving_geo.aoi_summary_v` (cached AOI-level indicator values; populated by `reimagina.jobs.aoi_summary.summarise_aoi`)
 
 Inspection workflow:
 

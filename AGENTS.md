@@ -71,6 +71,16 @@ python -m apps.cli.app overlap declare-pair \
     --target-context MEX --target-slug block
 python -m apps.cli.app overlap list-pairs
 python -m apps.cli.app overlap compute-all --aoi-id <uuid>
+
+# Indicator catalog + compute + rollup + AOI summary (Layer 2)
+python -m apps.cli.app indicators seed-catalog
+python -m apps.cli.app indicators compute \
+    --slug urban_form_block_compactness [--aoi-id <uuid>]
+python -m apps.cli.app indicators rollup \
+    --slug urban_form_block_compactness \
+    --source-type block --target-type ageb
+python -m apps.cli.app indicators aoi-summary \
+    --aoi-id <uuid> --slug urban_form_block_compactness
 ```
 
 ## Testing rules
