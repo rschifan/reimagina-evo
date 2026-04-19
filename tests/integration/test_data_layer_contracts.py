@@ -15,6 +15,7 @@ from reimagina.data import file_asset
 from reimagina.data import observation as obs
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
+from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
@@ -1134,3 +1135,97 @@ def test_indicator_applies_to_enforced_by_trigger(conn):
             value_numeric=0.5,
         )
     conn.rollback()
+
+
+def test_block_building_density_end_to_end(conn):
+    """Postgres: building-density vertical slice including trigger bounds."""
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="density_src", storage_type="vector", integration_role="canonical_entity"
+    )
+    run_id = _start_run(conn, source_id)
+
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    building_type = feat.get_type_id(conn, "global", "building")
+
+    dense_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="dense",
+        geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
+    )
+    sparse_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="sparse",
+        geometry_wkt="POLYGON((-99.130 19.430,-99.127 19.430,-99.127 19.433,-99.130 19.433,-99.130 19.430))",
+    )
+    _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="empty",
+        geometry_wkt="POLYGON((-99.120 19.430,-99.117 19.430,-99.117 19.433,-99.120 19.433,-99.120 19.430))",
+    )
+
+    # Three inside 'dense', one inside 'sparse', one outside all blocks.
+    for ref, lon, lat in [
+        ("bd-1", -99.139, 19.431),
+        ("bd-2", -99.138, 19.432),
+        ("bd-3", -99.1375, 19.4315),
+        ("bs-1", -99.129, 19.431),
+        ("b-outside", -99.100, 19.400),
+    ]:
+        _insert_feature(
+            conn,
+            type_id=building_type, source_id=source_id, ingestion_run_id=run_id,
+            dataset_version="v1", source_record_ref=ref,
+            geometry_wkt=(
+                f"POLYGON(({lon} {lat},{lon + 0.0001} {lat},"
+                f"{lon + 0.0001} {lat + 0.0001},{lon} {lat + 0.0001},{lon} {lat}))"
+            ),
+        )
+
+    result = compute_block_building_density(conn, code_version="test")
+    assert result.rows_written == 3
+    assert result.buildings_attributed == 4
+
+    result_repo = backend_for_connection(conn).indicator_result_repo()
+    current = {
+        (row["indicator_slug"],
+         _fetch_source_ref(conn, row["feature_id"])): float(row["value_numeric"])
+        for row in result_repo.list_current_for_indicator(
+            indicator_slug="urban_form_block_building_density"
+        )
+    }
+    assert current[("urban_form_block_building_density", "empty")] == 0.0
+    assert current[("urban_form_block_building_density", "sparse")] > 0.0
+    assert current[("urban_form_block_building_density", "dense")] == pytest.approx(
+        3 * current[("urban_form_block_building_density", "sparse")], rel=1e-6
+    )
+
+    # Trigger-enforced valid_max: rejecting 10000/ha (catalog cap 500).
+    job_repo = backend_for_connection(conn).job_run_repo()
+    job_id = job_repo.start_job(
+        model_family="urban_form", code_version="test", status="running"
+    )
+    with pytest.raises(psycopg2.Error):
+        result_repo.write_result(
+            feature_id=dense_id,
+            indicator_slug="urban_form_block_building_density",
+            job_run_id=job_id,
+            value_numeric=10_000.0,
+        )
+    conn.rollback()
+
+    # sanity: the never-attributed building didn't land against the empty block.
+    assert current[("urban_form_block_building_density", "empty")] == 0.0
+    _ = sparse_id  # keeps the variable named in case future asserts reference it
+
+
+def _fetch_source_ref(conn, feature_id: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source_record_ref FROM curated_geo.feature WHERE id = %s",
+            (feature_id,),
+        )
+        return cur.fetchone()[0]

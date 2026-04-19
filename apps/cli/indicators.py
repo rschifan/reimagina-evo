@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from reimagina.db import connect
+from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs.aoi_summary import summarise_aoi
@@ -40,9 +41,26 @@ def compute_indicator(
             "rows_written": result.rows_written,
             "aoi_id": result.aoi_id,
         }
+    if slug == "urban_form_block_building_density":
+        with connect(dsn) as conn:
+            result = compute_block_building_density(
+                conn,
+                aoi_id=aoi_id,
+                scenario_id=scenario_id,
+                code_version=code_version,
+            )
+        return {
+            "dsn": dsn,
+            "indicator_slug": result.indicator_slug,
+            "job_run_id": result.job_run_id,
+            "blocks_considered": result.blocks_considered,
+            "buildings_attributed": result.buildings_attributed,
+            "rows_written": result.rows_written,
+            "aoi_id": result.aoi_id,
+        }
     raise ValueError(
         f"Unknown indicator slug: {slug!r}. "
-        "Only 'urban_form_block_compactness' is wired today."
+        "Known slugs: urban_form_block_compactness, urban_form_block_building_density."
     )
 
 

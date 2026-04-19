@@ -182,12 +182,18 @@ def _group_children_postgres(
     params: list = [source_feature_type, target_feature_type, indicator_slug]
     if scenario_id is not None:
         params.append(scenario_id)
+    # Weight = overlap_measure (absolute intersection measure, m² for
+    # polygon-polygon rollups). This gives weighted_mean the area-weighted
+    # semantic: bigger children contribute proportionally more. Using
+    # overlap_ratio (1.0 for a fully-nested child) would collapse to a
+    # plain arithmetic mean and produce mathematically wrong numbers for
+    # extensive metrics like building density.
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT fo.target_feature_id::text,
                    ir.value_numeric,
-                   fo.overlap_ratio,
+                   fo.overlap_measure,
                    ir.quality_flag
             FROM curated_geo.feature_overlap fo
             JOIN curated_geo.feature src ON src.id = fo.source_feature_id
@@ -227,10 +233,12 @@ def _group_children_duckdb(
         if scenario_id is None
         else "CAST(ir.scenario_id AS VARCHAR) = ?"
     )
+    # See _group_children_postgres for why the weight is overlap_measure,
+    # not overlap_ratio.
     query = f"""
         SELECT CAST(fo.target_feature_id AS VARCHAR),
                ir.value_numeric,
-               fo.overlap_ratio,
+               fo.overlap_measure,
                ir.quality_flag
         FROM curated_geo.feature_overlap fo
         JOIN curated_geo.feature src

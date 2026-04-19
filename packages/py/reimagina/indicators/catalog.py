@@ -36,6 +36,29 @@ class IndicatorSpec:
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
 
 
+URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
+    slug="urban_form_block_building_density",
+    name="Block Building Density",
+    description=(
+        "Buildings per hectare on a block. Counts Overture buildings whose "
+        "centroid falls inside the block polygon and divides by block area "
+        "(hectares). Aggregated to AGEB via area-weighted mean of child "
+        "blocks — equivalent to (Σ buildings) / (Σ block area) when the "
+        "children nest cleanly."
+    ),
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="buildings_per_ha",
+    # Dense Asian mega-cities peak around 250/ha; 500 is a generous safety
+    # cap that catches pathological bugs without constraining real data.
+    valid_min=0.0,
+    valid_max=500.0,
+    aggregation_method="weighted_mean",
+    applies_to=("block", "ageb"),
+)
+
+
 URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     slug="urban_form_block_compactness",
     name="Block Compactness (Polsby-Popper)",
@@ -62,6 +85,7 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
 # be upserted before the composite indicators that reference them.
 SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     URBAN_FORM_BLOCK_COMPACTNESS,
+    URBAN_FORM_BLOCK_BUILDING_DENSITY,
 )
 
 
