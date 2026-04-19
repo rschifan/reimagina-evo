@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>reimagina · read-side</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <h1>reimagina</h1>
+
+        <section data-section="layers">
+          <h2>Spatial layers</h2>
+          <div id="layer-toggles" class="layer-toggles"></div>
+        </section>
+
+        <section data-section="indicators">
+          <h2>Indicator overlay</h2>
+          <label>
+            <span>Indicator</span>
+            <select id="indicator-select">
+              <option value="">(none)</option>
+            </select>
+          </label>
+          <div id="legend" class="legend" hidden></div>
+          <div id="downloads" class="downloads" hidden>
+            <button type="button" data-format="csv">Download CSV</button>
+            <button type="button" data-format="geojson">Download GeoJSON</button>
+            <button type="button" data-format="parquet">Download GeoParquet</button>
+          </div>
+        </section>
+
+        <section data-section="status">
+          <div id="status" class="status"></div>
+        </section>
+      </aside>
+
+      <section class="map-panel">
+        <div id="map"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
