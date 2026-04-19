@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import geopandas as gpd
 import numpy as np
+import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from reimagina.data import aoi as aoi_mod
@@ -13,6 +14,8 @@ from reimagina.data import explore
 from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 from reimagina.data import overlap as ovlp
+from reimagina.indicators.catalog import seed_catalog
+from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
@@ -820,3 +823,138 @@ def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
         names = {(row[0], row[1]) for row in layers}
         assert ("curated_geo", "aoi_indicator_summary") in names
         assert ("serving_geo", "aoi_summary_v") in names
+
+
+def test_duckdb_block_compactness_end_to_end(tmp_path):
+    """Seed catalog → load 3 blocks of known compactness → compute → assert.
+
+    Exercises the full vertical slice: catalog upsert, job_run lifecycle,
+    bulk indicator_result write through the Python validator, and the
+    serving_geo.current_indicator_v read contract.
+    """
+    app_path = tmp_path / "reimagina_l2.duckdb"
+    test_path = tmp_path / "reimagina_l2_test.duckdb"
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        seed_catalog(conn)
+
+        source_id = cat.register_source(
+            conn,
+            name="block_compactness_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/compactness.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        # Three shapes of known compactness at ~19.4° lat. Using a ~0.004°
+        # square gives ~440 m sides so planar-UTM metres are order-of-magnitude
+        # right; exact values are asserted via polsby_popper(...).
+        square = [
+            (-99.140, 19.430), (-99.136, 19.430),
+            (-99.136, 19.434), (-99.140, 19.434),
+        ]
+        thin_rect = [
+            (-99.130, 19.430), (-99.126, 19.430),
+            (-99.126, 19.4301), (-99.130, 19.4301),
+        ]
+        near_circle = []
+        import math as _m
+        cx, cy, r = -99.120, 19.432, 0.002
+        for i in range(32):
+            theta = 2 * _m.pi * i / 32
+            near_circle.append((cx + r * _m.cos(theta), cy + r * _m.sin(theta)))
+
+        blocks = gpd.GeoDataFrame(
+            [
+                {"id": "sq",  "geometry": Polygon(square)},
+                {"id": "rect", "geometry": Polygon(thin_rect)},
+                {"id": "circle", "geometry": Polygon(near_circle)},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn,
+            blocks,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        result = compute_block_compactness(conn, code_version="test")
+        assert result.rows_written == 3
+        assert result.features_considered == 3
+
+        # Read back through the serving contract.
+        result_repo = backend_for_connection(conn).indicator_result_repo()
+        current_rows = result_repo.list_current_for_indicator(
+            indicator_slug="urban_form_block_compactness"
+        )
+        assert len(current_rows) == 3
+        by_feature: dict[str, float] = {}
+        for row in current_rows:
+            ref = conn.execute(
+                "SELECT source_record_ref FROM curated_geo.feature WHERE CAST(id AS VARCHAR) = ?",
+                [row["feature_id"]],
+            ).fetchone()[0]
+            by_feature[ref] = row["value_numeric"]
+            assert row["quality_flag"] == "measured"
+            assert row["indicator_slug"] == "urban_form_block_compactness"
+            assert row["value_type"] == "numeric"
+            assert row["unit"] == "ratio_0_1"
+
+        # Assertions on the math. Tolerances generous because the
+        # projection isn't perfectly metric at this distance from the UTM
+        # central meridian.
+        assert 0.0 <= by_feature["rect"] < 0.1, by_feature
+        assert 0.7 < by_feature["sq"] < 0.9, by_feature
+        assert by_feature["circle"] > 0.95, by_feature
+
+        # Re-running the worker must be idempotent: same row count, and the
+        # old 'current' rows become 'stale'.
+        second = compute_block_compactness(conn, code_version="test")
+        assert second.rows_written == 3
+        current_after = result_repo.list_current_for_indicator(
+            indicator_slug="urban_form_block_compactness"
+        )
+        assert len(current_after) == 3  # still three current rows
+        stale_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM curated_geo.indicator_result
+            WHERE indicator_slug = 'urban_form_block_compactness'
+              AND status = 'stale'
+            """
+        ).fetchone()[0]
+        assert stale_count == 3  # the previous current rows
+
+        # Budget-keeping: validator rejects out-of-range value_numeric.
+        job_repo = backend_for_connection(conn).job_run_repo()
+        synthetic_job = job_repo.start_job(
+            model_family="urban_form", code_version="test", status="running"
+        )
+        feature_row = conn.execute(
+            "SELECT CAST(id AS VARCHAR) FROM curated_geo.feature WHERE source_record_ref = 'sq'"
+        ).fetchone()
+        with pytest.raises(ValueError, match="above valid_max"):
+            result_repo.write_result(
+                feature_id=feature_row[0],
+                indicator_slug="urban_form_block_compactness",
+                job_run_id=synthetic_job,
+                value_numeric=2.0,
+            )
