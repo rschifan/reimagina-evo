@@ -261,7 +261,7 @@ Read Diagram 1 as:
 - `observation` stores later measurements about `feature`.
 - `file_asset` stores batch/manifest-level asset metadata, not per-feature values.
 - `area_of_interest` and `aoi_feature` are project-scoped support tables for AOI filtering and overlap-based prorating.
-- `feature_overlap` stores pre-computed spatial intersections between arbitrary feature type pairs (e.g. blocks vs. H3 grid cells, lots vs. road segments), generalising `aoi_feature` to feature-to-feature. Populated by a background overlap worker for declared type-pair combinations (`feature_overlap_type_pair`). Enables cross-grain indicator aggregation for both hierarchical and non-hierarchical spatial relationships.
+- `feature_overlap` stores pre-computed spatial intersections between arbitrary feature type pairs (e.g. blocks vs. H3 grid cells, lots vs. road segments), generalising `aoi_feature` to feature-to-feature. Populated by `reimagina.jobs.overlap` (CLI: `overlap declare-pair` + `overlap compute-all --aoi-id …`) for declared type-pair combinations (`feature_overlap_type_pair`). Enables cross-grain indicator aggregation for both hierarchical and non-hierarchical spatial relationships.
 - `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) land in Layer 1 so API code can target them; the worker that populates rows reads from `indicator_result`, which arrives with the Layer 2 indicators milestone.
 - In the actual schema, `aoi_feature` uses the pair `(aoi_id, feature_id)` as its composite primary key.
 
