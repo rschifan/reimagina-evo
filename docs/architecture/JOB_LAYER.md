@@ -42,6 +42,7 @@ Frontend polls job status via API ───────────────�
 | `fiscal` | `jobs-fiscal` | Tax base, land value |
 | `urban_form` | `jobs-urban-form` | Street areas, block metrics |
 | `composite` | `jobs-composite` | Runs after direct indicators are ready |
+| `rollup` | `jobs-rollup` | Aggregates indicator results to a coarser grain via `feature_overlap` |
 
 Each queue has a **dead-letter queue (DLQ)** for messages that exceed the retry limit. DLQ messages require human investigation — they are never automatically reprocessed.
 
@@ -205,6 +206,87 @@ This is the sequence every model worker must follow. Deviation breaks result con
 ```
 
 **Idempotency:** if a worker re-processes the same message (e.g., after a crash and restart), step 7 marks prior rows stale, step 8 inserts new rows. The partial unique indexes in `indicator_result` enforce that only one `current` result exists per `(feature, scenario, indicator)`. Duplicate `succeeded` job_run rows are acceptable — `indicator_result` lineage points to the latest one.
+
+---
+
+## Rollup worker
+
+The rollup worker moves indicator results from a fine-grain `feature_type`
+(e.g., `block`) up to a coarser grain (e.g., `ageb`). It does not run a model
+— it aggregates results that other workers already wrote.
+
+**When does it run?** Queued automatically after a model-family worker
+reports `succeeded`, but only when:
+
+1. the indicator's `indicator_catalog.aggregation_method` is not `'none'`, and
+2. a row exists in `curated_geo.feature_overlap_type_pair` where the
+   `source_type` matches the indicator's grain and the `target_type` is
+   coarser.
+
+**Execution ordering.** Rollup runs **before** composite so composite workers
+that reference the coarser grain can read the rolled-up values through
+`serving_geo.indicator_result_v`.
+
+**Input message:**
+
+```json
+{
+  "rollup_run_id": "uuid",
+  "scenario_id": "uuid | null",
+  "indicator_id": "uuid",
+  "target_feature_type": "ageb",
+  "aggregation_method": "weighted_mean",
+  "triggering_job_run_ids": ["uuid", "uuid"]
+}
+```
+
+**Contract:**
+
+1. Claim the `job_run` row (status → `running`, `model_family = 'rollup'`).
+2. Read current fine-grain `indicator_result` rows for `indicator_id` at the
+   source grain, scoped to the relevant features (all features for base;
+   intervention + inherited features for a scenario).
+3. Join to `curated_geo.feature_overlap` where the target feature has
+   `type_slug = target_feature_type`.
+4. Apply `aggregation_method` over the fine-grain values grouped by target
+   feature. The supported methods are:
+   - `mean` — simple arithmetic mean
+   - `weighted_mean` — weights are `feature_overlap.overlap_ratio`
+   - `sum`
+   - `min`, `max`
+5. Mark any existing `current` parent rows stale (step 7 of the standard
+   worker contract).
+6. Insert the new parent rows with:
+   - `quality_flag = 'estimated'` (values are derived at a different
+     spatial resolution, not measured)
+   - `job_run_id = rollup_run_id`
+   - `lineage_ref.triggering_job_run_ids = [...]`
+
+**Missing-input policy (prototype).** For each parent feature, compute the
+fraction of child weight whose input is `missing` or `failed`. If that
+fraction is > 50%, write the parent as `missing`; otherwise prorate the
+aggregation over the remaining children and note `aggregation_note = "prorated"`.
+
+**Idempotency.** The `(indicator_id, target_feature_id, scenario_id)`
+partial-unique constraint on `indicator_result` guarantees one `current`
+row per parent. Re-running with the same input set replaces existing
+`current` rows and marks the old ones stale — no duplicates.
+
+**Stale-propagation from below (prototype).** If a child `indicator_result`
+becomes stale (e.g., a re-ingest), the parent rollup is **not** auto-marked
+stale. The caller that staled the child must enqueue a rollup message with
+the same `indicator_id` + `target_feature_type`. This is intentional for v1;
+a trigger-based propagation is tracked as future work.
+
+**Pure aggregation module.** Aggregation math lives in
+`reimagina.jobs.aggregation` and is reusable outside of workers (e.g., in
+CLI tools and tests). See that module for the exact semantics of each
+`aggregation_method`.
+
+**Implementation status (Layer 1).** The aggregation module and this
+contract are in place; the worker body reads from `indicator_result`, which
+lands with Layer 2. The full worker implementation therefore arrives with
+the indicators layer.
 
 ---
 

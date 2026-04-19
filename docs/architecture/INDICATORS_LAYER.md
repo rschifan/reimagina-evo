@@ -540,6 +540,29 @@ WHERE  feature_id  = ANY(:affected_feature_ids)
 
 After this, a new job is queued for each affected model family (see `JOB_LAYER.md`).
 
+### Rolling up a block-grain indicator to AGEB
+
+*Worked example: walkability.* The walkability model writes
+`indicator_result` rows at the `block` grain. Walkability has
+`indicator_catalog.aggregation_method = 'weighted_mean'`, and a row exists
+in `curated_geo.feature_overlap_type_pair` declaring `(MEX:block) → (MEX:ageb)`.
+
+After the model worker marks its `job_run` as `succeeded`, the rollup
+worker (see `JOB_LAYER.md`) is queued. For each AGEB, it:
+
+1. reads the current block-grain walkability `indicator_result` rows,
+2. joins them to `curated_geo.feature_overlap` on the target AGEB,
+3. computes the weighted mean using `overlap_ratio` as the per-block weight,
+4. marks any existing AGEB-grain `current` rows stale,
+5. inserts a new AGEB-grain row with `quality_flag = 'estimated'` and
+   `lineage_ref.triggering_job_run_ids` pointing back to the block model run.
+
+Consumers read the AGEB-grain value through `serving_geo.current_indicator_v`
+exactly as they read the block-grain value — the rollup is invisible at
+the read boundary except for `quality_flag`. The pure aggregation math
+is implemented in `reimagina.jobs.aggregation.aggregate` so it can be
+reused and tested outside of the worker.
+
 ---
 
 ## Build order
