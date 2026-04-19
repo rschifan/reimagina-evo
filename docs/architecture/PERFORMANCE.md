@@ -147,6 +147,44 @@ Cuauhtémoc AGEB-grain rollup spread (weighted-mean of child block values
 per AGEB): bottom three 0.423–0.431 (irregular historic street patterns),
 top three 0.757–0.760 (more-planned grids).
 
+*Note:* From Apr 2026 the rollup weight changed from
+`feature_overlap.overlap_ratio` to `feature_overlap.overlap_measure`
+(true area-weighted mean, not arithmetic-mean-in-disguise). Compactness
+numbers are stable to three decimals because Cuauhtémoc's blocks nest
+cleanly inside AGEBs; the fix matters most for extensive metrics like
+density.
+
+### Building density — `urban_form_block_building_density`
+
+Uses Overture buildings (5.9M loaded; ~1.5M attribute to CDMX INEGI
+blocks via centroid-in-polygon). Dual-filter SQL on Postgres:
+`block.geometry && bldg.geometry AND ST_Within(ST_Centroid(bldg), block)`,
+with GIST on `feature.geometry` doing the heavy lifting.
+
+| Step | Scope | Rows | Wall-clock |
+|---|---|---|---|
+| `overture load` | 5 888 557 building features landed into `curated_geo.feature` | 5 888 557 | ~5 min (background) |
+| `indicators compute --slug urban_form_block_building_density` | 66 789 blocks CDMX-wide; 1 511 860 buildings attributed | 66 789 | 8.9 s |
+| `indicators rollup --source-type block --target-type ageb` | 153 AGEBs covered | 153 | 0.5 s |
+| `indicators aoi-summary --aoi-id <Cuauhtémoc>` | 3 020 features weighted, 3 006 usable | 1 | <0.5 s |
+
+Cuauhtémoc building-density (weighted-mean): **26.56 buildings/ha**.
+
+CDMX-wide block-level distribution:
+
+| Quantile | Value (buildings/ha) |
+|---|---|
+| min  | 0.00 |
+| p05  | 0.00 |
+| p50  | 30.94 |
+| p95  | 89.24 |
+| max  | 411.30 |
+
+Cuauhtémoc AGEB-grain rollup spread: bottom three 4.5–4.8/ha (parks,
+plazas, wide boulevards), top three 48.4–50.0/ha (dense mixed-use
+vecindades). All values well inside the catalog's `valid_max = 500/ha`
+safety cap.
+
 Plan shape of the rollup SELECT: `Nested Loop` over
 `feature_overlap_target_idx` into `indicator_result.ir_base_slug_idx`, no
 sequential scans on either `feature_overlap` or `indicator_result`.

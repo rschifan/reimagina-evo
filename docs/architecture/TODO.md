@@ -8,7 +8,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Spatial aggregation mechanism | **Done** — schema (r009), contract (`JOB_LAYER.md`), `reimagina.jobs.aggregation` pure module, and `reimagina.jobs.rollup.run_rollup` worker. Validated end-to-end on real CDMX data (block→AGEB, 153 rollups written) and via the Cuauhtémoc AOI summary (0.636 weighted-mean compactness). See `PERFORMANCE.md` baseline numbers. |
+| 1 | Spatial aggregation mechanism | **Done** — schema (r009), contract (`JOB_LAYER.md`), `reimagina.jobs.aggregation` pure module, and `reimagina.jobs.rollup.run_rollup` worker (weights `weighted_mean` by `feature_overlap.overlap_measure` for area-weighted semantics). Validated end-to-end on real CDMX data: compactness (0.636 weighted-mean Cuauhtémoc) and building density (26.56/ha Cuauhtémoc, 1.5M buildings attributed). See `PERFORMANCE.md` baseline numbers. |
 | 2 | AOI-level aggregate indicator values | Decided (Option B); schema and worker not yet built |
 | 3 | Non-hierarchical spatial aggregation | Resolved — `feature_overlap` covers this |
 
