@@ -66,6 +66,57 @@ The benchmark framework uses deterministic tiers:
 - only one current row per `(feature_id, attribute_key)`
 - numeric, text, and JSON values
 
+## Baseline numbers (Cuauhtémoc, Apr 2026)
+
+Captured against real INEGI Marco Geoestadístico 2020 geometry loaded via
+`reimagina-cli cdmx bootstrap`; host is a local dev macOS laptop running
+PostgreSQL 17 with PostGIS 3.4. These are the numbers the overlap benchmark's
+budgets are derived from — update them alongside any significant code or
+schema change that touches the overlap path.
+
+Loaded dataset:
+
+| Layer | Rows | Load time (Postgres) | Load time (DuckDB) |
+|---|---|---|---|
+| MEX:municipality | 16 | included in 7.1 s total | included in 2.6 s total |
+| MEX:ageb | 2 431 | ″ | ″ |
+| MEX:block (manzanas) | 66 789 | ″ | ″ |
+
+Cuauhtémoc AOI (`CVE_MUN=015`): ~34.5 km² planar, ~32 km² after geodesic
+correction. 2 853 MEX:block features intersect the AOI polygon.
+
+Overlap compute `(MEX:block) → (MEX:ageb)` scoped to Cuauhtémoc:
+
+| Backend | Rows written | Wall-clock | Per-feature |
+|---|---|---|---|
+| Postgres (PostGIS geography) | 2 853 | 0.92 s | ~0.32 ms |
+| DuckDB (pyproj.Geod) | 2 853 | 3.48 s | ~1.22 ms |
+
+All 2 853 overlap_ratio values equal 1.0 (blocks nest cleanly inside AGEBs —
+the INEGI hierarchy is pre-snapped). `overlap_measure` range: 16.9 m² →
+208 788.8 m² (mean 8 187.9 m²), consistent with urban city-block areas.
+
+PMTiles export (`admin_reference`, 16 alcaldías): 35.3 KB artifact. `ogr2ogr`
+on macOS emits the benign `OGR2SQLITE_Setup` post-write warning;
+`reimagina.tiles.service._run_export_command` detects the warning and
+verifies the artifact on disk before treating the run as successful.
+
+Benchmark `overlap_block_to_ageb_cuauhtemoc` (5 iterations, warm cache,
+`representative` tier):
+
+| Percentile | Observed | Budget |
+|---|---|---|
+| p50 | 269 ms | 450 ms |
+| p95 | 279 ms | 600 ms |
+| p99 | 280 ms | 750 ms |
+
+Plan shape: `Nested Loop` + `Index Scan` on `feature_geometry_gist` for both
+block↔AGEB and block↔AOI joins. 55 K shared hit blocks, 0 temp blocks — the
+working set fits in memory on any reasonable dev box. Budgets follow the
+`observed × (1.5 p50 / 2.0 p95 / 2.5 p99)` policy rounded up to 50 ms, so
+normal CI variance has headroom but genuine regressions (e.g. a plan flip to
+sequential scan) will trip the budget.
+
 ## Benchmark rules
 
 - Benchmark the **real serving contract** whenever possible.
