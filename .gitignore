@@ -36,6 +36,7 @@ data/local/
 data/bronze/
 data/silver/
 data/tiles/
+data/sources/
 data/.DS_Store
 data/*.parquet
 data/*.gpkg

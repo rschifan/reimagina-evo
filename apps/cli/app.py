@@ -39,6 +39,12 @@ from .perf import (  # noqa: E402
     run_perf_benchmarks,
     seed_observations,
 )
+from .cdmx import (  # noqa: E402
+    aoi_from_alcaldia,
+    bootstrap_cdmx,
+    cdmx_status,
+    fetch_cdmx_layer,
+)
 from .feat import seed_types  # noqa: E402
 from .overlap import (  # noqa: E402
     compute_overlaps_all,
@@ -269,6 +275,52 @@ def _build_parser() -> argparse.ArgumentParser:
     feat_seed.add_argument("--dsn", default=DEFAULT_APP_DSN)
     feat_seed.set_defaults(handler=_handle_feat_seed_types)
 
+    cdmx_parser = subparsers.add_parser(
+        "cdmx",
+        help="CDMX canonical-geometry bootstrap (INEGI + datos.cdmx.gob.mx)",
+    )
+    cdmx_subparsers = cdmx_parser.add_subparsers(dest="cdmx_command", required=True)
+
+    cdmx_fetch = cdmx_subparsers.add_parser(
+        "fetch",
+        help="Download (or reuse cached) archive for one CDMX layer",
+    )
+    cdmx_fetch.add_argument("--layer", required=True,
+                            choices=("municipalities", "agebs", "blocks", "colonias"))
+    cdmx_fetch.add_argument("--overwrite", action="store_true")
+    cdmx_fetch.set_defaults(handler=_handle_cdmx_fetch)
+
+    cdmx_bootstrap = cdmx_subparsers.add_parser(
+        "bootstrap",
+        help="Fetch + stage + load CDMX layers into curated_geo.feature",
+    )
+    cdmx_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    cdmx_bootstrap.add_argument("--layers",
+        help="Comma-separated layer keys; default is municipalities,agebs,blocks,colonias")
+    cdmx_bootstrap.add_argument("--from-path", action="append", default=[],
+        metavar="LAYER=PATH",
+        help="Use a local archive instead of downloading, e.g. blocks=/path/to/09_ciudaddemexico.zip. Repeatable.")
+    cdmx_bootstrap.add_argument("--code-version", default="dev")
+    cdmx_bootstrap.set_defaults(handler=_handle_cdmx_bootstrap)
+
+    cdmx_status_cmd = cdmx_subparsers.add_parser(
+        "status",
+        help="Row counts per MEX feature type",
+    )
+    cdmx_status_cmd.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    cdmx_status_cmd.set_defaults(handler=_handle_cdmx_status)
+
+    cdmx_aoi = cdmx_subparsers.add_parser(
+        "aoi-from-alcaldia",
+        help="Create an AOI whose geometry is the matching MEX:municipality polygon",
+    )
+    cdmx_aoi.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    cdmx_aoi.add_argument("--cve-mun", required=True,
+                          help="INEGI municipality code, e.g. 015 for Cuauhtémoc")
+    cdmx_aoi.add_argument("--name", required=True)
+    cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
+    cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
+
     overlap_parser = subparsers.add_parser(
         "overlap",
         help="Feature-to-feature overlap pair declaration and compute",
@@ -465,6 +517,50 @@ def _handle_tiles_snapshots(args: argparse.Namespace) -> int:
 
 def _handle_feat_seed_types(args: argparse.Namespace) -> int:
     return _print(seed_types(dsn=args.dsn))
+
+
+def _handle_cdmx_fetch(args: argparse.Namespace) -> int:
+    payload = fetch_cdmx_layer(layer=args.layer, overwrite=args.overwrite)
+    _print(payload)
+    return 0 if payload.get("status") == "ok" else 2
+
+
+def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
+    pairs: dict[str, str] = {}
+    for entry in raw:
+        if "=" not in entry:
+            raise SystemExit(f"--from-path expects LAYER=PATH, got {entry!r}")
+        key, path = entry.split("=", 1)
+        pairs[key.strip()] = path.strip()
+    return pairs
+
+
+def _handle_cdmx_bootstrap(args: argparse.Namespace) -> int:
+    layers = [k.strip() for k in args.layers.split(",")] if args.layers else None
+    from_paths = _parse_from_path_pairs(args.from_path)
+    return _print(
+        bootstrap_cdmx(
+            dsn=args.dsn,
+            layers=layers,
+            from_paths=from_paths,
+            code_version=args.code_version,
+        )
+    )
+
+
+def _handle_cdmx_status(args: argparse.Namespace) -> int:
+    return _print(cdmx_status(dsn=args.dsn))
+
+
+def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
+    payload = aoi_from_alcaldia(
+        dsn=args.dsn,
+        cve_mun=args.cve_mun,
+        name=args.name,
+        project_name=args.project_name,
+    )
+    _print(payload)
+    return 0 if payload.get("status") == "ok" else 2
 
 
 def _handle_overlap_declare(args: argparse.Namespace) -> int:
