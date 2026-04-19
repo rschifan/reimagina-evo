@@ -15,6 +15,8 @@ from reimagina.data import file_asset
 from reimagina.data import observation as obs
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
+from reimagina.indicators.catalog import seed_catalog
+from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
 from reimagina.pipeline import loader
 from reimagina.storage import backend_for_connection
@@ -1031,3 +1033,100 @@ def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
                     (seed_source_id,),
                 )
         conn.close()
+
+
+def test_block_compactness_end_to_end(conn):
+    """Postgres: full vertical slice exercising the indicator_result trigger."""
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="compactness_src", storage_type="vector", integration_role="canonical_entity"
+    )
+    run_id = _start_run(conn, source_id)
+
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="sq",
+        geometry_wkt="POLYGON((-99.140 19.430,-99.136 19.430,-99.136 19.434,-99.140 19.434,-99.140 19.430))",
+    )
+    _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="rect",
+        geometry_wkt="POLYGON((-99.130 19.430,-99.126 19.430,-99.126 19.4301,-99.130 19.4301,-99.130 19.430))",
+    )
+
+    result = compute_block_compactness(conn, code_version="test")
+    assert result.rows_written == 2
+
+    result_repo = backend_for_connection(conn).indicator_result_repo()
+    current = result_repo.list_current_for_indicator(indicator_slug="urban_form_block_compactness")
+    by_ref: dict[str, float] = {}
+    for row in current:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT source_record_ref FROM curated_geo.feature WHERE id = %s",
+                (row["feature_id"],),
+            )
+            by_ref[cur.fetchone()[0]] = float(row["value_numeric"])
+    assert 0.7 < by_ref["sq"] < 0.9, by_ref
+    assert 0.0 <= by_ref["rect"] < 0.1, by_ref
+
+    # Trigger-enforced rule: invalid value_numeric is refused server-side.
+    job_repo = backend_for_connection(conn).job_run_repo()
+    synthetic_job = job_repo.start_job(
+        model_family="urban_form", code_version="test", status="running"
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id::text FROM curated_geo.feature WHERE source_record_ref = 'sq'"
+        )
+        sq_id = cur.fetchone()[0]
+    with pytest.raises(psycopg2.Error):
+        result_repo.write_result(
+            feature_id=sq_id,
+            indicator_slug="urban_form_block_compactness",
+            job_run_id=synthetic_job,
+            value_numeric=2.0,
+        )
+    conn.rollback()
+
+
+def test_indicator_applies_to_enforced_by_trigger(conn):
+    """Writing a result for a feature outside applies_to must be rejected."""
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="applies_to_src", storage_type="vector", integration_role="canonical_entity"
+    )
+    run_id = _start_run(conn, source_id)
+    ageb_type = feat.get_type_id(conn, "MEX", "ageb")
+    ageb_id = _insert_feature(
+        conn,
+        type_id=ageb_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="a-1",
+        geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
+    )
+
+    job_repo = backend_for_connection(conn).job_run_repo()
+    job_id = job_repo.start_job(
+        model_family="urban_form", code_version="test", status="running"
+    )
+    result_repo = backend_for_connection(conn).indicator_result_repo()
+    with pytest.raises(psycopg2.Error):
+        result_repo.write_result(
+            feature_id=ageb_id,
+            indicator_slug="urban_form_block_compactness",
+            job_run_id=job_id,
+            value_numeric=0.5,
+        )
+    conn.rollback()

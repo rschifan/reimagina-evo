@@ -46,6 +46,10 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
+from .indicators import (  # noqa: E402
+    compute_indicator,
+    seed_indicator_catalog,
+)
 from .overlap import (  # noqa: E402
     compute_overlaps_all,
     declare_overlap_pair,
@@ -321,6 +325,31 @@ def _build_parser() -> argparse.ArgumentParser:
     cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
     cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
 
+    indicators_parser = subparsers.add_parser(
+        "indicators",
+        help="Indicator catalog management and compute dispatch",
+    )
+    indicators_subparsers = indicators_parser.add_subparsers(
+        dest="indicators_command", required=True
+    )
+    indicators_seed = indicators_subparsers.add_parser(
+        "seed-catalog",
+        help="Register every shipped indicator in curated_geo.indicator_catalog",
+    )
+    indicators_seed.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    indicators_seed.set_defaults(handler=_handle_indicators_seed_catalog)
+
+    indicators_compute = indicators_subparsers.add_parser(
+        "compute",
+        help="Run the compute worker for a single indicator slug",
+    )
+    indicators_compute.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    indicators_compute.add_argument("--slug", required=True)
+    indicators_compute.add_argument("--aoi-id")
+    indicators_compute.add_argument("--scenario-id")
+    indicators_compute.add_argument("--code-version", default="dev")
+    indicators_compute.set_defaults(handler=_handle_indicators_compute)
+
     overlap_parser = subparsers.add_parser(
         "overlap",
         help="Feature-to-feature overlap pair declaration and compute",
@@ -561,6 +590,22 @@ def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
     )
     _print(payload)
     return 0 if payload.get("status") == "ok" else 2
+
+
+def _handle_indicators_seed_catalog(args: argparse.Namespace) -> int:
+    return _print(seed_indicator_catalog(dsn=args.dsn))
+
+
+def _handle_indicators_compute(args: argparse.Namespace) -> int:
+    return _print(
+        compute_indicator(
+            dsn=args.dsn,
+            slug=args.slug,
+            aoi_id=args.aoi_id,
+            scenario_id=args.scenario_id,
+            code_version=args.code_version,
+        )
+    )
 
 
 def _handle_overlap_declare(args: argparse.Namespace) -> int:
