@@ -163,6 +163,68 @@ def test_features_endpoint_returns_paginated_rows(client, conn):
     assert all(f["type_slug"] == "block" for f in payload["features"])
 
 
+def test_values_csv_download_is_streaming_and_has_pinned_header(
+    client, seeded_block_with_compactness
+):
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values.csv"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers.get("content-disposition", "")
+    lines = response.text.splitlines()
+    assert lines[0] == "feature_id,type_slug,value,quality_flag,computed_at"
+    assert len(lines) == 2  # one seeded row + header
+    parts = lines[1].split(",")
+    assert parts[0] == seeded_block_with_compactness["block_id"]
+    assert parts[1] == "block"
+    assert float(parts[2]) > 0
+    assert parts[3] == "measured"
+
+
+def test_values_geojson_download_is_valid_featurecollection(
+    client, seeded_block_with_compactness
+):
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values.geojson"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/geo+json")
+    payload = response.json()
+    assert payload["type"] == "FeatureCollection"
+    assert len(payload["features"]) == 1
+    feature = payload["features"][0]
+    assert feature["geometry"]["type"] == "Polygon"
+    assert feature["properties"]["feature_id"] == seeded_block_with_compactness["block_id"]
+    assert feature["properties"]["type_slug"] == "block"
+
+
+def test_values_parquet_download_round_trips_through_geopandas(
+    client, seeded_block_with_compactness
+):
+    import io as _io
+
+    import geopandas as gpd
+
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values.parquet"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/vnd.apache.parquet")
+    gdf = gpd.read_parquet(_io.BytesIO(response.content))
+    assert len(gdf) == 1
+    assert gdf.iloc[0]["feature_id"] == seeded_block_with_compactness["block_id"]
+    assert gdf.crs is not None
+    assert gdf.crs.to_epsg() == 4326
+
+
+def test_values_downloads_404_on_unknown_slug(client, conn):
+    seed_catalog(conn)  # ensure catalog exists, but the specific slug does not
+    for ext in ("csv", "geojson", "parquet"):
+        response = client.get(f"/indicators/does_not_exist/values.{ext}")
+        assert response.status_code == 404, ext
+
+
 def test_tile_sources_returns_manifest(client):
     response = client.get("/tile-sources")
     assert response.status_code == 200
