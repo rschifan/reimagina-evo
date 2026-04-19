@@ -198,6 +198,130 @@ class ExploreReader(Protocol):
     def list_serving_stats(self) -> list[dict[str, Any]]: ...
 
 
+class JobRunRepository(Protocol):
+    """Lifecycle of an async worker run (jobs_runtime.job_run).
+
+    Callers always create a row in `queued`, then transition to `running`
+    via claim_job, then terminate via complete_job with 'succeeded' or
+    'failed'. Every indicator_result row must cite a job_run by id.
+    """
+
+    def start_job(
+        self,
+        *,
+        model_family: str,
+        code_version: str,
+        scenario_id: str | None = None,
+        status: str = "queued",
+    ) -> str: ...
+
+    def claim_job(self, job_run_id: str) -> None: ...
+
+    def complete_job(
+        self,
+        job_run_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+    ) -> None: ...
+
+    def get_job(self, job_run_id: str) -> dict[str, Any] | None: ...
+
+
+class IndicatorCatalogRepository(Protocol):
+    """CRUD for indicator_catalog + indicator_dependency rows."""
+
+    def upsert_indicator(
+        self,
+        *,
+        slug: str,
+        name: str,
+        computation_kind: str,
+        value_type: str,
+        aggregation_method: str,
+        applies_to: list[str],
+        description: str | None = None,
+        model_family: str | None = None,
+        unit: str | None = None,
+        valid_min: float | None = None,
+        valid_max: float | None = None,
+    ) -> str: ...
+
+    def get_indicator(self, slug: str) -> dict[str, Any] | None: ...
+
+    def list_indicators(self) -> list[dict[str, Any]]: ...
+
+    def set_dependencies(
+        self,
+        *,
+        indicator_slug: str,
+        depends_on: list[tuple[str, float | None]],
+    ) -> None: ...
+
+
+class IndicatorResultRepository(Protocol):
+    """Write + read path for indicator_result.
+
+    Writers go through write_result, which enforces exactly-one-value-column,
+    valid_min/valid_max bounds, applies_to membership, and missing_reason
+    rules — matching the Postgres before-write trigger and giving DuckDB
+    equivalent semantics.
+
+    The `current`-status uniqueness guarantee is preserved across both
+    backends: write_result marks any existing `current` row for the same
+    (feature_id, scenario_id, indicator_id) stale before inserting the new
+    one, so reads through serving_geo.current_indicator_v always see at most
+    one row per triple.
+    """
+
+    def write_result(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        job_run_id: str,
+        value_numeric: float | None = None,
+        value_text: str | None = None,
+        value_json: Any = None,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+        confidence: float | None = None,
+        missing_reason: str | None = None,
+        model_version: str | None = None,
+    ) -> str: ...
+
+    def bulk_write_numeric_results(
+        self,
+        rows: list[tuple[str, float]],
+        *,
+        indicator_slug: str,
+        job_run_id: str,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+    ) -> int:
+        """Fast path for many per-feature numeric results from one job_run.
+
+        Each tuple is (feature_id, value_numeric). Returns number of rows
+        written. Supersedes existing `current` rows for each feature.
+        """
+        ...
+
+    def get_current(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def list_current_for_indicator(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+
 class AOISummaryRepository(Protocol):
     def upsert_summary(
         self,
@@ -276,6 +400,12 @@ class StorageBackend(Protocol):
     def tile_repo(self) -> TileSnapshotRepository: ...
 
     def aoi_summary_repo(self) -> AOISummaryRepository: ...
+
+    def job_run_repo(self) -> JobRunRepository: ...
+
+    def indicator_catalog_repo(self) -> IndicatorCatalogRepository: ...
+
+    def indicator_result_repo(self) -> IndicatorResultRepository: ...
 
 
 @dataclass(frozen=True)

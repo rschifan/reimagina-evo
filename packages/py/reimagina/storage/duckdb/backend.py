@@ -8,6 +8,9 @@ from .repositories import (
     DuckDBExploreReader,
     DuckDBFeatureRepository,
     DuckDBFileAssetRepository,
+    DuckDBIndicatorCatalogRepository,
+    DuckDBIndicatorResultRepository,
+    DuckDBJobRunRepository,
     DuckDBObservationRepository,
     DuckDBOverlapRepository,
     DuckDBOverlapTypePairRepository,
@@ -86,3 +89,12 @@ class DuckDBStorageBackend:
 
     def aoi_summary_repo(self) -> DuckDBAOISummaryRepository:
         return DuckDBAOISummaryRepository(self.connection)
+
+    def job_run_repo(self) -> DuckDBJobRunRepository:
+        return DuckDBJobRunRepository(self.connection)
+
+    def indicator_catalog_repo(self) -> DuckDBIndicatorCatalogRepository:
+        return DuckDBIndicatorCatalogRepository(self.connection)
+
+    def indicator_result_repo(self) -> DuckDBIndicatorResultRepository:
+        return DuckDBIndicatorResultRepository(self.connection)

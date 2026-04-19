@@ -69,6 +69,9 @@ def _protocol_methods(protocol_cls: type) -> set[str]:
         ("ExploreReader", "explore_reader"),
         ("TileSnapshotRepository", "tile_repo"),
         ("AOISummaryRepository", "aoi_summary_repo"),
+        ("JobRunRepository", "job_run_repo"),
+        ("IndicatorCatalogRepository", "indicator_catalog_repo"),
+        ("IndicatorResultRepository", "indicator_result_repo"),
     ],
 )
 @pytest.mark.parametrize(
