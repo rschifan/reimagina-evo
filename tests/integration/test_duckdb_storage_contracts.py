@@ -1411,3 +1411,62 @@ def test_duckdb_block_building_density_end_to_end(tmp_path):
                 job_run_id=synthetic_job,
                 value_numeric=10_000.0,
             )
+
+
+def test_duckdb_list_current_with_geometry_round_trips_wkb(tmp_path):
+    """list_current_with_geometry returns parseable EPSG:4326 WKB + the value.
+
+    Backs the API's GeoJSON + GeoParquet download paths. Asserts the WKB
+    is non-empty bytes that shapely can parse and that the polygon it
+    decodes to is the same geometry we loaded.
+    """
+    import shapely.wkb
+    app_path = tmp_path / "reimagina_wkb.duckdb"
+    test_path = tmp_path / "reimagina_wkb_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        seed_catalog(conn)
+
+        source_id = cat.register_source(
+            conn,
+            name="wkb_src", provider="pytest",
+            storage_type="vector", integration_role="canonical_entity",
+            storage_uri="file:///tmp/wkb.geojson", version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn, source_id=source_id,
+            orchestrator="pytest", orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated", code_version="test",
+        )
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+
+        block_polygon = Polygon([
+            (-99.140, 19.430), (-99.137, 19.430),
+            (-99.137, 19.433), (-99.140, 19.433),
+        ])
+        blocks = gpd.GeoDataFrame(
+            [{"id": "blk-1", "geometry": block_polygon}], crs="EPSG:4326"
+        )
+        feat.load_features(
+            conn, blocks,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+        compute_block_compactness(conn, code_version="test")
+
+        rows = backend_for_connection(conn).indicator_result_repo().list_current_with_geometry(
+            indicator_slug="urban_form_block_compactness",
+            feature_type="block",
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["type_slug"] == "block"
+        assert row["value_numeric"] is not None
+        assert isinstance(row["geometry_wkb"], (bytes, bytearray))
+        assert len(row["geometry_wkb"]) > 0
+        decoded = shapely.wkb.loads(bytes(row["geometry_wkb"]))
+        # Exact-equality via shapely's equals (same vertex order + coords).
+        assert decoded.equals(block_polygon), (decoded, block_polygon)
