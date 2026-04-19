@@ -47,8 +47,9 @@ python -m apps.cli.app tiles snapshots
 
 Runtime note:
 
-- `tiles export` requires `ogr2ogr` with PostgreSQL and PMTiles driver support
+- `tiles export` requires `ogr2ogr` with PostgreSQL and PMTiles driver support (GDAL ≥ 3.8)
 - local sandboxed environments may block the export subprocess from connecting to Postgres over TCP even when the CLI code is correct
+- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written — the end-to-end integration test (`test_pmtiles_export_end_to_end_against_postgres`) skips cleanly on that environment and runs fully on CI images with a complete GDAL
 
 ## Metadata surface
 

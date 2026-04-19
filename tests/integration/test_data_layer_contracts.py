@@ -942,3 +942,108 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
     names = {(row["schema_name"], row["object_name"]) for row in layers}
     assert ("curated_geo", "aoi_indicator_summary") in names
     assert ("serving_geo", "aoi_summary_v") in names
+
+
+def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
+    """Exercise the full PMTiles export path against a real ogr2ogr subprocess.
+
+    The export spawns a subprocess that opens its own Postgres connection,
+    so it cannot see data in the usual `conn`-fixture transaction. This
+    test uses an autocommit connection, seeds + exports + cleans up,
+    and skips cleanly when ogr2ogr is not installed (GDAL ≥ 3.8 with the
+    PMTiles driver is required).
+    """
+    import shutil
+
+    if shutil.which("ogr2ogr") is None:
+        pytest.skip("ogr2ogr not available; install GDAL ≥ 3.8 with the PMTiles driver")
+
+    conn = psycopg2.connect(migrated_db)
+    conn.autocommit = True
+    seed_source_id: str | None = None
+    output_dir = tmp_path / "pmtiles"
+
+    try:
+        with conn.cursor() as cur:
+            seed_source_id = cat.register_source(
+                conn,
+                name="pmtiles_e2e_seed",
+                provider="pytest",
+                storage_type="vector",
+                integration_role="canonical_entity",
+                storage_uri="file:///tmp/pmtiles_e2e.geojson",
+                version="v1",
+            )
+            run_id = cat.start_ingestion_run(
+                conn,
+                source_id=seed_source_id,
+                orchestrator="pytest",
+                orchestrator_run_id=str(uuid4()),
+                transformation_step="silver_to_curated",
+                code_version="test",
+            )
+            municipality_type = feat.get_type_id(conn, "MEX", "municipality")
+            _insert_feature(
+                conn,
+                type_id=municipality_type,
+                source_id=seed_source_id,
+                ingestion_run_id=run_id,
+                dataset_version="v1",
+                source_record_ref="mun-e2e-1",
+                geometry_wkt="POLYGON((-99.15 19.40,-99.05 19.40,-99.05 19.50,-99.15 19.50,-99.15 19.40))",
+            )
+            cat.complete_ingestion_run(conn, run_id, status="succeeded")
+
+        import subprocess
+
+        try:
+            payload = export_pmtiles_snapshot(
+                dsn=migrated_db,
+                layer_id="admin_reference",
+                output_dir=output_dir,
+                snapshot_base_url="http://localhost:3001",
+            )
+        except subprocess.CalledProcessError as exc:
+            # GDAL on macOS is commonly built without the SQLite dialect used by
+            # the PMTiles driver's post-write step, so ogr2ogr exits non-zero
+            # ('OGR2SQLITE_Setup() failed') even after producing a valid
+            # artifact. Skip cleanly on that environment so CI with a fuller
+            # GDAL still exercises the path.
+            stderr = exc.stderr or ""
+            if "OGR2SQLITE_Setup" in stderr:
+                pytest.skip(
+                    "ogr2ogr exited non-zero due to a macOS SQLite-dialect quirk; "
+                    "environment does not support the full PMTiles pipeline."
+                )
+            raise
+
+        artifact_path = Path(payload["artifact_path"])
+        assert artifact_path.exists(), "ogr2ogr did not produce a PMTiles artifact"
+        assert artifact_path.stat().st_size > 0, "PMTiles artifact is empty"
+        assert payload["source_relation"] == "serving_geo.admin_v"
+
+        latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+        assert latest is not None
+        assert latest["snapshot_version"] == payload["snapshot_version"]
+        assert latest["status"] == "ready"
+
+    finally:
+        # Explicit cleanup: autocommit means nothing rolls back automatically.
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM curated_geo.tile_snapshot_registry WHERE layer_id = 'admin_reference'"
+            )
+            if seed_source_id:
+                cur.execute(
+                    "DELETE FROM curated_geo.feature WHERE source_id = %s",
+                    (seed_source_id,),
+                )
+                cur.execute(
+                    "DELETE FROM curated_geo.ingestion_run WHERE source_id = %s",
+                    (seed_source_id,),
+                )
+                cur.execute(
+                    "DELETE FROM curated_geo.data_source_catalog WHERE id = %s",
+                    (seed_source_id,),
+                )
+        conn.close()
