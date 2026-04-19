@@ -1100,20 +1100,24 @@ def test_block_compactness_end_to_end(conn):
 
 
 def test_indicator_applies_to_enforced_by_trigger(conn):
-    """Writing a result for a feature outside applies_to must be rejected."""
+    """Writing a result for a feature outside applies_to must be rejected.
+
+    urban_form_block_compactness applies_to = ['block', 'ageb']. Writing to a
+    MEX:municipality feature must be rejected by the before-write trigger.
+    """
     seed_catalog(conn)
     source_id = _register_source(
         conn, name="applies_to_src", storage_type="vector", integration_role="canonical_entity"
     )
     run_id = _start_run(conn, source_id)
-    ageb_type = feat.get_type_id(conn, "MEX", "ageb")
-    ageb_id = _insert_feature(
+    muni_type = feat.get_type_id(conn, "MEX", "municipality")
+    muni_id = _insert_feature(
         conn,
-        type_id=ageb_type,
+        type_id=muni_type,
         source_id=source_id,
         ingestion_run_id=run_id,
         dataset_version="v1",
-        source_record_ref="a-1",
+        source_record_ref="m-1",
         geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
     )
 
@@ -1124,7 +1128,7 @@ def test_indicator_applies_to_enforced_by_trigger(conn):
     result_repo = backend_for_connection(conn).indicator_result_repo()
     with pytest.raises(psycopg2.Error):
         result_repo.write_result(
-            feature_id=ageb_id,
+            feature_id=muni_id,
             indicator_slug="urban_form_block_compactness",
             job_run_id=job_id,
             value_numeric=0.5,

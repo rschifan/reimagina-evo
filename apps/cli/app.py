@@ -48,7 +48,9 @@ from .cdmx import (  # noqa: E402
 from .feat import seed_types  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
+    rollup_indicator,
     seed_indicator_catalog,
+    summarise_aoi_indicator,
 )
 from .overlap import (  # noqa: E402
     compute_overlaps_all,
@@ -350,6 +352,28 @@ def _build_parser() -> argparse.ArgumentParser:
     indicators_compute.add_argument("--code-version", default="dev")
     indicators_compute.set_defaults(handler=_handle_indicators_compute)
 
+    indicators_rollup = indicators_subparsers.add_parser(
+        "rollup",
+        help="Roll an indicator up from a source grain to a coarser target grain",
+    )
+    indicators_rollup.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    indicators_rollup.add_argument("--slug", required=True)
+    indicators_rollup.add_argument("--source-type", required=True)
+    indicators_rollup.add_argument("--target-type", required=True)
+    indicators_rollup.add_argument("--scenario-id")
+    indicators_rollup.add_argument("--code-version", default="dev")
+    indicators_rollup.set_defaults(handler=_handle_indicators_rollup)
+
+    indicators_summary = indicators_subparsers.add_parser(
+        "aoi-summary",
+        help="Compute one aoi_indicator_summary row for (aoi, indicator, scenario)",
+    )
+    indicators_summary.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    indicators_summary.add_argument("--aoi-id", required=True)
+    indicators_summary.add_argument("--slug", required=True)
+    indicators_summary.add_argument("--scenario-id")
+    indicators_summary.set_defaults(handler=_handle_indicators_aoi_summary)
+
     overlap_parser = subparsers.add_parser(
         "overlap",
         help="Feature-to-feature overlap pair declaration and compute",
@@ -604,6 +628,30 @@ def _handle_indicators_compute(args: argparse.Namespace) -> int:
             aoi_id=args.aoi_id,
             scenario_id=args.scenario_id,
             code_version=args.code_version,
+        )
+    )
+
+
+def _handle_indicators_rollup(args: argparse.Namespace) -> int:
+    return _print(
+        rollup_indicator(
+            dsn=args.dsn,
+            slug=args.slug,
+            source_feature_type=args.source_type,
+            target_feature_type=args.target_type,
+            scenario_id=args.scenario_id,
+            code_version=args.code_version,
+        )
+    )
+
+
+def _handle_indicators_aoi_summary(args: argparse.Namespace) -> int:
+    return _print(
+        summarise_aoi_indicator(
+            dsn=args.dsn,
+            aoi_id=args.aoi_id,
+            slug=args.slug,
+            scenario_id=args.scenario_id,
         )
     )
 
