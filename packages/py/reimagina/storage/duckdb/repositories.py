@@ -1272,3 +1272,545 @@ class DuckDBAOISummaryRepository:
             params,
         ).fetchall()
         return [dict(zip(_AOI_SUMMARY_COLS, row)) for row in rows]
+
+
+# ─── Job run ────────────────────────────────────────────────────────────────
+
+
+class DuckDBJobRunRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def start_job(
+        self,
+        *,
+        model_family: str,
+        code_version: str,
+        scenario_id: str | None = None,
+        status: str = "queued",
+    ) -> str:
+        job_run_id = str(uuid4())
+        started_at = "now()" if status == "running" else "NULL"
+        self.connection.execute(
+            f"""
+            INSERT INTO jobs_runtime.job_run
+              (id, scenario_id, model_family, code_version, status, started_at)
+            VALUES (?, ?, ?, ?, ?, {started_at})
+            """,
+            [job_run_id, scenario_id, model_family, code_version, status],
+        )
+        return job_run_id
+
+    def claim_job(self, job_run_id: str) -> None:
+        self.connection.execute(
+            """
+            UPDATE jobs_runtime.job_run
+            SET status = 'running',
+                started_at = COALESCE(started_at, now())
+            WHERE CAST(id AS VARCHAR) = ? AND status = 'queued'
+            """,
+            [job_run_id],
+        )
+
+    def complete_job(
+        self,
+        job_run_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE jobs_runtime.job_run
+            SET status = ?,
+                completed_at = now(),
+                error_message = ?,
+                started_at = COALESCE(started_at, now())
+            WHERE CAST(id AS VARCHAR) = ?
+            """,
+            [status, error_message, job_run_id],
+        )
+
+    def get_job(self, job_run_id: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), CAST(scenario_id AS VARCHAR),
+                   model_family, status, code_version,
+                   queued_at, started_at, completed_at, error_message
+            FROM jobs_runtime.job_run WHERE CAST(id AS VARCHAR) = ?
+            """,
+            [job_run_id],
+        ).fetchone()
+        if row is None:
+            return None
+        cols = (
+            "id", "scenario_id", "model_family", "status", "code_version",
+            "queued_at", "started_at", "completed_at", "error_message",
+        )
+        return dict(zip(cols, row))
+
+
+# ─── Indicator catalog ──────────────────────────────────────────────────────
+
+
+class DuckDBIndicatorCatalogRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_indicator(
+        self,
+        *,
+        slug: str,
+        name: str,
+        computation_kind: str,
+        value_type: str,
+        aggregation_method: str,
+        applies_to: list[str],
+        description: str | None = None,
+        model_family: str | None = None,
+        unit: str | None = None,
+        valid_min: float | None = None,
+        valid_max: float | None = None,
+    ) -> str:
+        existing = self.connection.execute(
+            "SELECT CAST(id AS VARCHAR) FROM curated_geo.indicator_catalog WHERE slug = ?",
+            [slug],
+        ).fetchone()
+        if existing is not None:
+            indicator_id = existing[0]
+            self.connection.execute(
+                """
+                UPDATE curated_geo.indicator_catalog
+                SET name = ?, description = ?, model_family = ?,
+                    computation_kind = ?, value_type = ?, unit = ?,
+                    valid_min = ?, valid_max = ?, aggregation_method = ?,
+                    applies_to = ?
+                WHERE slug = ?
+                """,
+                [name, description, model_family, computation_kind, value_type,
+                 unit, valid_min, valid_max, aggregation_method, applies_to, slug],
+            )
+            return indicator_id
+
+        indicator_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.indicator_catalog
+              (id, slug, name, description, model_family, computation_kind, value_type,
+               unit, valid_min, valid_max, aggregation_method, applies_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [indicator_id, slug, name, description, model_family, computation_kind,
+             value_type, unit, valid_min, valid_max, aggregation_method, applies_to],
+        )
+        return indicator_id
+
+    def get_indicator(self, slug: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), slug, name, description, model_family,
+                   computation_kind, value_type, unit, valid_min, valid_max,
+                   aggregation_method, applies_to
+            FROM curated_geo.indicator_catalog WHERE slug = ?
+            """,
+            [slug],
+        ).fetchone()
+        if row is None:
+            return None
+        cols = (
+            "id", "slug", "name", "description", "model_family", "computation_kind",
+            "value_type", "unit", "valid_min", "valid_max", "aggregation_method",
+            "applies_to",
+        )
+        return dict(zip(cols, row))
+
+    def list_indicators(self) -> list[dict]:
+        rows = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), slug, name, description, model_family,
+                   computation_kind, value_type, unit, valid_min, valid_max,
+                   aggregation_method, applies_to
+            FROM curated_geo.indicator_catalog ORDER BY slug
+            """
+        ).fetchall()
+        cols = (
+            "id", "slug", "name", "description", "model_family", "computation_kind",
+            "value_type", "unit", "valid_min", "valid_max", "aggregation_method",
+            "applies_to",
+        )
+        return [dict(zip(cols, row)) for row in rows]
+
+    def set_dependencies(
+        self,
+        *,
+        indicator_slug: str,
+        depends_on: list[tuple[str, float | None]],
+    ) -> None:
+        parent = self.connection.execute(
+            "SELECT CAST(id AS VARCHAR) FROM curated_geo.indicator_catalog WHERE slug = ?",
+            [indicator_slug],
+        ).fetchone()
+        if parent is None:
+            raise ValueError(f"Unknown indicator slug: {indicator_slug!r}")
+        parent_id = parent[0]
+
+        self.connection.execute(
+            "DELETE FROM curated_geo.indicator_dependency WHERE CAST(indicator_id AS VARCHAR) = ?",
+            [parent_id],
+        )
+        for dep_slug, weight in depends_on:
+            child = self.connection.execute(
+                "SELECT CAST(id AS VARCHAR) FROM curated_geo.indicator_catalog WHERE slug = ?",
+                [dep_slug],
+            ).fetchone()
+            if child is None:
+                raise ValueError(f"Unknown dependency slug: {dep_slug!r}")
+            self.connection.execute(
+                """
+                INSERT INTO curated_geo.indicator_dependency
+                  (indicator_id, depends_on_id, weight)
+                VALUES (?, ?, ?)
+                """,
+                [parent_id, child[0], weight],
+            )
+
+
+# ─── Indicator result ──────────────────────────────────────────────────────
+
+
+_INDICATOR_VALUE_COLS = ("value_numeric", "value_text", "value_json")
+
+
+def _validate_indicator_result_write(
+    *,
+    quality_flag: str,
+    status: str,
+    value_numeric: float | None,
+    value_text: str | None,
+    value_json,
+    missing_reason: str | None,
+    feature_type: str,
+    applies_to: list[str],
+    valid_min: float | None,
+    valid_max: float | None,
+    indicator_slug: str,
+    scenario_id_col: str | None,
+    run_scenario: str | None,
+) -> None:
+    """Mirror of the Postgres indicator_result_before_write trigger.
+
+    Runs the same ordered checks so DuckDB users get the same error messages
+    and refusal semantics as Postgres. Called from DuckDBIndicatorResultRepository.
+    """
+    if scenario_id_col != run_scenario:
+        raise ValueError(
+            f"indicator_result.scenario_id ({scenario_id_col!r}) must match "
+            f"job_run.scenario_id ({run_scenario!r})"
+        )
+    if quality_flag != "not_applicable" and feature_type not in applies_to:
+        raise ValueError(
+            f"feature type {feature_type!r} is not in indicator applies_to "
+            f"({applies_to!r}); write quality_flag='not_applicable' to suppress"
+        )
+    values_set = sum(
+        0 if v is None else 1
+        for v in (value_numeric, value_text, value_json)
+    )
+    if quality_flag in ("measured", "estimated", "imputed") and status != "failed":
+        if values_set != 1:
+            raise ValueError(
+                f"indicator_result: exactly one value column must be set for "
+                f"quality_flag={quality_flag}"
+            )
+    else:
+        if values_set != 0:
+            raise ValueError(
+                f"indicator_result: all value columns must be NULL for "
+                f"quality_flag={quality_flag} / status={status}"
+            )
+    if quality_flag == "missing" and not missing_reason:
+        raise ValueError(
+            "indicator_result.missing_reason is required when quality_flag='missing'"
+        )
+    if value_numeric is not None:
+        if valid_min is not None and value_numeric < valid_min:
+            raise ValueError(
+                f"indicator_result.value_numeric {value_numeric} below valid_min {valid_min} "
+                f"for indicator {indicator_slug!r}"
+            )
+        if valid_max is not None and value_numeric > valid_max:
+            raise ValueError(
+                f"indicator_result.value_numeric {value_numeric} above valid_max {valid_max} "
+                f"for indicator {indicator_slug!r}"
+            )
+
+
+class DuckDBIndicatorResultRepository:
+    """Enforces the Postgres before-write-trigger semantics in Python.
+
+    Uniqueness of (feature_id, scenario_id, indicator_id, status='current')
+    is maintained by marking existing current rows stale before every insert
+    — same ordering as the Postgres repository.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def _lookup_feature_type(self, feature_id: str) -> str:
+        row = self.connection.execute(
+            "SELECT type_slug FROM curated_geo.feature WHERE CAST(id AS VARCHAR) = ?",
+            [feature_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"indicator_result.feature_id {feature_id!r} not found")
+        return row[0]
+
+    def _lookup_catalog(self, indicator_slug: str) -> tuple[str, list[str], float | None, float | None]:
+        row = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), applies_to, valid_min, valid_max
+            FROM curated_geo.indicator_catalog WHERE slug = ?
+            """,
+            [indicator_slug],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown indicator slug: {indicator_slug!r}")
+        return row[0], list(row[1] or []), row[2], row[3]
+
+    def _lookup_run(self, job_run_id: str) -> tuple[str | None, str]:
+        row = self.connection.execute(
+            """
+            SELECT CAST(scenario_id AS VARCHAR), code_version
+            FROM jobs_runtime.job_run WHERE CAST(id AS VARCHAR) = ?
+            """,
+            [job_run_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"indicator_result.job_run_id {job_run_id!r} not found")
+        return row[0], row[1]
+
+    def _mark_stale(
+        self,
+        *,
+        feature_id: str,
+        indicator_id: str,
+        scenario_id: str | None,
+    ) -> None:
+        if scenario_id is None:
+            self.connection.execute(
+                """
+                UPDATE curated_geo.indicator_result
+                SET status = 'stale', updated_at = now()
+                WHERE CAST(feature_id AS VARCHAR) = ?
+                  AND scenario_id IS NULL
+                  AND CAST(indicator_id AS VARCHAR) = ?
+                  AND status = 'current'
+                """,
+                [feature_id, indicator_id],
+            )
+        else:
+            self.connection.execute(
+                """
+                UPDATE curated_geo.indicator_result
+                SET status = 'stale', updated_at = now()
+                WHERE CAST(feature_id AS VARCHAR) = ?
+                  AND CAST(scenario_id AS VARCHAR) = ?
+                  AND CAST(indicator_id AS VARCHAR) = ?
+                  AND status = 'current'
+                """,
+                [feature_id, scenario_id, indicator_id],
+            )
+
+    def write_result(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        job_run_id: str,
+        value_numeric: float | None = None,
+        value_text: str | None = None,
+        value_json=None,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+        confidence: float | None = None,
+        missing_reason: str | None = None,
+        model_version: str | None = None,
+    ) -> str:
+        feature_type = self._lookup_feature_type(feature_id)
+        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(indicator_slug)
+        run_scenario, run_code_version = self._lookup_run(job_run_id)
+        resolved_model_version = model_version or run_code_version
+        _validate_indicator_result_write(
+            quality_flag=quality_flag,
+            status="current",
+            value_numeric=value_numeric,
+            value_text=value_text,
+            value_json=value_json,
+            missing_reason=missing_reason,
+            feature_type=feature_type,
+            applies_to=applies_to,
+            valid_min=valid_min,
+            valid_max=valid_max,
+            indicator_slug=indicator_slug,
+            scenario_id_col=scenario_id,
+            run_scenario=run_scenario,
+        )
+        self._mark_stale(
+            feature_id=feature_id,
+            indicator_id=indicator_id,
+            scenario_id=scenario_id,
+        )
+
+        result_id = str(uuid4())
+        value_json_str = json.dumps(value_json) if value_json is not None else None
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.indicator_result
+              (id, feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+               job_run_id, model_version, value_numeric, value_text, value_json,
+               quality_flag, confidence, missing_reason, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, 'current')
+            """,
+            [
+                result_id, feature_id, feature_type, scenario_id, indicator_id,
+                indicator_slug, job_run_id, resolved_model_version,
+                value_numeric, value_text, value_json_str,
+                quality_flag, confidence, missing_reason,
+            ],
+        )
+        return result_id
+
+    def bulk_write_numeric_results(
+        self,
+        rows: list[tuple[str, float]],
+        *,
+        indicator_slug: str,
+        job_run_id: str,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+    ) -> int:
+        if not rows:
+            return 0
+        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(indicator_slug)
+        run_scenario, run_code_version = self._lookup_run(job_run_id)
+        if scenario_id != run_scenario:
+            raise ValueError(
+                f"scenario_id {scenario_id!r} must match job_run.scenario_id {run_scenario!r}"
+            )
+        feature_ids = [fid for fid, _ in rows]
+        feature_types = {
+            str(fid): ftype
+            for fid, ftype in self.connection.execute(
+                """
+                SELECT CAST(id AS VARCHAR), type_slug
+                FROM curated_geo.feature
+                WHERE CAST(id AS VARCHAR) = ANY(?)
+                """,
+                [feature_ids],
+            ).fetchall()
+        }
+        insert_batch: list[tuple] = []
+        for fid, value in rows:
+            ftype = feature_types.get(str(fid))
+            if ftype is None:
+                raise ValueError(f"feature_id {fid!r} not found in curated_geo.feature")
+            _validate_indicator_result_write(
+                quality_flag=quality_flag,
+                status="current",
+                value_numeric=value,
+                value_text=None,
+                value_json=None,
+                missing_reason=None,
+                feature_type=ftype,
+                applies_to=applies_to,
+                valid_min=valid_min,
+                valid_max=valid_max,
+                indicator_slug=indicator_slug,
+                scenario_id_col=scenario_id,
+                run_scenario=run_scenario,
+            )
+            self._mark_stale(
+                feature_id=fid,
+                indicator_id=indicator_id,
+                scenario_id=scenario_id,
+            )
+            insert_batch.append((
+                str(uuid4()), fid, ftype, scenario_id, indicator_id, indicator_slug,
+                job_run_id, run_code_version, value, quality_flag,
+            ))
+
+        self.connection.executemany(
+            """
+            INSERT INTO curated_geo.indicator_result
+              (id, feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+               job_run_id, model_version, value_numeric, quality_flag, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'current')
+            """,
+            insert_batch,
+        )
+        return len(insert_batch)
+
+    def get_current(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> dict | None:
+        if scenario_id is None:
+            row = self.connection.execute(
+                """
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE feature_id = ? AND scenario_id IS NULL AND indicator_slug = ?
+                """,
+                [feature_id, indicator_slug],
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE feature_id = ? AND scenario_id = ? AND indicator_slug = ?
+                """,
+                [feature_id, scenario_id, indicator_slug],
+            ).fetchone()
+        if row is None:
+            return None
+        return _row_as_dict_current_indicator(row)
+
+    def list_current_for_indicator(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[dict]:
+        if scenario_id is None:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE indicator_slug = ? AND scenario_id IS NULL
+                """,
+                [indicator_slug],
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE indicator_slug = ? AND scenario_id = ?
+                """,
+                [indicator_slug, scenario_id],
+            ).fetchall()
+        return [_row_as_dict_current_indicator(row) for row in rows]
+
+
+_CURRENT_INDICATOR_V_COLS = (
+    "id", "feature_id", "feature_type", "scenario_id",
+    "indicator_id", "indicator_slug", "indicator_name",
+    "unit", "value_type", "computation_kind",
+    "job_run_id", "model_version",
+    "value_numeric", "value_text", "value_json",
+    "quality_flag", "confidence", "missing_reason", "computed_at",
+)
+
+
+def _row_as_dict_current_indicator(row: tuple) -> dict:
+    return dict(zip(_CURRENT_INDICATOR_V_COLS, row))

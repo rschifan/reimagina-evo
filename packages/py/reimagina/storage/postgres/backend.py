@@ -7,6 +7,9 @@ from .repositories import (
     PostgresExploreReader,
     PostgresFeatureRepository,
     PostgresFileAssetRepository,
+    PostgresIndicatorCatalogRepository,
+    PostgresIndicatorResultRepository,
+    PostgresJobRunRepository,
     PostgresObservationRepository,
     PostgresOverlapRepository,
     PostgresOverlapTypePairRepository,
@@ -75,3 +78,12 @@ class PostgresStorageBackend:
 
     def aoi_summary_repo(self) -> PostgresAOISummaryRepository:
         return PostgresAOISummaryRepository(self.connection)
+
+    def job_run_repo(self) -> PostgresJobRunRepository:
+        return PostgresJobRunRepository(self.connection)
+
+    def indicator_catalog_repo(self) -> PostgresIndicatorCatalogRepository:
+        return PostgresIndicatorCatalogRepository(self.connection)
+
+    def indicator_result_repo(self) -> PostgresIndicatorResultRepository:
+        return PostgresIndicatorResultRepository(self.connection)

@@ -1127,3 +1127,393 @@ class PostgresAOISummaryRepository:
                 params,
             )
             return [dict(row) for row in cur.fetchall()]
+
+
+# ─── Job run ────────────────────────────────────────────────────────────────
+
+class PostgresJobRunRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def start_job(
+        self,
+        *,
+        model_family: str,
+        code_version: str,
+        scenario_id: str | None = None,
+        status: str = "queued",
+    ) -> str:
+        started_at = "now()" if status == "running" else "NULL"
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO jobs_runtime.job_run
+                  (scenario_id, model_family, code_version, status, started_at)
+                VALUES (%s, %s, %s, %s, {started_at})
+                RETURNING id::text
+                """,
+                (scenario_id, model_family, code_version, status),
+            )
+            return str(cur.fetchone()[0])
+
+    def claim_job(self, job_run_id: str) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs_runtime.job_run
+                SET status = 'running', started_at = COALESCE(started_at, now())
+                WHERE id = %s AND status = 'queued'
+                """,
+                (job_run_id,),
+            )
+
+    def complete_job(
+        self,
+        job_run_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs_runtime.job_run
+                SET status = %s,
+                    completed_at = now(),
+                    error_message = %s,
+                    started_at = COALESCE(started_at, now())
+                WHERE id = %s
+                """,
+                (status, error_message, job_run_id),
+            )
+
+    def get_job(self, job_run_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, scenario_id::text, model_family, status, code_version,
+                       queued_at, started_at, completed_at, error_message
+                FROM jobs_runtime.job_run WHERE id = %s
+                """,
+                (job_run_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+# ─── Indicator catalog ──────────────────────────────────────────────────────
+
+class PostgresIndicatorCatalogRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_indicator(
+        self,
+        *,
+        slug: str,
+        name: str,
+        computation_kind: str,
+        value_type: str,
+        aggregation_method: str,
+        applies_to: list[str],
+        description: str | None = None,
+        model_family: str | None = None,
+        unit: str | None = None,
+        valid_min: float | None = None,
+        valid_max: float | None = None,
+    ) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.indicator_catalog
+                  (slug, name, description, model_family, computation_kind, value_type,
+                   unit, valid_min, valid_max, aggregation_method, applies_to)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (slug) DO UPDATE SET
+                    name               = EXCLUDED.name,
+                    description        = EXCLUDED.description,
+                    model_family       = EXCLUDED.model_family,
+                    computation_kind   = EXCLUDED.computation_kind,
+                    value_type         = EXCLUDED.value_type,
+                    unit               = EXCLUDED.unit,
+                    valid_min          = EXCLUDED.valid_min,
+                    valid_max          = EXCLUDED.valid_max,
+                    aggregation_method = EXCLUDED.aggregation_method,
+                    applies_to         = EXCLUDED.applies_to
+                RETURNING id::text
+                """,
+                (
+                    slug, name, description, model_family, computation_kind, value_type,
+                    unit, valid_min, valid_max, aggregation_method, applies_to,
+                ),
+            )
+            return str(cur.fetchone()[0])
+
+    def get_indicator(self, slug: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, slug, name, description, model_family, computation_kind,
+                       value_type, unit, valid_min, valid_max, aggregation_method, applies_to
+                FROM curated_geo.indicator_catalog WHERE slug = %s
+                """,
+                (slug,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_indicators(self) -> list[dict]:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, slug, name, description, model_family, computation_kind,
+                       value_type, unit, valid_min, valid_max, aggregation_method, applies_to
+                FROM curated_geo.indicator_catalog
+                ORDER BY slug
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def set_dependencies(
+        self,
+        *,
+        indicator_slug: str,
+        depends_on: list[tuple[str, float | None]],
+    ) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",
+                (indicator_slug,),
+            )
+            parent = cur.fetchone()
+            if parent is None:
+                raise ValueError(f"Unknown indicator slug: {indicator_slug!r}")
+            parent_id = parent[0]
+
+            cur.execute(
+                "DELETE FROM curated_geo.indicator_dependency WHERE indicator_id = %s",
+                (parent_id,),
+            )
+            for dep_slug, weight in depends_on:
+                cur.execute(
+                    "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",
+                    (dep_slug,),
+                )
+                child = cur.fetchone()
+                if child is None:
+                    raise ValueError(f"Unknown dependency slug: {dep_slug!r}")
+                cur.execute(
+                    """
+                    INSERT INTO curated_geo.indicator_dependency
+                      (indicator_id, depends_on_id, weight)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (parent_id, child[0], weight),
+                )
+
+
+# ─── Indicator result ───────────────────────────────────────────────────────
+
+class PostgresIndicatorResultRepository:
+    """Writer uses the Postgres trigger for business-rule enforcement."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def _mark_existing_current_stale(
+        self,
+        cur,
+        *,
+        feature_id: str,
+        indicator_id: str,
+        scenario_id: str | None,
+    ) -> None:
+        if scenario_id is None:
+            cur.execute(
+                """
+                UPDATE curated_geo.indicator_result
+                SET status = 'stale', updated_at = now()
+                WHERE feature_id = %s AND scenario_id IS NULL
+                  AND indicator_id = %s AND status = 'current'
+                """,
+                (feature_id, indicator_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE curated_geo.indicator_result
+                SET status = 'stale', updated_at = now()
+                WHERE feature_id = %s AND scenario_id = %s
+                  AND indicator_id = %s AND status = 'current'
+                """,
+                (feature_id, scenario_id, indicator_id),
+            )
+
+    def write_result(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        job_run_id: str,
+        value_numeric: float | None = None,
+        value_text: str | None = None,
+        value_json=None,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+        confidence: float | None = None,
+        missing_reason: str | None = None,
+        model_version: str | None = None,
+    ) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",
+                (indicator_slug,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"Unknown indicator slug: {indicator_slug!r}")
+            indicator_id = row[0]
+
+            self._mark_existing_current_stale(
+                cur,
+                feature_id=feature_id,
+                indicator_id=str(indicator_id),
+                scenario_id=scenario_id,
+            )
+
+            value_json_serialised = (
+                psycopg2.extras.Json(value_json) if value_json is not None else None
+            )
+
+            cur.execute(
+                """
+                INSERT INTO curated_geo.indicator_result
+                  (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+                   job_run_id, model_version, value_numeric, value_text, value_json,
+                   quality_flag, confidence, missing_reason, status)
+                VALUES (%s, '', %s, %s, '', %s, %s, %s, %s, %s, %s, %s, %s, 'current')
+                RETURNING id::text
+                """,
+                (
+                    feature_id, scenario_id, indicator_id,
+                    job_run_id, model_version,
+                    value_numeric, value_text, value_json_serialised,
+                    quality_flag, confidence, missing_reason,
+                ),
+            )
+            return str(cur.fetchone()[0])
+
+    def bulk_write_numeric_results(
+        self,
+        rows: list[tuple[str, float]],
+        *,
+        indicator_slug: str,
+        job_run_id: str,
+        scenario_id: str | None = None,
+        quality_flag: str = "measured",
+    ) -> int:
+        if not rows:
+            return 0
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",
+                (indicator_slug,),
+            )
+            found = cur.fetchone()
+            if found is None:
+                raise ValueError(f"Unknown indicator slug: {indicator_slug!r}")
+            indicator_id = str(found[0])
+
+            feature_ids = [fid for fid, _ in rows]
+            if scenario_id is None:
+                cur.execute(
+                    """
+                    UPDATE curated_geo.indicator_result
+                    SET status = 'stale', updated_at = now()
+                    WHERE feature_id = ANY(%s::uuid[])
+                      AND scenario_id IS NULL
+                      AND indicator_id = %s
+                      AND status = 'current'
+                    """,
+                    (feature_ids, indicator_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE curated_geo.indicator_result
+                    SET status = 'stale', updated_at = now()
+                    WHERE feature_id = ANY(%s::uuid[])
+                      AND scenario_id = %s
+                      AND indicator_id = %s
+                      AND status = 'current'
+                    """,
+                    (feature_ids, scenario_id, indicator_id),
+                )
+
+            psycopg2.extras.execute_batch(
+                cur,
+                """
+                INSERT INTO curated_geo.indicator_result
+                  (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+                   job_run_id, value_numeric, quality_flag, status)
+                VALUES (%s, '', %s, %s, '', %s, %s, %s, 'current')
+                """,
+                [
+                    (fid, scenario_id, indicator_id, job_run_id, value, quality_flag)
+                    for fid, value in rows
+                ],
+                page_size=500,
+            )
+            return len(rows)
+
+    def get_current(
+        self,
+        *,
+        feature_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if scenario_id is None:
+                cur.execute(
+                    """
+                    SELECT * FROM serving_geo.current_indicator_v
+                    WHERE feature_id = %s AND scenario_id IS NULL AND indicator_slug = %s
+                    """,
+                    (feature_id, indicator_slug),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM serving_geo.current_indicator_v
+                    WHERE feature_id = %s AND scenario_id = %s AND indicator_slug = %s
+                    """,
+                    (feature_id, scenario_id, indicator_slug),
+                )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_current_for_indicator(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[dict]:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if scenario_id is None:
+                cur.execute(
+                    """
+                    SELECT * FROM serving_geo.current_indicator_v
+                    WHERE indicator_slug = %s AND scenario_id IS NULL
+                    """,
+                    (indicator_slug,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT * FROM serving_geo.current_indicator_v
+                    WHERE indicator_slug = %s AND scenario_id = %s
+                    """,
+                    (indicator_slug, scenario_id),
+                )
+            return [dict(row) for row in cur.fetchall()]
