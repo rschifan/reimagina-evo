@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -60,16 +61,18 @@ def list_aois(
 
 @router.get("/{aoi_id}/summaries", response_model=list[AOISummary])
 def list_summaries(
-    aoi_id: str,
-    scenario_id: str | None = Query(default=None),
+    aoi_id: UUID,
+    scenario_id: UUID | None = Query(default=None),
     only_current: bool = Query(default=True),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[AOISummary]:
     """Cached aoi_indicator_summary rows for one AOI."""
-    _assert_aoi_exists(conn, aoi_id)
+    aoi_id_str = str(aoi_id)
+    scenario_id_str = str(scenario_id) if scenario_id is not None else None
+    _assert_aoi_exists(conn, aoi_id_str)
     rows = get_backend(conn).aoi_summary_repo().list_summaries(
-        aoi_id=aoi_id,
-        scenario_id=scenario_id,
+        aoi_id=aoi_id_str,
+        scenario_id=scenario_id_str,
         only_current=only_current,
     )
     return [
