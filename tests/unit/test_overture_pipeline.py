@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import geopandas as gpd
 from shapely.geometry import Polygon
 
 from reimagina.data.feature import FEATURE_TYPE_ROWS
 from reimagina.pipeline.overture import (
-    MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_MEXICO_CITY,
     OVERTURE_PENDING_STORAGE_URI,
     OVERTURE_BUILDINGS_SOURCE_NAME,

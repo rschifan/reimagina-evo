@@ -13,16 +13,21 @@ from reimagina.perf import run_benchmarks
 from reimagina.perf.runner import OverlapBenchmarkDataMissing
 
 
-def test_overlap_block_to_ageb_cuauhtemoc_hits_budget(conn):
+def test_overlap_block_to_ageb_cuauhtemoc_hits_budget(perf_conn):
     """Runs the overlap benchmark once and asserts budget + index usage.
 
     The SQL is a dry-run SELECT with the same spatial predicate + geography
     math the production OverlapRepository uses, so a regression here is a
     signal that the production overlap compute will degrade too.
+
+    Uses the non-destructive perf_conn fixture — this test depends on real
+    CDMX data being loaded, so pointing it at a test DB would skip cleanly
+    rather than failing and the destructive migrated_db teardown never runs
+    against the real-data DB.
     """
     try:
         report = run_benchmarks(
-            conn,
+            perf_conn,
             dataset_tier="representative",
             benchmark_names=["overlap_block_to_ageb_cuauhtemoc"],
         )
@@ -35,11 +40,11 @@ def test_overlap_block_to_ageb_cuauhtemoc_hits_budget(conn):
 
     # Empirically ~2,853 rows in Cuauhtémoc; don't pin to the exact number
     # (INEGI releases change it slightly) — just assert order of magnitude.
-    assert result["row_count"] >= 1000, result
+    assert result["latest_plan"]["actual_rows"] >= 1000, result
 
     # The benchmark passes if every percentile fits its budget. `passed=True`
     # at the top implies this, but we also check that the planner actually
     # chose the GIST index; otherwise the "fast" timing would be an illusion
     # produced by very small data.
-    index_names = result["plan_summary"]["index_names"]
+    index_names = result["latest_plan"]["index_names"]
     assert "feature_geometry_gist" in index_names, index_names
