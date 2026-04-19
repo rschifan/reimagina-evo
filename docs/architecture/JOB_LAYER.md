@@ -251,7 +251,7 @@ that reference the coarser grain can read the rolled-up values through
 4. Apply `aggregation_method` over the fine-grain values grouped by target
    feature. The supported methods are:
    - `mean` — simple arithmetic mean
-   - `weighted_mean` — weights are `feature_overlap.overlap_ratio`
+   - `weighted_mean` — weights are `feature_overlap.overlap_measure`, i.e. the absolute intersection measure (m² for polygon-polygon rollups). Using the ratio would collapse to an arithmetic mean for fully-nested children and produce wrong numbers for extensive metrics like density.
    - `sum`
    - `min`, `max`
 5. Mark any existing `current` parent rows stale (step 7 of the standard

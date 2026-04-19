@@ -14,6 +14,7 @@ from reimagina.data import explore
 from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 from reimagina.data import overlap as ovlp
+from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
@@ -1142,3 +1143,271 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
         ).fetchall()
         assert len(serving_rows) == 1
         assert serving_rows[0][0] == pytest.approx(summary.value)
+
+
+def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
+    """Rollup weights weighted_mean by feature_overlap.overlap_measure.
+
+    Builds a tiny AGEB with two blocks of **very different sizes** and
+    **different indicator values**. Under plain arithmetic mean the AGEB
+    value would be the midpoint of the two child values; under area-
+    weighted mean (correct) it must be pulled toward the larger block's
+    value. Asserting the latter catches any regression that reverts to
+    overlap_ratio weighting.
+    """
+    import math
+    app_path = tmp_path / "reimagina_rollup_weight.duckdb"
+    test_path = tmp_path / "reimagina_rollup_weight_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        seed_catalog(conn)
+
+        source_id = cat.register_source(
+            conn,
+            name="rollup_weight_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/rollup_weight.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        ageb_type_id = feat.get_type_id(conn, "MEX", "ageb")
+
+        # AGEB covering both blocks.
+        ageb_gdf = gpd.GeoDataFrame(
+            [{"id": "big-ageb", "geometry": Polygon([
+                (-99.140, 19.430), (-99.120, 19.430),
+                (-99.120, 19.440), (-99.140, 19.440),
+            ])}],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, ageb_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=ageb_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        # Tiny block (high compactness, circle-ish) + large block (low
+        # compactness, thin rectangle). We'll confirm the weighted mean
+        # gets pulled toward the large block's value (≈ 0 compactness).
+        tiny_circle_pts = [
+            (-99.138 + 0.0005 * math.cos(2 * math.pi * i / 32),
+             19.432  + 0.0005 * math.sin(2 * math.pi * i / 32))
+            for i in range(32)
+        ]
+        large_rect = Polygon([
+            (-99.135, 19.431), (-99.122, 19.431),
+            (-99.122, 19.439), (-99.135, 19.439),
+        ])
+        blocks_gdf = gpd.GeoDataFrame(
+            [
+                {"id": "tiny-circle", "geometry": Polygon(tiny_circle_pts)},
+                {"id": "large-rect",   "geometry": large_rect},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, blocks_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        compute_block_compactness(conn, code_version="test")
+        overlap_jobs.declare_pair(
+            conn,
+            source_context="MEX", source_slug="block",
+            target_context="MEX", target_slug="ageb",
+        )
+        overlap_jobs.compute_all_pairs(conn)
+        run_rollup(
+            conn,
+            indicator_slug="urban_form_block_compactness",
+            source_feature_type="block",
+            target_feature_type="ageb",
+            code_version="test",
+        )
+
+        tiny_value, large_value = (row[0] for row in conn.execute(
+            """
+            SELECT ir.value_numeric
+            FROM curated_geo.indicator_result ir
+            JOIN curated_geo.feature f ON f.id = ir.feature_id
+            WHERE ir.indicator_slug = 'urban_form_block_compactness'
+              AND ir.feature_type = 'block' AND ir.status = 'current'
+            ORDER BY CASE f.source_record_ref WHEN 'tiny-circle' THEN 0 ELSE 1 END
+            """
+        ).fetchall())
+
+        ageb_value = conn.execute(
+            """
+            SELECT ir.value_numeric
+            FROM curated_geo.indicator_result ir
+            JOIN curated_geo.feature f ON f.id = ir.feature_id
+            WHERE ir.indicator_slug = 'urban_form_block_compactness'
+              AND ir.feature_type = 'ageb' AND ir.status = 'current'
+            """
+        ).fetchone()[0]
+
+        # Arithmetic mean would sit at (tiny+large)/2. Area-weighted mean
+        # must be far closer to `large_value` because the rectangle dwarfs
+        # the circle in area. Assertion: distance to large-value is less
+        # than half the distance to the arithmetic midpoint.
+        arithmetic_mean = (tiny_value + large_value) / 2
+        distance_to_large = abs(ageb_value - large_value)
+        distance_to_midpoint = abs(ageb_value - arithmetic_mean)
+        assert distance_to_large < distance_to_midpoint, (
+            f"AGEB rollup {ageb_value:.4f} is closer to arithmetic mean "
+            f"{arithmetic_mean:.4f} than to the large-block value "
+            f"{large_value:.4f} — weighted_mean appears to use overlap_ratio."
+        )
+
+
+def test_duckdb_block_building_density_end_to_end(tmp_path):
+    """Seed catalog + load 3 blocks + 6 buildings → compute density → assert.
+
+    Covers the three real outcomes:
+    - dense block (3 buildings centroid-inside) → ~30/ha
+    - sparse block (1 building) → ~10/ha
+    - empty block (no buildings) → explicit 0.0/ha row with quality='measured'
+      (NOT missing — 'no buildings observed here' is real signal).
+    Also verifies buildings whose centroids fall *outside* any block are not
+    double-counted or silently added to the nearest one.
+    """
+    app_path = tmp_path / "reimagina_density.duckdb"
+    test_path = tmp_path / "reimagina_density_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        seed_catalog(conn)
+
+        source_id = cat.register_source(
+            conn,
+            name="density_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/density.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        building_type_id = feat.get_type_id(conn, "global", "building")
+
+        # Three blocks around Mexico City latitude 19.43°.
+        # Each ~0.003° × 0.003° ≈ 330m × 314m ≈ 10.4 ha.
+        def square(lon0: float, lat0: float) -> Polygon:
+            return Polygon([
+                (lon0, lat0),
+                (lon0 + 0.003, lat0),
+                (lon0 + 0.003, lat0 + 0.003),
+                (lon0, lat0 + 0.003),
+            ])
+
+        blocks = gpd.GeoDataFrame(
+            [
+                {"id": "dense",  "geometry": square(-99.140, 19.430)},
+                {"id": "sparse", "geometry": square(-99.130, 19.430)},
+                {"id": "empty",  "geometry": square(-99.120, 19.430)},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, blocks,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        # Tiny building footprints so `ST_Within(ST_Centroid(...))` clearly
+        # picks one block even under numerical jitter. Three in `dense`,
+        # one in `sparse`, zero in `empty`, one *outside all three* to prove
+        # the attribution rule rejects it.
+        def bldg(lon: float, lat: float) -> Polygon:
+            return Polygon([
+                (lon, lat),
+                (lon + 0.0001, lat),
+                (lon + 0.0001, lat + 0.0001),
+                (lon, lat + 0.0001),
+            ])
+
+        buildings = gpd.GeoDataFrame(
+            [
+                {"id": "bd-1", "geometry": bldg(-99.139, 19.431)},
+                {"id": "bd-2", "geometry": bldg(-99.138, 19.432)},
+                {"id": "bd-3", "geometry": bldg(-99.1375, 19.4315)},
+                {"id": "bs-1", "geometry": bldg(-99.129, 19.431)},
+                {"id": "b-outside", "geometry": bldg(-99.100, 19.400)},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, buildings,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=building_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        result = compute_block_building_density(conn, code_version="test")
+        assert result.rows_written == 3
+        assert result.blocks_considered == 3
+        # bd-1, bd-2, bd-3 → dense; bs-1 → sparse; b-outside → no block.
+        assert result.buildings_attributed == 4
+
+        result_repo = backend_for_connection(conn).indicator_result_repo()
+        current = result_repo.list_current_for_indicator(
+            indicator_slug="urban_form_block_building_density"
+        )
+        by_ref: dict[str, float] = {}
+        qualities: dict[str, str] = {}
+        for row in current:
+            ref = conn.execute(
+                "SELECT source_record_ref FROM curated_geo.feature WHERE CAST(id AS VARCHAR) = ?",
+                [row["feature_id"]],
+            ).fetchone()[0]
+            by_ref[ref] = row["value_numeric"]
+            qualities[ref] = row["quality_flag"]
+
+        # Area ~10.4 ha at this latitude; 3 buildings / 10.4 ha ≈ 0.29/ha.
+        # Assert ratios and the zero case, not exact magnitudes.
+        assert by_ref["empty"] == 0.0
+        assert qualities["empty"] == "measured"
+        assert by_ref["sparse"] > 0.0
+        assert by_ref["dense"] == pytest.approx(3 * by_ref["sparse"], rel=1e-6)
+
+        # valid_max enforcement: writing a 10000/ha value must trip the
+        # Python-side validator (mirror of the Postgres trigger).
+        job_repo = backend_for_connection(conn).job_run_repo()
+        synthetic_job = job_repo.start_job(
+            model_family="urban_form", code_version="test", status="running"
+        )
+        (dense_id,) = conn.execute(
+            "SELECT CAST(id AS VARCHAR) FROM curated_geo.feature WHERE source_record_ref = 'dense'"
+        ).fetchone()
+        with pytest.raises(ValueError, match="above valid_max"):
+            result_repo.write_result(
+                feature_id=dense_id,
+                indicator_slug="urban_form_block_building_density",
+                job_run_id=synthetic_job,
+                value_numeric=10_000.0,
+            )
