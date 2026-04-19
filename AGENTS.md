@@ -76,6 +76,8 @@ python -m apps.cli.app overlap compute-all --aoi-id <uuid>
 python -m apps.cli.app indicators seed-catalog
 python -m apps.cli.app indicators compute \
     --slug urban_form_block_compactness [--aoi-id <uuid>]
+python -m apps.cli.app indicators compute \
+    --slug urban_form_block_building_density [--aoi-id <uuid>]
 python -m apps.cli.app indicators rollup \
     --slug urban_form_block_compactness \
     --source-type block --target-type ageb
