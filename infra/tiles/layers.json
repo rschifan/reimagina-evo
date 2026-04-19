@@ -40,7 +40,8 @@
       "maxzoom": 16,
       "query_params": {
         "indicator_slug": "REQUIRED",
-        "scenario_id": "OPTIONAL"
+        "scenario_id": "OPTIONAL",
+        "feature_type": "OPTIONAL — filter to one grain (block, ageb, …). Without it, every feature_type the indicator applies to is rendered, so multi-grain indicators stack polygons."
       }
     }
   ]
