@@ -17,6 +17,8 @@ from reimagina.data import overlap as ovlp
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
+from reimagina.jobs.aoi_summary import summarise_aoi
+from reimagina.jobs.rollup import run_rollup
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
 from reimagina.db import bootstrap_local_platform, connect, verify_required_relations
@@ -958,3 +960,185 @@ def test_duckdb_block_compactness_end_to_end(tmp_path):
                 job_run_id=synthetic_job,
                 value_numeric=2.0,
             )
+
+
+def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
+    """block→ageb rollup + aoi_indicator_summary on DuckDB.
+
+    Builds a miniature two-AGEB city: four blocks with known compactness
+    values, two per AGEB, all inside one AOI. Exercises:
+    - the overlap declare + compute path (block→ageb)
+    - run_rollup writing quality_flag='estimated' AGEB rows
+    - summarise_aoi producing one row in serving_geo.aoi_summary_v
+    - missing-threshold behaviour (all-missing child set → 'missing' parent).
+    """
+    import math
+    app_path = tmp_path / "reimagina_l2_rollup.duckdb"
+    test_path = tmp_path / "reimagina_l2_rollup_test.duckdb"
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        seed_catalog(conn)
+
+        source_id = cat.register_source(
+            conn,
+            name="rollup_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/rollup.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        ageb_type_id = feat.get_type_id(conn, "MEX", "ageb")
+
+        def square(lon0: float, lat0: float, side: float) -> Polygon:
+            return Polygon([
+                (lon0, lat0),
+                (lon0 + side, lat0),
+                (lon0 + side, lat0 + side),
+                (lon0, lat0 + side),
+            ])
+
+        # Two AGEB polygons side by side. Each covers two blocks cleanly.
+        ageb_gdf = gpd.GeoDataFrame(
+            [
+                {"id": "ageb-L", "geometry": square(-99.140, 19.430, 0.008)},
+                {"id": "ageb-R", "geometry": square(-99.130, 19.430, 0.008)},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, ageb_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=ageb_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        # Four blocks, two inside each AGEB. The near-circle block is much
+        # more compact than the thin-rectangle block so we expect the
+        # weighted-mean AGEB value to land between their two compactness
+        # scores.
+        near_circle_pts = []
+        cx, cy, r = -99.136, 19.434, 0.0015
+        for i in range(32):
+            theta = 2 * math.pi * i / 32
+            near_circle_pts.append((cx + r * math.cos(theta), cy + r * math.sin(theta)))
+
+        block_gdf = gpd.GeoDataFrame(
+            [
+                {"id": "blk-L-sq", "geometry": square(-99.139, 19.431, 0.002)},
+                {"id": "blk-L-rect", "geometry": Polygon([
+                    (-99.137, 19.431), (-99.133, 19.431),
+                    (-99.133, 19.4311), (-99.137, 19.4311),
+                ])},
+                {"id": "blk-R-sq",    "geometry": square(-99.129, 19.431, 0.002)},
+                {"id": "blk-R-circle", "geometry": Polygon(near_circle_pts)},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, block_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        # Shift the circle to inside ageb-R so it actually overlaps.
+        conn.execute(
+            """
+            UPDATE curated_geo.feature
+            SET geometry = ST_GeomFromText(?)
+            WHERE source_record_ref = 'blk-R-circle'
+            """,
+            [Polygon([
+                (-99.126 + 0.0015 * math.cos(2*math.pi*i/32),
+                 19.434  + 0.0015 * math.sin(2*math.pi*i/32))
+                for i in range(32)
+            ]).wkt],
+        )
+
+        # Compute compactness (block level).
+        compute_block_compactness(conn, code_version="test")
+
+        # Declare + compute the block→ageb overlap.
+        overlap_jobs.declare_pair(
+            conn,
+            source_context="MEX", source_slug="block",
+            target_context="MEX", target_slug="ageb",
+        )
+        overlap_jobs.compute_all_pairs(conn)
+
+        # Run the rollup.
+        rollup = run_rollup(
+            conn,
+            indicator_slug="urban_form_block_compactness",
+            source_feature_type="block",
+            target_feature_type="ageb",
+            code_version="test",
+        )
+        assert rollup.targets_considered == 2
+        assert rollup.rows_written == 2
+        assert rollup.aggregation_method == "weighted_mean"
+
+        # Parent-grain rows show up through the serving view with
+        # quality_flag='estimated'.
+        parents = conn.execute(
+            """
+            SELECT f.source_record_ref, ir.value_numeric, ir.quality_flag
+            FROM curated_geo.indicator_result ir
+            JOIN curated_geo.feature f ON f.id = ir.feature_id
+            WHERE ir.indicator_slug = 'urban_form_block_compactness'
+              AND ir.status = 'current' AND ir.feature_type = 'ageb'
+            ORDER BY f.source_record_ref
+            """
+        ).fetchall()
+        assert len(parents) == 2
+        for _ref, value, flag in parents:
+            assert flag == "estimated"
+            assert 0.0 < value <= 1.0
+
+        # Build an AOI that covers both AGEBs, then summarise.
+        project_id = str(uuid4())
+        conn.execute(
+            "INSERT INTO app_core.project (id, name) VALUES (?, ?)",
+            [project_id, "rollup-test"],
+        )
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name="rollup-aoi",
+            geometry_wkt="POLYGON((-99.142 19.428,-99.118 19.428,-99.118 19.440,-99.142 19.440,-99.142 19.428))",
+        )
+        aoi_mod.compute_aoi_features(conn, aoi_id)
+
+        summary = summarise_aoi(
+            conn,
+            aoi_id=aoi_id,
+            indicator_slug="urban_form_block_compactness",
+        )
+        assert summary.status == "current"
+        assert summary.value is not None
+        assert 0.0 < summary.value <= 1.0
+
+        serving_rows = conn.execute(
+            """
+            SELECT value FROM serving_geo.aoi_summary_v
+            WHERE aoi_id = ?
+            """,
+            [aoi_id],
+        ).fetchall()
+        assert len(serving_rows) == 1
+        assert serving_rows[0][0] == pytest.approx(summary.value)

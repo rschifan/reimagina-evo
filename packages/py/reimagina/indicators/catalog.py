@@ -51,7 +51,10 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     valid_min=0.0,
     valid_max=1.0,
     aggregation_method="weighted_mean",
-    applies_to=("block",),
+    # Indicator is produced directly at the block grain and rolled up to AGEB
+    # via feature_overlap. Both grains appear in applies_to so indicator_result
+    # rows land cleanly at either level.
+    applies_to=("block", "ageb"),
 )
 
 
