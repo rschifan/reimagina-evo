@@ -1,0 +1,6 @@
+-- r014: Postgres-only serving-view fixups.
+--
+-- DuckDB keeps serving_geo.feature_v on top of the live
+-- feature_current_attributes_v view rather than a materialized snapshot, so no
+-- backend change is needed here. The shared revision exists to keep backend
+-- manifests aligned.

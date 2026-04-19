@@ -11,6 +11,7 @@ from .repositories import (
     DuckDBOverlapRepository,
     DuckDBServingReader,
     DuckDBSourceCatalogRepository,
+    DuckDBTileSnapshotRepository,
 )
 from ..capabilities import StorageCapabilities
 
@@ -74,3 +75,6 @@ class DuckDBStorageBackend:
 
     def explore_reader(self) -> DuckDBExploreReader:
         return DuckDBExploreReader(self.connection)
+
+    def tile_repo(self) -> DuckDBTileSnapshotRepository:
+        return DuckDBTileSnapshotRepository(self.connection)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,7 +14,10 @@ from reimagina.data import feature as feat
 from reimagina.data import file_asset
 from reimagina.data import observation as obs
 from reimagina.data import serving
+from reimagina.data import tiles as tile_data
 from reimagina.pipeline import loader
+from reimagina.storage import backend_for_connection
+from reimagina.tiles.service import export_pmtiles_snapshot
 
 
 def _register_source(
@@ -217,6 +221,67 @@ def test_explore_views_surface_source_and_feature_counts(conn):
 
     serving_stats = explore.get_serving_stats(conn)
     assert any(row["stat_scope"] == "all" and row["row_count"] >= 1 for row in serving_stats)
+
+
+def test_tile_snapshot_registry_and_source_resolution(conn):
+    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    assert latest is None
+
+    snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
+        layer_id="admin_reference",
+        artifact_path="/tmp/admin_reference-20260415T120000Z.pmtiles",
+        artifact_uri="http://localhost:3001/admin_reference-20260415T120000Z.pmtiles",
+        snapshot_version="20260415T120000Z",
+        source_relation="serving_geo.admin_v",
+        source_lineage_ref={"latest_successful_ingestion_run_id": None},
+    )
+    assert snapshot_id
+
+    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    assert latest is not None
+    assert latest["layer_id"] == "admin_reference"
+
+    sources = tile_data.get_tile_sources(
+        conn,
+        live_tilejson_base_url="http://localhost:3000/get_tile",
+        snapshot_base_url="http://localhost:3001",
+    )
+    by_id = {row["layer_id"]: row for row in sources}
+    assert by_id["admin_reference"]["source_mode"] == "pmtiles_snapshot"
+    assert by_id["admin_reference"]["available"] is True
+    assert by_id["admin_reference"]["source_config"]["url"].endswith(".pmtiles")
+    assert by_id["baseline_live"]["source_mode"] == "live_mvt"
+    assert by_id["baseline_live"]["source_config"]["tilejson_url"] == "http://localhost:3000/get_tile"
+
+
+def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path):
+    output_dir = tmp_path / "pmtiles"
+
+    def fake_run_export(command: list[str]) -> None:
+        Path(command[3]).write_text("pmtiles-placeholder")
+
+    @contextmanager
+    def fake_connect(_dsn: str):
+        yield conn
+
+    monkeypatch.setattr("reimagina.tiles.service._run_export_command", fake_run_export)
+    monkeypatch.setattr("reimagina.tiles.service.connect", fake_connect)
+
+    payload = export_pmtiles_snapshot(
+        dsn="postgresql://localhost/reimagina_test",
+        layer_id="admin_reference",
+        output_dir=output_dir,
+        snapshot_base_url="http://localhost:3001",
+        snapshot_version="20260415T130000Z",
+    )
+
+    assert payload["layer_id"] == "admin_reference"
+    assert Path(payload["artifact_path"]).exists()
+
+    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    assert latest is not None
+    assert latest["snapshot_version"] == "20260415T130000Z"
+    assert latest["artifact_uri"] == "http://localhost:3001/admin_reference-20260415T130000Z.pmtiles"
 
 
 def test_postgres_index_inventory_covers_lineage_and_fk_paths(conn):

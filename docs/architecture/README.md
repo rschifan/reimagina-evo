@@ -9,8 +9,9 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 3. `SCENARIOS_LAYER.md` — projects, scenarios, interventions, configuration
 4. `JOB_LAYER.md` — async execution, worker contract, job lifecycle
 5. `INDICATORS_LAYER.md` — indicator catalog, dependencies, results
-6. `PERFORMANCE.md` — benchmark corpus, observability, performance gates
-7. `TESTING.md` — pgTAP contract tests for the whole design
+6. `TILE_SERVING.md` — live MVT vs PMTiles snapshot serving rules
+7. `PERFORMANCE.md` — benchmark corpus, observability, performance gates
+8. `TESTING.md` — pgTAP contract tests for the whole design
 
 ## The six major flows
 
@@ -36,6 +37,7 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 | `SCENARIOS_LAYER.md` | User-authored planning state and scenario overlays |
 | `JOB_LAYER.md` | Queue model, worker lifecycle, execution provenance |
 | `INDICATORS_LAYER.md` | Indicator metadata, dependency graph, computed results |
+| `TILE_SERVING.md` | Live MVT serving, PMTiles snapshots, tile-layer classification |
 | `PERFORMANCE.md` | Production performance contract, benchmarks, observability |
 | `TESTING.md` | Contract tests for invariants, serving behavior, and performance expectations |
 
@@ -44,5 +46,6 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 - **Where does a new dataset land?** Start in `TERMINOLOGY.md`, then follow the onboarding playbook in `DATA_LAYER.md`.
 - **How do scenarios use baseline data?** Read `SCENARIOS_LAYER.md` and `JOB_LAYER.md` together.
 - **Where do outputs go?** `INDICATORS_LAYER.md`.
+- **How are map layers served?** `TILE_SERVING.md`.
 - **How do we monitor production-read performance?** `PERFORMANCE.md`.
 - **How do we know the rules are enforced?** `TESTING.md`.

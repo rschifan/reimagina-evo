@@ -197,3 +197,55 @@ def test_cli_perf_compare_delegates(monkeypatch, capsys, tmp_path):
     payload = json.loads(capsys.readouterr().out)
     assert payload["baseline_path"] == str(baseline)
     assert payload["candidate_path"] == str(candidate)
+
+
+def test_cli_tiles_manifest_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.tile_manifest",
+        lambda **kwargs: {"layers": [{"layer_id": "admin_reference"}], **kwargs},
+    )
+
+    exit_code = main(["tiles", "manifest"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["layers"][0]["layer_id"] == "admin_reference"
+
+
+def test_cli_tiles_export_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.export_tile_snapshot",
+        lambda **kwargs: {"layer_id": "admin_reference", **kwargs},
+    )
+
+    exit_code = main(["tiles", "export", "admin_reference"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["layer_id"] == "admin_reference"
+
+
+def test_cli_tiles_sources_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.list_tile_sources",
+        lambda **kwargs: {"layers": [{"layer_id": "baseline_live"}], **kwargs},
+    )
+
+    exit_code = main(["tiles", "sources"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["layers"][0]["layer_id"] == "baseline_live"
+
+
+def test_cli_tiles_snapshots_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.list_tile_snapshots",
+        lambda **kwargs: {"snapshots": [{"layer_id": "admin_reference"}], **kwargs},
+    )
+
+    exit_code = main(["tiles", "snapshots"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["snapshots"][0]["layer_id"] == "admin_reference"

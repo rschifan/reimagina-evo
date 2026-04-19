@@ -17,10 +17,11 @@ Read the architecture docs in this order:
 3. `SCENARIOS_LAYER.md`
 4. `JOB_LAYER.md`
 5. `INDICATORS_LAYER.md`
-6. `PERFORMANCE.md`
-7. `GEOSPATIAL_GRID_ARCHITECTURE.md`
-8. `TESTING.md`
-9. `TODO.md`
+6. `TILE_SERVING.md`
+7. `PERFORMANCE.md`
+8. `GEOSPATIAL_GRID_ARCHITECTURE.md`
+9. `TESTING.md`
+10. `TODO.md`
 
 ## Python namespace
 
@@ -104,6 +105,14 @@ Recommended tools:
 - workers read baseline from `serving_geo`, apply overrides in memory, write results back
 - `feature` is the shared anchor across scenarios, observations, and indicators
 - workers must be idempotent
+
+## Tile serving rules
+
+- live MVT (`serving_geo.get_tile()` + Martin) remains the primary map-serving path
+- PMTiles are snapshot artifacts for stable reference/context layers only in v1
+- if a layer must be current, filtered, scenario-aware, or fast-changing, it must stay `live_mvt`
+- tile-layer classification lives in `infra/tiles/layers.json`
+- PMTiles metadata lives in `curated_geo.tile_snapshot_registry`
 
 ## Testing rules
 

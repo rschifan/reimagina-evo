@@ -14,8 +14,10 @@ from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 from reimagina.data import overlap as ovlp
 from reimagina.data import serving
+from reimagina.data import tiles as tile_data
 from reimagina.db import bootstrap_local_platform, connect, verify_required_relations
 from reimagina.pipeline.loader import load_vector_source
+from reimagina.storage import backend_for_connection
 
 
 def _duckdb_dsn(path: Path) -> str:
@@ -123,6 +125,26 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
 
         serving_stats = explore.get_serving_stats(conn)
         assert any(row["stat_scope"] == "all" and row["row_count"] == 1 for row in serving_stats)
+
+        snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
+            layer_id="admin_reference",
+            artifact_path="/tmp/admin_reference.pmtiles",
+            artifact_uri="http://localhost:3001/admin_reference.pmtiles",
+            snapshot_version="20260415T120000Z",
+            source_relation="serving_geo.admin_v",
+            source_lineage_ref={"latest_successful_ingestion_run_id": None},
+        )
+        assert snapshot_id
+
+        sources = tile_data.get_tile_sources(
+            conn,
+            live_tilejson_base_url="http://localhost:3000/get_tile",
+            snapshot_base_url="http://localhost:3001",
+        )
+        by_id = {row["layer_id"]: row for row in sources}
+        assert by_id["admin_reference"]["source_mode"] == "pmtiles_snapshot"
+        assert by_id["admin_reference"]["available"] is True
+        assert by_id["baseline_live"]["source_mode"] == "live_mvt"
 
 
 def test_duckdb_parquet_fast_path_tolerates_missing_optional_columns(tmp_path):

@@ -862,3 +862,86 @@ class PostgresExploreReader:
             ORDER BY stat_scope, row_count DESC, type_slug NULLS FIRST, role NULLS FIRST
             """
         )
+
+
+class PostgresTileSnapshotRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_snapshot(
+        self,
+        *,
+        layer_id: str,
+        artifact_path: str,
+        artifact_uri: str | None,
+        snapshot_version: str,
+        source_relation: str,
+        source_lineage_ref: dict | None = None,
+        status: str = "ready",
+    ) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.tile_snapshot_registry
+                  (layer_id, artifact_path, artifact_uri, snapshot_version, source_relation, source_lineage_ref, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    layer_id,
+                    artifact_path,
+                    artifact_uri,
+                    snapshot_version,
+                    source_relation,
+                    json.dumps(source_lineage_ref or {}),
+                    status,
+                ),
+            )
+            return str(cur.fetchone()[0])
+
+    def get_latest_snapshot(self, *, layer_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text AS id,
+                  layer_id,
+                  artifact_path,
+                  artifact_uri,
+                  snapshot_version,
+                  source_relation,
+                  source_lineage_ref,
+                  status,
+                  created_at
+                FROM curated_geo.tile_snapshot_registry
+                WHERE layer_id = %s
+                ORDER BY created_at DESC, snapshot_version DESC
+                LIMIT 1
+                """,
+                (layer_id,),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def list_snapshots(self, *, layer_id: str | None = None) -> list[dict]:
+        query = """
+            SELECT
+              id::text AS id,
+              layer_id,
+              artifact_path,
+              artifact_uri,
+              snapshot_version,
+              source_relation,
+              source_lineage_ref,
+              status,
+              created_at
+            FROM curated_geo.tile_snapshot_registry
+        """
+        params: list[str] = []
+        if layer_id:
+            query += " WHERE layer_id = %s"
+            params.append(layer_id)
+        query += " ORDER BY created_at DESC, snapshot_version DESC"
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]

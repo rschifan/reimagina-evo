@@ -10,6 +10,7 @@ from .repositories import (
     PostgresOverlapRepository,
     PostgresServingReader,
     PostgresSourceCatalogRepository,
+    PostgresTileSnapshotRepository,
 )
 from ..capabilities import StorageCapabilities
 
@@ -63,3 +64,6 @@ class PostgresStorageBackend:
 
     def explore_reader(self) -> PostgresExploreReader:
         return PostgresExploreReader(self.connection)
+
+    def tile_repo(self) -> PostgresTileSnapshotRepository:
+        return PostgresTileSnapshotRepository(self.connection)

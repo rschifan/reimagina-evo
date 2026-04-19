@@ -28,6 +28,8 @@ Rules:
 - `feature` is the canonical spatial anchor
 - `observation` stores measured/derived facts about features
 - `explore` is for humans, not application dependencies
+- live MVT is the primary tile path; PMTiles are snapshot exports for stable reference layers only
+- if a layer must be live, filtered, scenario-aware, or fast-changing, it cannot move to PMTiles
 
 ## Inspection workflow
 
@@ -89,6 +91,6 @@ When changing DB structure, read paths, or inspection surfaces:
 4. update `explore` if the engineer-facing inspection surface changed
 5. keep CLI inspection commands reading from `explore`
 6. add/update tests
-7. update `CLAUDE.md`, `AGENTS.md`, and relevant docs when the contract changes
+7. update `CLAUDE.md`, `AGENTS.md`, `infra/tiles/layers.json`, and relevant docs when the contract changes
 
 If a system change makes inspection harder, that is a maintenance failure.
