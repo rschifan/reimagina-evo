@@ -8,7 +8,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Spatial aggregation mechanism | Schema done (r009); rollup worker contract documented in `JOB_LAYER.md`; `reimagina.jobs.aggregation` pure module shipped; worker body waits for Layer 2 `indicator_result` |
+| 1 | Spatial aggregation mechanism | **Done** — schema (r009), contract (`JOB_LAYER.md`), `reimagina.jobs.aggregation` pure module, and `reimagina.jobs.rollup.run_rollup` worker. Validated end-to-end on real CDMX data (block→AGEB, 153 rollups written) and via the Cuauhtémoc AOI summary (0.636 weighted-mean compactness). See `PERFORMANCE.md` baseline numbers. |
 | 2 | AOI-level aggregate indicator values | Decided (Option B); schema and worker not yet built |
 | 3 | Non-hierarchical spatial aggregation | Resolved — `feature_overlap` covers this |
 
@@ -22,7 +22,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-4 | `feature_overlap` table | **Done** — r009 schema + `reimagina.jobs.overlap` orchestrator (AOI-scoped) + CLI; realistic-scale validated on real INEGI CDMX geometry (2,853 block→AGEB rows in 0.92 s Postgres / 3.48 s DuckDB for Cuauhtémoc — see `PERFORMANCE.md`); rollup consumer lands Layer 2 |
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
-| T2-7 | `aoi_indicator_summary` table | **Partial** — r015 schema + serving view + repo on both backends; populating worker waits for Layer 2 `indicator_result` |
+| T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
 | T2-8 | SSE for job status | **Not built** — needs API + LISTEN/NOTIFY |
 | T2-9 | Row-Level Security | **Done** — r011 |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
