@@ -32,6 +32,19 @@ packages = ["packages/py/reimagina"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+# Third-party deprecations outside our control. Listed explicitly so that
+# any new warning — including ones we emit — remains visible.
+filterwarnings = [
+    # pyproj emits on older NumPy behaviour via its own internal transformer;
+    # not triggered by our code and will be resolved when pyproj bumps.
+    "ignore:Conversion of an array with ndim > 0 to a scalar is deprecated:DeprecationWarning:pyproj",
+    # Alembic 1.13 warns on legacy path_separator config; upstream fix is in flight.
+    "ignore:No path_separator found in configuration:DeprecationWarning:alembic.config",
+    # GeoPandas .notna() behaviour advisory — we already use the recommended
+    # `~.is_empty & .notna()` idiom the message points to.
+    "ignore:GeoSeries.notna\\(\\) previously returned False:UserWarning:reimagina.pipeline.silver",
+    "ignore:GeoSeries.notna\\(\\) previously returned False:UserWarning:geopandas",
+]
 
 [tool.coverage.run]
 source = ["packages/py/reimagina"]
