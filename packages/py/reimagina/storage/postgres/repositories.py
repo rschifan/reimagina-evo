@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 import geopandas as gpd
 import psycopg2.extras
@@ -751,6 +750,46 @@ class PostgresOverlapRepository:
                 )
 
             return cur.rowcount
+
+
+class PostgresOverlapTypePairRepository:
+    """Declared (source_type, target_type) pairs on Postgres."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_pair(self, source_type_id: str, target_type_id: str) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.feature_overlap_type_pair
+                  (source_type_id, target_type_id)
+                VALUES (%s, %s)
+                ON CONFLICT (source_type_id, target_type_id) DO UPDATE
+                  SET source_type_id = EXCLUDED.source_type_id
+                RETURNING id
+                """,
+                (source_type_id, target_type_id),
+            )
+            return str(cur.fetchone()[0])
+
+    def list_pairs(self) -> list[dict]:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    p.id::text             AS pair_id,
+                    p.source_type_id::text AS source_type_id,
+                    sc.context || ':' || sc.type_slug AS source,
+                    p.target_type_id::text AS target_type_id,
+                    tc.context || ':' || tc.type_slug AS target
+                FROM curated_geo.feature_overlap_type_pair p
+                JOIN curated_geo.feature_type_catalog sc ON sc.id = p.source_type_id
+                JOIN curated_geo.feature_type_catalog tc ON tc.id = p.target_type_id
+                ORDER BY sc.context, sc.type_slug, tc.context, tc.type_slug
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
 
 
 class PostgresServingReader:

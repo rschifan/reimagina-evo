@@ -158,6 +158,18 @@ class OverlapRepository(Protocol):
         ...
 
 
+class OverlapTypePairRepository(Protocol):
+    """Declared (source_type, target_type) pairs that the overlap worker computes.
+
+    Kept separate from OverlapRepository so that declaration (seed-time) and
+    computation (run-time) don't share a connection-facing type.
+    """
+
+    def upsert_pair(self, source_type_id: str, target_type_id: str) -> str: ...
+
+    def list_pairs(self) -> list[dict[str, Any]]: ...
+
+
 class ServingReader(Protocol):
     def get_features(
         self,
@@ -254,6 +266,8 @@ class StorageBackend(Protocol):
     def aoi_repo(self) -> AOIRepository: ...
 
     def overlap_repo(self) -> OverlapRepository: ...
+
+    def overlap_type_pair_repo(self) -> OverlapTypePairRepository: ...
 
     def serving_reader(self) -> ServingReader: ...
 
