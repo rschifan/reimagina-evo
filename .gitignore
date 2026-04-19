@@ -62,6 +62,7 @@ node_modules/
 .output/
 packages/ts/**/dist/
 apps/web/.next/
+apps/web/dist/
 
 # ── IDE / editors ────────────────────────────────────────────────────────────
 .vscode/

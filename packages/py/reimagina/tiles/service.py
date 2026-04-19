@@ -239,8 +239,12 @@ def resolve_tile_sources(
     """Resolve every manifest layer into a frontend-ready tile source.
 
     Each `live_mvt` layer is turned into `{martin_base}/{function_name}/{z}/{x}/{y}`,
-    where `function_name` is the layer's `tile_layer_name`, the last path
-    segment of `source_relation`, or `get_tile` as a final fallback.
+    where `function_name` is derived from `source_relation` (last dotted
+    segment — e.g. `serving_geo.indicator_overlay_tile` → `indicator_overlay_tile`),
+    falling back to the legacy URL's path component (`get_tile` by default).
+    `tile_layer_name` is the MVT layer name inside each tile blob — it's
+    what the frontend sets as `source-layer` when adding a style layer, and
+    is deliberately NOT conflated with the Martin URL path.
 
     `query_params` from the manifest are forwarded under
     `source_config.query_params` as schema hints (e.g. `{"indicator_slug":
@@ -253,8 +257,9 @@ def resolve_tile_sources(
     for layer in load_tile_layers(manifest_path):
         if layer.source_mode == "live_mvt":
             function_name = (
-                layer.tile_layer_name
-                or (layer.source_relation.split(".")[-1] if layer.source_relation else default_function)
+                layer.source_relation.split(".")[-1]
+                if layer.source_relation
+                else default_function
             )
             tilejson_url = f"{martin_base}/{function_name}"
             tiles_url_template = f"{martin_base}/{function_name}/{{z}}/{{x}}/{{y}}"
@@ -270,6 +275,7 @@ def resolve_tile_sources(
                         "kind": "vector",
                         "tilejson_url": tilejson_url,
                         "tiles_url_template": tiles_url_template,
+                        "source_layer": layer.tile_layer_name,
                         "query_params": dict(layer.query_params),
                         "minzoom": layer.minzoom,
                         "maxzoom": layer.maxzoom,

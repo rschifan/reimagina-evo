@@ -1,0 +1,166 @@
+:root {
+  --sidebar-bg: #111827;
+  --sidebar-fg: #f9fafb;
+  --accent: #60a5fa;
+  --muted: #9ca3af;
+  --border: #1f2937;
+  --panel: #1f2937;
+  --button-bg: #374151;
+  --button-bg-hover: #4b5563;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, .app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--sidebar-fg);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 20px 20px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.sidebar h1 {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sidebar h2 {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.sidebar section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.sidebar label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.sidebar label span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sidebar select,
+.sidebar button {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+}
+
+.sidebar button:hover {
+  background: var(--button-bg-hover);
+}
+
+.sidebar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.layer-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.layer-toggles label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.layer-toggles input[type="checkbox"] {
+  margin: 0;
+}
+
+.layer-toggles .layer-label {
+  color: var(--sidebar-fg);
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.legend {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.legend .gradient {
+  height: 12px;
+  border-radius: 3px;
+  background: linear-gradient(to right, #f7fbff, #08306b);
+}
+
+.legend .bounds {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+
+.downloads {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.status {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  min-height: 18px;
+}
+
+.map-panel {
+  position: relative;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+}
