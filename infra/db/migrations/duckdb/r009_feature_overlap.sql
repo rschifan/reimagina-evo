@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS curated_geo.feature_overlap (
     feature_measure   DOUBLE  NOT NULL,
     overlap_ratio     DOUBLE  NOT NULL,
     computed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (overlap_basis IN ('area', 'length', 'presence')),
+    CHECK (overlap_measure > 0),
+    CHECK (feature_measure > 0),
+    CHECK (overlap_ratio > 0 AND overlap_ratio <= 1),
     UNIQUE (source_feature_id, target_feature_id)
 );
 
