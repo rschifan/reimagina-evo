@@ -3,16 +3,44 @@
  *
  * Boots MapLibre with a minimal offline style (no basemap — the
  * prototype avoids external tile dependencies and licensing drift),
- * loads the tile-source catalog from the API, and wires input-layer
- * toggles. Indicator choropleth + downloads land in a follow-up commit.
+ * loads the tile-source catalog + indicator catalog from the API, and
+ * wires:
+ *   - Spatial-input layer toggles (municipalities / AGEBs / blocks /
+ *     buildings) served by Martin's serving_geo.get_tile.
+ *   - Indicator picker → server-side MVT choropleth via Martin's
+ *     serving_geo.indicator_overlay_tile function.
+ *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
+ *     selected.
  */
 import maplibregl from "maplibre-gl";
+import type { IndicatorSummary, TileSource } from "./api";
 import type { StyleSpecification } from "maplibre-gl";
 
-import { listTileSources } from "./api";
-import { extractTileSources, installInputLayers, wireLayerToggles } from "./layers";
+import { listIndicators, listTileSources } from "./api";
+import {
+  activateIndicator,
+  choroplethConfig,
+  clearLegend,
+  populateIndicatorSelect,
+  removeIndicator,
+  renderLegend,
+} from "./choropleth";
+import {
+  setDownloadAvailability,
+  wireDownloadButtons,
+} from "./download";
+import {
+  extractTileSources,
+  installInputLayers,
+  wireLayerToggles,
+} from "./layers";
 
 const CUAUHTEMOC_CENTER: [number, number] = [-99.137, 19.432];
+
+interface AppState {
+  activeIndicator: IndicatorSummary | null;
+}
+
 
 function setStatus(message: string): void {
   const el = document.getElementById("status");
@@ -36,17 +64,33 @@ function emptyStyle(): StyleSpecification {
 }
 
 
+async function loadInitialState(): Promise<{
+  sources: TileSource[];
+  indicators: IndicatorSummary[];
+}> {
+  const [sources, indicators] = await Promise.all([
+    listTileSources(),
+    listIndicators(),
+  ]);
+  return { sources, indicators };
+}
+
+
 async function main(): Promise<void> {
   setStatus("Connecting to reimagina API…");
 
-  let catalog;
+  let sources: TileSource[];
+  let indicators: IndicatorSummary[];
   try {
-    const sources = await listTileSources();
-    catalog = extractTileSources(sources);
+    ({ sources, indicators } = await loadInitialState());
   } catch (err) {
-    setStatus(`Failed to load tile sources: ${(err as Error).message}`);
+    setStatus(`Failed to load API: ${(err as Error).message}`);
     throw err;
   }
+  const tileCatalog = extractTileSources(sources);
+  const overlayConfig = choroplethConfig(sources);
+
+  const state: AppState = { activeIndicator: null };
 
   const map = new maplibregl.Map({
     container: "map",
@@ -60,11 +104,42 @@ async function main(): Promise<void> {
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
   map.on("load", () => {
-    installInputLayers(map, catalog);
+    installInputLayers(map, tileCatalog);
+
     const toggleContainer = document.getElementById("layer-toggles");
-    if (toggleContainer) {
-      wireLayerToggles(toggleContainer, map);
+    if (toggleContainer) wireLayerToggles(toggleContainer, map);
+
+    const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
+    const legend = document.getElementById("legend");
+    const downloads = document.getElementById("downloads");
+
+    if (select) {
+      populateIndicatorSelect(select, indicators);
+      select.addEventListener("change", () => {
+        const slug = select.value;
+        if (!slug) {
+          state.activeIndicator = null;
+          removeIndicator(map);
+          if (legend) clearLegend(legend);
+          if (downloads) setDownloadAvailability(downloads, false);
+          setStatus("Indicator cleared.");
+          return;
+        }
+        const indicator = indicators.find((i) => i.slug === slug);
+        if (!indicator) return;
+        state.activeIndicator = indicator;
+        activateIndicator(map, overlayConfig, indicator);
+        if (legend) renderLegend(legend, indicator);
+        if (downloads) setDownloadAvailability(downloads, true);
+        setStatus(`Showing ${indicator.name} (${indicator.unit ?? "no unit"}).`);
+      });
     }
+
+    if (downloads) {
+      wireDownloadButtons(downloads, () => state.activeIndicator?.slug ?? null);
+      setDownloadAvailability(downloads, false);
+    }
+
     setStatus("Map ready. Spatial input layers loaded.");
   });
   map.on("error", (e) => {
