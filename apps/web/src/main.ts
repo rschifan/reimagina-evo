@@ -21,6 +21,7 @@ import {
   activateIndicator,
   choroplethConfig,
   clearLegend,
+  defaultGrain,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
@@ -131,12 +132,14 @@ async function main(): Promise<void> {
         state.activeIndicator = indicator;
         setStatus(`Loading ${indicator.name} stats…`);
         // Fetch the observed distribution so the ramp uses p05–p95,
-        // not the catalog safety cap. Failure is non-fatal: if stats
-        // fail we still render with catalog bounds and note it in the
-        // legend.
+        // not the catalog safety cap. Pin to the same grain the tile
+        // layer will render so ramp + map agree. Failure is non-fatal:
+        // if stats fail we still render with catalog bounds and note
+        // it in the legend.
+        const grain = defaultGrain(indicator) ?? undefined;
         let stats = null;
         try {
-          stats = await getIndicatorStats(slug);
+          stats = await getIndicatorStats(slug, { feature_type: grain });
         } catch (err) {
           console.warn("stats fetch failed, falling back to catalog bounds", err);
         }

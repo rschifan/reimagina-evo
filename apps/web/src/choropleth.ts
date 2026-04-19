@@ -113,6 +113,17 @@ export function rampDomainFromStats(
 }
 
 
+/** Pick the finest grain this indicator applies to (block > ageb > …).
+ *
+ * The catalog lists `applies_to` in finest-to-coarsest order, so taking
+ * the first entry gives us the high-detail rendering the user generally
+ * wants. A future UI upgrade can add a radio button to switch grains.
+ */
+export function defaultGrain(indicator: IndicatorSummary): string | null {
+  return indicator.applies_to[0] ?? null;
+}
+
+
 export function activateIndicator(
   map: MapLibreMap,
   config: ChoroplethConfig,
@@ -124,7 +135,10 @@ export function activateIndicator(
   // `{z}/{x}/{y}` in the template is literal and must survive query-
   // string composition, so use a plain concatenation — URLSearchParams
   // or `new URL(template)` would reject the curly-brace placeholders.
-  const tileUrl = `${config.tilesUrlTemplate}?indicator_slug=${encodeURIComponent(indicator.slug)}`;
+  const grain = defaultGrain(indicator);
+  const params = new URLSearchParams({ indicator_slug: indicator.slug });
+  if (grain) params.set("feature_type", grain);
+  const tileUrl = `${config.tilesUrlTemplate}?${params.toString()}`;
 
   map.addSource(OVERLAY_SOURCE, {
     type: "vector",
