@@ -22,7 +22,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-4 | `feature_overlap` table | **Done** — r009 |
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
-| T2-7 | `aoi_indicator_summary` table | **Not built** — depends on rollup worker |
+| T2-7 | `aoi_indicator_summary` table | **Partial** — r015 schema + serving view + repo on both backends; populating worker waits for Layer 2 `indicator_result` |
 | T2-8 | SSE for job status | **Not built** — needs API + LISTEN/NOTIFY |
 | T2-9 | Row-Level Security | **Done** — r011 |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |

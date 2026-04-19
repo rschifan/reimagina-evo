@@ -1088,3 +1088,139 @@ class DuckDBTileSnapshotRepository:
                 """
             )
         )
+
+
+_AOI_SUMMARY_COLS = (
+    "id",
+    "aoi_id",
+    "scenario_id",
+    "indicator_id",
+    "value",
+    "aggregation_note",
+    "status",
+    "computed_at",
+)
+
+
+class DuckDBAOISummaryRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        value: float | None,
+        scenario_id: str | None = None,
+        aggregation_note: str | None = None,
+        status: str = "current",
+    ) -> str:
+        # Manual upsert: DuckDB's partial unique indexes do not support
+        # ON CONFLICT with a predicate, so we do a read-modify-write here.
+        if scenario_id is None:
+            existing = self.connection.execute(
+                """
+                SELECT CAST(id AS VARCHAR)
+                FROM curated_geo.aoi_indicator_summary
+                WHERE aoi_id = ? AND scenario_id IS NULL AND indicator_id = ?
+                """,
+                [aoi_id, indicator_id],
+            ).fetchone()
+        else:
+            existing = self.connection.execute(
+                """
+                SELECT CAST(id AS VARCHAR)
+                FROM curated_geo.aoi_indicator_summary
+                WHERE aoi_id = ? AND scenario_id = ? AND indicator_id = ?
+                """,
+                [aoi_id, scenario_id, indicator_id],
+            ).fetchone()
+
+        if existing is not None:
+            summary_id = existing[0]
+            self.connection.execute(
+                """
+                UPDATE curated_geo.aoi_indicator_summary
+                SET value = ?,
+                    aggregation_note = ?,
+                    status = ?,
+                    computed_at = now()
+                WHERE CAST(id AS VARCHAR) = ?
+                """,
+                [value, aggregation_note, status, summary_id],
+            )
+            return summary_id
+
+        summary_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.aoi_indicator_summary
+              (id, aoi_id, scenario_id, indicator_id, value, aggregation_note, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [summary_id, aoi_id, scenario_id, indicator_id, value, aggregation_note, status],
+        )
+        return summary_id
+
+    def get_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        scenario_id: str | None = None,
+    ) -> dict | None:
+        if scenario_id is None:
+            row = self.connection.execute(
+                """
+                SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
+                       CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
+                       value, aggregation_note, status, computed_at
+                FROM curated_geo.aoi_indicator_summary
+                WHERE aoi_id = ? AND scenario_id IS NULL AND indicator_id = ?
+                """,
+                [aoi_id, indicator_id],
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """
+                SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
+                       CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
+                       value, aggregation_note, status, computed_at
+                FROM curated_geo.aoi_indicator_summary
+                WHERE aoi_id = ? AND scenario_id = ? AND indicator_id = ?
+                """,
+                [aoi_id, scenario_id, indicator_id],
+            ).fetchone()
+        return dict(zip(_AOI_SUMMARY_COLS, row)) if row else None
+
+    def list_summaries(
+        self,
+        *,
+        aoi_id: str,
+        scenario_id: str | None = None,
+        only_current: bool = True,
+    ) -> list[dict]:
+        conditions = ["aoi_id = ?"]
+        params: list = [aoi_id]
+        if scenario_id is None:
+            conditions.append("scenario_id IS NULL")
+        else:
+            conditions.append("scenario_id = ?")
+            params.append(scenario_id)
+        if only_current:
+            conditions.append("status = 'current'")
+
+        where_clause = " AND ".join(conditions)
+        rows = self.connection.execute(
+            f"""
+            SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
+                   CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
+                   value, aggregation_note, status, computed_at
+            FROM curated_geo.aoi_indicator_summary
+            WHERE {where_clause}
+            ORDER BY computed_at DESC
+            """,
+            params,
+        ).fetchall()
+        return [dict(zip(_AOI_SUMMARY_COLS, row)) for row in rows]

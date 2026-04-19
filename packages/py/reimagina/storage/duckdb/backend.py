@@ -4,6 +4,7 @@ from __future__ import annotations
 from .migrations import run_duckdb_migrations
 from .repositories import (
     DuckDBAOIRepository,
+    DuckDBAOISummaryRepository,
     DuckDBExploreReader,
     DuckDBFeatureRepository,
     DuckDBFileAssetRepository,
@@ -78,3 +79,6 @@ class DuckDBStorageBackend:
 
     def tile_repo(self) -> DuckDBTileSnapshotRepository:
         return DuckDBTileSnapshotRepository(self.connection)
+
+    def aoi_summary_repo(self) -> DuckDBAOISummaryRepository:
+        return DuckDBAOISummaryRepository(self.connection)

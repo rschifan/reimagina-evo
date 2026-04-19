@@ -872,3 +872,73 @@ def test_overlap_compute_all_pairs_scopes_by_aoi(conn):
 
     unscoped = overlap_jobs.compute_all_pairs(conn)
     assert unscoped["rows_total"] == 2
+
+
+def test_aoi_summary_upsert_list_and_serving_view(conn):
+    """Postgres: AOISummaryRepository upserts via partial unique indexes; the
+    serving view exposes only status='current' rows and explore.layer_catalog_v
+    lists the new layers.
+    """
+    project_id = _insert_project(conn, name="AOI Summary Project")
+    aoi_id = aoi.create_aoi(
+        conn,
+        project_id=project_id,
+        name="summary-aoi",
+        geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
+    )
+
+    summary_repo = backend_for_connection(conn).aoi_summary_repo()
+    indicator_id = str(uuid4())
+
+    first = summary_repo.upsert_summary(
+        aoi_id=aoi_id, indicator_id=indicator_id, value=1.0,
+        aggregation_note="seed",
+    )
+    # Re-upsert (no scenario) → same id, updated value.
+    second = summary_repo.upsert_summary(
+        aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+        aggregation_note="reran",
+    )
+    assert first == second
+
+    current = summary_repo.get_summary(aoi_id=aoi_id, indicator_id=indicator_id)
+    assert current["value"] == 2.0
+    assert current["aggregation_note"] == "reran"
+    assert current["status"] == "current"
+
+    scenario_id = str(uuid4())
+    scenario_summary_id = summary_repo.upsert_summary(
+        aoi_id=aoi_id, indicator_id=indicator_id, value=5.0,
+        scenario_id=scenario_id,
+    )
+    assert scenario_summary_id != first
+
+    base_rows = summary_repo.list_summaries(aoi_id=aoi_id)
+    assert [r["value"] for r in base_rows] == [2.0]
+
+    scenario_rows = summary_repo.list_summaries(aoi_id=aoi_id, scenario_id=scenario_id)
+    assert [r["value"] for r in scenario_rows] == [5.0]
+
+    # Marking the base-city row stale drops it from the serving view.
+    summary_repo.upsert_summary(
+        aoi_id=aoi_id, indicator_id=indicator_id, value=2.0, status="stale",
+    )
+    assert summary_repo.list_summaries(aoi_id=aoi_id) == []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT indicator_id::text, value
+            FROM serving_geo.aoi_summary_v
+            WHERE aoi_id = %s
+            """,
+            (aoi_id,),
+        )
+        serving_rows = cur.fetchall()
+    assert serving_rows == [(indicator_id, 5.0)]
+
+    # Explore catalog surfaces the new layers.
+    layers = explore.get_layers(conn)
+    names = {(row["schema_name"], row["object_name"]) for row in layers}
+    assert ("curated_geo", "aoi_indicator_summary") in names
+    assert ("serving_geo", "aoi_summary_v") in names
