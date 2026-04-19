@@ -31,10 +31,17 @@
     {
       "layer_id": "indicator_overlay",
       "logical_name": "Indicator Overlay",
-      "description": "Reserved live tile source for indicator overlays; snapshot export is not allowed in v1.",
+      "description": "Live MVT choropleth from serving_geo.indicator_overlay_tile. Caller must set indicator_slug; scenario_id is optional.",
       "source_mode": "live_mvt",
-      "implemented": false,
-      "query_params": {}
+      "implemented": true,
+      "source_relation": "serving_geo.indicator_overlay_tile",
+      "tile_layer_name": "indicator_overlay",
+      "minzoom": 10,
+      "maxzoom": 16,
+      "query_params": {
+        "indicator_slug": "REQUIRED",
+        "scenario_id": "OPTIONAL"
+      }
     }
   ]
 }
