@@ -50,6 +50,7 @@ export interface TileSource {
     tilejson_url?: string;
     tiles_url_template?: string;
     url?: string;
+    source_layer?: string | null;
     query_params?: Record<string, unknown>;
     minzoom?: number | null;
     maxzoom?: number | null;
