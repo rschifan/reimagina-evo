@@ -1854,6 +1854,47 @@ class DuckDBIndicatorResultRepository:
             for row in rows
         ]
 
+    def value_stats(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+    ) -> dict:
+        clauses = ["indicator_slug = ?", "status = 'current'", "value_numeric IS NOT NULL"]
+        params: list = [indicator_slug]
+        if scenario_id is None:
+            clauses.append("scenario_id IS NULL")
+        else:
+            clauses.append("CAST(scenario_id AS VARCHAR) = ?")
+            params.append(scenario_id)
+        if feature_type is not None:
+            clauses.append("feature_type = ?")
+            params.append(feature_type)
+
+        row = self.connection.execute(
+            f"""
+            SELECT COUNT(*)                             AS count,
+                   MIN(value_numeric)                   AS min,
+                   quantile_cont(value_numeric, 0.05)   AS p05,
+                   quantile_cont(value_numeric, 0.50)   AS p50,
+                   quantile_cont(value_numeric, 0.95)   AS p95,
+                   MAX(value_numeric)                   AS max
+            FROM curated_geo.indicator_result
+            WHERE {' AND '.join(clauses)}
+            """,
+            params,
+        ).fetchone()
+        count, vmin, p05, p50, p95, vmax = row
+        return {
+            "count": int(count),
+            "min": float(vmin) if vmin is not None else None,
+            "p05": float(p05) if p05 is not None else None,
+            "p50": float(p50) if p50 is not None else None,
+            "p95": float(p95) if p95 is not None else None,
+            "max": float(vmax) if vmax is not None else None,
+        }
+
 
 _CURRENT_INDICATOR_V_COLS = (
     "id", "feature_id", "feature_type", "scenario_id",

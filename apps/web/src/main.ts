@@ -16,12 +16,13 @@ import maplibregl from "maplibre-gl";
 import type { IndicatorSummary, TileSource } from "./api";
 import type { StyleSpecification } from "maplibre-gl";
 
-import { listIndicators, listTileSources } from "./api";
+import { getIndicatorStats, listIndicators, listTileSources } from "./api";
 import {
   activateIndicator,
   choroplethConfig,
   clearLegend,
   populateIndicatorSelect,
+  rampDomainFromStats,
   removeIndicator,
   renderLegend,
 } from "./choropleth";
@@ -115,7 +116,7 @@ async function main(): Promise<void> {
 
     if (select) {
       populateIndicatorSelect(select, indicators);
-      select.addEventListener("change", () => {
+      select.addEventListener("change", async () => {
         const slug = select.value;
         if (!slug) {
           state.activeIndicator = null;
@@ -128,10 +129,27 @@ async function main(): Promise<void> {
         const indicator = indicators.find((i) => i.slug === slug);
         if (!indicator) return;
         state.activeIndicator = indicator;
-        activateIndicator(map, overlayConfig, indicator);
-        if (legend) renderLegend(legend, indicator);
+        setStatus(`Loading ${indicator.name} stats…`);
+        // Fetch the observed distribution so the ramp uses p05–p95,
+        // not the catalog safety cap. Failure is non-fatal: if stats
+        // fail we still render with catalog bounds and note it in the
+        // legend.
+        let stats = null;
+        try {
+          stats = await getIndicatorStats(slug);
+        } catch (err) {
+          console.warn("stats fetch failed, falling back to catalog bounds", err);
+        }
+        const domain = rampDomainFromStats(stats, indicator);
+        activateIndicator(map, overlayConfig, indicator, domain);
+        if (legend) renderLegend(legend, indicator, domain);
         if (downloads) setDownloadAvailability(downloads, true);
-        setStatus(`Showing ${indicator.name} (${indicator.unit ?? "no unit"}).`);
+        setStatus(
+          `Showing ${indicator.name} (${indicator.unit ?? "no unit"})` +
+            (domain.fromStats
+              ? ` · ramp ${domain.min.toFixed(2)}–${domain.max.toFixed(2)} (p05–p95).`
+              : "."),
+        );
       });
     }
 

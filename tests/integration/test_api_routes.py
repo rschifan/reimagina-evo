@@ -196,6 +196,38 @@ def test_features_endpoint_returns_paginated_rows(client, conn):
     assert all(f["type_slug"] == "block" for f in payload["features"])
 
 
+def test_stats_endpoint_returns_percentiles(client, seeded_block_with_compactness):
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/stats"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["slug"] == seeded_block_with_compactness["slug"]
+    assert payload["count"] == 1
+    # With one row every quantile equals the value, so min == p50 == max.
+    for key in ("min", "p05", "p50", "p95", "max"):
+        assert payload[key] is not None
+    assert payload["min"] == payload["max"]
+
+
+def test_stats_endpoint_returns_empty_for_unseeded_indicator(client, conn):
+    seed_catalog(conn)
+    response = client.get(
+        "/indicators/urban_form_block_building_density/stats"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 0
+    for key in ("min", "p05", "p50", "p95", "max"):
+        assert payload[key] is None
+
+
+def test_stats_endpoint_404s_on_unknown_slug(client, conn):
+    seed_catalog(conn)
+    response = client.get("/indicators/does_not_exist/stats")
+    assert response.status_code == 404
+
+
 def test_values_csv_download_is_streaming_and_has_pinned_header(
     client, seeded_block_with_compactness
 ):
