@@ -210,6 +210,25 @@ def _with_querystring(base_url: str, params: dict[str, object]) -> str:
     return f"{base_url}?{urlencode(params, doseq=True)}"
 
 
+def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:
+    """Split a legacy `{base}/{function}` URL into its components.
+
+    Older callers pass live_tilejson_base_url = `http://localhost:3000/get_tile`;
+    newer ones will pass `http://localhost:3000`. To avoid a breaking change we
+    tolerate both: the final URL segment is treated as the default Martin
+    function name, falling back to `get_tile` if the URL is already a bare
+    host.
+    """
+    trimmed = live_tilejson_base_url.rstrip("/")
+    try:
+        base, tail = trimmed.rsplit("/", 1)
+    except ValueError:
+        return trimmed, "get_tile"
+    if "://" not in tail and tail:
+        return base, tail
+    return trimmed, "get_tile"
+
+
 def resolve_tile_sources(
     conn,
     *,
@@ -217,15 +236,28 @@ def resolve_tile_sources(
     snapshot_base_url: str | None = None,
     manifest_path: str | Path | None = None,
 ) -> list[dict[str, object]]:
+    """Resolve every manifest layer into a frontend-ready tile source.
+
+    Each `live_mvt` layer is turned into `{martin_base}/{function_name}/{z}/{x}/{y}`,
+    where `function_name` is the layer's `tile_layer_name`, the last path
+    segment of `source_relation`, or `get_tile` as a final fallback.
+
+    `query_params` from the manifest are forwarded under
+    `source_config.query_params` as schema hints (e.g. `{"indicator_slug":
+    "REQUIRED"}`) rather than being baked into the URL — the frontend picks
+    real values at render time and assembles the final URL itself.
+    """
+    martin_base, default_function = _martin_base_and_default_function(live_tilejson_base_url)
     repo = backend_for_connection(conn).tile_repo()
     resolved: list[dict[str, object]] = []
     for layer in load_tile_layers(manifest_path):
         if layer.source_mode == "live_mvt":
-            tilejson_url = _with_querystring(live_tilejson_base_url, layer.query_params)
-            tiles_url_template = _with_querystring(
-                f"{live_tilejson_base_url.rstrip('/')}/{{z}}/{{x}}/{{y}}",
-                layer.query_params,
+            function_name = (
+                layer.tile_layer_name
+                or (layer.source_relation.split(".")[-1] if layer.source_relation else default_function)
             )
+            tilejson_url = f"{martin_base}/{function_name}"
+            tiles_url_template = f"{martin_base}/{function_name}/{{z}}/{{x}}/{{y}}"
             resolved.append(
                 {
                     "layer_id": layer.layer_id,
@@ -238,6 +270,9 @@ def resolve_tile_sources(
                         "kind": "vector",
                         "tilejson_url": tilejson_url,
                         "tiles_url_template": tiles_url_template,
+                        "query_params": dict(layer.query_params),
+                        "minzoom": layer.minzoom,
+                        "maxzoom": layer.maxzoom,
                     },
                 }
             )
