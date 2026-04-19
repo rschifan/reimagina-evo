@@ -967,3 +967,124 @@ class PostgresTileSnapshotRepository:
         with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
+
+
+class PostgresAOISummaryRepository:
+    """Upsert + read helpers for curated_geo.aoi_indicator_summary.
+
+    Uses the two partial unique indexes defined in r015 so that base-city
+    and scenario-scoped rows coexist without NULL-scenario duplication.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        value: float | None,
+        scenario_id: str | None = None,
+        aggregation_note: str | None = None,
+        status: str = "current",
+    ) -> str:
+        # Partial unique indexes cannot be referenced by name in ON CONFLICT;
+        # use the inference form (column list + WHERE predicate) instead.
+        with self.connection.cursor() as cur:
+            if scenario_id is None:
+                cur.execute(
+                    """
+                    INSERT INTO curated_geo.aoi_indicator_summary
+                      (aoi_id, scenario_id, indicator_id, value, aggregation_note, status)
+                    VALUES (%s, NULL, %s, %s, %s, %s)
+                    ON CONFLICT (aoi_id, indicator_id) WHERE scenario_id IS NULL
+                    DO UPDATE SET
+                      value            = EXCLUDED.value,
+                      aggregation_note = EXCLUDED.aggregation_note,
+                      status           = EXCLUDED.status,
+                      computed_at      = now()
+                    RETURNING id
+                    """,
+                    (aoi_id, indicator_id, value, aggregation_note, status),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO curated_geo.aoi_indicator_summary
+                      (aoi_id, scenario_id, indicator_id, value, aggregation_note, status)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (aoi_id, scenario_id, indicator_id)
+                      WHERE scenario_id IS NOT NULL
+                    DO UPDATE SET
+                      value            = EXCLUDED.value,
+                      aggregation_note = EXCLUDED.aggregation_note,
+                      status           = EXCLUDED.status,
+                      computed_at      = now()
+                    RETURNING id
+                    """,
+                    (aoi_id, scenario_id, indicator_id, value, aggregation_note, status),
+                )
+            return str(cur.fetchone()[0])
+
+    def get_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        scenario_id: str | None = None,
+    ) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if scenario_id is None:
+                cur.execute(
+                    """
+                    SELECT id, aoi_id, scenario_id, indicator_id, value,
+                           aggregation_note, status, computed_at
+                    FROM curated_geo.aoi_indicator_summary
+                    WHERE aoi_id = %s AND scenario_id IS NULL AND indicator_id = %s
+                    """,
+                    (aoi_id, indicator_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, aoi_id, scenario_id, indicator_id, value,
+                           aggregation_note, status, computed_at
+                    FROM curated_geo.aoi_indicator_summary
+                    WHERE aoi_id = %s AND scenario_id = %s AND indicator_id = %s
+                    """,
+                    (aoi_id, scenario_id, indicator_id),
+                )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_summaries(
+        self,
+        *,
+        aoi_id: str,
+        scenario_id: str | None = None,
+        only_current: bool = True,
+    ) -> list[dict]:
+        conditions = ["aoi_id = %s"]
+        params: list = [aoi_id]
+        if scenario_id is None:
+            conditions.append("scenario_id IS NULL")
+        else:
+            conditions.append("scenario_id = %s")
+            params.append(scenario_id)
+        if only_current:
+            conditions.append("status = 'current'")
+
+        where_clause = " AND ".join(conditions)
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT id, aoi_id, scenario_id, indicator_id, value,
+                       aggregation_note, status, computed_at
+                FROM curated_geo.aoi_indicator_summary
+                WHERE {where_clause}
+                ORDER BY computed_at DESC
+                """,
+                params,
+            )
+            return [dict(row) for row in cur.fetchall()]

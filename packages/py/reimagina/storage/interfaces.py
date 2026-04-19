@@ -186,6 +186,35 @@ class ExploreReader(Protocol):
     def list_serving_stats(self) -> list[dict[str, Any]]: ...
 
 
+class AOISummaryRepository(Protocol):
+    def upsert_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        value: float | None,
+        scenario_id: str | None = None,
+        aggregation_note: str | None = None,
+        status: str = "current",
+    ) -> str: ...
+
+    def get_summary(
+        self,
+        *,
+        aoi_id: str,
+        indicator_id: str,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def list_summaries(
+        self,
+        *,
+        aoi_id: str,
+        scenario_id: str | None = None,
+        only_current: bool = True,
+    ) -> list[dict[str, Any]]: ...
+
+
 class TileSnapshotRepository(Protocol):
     def register_snapshot(
         self,
@@ -231,6 +260,8 @@ class StorageBackend(Protocol):
     def explore_reader(self) -> ExploreReader: ...
 
     def tile_repo(self) -> TileSnapshotRepository: ...
+
+    def aoi_summary_repo(self) -> AOISummaryRepository: ...
 
 
 @dataclass(frozen=True)

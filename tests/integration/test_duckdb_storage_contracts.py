@@ -736,3 +736,87 @@ def test_duckdb_overlap_compute_aoi_scoping(tmp_path):
         # Unscoped run should find both pairs.
         unscoped = overlap_jobs.compute_all_pairs(conn)
         assert unscoped["rows_total"] == 2
+
+
+def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
+    """AOISummaryRepository upserts are idempotent; serving_geo.aoi_summary_v
+    returns only status='current' rows.
+    """
+    app_path = tmp_path / "reimagina_aoi_summary.duckdb"
+    test_path = tmp_path / "reimagina_aoi_summary_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        project_id = str(uuid4())
+        conn.execute(
+            "INSERT INTO app_core.project (id, name) VALUES (?, ?)",
+            [project_id, "aoi-summary-test"],
+        )
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name="summary-aoi",
+            geometry_wkt="POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))",
+        )
+
+        summary_repo = backend_for_connection(conn).aoi_summary_repo()
+        indicator_id = str(uuid4())
+
+        first_id = summary_repo.upsert_summary(
+            aoi_id=aoi_id, indicator_id=indicator_id, value=1.0,
+            aggregation_note="seed",
+        )
+        # Re-upsert without scenario → same row id, updated value + note.
+        second_id = summary_repo.upsert_summary(
+            aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+            aggregation_note="reran",
+        )
+        assert first_id == second_id
+
+        current = summary_repo.get_summary(aoi_id=aoi_id, indicator_id=indicator_id)
+        assert current is not None
+        assert current["value"] == 2.0
+        assert current["aggregation_note"] == "reran"
+        assert current["status"] == "current"
+
+        # Scenario-scoped row is independent.
+        scenario_id = str(uuid4())
+        scenario_summary_id = summary_repo.upsert_summary(
+            aoi_id=aoi_id, indicator_id=indicator_id, value=5.0,
+            scenario_id=scenario_id,
+        )
+        assert scenario_summary_id != first_id
+
+        # list_summaries filters by scenario scope and status.
+        base_rows = summary_repo.list_summaries(aoi_id=aoi_id)
+        assert [r["value"] for r in base_rows] == [2.0]
+
+        scenario_rows = summary_repo.list_summaries(aoi_id=aoi_id, scenario_id=scenario_id)
+        assert [r["value"] for r in scenario_rows] == [5.0]
+
+        # Stale rows fall out of the serving view + default list.
+        summary_repo.upsert_summary(
+            aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+            status="stale",
+        )
+        assert summary_repo.list_summaries(aoi_id=aoi_id) == []
+        assert summary_repo.list_summaries(aoi_id=aoi_id, only_current=False) != []
+
+        serving_rows = conn.execute(
+            """
+            SELECT CAST(indicator_id AS VARCHAR), value
+            FROM serving_geo.aoi_summary_v
+            WHERE aoi_id = ?
+            """,
+            [aoi_id],
+        ).fetchall()
+        # Only the scenario-scoped row remains 'current'.
+        assert serving_rows == [(indicator_id, 5.0)]
+
+        # New explore layer rows show up.
+        layers = conn.execute(
+            "SELECT schema_name, object_name FROM explore.layer_catalog_v"
+        ).fetchall()
+        names = {(row[0], row[1]) for row in layers}
+        assert ("curated_geo", "aoi_indicator_summary") in names
+        assert ("serving_geo", "aoi_summary_v") in names

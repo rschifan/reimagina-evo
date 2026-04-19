@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .repositories import (
     PostgresAOIRepository,
+    PostgresAOISummaryRepository,
     PostgresExploreReader,
     PostgresFeatureRepository,
     PostgresFileAssetRepository,
@@ -67,3 +68,6 @@ class PostgresStorageBackend:
 
     def tile_repo(self) -> PostgresTileSnapshotRepository:
         return PostgresTileSnapshotRepository(self.connection)
+
+    def aoi_summary_repo(self) -> PostgresAOISummaryRepository:
+        return PostgresAOISummaryRepository(self.connection)
