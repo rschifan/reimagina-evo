@@ -1567,3 +1567,45 @@ class PostgresIndicatorResultRepository:
                 {**row, "geometry_wkb": bytes(row["geometry_wkb"])}
                 for row in cur.fetchall()
             ]
+
+    def value_stats(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+    ) -> dict:
+        clauses = ["indicator_slug = %s", "status = 'current'", "value_numeric IS NOT NULL"]
+        params: list = [indicator_slug]
+        if scenario_id is None:
+            clauses.append("scenario_id IS NULL")
+        else:
+            clauses.append("scenario_id = %s")
+            params.append(scenario_id)
+        if feature_type is not None:
+            clauses.append("feature_type = %s")
+            params.append(feature_type)
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  COUNT(*)::bigint                                            AS count,
+                  MIN(value_numeric)                                          AS min,
+                  percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric) AS p05,
+                  percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric) AS p50,
+                  percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric) AS p95,
+                  MAX(value_numeric)                                          AS max
+                FROM curated_geo.indicator_result
+                WHERE {' AND '.join(clauses)}
+                """,
+                params,
+            )
+            count, vmin, p05, p50, p95, vmax = cur.fetchone()
+        return {
+            "count": int(count),
+            "min": float(vmin) if vmin is not None else None,
+            "p05": float(p05) if p05 is not None else None,
+            "p50": float(p50) if p50 is not None else None,
+            "p95": float(p95) if p95 is not None else None,
+            "max": float(vmax) if vmax is not None else None,
+        }

@@ -75,8 +75,35 @@ export class ApiError extends Error {
   }
 }
 
+export interface IndicatorValueStats {
+  slug: string;
+  scenario_id: string | null;
+  feature_type: string | null;
+  count: number;
+  min: number | null;
+  p05: number | null;
+  p50: number | null;
+  p95: number | null;
+  max: number | null;
+}
+
+
 export function listIndicators(): Promise<IndicatorSummary[]> {
   return jsonRequest<IndicatorSummary[]>("/indicators");
+}
+
+
+export function getIndicatorStats(
+  slug: string,
+  options: { scenario_id?: string; feature_type?: string } = {},
+): Promise<IndicatorValueStats> {
+  const params = new URLSearchParams();
+  if (options.scenario_id) params.set("scenario_id", options.scenario_id);
+  if (options.feature_type) params.set("feature_type", options.feature_type);
+  const qs = params.toString();
+  return jsonRequest<IndicatorValueStats>(
+    `/indicators/${encodeURIComponent(slug)}/stats${qs ? `?${qs}` : ""}`,
+  );
 }
 
 export function listTileSources(): Promise<TileSource[]> {

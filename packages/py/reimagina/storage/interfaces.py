@@ -338,6 +338,22 @@ class IndicatorResultRepository(Protocol):
         """
         ...
 
+    def value_stats(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Summary statistics for a numeric indicator's current values.
+
+        Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`
+        (all `None` when there are no rows). Intended to drive the
+        frontend's choropleth colour ramp from the real distribution
+        rather than the catalog's safety bounds.
+        """
+        ...
+
 
 class AOISummaryRepository(Protocol):
     def upsert_summary(

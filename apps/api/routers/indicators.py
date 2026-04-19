@@ -101,6 +101,48 @@ def list_values(
     return [IndicatorValue(**_value_row_to_dict(row)) for row in rows[:limit]]
 
 
+class IndicatorValueStats(BaseModel):
+    """Summary stats of an indicator's current numeric values.
+
+    Intended to drive a visualisation colour ramp off the observed data
+    distribution — not the catalog's `valid_min` / `valid_max` safety
+    cap, which is usually orders of magnitude wider than the real range
+    and washes the map white.
+    """
+
+    slug: str
+    scenario_id: str | None = None
+    feature_type: str | None = None
+    count: int
+    min: float | None = None
+    p05: float | None = None
+    p50: float | None = None
+    p95: float | None = None
+    max: float | None = None
+
+
+@router.get("/{slug}/stats", response_model=IndicatorValueStats)
+def get_values_stats(
+    slug: str,
+    scenario_id: str | None = Query(default=None),
+    feature_type: str | None = Query(default=None),
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> IndicatorValueStats:
+    """Return count + percentiles for an indicator's current numeric values."""
+    _ensure_indicator_exists(conn, slug)
+    stats = get_backend(conn).indicator_result_repo().value_stats(
+        indicator_slug=slug,
+        scenario_id=scenario_id,
+        feature_type=feature_type,
+    )
+    return IndicatorValueStats(
+        slug=slug,
+        scenario_id=scenario_id,
+        feature_type=feature_type,
+        **stats,
+    )
+
+
 @router.get("/{slug}/values.csv", response_class=StreamingResponse)
 def download_values_csv(
     slug: str,
