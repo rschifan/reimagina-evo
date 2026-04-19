@@ -1,0 +1,40 @@
+{
+  "layers": [
+    {
+      "layer_id": "admin_reference",
+      "logical_name": "Admin Reference",
+      "description": "Stable administrative and context features exported as PMTiles snapshots.",
+      "source_mode": "pmtiles_snapshot",
+      "implemented": true,
+      "source_relation": "serving_geo.admin_v",
+      "tile_layer_name": "admin_reference",
+      "tileset_type": "overlay",
+      "minzoom": 0,
+      "maxzoom": 8
+    },
+    {
+      "layer_id": "baseline_live",
+      "logical_name": "Baseline Live",
+      "description": "Live baseline MVT tiles served by Martin from serving_geo.get_tile().",
+      "source_mode": "live_mvt",
+      "implemented": true,
+      "query_params": {}
+    },
+    {
+      "layer_id": "scenario_overlay",
+      "logical_name": "Scenario Overlay",
+      "description": "Reserved live tile source for scenario-sensitive overlays; stays dynamic in v1.",
+      "source_mode": "live_mvt",
+      "implemented": false,
+      "query_params": {}
+    },
+    {
+      "layer_id": "indicator_overlay",
+      "logical_name": "Indicator Overlay",
+      "description": "Reserved live tile source for indicator overlays; snapshot export is not allowed in v1.",
+      "source_mode": "live_mvt",
+      "implemented": false,
+      "query_params": {}
+    }
+  ]
+}

@@ -182,6 +182,24 @@ class ExploreReader(Protocol):
     def list_serving_stats(self) -> list[dict[str, Any]]: ...
 
 
+class TileSnapshotRepository(Protocol):
+    def register_snapshot(
+        self,
+        *,
+        layer_id: str,
+        artifact_path: str,
+        artifact_uri: str | None,
+        snapshot_version: str,
+        source_relation: str,
+        source_lineage_ref: dict[str, Any] | None = None,
+        status: str = "ready",
+    ) -> str: ...
+
+    def get_latest_snapshot(self, *, layer_id: str) -> dict[str, Any] | None: ...
+
+    def list_snapshots(self, *, layer_id: str | None = None) -> list[dict[str, Any]]: ...
+
+
 class StorageBackend(Protocol):
     name: str
     connection: Any
@@ -207,6 +225,8 @@ class StorageBackend(Protocol):
     def serving_reader(self) -> ServingReader: ...
 
     def explore_reader(self) -> ExploreReader: ...
+
+    def tile_repo(self) -> TileSnapshotRepository: ...
 
 
 @dataclass(frozen=True)

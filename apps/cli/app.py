@@ -39,6 +39,12 @@ from .perf import (  # noqa: E402
     run_perf_benchmarks,
     seed_observations,
 )
+from .tiles import (  # noqa: E402
+    export_tile_snapshot,
+    list_tile_snapshots,
+    list_tile_sources,
+    tile_manifest,
+)
 
 
 def create_cli() -> dict[str, str]:
@@ -203,6 +209,48 @@ def _build_parser() -> argparse.ArgumentParser:
     perf_compare.add_argument("candidate_path")
     perf_compare.set_defaults(handler=_handle_perf_compare)
 
+    tiles_parser = subparsers.add_parser(
+        "tiles",
+        help="Hybrid live-MVT and PMTiles snapshot commands",
+    )
+    tiles_subparsers = tiles_parser.add_subparsers(dest="tiles_command", required=True)
+
+    tiles_manifest = tiles_subparsers.add_parser(
+        "manifest",
+        help="Show the infrastructure-owned layer manifest for live and snapshot tile sources",
+    )
+    tiles_manifest.add_argument("--manifest-path")
+    tiles_manifest.set_defaults(handler=_handle_tiles_manifest)
+
+    tiles_export = tiles_subparsers.add_parser(
+        "export",
+        help="Build a PMTiles snapshot for a configured stable layer",
+    )
+    tiles_export.add_argument("layer_id")
+    tiles_export.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    tiles_export.add_argument("--output-dir", default="data/tiles/pmtiles")
+    tiles_export.add_argument("--snapshot-base-url", default="http://localhost:3001")
+    tiles_export.add_argument("--manifest-path")
+    tiles_export.set_defaults(handler=_handle_tiles_export)
+
+    tiles_sources = tiles_subparsers.add_parser(
+        "sources",
+        help="Resolve frontend-facing layer source configs from the manifest and snapshot registry",
+    )
+    tiles_sources.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    tiles_sources.add_argument("--live-tilejson-base-url", default="http://localhost:3000/get_tile")
+    tiles_sources.add_argument("--snapshot-base-url", default="http://localhost:3001")
+    tiles_sources.add_argument("--manifest-path")
+    tiles_sources.set_defaults(handler=_handle_tiles_sources)
+
+    tiles_snapshots = tiles_subparsers.add_parser(
+        "snapshots",
+        help="List the PMTiles snapshot registry",
+    )
+    tiles_snapshots.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    tiles_snapshots.add_argument("--layer-id")
+    tiles_snapshots.set_defaults(handler=_handle_tiles_snapshots)
+
     return parser
 
 
@@ -325,6 +373,42 @@ def _handle_perf_compare(args: argparse.Namespace) -> int:
         compare_perf_reports(
             baseline_path=args.baseline_path,
             candidate_path=args.candidate_path,
+        )
+    )
+
+
+def _handle_tiles_manifest(args: argparse.Namespace) -> int:
+    return _print(tile_manifest(manifest_path=args.manifest_path))
+
+
+def _handle_tiles_export(args: argparse.Namespace) -> int:
+    return _print(
+        export_tile_snapshot(
+            dsn=args.dsn,
+            layer_id=args.layer_id,
+            output_dir=args.output_dir,
+            snapshot_base_url=args.snapshot_base_url,
+            manifest_path=args.manifest_path,
+        )
+    )
+
+
+def _handle_tiles_sources(args: argparse.Namespace) -> int:
+    return _print(
+        list_tile_sources(
+            dsn=args.dsn,
+            live_tilejson_base_url=args.live_tilejson_base_url,
+            snapshot_base_url=args.snapshot_base_url,
+            manifest_path=args.manifest_path,
+        )
+    )
+
+
+def _handle_tiles_snapshots(args: argparse.Namespace) -> int:
+    return _print(
+        list_tile_snapshots(
+            dsn=args.dsn,
+            layer_id=args.layer_id,
         )
     )
 

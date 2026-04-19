@@ -35,6 +35,8 @@ htmlcov/
 data/local/
 data/bronze/
 data/silver/
+data/tiles/
+data/.DS_Store
 data/*.parquet
 data/*.gpkg
 data/*.geojson

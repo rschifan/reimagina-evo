@@ -964,3 +964,104 @@ class DuckDBExploreReader:
             ORDER BY stat_scope, row_count DESC, type_slug, role
             """
         )
+
+
+class DuckDBTileSnapshotRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_snapshot(
+        self,
+        *,
+        layer_id: str,
+        artifact_path: str,
+        artifact_uri: str | None,
+        snapshot_version: str,
+        source_relation: str,
+        source_lineage_ref: dict | None = None,
+        status: str = "ready",
+    ) -> str:
+        snapshot_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.tile_snapshot_registry
+              (id, layer_id, artifact_path, artifact_uri, snapshot_version, source_relation, source_lineage_ref, status)
+            VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?)
+            """,
+            [
+                snapshot_id,
+                layer_id,
+                artifact_path,
+                artifact_uri,
+                snapshot_version,
+                source_relation,
+                json.dumps(source_lineage_ref or {}),
+                status,
+            ],
+        )
+        return snapshot_id
+
+    def get_latest_snapshot(self, *, layer_id: str) -> dict | None:
+        rows = _rows_as_dicts(
+            self.connection.execute(
+                """
+                SELECT
+                  id,
+                  layer_id,
+                  artifact_path,
+                  artifact_uri,
+                  snapshot_version,
+                  source_relation,
+                  source_lineage_ref,
+                  status,
+                  created_at
+                FROM curated_geo.tile_snapshot_registry
+                WHERE layer_id = ?
+                ORDER BY created_at DESC, snapshot_version DESC
+                LIMIT 1
+                """,
+                [layer_id],
+            )
+        )
+        return rows[0] if rows else None
+
+    def list_snapshots(self, *, layer_id: str | None = None) -> list[dict]:
+        if layer_id:
+            return _rows_as_dicts(
+                self.connection.execute(
+                    """
+                    SELECT
+                      id,
+                      layer_id,
+                      artifact_path,
+                      artifact_uri,
+                      snapshot_version,
+                      source_relation,
+                      source_lineage_ref,
+                      status,
+                      created_at
+                    FROM curated_geo.tile_snapshot_registry
+                    WHERE layer_id = ?
+                    ORDER BY created_at DESC, snapshot_version DESC
+                    """,
+                    [layer_id],
+                )
+            )
+        return _rows_as_dicts(
+            self.connection.execute(
+                """
+                SELECT
+                  id,
+                  layer_id,
+                  artifact_path,
+                  artifact_uri,
+                  snapshot_version,
+                  source_relation,
+                  source_lineage_ref,
+                  status,
+                  created_at
+                FROM curated_geo.tile_snapshot_registry
+                ORDER BY created_at DESC, snapshot_version DESC
+                """
+            )
+        )

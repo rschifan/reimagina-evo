@@ -99,5 +99,17 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── PMTiles static hosting (dev only) ──────────────────────────────────────
+  # Serves exported PMTiles snapshot artifacts from the repo-local data folder.
+  # This is intentionally simple: snapshots are built by the CLI and served as
+  # static files. Martin remains responsible only for the live MVT path.
+  pmtiles_static:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ../../data/tiles/pmtiles:/usr/share/nginx/html:ro
+    ports:
+      - "3001:80"
+
 volumes:
   postgres_data:
