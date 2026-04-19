@@ -674,7 +674,13 @@ class DuckDBOverlapRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def compute_feature_overlaps(self, source_type_id: str, target_type_id: str) -> int:
+    def compute_feature_overlaps(
+        self,
+        source_type_id: str,
+        target_type_id: str,
+        *,
+        aoi_id: str | None = None,
+    ) -> int:
         import shapely.wkb
         from pyproj import Geod
 
@@ -697,6 +703,23 @@ class DuckDBOverlapRepository:
         if tgt_row is None:
             raise ValueError(f"Unknown target_type_id: {target_type_id!r}")
 
+        if aoi_id is not None:
+            aoi_row = self.connection.execute(
+                "SELECT 1 FROM curated_geo.area_of_interest WHERE CAST(id AS VARCHAR) = ?",
+                [aoi_id],
+            ).fetchone()
+            if aoi_row is None:
+                raise ValueError(f"Unknown aoi_id: {aoi_id!r}")
+
+        aoi_join_clause = (
+            " JOIN curated_geo.area_of_interest aoi"
+            "   ON CAST(aoi.id AS VARCHAR) = ?"
+            "   AND ST_Intersects(sf.geometry, aoi.geometry)"
+            if aoi_id is not None
+            else ""
+        )
+        aoi_params = [aoi_id] if aoi_id is not None else []
+
         _UPSERT_SQL = """
             INSERT INTO curated_geo.feature_overlap
               (source_feature_id, target_feature_id, overlap_basis,
@@ -715,7 +738,7 @@ class DuckDBOverlapRepository:
 
         if source_family == "polygon":
             result = self.connection.execute(
-                """
+                f"""
                 SELECT
                     CAST(sf.id AS VARCHAR),
                     CAST(tf.id AS VARCHAR),
@@ -724,10 +747,10 @@ class DuckDBOverlapRepository:
                 FROM curated_geo.feature sf
                 JOIN curated_geo.feature tf
                     ON CAST(tf.type_id AS VARCHAR) = ?
-                    AND ST_Intersects(sf.geometry, tf.geometry)
+                    AND ST_Intersects(sf.geometry, tf.geometry){aoi_join_clause}
                 WHERE CAST(sf.type_id AS VARCHAR) = ?
                 """,
-                [target_type_id, source_type_id],
+                [target_type_id, *aoi_params, source_type_id],
             )
             while True:
                 batch = result.fetchmany(_CHUNK)
@@ -748,7 +771,7 @@ class DuckDBOverlapRepository:
 
         elif source_family == "line":
             result = self.connection.execute(
-                """
+                f"""
                 SELECT
                     CAST(sf.id AS VARCHAR),
                     CAST(tf.id AS VARCHAR),
@@ -757,10 +780,10 @@ class DuckDBOverlapRepository:
                 FROM curated_geo.feature sf
                 JOIN curated_geo.feature tf
                     ON CAST(tf.type_id AS VARCHAR) = ?
-                    AND ST_Intersects(sf.geometry, tf.geometry)
+                    AND ST_Intersects(sf.geometry, tf.geometry){aoi_join_clause}
                 WHERE CAST(sf.type_id AS VARCHAR) = ?
                 """,
-                [target_type_id, source_type_id],
+                [target_type_id, *aoi_params, source_type_id],
             )
             while True:
                 batch = result.fetchmany(_CHUNK)
@@ -781,15 +804,15 @@ class DuckDBOverlapRepository:
 
         else:  # point or geometry — presence basis
             pairs = self.connection.execute(
-                """
+                f"""
                 SELECT CAST(sf.id AS VARCHAR), CAST(tf.id AS VARCHAR)
                 FROM curated_geo.feature sf
                 JOIN curated_geo.feature tf
                     ON CAST(tf.type_id AS VARCHAR) = ?
-                    AND ST_Within(sf.geometry, tf.geometry)
+                    AND ST_Within(sf.geometry, tf.geometry){aoi_join_clause}
                 WHERE CAST(sf.type_id AS VARCHAR) = ?
                 """,
-                [target_type_id, source_type_id],
+                [target_type_id, *aoi_params, source_type_id],
             ).fetchall()
             insert_rows = [(src_id, tgt_id, "presence", 1.0, 1.0, 1.0) for src_id, tgt_id in pairs]
 

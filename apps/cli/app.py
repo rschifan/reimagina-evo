@@ -39,6 +39,11 @@ from .perf import (  # noqa: E402
     run_perf_benchmarks,
     seed_observations,
 )
+from .overlap import (  # noqa: E402
+    compute_overlaps_all,
+    declare_overlap_pair,
+    list_overlap_pairs,
+)
 from .tiles import (  # noqa: E402
     export_tile_snapshot,
     list_tile_snapshots,
@@ -251,6 +256,38 @@ def _build_parser() -> argparse.ArgumentParser:
     tiles_snapshots.add_argument("--layer-id")
     tiles_snapshots.set_defaults(handler=_handle_tiles_snapshots)
 
+    overlap_parser = subparsers.add_parser(
+        "overlap",
+        help="Feature-to-feature overlap pair declaration and compute",
+    )
+    overlap_subparsers = overlap_parser.add_subparsers(dest="overlap_command", required=True)
+
+    overlap_declare = overlap_subparsers.add_parser(
+        "declare-pair",
+        help="Register a source→target type pair in feature_overlap_type_pair",
+    )
+    overlap_declare.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    overlap_declare.add_argument("--source-context", required=True)
+    overlap_declare.add_argument("--source-slug", required=True)
+    overlap_declare.add_argument("--target-context", required=True)
+    overlap_declare.add_argument("--target-slug", required=True)
+    overlap_declare.set_defaults(handler=_handle_overlap_declare)
+
+    overlap_list = overlap_subparsers.add_parser(
+        "list-pairs",
+        help="List declared type-pair rows",
+    )
+    overlap_list.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    overlap_list.set_defaults(handler=_handle_overlap_list)
+
+    overlap_compute = overlap_subparsers.add_parser(
+        "compute-all",
+        help="Compute overlaps for every declared pair (AOI-scoped recommended)",
+    )
+    overlap_compute.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    overlap_compute.add_argument("--aoi-id")
+    overlap_compute.set_defaults(handler=_handle_overlap_compute_all)
+
     return parser
 
 
@@ -411,6 +448,26 @@ def _handle_tiles_snapshots(args: argparse.Namespace) -> int:
             layer_id=args.layer_id,
         )
     )
+
+
+def _handle_overlap_declare(args: argparse.Namespace) -> int:
+    return _print(
+        declare_overlap_pair(
+            dsn=args.dsn,
+            source_context=args.source_context,
+            source_slug=args.source_slug,
+            target_context=args.target_context,
+            target_slug=args.target_slug,
+        )
+    )
+
+
+def _handle_overlap_list(args: argparse.Namespace) -> int:
+    return _print(list_overlap_pairs(dsn=args.dsn))
+
+
+def _handle_overlap_compute_all(args: argparse.Namespace) -> int:
+    return _print(compute_overlaps_all(dsn=args.dsn, aoi_id=args.aoi_id))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -249,3 +249,48 @@ def test_cli_tiles_snapshots_delegates(monkeypatch, capsys):
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["snapshots"][0]["layer_id"] == "admin_reference"
+
+
+def test_cli_overlap_declare_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.declare_overlap_pair",
+        lambda **kwargs: {"pair": {"source": "MEX:lot", "target": "MEX:block"}, **kwargs},
+    )
+
+    exit_code = main([
+        "overlap", "declare-pair",
+        "--source-context", "MEX", "--source-slug", "lot",
+        "--target-context", "MEX", "--target-slug", "block",
+    ])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pair"]["source"] == "MEX:lot"
+    assert payload["source_slug"] == "lot"
+
+
+def test_cli_overlap_compute_all_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.compute_overlaps_all",
+        lambda **kwargs: {"rows_total": 42, **kwargs},
+    )
+
+    exit_code = main(["overlap", "compute-all", "--aoi-id", "abc"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rows_total"] == 42
+    assert payload["aoi_id"] == "abc"
+
+
+def test_cli_overlap_list_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.list_overlap_pairs",
+        lambda **kwargs: {"pairs": [{"source": "MEX:lot", "target": "MEX:block"}], **kwargs},
+    )
+
+    exit_code = main(["overlap", "list-pairs"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pairs"][0]["target"] == "MEX:block"
