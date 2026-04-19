@@ -251,6 +251,19 @@ def test_cli_tiles_snapshots_delegates(monkeypatch, capsys):
     assert payload["snapshots"][0]["layer_id"] == "admin_reference"
 
 
+def test_cli_feat_seed_types_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.seed_types",
+        lambda **kwargs: {"seeded_count": 15, **kwargs},
+    )
+
+    exit_code = main(["feat", "seed-types"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["seeded_count"] == 15
+
+
 def test_cli_overlap_declare_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.declare_overlap_pair",

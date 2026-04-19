@@ -39,6 +39,7 @@ from .perf import (  # noqa: E402
     run_perf_benchmarks,
     seed_observations,
 )
+from .feat import seed_types  # noqa: E402
 from .overlap import (  # noqa: E402
     compute_overlaps_all,
     declare_overlap_pair,
@@ -256,6 +257,18 @@ def _build_parser() -> argparse.ArgumentParser:
     tiles_snapshots.add_argument("--layer-id")
     tiles_snapshots.set_defaults(handler=_handle_tiles_snapshots)
 
+    feat_parser = subparsers.add_parser(
+        "feat",
+        help="Canonical feature_type_catalog operations",
+    )
+    feat_subparsers = feat_parser.add_subparsers(dest="feat_command", required=True)
+    feat_seed = feat_subparsers.add_parser(
+        "seed-types",
+        help="Seed the MEX + global feature types (idempotent)",
+    )
+    feat_seed.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    feat_seed.set_defaults(handler=_handle_feat_seed_types)
+
     overlap_parser = subparsers.add_parser(
         "overlap",
         help="Feature-to-feature overlap pair declaration and compute",
@@ -448,6 +461,10 @@ def _handle_tiles_snapshots(args: argparse.Namespace) -> int:
             layer_id=args.layer_id,
         )
     )
+
+
+def _handle_feat_seed_types(args: argparse.Namespace) -> int:
+    return _print(seed_types(dsn=args.dsn))
 
 
 def _handle_overlap_declare(args: argparse.Namespace) -> int:
