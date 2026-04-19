@@ -10,8 +10,9 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 4. `JOB_LAYER.md` — async execution, worker contract, job lifecycle
 5. `INDICATORS_LAYER.md` — indicator catalog, dependencies, results
 6. `TILE_SERVING.md` — live MVT vs PMTiles snapshot serving rules
-7. `PERFORMANCE.md` — benchmark corpus, observability, performance gates
-8. `TESTING.md` — pgTAP contract tests for the whole design
+7. `API.md` — read-side HTTP surface + download formats
+8. `PERFORMANCE.md` — benchmark corpus, observability, performance gates
+9. `TESTING.md` — pgTAP contract tests for the whole design
 
 ## The six major flows
 
@@ -38,6 +39,7 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 | `JOB_LAYER.md` | Queue model, worker lifecycle, execution provenance |
 | `INDICATORS_LAYER.md` | Indicator metadata, dependency graph, computed results |
 | `TILE_SERVING.md` | Live MVT serving, PMTiles snapshots, tile-layer classification |
+| `API.md` | Read-side HTTP surface (FastAPI routes, download formats, ops knobs) |
 | `PERFORMANCE.md` | Production performance contract, benchmarks, observability |
 | `TESTING.md` | Contract tests for invariants, serving behavior, and performance expectations |
 

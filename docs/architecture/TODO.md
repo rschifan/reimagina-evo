@@ -23,7 +23,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
-| T2-8 | SSE for job status | **Not built** — needs API + LISTEN/NOTIFY |
+| T2-8 | SSE for job status | **Not built** — FastAPI API scaffold shipped (see `API.md`); LISTEN/NOTIFY + SSE endpoint still pending |
 | T2-9 | Row-Level Security | **Done** — r011 |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
 | T3-11 | STAC alignment for `file_asset` | **Not built** — low priority |
