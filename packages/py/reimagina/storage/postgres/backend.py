@@ -9,6 +9,7 @@ from .repositories import (
     PostgresFileAssetRepository,
     PostgresObservationRepository,
     PostgresOverlapRepository,
+    PostgresOverlapTypePairRepository,
     PostgresServingReader,
     PostgresSourceCatalogRepository,
     PostgresTileSnapshotRepository,
@@ -59,6 +60,9 @@ class PostgresStorageBackend:
 
     def overlap_repo(self) -> PostgresOverlapRepository:
         return PostgresOverlapRepository(self.connection)
+
+    def overlap_type_pair_repo(self) -> PostgresOverlapTypePairRepository:
+        return PostgresOverlapTypePairRepository(self.connection)
 
     def serving_reader(self) -> PostgresServingReader:
         return PostgresServingReader(self.connection)

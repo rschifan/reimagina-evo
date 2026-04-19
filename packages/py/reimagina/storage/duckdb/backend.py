@@ -10,6 +10,7 @@ from .repositories import (
     DuckDBFileAssetRepository,
     DuckDBObservationRepository,
     DuckDBOverlapRepository,
+    DuckDBOverlapTypePairRepository,
     DuckDBServingReader,
     DuckDBSourceCatalogRepository,
     DuckDBTileSnapshotRepository,
@@ -70,6 +71,9 @@ class DuckDBStorageBackend:
 
     def overlap_repo(self) -> DuckDBOverlapRepository:
         return DuckDBOverlapRepository(self.connection)
+
+    def overlap_type_pair_repo(self) -> DuckDBOverlapTypePairRepository:
+        return DuckDBOverlapTypePairRepository(self.connection)
 
     def serving_reader(self) -> DuckDBServingReader:
         return DuckDBServingReader(self.connection)

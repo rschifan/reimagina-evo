@@ -1,7 +1,6 @@
 """PMTiles snapshot export and frontend-facing layer source resolution."""
 from __future__ import annotations
 
-import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path

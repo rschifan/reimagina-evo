@@ -822,6 +822,54 @@ class DuckDBOverlapRepository:
         return len(insert_rows)
 
 
+class DuckDBOverlapTypePairRepository:
+    """Declared (source_type, target_type) pairs on DuckDB."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def upsert_pair(self, source_type_id: str, target_type_id: str) -> str:
+        existing = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR)
+            FROM curated_geo.feature_overlap_type_pair
+            WHERE source_type_id = ? AND target_type_id = ?
+            """,
+            [source_type_id, target_type_id],
+        ).fetchone()
+        if existing is not None:
+            return existing[0]
+
+        pair_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.feature_overlap_type_pair
+              (id, source_type_id, target_type_id)
+            VALUES (?, ?, ?)
+            """,
+            [pair_id, source_type_id, target_type_id],
+        )
+        return pair_id
+
+    def list_pairs(self) -> list[dict]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                CAST(p.id AS VARCHAR)             AS pair_id,
+                CAST(p.source_type_id AS VARCHAR) AS source_type_id,
+                sc.context || ':' || sc.type_slug AS source,
+                CAST(p.target_type_id AS VARCHAR) AS target_type_id,
+                tc.context || ':' || tc.type_slug AS target
+            FROM curated_geo.feature_overlap_type_pair p
+            JOIN curated_geo.feature_type_catalog sc ON sc.id = p.source_type_id
+            JOIN curated_geo.feature_type_catalog tc ON tc.id = p.target_type_id
+            ORDER BY sc.context, sc.type_slug, tc.context, tc.type_slug
+            """
+        ).fetchall()
+        cols = ("pair_id", "source_type_id", "source", "target_type_id", "target")
+        return [dict(zip(cols, row)) for row in rows]
+
+
 class DuckDBServingReader:
     def __init__(self, connection):
         self.connection = connection
