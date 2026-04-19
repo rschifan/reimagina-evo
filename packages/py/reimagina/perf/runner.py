@@ -156,8 +156,15 @@ def _get_aoi_id(conn, *, logical_name: str) -> str:
 
 
 def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[object]:
-    extent = _extent_bounds(conn)
     tier = DATASET_TIERS[dataset_tier]
+
+    # Benchmarks that work off the real INEGI geometry resolve their own
+    # references (AOI + type ids) and should not require the generic
+    # _extent_bounds probe, which fails when synthetic fixture data is absent.
+    if benchmark_name == "overlap_block_to_ageb_cuauhtemoc":
+        return _build_overlap_block_ageb_cuauhtemoc_params(conn)
+
+    extent = _extent_bounds(conn)
     if benchmark_name == "bbox_features_small":
         bounds = _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
         return [*bounds, *bounds]
@@ -180,6 +187,54 @@ def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[objec
     if benchmark_name == "aoi_membership_read":
         return [_get_aoi_id(conn, logical_name="bbox_dense")]
     raise ValueError(f"Unknown benchmark name: {benchmark_name!r}")
+
+
+class OverlapBenchmarkDataMissing(RuntimeError):
+    """Raised when the overlap benchmark can't find the CDMX/Cuauhtémoc prerequisites."""
+
+
+def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
+    """Resolve (target_type_id, aoi_id, source_type_id) for the Cuauhtémoc overlap benchmark.
+
+    Returns a list suitable for the _OVERLAP_DRYRUN_SQL placeholder order. Raises
+    OverlapBenchmarkDataMissing with a clear message when the CDMX bootstrap
+    has not been run, so the runner can decide between skip and fail.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM curated_geo.feature_type_catalog WHERE context = 'MEX' AND type_slug = 'block'"
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise OverlapBenchmarkDataMissing(
+                "MEX:block feature type not found. Run `reimagina-cli feat seed-types` first."
+            )
+        block_type_id = row[0]
+
+        cur.execute(
+            "SELECT id FROM curated_geo.feature_type_catalog WHERE context = 'MEX' AND type_slug = 'ageb'"
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise OverlapBenchmarkDataMissing(
+                "MEX:ageb feature type not found. Run `reimagina-cli feat seed-types` first."
+            )
+        ageb_type_id = row[0]
+
+        cur.execute(
+            "SELECT id FROM curated_geo.area_of_interest WHERE name = %s",
+            ("Cuauhtémoc",),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise OverlapBenchmarkDataMissing(
+                "AOI 'Cuauhtémoc' not found. Run `reimagina-cli cdmx bootstrap` followed by "
+                "`reimagina-cli cdmx aoi-from-alcaldia --cve-mun 015 --name Cuauhtémoc` first."
+            )
+        aoi_id = row[0]
+
+    # SQL placeholder order: target_type_id, aoi_id, source_type_id.
+    return [ageb_type_id, aoi_id, block_type_id]
 
 
 def _percentile(values: list[float], percentile: float) -> float:
