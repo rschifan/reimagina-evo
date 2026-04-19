@@ -5,10 +5,34 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+from pyproj import Transformer
+from shapely.ops import transform as shapely_transform
 from shapely.validation import make_valid
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 SILVER_DIR = Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "silver"
+
+
+def _reproject_to_4326(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Reproject to EPSG:4326.
+
+    pyproj 3.7.x's vectorised transform path raises a NumPy ndim>0 scalar
+    conversion DeprecationWarning when it receives a length-1 array, which
+    geopandas hands it for single-geometry GeoDataFrames. Per-geometry
+    shapely.ops.transform uses the scalar pyproj API and hits no such
+    deprecation. We dispatch on len(gdf) == 1 so real-world loads stay on
+    the fast vectorised path. See https://github.com/pyproj4/pyproj/issues
+    for upstream progress; drop this branch once pyproj ships the fix.
+    """
+    if len(gdf) == 1:
+        transformer = Transformer.from_crs(gdf.crs, "EPSG:4326", always_xy=True)
+        reprojected = gdf.copy()
+        reprojected["geometry"] = reprojected["geometry"].apply(
+            lambda g: shapely_transform(transformer.transform, g) if g is not None else g
+        )
+        reprojected.set_crs("EPSG:4326", inplace=True, allow_override=True)
+        return reprojected
+    return gdf.to_crs(epsg=4326)
 
 
 def clean_vector(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -23,13 +47,21 @@ def clean_vector(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if gdf.crs is None:
         raise ValueError("GeoDataFrame has no CRS set — cannot clean")
     if gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs(epsg=4326)
+        gdf = _reproject_to_4326(gdf)
 
     gdf = gdf.copy()
     gdf["geometry"] = gdf["geometry"].apply(
         lambda g: make_valid(g) if g is not None and not g.is_valid else g
     )
-    gdf = gdf[gdf["geometry"].notna() & ~gdf["geometry"].is_empty].reset_index(drop=True)
+    # Filter nulls and empties via pandas operators instead of GeoSeries.notna,
+    # which geopandas 0.14+ emits an informational UserWarning on whenever any
+    # empty geometries are present in the series (even when the caller also
+    # combines the mask with ~is_empty, as we do). pd.notna operates on the
+    # underlying object array and bypasses the GeoSeries-specific warning
+    # without changing semantics.
+    geom = gdf["geometry"]
+    keep_mask = pd.notna(geom) & ~geom.is_empty
+    gdf = gdf[keep_mask].reset_index(drop=True)
     return gdf
 
 
