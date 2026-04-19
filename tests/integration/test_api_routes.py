@@ -1,0 +1,177 @@
+"""Integration tests for the reimagina read-side API.
+
+Every test reuses the shared `conn` fixture from tests/conftest.py (the
+rollback-on-teardown Postgres connection), overrides FastAPI's database
+dependency so route handlers see the same in-flight transaction, seeds the
+catalog + a tiny fixture using existing helpers, and asserts the HTTP
+response shape.
+
+No real data is committed; every test rolls back cleanly.
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from apps.api.app import create_app
+from apps.api.deps import get_db_conn
+
+from reimagina.data import aoi, feature as feat
+from reimagina.indicators.catalog import seed_catalog
+from reimagina.indicators.compactness import compute_block_compactness
+
+
+@pytest.fixture
+def client(conn):
+    """FastAPI TestClient wired to reuse the per-test connection.
+
+    The API dep normally opens its own psycopg2 connection; here we pin it
+    to the transaction the test is already using so seed data is visible
+    to route handlers and nothing committed leaks to the DB.
+    """
+    app = create_app()
+
+    def _override_conn():
+        yield conn
+
+    app.dependency_overrides[get_db_conn] = _override_conn
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def seeded_block_with_compactness(conn):
+    """Seed catalog + one MEX:block with a computed compactness indicator.
+
+    Returns a dict with feature_id (+ slug) so tests can cross-check values.
+    """
+    from tests.integration.test_data_layer_contracts import (
+        _insert_feature, _register_source, _start_run,
+    )
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="api_route_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    block_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="api-blk-1",
+        geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
+    )
+    compute_block_compactness(conn, code_version="test")
+    return {"block_id": block_id, "slug": "urban_form_block_compactness"}
+
+
+def test_health_reports_db_reachable(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "db": "reachable"}
+
+
+def test_list_indicators_returns_seeded_catalog(client, conn):
+    seed_catalog(conn)
+    response = client.get("/indicators")
+    assert response.status_code == 200
+    payload = response.json()
+    slugs = {row["slug"] for row in payload}
+    assert "urban_form_block_compactness" in slugs
+    assert "urban_form_block_building_density" in slugs
+
+    # Numeric bounds and aggregation method make it back through the schema.
+    compactness = next(r for r in payload if r["slug"] == "urban_form_block_compactness")
+    assert compactness["unit"] == "ratio_0_1"
+    assert compactness["valid_max"] == 1.0
+    assert compactness["aggregation_method"] == "weighted_mean"
+    assert "block" in compactness["applies_to"]
+
+
+def test_get_indicator_404s_on_unknown_slug(client):
+    response = client.get("/indicators/not_a_real_indicator")
+    assert response.status_code == 404
+
+
+def test_list_values_returns_measured_row(client, seeded_block_with_compactness):
+    response = client.get(
+        f"/indicators/{seeded_block_with_compactness['slug']}/values?limit=10"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    row = payload[0]
+    assert row["feature_id"] == seeded_block_with_compactness["block_id"]
+    assert row["indicator_slug"] == "urban_form_block_compactness"
+    assert row["feature_type"] == "block"
+    assert row["quality_flag"] == "measured"
+    assert 0.0 <= row["value_numeric"] <= 1.0
+    assert row["unit"] == "ratio_0_1"
+
+
+def test_list_values_404s_on_unknown_slug(client, conn):
+    seed_catalog(conn)
+    response = client.get("/indicators/not_a_real_indicator/values")
+    assert response.status_code == 404
+
+
+def test_list_aois_returns_inserted_row(client, conn):
+    from tests.integration.test_data_layer_contracts import _insert_project
+    project_id = _insert_project(conn, name="API test project")
+    aoi.create_aoi(
+        conn,
+        project_id=project_id,
+        name="API test AOI",
+        geometry_wkt="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+    )
+
+    response = client.get("/aois")
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(row["name"] == "API test AOI" for row in payload)
+
+
+def test_aoi_summaries_404s_on_unknown_aoi(client):
+    response = client.get("/aois/00000000-0000-0000-0000-000000000000/summaries")
+    assert response.status_code == 404
+
+
+def test_features_endpoint_returns_paginated_rows(client, conn):
+    from tests.integration.test_data_layer_contracts import (
+        _insert_feature, _register_source, _start_run,
+    )
+    source_id = _register_source(
+        conn, name="api_features_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    for i in range(3):
+        _insert_feature(
+            conn,
+            type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+            dataset_version="v1", source_record_ref=f"pg-{i}",
+            geometry_wkt=f"POLYGON(({i} {i}, {i + 1} {i}, {i + 1} {i + 1}, {i} {i + 1}, {i} {i}))",
+        )
+
+    response = client.get("/features?type_slug=block&limit=2")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["features"]) == 2
+    # Every row back is a block.
+    assert all(f["type_slug"] == "block" for f in payload["features"])
+
+
+def test_tile_sources_returns_manifest(client):
+    response = client.get("/tile-sources")
+    assert response.status_code == 200
+    payload = response.json()
+    layer_ids = {row["layer_id"] for row in payload}
+    # Shipped layers from infra/tiles/layers.json.
+    assert "baseline_live" in layer_ids
+    assert "admin_reference" in layer_ids
+    # Each row must have a source_config the frontend can consume.
+    for row in payload:
+        assert "source_mode" in row
+        assert "source_config" in row
