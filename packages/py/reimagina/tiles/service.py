@@ -50,8 +50,43 @@ def _layer_query(layer: TileLayerDefinition) -> str:
     )
 
 
+class _BenignGdalQuirk:
+    """Substrings in ogr2ogr stderr that indicate a benign, post-write failure.
+
+    The PMTiles driver sometimes invokes GDAL's SQLite dialect for an optional
+    post-write step; macOS GDAL builds frequently ship without that dialect
+    compiled in, so the subprocess exits non-zero even though the artifact is
+    fully written. We don't want that to fail the whole export when we can see
+    the artifact on disk and the only complaint is this known-benign message.
+    """
+
+    SQLITE_DIALECT_MISSING = "OGR2SQLITE_Setup"
+
+
 def _run_export_command(command: list[str]) -> None:
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    """Run ogr2ogr and tolerate known-benign post-write quirks.
+
+    If ogr2ogr exits non-zero but the artifact file exists with a non-trivial
+    size AND the stderr matches a known-benign pattern, treat it as success
+    and move on. Any other non-zero exit re-raises the CalledProcessError.
+    """
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        return
+    except subprocess.CalledProcessError as exc:
+        # Command layout: [..., "-f", "PMTiles", <artifact_path>, ...]. Pull the
+        # artifact path out by index to stay driver-agnostic on argument order.
+        artifact_path: Path | None = None
+        if "-f" in command:
+            fmt_idx = command.index("-f")
+            if fmt_idx + 2 < len(command):
+                artifact_path = Path(command[fmt_idx + 2])
+        stderr = exc.stderr or ""
+        benign = _BenignGdalQuirk.SQLITE_DIALECT_MISSING in stderr
+        has_artifact = artifact_path is not None and artifact_path.exists() and artifact_path.stat().st_size > 0
+        if benign and has_artifact:
+            return
+        raise
 
 
 def _latest_lineage_marker(conn) -> dict[str, str | None]:
