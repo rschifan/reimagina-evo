@@ -29,7 +29,10 @@ Read the architecture docs in this order:
 - `reimagina.db`: connection and migration helpers
 - `reimagina.data`: canonical data-layer logic
 - `reimagina.pipeline`: bronze/silver/curated ingestion
-- `reimagina.scenarios`, `reimagina.indicators`, `reimagina.jobs`: reserved next-layer modules
+- `reimagina.storage`: backend-agnostic storage Protocols + DuckDB/Postgres implementations
+- `reimagina.tiles`: PMTiles snapshot + live MVT manifest helpers
+- `reimagina.jobs`: async job orchestration (overlap computation, rollup aggregation)
+- `reimagina.scenarios`, `reimagina.indicators`: reserved next-layer modules
 
 Rule: app code may import `reimagina.*`; domain packages must not import app code.
 
@@ -87,6 +90,12 @@ Current `explore` surface:
 - `explore.source_runs_v`
 - `explore.feature_type_stats_v`
 - `explore.serving_stats_v`
+
+Current `serving_geo` read surface (what API/workers consume):
+
+- `serving_geo.feature_v` + role/type projections (`admin_v`, `blocks`, …)
+- `serving_geo.get_tile()` (Martin-backed MVT path)
+- `serving_geo.aoi_summary_v` (cached AOI-level indicator values; rows appear once the Layer 2 worker lands)
 
 Inspection workflow:
 

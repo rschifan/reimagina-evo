@@ -58,6 +58,19 @@ python -m apps.cli.app explore layers
 python -m apps.cli.app explore sources
 python -m apps.cli.app explore feature-stats
 python -m apps.cli.app explore serving-stats
+
+# Tile snapshots and live-MVT source resolution
+python -m apps.cli.app tiles manifest
+python -m apps.cli.app tiles snapshots
+python -m apps.cli.app tiles sources
+
+# Overlap pair declaration and compute
+python -m apps.cli.app feat seed-types
+python -m apps.cli.app overlap declare-pair \
+    --source-context MEX --source-slug lot \
+    --target-context MEX --target-slug block
+python -m apps.cli.app overlap list-pairs
+python -m apps.cli.app overlap compute-all --aoi-id <uuid>
 ```
 
 ## Testing rules

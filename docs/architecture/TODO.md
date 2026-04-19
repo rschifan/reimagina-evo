@@ -8,7 +8,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Spatial aggregation mechanism | Schema done (r009); rollup worker contract pending |
+| 1 | Spatial aggregation mechanism | Schema done (r009); rollup worker contract documented in `JOB_LAYER.md`; `reimagina.jobs.aggregation` pure module shipped; worker body waits for Layer 2 `indicator_result` |
 | 2 | AOI-level aggregate indicator values | Decided (Option B); schema and worker not yet built |
 | 3 | Non-hierarchical spatial aggregation | Resolved — `feature_overlap` covers this |
 
@@ -19,7 +19,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-1 | Materialise `feature_current_attributes_mv` | **Done** — r008 |
 | T1-2 | PgBouncer connection pooling | **Done** — docker-compose + martin config |
 | T1-3 | Cursor-based API pagination | **Done** — `_utils.py` + Protocol |
-| T1-4 | `feature_overlap` table | **Done** — r009 |
+| T1-4 | `feature_overlap` table | **Done** — r009 schema + `reimagina.jobs.overlap` orchestrator (AOI-scoped) + CLI; rollup consumer lands Layer 2 |
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Partial** — r015 schema + serving view + repo on both backends; populating worker waits for Layer 2 `indicator_result` |
