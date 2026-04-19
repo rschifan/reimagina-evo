@@ -7,10 +7,18 @@ REIMAGINA_API_PORT env vars for container / prod use.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
-import uvicorn
+# Ensure `reimagina.*` is importable when the API is launched as
+# `python -m apps.api` from a clean checkout without an editable install.
+_PACKAGES_DIR = Path(__file__).resolve().parents[2] / "packages" / "py"
+if str(_PACKAGES_DIR) not in sys.path:
+    sys.path.insert(0, str(_PACKAGES_DIR))
 
-from .app import app as _app
+import uvicorn  # noqa: E402
+
+from .app import app as _app  # noqa: E402
 
 
 def main() -> None:
