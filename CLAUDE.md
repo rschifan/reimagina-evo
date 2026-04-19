@@ -108,6 +108,12 @@ Recommended tools:
 - DBeaver Community for SQL exploration
 - QGIS only for visual geometry/map checks
 
+Quickest way to confirm a DB has real data loaded:
+
+```bash
+python -m apps.cli.app cdmx status   # {"counts": {...}, "ready": true/false}
+```
+
 ## Scenario / execution rules
 
 - baseline is never mutated by scenarios

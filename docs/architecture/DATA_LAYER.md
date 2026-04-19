@@ -265,6 +265,28 @@ Read Diagram 1 as:
 - `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) land in Layer 1 so API code can target them; the worker that populates rows reads from `indicator_result`, which arrives with the Layer 2 indicators milestone.
 - In the actual schema, `aoi_feature` uses the pair `(aoi_id, feature_id)` as its composite primary key.
 
+### Canonical CDMX bootstrap
+
+Two vector-source onboarding paths are wired up in v1:
+
+- **Overture Buildings** — `overture` CLI family; see `pipeline/overture.py`.
+- **CDMX canonical geometry (INEGI + datos.cdmx.gob.mx)** — `cdmx` CLI family;
+  fetches Marco Geoestadístico 2020 per-state archive (state 09 = CDMX) and
+  the CDMX colonias layer, lands them through Bronze/Silver, and loads them
+  into `curated_geo.feature` as `MEX:municipality`, `MEX:ageb`, `MEX:block`,
+  and `MEX:neighborhood`. Colonias download may need manual fallback when the
+  CDMX portal is rate-limited (`--from-path` accepts a local archive).
+
+```bash
+reimagina-cli feat seed-types
+reimagina-cli cdmx bootstrap --layers municipalities,agebs,blocks
+reimagina-cli cdmx aoi-from-alcaldia --cve-mun 015 --name "Cuauhtémoc"
+reimagina-cli cdmx status
+```
+
+Baseline load counts for INEGI 2020 CDMX: 16 municipalities, 2 431 AGEBs,
+66 789 manzanas. See `PERFORMANCE.md` for timing + overlap baseline numbers.
+
 The diagram does **not** try to encode every workflow rule. For example, raster and imagery assets may later produce `observation` rows or detected `feature` rows, but that is a pipeline behavior, not a direct foreign-key relationship.
 
 ### 2. Derived serving views
