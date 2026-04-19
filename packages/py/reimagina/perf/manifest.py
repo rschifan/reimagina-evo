@@ -141,6 +141,35 @@ _TILE_Z8_SQL  = "SELECT serving_geo.get_tile(%s, %s, %s, '{}'::json)"
 _TILE_FILTERED_SQL = "SELECT serving_geo.get_tile(%s, %s, %s, %s::json)"
 
 
+# Dry-run overlap join: same spatial predicate + geography math as the real
+# OverlapRepository.compute_feature_overlaps polygon branch, but returns rows
+# instead of upserting. Safe to re-run for EXPLAIN ANALYZE.
+_OVERLAP_DRYRUN_SQL = """
+SELECT
+    sf.id AS source_feature_id,
+    tf.id AS target_feature_id,
+    LEAST(
+        ST_Area(ST_Intersection(sf.geometry, tf.geometry)::geography)
+            / NULLIF(ST_Area(sf.geometry::geography), 0),
+        1.0
+    ) AS overlap_ratio,
+    LEAST(
+        ST_Area(ST_Intersection(sf.geometry, tf.geometry)::geography),
+        ST_Area(sf.geometry::geography)
+    ) AS overlap_measure
+FROM curated_geo.feature sf
+JOIN curated_geo.feature tf
+    ON tf.type_id = %s
+    AND sf.geometry && tf.geometry
+    AND ST_Intersects(sf.geometry, tf.geometry)
+JOIN curated_geo.area_of_interest aoi
+    ON aoi.id = %s
+    AND ST_Intersects(sf.geometry, aoi.geometry)
+WHERE sf.type_id = %s
+  AND ST_Area(sf.geometry::geography) > 0
+"""
+
+
 BENCHMARKS: dict[str, BenchmarkSpec] = {
     "bbox_features_small": BenchmarkSpec(
         name="bbox_features_small",
@@ -331,6 +360,34 @@ BENCHMARKS: dict[str, BenchmarkSpec] = {
             "representative": LatencyBudget(15, 50, 100),
             "stress": LatencyBudget(25, 80, 160),
         },
+    ),
+    "overlap_block_to_ageb_cuauhtemoc": BenchmarkSpec(
+        name="overlap_block_to_ageb_cuauhtemoc",
+        description=(
+            "Geodesic polygon-polygon overlap on real INEGI geometry: blocks → AGEBs inside "
+            "the Cuauhtémoc alcaldía. Validates that the GIST index on curated_geo.feature is "
+            "used for the block→AGEB + block→AOI spatial joins, and exercises PostGIS ::geography "
+            "for metric area measurements. Requires the cdmx bootstrap to have been run and the "
+            "Cuauhtémoc AOI to exist."
+        ),
+        sql=_OVERLAP_DRYRUN_SQL,
+        parameter_builder="overlap_block_ageb_cuauhtemoc",
+        expected_node_any_of=("Nested Loop", "Hash Join", "Merge Join", "Bitmap Heap Scan"),
+        expected_index_any_of=("feature_geometry_gist", "feature_type_idx"),
+        hot_tables_no_seq_scan=("feature",),
+        row_count_min=1000,
+        latency_budgets={
+            # Empirical (local dev macOS + Postgres 17, 3 iterations):
+            #   observed p50=269ms, p95=279ms, p99=280ms.
+            # Budget = observed × (1.5 p50 / 2.0 p95 / 2.5 p99) per the policy
+            # documented in PERFORMANCE.md, rounded up to nearest 50ms.
+            # smoke uses the same budgets — the data is the same; tier names
+            # here just mirror the rest of the manifest.
+            "smoke": LatencyBudget(450, 600, 750),
+            "representative": LatencyBudget(450, 600, 750),
+            "stress": LatencyBudget(900, 1200, 1500),
+        },
+        statement_timeout_ms=15000,
     ),
     "tile_z14_filtered_type": BenchmarkSpec(
         name="tile_z14_filtered_type",
