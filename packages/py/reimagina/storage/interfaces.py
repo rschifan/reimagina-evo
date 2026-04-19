@@ -321,6 +321,23 @@ class IndicatorResultRepository(Protocol):
         scenario_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
+    def list_current_with_geometry(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+        limit: int = 100_000,
+    ) -> list[dict[str, Any]]:
+        """Like list_current_for_indicator but also returns geometry_wkb.
+
+        Result dicts carry `feature_id`, `type_slug`, `geometry_wkb` (bytes,
+        EPSG:4326 WKB), `value_numeric`, `quality_flag`, and `computed_at`.
+        Intended to back the API's GeoJSON / GeoParquet download endpoints
+        without a second round trip.
+        """
+        ...
+
 
 class AOISummaryRepository(Protocol):
     def upsert_summary(

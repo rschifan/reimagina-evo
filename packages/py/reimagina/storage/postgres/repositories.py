@@ -1517,3 +1517,53 @@ class PostgresIndicatorResultRepository:
                     (indicator_slug, scenario_id),
                 )
             return [dict(row) for row in cur.fetchall()]
+
+    def list_current_with_geometry(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+        limit: int = 100_000,
+    ) -> list[dict]:
+        """Current indicator rows joined with EPSG:4326 geometry (WKB bytes).
+
+        Backs the GeoJSON / GeoParquet download paths — one query, no
+        extra round-trip for geometry. Feature-type filter is optional;
+        omitting it returns every grain the indicator applies to.
+        """
+        # Build the predicate progressively so NULL-safe scenario matching
+        # and the optional feature_type filter compose cleanly.
+        clauses = ["ir.indicator_slug = %s", "ir.status = 'current'"]
+        params: list = [indicator_slug]
+        if scenario_id is None:
+            clauses.append("ir.scenario_id IS NULL")
+        else:
+            clauses.append("ir.scenario_id = %s")
+            params.append(scenario_id)
+        if feature_type is not None:
+            clauses.append("ir.feature_type = %s")
+            params.append(feature_type)
+        params.append(limit)
+
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT ir.feature_id::text       AS feature_id,
+                       ir.feature_type           AS type_slug,
+                       ST_AsBinary(f.geometry)   AS geometry_wkb,
+                       ir.value_numeric          AS value_numeric,
+                       ir.quality_flag           AS quality_flag,
+                       ir.computed_at            AS computed_at
+                FROM curated_geo.indicator_result ir
+                JOIN curated_geo.feature f ON f.id = ir.feature_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY ir.feature_id
+                LIMIT %s
+                """,
+                params,
+            )
+            return [
+                {**row, "geometry_wkb": bytes(row["geometry_wkb"])}
+                for row in cur.fetchall()
+            ]

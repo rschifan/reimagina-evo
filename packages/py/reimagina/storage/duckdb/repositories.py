@@ -1801,6 +1801,59 @@ class DuckDBIndicatorResultRepository:
             ).fetchall()
         return [_row_as_dict_current_indicator(row) for row in rows]
 
+    def list_current_with_geometry(
+        self,
+        *,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+        feature_type: str | None = None,
+        limit: int = 100_000,
+    ) -> list[dict]:
+        """DuckDB mirror of PostgresIndicatorResultRepository.list_current_with_geometry.
+
+        Emits EPSG:4326 WKB as bytes so the API download path can treat
+        both backends identically. Ordering + limit behaviour match.
+        """
+        clauses = ["ir.indicator_slug = ?", "ir.status = 'current'"]
+        params: list = [indicator_slug]
+        if scenario_id is None:
+            clauses.append("ir.scenario_id IS NULL")
+        else:
+            clauses.append("CAST(ir.scenario_id AS VARCHAR) = ?")
+            params.append(scenario_id)
+        if feature_type is not None:
+            clauses.append("ir.feature_type = ?")
+            params.append(feature_type)
+        params.append(limit)
+
+        rows = self.connection.execute(
+            f"""
+            SELECT CAST(ir.feature_id AS VARCHAR) AS feature_id,
+                   ir.feature_type                AS type_slug,
+                   ST_AsWKB(f.geometry)           AS geometry_wkb,
+                   ir.value_numeric               AS value_numeric,
+                   ir.quality_flag                AS quality_flag,
+                   ir.computed_at                 AS computed_at
+            FROM curated_geo.indicator_result ir
+            JOIN curated_geo.feature f ON f.id = ir.feature_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY ir.feature_id
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        cols = (
+            "feature_id", "type_slug", "geometry_wkb",
+            "value_numeric", "quality_flag", "computed_at",
+        )
+        return [
+            {
+                **dict(zip(cols, row)),
+                "geometry_wkb": bytes(row[2]) if row[2] is not None else b"",
+            }
+            for row in rows
+        ]
+
 
 _CURRENT_INDICATOR_V_COLS = (
     "id", "feature_id", "feature_type", "scenario_id",
