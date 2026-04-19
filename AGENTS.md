@@ -85,6 +85,19 @@ python -m apps.cli.app indicators aoi-summary \
     --aoi-id <uuid> --slug urban_form_block_compactness
 ```
 
+Web read-side (API + map frontend):
+
+```bash
+# Start both from two terminals
+REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
+cd apps/web && npm install && npm run dev
+
+# Then
+open http://localhost:8000/docs      # OpenAPI / Swagger
+open http://localhost:5173           # Map with input-layer toggles,
+                                     # indicator picker, download buttons
+```
+
 ## Testing rules
 
 Testing is non-optional.

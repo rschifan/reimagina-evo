@@ -8,10 +8,28 @@ Tile serving in Reimagina follows a hybrid rule:
 ## Current v1 contract
 
 - `serving_geo.get_tile()` + **Martin** remains the primary live tile path
+- `serving_geo.indicator_overlay_tile()` adds a live choropleth channel
+  (details below), also auto-published by Martin.
 - PMTiles are additive, not a replacement
 - v1 PMTiles target: `admin_reference` from `serving_geo.admin_v`
 - PMTiles are rebuilt manually, on schedule, or on release publication
 - PMTiles are **not** rebuilt on every ingestion run
+
+### `serving_geo.indicator_overlay_tile(z, x, y, query_params json)`
+
+- Martin auto-discovery publishes the function at
+  `GET /indicator_overlay_tile/{z}/{x}/{y}?…`.
+- Required query param: `indicator_slug` — the function returns an
+  empty tile when absent so a misconfigured caller never leaks the
+  whole table.
+- Optional query param: `scenario_id` (uuid). Omit for base state.
+- Returns empty below `z=10`; choropleth below city scale is misleading
+  (every feature collapses into one pixel). `infra/tiles/layers.json`
+  reflects this with `minzoom: 10`.
+- Emits per feature: `feature_id`, `type_slug`, `value_numeric`,
+  `quality_flag`. Frontend's `fill-color` expression reads
+  `value_numeric`; `quality_flag` is used to dim `estimated` / `missing`
+  rows if the UI wants to distinguish them.
 
 ## Source classification
 

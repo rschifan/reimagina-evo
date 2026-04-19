@@ -18,10 +18,11 @@ Read the architecture docs in this order:
 4. `JOB_LAYER.md`
 5. `INDICATORS_LAYER.md`
 6. `TILE_SERVING.md`
-7. `PERFORMANCE.md`
-8. `GEOSPATIAL_GRID_ARCHITECTURE.md`
-9. `TESTING.md`
-10. `TODO.md`
+7. `API.md`
+8. `PERFORMANCE.md`
+9. `GEOSPATIAL_GRID_ARCHITECTURE.md`
+10. `TESTING.md`
+11. `TODO.md`
 
 ## Python namespace
 
