@@ -15,6 +15,7 @@ from reimagina.data import file_asset
 from reimagina.data import observation as obs
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
+from reimagina.jobs import overlap as overlap_jobs
 from reimagina.pipeline import loader
 from reimagina.storage import backend_for_connection
 from reimagina.tiles.service import export_pmtiles_snapshot
@@ -744,3 +745,130 @@ def test_rls_set_local_scopes_to_transaction(migrated_db):
     finally:
         probe.rollback()
         probe.close()
+
+
+def test_overlap_jobs_declare_list_and_compute_all_pairs(conn):
+    """Postgres: declare_pair + compute_all_pairs end-to-end for a MEX lot→block pair."""
+    source_id = _register_source(
+        conn,
+        name="overlap_jobs_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    lot_type = feat.get_type_id(conn, "MEX", "lot")
+
+    _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="blk-1",
+        geometry_wkt="POLYGON((-99.140 19.430,-99.130 19.430,-99.130 19.440,-99.140 19.440,-99.140 19.430))",
+    )
+    _insert_feature(
+        conn,
+        type_id=lot_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="lot-1",
+        geometry_wkt="POLYGON((-99.138 19.432,-99.134 19.432,-99.134 19.436,-99.138 19.436,-99.138 19.432))",
+    )
+
+    first = overlap_jobs.declare_pair(
+        conn,
+        source_context="MEX", source_slug="lot",
+        target_context="MEX", target_slug="block",
+    )
+    second = overlap_jobs.declare_pair(
+        conn,
+        source_context="MEX", source_slug="lot",
+        target_context="MEX", target_slug="block",
+    )
+    assert first == second
+
+    pairs = overlap_jobs.list_pairs(conn)
+    assert len(pairs) == 1
+    assert pairs[0]["source"] == "MEX:lot"
+    assert pairs[0]["target"] == "MEX:block"
+
+    run = overlap_jobs.compute_all_pairs(conn)
+    assert run["rows_total"] == 1
+
+    # Re-run is idempotent via ON CONFLICT upsert.
+    rerun = overlap_jobs.compute_all_pairs(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM curated_geo.feature_overlap")
+        assert cur.fetchone()[0] == 1
+    assert rerun["rows_total"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT overlap_basis, overlap_ratio
+            FROM curated_geo.feature_overlap
+        """)
+        basis, ratio = cur.fetchone()
+    assert basis == "area"
+    assert 0 < float(ratio) <= 1.0
+
+
+def test_overlap_compute_all_pairs_scopes_by_aoi(conn):
+    """aoi_id restricts computation to source features intersecting the AOI."""
+    source_id = _register_source(
+        conn,
+        name="overlap_aoi_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    lot_type = feat.get_type_id(conn, "MEX", "lot")
+
+    # Two blocks side by side.
+    _insert_feature(conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="blk-L",
+        geometry_wkt="POLYGON((-99.150 19.430,-99.140 19.430,-99.140 19.440,-99.150 19.440,-99.150 19.430))")
+    _insert_feature(conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="blk-R",
+        geometry_wkt="POLYGON((-99.130 19.430,-99.120 19.430,-99.120 19.440,-99.130 19.440,-99.130 19.430))")
+    # A lot inside each block.
+    _insert_feature(conn, type_id=lot_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="lot-L",
+        geometry_wkt="POLYGON((-99.148 19.432,-99.142 19.432,-99.142 19.438,-99.148 19.438,-99.148 19.432))")
+    _insert_feature(conn, type_id=lot_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="lot-R",
+        geometry_wkt="POLYGON((-99.128 19.432,-99.122 19.432,-99.122 19.438,-99.128 19.438,-99.128 19.432))")
+
+    overlap_jobs.declare_pair(
+        conn,
+        source_context="MEX", source_slug="lot",
+        target_context="MEX", target_slug="block",
+    )
+
+    project_id = _insert_project(conn, name="Overlap AOI Scope Project")
+    aoi_id = aoi.create_aoi(
+        conn,
+        project_id=project_id,
+        name="left-aoi",
+        geometry_wkt="POLYGON((-99.150 19.430,-99.140 19.430,-99.140 19.440,-99.150 19.440,-99.150 19.430))",
+    )
+
+    scoped = overlap_jobs.compute_all_pairs(conn, aoi_id=aoi_id)
+    assert scoped["rows_total"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT f.source_record_ref
+            FROM curated_geo.feature_overlap fo
+            JOIN curated_geo.feature f ON f.id = fo.source_feature_id
+        """)
+        refs = [row[0] for row in cur.fetchall()]
+    assert refs == ["lot-L"]
+
+    unscoped = overlap_jobs.compute_all_pairs(conn)
+    assert unscoped["rows_total"] == 2

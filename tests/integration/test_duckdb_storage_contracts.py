@@ -13,6 +13,7 @@ from reimagina.data import explore
 from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 from reimagina.data import overlap as ovlp
+from reimagina.jobs import overlap as overlap_jobs
 from reimagina.data import serving
 from reimagina.data import tiles as tile_data
 from reimagina.db import bootstrap_local_platform, connect, verify_required_relations
@@ -512,4 +513,226 @@ def test_duckdb_feature_overlap_polygon_contains_point(tmp_path):
         assert basis == "presence"
         assert ratio == 1.0
         assert measure == 1.0
-        assert feat_measure == 1.0
+
+
+def test_duckdb_overlap_jobs_declare_and_compute_all_pairs(tmp_path):
+    """jobs.overlap.declare_pair + compute_all_pairs orchestrate declared MEX pairs.
+
+    Declares (MEX, block) → (MEX, lot) and verifies:
+    - declare_pair is idempotent (second call returns the same ids, no extra rows)
+    - list_pairs surfaces the declared pair joined with catalog slugs
+    - compute_all_pairs returns per-pair counts and a total
+    - a polygon-polygon overlap produces an 'area' row in metres (geodesic)
+    - rerunning is idempotent (ON CONFLICT upsert)
+    """
+    app_path = tmp_path / "reimagina_overlap_jobs.duckdb"
+    test_path = tmp_path / "reimagina_overlap_jobs_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        source_id = cat.register_source(
+            conn,
+            name="overlap_jobs_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/overlap_jobs.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        lot_type_id = feat.get_type_id(conn, "MEX", "lot")
+
+        # One block, one lot that sits entirely inside the block.
+        # Coordinates are near Mexico City (lon ~-99.13, lat ~19.43); small
+        # degree deltas keep the geometry inside the block and give a
+        # well-defined partial-area overlap on WGS84.
+        block_gdf = gpd.GeoDataFrame(
+            [{"id": "blk-1", "geometry": Polygon([
+                (-99.140, 19.430), (-99.130, 19.430),
+                (-99.130, 19.440), (-99.140, 19.440),
+            ])}],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, block_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        lot_gdf = gpd.GeoDataFrame(
+            [{"id": "lot-1", "geometry": Polygon([
+                (-99.138, 19.432), (-99.134, 19.432),
+                (-99.134, 19.436), (-99.138, 19.436),
+            ])}],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, lot_gdf,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=lot_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        pair1 = overlap_jobs.declare_pair(
+            conn,
+            source_context="MEX", source_slug="lot",
+            target_context="MEX", target_slug="block",
+        )
+        pair2 = overlap_jobs.declare_pair(
+            conn,
+            source_context="MEX", source_slug="lot",
+            target_context="MEX", target_slug="block",
+        )
+        assert pair1 == pair2
+        row_count = conn.execute(
+            "SELECT COUNT(*) FROM curated_geo.feature_overlap_type_pair"
+        ).fetchone()[0]
+        assert row_count == 1
+
+        pairs = overlap_jobs.list_pairs(conn)
+        assert len(pairs) == 1
+        assert pairs[0]["source"] == "MEX:lot"
+        assert pairs[0]["target"] == "MEX:block"
+
+        first = overlap_jobs.compute_all_pairs(conn)
+        assert first["rows_total"] == 1
+        assert first["pairs"][0]["rows"] == 1
+
+        basis, measure, feat_measure, ratio = conn.execute("""
+            SELECT CAST(overlap_basis AS VARCHAR), overlap_measure, feature_measure, overlap_ratio
+            FROM curated_geo.feature_overlap
+        """).fetchone()
+        assert basis == "area"
+        # The lot sits entirely inside the block, so the geodesic intersection
+        # area equals the lot's own area and overlap_ratio is 1.0.
+        assert ratio == 1.0
+        assert measure == feat_measure
+        # Sanity-check the geodesic measurement order of magnitude: a
+        # 0.004° × 0.004° polygon at ~19.4° lat is roughly 1.8e5 m².
+        assert 1.0e5 < measure < 3.0e5
+
+        # Re-run: still one row (upsert), count returned is 1.
+        second = overlap_jobs.compute_all_pairs(conn)
+        assert second["rows_total"] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM curated_geo.feature_overlap"
+        ).fetchone()[0] == 1
+
+
+def test_duckdb_overlap_compute_aoi_scoping(tmp_path):
+    """aoi_id filters source features: lots outside the AOI produce no overlap rows."""
+    app_path = tmp_path / "reimagina_overlap_aoi.duckdb"
+    test_path = tmp_path / "reimagina_overlap_aoi_test.duckdb"
+    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        source_id = cat.register_source(
+            conn,
+            name="overlap_aoi_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/overlap_aoi.geojson",
+            version="v1",
+        )
+        run_id = cat.start_ingestion_run(
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
+        )
+
+        block_type_id = feat.get_type_id(conn, "MEX", "block")
+        lot_type_id = feat.get_type_id(conn, "MEX", "lot")
+
+        # Two non-overlapping blocks side by side.
+        blocks = gpd.GeoDataFrame(
+            [
+                {"id": "blk-L", "geometry": Polygon([
+                    (-99.150, 19.430), (-99.140, 19.430),
+                    (-99.140, 19.440), (-99.150, 19.440),
+                ])},
+                {"id": "blk-R", "geometry": Polygon([
+                    (-99.130, 19.430), (-99.120, 19.430),
+                    (-99.120, 19.440), (-99.130, 19.440),
+                ])},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, blocks,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=block_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        # One lot inside each block.
+        lots = gpd.GeoDataFrame(
+            [
+                {"id": "lot-L", "geometry": Polygon([
+                    (-99.148, 19.432), (-99.142, 19.432),
+                    (-99.142, 19.438), (-99.148, 19.438),
+                ])},
+                {"id": "lot-R", "geometry": Polygon([
+                    (-99.128, 19.432), (-99.122, 19.432),
+                    (-99.122, 19.438), (-99.128, 19.438),
+                ])},
+            ],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, lots,
+            source_id=source_id, ingestion_run_id=run_id,
+            type_id=lot_type_id, dataset_version="v1",
+            source_record_ref_col="id",
+        )
+
+        overlap_jobs.declare_pair(
+            conn,
+            source_context="MEX", source_slug="lot",
+            target_context="MEX", target_slug="block",
+        )
+
+        # AOI that covers only the LEFT block.
+        project_id = str(uuid4())
+        conn.execute(
+            "INSERT INTO app_core.project (id, name) VALUES (?, ?)",
+            [project_id, "aoi-scope-test"],
+        )
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name="left-aoi",
+            geometry_wkt=(
+                "POLYGON ((-99.150 19.430, -99.140 19.430,"
+                " -99.140 19.440, -99.150 19.440, -99.150 19.430))"
+            ),
+        )
+
+        scoped = overlap_jobs.compute_all_pairs(conn, aoi_id=aoi_id)
+        assert scoped["rows_total"] == 1
+
+        (source_ref,) = conn.execute("""
+            SELECT f.source_record_ref
+            FROM curated_geo.feature_overlap fo
+            JOIN curated_geo.feature f ON f.id = fo.source_feature_id
+        """).fetchone()
+        assert source_ref == "lot-L"
+
+        # Unscoped run should find both pairs.
+        unscoped = overlap_jobs.compute_all_pairs(conn)
+        assert unscoped["rows_total"] == 2

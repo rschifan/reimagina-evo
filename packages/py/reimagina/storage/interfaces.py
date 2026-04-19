@@ -145,10 +145,14 @@ class OverlapRepository(Protocol):
         self,
         source_type_id: str,
         target_type_id: str,
+        *,
+        aoi_id: str | None = None,
     ) -> int:
         """Compute and store overlap rows for all feature pairs of the given types.
 
         Measures are geodesic (m² for area, m for length, dimensionless for presence).
+        When aoi_id is provided, only source features intersecting that AOI are
+        considered — use this at city scale to avoid unbounded cross joins.
         Returns the number of overlap rows written (upserted).
         """
         ...

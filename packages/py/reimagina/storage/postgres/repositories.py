@@ -618,7 +618,13 @@ class PostgresOverlapRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def compute_feature_overlaps(self, source_type_id: str, target_type_id: str) -> int:
+    def compute_feature_overlaps(
+        self,
+        source_type_id: str,
+        target_type_id: str,
+        *,
+        aoi_id: str | None = None,
+    ) -> int:
         with self.connection.cursor() as cur:
             cur.execute(
                 "SELECT geometry_family FROM curated_geo.feature_type_catalog WHERE id = %s",
@@ -636,9 +642,25 @@ class PostgresOverlapRepository:
             if cur.fetchone() is None:
                 raise ValueError(f"Unknown target_type_id: {target_type_id!r}")
 
+            if aoi_id is not None:
+                cur.execute(
+                    "SELECT 1 FROM curated_geo.area_of_interest WHERE id = %s",
+                    (aoi_id,),
+                )
+                if cur.fetchone() is None:
+                    raise ValueError(f"Unknown aoi_id: {aoi_id!r}")
+
+            aoi_join = (
+                " JOIN curated_geo.area_of_interest aoi"
+                "   ON aoi.id = %s AND ST_Intersects(sf.geometry, aoi.geometry)"
+                if aoi_id is not None
+                else ""
+            )
+            aoi_params: tuple = (aoi_id,) if aoi_id is not None else ()
+
             if source_family == "polygon":
                 cur.execute(
-                    """
+                    f"""
                     INSERT INTO curated_geo.feature_overlap
                       (source_feature_id, target_feature_id, overlap_basis,
                        overlap_measure, feature_measure, overlap_ratio)
@@ -658,7 +680,7 @@ class PostgresOverlapRepository:
                     JOIN curated_geo.feature tf
                         ON tf.type_id = %s
                         AND sf.geometry && tf.geometry
-                        AND ST_Intersects(sf.geometry, tf.geometry)
+                        AND ST_Intersects(sf.geometry, tf.geometry){aoi_join}
                     WHERE sf.type_id = %s
                       AND ST_Area(sf.geometry::geography) > 0
                       AND ST_Area(ST_Intersection(sf.geometry, tf.geometry)::geography) > 0
@@ -669,11 +691,11 @@ class PostgresOverlapRepository:
                             overlap_ratio    = EXCLUDED.overlap_ratio,
                             computed_at      = now()
                     """,
-                    (target_type_id, source_type_id),
+                    (target_type_id, *aoi_params, source_type_id),
                 )
             elif source_family == "line":
                 cur.execute(
-                    """
+                    f"""
                     INSERT INTO curated_geo.feature_overlap
                       (source_feature_id, target_feature_id, overlap_basis,
                        overlap_measure, feature_measure, overlap_ratio)
@@ -693,7 +715,7 @@ class PostgresOverlapRepository:
                     JOIN curated_geo.feature tf
                         ON tf.type_id = %s
                         AND sf.geometry && tf.geometry
-                        AND ST_Intersects(sf.geometry, tf.geometry)
+                        AND ST_Intersects(sf.geometry, tf.geometry){aoi_join}
                     WHERE sf.type_id = %s
                       AND ST_Length(sf.geometry::geography) > 0
                       AND ST_Length(ST_Intersection(sf.geometry, tf.geometry)::geography) > 0
@@ -704,11 +726,11 @@ class PostgresOverlapRepository:
                             overlap_ratio    = EXCLUDED.overlap_ratio,
                             computed_at      = now()
                     """,
-                    (target_type_id, source_type_id),
+                    (target_type_id, *aoi_params, source_type_id),
                 )
             else:  # point or geometry — presence basis
                 cur.execute(
-                    """
+                    f"""
                     INSERT INTO curated_geo.feature_overlap
                       (source_feature_id, target_feature_id, overlap_basis,
                        overlap_measure, feature_measure, overlap_ratio)
@@ -716,7 +738,7 @@ class PostgresOverlapRepository:
                     FROM curated_geo.feature sf
                     JOIN curated_geo.feature tf
                         ON tf.type_id = %s
-                        AND ST_Within(sf.geometry, tf.geometry)
+                        AND ST_Within(sf.geometry, tf.geometry){aoi_join}
                     WHERE sf.type_id = %s
                     ON CONFLICT (source_feature_id, target_feature_id) DO UPDATE
                         SET overlap_basis    = EXCLUDED.overlap_basis,
@@ -725,7 +747,7 @@ class PostgresOverlapRepository:
                             overlap_ratio    = EXCLUDED.overlap_ratio,
                             computed_at      = now()
                     """,
-                    (target_type_id, source_type_id),
+                    (target_type_id, *aoi_params, source_type_id),
                 )
 
             return cur.rowcount
