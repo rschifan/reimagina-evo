@@ -994,28 +994,12 @@ def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
             )
             cat.complete_ingestion_run(conn, run_id, status="succeeded")
 
-        import subprocess
-
-        try:
-            payload = export_pmtiles_snapshot(
-                dsn=migrated_db,
-                layer_id="admin_reference",
-                output_dir=output_dir,
-                snapshot_base_url="http://localhost:3001",
-            )
-        except subprocess.CalledProcessError as exc:
-            # GDAL on macOS is commonly built without the SQLite dialect used by
-            # the PMTiles driver's post-write step, so ogr2ogr exits non-zero
-            # ('OGR2SQLITE_Setup() failed') even after producing a valid
-            # artifact. Skip cleanly on that environment so CI with a fuller
-            # GDAL still exercises the path.
-            stderr = exc.stderr or ""
-            if "OGR2SQLITE_Setup" in stderr:
-                pytest.skip(
-                    "ogr2ogr exited non-zero due to a macOS SQLite-dialect quirk; "
-                    "environment does not support the full PMTiles pipeline."
-                )
-            raise
+        payload = export_pmtiles_snapshot(
+            dsn=migrated_db,
+            layer_id="admin_reference",
+            output_dir=output_dir,
+            snapshot_base_url="http://localhost:3001",
+        )
 
         artifact_path = Path(payload["artifact_path"])
         assert artifact_path.exists(), "ogr2ogr did not produce a PMTiles artifact"
