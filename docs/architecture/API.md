@@ -83,6 +83,8 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host. |
 | `REIMAGINA_API_PORT` | `8000` | uvicorn bind port. |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level. |
+| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for Martin live MVT. Must be reachable by the end user's browser in deployed environments. |
+| `REIMAGINA_TILE_SNAPSHOT_BASE_URL` | `http://localhost:3001` | Static host serving PMTiles snapshot artifacts. |
 
 ---
 

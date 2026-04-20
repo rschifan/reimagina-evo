@@ -29,6 +29,27 @@ DEFAULT_API_DSN = os.environ.get(
 _DEFAULT_POOL_MIN = int(os.environ.get("REIMAGINA_API_POOL_MIN", "1"))
 _DEFAULT_POOL_MAX = int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
 
+
+def tile_live_base_url() -> str:
+    """Base URL Martin serves the tile function at.
+
+    Resolved at call time so tests (and `REIMAGINA_TILE_LIVE_BASE_URL`
+    changes at deploy time) actually steer the value. Defaults to the
+    dev-compose Martin URL; production deployments must override.
+    """
+    return os.environ.get(
+        "REIMAGINA_TILE_LIVE_BASE_URL",
+        "http://localhost:3000/get_tile",
+    )
+
+
+def tile_snapshot_base_url() -> str:
+    """Static host serving PMTiles snapshot artifacts."""
+    return os.environ.get(
+        "REIMAGINA_TILE_SNAPSHOT_BASE_URL",
+        "http://localhost:3001",
+    )
+
 _pool: ThreadedConnectionPool | None = None
 _pool_lock = Lock()
 
