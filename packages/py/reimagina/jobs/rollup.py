@@ -141,128 +141,21 @@ def _group_children_by_parent(
     target_feature_type: str,
     scenario_id: str | None,
 ) -> dict[str, list[_ChildRow]]:
-    """Return {target_feature_id: [child rows]} joining overlap × indicator_result.
+    """Return {target_feature_id: [child rows]} from overlap × indicator_result.
 
-    Pulls only current base- or scenario-scoped rows as requested. NULL-safe
-    comparison on scenario_id is handled by a per-backend branch so both
-    Postgres and DuckDB treat "base state" the same way.
+    The repo emits a flat list; grouping by target is a worker concern so
+    the SQL contract stays thin.
     """
-    conn = backend.connection
-    if backend.name == "postgres":
-        return _group_children_postgres(
-            conn,
-            indicator_slug=indicator_slug,
-            source_feature_type=source_feature_type,
-            target_feature_type=target_feature_type,
-            scenario_id=scenario_id,
-        )
-    return _group_children_duckdb(
-        conn,
+    flat = backend.overlap_repo().rollup_child_rows(
         indicator_slug=indicator_slug,
         source_feature_type=source_feature_type,
         target_feature_type=target_feature_type,
         scenario_id=scenario_id,
     )
-
-
-def _group_children_postgres(
-    conn,
-    *,
-    indicator_slug: str,
-    source_feature_type: str,
-    target_feature_type: str,
-    scenario_id: str | None,
-) -> dict[str, list[_ChildRow]]:
-    scenario_predicate = (
-        "ir.scenario_id IS NULL" if scenario_id is None else "ir.scenario_id = %s"
-    )
-    # SQL placeholder order: src.type_slug, tgt.type_slug, ir.indicator_slug,
-    # [optional ir.scenario_id]. Keeps the parameter list lined up with the
-    # join-order we read in the query.
-    params: list = [source_feature_type, target_feature_type, indicator_slug]
-    if scenario_id is not None:
-        params.append(scenario_id)
-    # Weight = overlap_measure (absolute intersection measure, m² for
-    # polygon-polygon rollups). This gives weighted_mean the area-weighted
-    # semantic: bigger children contribute proportionally more. Using
-    # overlap_ratio (1.0 for a fully-nested child) would collapse to a
-    # plain arithmetic mean and produce mathematically wrong numbers for
-    # extensive metrics like building density.
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT fo.target_feature_id::text,
-                   ir.value_numeric,
-                   fo.overlap_measure,
-                   ir.quality_flag
-            FROM curated_geo.feature_overlap fo
-            JOIN curated_geo.feature src ON src.id = fo.source_feature_id
-                 AND src.type_slug = %s
-            JOIN curated_geo.feature tgt ON tgt.id = fo.target_feature_id
-                 AND tgt.type_slug = %s
-            LEFT JOIN curated_geo.indicator_result ir
-                 ON ir.feature_id = fo.source_feature_id
-                AND ir.indicator_slug = %s
-                AND ir.status = 'current'
-                AND {scenario_predicate}
-            """,
-            params,
-        )
-        groups: dict[str, list[_ChildRow]] = {}
-        for target_id, value, weight, quality in cur.fetchall():
-            groups.setdefault(str(target_id), []).append(
-                _ChildRow(
-                    value=float(value) if value is not None else None,
-                    weight=float(weight),
-                    quality_flag=quality or "missing",
-                )
-            )
-    return groups
-
-
-def _group_children_duckdb(
-    conn,
-    *,
-    indicator_slug: str,
-    source_feature_type: str,
-    target_feature_type: str,
-    scenario_id: str | None,
-) -> dict[str, list[_ChildRow]]:
-    scenario_predicate = (
-        "ir.scenario_id IS NULL"
-        if scenario_id is None
-        else "CAST(ir.scenario_id AS VARCHAR) = ?"
-    )
-    # See _group_children_postgres for why the weight is overlap_measure,
-    # not overlap_ratio.
-    query = f"""
-        SELECT CAST(fo.target_feature_id AS VARCHAR),
-               ir.value_numeric,
-               fo.overlap_measure,
-               ir.quality_flag
-        FROM curated_geo.feature_overlap fo
-        JOIN curated_geo.feature src
-          ON src.id = fo.source_feature_id AND src.type_slug = ?
-        JOIN curated_geo.feature tgt
-          ON tgt.id = fo.target_feature_id AND tgt.type_slug = ?
-        LEFT JOIN curated_geo.indicator_result ir
-          ON ir.feature_id = fo.source_feature_id
-         AND ir.indicator_slug = ?
-         AND ir.status = 'current'
-         AND {scenario_predicate}
-    """
-    params = [source_feature_type, target_feature_type, indicator_slug]
-    if scenario_id is not None:
-        params.append(scenario_id)
-
     groups: dict[str, list[_ChildRow]] = {}
-    for target_id, value, weight, quality in conn.execute(query, params).fetchall():
-        groups.setdefault(str(target_id), []).append(
-            _ChildRow(
-                value=float(value) if value is not None else None,
-                weight=float(weight),
-                quality_flag=quality or "missing",
-            )
+    for target_id, value, weight, quality in flat:
+        groups.setdefault(target_id, []).append(
+            _ChildRow(value=value, weight=weight, quality_flag=quality)
         )
     return groups
 

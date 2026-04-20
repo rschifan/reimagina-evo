@@ -837,6 +837,46 @@ class PostgresOverlapRepository:
 
             return cur.rowcount
 
+    def rollup_child_rows(
+        self,
+        *,
+        indicator_slug: str,
+        source_feature_type: str,
+        target_feature_type: str,
+        scenario_id: str | None = None,
+    ) -> list[tuple[str, float | None, float, str]]:
+        scenario_clause, scenario_params = _scenario_filter("ir.scenario_id", scenario_id)
+        params: list = [source_feature_type, target_feature_type, indicator_slug, *scenario_params]
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT fo.target_feature_id::text,
+                       ir.value_numeric,
+                       fo.overlap_measure,
+                       ir.quality_flag
+                FROM curated_geo.feature_overlap fo
+                JOIN curated_geo.feature src ON src.id = fo.source_feature_id
+                     AND src.type_slug = %s
+                JOIN curated_geo.feature tgt ON tgt.id = fo.target_feature_id
+                     AND tgt.type_slug = %s
+                LEFT JOIN curated_geo.indicator_result ir
+                     ON ir.feature_id = fo.source_feature_id
+                    AND ir.indicator_slug = %s
+                    AND ir.status = 'current'
+                    AND {scenario_clause}
+                """,
+                params,
+            )
+            return [
+                (
+                    str(target_id),
+                    float(value) if value is not None else None,
+                    float(weight),
+                    quality or "missing",
+                )
+                for target_id, value, weight, quality in cur.fetchall()
+            ]
+
 
 class PostgresOverlapTypePairRepository:
     """Declared (source_type, target_type) pairs on Postgres."""
