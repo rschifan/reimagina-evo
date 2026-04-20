@@ -19,6 +19,7 @@ from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
+from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.pipeline import loader
 from reimagina.storage import backend_for_connection
 from reimagina.tiles.service import export_pmtiles_snapshot
@@ -867,6 +868,103 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
     names = {(row["schema_name"], row["object_name"]) for row in layers}
     assert ("curated_geo", "aoi_indicator_summary") in names
     assert ("serving_geo", "aoi_summary_v") in names
+
+
+def test_summarise_aoi_end_to_end_weighted_mean_postgres(conn):
+    """End-to-end Postgres coverage for the summarise_aoi worker.
+
+    Seeds a project + AOI covering two blocks with very different areas
+    and different indicator values, computes aoi_feature (so the weights
+    come from real PostGIS area measurement), writes the two child
+    indicator_result rows, then runs summarise_aoi and asserts:
+
+    * the resulting summary is status='current' and the value is pulled
+      toward the larger block's value — i.e. the weight is
+      `aoi_feature.overlap_measure`, not `overlap_ratio`; and
+    * the row surfaces through `serving_geo.aoi_summary_v` with the same
+      value.
+
+    DuckDB has an analogous test in test_duckdb_storage_contracts; the
+    production backend is Postgres, so covering it directly here is a
+    non-redundant safety net.
+    """
+    seed_catalog(conn)
+    project_id = _insert_project(conn, name="AOI Summary E2E Project")
+
+    # Small block (≈1/9 of the AOI area) with a high indicator value,
+    # big block (≈8/9 of the AOI area) with a low one. An unweighted mean
+    # would sit near 0.55; an overlap_ratio-weighted mean (both children
+    # nested → weight ≈1.0) would give the same. A correctly area-weighted
+    # mean must be close to the big block's 0.1, i.e. well below 0.3.
+    source_id = _register_source(
+        conn, name="aoi_summary_e2e_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    small_block_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="small",
+        geometry_wkt="POLYGON((0 0, 0.001 0, 0.001 0.001, 0 0.001, 0 0))",
+    )
+    big_block_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="big",
+        geometry_wkt="POLYGON((0.002 0, 0.005 0, 0.005 0.003, 0.002 0.003, 0.002 0))",
+    )
+    aoi_id = aoi.create_aoi(
+        conn,
+        project_id=project_id,
+        name="summary-aoi-e2e",
+        geometry_wkt="POLYGON((0 0, 0.006 0, 0.006 0.004, 0 0.004, 0 0))",
+    )
+    aoi.compute_aoi_features(conn, aoi_id)
+
+    # Write indicator_result rows directly through the repo — deliberately
+    # bypassing compute_block_compactness so this test is tightly scoped to
+    # aoi_summary's join / weight behaviour.
+    backend = backend_for_connection(conn)
+    job_run_id = backend.job_run_repo().start_job(
+        model_family="urban_form",
+        code_version="test",
+        status="running",
+    )
+    result_repo = backend.indicator_result_repo()
+    result_repo.bulk_write_numeric_results(
+        [(small_block_id, 0.9), (big_block_id, 0.1)],
+        indicator_slug="urban_form_block_compactness",
+        job_run_id=job_run_id,
+    )
+    backend.job_run_repo().complete_job(job_run_id, status="succeeded")
+
+    result = summarise_aoi(
+        conn,
+        aoi_id=aoi_id,
+        indicator_slug="urban_form_block_compactness",
+    )
+    assert result.status == "current"
+    assert result.value is not None
+    # Area-weighted: the big block dominates. If weighting reverted to
+    # overlap_ratio, the value would sit near 0.5 and this assertion would
+    # fail loudly.
+    assert result.value < 0.3, (
+        f"expected weighted mean near the big block's 0.1, got {result.value!r} — "
+        "likely regressed to overlap_ratio weighting"
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT value FROM serving_geo.aoi_summary_v
+            WHERE aoi_id = %s
+            """,
+            (aoi_id,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == pytest.approx(result.value)
 
 
 def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
