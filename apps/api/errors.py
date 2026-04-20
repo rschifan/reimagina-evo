@@ -1,14 +1,18 @@
 """Structured exception handlers for the reimagina API.
 
-Two handlers cover the realistic failure modes:
+Three handlers cover the realistic failure modes — split so the HTTP
+status code carries useful retry semantics:
 
-- `psycopg2.Error` — the DB is unreachable / query blew up. Responds 503
-  `Service Unavailable` with a stable JSON body so clients can decide
-  whether to retry.
-- `Exception` (catch-all) — anything else becomes 500 with the same
-  JSON shape. We deliberately do not echo the internal message — the
-  request_id lets the operator correlate the user-visible error with
-  server logs without leaking stack trace text through the API.
+- `psycopg2.OperationalError` / `InterfaceError` — the DB is unreachable
+  or the connection broke. 503 `Service Unavailable`; client may retry.
+- Any other `psycopg2.Error` (ProgrammingError, DataError, IntegrityError,
+  …) is a shipped-SQL bug, not a transient condition. 500 `Internal
+  Server Error`; retrying won't help.
+- `Exception` (catch-all) — anything else becomes 500.
+
+In every case we return a stable JSON shape and a request_id the
+operator can correlate with server logs. The internal message is never
+echoed back.
 """
 from __future__ import annotations
 
@@ -48,17 +52,39 @@ def _error_response(
     )
 
 
-async def psycopg_error_handler(request: Request, exc: psycopg2.Error) -> JSONResponse:
-    """DB-level failure → 503 with a structured body."""
+async def database_unavailable_handler(
+    request: Request, exc: psycopg2.OperationalError | psycopg2.InterfaceError
+) -> JSONResponse:
+    """Connection-class failures → 503. Retrying can help."""
     request_id = _request_id(request)
     log.warning(
-        "psycopg error on %s %s (request_id=%s): %s",
+        "database unavailable on %s %s (request_id=%s): %s",
         request.method, request.url.path, request_id, exc,
     )
     return _error_response(
         status_code=503,
         error_code="database_unavailable",
-        message="The database was unreachable or rejected the query.",
+        message="The database was unreachable.",
+        request_id=request_id,
+    )
+
+
+async def database_error_handler(request: Request, exc: psycopg2.Error) -> JSONResponse:
+    """Non-connection DB errors (ProgrammingError, DataError, …) → 500.
+
+    These are shipped-SQL bugs or constraint violations that the client
+    can't recover from by retrying. The 503 path is reserved for
+    transient conditions so operators and clients can distinguish them.
+    """
+    request_id = _request_id(request)
+    log.exception(
+        "database error on %s %s (request_id=%s)",
+        request.method, request.url.path, request_id,
+    )
+    return _error_response(
+        status_code=500,
+        error_code="database_error",
+        message="A database error occurred. See server logs with the given request_id.",
         request_id=request_id,
     )
 

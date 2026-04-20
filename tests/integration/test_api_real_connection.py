@@ -76,8 +76,8 @@ def test_pool_survives_consecutive_requests(real_conn_client):
         assert response.status_code == 200
 
 
-def test_psycopg_error_handler_produces_structured_503(monkeypatch, real_conn_client):
-    """Simulate a DB failure and assert the error envelope + request_id."""
+def test_psycopg_operational_error_produces_structured_503(monkeypatch, real_conn_client):
+    """Simulated connectivity outage → 503 + database_unavailable."""
     import psycopg2
 
     from apps.api.deps import get_db_conn
@@ -96,3 +96,28 @@ def test_psycopg_error_handler_produces_structured_503(monkeypatch, real_conn_cl
     assert body["error"]["code"] == "database_unavailable"
     assert "request_id" in body["error"]
     assert response.headers["X-Request-Id"] == body["error"]["request_id"]
+
+
+def test_psycopg_programming_error_produces_500(monkeypatch, real_conn_client):
+    """A shipped-SQL bug must NOT masquerade as a transient 503.
+
+    ProgrammingError is a programming fault, not a connectivity problem —
+    retrying will never help. Keeping it on the 500 path means clients
+    and operators get the right signal.
+    """
+    import psycopg2
+
+    from apps.api.deps import get_db_conn
+    def _buggy_conn():
+        raise psycopg2.ProgrammingError("syntax error at or near ...")
+        yield  # pragma: no cover
+
+    real_conn_client.app.dependency_overrides[get_db_conn] = _buggy_conn
+    try:
+        response = real_conn_client.get("/indicators")
+    finally:
+        real_conn_client.app.dependency_overrides.pop(get_db_conn, None)
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"]["code"] == "database_error"
