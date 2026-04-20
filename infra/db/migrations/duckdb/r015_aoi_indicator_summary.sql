@@ -40,7 +40,7 @@ WHERE s.status = 'current';
 
 -- Register the new read surfaces in explore.layer_catalog. The view over
 -- that table (created in r006) picks them up automatically.
-INSERT INTO explore.layer_catalog
+INSERT OR IGNORE INTO explore.layer_catalog
     (schema_name, object_name, logical_name, layer_kind, description,
      primary_geometry_column, intended_use, display_order)
 VALUES
