@@ -266,6 +266,10 @@ class ServingReader(Protocol):
         """
         ...
 
+    def count_features(self, *, type_slug: str | None = None) -> int:
+        """Return the total number of serving-layer features (optionally filtered by type)."""
+        ...
+
 
 class ExploreReader(Protocol):
     def list_layers(self) -> list[dict[str, Any]]: ...

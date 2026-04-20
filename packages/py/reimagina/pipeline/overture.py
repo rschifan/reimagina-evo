@@ -263,52 +263,17 @@ def load_overture_buildings_subset(
 
 def validate_overture_buildings_layer(conn) -> dict[str, Any]:
     """Return a compact validation snapshot for the first spatial layer."""
-    backend = backend_for_connection(conn)
+    reader = backend_for_connection(conn).serving_reader()
     type_slug = OVERTURE_BUILDINGS_MEXICO_CITY.feature_type_slug
-    count_sql = """
-        SELECT COUNT(*)
-        FROM serving_geo.feature_v
-        WHERE type_slug = ?
-    """
-    sample_sql = """
-        SELECT
-            source_id,
-            source_record_ref,
-            ST_GeometryType(geometry) AS geometry_type,
-            attributes
-        FROM serving_geo.feature_v
-        WHERE type_slug = ?
-        ORDER BY created_at
-        LIMIT 3
-    """
-    if backend.name == "postgres":
-        count_sql = count_sql.replace("?", "%s")
-        sample_sql = sample_sql.replace("?", "%s")
-        with conn.cursor() as cur:
-            cur.execute(count_sql, (type_slug,))
-            count = int(cur.fetchone()[0])
-            cur.execute(sample_sql, (type_slug,))
-            samples = [
-                {
-                    "source_id": str(row[0]),
-                    "source_record_ref": row[1],
-                    "geometry_type": row[2],
-                    "attributes": row[3],
-                }
-                for row in cur.fetchall()
-            ]
-    else:
-        count = int(conn.execute(count_sql, [type_slug]).fetchone()[0])
-        samples = [
-            {
-                "source_id": str(row[0]),
-                "source_record_ref": row[1],
-                "geometry_type": row[2],
-                "attributes": row[3],
-            }
-            for row in conn.execute(sample_sql, [type_slug]).fetchall()
-        ]
-
+    count = reader.count_features(type_slug=type_slug)
+    page = reader.get_features(type_slug=type_slug, limit=3)
+    samples = [
+        {
+            "source_record_ref": row.get("name"),
+            "attributes": row.get("attributes"),
+        }
+        for row in page["features"]
+    ]
     return {
         "count": count,
         "sample_features": samples,

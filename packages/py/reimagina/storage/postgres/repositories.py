@@ -1069,6 +1069,17 @@ class PostgresServingReader:
 
         return {"features": rows, "next_cursor": next_cursor}
 
+    def count_features(self, *, type_slug: str | None = None) -> int:
+        with self.connection.cursor() as cur:
+            if type_slug is None:
+                cur.execute("SELECT COUNT(*) FROM serving_geo.feature_v")
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM serving_geo.feature_v WHERE type_slug = %s",
+                    (type_slug,),
+                )
+            return int(cur.fetchone()[0])
+
 
 class PostgresExploreReader:
     def __init__(self, connection):
