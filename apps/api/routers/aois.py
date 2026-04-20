@@ -38,25 +38,9 @@ class AOIRow(BaseModel):
 def list_aois(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[AOIRow]:
-    """Every AOI registered in the current database.
-
-    Reads curated_geo.area_of_interest directly rather than through a repo
-    because AOI listing has no first-class Protocol method yet. Kept small
-    so promoting it to AOIRepository later is a one-line change.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT id::text, project_id::text, name, description
-            FROM curated_geo.area_of_interest
-            ORDER BY name
-            """
-        )
-        rows = cur.fetchall()
-    return [
-        AOIRow(aoi_id=aid, project_id=pid, name=name, description=descr)
-        for aid, pid, name, descr in rows
-    ]
+    """Every AOI registered in the current database."""
+    rows = get_backend(conn).aoi_repo().list_aois()
+    return [AOIRow(**row) for row in rows]
 
 
 @router.get("/{aoi_id}/summaries", response_model=list[AOISummary])
@@ -90,10 +74,5 @@ def list_summaries(
 
 
 def _assert_aoi_exists(conn, aoi_id: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM curated_geo.area_of_interest WHERE id = %s",
-            (aoi_id,),
-        )
-        if cur.fetchone() is None:
-            raise HTTPException(status_code=404, detail=f"Unknown AOI id: {aoi_id!r}")
+    if get_backend(conn).aoi_repo().get_aoi(aoi_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown AOI id: {aoi_id!r}")

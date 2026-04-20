@@ -172,6 +172,14 @@ class AOIRepository(Protocol):
 
     def compute_overlaps(self, aoi_id: str) -> int: ...
 
+    def list_aois(self) -> list[dict[str, Any]]:
+        """Return every AOI as ``{aoi_id, project_id, name, description}``."""
+        ...
+
+    def get_aoi(self, aoi_id: str) -> dict[str, Any] | None:
+        """Return one AOI or ``None``; shape matches ``list_aois`` rows."""
+        ...
+
 
 class OverlapRepository(Protocol):
     def compute_feature_overlaps(

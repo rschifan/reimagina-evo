@@ -696,6 +696,36 @@ class PostgresAOIRepository:
             point_count = cur.rowcount
         return poly_count + line_count + point_count
 
+    def list_aois(self) -> list[dict]:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, project_id::text, name, description
+                FROM curated_geo.area_of_interest
+                ORDER BY name
+                """
+            )
+            return [
+                {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+                for aid, pid, name, descr in cur.fetchall()
+            ]
+
+    def get_aoi(self, aoi_id: str) -> dict | None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, project_id::text, name, description
+                FROM curated_geo.area_of_interest
+                WHERE id = %s
+                """,
+                (aoi_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            aid, pid, name, descr = row
+            return {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+
 
 class PostgresOverlapRepository:
     """Compute feature-to-feature spatial overlaps using PostGIS geography measurements."""
