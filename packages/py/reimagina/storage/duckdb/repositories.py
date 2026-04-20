@@ -1741,14 +1741,18 @@ class DuckDBIndicatorResultRepository:
         *,
         indicator_slug: str,
         scenario_id: str | None = None,
+        limit: int | None = None,
     ) -> list[dict]:
         scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        limit_sql = "" if limit is None else "LIMIT ?"
+        limit_params: list = [] if limit is None else [limit]
         rows = self.connection.execute(
             f"""
             SELECT * FROM serving_geo.current_indicator_v
             WHERE indicator_slug = ? AND {scenario_clause}
+            {limit_sql}
             """,
-            [indicator_slug, *scenario_params],
+            [indicator_slug, *scenario_params, *limit_params],
         ).fetchall()
         return [_row_as_dict_current_indicator(row) for row in rows]
 

@@ -97,8 +97,9 @@ def list_values(
     rows = get_backend(conn).indicator_result_repo().list_current_for_indicator(
         indicator_slug=slug,
         scenario_id=scenario_id,
+        limit=limit,
     )
-    return [IndicatorValue(**_value_row_to_dict(row)) for row in rows[:limit]]
+    return [IndicatorValue(**_value_row_to_dict(row)) for row in rows]
 
 
 class IndicatorValueStats(BaseModel):
