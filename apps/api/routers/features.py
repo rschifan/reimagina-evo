@@ -23,7 +23,6 @@ class FeatureRow(BaseModel):
     role: str
     name: str | None = None
     attributes: dict | None = None
-    geometry_wkt: str | None = None
 
 
 class FeaturePage(BaseModel):
@@ -63,5 +62,4 @@ def _feature_row(row: dict) -> FeatureRow:
         role=row["role"],
         name=row.get("name"),
         attributes=row.get("attributes"),
-        geometry_wkt=row.get("geometry_wkt"),
     )
