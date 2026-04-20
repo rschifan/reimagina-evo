@@ -123,106 +123,37 @@ def upgrade() -> None:
         'Returns empty below z=10 (choropleth is misleading at city/country scale).'
     """)
 
-    # Register the new read surface in the engineer-facing explore catalog so
-    # `explore layers` surfaces it the same way every other serving object
-    # shows up.
-    op.execute("""
-        CREATE OR REPLACE VIEW explore.layer_catalog_v AS
-        SELECT 'curated_geo'::text AS schema_name, 'data_source_catalog'::text AS object_name, 'source_registry'::text AS logical_name,
-               'canonical'::text AS layer_kind, 'Registered source datasets and versions'::text AS description,
-               NULL::text AS primary_geometry_column, 'Inspect available datasets and storage metadata'::text AS intended_use
-        UNION ALL
-        SELECT 'curated_geo', 'ingestion_run', 'ingestion_runs', 'canonical',
-               'Lineage and status for source loads', NULL, 'Inspect pipeline runs and failure details'
-        UNION ALL
-        SELECT 'curated_geo', 'feature', 'canonical_features', 'canonical',
-               'Stable canonical spatial entities', 'geometry', 'Debug source-of-truth feature storage'
-        UNION ALL
-        SELECT 'curated_geo', 'observation', 'feature_observations', 'canonical',
-               'Measured and derived values attached to features', NULL, 'Inspect current and historical enrichments'
-        UNION ALL
-        SELECT 'curated_geo', 'aoi_indicator_summary', 'aoi_summaries', 'canonical',
-               'Cached AOI-level aggregated indicator values', NULL, 'Inspect cached summary rows by AOI'
-        UNION ALL
-        SELECT 'curated_geo', 'indicator_catalog', 'indicator_catalog', 'canonical',
-               'Registry of every indicator computed by the platform', NULL, 'See what indicators are defined and how they aggregate'
-        UNION ALL
-        SELECT 'curated_geo', 'indicator_result', 'indicator_results', 'canonical',
-               'Long-format computed indicator values per (feature, scenario, indicator)', NULL, 'Inspect raw indicator outputs and lineage'
-        UNION ALL
-        SELECT 'serving_geo', 'feature_v', 'serving_features', 'serving',
-               'App-facing merged baseline features', 'geometry', 'Inspect what API and workers read'
-        UNION ALL
-        SELECT 'serving_geo', 'aoi_summary_v', 'aoi_summaries_serving', 'serving',
-               'App-facing AOI-level summaries (status = current only)', NULL, 'Inspect the read contract for the AOI summary cache'
-        UNION ALL
-        SELECT 'serving_geo', 'current_indicator_v', 'current_indicators', 'serving',
-               'App-facing indicator read contract (status = current only) joined with catalog metadata', NULL, 'Inspect the read path API and workers use for indicator values'
-        UNION ALL
-        SELECT 'serving_geo', 'indicator_overlay_tile', 'indicator_overlay_tiles', 'serving',
-               'Live MVT choropleth for one indicator — martin function source', NULL, 'Call as GET /indicator_overlay_tile/z/x/y?indicator_slug=…'
-        UNION ALL
-        SELECT 'explore', 'layer_catalog_v', 'layer_catalog', 'explore',
-               'Curated registry of important database layers', NULL, 'Use as the entrypoint for database exploration'
-        UNION ALL
-        SELECT 'explore', 'source_runs_v', 'source_runs', 'explore',
-               'Flattened source registry joined with ingestion runs', NULL, 'Inspect source lineage quickly'
-        UNION ALL
-        SELECT 'explore', 'feature_type_stats_v', 'feature_type_stats', 'explore',
-               'Counts of canonical features by type, role, source, and version', NULL, 'Inspect loaded feature volumes'
-        UNION ALL
-        SELECT 'explore', 'serving_stats_v', 'serving_stats', 'explore',
-               'High-level counts over the serving layer', NULL, 'Verify what the app-facing layer exposes'
-    """)
+    # Register the new read surface in explore.layer_catalog so
+    # `explore layers` surfaces it alongside every other object.
+    for row in _NEW_CATALOG_ROWS:
+        op.execute(
+            "INSERT INTO explore.layer_catalog "
+            "(schema_name, object_name, logical_name, layer_kind, description, "
+            "primary_geometry_column, intended_use, display_order) VALUES "
+            f"('{row[0]}', '{row[1]}', '{row[2]}', '{row[3]}', '{row[4]}', "
+            f"{_sql_null_or(row[5])}, '{row[6]}', {row[7]})"
+        )
+
+
+_NEW_CATALOG_ROWS = [
+    # (schema_name, object_name, logical_name, layer_kind, description,
+    #  primary_geometry_column, intended_use, display_order)
+    ("serving_geo", "indicator_overlay_tile", "indicator_overlay_tiles", "serving",
+     "Live MVT choropleth for one indicator — martin function source", None,
+     "Call as GET /indicator_overlay_tile/z/x/y?indicator_slug=…", 130),
+]
+
+
+def _sql_null_or(value: str | None) -> str:
+    return "NULL" if value is None else "'" + value.replace("'", "''") + "'"
 
 
 def downgrade() -> None:
     op.execute(
         "DROP FUNCTION IF EXISTS serving_geo.indicator_overlay_tile(integer, integer, integer, json)"
     )
-    # Restore the r016-shaped explore catalog.
-    op.execute("""
-        CREATE OR REPLACE VIEW explore.layer_catalog_v AS
-        SELECT 'curated_geo'::text AS schema_name, 'data_source_catalog'::text AS object_name, 'source_registry'::text AS logical_name,
-               'canonical'::text AS layer_kind, 'Registered source datasets and versions'::text AS description,
-               NULL::text AS primary_geometry_column, 'Inspect available datasets and storage metadata'::text AS intended_use
-        UNION ALL
-        SELECT 'curated_geo', 'ingestion_run', 'ingestion_runs', 'canonical',
-               'Lineage and status for source loads', NULL, 'Inspect pipeline runs and failure details'
-        UNION ALL
-        SELECT 'curated_geo', 'feature', 'canonical_features', 'canonical',
-               'Stable canonical spatial entities', 'geometry', 'Debug source-of-truth feature storage'
-        UNION ALL
-        SELECT 'curated_geo', 'observation', 'feature_observations', 'canonical',
-               'Measured and derived values attached to features', NULL, 'Inspect current and historical enrichments'
-        UNION ALL
-        SELECT 'curated_geo', 'aoi_indicator_summary', 'aoi_summaries', 'canonical',
-               'Cached AOI-level aggregated indicator values', NULL, 'Inspect cached summary rows by AOI'
-        UNION ALL
-        SELECT 'curated_geo', 'indicator_catalog', 'indicator_catalog', 'canonical',
-               'Registry of every indicator computed by the platform', NULL, 'See what indicators are defined and how they aggregate'
-        UNION ALL
-        SELECT 'curated_geo', 'indicator_result', 'indicator_results', 'canonical',
-               'Long-format computed indicator values per (feature, scenario, indicator)', NULL, 'Inspect raw indicator outputs and lineage'
-        UNION ALL
-        SELECT 'serving_geo', 'feature_v', 'serving_features', 'serving',
-               'App-facing merged baseline features', 'geometry', 'Inspect what API and workers read'
-        UNION ALL
-        SELECT 'serving_geo', 'aoi_summary_v', 'aoi_summaries_serving', 'serving',
-               'App-facing AOI-level summaries (status = current only)', NULL, 'Inspect the read contract for the AOI summary cache'
-        UNION ALL
-        SELECT 'serving_geo', 'current_indicator_v', 'current_indicators', 'serving',
-               'App-facing indicator read contract (status = current only) joined with catalog metadata', NULL, 'Inspect the read path API and workers use for indicator values'
-        UNION ALL
-        SELECT 'explore', 'layer_catalog_v', 'layer_catalog', 'explore',
-               'Curated registry of important database layers', NULL, 'Use as the entrypoint for database exploration'
-        UNION ALL
-        SELECT 'explore', 'source_runs_v', 'source_runs', 'explore',
-               'Flattened source registry joined with ingestion runs', NULL, 'Inspect source lineage quickly'
-        UNION ALL
-        SELECT 'explore', 'feature_type_stats_v', 'feature_type_stats', 'explore',
-               'Counts of canonical features by type, role, source, and version', NULL, 'Inspect loaded feature volumes'
-        UNION ALL
-        SELECT 'explore', 'serving_stats_v', 'serving_stats', 'explore',
-               'High-level counts over the serving layer', NULL, 'Verify what the app-facing layer exposes'
-    """)
+    for row in _NEW_CATALOG_ROWS:
+        op.execute(
+            f"DELETE FROM explore.layer_catalog "
+            f"WHERE schema_name = '{row[0]}' AND object_name = '{row[1]}'"
+        )
