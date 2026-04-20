@@ -196,10 +196,16 @@ def _fetch_aoi_children_postgres(
         params.append(scenario_id)
     params.append(aoi_id)
     with conn.cursor() as cur:
+        # Weight = overlap_measure (absolute area of the feature inside the
+        # AOI) so weighted_mean is area-weighted. overlap_ratio (fraction of
+        # the child inside the AOI) collapses to ~1.0 for fully-contained
+        # children and would degrade the aggregate to a plain arithmetic
+        # mean for extensive metrics like building density. Same rationale
+        # as reimagina.jobs.rollup._group_children_postgres.
         cur.execute(
             f"""
             SELECT ir.value_numeric,
-                   af.overlap_ratio,
+                   af.overlap_measure,
                    ir.quality_flag
             FROM curated_geo.aoi_feature af
             LEFT JOIN curated_geo.indicator_result ir
@@ -229,9 +235,11 @@ def _fetch_aoi_children_duckdb(
         if scenario_id is None
         else "CAST(ir.scenario_id AS VARCHAR) = ?"
     )
+    # See _fetch_aoi_children_postgres for why the weight is overlap_measure
+    # (absolute area), not overlap_ratio (fraction-of-child).
     query = f"""
         SELECT ir.value_numeric,
-               af.overlap_ratio,
+               af.overlap_measure,
                ir.quality_flag
         FROM curated_geo.aoi_feature af
         LEFT JOIN curated_geo.indicator_result ir

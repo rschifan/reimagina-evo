@@ -552,7 +552,10 @@ worker (see `JOB_LAYER.md`) is queued. For each AGEB, it:
 
 1. reads the current block-grain walkability `indicator_result` rows,
 2. joins them to `curated_geo.feature_overlap` on the target AGEB,
-3. computes the weighted mean using `overlap_ratio` as the per-block weight,
+3. computes the weighted mean using `overlap_measure` (absolute intersection
+   area) as the per-block weight — not `overlap_ratio`, which collapses to
+   ~1.0 for fully-contained children and would degrade the aggregate to a
+   plain arithmetic mean for extensive metrics like building density,
 4. marks any existing AGEB-grain `current` rows stale,
 5. inserts a new AGEB-grain row with `quality_flag = 'estimated'` and
    `lineage_ref.triggering_job_run_ids` pointing back to the block model run.
