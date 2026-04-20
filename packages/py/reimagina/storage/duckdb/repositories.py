@@ -1375,6 +1375,38 @@ class DuckDBAOISummaryRepository:
         ).fetchall()
         return [dict(zip(_AOI_SUMMARY_COLS, row)) for row in rows]
 
+    def fetch_aoi_children(
+        self,
+        *,
+        aoi_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[tuple[float | None, float, str]]:
+        # See Protocol docstring for why weight is overlap_measure.
+        scenario_clause, scenario_params = _scenario_filter(
+            "CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?"
+        )
+        params: list = [indicator_slug, *scenario_params, aoi_id]
+        rows = self.connection.execute(
+            f"""
+            SELECT ir.value_numeric,
+                   af.overlap_measure,
+                   ir.quality_flag
+            FROM curated_geo.aoi_feature af
+            LEFT JOIN curated_geo.indicator_result ir
+              ON ir.feature_id = af.feature_id
+             AND ir.indicator_slug = ?
+             AND ir.status = 'current'
+             AND {scenario_clause}
+            WHERE CAST(af.aoi_id AS VARCHAR) = ?
+            """,
+            params,
+        ).fetchall()
+        return [
+            (float(value) if value is not None else None, float(weight), quality or "missing")
+            for value, weight, quality in rows
+        ]
+
 
 # ─── Job run ────────────────────────────────────────────────────────────────
 

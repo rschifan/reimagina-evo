@@ -438,6 +438,25 @@ class AOISummaryRepository(Protocol):
         only_current: bool = True,
     ) -> list[dict[str, Any]]: ...
 
+    def fetch_aoi_children(
+        self,
+        *,
+        aoi_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[tuple[float | None, float, str]]:
+        """Return ``(value, weight, quality_flag)`` for each feature in the AOI.
+
+        Joins ``aoi_feature`` to ``indicator_result`` on the given slug +
+        scenario scope. ``weight`` is ``aoi_feature.overlap_measure``
+        (absolute area) — ``overlap_ratio`` would collapse fully-nested
+        children to 1.0 and degrade weighted aggregates to an arithmetic
+        mean. Features with no current indicator row appear with
+        ``value=None`` and ``quality='missing'`` so the worker's
+        missing-weight policy can account for them.
+        """
+        ...
+
 
 class TileSnapshotRepository(Protocol):
     def register_snapshot(
