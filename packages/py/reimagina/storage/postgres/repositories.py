@@ -1029,7 +1029,6 @@ class PostgresServingReader:
             sql = f"""
                 SELECT
                     f.id, f.type_slug, f.role, f.name,
-                    ST_AsText(f.geometry) AS geometry_wkt,
                     f.attributes,
                     f.overlap_ratio,
                     f.created_at
@@ -1044,7 +1043,6 @@ class PostgresServingReader:
             sql = f"""
                 SELECT
                     f.id, f.type_slug, f.role, f.name,
-                    ST_AsText(f.geometry) AS geometry_wkt,
                     f.attributes,
                     f.created_at
                 FROM serving_geo.feature_v f

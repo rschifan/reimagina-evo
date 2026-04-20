@@ -1110,7 +1110,6 @@ class DuckDBServingReader:
                     f.type_slug,
                     f.role,
                     f.name,
-                    ST_AsText(f.geometry) AS geometry_wkt,
                     CAST(f.attributes AS VARCHAR) AS attributes,
                     f.overlap_ratio,
                     f.created_at
@@ -1130,7 +1129,6 @@ class DuckDBServingReader:
                     f.type_slug,
                     f.role,
                     f.name,
-                    ST_AsText(f.geometry) AS geometry_wkt,
                     CAST(f.attributes AS VARCHAR) AS attributes,
                     f.created_at
                 FROM serving_geo.feature_v f
