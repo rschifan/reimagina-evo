@@ -7,7 +7,7 @@ attribute/catalog side so list views and search don't have to parse tiles.
 from __future__ import annotations
 
 import psycopg2
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from ..deps import get_backend, get_db_conn
@@ -42,13 +42,19 @@ def list_features(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> FeaturePage:
     """Paginated feature inventory — wraps ServingReader.get_features."""
-    payload = get_backend(conn).serving_reader().get_features(
-        type_slug=type_slug,
-        role=role,
-        aoi_id=aoi_id,
-        limit=limit,
-        after_cursor=after_cursor,
-    )
+    try:
+        payload = get_backend(conn).serving_reader().get_features(
+            type_slug=type_slug,
+            role=role,
+            aoi_id=aoi_id,
+            limit=limit,
+            after_cursor=after_cursor,
+        )
+    except ValueError as exc:
+        # decode_cursor raises ValueError for malformed tokens. That's a
+        # client mistake, not a server fault — surface it as 422 rather
+        # than letting the generic 500 handler catch it.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return FeaturePage(
         features=[_feature_row(row) for row in payload["features"]],
         next_cursor=payload.get("next_cursor"),

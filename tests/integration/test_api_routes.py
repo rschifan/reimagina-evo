@@ -315,6 +315,12 @@ def test_features_endpoint_rejects_zero_limit_with_422(client):
     assert response.status_code == 422
 
 
+def test_features_endpoint_rejects_malformed_cursor_with_422(client):
+    """A bad after_cursor is a client mistake, not a 500."""
+    response = client.get("/features?after_cursor=not-a-valid-cursor")
+    assert response.status_code == 422
+
+
 def test_aoi_summaries_rejects_malformed_uuid_with_422(client):
     """UUID-typed path parameter → 422 before any DB round trip."""
     response = client.get("/aois/not-a-uuid/summaries")
