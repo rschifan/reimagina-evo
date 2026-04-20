@@ -9,12 +9,9 @@ import pytest
 
 from reimagina.data import aoi
 from reimagina.data import catalog as cat
-from reimagina.data import explore
 from reimagina.data import feature as feat
 from reimagina.data import file_asset
 from reimagina.data import observation as obs
-from reimagina.data import serving
-from reimagina.data import tiles as tile_data
 from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
@@ -22,7 +19,7 @@ from reimagina.jobs import overlap as overlap_jobs
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.pipeline import loader
 from reimagina.storage import backend_for_connection
-from reimagina.tiles.service import export_pmtiles_snapshot
+from reimagina.tiles.service import export_pmtiles_snapshot, resolve_tile_sources
 from tests.integration._helpers import (
     insert_feature as _insert_feature,
     insert_project as _insert_project,
@@ -132,13 +129,13 @@ def test_explore_views_surface_source_and_feature_counts(conn):
         geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
     )
 
-    layers = explore.get_layers(conn)
+    layers = backend_for_connection(conn).explore_reader().list_layers()
     assert any(row["logical_name"] == "feature_type_stats" for row in layers)
 
-    sources = explore.get_sources(conn)
+    sources = backend_for_connection(conn).explore_reader().list_sources()
     assert any(row["source_id"] == source_id and row["ingestion_run_id"] == run_id for row in sources)
 
-    feature_stats = explore.get_feature_stats(conn)
+    feature_stats = backend_for_connection(conn).explore_reader().list_feature_stats()
     assert any(
         row["source_id"] == source_id
         and row["type_slug"] == "building"
@@ -146,12 +143,12 @@ def test_explore_views_surface_source_and_feature_counts(conn):
         for row in feature_stats
     )
 
-    serving_stats = explore.get_serving_stats(conn)
+    serving_stats = backend_for_connection(conn).explore_reader().list_serving_stats()
     assert any(row["stat_scope"] == "all" and row["row_count"] >= 1 for row in serving_stats)
 
 
 def test_tile_snapshot_registry_and_source_resolution(conn):
-    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
     assert latest is None
 
     snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
@@ -164,11 +161,11 @@ def test_tile_snapshot_registry_and_source_resolution(conn):
     )
     assert snapshot_id
 
-    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
     assert latest is not None
     assert latest["layer_id"] == "admin_reference"
 
-    sources = tile_data.get_tile_sources(
+    sources = resolve_tile_sources(
         conn,
         live_tilejson_base_url="http://localhost:3000/get_tile",
         snapshot_base_url="http://localhost:3001",
@@ -205,7 +202,7 @@ def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path)
     assert payload["layer_id"] == "admin_reference"
     assert Path(payload["artifact_path"]).exists()
 
-    latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
     assert latest is not None
     assert latest["snapshot_version"] == "20260415T130000Z"
     assert latest["artifact_uri"] == "http://localhost:3001/admin_reference-20260415T130000Z.pmtiles"
@@ -576,7 +573,7 @@ def test_aoi_computation_and_serving_view_cover_polygon_line_and_point(conn):
     assert overlaps[1][1] < 1
     assert overlaps[2][1] == 1
 
-    page = serving.get_features(conn, aoi_id=aoi_id)
+    page = backend_for_connection(conn).serving_reader().get_features(aoi_id=aoi_id)
     features = page["features"]
     assert len(features) == 3
     assert all("overlap_ratio" in row for row in features)
@@ -864,7 +861,7 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
     assert serving_rows == [(indicator_id, 5.0)]
 
     # Explore catalog surfaces the new layers.
-    layers = explore.get_layers(conn)
+    layers = backend_for_connection(conn).explore_reader().list_layers()
     names = {(row["schema_name"], row["object_name"]) for row in layers}
     assert ("curated_geo", "aoi_indicator_summary") in names
     assert ("serving_geo", "aoi_summary_v") in names
@@ -1029,7 +1026,7 @@ def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
         assert artifact_path.stat().st_size > 0, "PMTiles artifact is empty"
         assert payload["source_relation"] == "serving_geo.admin_v"
 
-        latest = tile_data.get_latest_tile_snapshot(conn, layer_id="admin_reference")
+        latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
         assert latest is not None
         assert latest["snapshot_version"] == payload["snapshot_version"]
         assert latest["status"] == "ready"
