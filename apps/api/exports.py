@@ -59,22 +59,46 @@ def indicator_rows_to_csv(rows: Iterable[dict]) -> Iterator[bytes]:
         buffer.truncate(0)
 
 
+class MalformedGeometryError(ValueError):
+    """Raised when an indicator row carries a non-null WKB that shapely can't decode.
+
+    The download formats are the boundary where a silent skip would turn a
+    storage-layer bug into a subtly-truncated file for the user. Raising
+    here lets the API return a 500 that surfaces the problem, rather than
+    shipping a 200 with missing features.
+    """
+
+
+def _decode_geometry(row: dict):
+    """Shapely-decode row['geometry_wkb']. Returns None iff WKB is null/empty.
+
+    Non-empty-but-broken WKB raises MalformedGeometryError with the row's
+    feature_id for triage.
+    """
+    wkb = row.get("geometry_wkb")
+    if not wkb:
+        return None
+    try:
+        return shapely.wkb.loads(bytes(wkb))
+    except Exception as exc:  # shapely raises GEOSException / TypeError / etc.
+        raise MalformedGeometryError(
+            f"Undecodable WKB for feature_id={row.get('feature_id')!r}: {exc}"
+        ) from exc
+
+
 def indicator_rows_to_geojson(rows: Iterable[dict]) -> dict:
     """Return a GeoJSON FeatureCollection (EPSG:4326) for every row.
 
     Each feature carries value + quality_flag + computed_at on `properties`
     and a Shapely-decoded GeoJSON geometry. Rows with a null / empty WKB
-    are skipped — the caller can still find them via the JSON list endpoint
-    if they need the raw row.
+    are skipped; rows with a non-null but undecodable WKB raise
+    MalformedGeometryError so the caller sees the failure instead of a
+    silently-truncated file.
     """
     features: list[dict] = []
     for row in rows:
-        wkb = row.get("geometry_wkb")
-        if not wkb:
-            continue
-        try:
-            geom = shapely.wkb.loads(bytes(wkb))
-        except Exception:
+        geom = _decode_geometry(row)
+        if geom is None:
             continue
         features.append({
             "type": "Feature",
@@ -96,18 +120,14 @@ def indicator_rows_to_geoparquet(rows: Iterable[dict]) -> bytes:
 
     Preserves CRS=EPSG:4326 so the file opens directly in QGIS / geopandas
     without further reprojection. Returns an empty (valid) GeoParquet when
-    `rows` is empty so callers always get a parseable file back.
+    `rows` is empty. Malformed WKB raises MalformedGeometryError (see
+    indicator_rows_to_geojson for rationale).
     """
-    materialised = list(rows)
     records = []
     geometries = []
-    for row in materialised:
-        wkb = row.get("geometry_wkb")
-        if not wkb:
-            continue
-        try:
-            geom = shapely.wkb.loads(bytes(wkb))
-        except Exception:
+    for row in rows:
+        geom = _decode_geometry(row)
+        if geom is None:
             continue
         records.append({
             "feature_id": row["feature_id"],
