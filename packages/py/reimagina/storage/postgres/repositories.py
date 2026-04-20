@@ -1242,6 +1242,38 @@ class PostgresAOISummaryRepository:
             )
             return [dict(row) for row in cur.fetchall()]
 
+    def fetch_aoi_children(
+        self,
+        *,
+        aoi_id: str,
+        indicator_slug: str,
+        scenario_id: str | None = None,
+    ) -> list[tuple[float | None, float, str]]:
+        # Weight = overlap_measure (absolute area inside the AOI); see
+        # Protocol docstring for why overlap_ratio is wrong here.
+        scenario_clause, scenario_params = _scenario_filter("ir.scenario_id", scenario_id)
+        params: list = [indicator_slug, *scenario_params, aoi_id]
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT ir.value_numeric,
+                       af.overlap_measure,
+                       ir.quality_flag
+                FROM curated_geo.aoi_feature af
+                LEFT JOIN curated_geo.indicator_result ir
+                     ON ir.feature_id = af.feature_id
+                    AND ir.indicator_slug = %s
+                    AND ir.status = 'current'
+                    AND {scenario_clause}
+                WHERE af.aoi_id = %s
+                """,
+                params,
+            )
+            return [
+                (float(value) if value is not None else None, float(weight), quality or "missing")
+                for value, weight, quality in cur.fetchall()
+            ]
+
 
 # ─── Job run ────────────────────────────────────────────────────────────────
 

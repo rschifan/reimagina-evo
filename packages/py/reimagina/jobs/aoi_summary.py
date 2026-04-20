@@ -8,7 +8,6 @@ one row per (aoi_id, scenario_id, indicator_id) into `aoi_indicator_summary`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from reimagina.jobs.aggregation import (
     MissingAggregationInputs,
@@ -57,8 +56,7 @@ def summarise_aoi(
         )
     indicator_id = catalog["id"]
 
-    children = _fetch_aoi_children(
-        backend=backend,
+    children = backend.aoi_summary_repo().fetch_aoi_children(
         aoi_id=aoi_id,
         indicator_slug=indicator_slug,
         scenario_id=scenario_id,
@@ -147,113 +145,3 @@ def summarise_aoi(
     )
 
 
-def _fetch_aoi_children(
-    *,
-    backend: Any,
-    aoi_id: str,
-    indicator_slug: str,
-    scenario_id: str | None,
-) -> list[tuple[float | None, float, str]]:
-    """Return (value, weight, quality_flag) for each feature in the AOI.
-
-    Uses curated_geo.aoi_feature for per-feature weights so the summary
-    inherits whatever overlap basis the AOI compute used (area, length,
-    presence). Features without a current indicator_result show up with
-    value=None so the missing-weight policy can account for them.
-    """
-    conn = backend.connection
-    if backend.name == "postgres":
-        return _fetch_aoi_children_postgres(
-            conn,
-            aoi_id=aoi_id,
-            indicator_slug=indicator_slug,
-            scenario_id=scenario_id,
-        )
-    return _fetch_aoi_children_duckdb(
-        conn,
-        aoi_id=aoi_id,
-        indicator_slug=indicator_slug,
-        scenario_id=scenario_id,
-    )
-
-
-def _fetch_aoi_children_postgres(
-    conn,
-    *,
-    aoi_id: str,
-    indicator_slug: str,
-    scenario_id: str | None,
-) -> list[tuple[float | None, float, str]]:
-    # SQL placeholder order: indicator_slug, [scenario_id], aoi_id — matching
-    # the LEFT JOIN clause order and the final WHERE.
-    scenario_predicate = (
-        "ir.scenario_id IS NULL"
-        if scenario_id is None
-        else "ir.scenario_id = %s"
-    )
-    params: list = [indicator_slug]
-    if scenario_id is not None:
-        params.append(scenario_id)
-    params.append(aoi_id)
-    with conn.cursor() as cur:
-        # Weight = overlap_measure (absolute area of the feature inside the
-        # AOI) so weighted_mean is area-weighted. overlap_ratio (fraction of
-        # the child inside the AOI) collapses to ~1.0 for fully-contained
-        # children and would degrade the aggregate to a plain arithmetic
-        # mean for extensive metrics like building density. Same rationale
-        # as reimagina.jobs.rollup._group_children_postgres.
-        cur.execute(
-            f"""
-            SELECT ir.value_numeric,
-                   af.overlap_measure,
-                   ir.quality_flag
-            FROM curated_geo.aoi_feature af
-            LEFT JOIN curated_geo.indicator_result ir
-                 ON ir.feature_id = af.feature_id
-                AND ir.indicator_slug = %s
-                AND ir.status = 'current'
-                AND {scenario_predicate}
-            WHERE af.aoi_id = %s
-            """,
-            params,
-        )
-        return [
-            (float(value) if value is not None else None, float(weight), quality or "missing")
-            for value, weight, quality in cur.fetchall()
-        ]
-
-
-def _fetch_aoi_children_duckdb(
-    conn,
-    *,
-    aoi_id: str,
-    indicator_slug: str,
-    scenario_id: str | None,
-) -> list[tuple[float | None, float, str]]:
-    scenario_predicate = (
-        "ir.scenario_id IS NULL"
-        if scenario_id is None
-        else "CAST(ir.scenario_id AS VARCHAR) = ?"
-    )
-    # See _fetch_aoi_children_postgres for why the weight is overlap_measure
-    # (absolute area), not overlap_ratio (fraction-of-child).
-    query = f"""
-        SELECT ir.value_numeric,
-               af.overlap_measure,
-               ir.quality_flag
-        FROM curated_geo.aoi_feature af
-        LEFT JOIN curated_geo.indicator_result ir
-          ON ir.feature_id = af.feature_id
-         AND ir.indicator_slug = ?
-         AND ir.status = 'current'
-         AND {scenario_predicate}
-        WHERE CAST(af.aoi_id AS VARCHAR) = ?
-    """
-    params: list = [indicator_slug]
-    if scenario_id is not None:
-        params.append(scenario_id)
-    params.append(aoi_id)
-    return [
-        (float(value) if value is not None else None, float(weight), quality or "missing")
-        for value, weight, quality in conn.execute(query, params).fetchall()
-    ]
