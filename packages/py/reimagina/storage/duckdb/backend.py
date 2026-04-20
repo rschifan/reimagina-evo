@@ -18,7 +18,6 @@ from .repositories import (
     DuckDBSourceCatalogRepository,
     DuckDBTileSnapshotRepository,
 )
-from ..capabilities import StorageCapabilities
 
 
 class DuckDBStorageBackend:
@@ -26,15 +25,6 @@ class DuckDBStorageBackend:
 
     def __init__(self, connection):
         self.connection = connection
-
-    def capabilities(self) -> StorageCapabilities:
-        return StorageCapabilities(
-            backend_name="duckdb",
-            supports_triggers=False,
-            supports_materialized_views=False,
-            supports_spatial_index=True,
-            supports_partial_indexes=False,
-        )
 
     def run_migrations(self) -> None:
         run_duckdb_migrations(self.connection)
