@@ -55,9 +55,9 @@ def _probe_db() -> str:
     a dedicated connection each time — if that fails, readiness fails,
     which is exactly the signal the probe is there to give.
     """
-    from ..deps import DEFAULT_API_DSN
+    from ..deps import api_dsn
     try:
-        conn = psycopg2.connect(DEFAULT_API_DSN, connect_timeout=2)
+        conn = psycopg2.connect(api_dsn(), connect_timeout=2)
     except psycopg2.Error:
         return "unreachable"
     try:

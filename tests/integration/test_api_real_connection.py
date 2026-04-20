@@ -23,19 +23,17 @@ from apps.api.app import create_app
 
 
 @pytest.fixture
-def real_conn_client(migrated_db) -> Iterator[TestClient]:
+def real_conn_client(migrated_db, monkeypatch) -> Iterator[TestClient]:
     """TestClient with a live pool against the migrated test DB.
 
     `migrated_db` is the session-scoped fixture in tests/conftest.py that
     Alembic-migrates whatever DB TEST_DATABASE_URL points at (with a
-    name-safety rail — refuses non-`*test*` names).  Here we shove that
-    DSN into the API module's pool factory and let the lifespan run.
+    name-safety rail — refuses non-`*test*` names).  Setting
+    REIMAGINA_APP_DSN steers `deps.api_dsn()` at the pool factory + the
+    readiness probe without patching module state.
     """
-    # Shutdown any pool that might still be active from a previous test run.
     deps.shutdown_pool()
-    # Override the pool DSN so `initialise_pool()` targets the test DB.
-    original_dsn = deps.DEFAULT_API_DSN
-    deps.DEFAULT_API_DSN = migrated_db
+    monkeypatch.setenv("REIMAGINA_APP_DSN", migrated_db)
     app = create_app(initialise_pool=True)
     try:
         with TestClient(app) as client:
@@ -44,7 +42,6 @@ def real_conn_client(migrated_db) -> Iterator[TestClient]:
         # Belt-and-braces: ensure the pool is closed even if lifespan
         # didn't fire (e.g. if TestClient raised during setup).
         deps.shutdown_pool()
-        deps.DEFAULT_API_DSN = original_dsn
 
 
 def test_pool_backed_liveness(real_conn_client):
