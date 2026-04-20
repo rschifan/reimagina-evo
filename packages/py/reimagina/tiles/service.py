@@ -1,6 +1,7 @@
 """PMTiles snapshot export and frontend-facing layer source resolution."""
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,23 @@ def _postgres_ogr_connection_string(dsn: str) -> str:
     if parsed.password:
         parts.append(f"password='{parsed.password}'")
     return "PG:" + " ".join(parts)
+
+
+def _redact_ogr_command(command: list[str]) -> list[str]:
+    """Replace password secrets in a PG: connection-string argument.
+
+    ogr2ogr takes the full PG connection string as an argv entry, which
+    includes the database password. Returning or logging the raw command
+    leaks that secret to terminals, CI logs, and pasted bug reports —
+    this helper produces a redacted copy safe to surface to callers.
+    """
+    redacted: list[str] = []
+    for arg in command:
+        if arg.startswith("PG:") and "password='" in arg:
+            redacted.append(re.sub(r"password='[^']*'", "password='***'", arg))
+        else:
+            redacted.append(arg)
+    return redacted
 
 
 def _layer_query(layer: TileLayerDefinition) -> str:
@@ -87,7 +105,14 @@ def _run_export_command(command: list[str]) -> None:
         has_artifact = artifact_path is not None and artifact_path.exists() and artifact_path.stat().st_size > 0
         if benign and has_artifact:
             return
-        raise
+        # Re-raise with a redacted cmd so the traceback / str(exc) does not
+        # leak the Postgres password embedded in the PG: connection string.
+        raise subprocess.CalledProcessError(
+            exc.returncode,
+            _redact_ogr_command(exc.cmd),
+            output=exc.output,
+            stderr=exc.stderr,
+        ) from None
 
 
 def _latest_lineage_marker(conn) -> dict[str, str | None]:
@@ -197,7 +222,7 @@ def export_pmtiles_snapshot(
         "artifact_uri": artifact_uri,
         "source_mode": layer.source_mode,
         "source_relation": layer.source_relation,
-        "command": command,
+        "command": _redact_ogr_command(command),
     }
 
 
