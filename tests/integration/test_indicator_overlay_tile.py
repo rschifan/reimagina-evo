@@ -191,3 +191,101 @@ def test_tile_filters_by_scenario_id(conn):
     scenario = mapbox_vector_tile.decode(scenario_tile)["indicator_overlay"]["features"]
     assert len(scenario) == 1
     assert scenario[0]["properties"]["value_numeric"] == pytest.approx(0.42)
+
+
+def test_tile_filters_by_feature_type(conn):
+    """r018 regression: same slug written at two grains must not overlap.
+
+    Before r018, a multi-grain indicator (e.g. block_building_density,
+    which has applies_to=['block', 'ageb'] and uses a rollup to produce
+    AGEB rows) rendered overlapping polygons on the same tile because
+    the server returned every grain in applies_to. r018 added an optional
+    feature_type query param that scopes the tile to one grain. This
+    test seeds a block + an overlapping AGEB row with the same slug and
+    asserts each filtered tile only carries its requested grain.
+    """
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+    from reimagina.storage import backend_for_connection
+
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="tile_feature_type_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+
+    # Block + AGEB features, both intersecting the same z=14 tile.
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    ageb_type = feat.get_type_id(conn, "MEX", "ageb")
+    block_id = _insert_feature(
+        conn,
+        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref=f"block-{uuid4().hex[:8]}",
+        geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
+    )
+    ageb_id = _insert_feature(
+        conn,
+        type_id=ageb_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref=f"ageb-{uuid4().hex[:8]}",
+        geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
+    )
+
+    # Write one block row + one AGEB row for the same multi-grain slug.
+    backend = backend_for_connection(conn)
+    job_run_id = backend.job_run_repo().start_job(
+        model_family="urban_form", code_version="test", status="running",
+    )
+    slug = "urban_form_block_building_density"
+    result_repo = backend.indicator_result_repo()
+    result_repo.write_result(
+        feature_id=block_id,
+        indicator_slug=slug,
+        job_run_id=job_run_id,
+        value_numeric=12.0,
+    )
+    result_repo.write_result(
+        feature_id=ageb_id,
+        indicator_slug=slug,
+        job_run_id=job_run_id,
+        value_numeric=99.0,
+    )
+
+    def _render(params_json: str) -> list[dict]:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT serving_geo.indicator_overlay_tile(14, 3680, 7290, %s::json)",
+                (params_json,),
+            )
+            tile_bytes = bytes(cur.fetchone()[0])
+        if not tile_bytes:
+            return []
+        return (
+            mapbox_vector_tile.decode(tile_bytes)
+            .get("indicator_overlay", {})
+            .get("features", [])
+        )
+
+    block_only = _render(
+        f'{{"indicator_slug": "{slug}", "feature_type": "block"}}'
+    )
+    assert len(block_only) == 1
+    assert block_only[0]["properties"]["feature_id"] == block_id
+    assert block_only[0]["properties"]["type_slug"] == "block"
+
+    ageb_only = _render(
+        f'{{"indicator_slug": "{slug}", "feature_type": "ageb"}}'
+    )
+    assert len(ageb_only) == 1
+    assert ageb_only[0]["properties"]["feature_id"] == ageb_id
+    assert ageb_only[0]["properties"]["type_slug"] == "ageb"
+
+    # No feature_type filter: both grains land in the tile (pre-r018
+    # behaviour). This half of the assertion protects r018 itself from
+    # regressing into "always filter by grain".
+    both = _render(f'{{"indicator_slug": "{slug}"}}')
+    type_slugs = {f["properties"]["type_slug"] for f in both}
+    assert type_slugs == {"block", "ageb"}
