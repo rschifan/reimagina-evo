@@ -290,6 +290,44 @@ class PostgresFeatureRepository:
                 inserted_count += max(cur.rowcount, 0)
         return inserted_count
 
+    def geodesic_metrics_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, float, float]]:
+        # ::geography gives geodesic area/perimeter directly; no reprojection
+        # needed. AOI-scoped variant uses the GIST index on AOI + feature.
+        with self.connection.cursor() as cur:
+            if aoi_id is None:
+                cur.execute(
+                    """
+                    SELECT f.id::text,
+                           ST_Area(f.geometry::geography),
+                           ST_Perimeter(f.geometry::geography)
+                    FROM curated_geo.feature f
+                    WHERE f.type_id = %s
+                    """,
+                    (type_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT f.id::text,
+                           ST_Area(f.geometry::geography),
+                           ST_Perimeter(f.geometry::geography)
+                    FROM curated_geo.feature f
+                    JOIN curated_geo.area_of_interest aoi
+                      ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
+                    WHERE f.type_id = %s
+                    """,
+                    (aoi_id, type_id),
+                )
+            return [
+                (str(fid), float(area), float(perim))
+                for fid, area, perim in cur.fetchall()
+            ]
+
 
 class PostgresObservationRepository:
     def __init__(self, connection):
