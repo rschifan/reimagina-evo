@@ -48,8 +48,10 @@ def seeded_block_with_compactness(conn):
 
     Returns a dict with feature_id (+ slug) so tests can cross-check values.
     """
-    from tests.integration.test_data_layer_contracts import (
-        _insert_feature, _register_source, _start_run,
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
     )
     seed_catalog(conn)
     source_id = _register_source(
@@ -171,8 +173,10 @@ def test_aoi_summaries_404s_on_unknown_aoi(client):
 
 
 def test_features_endpoint_returns_paginated_rows(client, conn):
-    from tests.integration.test_data_layer_contracts import (
-        _insert_feature, _register_source, _start_run,
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
     )
     source_id = _register_source(
         conn, name="api_features_src",
