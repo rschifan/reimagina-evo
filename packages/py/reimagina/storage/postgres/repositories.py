@@ -328,6 +328,53 @@ class PostgresFeatureRepository:
                 for fid, area, perim in cur.fetchall()
             ]
 
+    def centroid_in_parent_counts(
+        self,
+        *,
+        parent_type_id: str,
+        child_type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, int, float]]:
+        with self.connection.cursor() as cur:
+            if aoi_id is None:
+                cur.execute(
+                    """
+                    SELECT parent.id::text,
+                           COUNT(child.id)::int,
+                           ST_Area(parent.geometry::geography)
+                    FROM curated_geo.feature parent
+                    LEFT JOIN curated_geo.feature child
+                           ON child.type_id = %s
+                          AND parent.geometry && child.geometry
+                          AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
+                    WHERE parent.type_id = %s
+                    GROUP BY parent.id, parent.geometry
+                    """,
+                    (child_type_id, parent_type_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT parent.id::text,
+                           COUNT(child.id)::int,
+                           ST_Area(parent.geometry::geography)
+                    FROM curated_geo.feature parent
+                    JOIN curated_geo.area_of_interest aoi
+                      ON aoi.id = %s AND ST_Intersects(parent.geometry, aoi.geometry)
+                    LEFT JOIN curated_geo.feature child
+                           ON child.type_id = %s
+                          AND parent.geometry && child.geometry
+                          AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
+                    WHERE parent.type_id = %s
+                    GROUP BY parent.id, parent.geometry
+                    """,
+                    (aoi_id, child_type_id, parent_type_id),
+                )
+            return [
+                (str(fid), int(count), float(area))
+                for fid, count, area in cur.fetchall()
+            ]
+
 
 class PostgresObservationRepository:
     def __init__(self, connection):

@@ -14,7 +14,6 @@ would produce at block boundaries. Standard convention in urban analysis.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from reimagina.data.feature import get_type_id
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_BUILDING_DENSITY
@@ -77,10 +76,9 @@ def compute_block_building_density(
         status="running",
     )
     try:
-        rows = _fetch_block_building_counts(
-            backend=backend,
-            block_type_id=block_type_id,
-            building_type_id=building_type_id,
+        rows = backend.feature_repo().centroid_in_parent_counts(
+            parent_type_id=block_type_id,
+            child_type_id=building_type_id,
             aoi_id=aoi_id,
         )
         numeric_rows = [
@@ -111,127 +109,3 @@ def compute_block_building_density(
         rows_written=rows_written,
         aoi_id=aoi_id,
     )
-
-
-# ─── Backend-specific counts readers ───────────────────────────────────────
-
-
-def _fetch_block_building_counts(
-    *,
-    backend: Any,
-    block_type_id: str,
-    building_type_id: str,
-    aoi_id: str | None,
-) -> list[tuple[str, int, float]]:
-    """Return (block_feature_id, building_count, area_m2) for each eligible block.
-
-    Every in-scope block appears exactly once even when zero buildings match —
-    the join is LEFT on the building side so the downstream compute worker
-    can emit a measured 0.0/ha row rather than a missing one.
-    """
-    conn = backend.connection
-    if backend.name == "postgres":
-        return _fetch_block_building_counts_postgres(
-            conn,
-            block_type_id=block_type_id,
-            building_type_id=building_type_id,
-            aoi_id=aoi_id,
-        )
-    return _fetch_block_building_counts_duckdb(
-        conn,
-        block_type_id=block_type_id,
-        building_type_id=building_type_id,
-        aoi_id=aoi_id,
-    )
-
-
-def _fetch_block_building_counts_postgres(
-    conn,
-    *,
-    block_type_id: str,
-    building_type_id: str,
-    aoi_id: str | None,
-) -> list[tuple[str, int, float]]:
-    with conn.cursor() as cur:
-        if aoi_id is None:
-            cur.execute(
-                """
-                SELECT block.id::text,
-                       COUNT(bldg.id)::int,
-                       ST_Area(block.geometry::geography)
-                FROM curated_geo.feature block
-                LEFT JOIN curated_geo.feature bldg
-                       ON bldg.type_id = %s
-                      AND block.geometry && bldg.geometry
-                      AND ST_Within(ST_Centroid(bldg.geometry), block.geometry)
-                WHERE block.type_id = %s
-                GROUP BY block.id, block.geometry
-                """,
-                (building_type_id, block_type_id),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT block.id::text,
-                       COUNT(bldg.id)::int,
-                       ST_Area(block.geometry::geography)
-                FROM curated_geo.feature block
-                JOIN curated_geo.area_of_interest aoi
-                  ON aoi.id = %s AND ST_Intersects(block.geometry, aoi.geometry)
-                LEFT JOIN curated_geo.feature bldg
-                       ON bldg.type_id = %s
-                      AND block.geometry && bldg.geometry
-                      AND ST_Within(ST_Centroid(bldg.geometry), block.geometry)
-                WHERE block.type_id = %s
-                GROUP BY block.id, block.geometry
-                """,
-                (aoi_id, building_type_id, block_type_id),
-            )
-        return [(str(fid), int(count), float(area)) for fid, count, area in cur.fetchall()]
-
-
-def _fetch_block_building_counts_duckdb(
-    conn,
-    *,
-    block_type_id: str,
-    building_type_id: str,
-    aoi_id: str | None,
-) -> list[tuple[str, int, float]]:
-    # UTM 14N area for CDMX — matches the compactness worker; accurate enough
-    # at this latitude for a hectare-scale metric.
-    if aoi_id is None:
-        rows = conn.execute(
-            """
-            SELECT CAST(block.id AS VARCHAR),
-                   COUNT(bldg.id),
-                   ST_Area(ST_Transform(block.geometry, 'EPSG:4326', 'EPSG:32614', true))
-            FROM curated_geo.feature block
-            LEFT JOIN curated_geo.feature bldg
-                   ON CAST(bldg.type_id AS VARCHAR) = ?
-                  AND ST_Intersects(block.geometry, bldg.geometry)
-                  AND ST_Within(ST_Centroid(bldg.geometry), block.geometry)
-            WHERE CAST(block.type_id AS VARCHAR) = ?
-            GROUP BY block.id, block.geometry
-            """,
-            [building_type_id, block_type_id],
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT CAST(block.id AS VARCHAR),
-                   COUNT(bldg.id),
-                   ST_Area(ST_Transform(block.geometry, 'EPSG:4326', 'EPSG:32614', true))
-            FROM curated_geo.feature block
-            JOIN curated_geo.area_of_interest aoi
-              ON CAST(aoi.id AS VARCHAR) = ?
-              AND ST_Intersects(block.geometry, aoi.geometry)
-            LEFT JOIN curated_geo.feature bldg
-                   ON CAST(bldg.type_id AS VARCHAR) = ?
-                  AND ST_Intersects(block.geometry, bldg.geometry)
-                  AND ST_Within(ST_Centroid(bldg.geometry), block.geometry)
-            WHERE CAST(block.type_id AS VARCHAR) = ?
-            GROUP BY block.id, block.geometry
-            """,
-            [aoi_id, building_type_id, block_type_id],
-        ).fetchall()
-    return [(str(fid), int(count), float(area)) for fid, count, area in rows]

@@ -408,6 +408,50 @@ class DuckDBFeatureRepository:
             ).fetchall()
         return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]
 
+    def centroid_in_parent_counts(
+        self,
+        *,
+        parent_type_id: str,
+        child_type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, int, float]]:
+        if aoi_id is None:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(parent.id AS VARCHAR),
+                       COUNT(child.id),
+                       ST_Area(ST_Transform(parent.geometry, 'EPSG:4326', 'EPSG:32614', true))
+                FROM curated_geo.feature parent
+                LEFT JOIN curated_geo.feature child
+                       ON CAST(child.type_id AS VARCHAR) = ?
+                      AND ST_Intersects(parent.geometry, child.geometry)
+                      AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
+                WHERE CAST(parent.type_id AS VARCHAR) = ?
+                GROUP BY parent.id, parent.geometry
+                """,
+                [child_type_id, parent_type_id],
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(parent.id AS VARCHAR),
+                       COUNT(child.id),
+                       ST_Area(ST_Transform(parent.geometry, 'EPSG:4326', 'EPSG:32614', true))
+                FROM curated_geo.feature parent
+                JOIN curated_geo.area_of_interest aoi
+                  ON CAST(aoi.id AS VARCHAR) = ?
+                  AND ST_Intersects(parent.geometry, aoi.geometry)
+                LEFT JOIN curated_geo.feature child
+                       ON CAST(child.type_id AS VARCHAR) = ?
+                      AND ST_Intersects(parent.geometry, child.geometry)
+                      AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
+                WHERE CAST(parent.type_id AS VARCHAR) = ?
+                GROUP BY parent.id, parent.geometry
+                """,
+                [aoi_id, child_type_id, parent_type_id],
+            ).fetchall()
+        return [(str(fid), int(count), float(area)) for fid, count, area in rows]
+
 
 class DuckDBObservationRepository:
     def __init__(self, connection):
