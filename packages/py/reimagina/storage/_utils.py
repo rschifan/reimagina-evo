@@ -42,6 +42,23 @@ def normalize_json_value(value):
     return value
 
 
+def scenario_filter(
+    column: str,
+    scenario_id: str | None,
+    placeholder: str = "%s",
+) -> tuple[str, list]:
+    """Build a NULL-safe scenario_id WHERE clause fragment.
+
+    Returns ``(sql, params)`` so callers can append to their clause lists
+    without repeating the if/else. ``column`` may be qualified
+    (``"ir.scenario_id"``) or wrapped in a cast
+    (``"CAST(scenario_id AS VARCHAR)"``) — the helper does not introspect it.
+    """
+    if scenario_id is None:
+        return f"{column} IS NULL", []
+    return f"{column} = {placeholder}", [scenario_id]
+
+
 def encode_cursor(created_at: Any, feature_id: str) -> str:
     """Encode a (created_at, id) pair as an opaque, URL-safe pagination cursor."""
     ts = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
