@@ -82,15 +82,26 @@ class _BenignGdalQuirk:
     SQLITE_DIALECT_MISSING = "OGR2SQLITE_Setup"
 
 
+_OGR_EXPORT_TIMEOUT_SECONDS = 30 * 60  # 30 min — large CDMX layers are ~minutes
+
+
 def _run_export_command(command: list[str]) -> None:
     """Run ogr2ogr and tolerate known-benign post-write quirks.
 
     If ogr2ogr exits non-zero but the artifact file exists with a non-trivial
     size AND the stderr matches a known-benign pattern, treat it as success
     and move on. Any other non-zero exit re-raises the CalledProcessError.
+    Enforces a hard timeout so a wedged DB or stuck GDAL process can't hang
+    the operator indefinitely.
     """
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_OGR_EXPORT_TIMEOUT_SECONDS,
+        )
         return
     except subprocess.CalledProcessError as exc:
         # Command layout: [..., "-f", "PMTiles", <artifact_path>, ...]. Pull the
