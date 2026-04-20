@@ -103,6 +103,24 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def centroid_in_parent_counts(
+        self,
+        *,
+        parent_type_id: str,
+        child_type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, int, float]]:
+        """Return (parent_feature_id, child_count, area_m2) for every parent.
+
+        Counts children whose centroid is inside each parent (the standard
+        point-in-polygon attribution rule that avoids double-counting at
+        boundaries). LEFT-joined so parents with zero matching children
+        still appear — callers can distinguish 'measured zero' from 'not
+        observed'. Area uses the same units/convention as
+        ``geodesic_metrics_by_type`` on the same backend.
+        """
+        ...
+
 
 class ObservationRepository(Protocol):
     def upsert_current(
