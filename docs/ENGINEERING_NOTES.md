@@ -69,8 +69,9 @@ PgBouncer transaction mode. The SSE connection MUST use `DATABASE_URL_DIRECT`
 ---
 
 ### OpenTelemetry distributed tracing (plan item 10)
-**Blocked by:** no `apps/api/` or `apps/worker/` application code exists yet.  
-**When to implement:** at the same time the first API route is written.  
+**When to implement:** before the first real production deploy; the
+FastAPI read-side is up under `apps/api/`, so the integration point
+exists. Not a prototype blocker.
 **What to add:**
 ```python
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor

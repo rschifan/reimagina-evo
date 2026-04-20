@@ -298,7 +298,16 @@ class JobRunRepository(Protocol):
         status: str = "queued",
     ) -> str: ...
 
-    def claim_job(self, job_run_id: str) -> None: ...
+    def claim_job(self, job_run_id: str) -> bool:
+        """Transition the named run from 'queued' → 'running'.
+
+        Returns ``True`` when this call was the one that updated the
+        row, ``False`` when another worker already claimed it or the id
+        is no longer queued. A synchronous in-process worker can ignore
+        the return value; an async worker must check it to avoid
+        double-executing a run.
+        """
+        ...
 
     def complete_job(
         self,
