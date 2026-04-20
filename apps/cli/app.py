@@ -18,6 +18,10 @@ from reimagina.db import (  # noqa: E402
     connect,
     verify_required_relations,
 )
+from reimagina.tiles.defaults import (  # noqa: E402
+    tile_live_base_url,
+    tile_snapshot_base_url,
+)
 from .explore import (  # noqa: E402
     list_feature_stats,
     list_layers,
@@ -247,7 +251,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tiles_export.add_argument("layer_id")
     tiles_export.add_argument("--dsn", default=DEFAULT_APP_DSN)
     tiles_export.add_argument("--output-dir", default="data/tiles/pmtiles")
-    tiles_export.add_argument("--snapshot-base-url", default="http://localhost:3001")
+    tiles_export.add_argument("--snapshot-base-url", default=tile_snapshot_base_url())
     tiles_export.add_argument("--manifest-path")
     tiles_export.set_defaults(handler=_handle_tiles_export)
 
@@ -256,8 +260,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Resolve frontend-facing layer source configs from the manifest and snapshot registry",
     )
     tiles_sources.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    tiles_sources.add_argument("--live-tilejson-base-url", default="http://localhost:3000/get_tile")
-    tiles_sources.add_argument("--snapshot-base-url", default="http://localhost:3001")
+    tiles_sources.add_argument("--live-tilejson-base-url", default=tile_live_base_url())
+    tiles_sources.add_argument("--snapshot-base-url", default=tile_snapshot_base_url())
     tiles_sources.add_argument("--manifest-path")
     tiles_sources.set_defaults(handler=_handle_tiles_sources)
 

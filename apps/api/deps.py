@@ -19,6 +19,7 @@ from psycopg2.pool import ThreadedConnectionPool
 
 from reimagina.storage import backend_for_connection
 from reimagina.storage.interfaces import StorageBackend
+from reimagina.tiles.defaults import tile_live_base_url, tile_snapshot_base_url
 
 
 DEFAULT_API_DSN = os.environ.get(
@@ -30,25 +31,19 @@ _DEFAULT_POOL_MIN = int(os.environ.get("REIMAGINA_API_POOL_MIN", "1"))
 _DEFAULT_POOL_MAX = int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
 
 
-def tile_live_base_url() -> str:
-    """Base URL Martin serves the tile function at.
+# Re-exported so importers of apps.api.deps keep working after the
+# functions moved into reimagina.tiles.defaults.
+__all__ = [
+    "DEFAULT_API_DSN",
+    "PoolNotInitialised",
+    "get_backend",
+    "get_db_conn",
+    "initialise_pool",
+    "shutdown_pool",
+    "tile_live_base_url",
+    "tile_snapshot_base_url",
+]
 
-    Resolved at call time so tests (and `REIMAGINA_TILE_LIVE_BASE_URL`
-    changes at deploy time) actually steer the value. Defaults to the
-    dev-compose Martin URL; production deployments must override.
-    """
-    return os.environ.get(
-        "REIMAGINA_TILE_LIVE_BASE_URL",
-        "http://localhost:3000/get_tile",
-    )
-
-
-def tile_snapshot_base_url() -> str:
-    """Static host serving PMTiles snapshot artifacts."""
-    return os.environ.get(
-        "REIMAGINA_TILE_SNAPSHOT_BASE_URL",
-        "http://localhost:3001",
-    )
 
 _pool: ThreadedConnectionPool | None = None
 _pool_lock = Lock()
