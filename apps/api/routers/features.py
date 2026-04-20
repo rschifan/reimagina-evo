@@ -57,21 +57,11 @@ def list_features(
 
 
 def _feature_row(row: dict) -> FeatureRow:
-    import json as _json
-
-    attributes = row.get("attributes")
-    if isinstance(attributes, str):
-        # DuckDB backend returns attributes as a JSON string; Postgres
-        # returns a dict via RealDictCursor.  Normalise here.
-        try:
-            attributes = _json.loads(attributes)
-        except (TypeError, ValueError):
-            attributes = None
     return FeatureRow(
         id=str(row["id"]),
         type_slug=row["type_slug"],
         role=row["role"],
         name=row.get("name"),
-        attributes=attributes,
+        attributes=row.get("attributes"),
         geometry_wkt=row.get("geometry_wkt"),
     )

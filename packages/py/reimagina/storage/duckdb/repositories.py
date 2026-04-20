@@ -746,6 +746,33 @@ class DuckDBAOIRepository:
 
         return len(insert_rows)
 
+    def list_aois(self) -> list[dict]:
+        rows = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description
+            FROM curated_geo.area_of_interest
+            ORDER BY name
+            """
+        ).fetchall()
+        return [
+            {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+            for aid, pid, name, descr in rows
+        ]
+
+    def get_aoi(self, aoi_id: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description
+            FROM curated_geo.area_of_interest
+            WHERE CAST(id AS VARCHAR) = ?
+            """,
+            [aoi_id],
+        ).fetchone()
+        if row is None:
+            return None
+        aid, pid, name, descr = row
+        return {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+
 
 class DuckDBOverlapRepository:
     """Compute feature-to-feature spatial overlaps using geodesic measurements.
@@ -1074,9 +1101,17 @@ class DuckDBServingReader:
             )
 
         rows = _rows_as_dicts(result)
+        # Normalise attributes to dict | None here so callers see the same
+        # contract as the Postgres RealDictCursor-backed reader. Malformed
+        # JSON degrades to None rather than raising — the serving view is
+        # best-effort for inspection, not a place to fail a request.
         for row in rows:
-            if isinstance(row.get("attributes"), str):
-                row["attributes"] = json.loads(row["attributes"])
+            value = row.get("attributes")
+            if isinstance(value, str):
+                try:
+                    row["attributes"] = json.loads(value)
+                except (TypeError, ValueError):
+                    row["attributes"] = None
 
         next_cursor: str | None = None
         if len(rows) > limit:
