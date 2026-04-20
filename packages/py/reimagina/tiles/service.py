@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
@@ -198,16 +198,6 @@ def export_pmtiles_snapshot(
         "source_relation": layer.source_relation,
         "command": command,
     }
-
-
-def list_tile_snapshot_registry(conn, *, layer_id: str | None = None) -> list[dict]:
-    return backend_for_connection(conn).tile_repo().list_snapshots(layer_id=layer_id)
-
-
-def _with_querystring(base_url: str, params: dict[str, object]) -> str:
-    if not params:
-        return base_url
-    return f"{base_url}?{urlencode(params, doseq=True)}"
 
 
 def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:

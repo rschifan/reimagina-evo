@@ -1,13 +1,10 @@
 """Operation-shaped storage interfaces for the data layer."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import geopandas as gpd
-
-from .capabilities import StorageCapabilities
 
 
 class SourceCatalogRepository(Protocol):
@@ -488,8 +485,6 @@ class StorageBackend(Protocol):
     name: str
     connection: Any
 
-    def capabilities(self) -> StorageCapabilities: ...
-
     def run_migrations(self) -> None: ...
 
     def verify_required_relations(self, relations: list[str]) -> dict[str, bool]: ...
@@ -521,9 +516,3 @@ class StorageBackend(Protocol):
     def indicator_catalog_repo(self) -> IndicatorCatalogRepository: ...
 
     def indicator_result_repo(self) -> IndicatorResultRepository: ...
-
-
-@dataclass(frozen=True)
-class BackendConnectionSpec:
-    dsn: str
-    path: Path | None = None

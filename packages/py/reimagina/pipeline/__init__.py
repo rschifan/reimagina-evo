@@ -13,7 +13,6 @@ from .overture import (
     overture_buildings_extract_sql,
     overture_theme_type_glob,
     register_overture_buildings_source,
-    sample_serving_buildings,
     stage_overture_buildings_subset,
     validate_overture_buildings_layer,
 )
@@ -34,7 +33,6 @@ __all__ = [
     "overture_buildings_extract_sql",
     "overture_theme_type_glob",
     "register_overture_buildings_source",
-    "sample_serving_buildings",
     "stage_overture_buildings_subset",
     "validate_overture_buildings_layer",
     "clean_vector",

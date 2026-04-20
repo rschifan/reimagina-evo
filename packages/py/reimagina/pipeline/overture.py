@@ -9,7 +9,6 @@ import duckdb
 
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
-from reimagina.data import serving
 from reimagina.storage import backend_for_connection
 from . import bronze, silver
 from .loader import load_vector_source
@@ -318,10 +317,3 @@ def validate_overture_buildings_layer(conn) -> dict[str, Any]:
     }
 
 
-def sample_serving_buildings(
-    conn,
-    *,
-    limit: int = 3,
-) -> list[dict[str, Any]]:
-    """Return a small serving-layer sample for building features."""
-    return serving.get_features(conn, type_slug=OVERTURE_BUILDINGS_MEXICO_CITY.feature_type_slug)[:limit]

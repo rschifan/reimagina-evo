@@ -17,7 +17,6 @@ from .repositories import (
     PostgresSourceCatalogRepository,
     PostgresTileSnapshotRepository,
 )
-from ..capabilities import StorageCapabilities
 
 
 class PostgresStorageBackend:
@@ -25,15 +24,6 @@ class PostgresStorageBackend:
 
     def __init__(self, connection):
         self.connection = connection
-
-    def capabilities(self) -> StorageCapabilities:
-        return StorageCapabilities(
-            backend_name="postgres",
-            supports_triggers=True,
-            supports_materialized_views=True,
-            supports_spatial_index=True,
-            supports_partial_indexes=True,
-        )
 
     def run_migrations(self) -> None:
         raise NotImplementedError("Use the postgres migration runner with a DSN")
