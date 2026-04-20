@@ -39,16 +39,27 @@ class PoolNotInitialised(RuntimeError):
 
 def initialise_pool(
     *,
-    dsn: str = DEFAULT_API_DSN,
-    minconn: int = _DEFAULT_POOL_MIN,
-    maxconn: int = _DEFAULT_POOL_MAX,
+    dsn: str | None = None,
+    minconn: int | None = None,
+    maxconn: int | None = None,
 ) -> None:
-    """Create the process-wide connection pool. Idempotent."""
+    """Create the process-wide connection pool. Idempotent.
+
+    Defaults resolve at call time — not at function-definition time — so
+    tests that rebind ``deps.DEFAULT_API_DSN`` before calling
+    ``create_app(initialise_pool=True)`` actually steer the pool at the
+    test DB rather than at whatever value the module constant held when
+    the function was compiled.
+    """
     global _pool
     with _pool_lock:
         if _pool is not None:
             return
-        _pool = ThreadedConnectionPool(minconn, maxconn, dsn)
+        _pool = ThreadedConnectionPool(
+            _DEFAULT_POOL_MIN if minconn is None else minconn,
+            _DEFAULT_POOL_MAX if maxconn is None else maxconn,
+            DEFAULT_API_DSN if dsn is None else dsn,
+        )
 
 
 def shutdown_pool() -> None:
