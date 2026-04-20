@@ -152,7 +152,7 @@ def test_list_values_404s_on_unknown_slug(client, conn):
 
 
 def test_list_aois_returns_inserted_row(client, conn):
-    from tests.integration.test_data_layer_contracts import _insert_project
+    from tests.integration._helpers import insert_project as _insert_project
     project_id = _insert_project(conn, name="API test project")
     aoi.create_aoi(
         conn,
