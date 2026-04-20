@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS explore.layer_catalog (
     PRIMARY KEY (schema_name, object_name)
 );
 
-INSERT INTO explore.layer_catalog
+INSERT OR IGNORE INTO explore.layer_catalog
     (schema_name, object_name, logical_name, layer_kind, description,
      primary_geometry_column, intended_use, display_order)
 VALUES

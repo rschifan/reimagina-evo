@@ -129,7 +129,7 @@ JOIN curated_geo.indicator_catalog ic ON ic.id = ir.indicator_id
 WHERE ir.status = 'current';
 
 
-INSERT INTO explore.layer_catalog
+INSERT OR IGNORE INTO explore.layer_catalog
     (schema_name, object_name, logical_name, layer_kind, description,
      primary_geometry_column, intended_use, display_order)
 VALUES
