@@ -37,8 +37,12 @@ def api_dsn() -> str:
     )
 
 
-_DEFAULT_POOL_MIN = int(os.environ.get("REIMAGINA_API_POOL_MIN", "1"))
-_DEFAULT_POOL_MAX = int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
+def _pool_min() -> int:
+    return int(os.environ.get("REIMAGINA_API_POOL_MIN", "1"))
+
+
+def _pool_max() -> int:
+    return int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
 
 
 # Re-exported so importers of apps.api.deps keep working after helpers
@@ -80,8 +84,8 @@ def initialise_pool(
         if _pool is not None:
             return
         _pool = ThreadedConnectionPool(
-            _DEFAULT_POOL_MIN if minconn is None else minconn,
-            _DEFAULT_POOL_MAX if maxconn is None else maxconn,
+            _pool_min() if minconn is None else minconn,
+            _pool_max() if maxconn is None else maxconn,
             api_dsn() if dsn is None else dsn,
         )
 
