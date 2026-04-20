@@ -10,7 +10,6 @@ from shapely.geometry import LineString, Point, Polygon
 
 from reimagina.data import aoi as aoi_mod
 from reimagina.data import catalog as cat
-from reimagina.data import explore
 from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 from reimagina.data import overlap as ovlp
@@ -20,11 +19,10 @@ from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs import overlap as overlap_jobs
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.jobs.rollup import run_rollup
-from reimagina.data import serving
-from reimagina.data import tiles as tile_data
 from reimagina.db import bootstrap_local_platform, connect, verify_required_relations
 from reimagina.pipeline.loader import load_vector_source
 from reimagina.storage import backend_for_connection
+from reimagina.tiles.service import resolve_tile_sources
 
 
 def _duckdb_dsn(path: Path) -> str:
@@ -115,7 +113,7 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
             ingestion_run_id=run_id,
         )
 
-        page = serving.get_features(conn, type_slug="building")
+        page = backend_for_connection(conn).serving_reader().get_features(type_slug="building")
         rows = page["features"]
         assert page["next_cursor"] is None
         assert len(rows) == 1
@@ -124,13 +122,13 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
         assert rows[0]["attributes"]["names"] == [{"primary": "Tower One"}]
         assert rows[0]["attributes"]["status"] == "active"
 
-        layer_rows = explore.get_layers(conn)
+        layer_rows = backend_for_connection(conn).explore_reader().list_layers()
         assert any(row["logical_name"] == "serving_features" for row in layer_rows)
 
-        feature_stats = explore.get_feature_stats(conn)
+        feature_stats = backend_for_connection(conn).explore_reader().list_feature_stats()
         assert any(row["type_slug"] == "building" and row["row_count"] == 1 for row in feature_stats)
 
-        serving_stats = explore.get_serving_stats(conn)
+        serving_stats = backend_for_connection(conn).explore_reader().list_serving_stats()
         assert any(row["stat_scope"] == "all" and row["row_count"] == 1 for row in serving_stats)
 
         snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
@@ -143,7 +141,7 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
         )
         assert snapshot_id
 
-        sources = tile_data.get_tile_sources(
+        sources = resolve_tile_sources(
             conn,
             live_tilejson_base_url="http://localhost:3000/get_tile",
             snapshot_base_url="http://localhost:3001",
@@ -425,7 +423,7 @@ def test_duckdb_serving_pagination(tmp_path):
         pages = 0
 
         while True:
-            page = serving.get_features(conn, type_slug="building", limit=2, after_cursor=cursor)
+            page = backend_for_connection(conn).serving_reader().get_features(type_slug="building", limit=2, after_cursor=cursor)
             batch = page["features"]
             assert len(batch) <= 2
             seen_ids.extend(row["id"] for row in batch)
