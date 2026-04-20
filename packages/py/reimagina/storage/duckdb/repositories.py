@@ -1165,6 +1165,18 @@ class DuckDBServingReader:
 
         return {"features": rows, "next_cursor": next_cursor}
 
+    def count_features(self, *, type_slug: str | None = None) -> int:
+        if type_slug is None:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM serving_geo.feature_v"
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM serving_geo.feature_v WHERE type_slug = ?",
+                [type_slug],
+            ).fetchone()
+        return int(row[0])
+
 
 # Columns that are stored as JSON in the DB and returned as strings by DuckDB.
 # Only these are JSON-decoded; other string values are left untouched.
