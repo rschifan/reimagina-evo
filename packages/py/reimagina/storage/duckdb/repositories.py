@@ -10,6 +10,7 @@ import geopandas as gpd
 import pyarrow as pa
 
 from .._utils import normalize_json_value as _normalize_json_value
+from .._utils import scenario_filter as _scenario_filter
 
 
 def _rows_as_dicts(result) -> list[dict]:
@@ -1166,24 +1167,15 @@ class DuckDBAOISummaryRepository:
     ) -> str:
         # Manual upsert: DuckDB's partial unique indexes do not support
         # ON CONFLICT with a predicate, so we do a read-modify-write here.
-        if scenario_id is None:
-            existing = self.connection.execute(
-                """
-                SELECT CAST(id AS VARCHAR)
-                FROM curated_geo.aoi_indicator_summary
-                WHERE aoi_id = ? AND scenario_id IS NULL AND indicator_id = ?
-                """,
-                [aoi_id, indicator_id],
-            ).fetchone()
-        else:
-            existing = self.connection.execute(
-                """
-                SELECT CAST(id AS VARCHAR)
-                FROM curated_geo.aoi_indicator_summary
-                WHERE aoi_id = ? AND scenario_id = ? AND indicator_id = ?
-                """,
-                [aoi_id, scenario_id, indicator_id],
-            ).fetchone()
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        existing = self.connection.execute(
+            f"""
+            SELECT CAST(id AS VARCHAR)
+            FROM curated_geo.aoi_indicator_summary
+            WHERE aoi_id = ? AND {scenario_clause} AND indicator_id = ?
+            """,
+            [aoi_id, *scenario_params, indicator_id],
+        ).fetchone()
 
         if existing is not None:
             summary_id = existing[0]
@@ -1218,28 +1210,17 @@ class DuckDBAOISummaryRepository:
         indicator_id: str,
         scenario_id: str | None = None,
     ) -> dict | None:
-        if scenario_id is None:
-            row = self.connection.execute(
-                """
-                SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
-                       CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
-                       value, aggregation_note, status, computed_at
-                FROM curated_geo.aoi_indicator_summary
-                WHERE aoi_id = ? AND scenario_id IS NULL AND indicator_id = ?
-                """,
-                [aoi_id, indicator_id],
-            ).fetchone()
-        else:
-            row = self.connection.execute(
-                """
-                SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
-                       CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
-                       value, aggregation_note, status, computed_at
-                FROM curated_geo.aoi_indicator_summary
-                WHERE aoi_id = ? AND scenario_id = ? AND indicator_id = ?
-                """,
-                [aoi_id, scenario_id, indicator_id],
-            ).fetchone()
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        row = self.connection.execute(
+            f"""
+            SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
+                   CAST(scenario_id AS VARCHAR), CAST(indicator_id AS VARCHAR),
+                   value, aggregation_note, status, computed_at
+            FROM curated_geo.aoi_indicator_summary
+            WHERE aoi_id = ? AND {scenario_clause} AND indicator_id = ?
+            """,
+            [aoi_id, *scenario_params, indicator_id],
+        ).fetchone()
         return dict(zip(_AOI_SUMMARY_COLS, row)) if row else None
 
     def list_summaries(
@@ -1251,11 +1232,9 @@ class DuckDBAOISummaryRepository:
     ) -> list[dict]:
         conditions = ["aoi_id = ?"]
         params: list = [aoi_id]
-        if scenario_id is None:
-            conditions.append("scenario_id IS NULL")
-        else:
-            conditions.append("scenario_id = ?")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("scenario_id", scenario_id, "?")
+        conditions.append(clause)
+        params.extend(extra)
         if only_current:
             conditions.append("status = 'current'")
 
@@ -1596,30 +1575,18 @@ class DuckDBIndicatorResultRepository:
         indicator_id: str,
         scenario_id: str | None,
     ) -> None:
-        if scenario_id is None:
-            self.connection.execute(
-                """
-                UPDATE curated_geo.indicator_result
-                SET status = 'stale', updated_at = now()
-                WHERE CAST(feature_id AS VARCHAR) = ?
-                  AND scenario_id IS NULL
-                  AND CAST(indicator_id AS VARCHAR) = ?
-                  AND status = 'current'
-                """,
-                [feature_id, indicator_id],
-            )
-        else:
-            self.connection.execute(
-                """
-                UPDATE curated_geo.indicator_result
-                SET status = 'stale', updated_at = now()
-                WHERE CAST(feature_id AS VARCHAR) = ?
-                  AND CAST(scenario_id AS VARCHAR) = ?
-                  AND CAST(indicator_id AS VARCHAR) = ?
-                  AND status = 'current'
-                """,
-                [feature_id, scenario_id, indicator_id],
-            )
+        scenario_clause, scenario_params = _scenario_filter("CAST(scenario_id AS VARCHAR)", scenario_id, "?")
+        self.connection.execute(
+            f"""
+            UPDATE curated_geo.indicator_result
+            SET status = 'stale', updated_at = now()
+            WHERE CAST(feature_id AS VARCHAR) = ?
+              AND {scenario_clause}
+              AND CAST(indicator_id AS VARCHAR) = ?
+              AND status = 'current'
+            """,
+            [feature_id, *scenario_params, indicator_id],
+        )
 
     def write_result(
         self,
@@ -1757,22 +1724,14 @@ class DuckDBIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> dict | None:
-        if scenario_id is None:
-            row = self.connection.execute(
-                """
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE feature_id = ? AND scenario_id IS NULL AND indicator_slug = ?
-                """,
-                [feature_id, indicator_slug],
-            ).fetchone()
-        else:
-            row = self.connection.execute(
-                """
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE feature_id = ? AND scenario_id = ? AND indicator_slug = ?
-                """,
-                [feature_id, scenario_id, indicator_slug],
-            ).fetchone()
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        row = self.connection.execute(
+            f"""
+            SELECT * FROM serving_geo.current_indicator_v
+            WHERE feature_id = ? AND {scenario_clause} AND indicator_slug = ?
+            """,
+            [feature_id, *scenario_params, indicator_slug],
+        ).fetchone()
         if row is None:
             return None
         return _row_as_dict_current_indicator(row)
@@ -1783,22 +1742,14 @@ class DuckDBIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> list[dict]:
-        if scenario_id is None:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE indicator_slug = ? AND scenario_id IS NULL
-                """,
-                [indicator_slug],
-            ).fetchall()
-        else:
-            rows = self.connection.execute(
-                """
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE indicator_slug = ? AND scenario_id = ?
-                """,
-                [indicator_slug, scenario_id],
-            ).fetchall()
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM serving_geo.current_indicator_v
+            WHERE indicator_slug = ? AND {scenario_clause}
+            """,
+            [indicator_slug, *scenario_params],
+        ).fetchall()
         return [_row_as_dict_current_indicator(row) for row in rows]
 
     def list_current_with_geometry(
@@ -1816,11 +1767,9 @@ class DuckDBIndicatorResultRepository:
         """
         clauses = ["ir.indicator_slug = ?", "ir.status = 'current'"]
         params: list = [indicator_slug]
-        if scenario_id is None:
-            clauses.append("ir.scenario_id IS NULL")
-        else:
-            clauses.append("CAST(ir.scenario_id AS VARCHAR) = ?")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?")
+        clauses.append(clause)
+        params.extend(extra)
         if feature_type is not None:
             clauses.append("ir.feature_type = ?")
             params.append(feature_type)
@@ -1863,11 +1812,9 @@ class DuckDBIndicatorResultRepository:
     ) -> dict:
         clauses = ["indicator_slug = ?", "status = 'current'", "value_numeric IS NOT NULL"]
         params: list = [indicator_slug]
-        if scenario_id is None:
-            clauses.append("scenario_id IS NULL")
-        else:
-            clauses.append("CAST(scenario_id AS VARCHAR) = ?")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("CAST(scenario_id AS VARCHAR)", scenario_id, "?")
+        clauses.append(clause)
+        params.extend(extra)
         if feature_type is not None:
             clauses.append("feature_type = ?")
             params.append(feature_type)

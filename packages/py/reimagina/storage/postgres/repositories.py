@@ -10,6 +10,7 @@ import psycopg2.extras
 import pyarrow.parquet as pq
 
 from .._utils import normalize_json_value as _normalize_json_value
+from .._utils import scenario_filter as _scenario_filter
 
 
 class PostgresSourceCatalogRepository:
@@ -1073,27 +1074,17 @@ class PostgresAOISummaryRepository:
         indicator_id: str,
         scenario_id: str | None = None,
     ) -> dict | None:
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
         with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if scenario_id is None:
-                cur.execute(
-                    """
-                    SELECT id, aoi_id, scenario_id, indicator_id, value,
-                           aggregation_note, status, computed_at
-                    FROM curated_geo.aoi_indicator_summary
-                    WHERE aoi_id = %s AND scenario_id IS NULL AND indicator_id = %s
-                    """,
-                    (aoi_id, indicator_id),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT id, aoi_id, scenario_id, indicator_id, value,
-                           aggregation_note, status, computed_at
-                    FROM curated_geo.aoi_indicator_summary
-                    WHERE aoi_id = %s AND scenario_id = %s AND indicator_id = %s
-                    """,
-                    (aoi_id, scenario_id, indicator_id),
-                )
+            cur.execute(
+                f"""
+                SELECT id, aoi_id, scenario_id, indicator_id, value,
+                       aggregation_note, status, computed_at
+                FROM curated_geo.aoi_indicator_summary
+                WHERE aoi_id = %s AND {scenario_clause} AND indicator_id = %s
+                """,
+                [aoi_id, *scenario_params, indicator_id],
+            )
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -1106,11 +1097,9 @@ class PostgresAOISummaryRepository:
     ) -> list[dict]:
         conditions = ["aoi_id = %s"]
         params: list = [aoi_id]
-        if scenario_id is None:
-            conditions.append("scenario_id IS NULL")
-        else:
-            conditions.append("scenario_id = %s")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("scenario_id", scenario_id)
+        conditions.append(clause)
+        params.extend(extra)
         if only_current:
             conditions.append("status = 'current'")
 
@@ -1328,26 +1317,16 @@ class PostgresIndicatorResultRepository:
         indicator_id: str,
         scenario_id: str | None,
     ) -> None:
-        if scenario_id is None:
-            cur.execute(
-                """
-                UPDATE curated_geo.indicator_result
-                SET status = 'stale', updated_at = now()
-                WHERE feature_id = %s AND scenario_id IS NULL
-                  AND indicator_id = %s AND status = 'current'
-                """,
-                (feature_id, indicator_id),
-            )
-        else:
-            cur.execute(
-                """
-                UPDATE curated_geo.indicator_result
-                SET status = 'stale', updated_at = now()
-                WHERE feature_id = %s AND scenario_id = %s
-                  AND indicator_id = %s AND status = 'current'
-                """,
-                (feature_id, scenario_id, indicator_id),
-            )
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
+        cur.execute(
+            f"""
+            UPDATE curated_geo.indicator_result
+            SET status = 'stale', updated_at = now()
+            WHERE feature_id = %s AND {scenario_clause}
+              AND indicator_id = %s AND status = 'current'
+            """,
+            [feature_id, *scenario_params, indicator_id],
+        )
 
     def write_result(
         self,
@@ -1425,30 +1404,18 @@ class PostgresIndicatorResultRepository:
             indicator_id = str(found[0])
 
             feature_ids = [fid for fid, _ in rows]
-            if scenario_id is None:
-                cur.execute(
-                    """
-                    UPDATE curated_geo.indicator_result
-                    SET status = 'stale', updated_at = now()
-                    WHERE feature_id = ANY(%s::uuid[])
-                      AND scenario_id IS NULL
-                      AND indicator_id = %s
-                      AND status = 'current'
-                    """,
-                    (feature_ids, indicator_id),
-                )
-            else:
-                cur.execute(
-                    """
-                    UPDATE curated_geo.indicator_result
-                    SET status = 'stale', updated_at = now()
-                    WHERE feature_id = ANY(%s::uuid[])
-                      AND scenario_id = %s
-                      AND indicator_id = %s
-                      AND status = 'current'
-                    """,
-                    (feature_ids, scenario_id, indicator_id),
-                )
+            scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
+            cur.execute(
+                f"""
+                UPDATE curated_geo.indicator_result
+                SET status = 'stale', updated_at = now()
+                WHERE feature_id = ANY(%s::uuid[])
+                  AND {scenario_clause}
+                  AND indicator_id = %s
+                  AND status = 'current'
+                """,
+                [feature_ids, *scenario_params, indicator_id],
+            )
 
             psycopg2.extras.execute_batch(
                 cur,
@@ -1473,23 +1440,15 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> dict | None:
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
         with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if scenario_id is None:
-                cur.execute(
-                    """
-                    SELECT * FROM serving_geo.current_indicator_v
-                    WHERE feature_id = %s AND scenario_id IS NULL AND indicator_slug = %s
-                    """,
-                    (feature_id, indicator_slug),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT * FROM serving_geo.current_indicator_v
-                    WHERE feature_id = %s AND scenario_id = %s AND indicator_slug = %s
-                    """,
-                    (feature_id, scenario_id, indicator_slug),
-                )
+            cur.execute(
+                f"""
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE feature_id = %s AND {scenario_clause} AND indicator_slug = %s
+                """,
+                [feature_id, *scenario_params, indicator_slug],
+            )
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -1499,23 +1458,15 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> list[dict]:
+        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
         with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            if scenario_id is None:
-                cur.execute(
-                    """
-                    SELECT * FROM serving_geo.current_indicator_v
-                    WHERE indicator_slug = %s AND scenario_id IS NULL
-                    """,
-                    (indicator_slug,),
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT * FROM serving_geo.current_indicator_v
-                    WHERE indicator_slug = %s AND scenario_id = %s
-                    """,
-                    (indicator_slug, scenario_id),
-                )
+            cur.execute(
+                f"""
+                SELECT * FROM serving_geo.current_indicator_v
+                WHERE indicator_slug = %s AND {scenario_clause}
+                """,
+                [indicator_slug, *scenario_params],
+            )
             return [dict(row) for row in cur.fetchall()]
 
     def list_current_with_geometry(
@@ -1536,11 +1487,9 @@ class PostgresIndicatorResultRepository:
         # and the optional feature_type filter compose cleanly.
         clauses = ["ir.indicator_slug = %s", "ir.status = 'current'"]
         params: list = [indicator_slug]
-        if scenario_id is None:
-            clauses.append("ir.scenario_id IS NULL")
-        else:
-            clauses.append("ir.scenario_id = %s")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("ir.scenario_id", scenario_id)
+        clauses.append(clause)
+        params.extend(extra)
         if feature_type is not None:
             clauses.append("ir.feature_type = %s")
             params.append(feature_type)
@@ -1577,11 +1526,9 @@ class PostgresIndicatorResultRepository:
     ) -> dict:
         clauses = ["indicator_slug = %s", "status = 'current'", "value_numeric IS NOT NULL"]
         params: list = [indicator_slug]
-        if scenario_id is None:
-            clauses.append("scenario_id IS NULL")
-        else:
-            clauses.append("scenario_id = %s")
-            params.append(scenario_id)
+        clause, extra = _scenario_filter("scenario_id", scenario_id)
+        clauses.append(clause)
+        params.extend(extra)
         if feature_type is not None:
             clauses.append("feature_type = %s")
             params.append(feature_type)
