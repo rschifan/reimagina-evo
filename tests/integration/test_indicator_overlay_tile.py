@@ -64,8 +64,10 @@ def test_tile_is_empty_below_minzoom(conn):
 
 def test_tile_decodes_with_expected_properties(conn):
     """End-to-end: seed a block + a compactness value, render the tile, decode."""
-    from tests.integration.test_data_layer_contracts import (
-        _insert_feature, _register_source, _start_run,
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
     )
     seed_catalog(conn)
     source_id = _register_source(
@@ -116,8 +118,10 @@ def test_tile_filters_by_scenario_id(conn):
     feature. A base-scoped tile renders only the base row; a scenario-
     scoped tile renders only that scenario's row.
     """
-    from tests.integration.test_data_layer_contracts import (
-        _insert_feature, _register_source, _start_run,
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
     )
     from reimagina.storage import backend_for_connection
 
