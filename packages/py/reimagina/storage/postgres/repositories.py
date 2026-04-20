@@ -328,6 +328,33 @@ class PostgresFeatureRepository:
                 for fid, area, perim in cur.fetchall()
             ]
 
+    def find_by_attributes(
+        self,
+        *,
+        type_slug: str,
+        attributes: dict[str, str],
+    ) -> dict[str, str] | None:
+        if not attributes:
+            raise ValueError("find_by_attributes requires at least one attribute")
+        # Build one `attributes->>'key' = %s` predicate per input entry.
+        predicates = [f"attributes->>'{key}' = %s" for key in attributes]
+        params: list = list(attributes.values()) + [type_slug]
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id::text, ST_AsText(geometry)
+                FROM curated_geo.feature
+                WHERE {' AND '.join(predicates)}
+                  AND type_slug = %s
+                LIMIT 1
+                """,
+                params,
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "geometry_wkt": str(row[1])}
+
     def centroid_in_parent_counts(
         self,
         *,
@@ -725,6 +752,21 @@ class PostgresAOIRepository:
                 return None
             aid, pid, name, descr = row
             return {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+
+    def upsert_project_by_name(self, name: str, description: str | None = None) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT id::text FROM app_core.project WHERE name = %s LIMIT 1",
+                (name,),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                return str(existing[0])
+            cur.execute(
+                "INSERT INTO app_core.project (name, description) VALUES (%s, %s) RETURNING id::text",
+                (name, description),
+            )
+            return str(cur.fetchone()[0])
 
 
 class PostgresOverlapRepository:

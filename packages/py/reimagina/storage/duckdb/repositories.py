@@ -408,6 +408,32 @@ class DuckDBFeatureRepository:
             ).fetchall()
         return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]
 
+    def find_by_attributes(
+        self,
+        *,
+        type_slug: str,
+        attributes: dict[str, str],
+    ) -> dict[str, str] | None:
+        if not attributes:
+            raise ValueError("find_by_attributes requires at least one attribute")
+        predicates = [
+            f"json_extract_string(attributes, '$.{key}') = ?" for key in attributes
+        ]
+        params: list = list(attributes.values()) + [type_slug]
+        row = self.connection.execute(
+            f"""
+            SELECT CAST(id AS VARCHAR), ST_AsText(geometry)
+            FROM curated_geo.feature
+            WHERE {' AND '.join(predicates)}
+              AND type_slug = ?
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": str(row[0]), "geometry_wkt": str(row[1])}
+
     def centroid_in_parent_counts(
         self,
         *,
@@ -772,6 +798,21 @@ class DuckDBAOIRepository:
             return None
         aid, pid, name, descr = row
         return {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+
+    def upsert_project_by_name(self, name: str, description: str | None = None) -> str:
+        existing = self.connection.execute(
+            "SELECT CAST(id AS VARCHAR) FROM app_core.project WHERE name = ? LIMIT 1",
+            [name],
+        ).fetchone()
+        if existing is not None:
+            return str(existing[0])
+        # DuckDB: no RETURNING; generate UUID client-side.
+        project_id = str(uuid4())
+        self.connection.execute(
+            "INSERT INTO app_core.project (id, name, description) VALUES (?, ?, ?)",
+            [project_id, name, description],
+        )
+        return project_id
 
 
 class DuckDBOverlapRepository:

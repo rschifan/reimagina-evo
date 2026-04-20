@@ -100,6 +100,19 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def find_by_attributes(
+        self,
+        *,
+        type_slug: str,
+        attributes: dict[str, str],
+    ) -> dict[str, str] | None:
+        """Return ``{id, geometry_wkt}`` for the first feature whose ``type_slug``
+        matches and whose ``attributes`` JSON contains the given key/value pairs
+        exactly, or ``None``. Attribute values are compared as strings — the
+        concrete backends use the relevant JSON-access function per engine.
+        """
+        ...
+
     def centroid_in_parent_counts(
         self,
         *,
@@ -175,6 +188,13 @@ class AOIRepository(Protocol):
 
     def get_aoi(self, aoi_id: str) -> dict[str, Any] | None:
         """Return one AOI or ``None``; shape matches ``list_aois`` rows."""
+        ...
+
+    def upsert_project_by_name(self, name: str, description: str | None = None) -> str:
+        """Return the ``app_core.project`` id for the row with the given name,
+        creating it first if needed. Intended for dev/bootstrap flows that
+        want one project row to hang data off without coordinating ids.
+        """
         ...
 
 

@@ -132,77 +132,20 @@ def _lookup_spec(layer: str) -> cdmx_pipeline.CDMXLayerSpec:
         ) from exc
 
 
-def _fetch_municipality_wkt(backend, *, cve_mun: str) -> tuple[str, str] | None:
-    """Return (feature_id, geometry_wkt) for the CDMX municipality with the given CVE_MUN.
+_DEV_PROJECT_DESCRIPTION = "Dev project for CDMX realistic-scale validation."
 
-    Kept backend-aware in one place; both DuckDB and Postgres answer the same
-    query with the same ST_AsText / attributes JSON indexing semantics.
-    """
-    conn = backend.connection
-    if backend.name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id::text, ST_AsText(geometry)
-                FROM curated_geo.feature
-                WHERE type_slug = 'municipality'
-                  AND attributes->>'CVE_ENT' = '09'
-                  AND attributes->>'CVE_MUN' = %s
-                LIMIT 1
-                """,
-                (cve_mun,),
-            )
-            row = cur.fetchone()
-    else:
-        row = conn.execute(
-            """
-            SELECT CAST(id AS VARCHAR), ST_AsText(geometry)
-            FROM curated_geo.feature
-            WHERE type_slug = 'municipality'
-              AND json_extract_string(attributes, '$.CVE_ENT') = '09'
-              AND json_extract_string(attributes, '$.CVE_MUN') = ?
-            LIMIT 1
-            """,
-            [cve_mun],
-        ).fetchone()
+
+def _fetch_municipality_wkt(backend, *, cve_mun: str) -> tuple[str, str] | None:
+    """Return (feature_id, geometry_wkt) for the CDMX municipality with the given CVE_MUN."""
+    row = backend.feature_repo().find_by_attributes(
+        type_slug="municipality",
+        attributes={"CVE_ENT": "09", "CVE_MUN": cve_mun},
+    )
     if row is None:
         return None
-    return str(row[0]), str(row[1])
+    return row["id"], row["geometry_wkt"]
 
 
 def _ensure_dev_project(backend, name: str) -> str:
     """Idempotently create (or reuse) an app_core.project row by name. Returns its id."""
-    conn = backend.connection
-    if backend.name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id::text FROM app_core.project WHERE name = %s LIMIT 1",
-                (name,),
-            )
-            existing = cur.fetchone()
-            if existing is not None:
-                return str(existing[0])
-            cur.execute(
-                "INSERT INTO app_core.project (name, description) VALUES (%s, %s) RETURNING id::text",
-                (name, "Dev project for CDMX realistic-scale validation."),
-            )
-            return str(cur.fetchone()[0])
-
-    existing = conn.execute(
-        "SELECT CAST(id AS VARCHAR) FROM app_core.project WHERE name = ? LIMIT 1",
-        [name],
-    ).fetchone()
-    if existing is not None:
-        return str(existing[0])
-    # DuckDB: no RETURNING for this schema; generate UUID client-side.
-    from uuid import uuid4
-
-    project_id = str(uuid4())
-    conn.execute(
-        """
-        INSERT INTO app_core.project (id, name, description)
-        VALUES (?, ?, ?)
-        """,
-        [project_id, name, "Dev project for CDMX realistic-scale validation."],
-    )
-    return project_id
+    return backend.aoi_repo().upsert_project_by_name(name, _DEV_PROJECT_DESCRIPTION)
