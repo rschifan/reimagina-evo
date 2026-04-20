@@ -83,7 +83,17 @@ def create_app(
         allow_credentials=False,
     )
 
-    app.add_exception_handler(psycopg2.Error, errors.psycopg_error_handler)
+    # Order matters: FastAPI walks handlers most-specific → least-specific,
+    # so the OperationalError/InterfaceError pair must register *before*
+    # the generic psycopg2.Error handler. Otherwise a connectivity outage
+    # would wrongly surface as 500 instead of 503.
+    app.add_exception_handler(
+        psycopg2.OperationalError, errors.database_unavailable_handler
+    )
+    app.add_exception_handler(
+        psycopg2.InterfaceError, errors.database_unavailable_handler
+    )
+    app.add_exception_handler(psycopg2.Error, errors.database_error_handler)
     app.add_exception_handler(Exception, errors.unhandled_error_handler)
 
     app.include_router(health.router)
