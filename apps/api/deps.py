@@ -22,20 +22,30 @@ from reimagina.storage.interfaces import StorageBackend
 from reimagina.tiles.defaults import tile_live_base_url, tile_snapshot_base_url
 
 
-DEFAULT_API_DSN = os.environ.get(
-    "REIMAGINA_APP_DSN",
-    "postgresql://localhost/reimagina_app",
-)
+def api_dsn() -> str:
+    """Resolve the API DSN at call time.
+
+    Reading from the environment on every call means test fixtures can
+    point the pool at a different database via ``monkeypatch.setenv``
+    (the documented knob) and get consistent behaviour across the pool
+    factory, readiness probe, and any future callers — instead of
+    racing a module constant that was captured at import time.
+    """
+    return os.environ.get(
+        "REIMAGINA_APP_DSN",
+        "postgresql://localhost/reimagina_app",
+    )
+
 
 _DEFAULT_POOL_MIN = int(os.environ.get("REIMAGINA_API_POOL_MIN", "1"))
 _DEFAULT_POOL_MAX = int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
 
 
-# Re-exported so importers of apps.api.deps keep working after the
-# functions moved into reimagina.tiles.defaults.
+# Re-exported so importers of apps.api.deps keep working after helpers
+# moved into reimagina.tiles.defaults.
 __all__ = [
-    "DEFAULT_API_DSN",
     "PoolNotInitialised",
+    "api_dsn",
     "get_backend",
     "get_db_conn",
     "initialise_pool",
@@ -61,11 +71,9 @@ def initialise_pool(
 ) -> None:
     """Create the process-wide connection pool. Idempotent.
 
-    Defaults resolve at call time — not at function-definition time — so
-    tests that rebind ``deps.DEFAULT_API_DSN`` before calling
-    ``create_app(initialise_pool=True)`` actually steer the pool at the
-    test DB rather than at whatever value the module constant held when
-    the function was compiled.
+    All defaults resolve at call time via ``api_dsn()`` / env vars so
+    tests and deployments can steer the pool through environment
+    overrides without reloading this module.
     """
     global _pool
     with _pool_lock:
@@ -74,7 +82,7 @@ def initialise_pool(
         _pool = ThreadedConnectionPool(
             _DEFAULT_POOL_MIN if minconn is None else minconn,
             _DEFAULT_POOL_MAX if maxconn is None else maxconn,
-            DEFAULT_API_DSN if dsn is None else dsn,
+            api_dsn() if dsn is None else dsn,
         )
 
 
