@@ -190,6 +190,27 @@ class OverlapRepository(Protocol):
         """
         ...
 
+    def rollup_child_rows(
+        self,
+        *,
+        indicator_slug: str,
+        source_feature_type: str,
+        target_feature_type: str,
+        scenario_id: str | None = None,
+    ) -> list[tuple[str, float | None, float, str]]:
+        """Return ``(target_id, value_numeric, overlap_measure, quality_flag)`` per
+        (source, target) overlap pair, restricted to the given feature types and
+        the current indicator row for the given scenario scope.
+
+        Weight is ``overlap_measure`` (absolute intersection, m² for polygon
+        rollups) so ``weighted_mean`` is area-weighted. ``overlap_ratio`` is
+        wrong here: fully-nested children collapse to ~1.0 and degrade the
+        weighted mean to an arithmetic mean. Quality defaults to ``'missing'``
+        when the LEFT join misses an indicator row. Callers group by target
+        themselves.
+        """
+        ...
+
 
 class OverlapTypePairRepository(Protocol):
     """Declared (source_type, target_type) pairs that the overlap worker computes.
