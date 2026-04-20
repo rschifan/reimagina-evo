@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
 
+from .defaults import tile_live_base_url, tile_snapshot_base_url
 from .manifest import TileLayerDefinition, get_tile_layer, load_tile_layers
 
 
@@ -222,7 +223,7 @@ def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str,
 def resolve_tile_sources(
     conn,
     *,
-    live_tilejson_base_url: str = "http://localhost:3000/get_tile",
+    live_tilejson_base_url: str | None = None,
     snapshot_base_url: str | None = None,
     manifest_path: str | Path | None = None,
 ) -> list[dict[str, object]]:
@@ -241,7 +242,9 @@ def resolve_tile_sources(
     "REQUIRED"}`) rather than being baked into the URL — the frontend picks
     real values at render time and assembles the final URL itself.
     """
-    martin_base, default_function = _martin_base_and_default_function(live_tilejson_base_url)
+    live_url = live_tilejson_base_url if live_tilejson_base_url is not None else tile_live_base_url()
+    snapshot_url = snapshot_base_url if snapshot_base_url is not None else tile_snapshot_base_url()
+    martin_base, default_function = _martin_base_and_default_function(live_url)
     repo = backend_for_connection(conn).tile_repo()
     resolved: list[dict[str, object]] = []
     for layer in load_tile_layers(manifest_path):
@@ -278,8 +281,8 @@ def resolve_tile_sources(
         artifact_uri = None
         if latest is not None:
             artifact_uri = latest["artifact_uri"]
-            if snapshot_base_url:
-                artifact_uri = f"{snapshot_base_url.rstrip('/')}/{Path(latest['artifact_path']).name}"
+            if snapshot_url:
+                artifact_uri = f"{snapshot_url.rstrip('/')}/{Path(latest['artifact_path']).name}"
         resolved.append(
             {
                 "layer_id": layer.layer_id,
