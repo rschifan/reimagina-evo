@@ -370,6 +370,44 @@ class DuckDBFeatureRepository:
         )
         return int(inserted)
 
+    def geodesic_metrics_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, float, float]]:
+        # DuckDB has no geography type; project to UTM 14N (EPSG:32614 —
+        # CDMX's local UTM zone) and measure in planar metres. Accurate
+        # enough at city scale for urban-form indicators. `always_xy=true`
+        # keeps coordinate order stable across ST_Transform's flipped
+        # default on DuckDB-spatial.
+        if aoi_id is None:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(f.id AS VARCHAR),
+                       ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
+                       ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
+                FROM curated_geo.feature f
+                WHERE CAST(f.type_id AS VARCHAR) = ?
+                """,
+                [type_id],
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(f.id AS VARCHAR),
+                       ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
+                       ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
+                FROM curated_geo.feature f
+                JOIN curated_geo.area_of_interest aoi
+                  ON CAST(aoi.id AS VARCHAR) = ?
+                  AND ST_Intersects(f.geometry, aoi.geometry)
+                WHERE CAST(f.type_id AS VARCHAR) = ?
+                """,
+                [aoi_id, type_id],
+            ).fetchall()
+        return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]
+
 
 class DuckDBObservationRepository:
     def __init__(self, connection):

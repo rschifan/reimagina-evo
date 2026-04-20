@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
 
 from reimagina.data.feature import get_type_id
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_COMPACTNESS
@@ -88,9 +87,8 @@ def compute_block_compactness(
         status="running",
     )
     try:
-        rows = _fetch_block_geometry_metrics(
-            backend=backend,
-            block_type_id=block_type_id,
+        rows = backend.feature_repo().geodesic_metrics_by_type(
+            type_id=block_type_id,
             aoi_id=aoi_id,
         )
         numeric_rows = [
@@ -122,95 +120,3 @@ def compute_block_compactness(
     )
 
 
-# ─── Backend-specific geometry metrics readers ─────────────────────────────
-
-
-def _fetch_block_geometry_metrics(
-    *,
-    backend: Any,
-    block_type_id: str,
-    aoi_id: str | None,
-) -> list[tuple[str, float, float]]:
-    """Return (feature_id, area_m2, perimeter_m) rows for every eligible block.
-
-    Uses backend-native geodesic metrics where possible (PostGIS ::geography)
-    so the result is comparable across backends without Python-side pyproj
-    calls. DuckDB projects to EPSG:32614 (UTM 14N, CDMX) and measures in
-    planar metres on the projected geometry — accurate enough at city scale
-    for an urban-form indicator.
-    """
-    conn = backend.connection
-    if backend.name == "postgres":
-        return _fetch_block_geometry_metrics_postgres(
-            conn, block_type_id=block_type_id, aoi_id=aoi_id
-        )
-    return _fetch_block_geometry_metrics_duckdb(
-        conn, block_type_id=block_type_id, aoi_id=aoi_id
-    )
-
-
-def _fetch_block_geometry_metrics_postgres(
-    conn, *, block_type_id: str, aoi_id: str | None
-) -> list[tuple[str, float, float]]:
-    with conn.cursor() as cur:
-        if aoi_id is None:
-            cur.execute(
-                """
-                SELECT f.id::text,
-                       ST_Area(f.geometry::geography),
-                       ST_Perimeter(f.geometry::geography)
-                FROM curated_geo.feature f
-                WHERE f.type_id = %s
-                """,
-                (block_type_id,),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT f.id::text,
-                       ST_Area(f.geometry::geography),
-                       ST_Perimeter(f.geometry::geography)
-                FROM curated_geo.feature f
-                JOIN curated_geo.area_of_interest aoi
-                  ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
-                WHERE f.type_id = %s
-                """,
-                (aoi_id, block_type_id),
-            )
-        return [(str(fid), float(area), float(perim)) for fid, area, perim in cur.fetchall()]
-
-
-def _fetch_block_geometry_metrics_duckdb(
-    conn, *, block_type_id: str, aoi_id: str | None
-) -> list[tuple[str, float, float]]:
-    # Compute area / perimeter in UTM 14N (EPSG:32614) — planar metres for
-    # the CDMX zone. DuckDB's spatial extension doesn't expose a geography
-    # type, so projecting once and measuring on the projection is the
-    # closest we can get to the PostGIS result without falling back to
-    # Python-side pyproj.
-    if aoi_id is None:
-        rows = conn.execute(
-            """
-            SELECT CAST(f.id AS VARCHAR),
-                   ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
-                   ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
-            FROM curated_geo.feature f
-            WHERE CAST(f.type_id AS VARCHAR) = ?
-            """,
-            [block_type_id],
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT CAST(f.id AS VARCHAR),
-                   ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
-                   ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
-            FROM curated_geo.feature f
-            JOIN curated_geo.area_of_interest aoi
-              ON CAST(aoi.id AS VARCHAR) = ?
-              AND ST_Intersects(f.geometry, aoi.geometry)
-            WHERE CAST(f.type_id AS VARCHAR) = ?
-            """,
-            [aoi_id, block_type_id],
-        ).fetchall()
-    return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]

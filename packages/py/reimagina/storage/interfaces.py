@@ -88,6 +88,21 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def geodesic_metrics_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, float, float]]:
+        """Return (feature_id, area_m2, perimeter_m) for every feature of a type.
+
+        Postgres uses the ``geography`` cast for geodesic measurement; DuckDB
+        projects to the locally-appropriate UTM zone and measures in planar
+        metres. Scope with ``aoi_id`` to restrict to features intersecting
+        an AOI.
+        """
+        ...
+
 
 class ObservationRepository(Protocol):
     def upsert_current(
