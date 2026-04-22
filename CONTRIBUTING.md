@@ -5,27 +5,23 @@ Thanks for your interest in reimagina-evo.
 ## Development setup
 
 ```bash
-uv sync                           # or: pip install -e '.[dev]'
+make install                      # Python (uv) + web (npm) deps
 cp .env.example .env              # fill DSNs
 alembic upgrade head              # Postgres + DuckDB schema
 ```
 
-Run the test suites:
+Run `make help` to see every shortcut. The important ones:
 
-```bash
-pytest tests/unit tests/contract              # fast, no services required
-pytest tests/integration                      # requires Postgres + PostGIS running
-pytest tests/performance                      # benchmarks; opt-in
-```
-
-Front-end:
-
-```bash
-cd apps/web
-npm install
-npm run typecheck
-npm run build
-```
+| Command | What it does |
+|---|---|
+| `make check` | Run everything CI gates on (lint + unit/contract tests + web build). Run before every PR. |
+| `make test` | Fast Python tests (unit + contract). |
+| `make test-integration` | Integration tests — requires local Postgres + PostGIS. |
+| `make dev-api` / `make dev-web` | Start the API / web dev server. |
+| `make branch NAME=feat/x` | Create a branch off latest `main`. |
+| `make ship` | `make check` + push + open PR in one go. |
+| `make pr-merge` | Squash-merge the current branch's PR and delete the branch. |
+| `make release VERSION=v0.2.0` | Tag + publish a GitHub release. |
 
 ## Branch + commit conventions
 
