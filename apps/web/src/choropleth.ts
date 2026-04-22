@@ -19,11 +19,19 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 
 import type { IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
+import { enableHoverHighlight } from "./hover-highlight";
+import { mvtProvider, type TooltipController } from "./tooltip";
 
 const OVERLAY_SOURCE = "indicator_overlay";
 const OVERLAY_LAYER = "indicator_overlay__fill";
+const OVERLAY_LINE_LAYER = "indicator_overlay__line";
 const RAMP_START = "#f7fbff";
 const RAMP_END = "#08306b";
+
+// The currently-active indicator's disposers — tooltip deregistration
+// and hover-highlight teardown. Cleared and re-populated on every
+// activateIndicator so switching indicators doesn't leak providers.
+let _activeDisposers: Array<() => void> = [];
 
 
 export interface ChoroplethConfig {
@@ -129,6 +137,7 @@ export function activateIndicator(
   config: ChoroplethConfig,
   indicator: IndicatorSummary,
   domain: RampDomain,
+  tooltips?: TooltipController,
 ): void {
   removeIndicator(map);
 
@@ -140,16 +149,21 @@ export function activateIndicator(
   if (grain) params.set("feature_type", grain);
   const tileUrl = `${config.tilesUrlTemplate}?${params.toString()}`;
 
+  // promoteId surfaces MVT feature_id as feature.id so setFeatureState
+  // can target the right feature for hover highlighting — same
+  // contract every other vector source in the app uses.
   map.addSource(OVERLAY_SOURCE, {
     type: "vector",
     tiles: [tileUrl],
     minzoom: config.minzoom,
     maxzoom: config.maxzoom,
+    promoteId: "feature_id",
   });
 
   // If domain.max==min we've got a degenerate range; widen so the linear
   // interpolation doesn't divide by zero (MapLibre silently produces NaN).
   const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
+  const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
   map.addLayer({
     id: OVERLAY_LAYER,
@@ -165,19 +179,95 @@ export function activateIndicator(
         rampMax, RAMP_END,
       ],
       "fill-opacity": 0.75,
-      "fill-outline-color": "rgba(17, 24, 39, 0.7)",
+      "fill-outline-color": defaultOutline,
     },
   });
+
+  // Companion line layer at width 0 so enableHoverHighlight can push
+  // it to the standard thick stroke on hover. MapLibre's
+  // fill-outline-color is hardcoded to 1px and can't carry the
+  // hover-width bump on its own.
+  map.addLayer({
+    id: OVERLAY_LINE_LAYER,
+    type: "line",
+    source: OVERLAY_SOURCE,
+    "source-layer": config.sourceLayer,
+    paint: {
+      "line-color": defaultOutline,
+      "line-width": 0,
+    },
+  });
+
+  // Wire hover + tooltip via the same helpers every other vector
+  // layer in the app uses. Disposers get stashed for removeIndicator
+  // to call on teardown so switching to a different indicator
+  // doesn't leave stale providers behind.
+  _activeDisposers.push(
+    enableHoverHighlight(map, {
+      fillLayerId: OVERLAY_LAYER,
+      lineLayerId: OVERLAY_LINE_LAYER,
+      defaultFillOpacity: 0.75,
+      defaultOutlineColor: defaultOutline,
+      defaultLineWidth: 0,
+      hoverFillOpacity: 0.9,
+    }),
+  );
+
+  if (tooltips) {
+    _activeDisposers.push(
+      tooltips.register(mvtProvider({
+        id: `indicator::${indicator.slug}`,
+        layerId: OVERLAY_LAYER,
+        format: (feature) => {
+          const props = feature.properties ?? {};
+          const raw = props.value_numeric;
+          if (raw === undefined || raw === null) return null;
+          const num = typeof raw === "number" ? raw : Number(raw);
+          if (Number.isNaN(num)) return null;
+          const formatted = _formatIndicatorValue(num);
+          const unit = indicator.unit ? ` ${indicator.unit}` : "";
+          return {
+            title: indicator.name,
+            detail: `${formatted}${unit}`,
+          };
+        },
+      })),
+    );
+  }
 }
 
 
 export function removeIndicator(map: MapLibreMap): void {
+  for (const dispose of _activeDisposers) {
+    try {
+      dispose();
+    } catch {
+      // Disposers should never throw, but swallow defensively so one
+      // bad dispose doesn't skip the rest and leave MapLibre layers
+      // stranded.
+    }
+  }
+  _activeDisposers = [];
+  if (map.getLayer(OVERLAY_LINE_LAYER)) {
+    map.removeLayer(OVERLAY_LINE_LAYER);
+  }
   if (map.getLayer(OVERLAY_LAYER)) {
     map.removeLayer(OVERLAY_LAYER);
   }
   if (map.getSource(OVERLAY_SOURCE)) {
     map.removeSource(OVERLAY_SOURCE);
   }
+}
+
+
+function _formatIndicatorValue(value: number): string {
+  if (Number.isInteger(value)) return value.toLocaleString();
+  const abs = Math.abs(value);
+  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 3;
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 }
 
 

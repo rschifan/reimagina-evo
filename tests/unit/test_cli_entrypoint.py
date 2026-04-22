@@ -307,3 +307,80 @@ def test_cli_overlap_list_delegates(monkeypatch, capsys):
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["pairs"][0]["target"] == "MEX:block"
+
+
+def test_cli_raster_ingest_delegates(monkeypatch, capsys):
+    """`raster ingest` passes every flag through to the pipeline helper."""
+    received: dict = {}
+
+    def _fake(**kwargs):
+        received.update(kwargs)
+        return {"source_id": "src", "layer_slug": kwargs["layer_slug"]}
+
+    monkeypatch.setattr("apps.cli.app.ingest_raster", _fake)
+
+    exit_code = main([
+        "raster", "ingest",
+        "--raw-path", "/tmp/x.tif",
+        "--source-name", "Test LST",
+        "--provider", "NASA",
+        "--version", "2026-01-15",
+        "--layer-slug", "lst_2026_01_15",
+        "--aggregation-kind", "intensive",
+        "--colormap-name", "inferno",
+        "--rescale", "270,320",
+    ])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["layer_slug"] == "lst_2026_01_15"
+    assert received["source_name"] == "Test LST"
+    assert received["aggregation_kind"] == "intensive"
+    assert received["colormap_name"] == "inferno"
+    assert received["published"] is True   # default
+
+
+def test_cli_raster_ingest_unpublished_flag(monkeypatch, capsys):
+    """--unpublished inverts to published=False at the pipeline call."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.ingest_raster",
+        lambda **kw: captured.update(kw) or {"ok": True},
+    )
+    exit_code = main([
+        "raster", "ingest",
+        "--raw-path", "/tmp/x.tif",
+        "--source-name", "X", "--provider", "Y",
+        "--version", "v1", "--layer-slug", "x",
+        "--unpublished",
+    ])
+    assert exit_code == 0
+    assert captured["published"] is False
+
+
+def test_cli_raster_list_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.list_raster_layers",
+        lambda **kw: {"layers": [{"layer_slug": "a"}, {"layer_slug": "b"}], **kw},
+    )
+    exit_code = main(["raster", "list"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["layers"]) == 2
+
+
+def test_cli_raster_publish_flips_flag(monkeypatch, capsys):
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.set_raster_published",
+        lambda **kw: captured.update(kw) or {"ok": True, **kw},
+    )
+
+    exit_code = main(["raster", "publish", "--layer-slug", "my_slug"])
+    assert exit_code == 0
+    assert captured["published"] is True
+    assert captured["layer_slug"] == "my_slug"
+
+    captured.clear()
+    exit_code = main(["raster", "publish", "--layer-slug", "my_slug", "--unpublish"])
+    assert exit_code == 0
+    assert captured["published"] is False

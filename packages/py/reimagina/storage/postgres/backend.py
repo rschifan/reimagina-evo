@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .repositories import (
+    PostgresAggregationRecipeRepository,
     PostgresAOIRepository,
     PostgresAOISummaryRepository,
     PostgresExploreReader,
@@ -13,6 +14,7 @@ from .repositories import (
     PostgresObservationRepository,
     PostgresOverlapRepository,
     PostgresOverlapTypePairRepository,
+    PostgresRasterLayerRepository,
     PostgresServingReader,
     PostgresSourceCatalogRepository,
     PostgresTileSnapshotRepository,
@@ -47,6 +49,12 @@ class PostgresStorageBackend:
 
     def file_asset_repo(self) -> PostgresFileAssetRepository:
         return PostgresFileAssetRepository(self.connection)
+
+    def raster_layer_repo(self) -> PostgresRasterLayerRepository:
+        return PostgresRasterLayerRepository(self.connection)
+
+    def aggregation_recipe_repo(self) -> PostgresAggregationRecipeRepository:
+        return PostgresAggregationRecipeRepository(self.connection)
 
     def aoi_repo(self) -> PostgresAOIRepository:
         return PostgresAOIRepository(self.connection)

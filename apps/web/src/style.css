@@ -121,6 +121,77 @@ html, body, .app {
   text-transform: none;
 }
 
+.layer-toggles .layer-group-heading {
+  margin: 10px 0 2px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.layer-toggles .layer-group-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.layer-toggles .raster-group {
+  margin: 4px 0 6px 0;
+}
+
+.layer-toggles .raster-group-summary {
+  cursor: pointer;
+  list-style: disclosure-closed;
+  padding: 4px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sidebar-fg);
+  letter-spacing: 0;
+}
+
+.layer-toggles .raster-group[open] > .raster-group-summary {
+  list-style: disclosure-open;
+}
+
+.layer-toggles .raster-group .layer-toggle-row {
+  /* Indent children under their parent raster so the nesting reads
+     without any tree-connector glyphs. Matches the small-gap rhythm
+     the sidebar already uses between sibling rows. */
+  margin-left: 14px;
+}
+
+/* ── Map hover tooltip ──────────────────────────────────────────── */
+
+.map-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background: rgba(17, 24, 39, 0.92);
+  color: #f9fafb;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+  max-width: 280px;
+  white-space: nowrap;
+}
+
+.map-tooltip strong {
+  font-weight: 600;
+}
+
+.map-tooltip .map-tooltip-detail {
+  font-variant-numeric: tabular-nums;
+  color: #d1d5db;
+  margin-top: 2px;
+}
+
 .legend {
   margin-top: 12px;
   font-size: 12px;

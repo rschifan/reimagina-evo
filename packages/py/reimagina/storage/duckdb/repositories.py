@@ -408,6 +408,35 @@ class DuckDBFeatureRepository:
             ).fetchall()
         return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]
 
+    def iter_geometries_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, bytes]]:
+        if aoi_id is None:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(f.id AS VARCHAR), ST_AsWKB(f.geometry)
+                FROM curated_geo.feature f
+                WHERE CAST(f.type_id AS VARCHAR) = ?
+                """,
+                [type_id],
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT CAST(f.id AS VARCHAR), ST_AsWKB(f.geometry)
+                FROM curated_geo.feature f
+                JOIN curated_geo.area_of_interest aoi
+                  ON CAST(aoi.id AS VARCHAR) = ?
+                  AND ST_Intersects(f.geometry, aoi.geometry)
+                WHERE CAST(f.type_id AS VARCHAR) = ?
+                """,
+                [aoi_id, type_id],
+            ).fetchall()
+        return [(str(fid), bytes(wkb)) for fid, wkb in rows]
+
     def find_by_attributes(
         self,
         *,
@@ -610,6 +639,62 @@ class DuckDBObservationRepository:
 
         return len(records)
 
+    def retire_current_by_prefix(self, *, prefix: str) -> int:
+        # Match either the exact prefix OR `<prefix>_<anything>`.
+        # Using starts_with() instead of LIKE + ESCAPE sidesteps the
+        # backslash-quoting differences between Postgres E-strings and
+        # DuckDB's own escape rules — both engines have a straight
+        # starts_with() builtin, so the two backends share semantics.
+        # Retirement is cross-source by design.
+        if not prefix:
+            raise ValueError("retire_current_by_prefix: prefix must be non-empty")
+        result = self.connection.execute(
+            """
+            UPDATE curated_geo.observation
+               SET is_current = false, valid_to = now(), updated_at = now()
+             WHERE is_current
+               AND (attribute_key = ?
+                    OR starts_with(attribute_key, ? || '_'))
+            """,
+            [prefix, prefix],
+        )
+        rowcount = getattr(result, "rowcount", -1)
+        if rowcount >= 0:
+            return rowcount
+        # Older DuckDB builds returned -1; count via a follow-up select.
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM curated_geo.observation
+            WHERE NOT is_current
+              AND updated_at = valid_to
+              AND (attribute_key = ?
+                   OR starts_with(attribute_key, ? || '_'))
+            """,
+            [prefix, prefix],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def has_active_prefix(
+        self,
+        *,
+        prefix: str,
+        excluding_source_id: str,
+    ) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM curated_geo.observation
+            WHERE is_current
+              AND CAST(source_id AS VARCHAR) <> ?
+              AND (attribute_key = ?
+                   OR starts_with(attribute_key, ? || '_'))
+            LIMIT 1
+            """,
+            [excluding_source_id, prefix, prefix],
+        ).fetchone()
+        return row is not None
+
 
 class DuckDBFileAssetRepository:
     def __init__(self, connection):
@@ -650,6 +735,251 @@ class DuckDBFileAssetRepository:
             ],
         )
         return asset_id
+
+    def get_by_source(self, source_id: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT CAST(id AS VARCHAR),
+                   CAST(source_id AS VARCHAR),
+                   CAST(ingestion_run_id AS VARCHAR),
+                   storage_uri, format, crs, resolution_m,
+                   CAST(band_description AS VARCHAR) AS band_description,
+                   captured_at, dataset_version, created_at
+            FROM curated_geo.file_asset
+            WHERE CAST(source_id AS VARCHAR) = ?
+            """,
+            [source_id],
+        ).fetchone()
+        if row is None:
+            return None
+        band_desc = row[7]
+        if isinstance(band_desc, str):
+            try:
+                band_desc = json.loads(band_desc)
+            except (TypeError, ValueError):
+                band_desc = None
+        return {
+            "id": row[0], "source_id": row[1], "ingestion_run_id": row[2],
+            "storage_uri": row[3], "format": row[4], "crs": row[5],
+            "resolution_m": row[6], "band_description": band_desc,
+            "captured_at": row[8], "dataset_version": row[9],
+            "created_at": row[10],
+        }
+
+
+class DuckDBRasterLayerRepository:
+    _LAYER_COLS = (
+        "id", "source_id", "asset_id", "layer_slug", "logical_name",
+        "description", "colormap_name", "rescale", "minzoom", "maxzoom",
+        "published", "aggregation_kind", "created_at",
+        "storage_uri", "crs", "resolution_m", "format", "band_description",
+    )
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_layer(
+        self,
+        *,
+        source_id: str,
+        asset_id: str,
+        layer_slug: str,
+        logical_name: str | None = None,
+        description: str | None = None,
+        colormap_name: str | None = None,
+        rescale: str | None = None,
+        minzoom: int = 5,
+        maxzoom: int = 14,
+        published: bool = True,
+        aggregation_kind: str = "intensive",
+    ) -> str:
+        layer_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.raster_layer
+              (id, source_id, asset_id, layer_slug, logical_name, description,
+               colormap_name, rescale, minzoom, maxzoom, published,
+               aggregation_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                layer_id, source_id, asset_id, layer_slug, logical_name,
+                description, colormap_name, rescale, minzoom, maxzoom,
+                published, aggregation_kind,
+            ],
+        )
+        return layer_id
+
+    def get_by_source(self, source_id: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT id, source_id, asset_id, layer_slug, logical_name,
+                   description, colormap_name, rescale, minzoom, maxzoom,
+                   published, aggregation_kind, created_at,
+                   storage_uri, crs, resolution_m, format, band_description
+            FROM serving_geo.raster_layer_v
+            WHERE source_id = ?
+            """,
+            [source_id],
+        ).fetchone()
+        return self._row_to_dict(row) if row is not None else None
+
+    def get_by_id(self, layer_id: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT id, source_id, asset_id, layer_slug, logical_name,
+                   description, colormap_name, rescale, minzoom, maxzoom,
+                   published, aggregation_kind, created_at,
+                   storage_uri, crs, resolution_m, format, band_description
+            FROM serving_geo.raster_layer_v
+            WHERE id = ?
+            """,
+            [layer_id],
+        ).fetchone()
+        return self._row_to_dict(row) if row is not None else None
+
+    def list_published_layers(self) -> list[dict]:
+        rows = self.connection.execute(
+            """
+            SELECT id, source_id, asset_id, layer_slug, logical_name,
+                   description, colormap_name, rescale, minzoom, maxzoom,
+                   published, aggregation_kind, created_at,
+                   storage_uri, crs, resolution_m, format, band_description
+            FROM serving_geo.raster_layer_v
+            WHERE published
+            ORDER BY layer_slug
+            """
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def set_published(self, *, layer_slug: str, published: bool) -> None:
+        self.connection.execute(
+            """
+            UPDATE curated_geo.raster_layer
+               SET published = ?
+             WHERE layer_slug = ?
+            """,
+            [published, layer_slug],
+        )
+
+    @classmethod
+    def _row_to_dict(cls, row: tuple) -> dict:
+        record = dict(zip(cls._LAYER_COLS, row, strict=False))
+        band_desc = record.get("band_description")
+        if isinstance(band_desc, str):
+            try:
+                record["band_description"] = json.loads(band_desc)
+            except (TypeError, ValueError):
+                record["band_description"] = None
+        return record
+
+
+class DuckDBAggregationRecipeRepository:
+    """DuckDB-backed recipe registry (r020). Reads via serving view."""
+
+    _COLS = (
+        "id", "input_kind", "input_raster_layer_id", "input_raster_layer_slug",
+        "input_attribute_key_prefix", "input_feature_type_slug",
+        "target_feature_type_slug", "attribute_key_prefix",
+        "method", "weight_basis", "params", "coverage_threshold",
+        "aoi_id", "enabled", "created_at", "updated_at",
+    )
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_recipe(
+        self,
+        *,
+        input_kind: str,
+        target_feature_type_slug: str,
+        attribute_key_prefix: str,
+        method: str,
+        input_raster_layer_id: str | None = None,
+        input_attribute_key_prefix: str | None = None,
+        input_feature_type_slug: str | None = None,
+        weight_basis: str | None = None,
+        params: dict | None = None,
+        coverage_threshold: float = 0.5,
+        aoi_id: str | None = None,
+        enabled: bool = True,
+    ) -> str:
+        recipe_id = str(uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO curated_geo.aggregation_recipe
+              (id, input_kind, input_raster_layer_id, input_attribute_key_prefix,
+               input_feature_type_slug, target_feature_type_slug,
+               attribute_key_prefix, method, weight_basis, params,
+               coverage_threshold, aoi_id, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                recipe_id, input_kind, input_raster_layer_id,
+                input_attribute_key_prefix, input_feature_type_slug,
+                target_feature_type_slug, attribute_key_prefix,
+                method, weight_basis, json.dumps(params or {}),
+                coverage_threshold, aoi_id, enabled,
+            ],
+        )
+        return recipe_id
+
+    def get_recipe(self, recipe_id: str) -> dict | None:
+        row = self.connection.execute(
+            f"SELECT {', '.join(self._COLS)} "
+            f"FROM serving_geo.aggregation_recipe_v WHERE id = ?",
+            [recipe_id],
+        ).fetchone()
+        return self._row_to_dict(row) if row is not None else None
+
+    def list_recipes(
+        self,
+        *,
+        input_raster_layer_id: str | None = None,
+        enabled_only: bool = True,
+    ) -> list[dict]:
+        conditions: list[str] = []
+        params: list = []
+        if input_raster_layer_id is not None:
+            conditions.append("input_raster_layer_id = ?")
+            params.append(input_raster_layer_id)
+        if enabled_only:
+            conditions.append("enabled")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self.connection.execute(
+            f"SELECT {', '.join(self._COLS)} "
+            f"FROM serving_geo.aggregation_recipe_v{where} "
+            f"ORDER BY target_feature_type_slug, attribute_key_prefix",
+            params,
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def set_enabled(self, *, recipe_id: str, enabled: bool) -> None:
+        self.connection.execute(
+            """
+            UPDATE curated_geo.aggregation_recipe
+               SET enabled = ?, updated_at = now()
+             WHERE id = ?
+            """,
+            [enabled, recipe_id],
+        )
+
+    def delete_recipe(self, recipe_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM curated_geo.aggregation_recipe WHERE id = ?",
+            [recipe_id],
+        )
+
+    @classmethod
+    def _row_to_dict(cls, row: tuple) -> dict:
+        record = dict(zip(cls._COLS, row, strict=False))
+        params = record.get("params")
+        if isinstance(params, str):
+            try:
+                record["params"] = json.loads(params)
+            except (TypeError, ValueError):
+                record["params"] = {}
+        return record
 
 
 class DuckDBAOIRepository:
@@ -1011,6 +1341,54 @@ class DuckDBOverlapRepository:
                 quality or "missing",
             )
             for target_id, value, weight, quality in rows
+        ]
+
+    def rollup_observation_child_rows(
+        self,
+        *,
+        input_attribute_key_prefix: str,
+        source_feature_type: str,
+        target_feature_type: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, str, float, float]]:
+        if not input_attribute_key_prefix:
+            raise ValueError("input_attribute_key_prefix is required")
+        aoi_clause = ""
+        aoi_params: list = []
+        if aoi_id is not None:
+            aoi_clause = (
+                " AND fo.source_feature_id IN "
+                "(SELECT feature_id FROM curated_geo.aoi_feature WHERE aoi_id = ?)"
+            )
+            aoi_params.append(aoi_id)
+        rows = self.connection.execute(
+            f"""
+            SELECT CAST(fo.target_feature_id AS VARCHAR),
+                   obs.attribute_key,
+                   obs.value_numeric,
+                   fo.overlap_measure
+            FROM curated_geo.feature_overlap fo
+            JOIN curated_geo.feature src
+              ON src.id = fo.source_feature_id AND src.type_slug = ?
+            JOIN curated_geo.feature tgt
+              ON tgt.id = fo.target_feature_id AND tgt.type_slug = ?
+            JOIN curated_geo.observation obs
+              ON obs.feature_id = fo.source_feature_id
+             AND obs.is_current
+             AND obs.value_numeric IS NOT NULL
+             AND (obs.attribute_key = ?
+                  OR starts_with(obs.attribute_key, ? || '_'))
+            WHERE TRUE{aoi_clause}
+            """,
+            [
+                source_feature_type, target_feature_type,
+                input_attribute_key_prefix, input_attribute_key_prefix,
+                *aoi_params,
+            ],
+        ).fetchall()
+        return [
+            (str(target_id), str(attr_key), float(value), float(weight))
+            for target_id, attr_key, value, weight in rows
         ]
 
 

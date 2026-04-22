@@ -1468,3 +1468,149 @@ def test_duckdb_list_current_with_geometry_round_trips_wkb(tmp_path):
         decoded = shapely.wkb.loads(bytes(row["geometry_wkb"]))
         # Exact-equality via shapely's equals (same vertex order + coords).
         assert decoded.equals(block_polygon), (decoded, block_polygon)
+
+
+def test_duckdb_r1_raster_surface(tmp_path):
+    """End-to-end exercise of R1's new methods on DuckDB in one pass.
+
+    Parallels the Postgres coverage in test_data_layer_contracts.py;
+    mirroring critical boundary cases (the 'ndvi' vs 'ndvi2_mean' retire
+    test, the raster_layer lifecycle, the separator-safe has_active_prefix)
+    so a DuckDB-specific regression — e.g. starts_with() behaving
+    differently between engines — fires a clear red test.
+    """
+    import shapely.wkb
+
+    app_path = tmp_path / "reimagina.duckdb"
+    test_path = tmp_path / "reimagina_test.duckdb"
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path),
+    )
+
+    with connect(_duckdb_dsn(app_path)) as conn:
+        feat.seed_feature_types(conn)
+        backend = backend_for_connection(conn)
+
+        # --- Register a vector source + a block feature for iter_geometries_by_type ---
+        vec_src_id = cat.register_source(
+            conn,
+            name="r1_vec", provider="pytest", storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/r1.geojson", version="v1",
+        )
+        vec_run_id = cat.start_ingestion_run(
+            conn, source_id=vec_src_id, orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="r1_seed", code_version="test",
+        )
+        block_type = feat.get_type_id(conn, "MEX", "block")
+        gdf = gpd.GeoDataFrame(
+            [{"record_ref": "r1-blk", "geometry": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])}],
+            crs="EPSG:4326",
+        )
+        feat.load_features(
+            conn, gdf, source_id=vec_src_id, ingestion_run_id=vec_run_id,
+            type_id=block_type, dataset_version="v1",
+            source_record_ref_col="record_ref",
+        )
+
+        # --- iter_geometries_by_type round-trips a valid WKB ---
+        geoms = backend.feature_repo().iter_geometries_by_type(type_id=block_type)
+        assert len(geoms) == 1
+        fid, wkb_bytes = geoms[0]
+        assert isinstance(wkb_bytes, bytes) and len(wkb_bytes) > 0
+        decoded = shapely.wkb.loads(wkb_bytes)
+        assert decoded.is_valid
+
+        # --- Register a raster source + file_asset for the rest of R1 ---
+        ras_src_id = cat.register_source(
+            conn,
+            name="r1_ras", provider="pytest", storage_type="raster",
+            integration_role="enrichment",
+            storage_uri="file://data/silver/x.cog.tif", version="v1",
+        )
+        ras_run_id = cat.start_ingestion_run(
+            conn, source_id=ras_src_id, orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="r1_raster_seed", code_version="test",
+        )
+        asset_id = backend.file_asset_repo().register_file_asset(
+            source_id=ras_src_id, ingestion_run_id=ras_run_id,
+            storage_uri="file://data/silver/x.cog.tif", dataset_version="v1",
+            format="COG", crs="EPSG:4326", resolution_m=30.0,
+        )
+
+        # --- FileAssetRepository.get_by_source ---
+        got = backend.file_asset_repo().get_by_source(ras_src_id)
+        assert got is not None
+        assert got["id"] == asset_id
+        assert got["storage_uri"] == "file://data/silver/x.cog.tif"
+        assert backend.file_asset_repo().get_by_source(str(uuid4())) is None
+
+        # --- RasterLayerRepository lifecycle ---
+        raster_repo = backend.raster_layer_repo()
+        raster_repo.register_layer(
+            source_id=ras_src_id, asset_id=asset_id,
+            layer_slug="r1_duck_life", aggregation_kind="extensive",
+            colormap_name="inferno", rescale="0,1",
+        )
+        fetched = raster_repo.get_by_source(ras_src_id)
+        assert fetched is not None
+        assert fetched["layer_slug"] == "r1_duck_life"
+        assert fetched["aggregation_kind"] == "extensive"
+        assert fetched["storage_uri"] == "file://data/silver/x.cog.tif"
+        assert fetched["published"] is True
+
+        published = raster_repo.list_published_layers()
+        assert any(r["layer_slug"] == "r1_duck_life" for r in published)
+
+        raster_repo.set_published(layer_slug="r1_duck_life", published=False)
+        assert not any(
+            r["layer_slug"] == "r1_duck_life"
+            for r in raster_repo.list_published_layers()
+        )
+
+        # --- Observation prefix ops — the ndvi / ndvi2_mean boundary case ---
+        obs_repo = backend.observation_repo()
+        obs_repo.bulk_upsert_current(
+            [
+                {"feature_id": fid, "attribute_key": "ndvi",       "value": 0.7, "value_type": "numeric"},
+                {"feature_id": fid, "attribute_key": "ndvi_mean",  "value": 0.5, "value_type": "numeric"},
+                {"feature_id": fid, "attribute_key": "ndvi2_mean", "value": 0.9, "value_type": "numeric"},
+            ],
+            source_id=ras_src_id, ingestion_run_id=ras_run_id,
+        )
+
+        # has_active_prefix: another source excluded → sees ras_src_id's rows → True;
+        # excluding ras_src_id itself → False.
+        assert obs_repo.has_active_prefix(
+            prefix="ndvi", excluding_source_id=str(uuid4()),
+        ) is True
+        assert obs_repo.has_active_prefix(
+            prefix="ndvi", excluding_source_id=ras_src_id,
+        ) is False
+        # Separator-safe: 'ndv' does not match 'ndvi_mean' because 'ndv_' is
+        # not the prefix.
+        assert obs_repo.has_active_prefix(
+            prefix="ndv", excluding_source_id=str(uuid4()),
+        ) is False
+
+        # retire_current_by_prefix: 'ndvi' retires 'ndvi' + 'ndvi_mean' but
+        # NOT 'ndvi2_mean'. If a future edit reintroduces LIKE/ESCAPE and
+        # both DuckDB + Postgres go back to wildcard semantics, this fires.
+        obs_repo.retire_current_by_prefix(prefix="ndvi")
+        remaining = conn.execute(
+            "SELECT attribute_key, is_current "
+            "FROM curated_geo.observation "
+            "WHERE CAST(feature_id AS VARCHAR) = ? "
+            "ORDER BY attribute_key",
+            [fid],
+        ).fetchall()
+        state = {k: v for k, v in remaining}
+        assert state["ndvi"] is False
+        assert state["ndvi_mean"] is False
+        assert state["ndvi2_mean"] is True, "ndvi2_mean must NOT be retired"
+
+        # Empty prefix rejected.
+        with pytest.raises(ValueError, match="non-empty"):
+            obs_repo.retire_current_by_prefix(prefix="")

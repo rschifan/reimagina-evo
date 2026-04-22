@@ -62,6 +62,7 @@ def _protocol_methods(protocol_cls: type) -> set[str]:
         ("FeatureRepository", "feature_repo"),
         ("ObservationRepository", "observation_repo"),
         ("FileAssetRepository", "file_asset_repo"),
+        ("RasterLayerRepository", "raster_layer_repo"),
         ("AOIRepository", "aoi_repo"),
         ("OverlapRepository", "overlap_repo"),
         ("OverlapTypePairRepository", "overlap_type_pair_repo"),

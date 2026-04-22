@@ -12,7 +12,12 @@ from pydantic import BaseModel
 
 from reimagina.tiles.service import resolve_tile_sources
 
-from ..deps import get_db_conn, tile_live_base_url, tile_snapshot_base_url
+from ..deps import (
+    get_db_conn,
+    tile_live_base_url,
+    tile_raster_base_url,
+    tile_snapshot_base_url,
+)
 
 router = APIRouter(prefix="/tile-sources", tags=["tiles"])
 
@@ -44,13 +49,23 @@ def list_tile_sources(
             "Defaults to REIMAGINA_TILE_SNAPSHOT_BASE_URL when omitted."
         ),
     ),
+    raster_base_url: str | None = Query(
+        default=None,
+        description=(
+            "Base URL of the titiler COG endpoint (e.g. "
+            "http://localhost:8000/cog for the in-process mount). "
+            "Defaults to REIMAGINA_TILE_RASTER_BASE_URL when omitted."
+        ),
+    ),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[TileSource]:
-    """Resolve every layer in infra/tiles/layers.json into a frontend-ready source."""
+    """Resolve every tile layer (vector manifest, PMTiles snapshot, raster
+    layer registry) into a frontend-ready source."""
     rows = resolve_tile_sources(
         conn,
         live_tilejson_base_url=live_tilejson_base_url or tile_live_base_url(),
         snapshot_base_url=snapshot_base_url or tile_snapshot_base_url(),
+        raster_base_url=raster_base_url or tile_raster_base_url(),
     )
     return [
         TileSource(
