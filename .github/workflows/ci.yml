@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Monday 06:00 UTC — catches dep rot on main.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-py:
+    name: Lint (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  test-py-unit:
+    name: Unit + Contract tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System dependencies (GDAL for fiona/rasterio wheels fallback)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgdal-dev
+
+      - name: Install package (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: pytest (unit + contract)
+        run: pytest tests/unit tests/contract
+
+  build-web:
+    name: Build web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: typecheck + build
+        run: npm run build
+
+  test-py-integration:
+    name: Integration tests (Postgres + PostGIS) — informational
+    runs-on: ubuntu-latest
+    # Informational for now; not a required check. Promote to required
+    # once we've seen it stable across a few PRs.
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: reimagina
+          POSTGRES_PASSWORD: reimagina
+          POSTGRES_DB: reimagina
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reimagina"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgdal-dev postgresql-client
+
+      - name: Install package (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Alembic migrations
+        run: alembic upgrade head
+
+      - name: pytest (integration)
+        run: pytest tests/integration
