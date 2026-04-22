@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+title: "reimagina-evo: urban planning scenario modelling platform"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Schifanella
+    given-names: Rossano
+    email: rossano.schifanella@isi.it
+    affiliation: ISI Foundation
+repository-code: "https://github.com/rschifan/reimagina-evo"
+license: MIT
+version: 0.1.0
+date-released: "2026-04-22"
+keywords:
+  - urban-analytics
+  - gis
+  - postgis
+  - duckdb
+  - maplibre
+  - raster
+  - scenario-modelling
