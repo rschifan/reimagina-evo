@@ -335,7 +335,6 @@ def test_observation_recipe_rolls_up_to_coarser_grain(
     # the "one recipe produces many output keys" path.
     input_prefix = f"r20_in_{uuid4().hex[:8]}"
     output_prefix = f"r20_out_{uuid4().hex[:8]}"
-    import json
     from reimagina.data import catalog as cat
     obs_source = cat.register_source(
         conn,
