@@ -94,6 +94,7 @@ infra/docker/volumes/
 
 # ── Agent instruction files (local only, not published) ─────────────────────
 CLAUDE.md
+.claude/
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.log
