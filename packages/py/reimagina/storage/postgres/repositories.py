@@ -328,6 +328,35 @@ class PostgresFeatureRepository:
                 for fid, area, perim in cur.fetchall()
             ]
 
+    def iter_geometries_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, bytes]]:
+        with self.connection.cursor() as cur:
+            if aoi_id is None:
+                cur.execute(
+                    """
+                    SELECT f.id::text, ST_AsBinary(f.geometry)
+                    FROM curated_geo.feature f
+                    WHERE f.type_id = %s
+                    """,
+                    (type_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT f.id::text, ST_AsBinary(f.geometry)
+                    FROM curated_geo.feature f
+                    JOIN curated_geo.area_of_interest aoi
+                      ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
+                    WHERE f.type_id = %s
+                    """,
+                    (aoi_id, type_id),
+                )
+            return [(str(fid), bytes(wkb)) for fid, wkb in cur.fetchall()]
+
     def find_by_attributes(
         self,
         *,
@@ -510,6 +539,49 @@ class PostgresObservationRepository:
             )
         return len(records)
 
+    def retire_current_by_prefix(self, *, prefix: str) -> int:
+        # Match either the exact prefix OR `<prefix>_<anything>`. We
+        # intentionally avoid LIKE + ESCAPE here — Postgres E-strings
+        # silently swallow unknown backslash sequences (`\_` ≠ escape),
+        # which would turn an "escape the underscore" pattern into an
+        # unescaped wildcard and retire `ndvi2_mean` alongside
+        # `ndvi_mean`. `starts_with()` (Postgres 11+) has no such trap.
+        if not prefix:
+            raise ValueError("retire_current_by_prefix: prefix must be non-empty")
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE curated_geo.observation
+                   SET is_current = false, valid_to = now(), updated_at = now()
+                 WHERE is_current
+                   AND (attribute_key = %s
+                        OR starts_with(attribute_key, %s || '_'))
+                """,
+                (prefix, prefix),
+            )
+            return cur.rowcount
+
+    def has_active_prefix(
+        self,
+        *,
+        prefix: str,
+        excluding_source_id: str,
+    ) -> bool:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM curated_geo.observation
+                WHERE is_current
+                  AND source_id <> %s
+                  AND (attribute_key = %s
+                       OR starts_with(attribute_key, %s || '_'))
+                LIMIT 1
+                """,
+                (excluding_source_id, prefix, prefix),
+            )
+            return cur.fetchone() is not None
+
 
 class PostgresFileAssetRepository:
     def __init__(self, connection):
@@ -550,6 +622,225 @@ class PostgresFileAssetRepository:
                 ),
             )
             return str(cur.fetchone()[0])
+
+    def get_by_source(self, source_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, source_id::text, ingestion_run_id::text,
+                       storage_uri, format, crs, resolution_m,
+                       band_description, captured_at, dataset_version,
+                       created_at
+                FROM curated_geo.file_asset
+                WHERE source_id = %s
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+class PostgresRasterLayerRepository:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_layer(
+        self,
+        *,
+        source_id: str,
+        asset_id: str,
+        layer_slug: str,
+        logical_name: str | None = None,
+        description: str | None = None,
+        colormap_name: str | None = None,
+        rescale: str | None = None,
+        minzoom: int = 5,
+        maxzoom: int = 14,
+        published: bool = True,
+        aggregation_kind: str = "intensive",
+    ) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.raster_layer
+                  (source_id, asset_id, layer_slug, logical_name, description,
+                   colormap_name, rescale, minzoom, maxzoom, published,
+                   aggregation_kind)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (source_id, asset_id, layer_slug, logical_name, description,
+                 colormap_name, rescale, minzoom, maxzoom, published,
+                 aggregation_kind),
+            )
+            return str(cur.fetchone()[0])
+
+    def get_by_source(self, source_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, source_id::text, asset_id::text,
+                       layer_slug, logical_name, description,
+                       colormap_name, rescale, minzoom, maxzoom,
+                       published, aggregation_kind, created_at,
+                       storage_uri, crs, resolution_m, format,
+                       band_description
+                FROM serving_geo.raster_layer_v
+                WHERE source_id = %s
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_by_id(self, layer_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, source_id::text, asset_id::text,
+                       layer_slug, logical_name, description,
+                       colormap_name, rescale, minzoom, maxzoom,
+                       published, aggregation_kind, created_at,
+                       storage_uri, crs, resolution_m, format,
+                       band_description
+                FROM serving_geo.raster_layer_v
+                WHERE id = %s
+                """,
+                (layer_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_published_layers(self) -> list[dict]:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id::text, source_id::text, asset_id::text,
+                       layer_slug, logical_name, description,
+                       colormap_name, rescale, minzoom, maxzoom,
+                       published, aggregation_kind, created_at,
+                       storage_uri, crs, resolution_m, format
+                FROM serving_geo.raster_layer_v
+                WHERE published
+                ORDER BY layer_slug
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def set_published(self, *, layer_slug: str, published: bool) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE curated_geo.raster_layer
+                   SET published = %s
+                 WHERE layer_slug = %s
+                """,
+                (published, layer_slug),
+            )
+
+
+class PostgresAggregationRecipeRepository:
+    """Postgres-backed recipe registry (r020). Reads via serving view."""
+
+    _SELECT_COLS = (
+        "id::text, input_kind, "
+        "input_raster_layer_id::text, input_raster_layer_slug, "
+        "input_attribute_key_prefix, input_feature_type_slug, "
+        "target_feature_type_slug, attribute_key_prefix, "
+        "method, weight_basis, params, coverage_threshold, "
+        "aoi_id::text, enabled, created_at, updated_at"
+    )
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def register_recipe(
+        self,
+        *,
+        input_kind: str,
+        target_feature_type_slug: str,
+        attribute_key_prefix: str,
+        method: str,
+        input_raster_layer_id: str | None = None,
+        input_attribute_key_prefix: str | None = None,
+        input_feature_type_slug: str | None = None,
+        weight_basis: str | None = None,
+        params: dict | None = None,
+        coverage_threshold: float = 0.5,
+        aoi_id: str | None = None,
+        enabled: bool = True,
+    ) -> str:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.aggregation_recipe
+                  (input_kind, input_raster_layer_id, input_attribute_key_prefix,
+                   input_feature_type_slug, target_feature_type_slug,
+                   attribute_key_prefix, method, weight_basis, params,
+                   coverage_threshold, aoi_id, enabled)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    input_kind, input_raster_layer_id, input_attribute_key_prefix,
+                    input_feature_type_slug, target_feature_type_slug,
+                    attribute_key_prefix, method, weight_basis,
+                    psycopg2.extras.Json(params or {}),
+                    coverage_threshold, aoi_id, enabled,
+                ),
+            )
+            return str(cur.fetchone()[0])
+
+    def get_recipe(self, recipe_id: str) -> dict | None:
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT {self._SELECT_COLS} "
+                f"FROM serving_geo.aggregation_recipe_v WHERE id = %s",
+                (recipe_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def list_recipes(
+        self,
+        *,
+        input_raster_layer_id: str | None = None,
+        enabled_only: bool = True,
+    ) -> list[dict]:
+        conditions: list[str] = []
+        params: list = []
+        if input_raster_layer_id is not None:
+            conditions.append("input_raster_layer_id = %s")
+            params.append(input_raster_layer_id)
+        if enabled_only:
+            conditions.append("enabled")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT {self._SELECT_COLS} "
+                f"FROM serving_geo.aggregation_recipe_v{where} "
+                f"ORDER BY target_feature_type_slug, attribute_key_prefix",
+                params,
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def set_enabled(self, *, recipe_id: str, enabled: bool) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE curated_geo.aggregation_recipe
+                   SET enabled = %s, updated_at = now()
+                 WHERE id = %s
+                """,
+                (enabled, recipe_id),
+            )
+
+    def delete_recipe(self, recipe_id: str) -> None:
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM curated_geo.aggregation_recipe WHERE id = %s",
+                (recipe_id,),
+            )
 
 
 class PostgresAOIRepository:
@@ -947,6 +1238,54 @@ class PostgresOverlapRepository:
                     quality or "missing",
                 )
                 for target_id, value, weight, quality in cur.fetchall()
+            ]
+
+    def rollup_observation_child_rows(
+        self,
+        *,
+        input_attribute_key_prefix: str,
+        source_feature_type: str,
+        target_feature_type: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, str, float, float]]:
+        if not input_attribute_key_prefix:
+            raise ValueError("input_attribute_key_prefix is required")
+        aoi_clause = ""
+        aoi_params: list = []
+        if aoi_id is not None:
+            aoi_clause = " AND fo.source_feature_id IN (SELECT feature_id FROM curated_geo.aoi_feature WHERE aoi_id = %s)"
+            aoi_params.append(aoi_id)
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT fo.target_feature_id::text,
+                       obs.attribute_key,
+                       obs.value_numeric,
+                       fo.overlap_measure
+                FROM curated_geo.feature_overlap fo
+                JOIN curated_geo.feature src ON src.id = fo.source_feature_id
+                     AND src.type_slug = %s
+                JOIN curated_geo.feature tgt ON tgt.id = fo.target_feature_id
+                     AND tgt.type_slug = %s
+                JOIN curated_geo.observation obs
+                     ON obs.feature_id = fo.source_feature_id
+                    AND obs.is_current
+                    AND obs.value_numeric IS NOT NULL
+                    AND (obs.attribute_key = %s
+                         OR obs.attribute_key LIKE %s ESCAPE '\\')
+                WHERE TRUE{aoi_clause}
+                """,
+                (
+                    source_feature_type, target_feature_type,
+                    input_attribute_key_prefix,
+                    input_attribute_key_prefix + "\\_%",
+                    *aoi_params,
+                ),
+            )
+            return [
+                (str(target_id), str(attr_key), float(value), float(weight))
+                for target_id, attr_key, value, weight in cur.fetchall()
+                if value is not None
             ]
 
 

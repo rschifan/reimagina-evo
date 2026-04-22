@@ -22,11 +22,43 @@ export interface IndicatorSummary {
 
 export interface TileSource {
   layer_id: string;
+  logical_name?: string | null;
+  description?: string | null;
+  source_mode?: string;
+  available?: boolean;
   source_config: {
     tiles_url_template?: string;
     source_layer?: string | null;
     minzoom?: number | null;
     maxzoom?: number | null;
+    // Raster (source_mode='raster_cog') fields. Populated alongside
+    // tiles_url_template so the frontend can expose the colormap /
+    // rescale in the UI without re-parsing the URL.
+    colormap_name?: string | null;
+    rescale?: string | null;
+    // Resolved file:// URL that titiler opens (populated for raster_cog).
+    // Used by the hover-tooltip provider to call titiler's /cog/point
+    // endpoint under the cursor.
+    cog_url?: string | null;
+    // Aggregation overlay (source_mode='aggregation_overlay') fields.
+    // Each overlay renders one MVT choropleth of a recipe's current
+    // observations. parent_raster_layer_slug links the overlay back to
+    // the raster_cog source it was derived from (null for
+    // observation→observation rollups with no raster ancestor).
+    attribute_key?: string | null;
+    target_feature_type_slug?: string | null;
+    method?: string | null;
+    input_kind?: string | null;
+    parent_raster_layer_id?: string | null;
+    parent_raster_layer_slug?: string | null;
+    value_range?: {
+      count: number;
+      min: number | null;
+      p05: number | null;
+      p50: number | null;
+      p95: number | null;
+      max: number | null;
+    } | null;
   };
 }
 

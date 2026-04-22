@@ -23,6 +23,18 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
+    # Raster ingest pipeline — single-band GDAL-openable inputs + COG writes.
+    # rasterio bundles its own GDAL wheel; coexists with fiona's GDAL in
+    # practice (verified on the R1 pre-flight clean-venv smoke test).
+    "rasterio>=1.3",
+    # Zonal-stats worker (R3). rasterstats itself depends on rasterio,
+    # shapely, and numpy — all already pinned above or transitive.
+    "rasterstats>=0.19",
+    # Raster tile serving (R4). titiler.core ships the FastAPI router
+    # we mount under /cog in apps/api so the API + tile server share a
+    # process. Staying on core (no titiler.mosaic / titiler.application)
+    # keeps the dep footprint tight.
+    "titiler.core>=0.22",
 ]
 
 [project.optional-dependencies]

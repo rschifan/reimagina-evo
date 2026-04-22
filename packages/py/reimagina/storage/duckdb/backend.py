@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .migrations import run_duckdb_migrations
 from .repositories import (
+    DuckDBAggregationRecipeRepository,
     DuckDBAOIRepository,
     DuckDBAOISummaryRepository,
     DuckDBExploreReader,
@@ -14,6 +15,7 @@ from .repositories import (
     DuckDBObservationRepository,
     DuckDBOverlapRepository,
     DuckDBOverlapTypePairRepository,
+    DuckDBRasterLayerRepository,
     DuckDBServingReader,
     DuckDBSourceCatalogRepository,
     DuckDBTileSnapshotRepository,
@@ -58,6 +60,12 @@ class DuckDBStorageBackend:
 
     def file_asset_repo(self) -> DuckDBFileAssetRepository:
         return DuckDBFileAssetRepository(self.connection)
+
+    def raster_layer_repo(self) -> DuckDBRasterLayerRepository:
+        return DuckDBRasterLayerRepository(self.connection)
+
+    def aggregation_recipe_repo(self) -> DuckDBAggregationRecipeRepository:
+        return DuckDBAggregationRecipeRepository(self.connection)
 
     def aoi_repo(self) -> DuckDBAOIRepository:
         return DuckDBAOIRepository(self.connection)

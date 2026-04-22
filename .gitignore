@@ -67,6 +67,7 @@ apps/web/dist/
 # ── IDE / editors ────────────────────────────────────────────────────────────
 .vscode/
 .idea/
+.obsidian/
 *.swp
 *.swo
 *~

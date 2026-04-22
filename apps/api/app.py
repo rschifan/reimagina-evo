@@ -19,7 +19,10 @@ import psycopg2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from titiler.core.factory import TilerFactory
+
 from . import deps, errors
+from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
 from .routers import aois, features, health, indicators, tiles
 
@@ -101,6 +104,18 @@ def create_app(
     app.include_router(aois.router)
     app.include_router(features.router)
     app.include_router(tiles.router)
+    # Raster tiles: mount titiler's standard COG endpoints under /cog so
+    # the API + tile server share a process, a dep tree, and an origin.
+    # Splitting titiler into a sidecar (separate uvicorn or Docker) is
+    # a later scaling decision — until then, one less moving part.
+    #
+    # path_dependency: titiler's default accepts ANY ``url`` query param
+    # and hands it straight to rasterio/GDAL, which would let a client
+    # read arbitrary host files via ``/cog/info?url=file:///etc/passwd``.
+    # ``validated_cog_path`` pins the URL to file:// under
+    # ``host_data_root()`` so only registered COGs are servable.
+    cog = TilerFactory(path_dependency=validated_cog_path)
+    app.include_router(cog.router, prefix="/cog", tags=["raster-tiles"])
     return app
 
 

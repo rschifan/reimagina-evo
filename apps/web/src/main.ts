@@ -34,8 +34,12 @@ import {
 import {
   extractTileSources,
   installInputLayers,
+  installAggregationOverlays,
+  installRasterLayers,
   wireLayerToggles,
+  wireRasterToggles,
 } from "./layers";
+import { TooltipController } from "./tooltip";
 
 const CUAUHTEMOC_CENTER: [number, number] = [-99.137, 19.432];
 
@@ -106,10 +110,21 @@ async function main(): Promise<void> {
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
   map.on("load", () => {
-    installInputLayers(map, tileCatalog);
+    // Tooltip controller is the only thing that knows how to render
+    // hover content. Providers are registered by the installers below
+    // so each layer type declares its own "what do I show on hover"
+    // in one place — main.ts stays agnostic of per-layer details.
+    const tooltipController = new TooltipController(map, map.getContainer());
+
+    installInputLayers(map, tileCatalog, tooltipController);
+    installRasterLayers(map, sources, tooltipController);
+    installAggregationOverlays(map, sources, tooltipController);
 
     const toggleContainer = document.getElementById("layer-toggles");
-    if (toggleContainer) wireLayerToggles(toggleContainer, map);
+    if (toggleContainer) {
+      wireLayerToggles(toggleContainer, map);
+      wireRasterToggles(toggleContainer, map, sources);
+    }
 
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const legend = document.getElementById("legend");
@@ -144,7 +159,7 @@ async function main(): Promise<void> {
           console.warn("stats fetch failed, falling back to catalog bounds", err);
         }
         const domain = rampDomainFromStats(stats, indicator);
-        activateIndicator(map, overlayConfig, indicator, domain);
+        activateIndicator(map, overlayConfig, indicator, domain, tooltipController);
         if (legend) renderLegend(legend, indicator, domain);
         if (downloads) setDownloadAvailability(downloads, true);
         setStatus(

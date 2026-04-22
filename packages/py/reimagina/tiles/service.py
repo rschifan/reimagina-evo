@@ -5,12 +5,18 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
 
-from .defaults import tile_live_base_url, tile_snapshot_base_url
+from .defaults import (
+    tile_live_base_url,
+    tile_raster_base_url,
+    tile_snapshot_base_url,
+    to_host_path,
+    to_titiler_url,
+)
 from .manifest import TileLayerDefinition, get_tile_layer, load_tile_layers
 
 
@@ -261,6 +267,7 @@ def resolve_tile_sources(
     *,
     live_tilejson_base_url: str | None = None,
     snapshot_base_url: str | None = None,
+    raster_base_url: str | None = None,
     manifest_path: str | Path | None = None,
 ) -> list[dict[str, object]]:
     """Resolve every manifest layer into a frontend-ready tile source.
@@ -280,8 +287,10 @@ def resolve_tile_sources(
     """
     live_url = live_tilejson_base_url if live_tilejson_base_url is not None else tile_live_base_url()
     snapshot_url = snapshot_base_url if snapshot_base_url is not None else tile_snapshot_base_url()
+    raster_url = raster_base_url if raster_base_url is not None else tile_raster_base_url()
     martin_base, default_function = _martin_base_and_default_function(live_url)
-    repo = backend_for_connection(conn).tile_repo()
+    backend = backend_for_connection(conn)
+    repo = backend.tile_repo()
     resolved: list[dict[str, object]] = []
     for layer in load_tile_layers(manifest_path):
         if layer.source_mode == "live_mvt":
@@ -334,4 +343,358 @@ def resolve_tile_sources(
                 },
             }
         )
+
+    resolved.extend(_resolve_raster_layers(backend, raster_url))
+    resolved.extend(_resolve_aggregation_overlays(backend, martin_base))
     return resolved
+
+
+def _resolve_raster_layers(backend, raster_base_url: str) -> list[dict[str, object]]:
+    """Turn every published ``raster_layer`` row into a frontend source.
+
+    The tile URL follows titiler's standard shape:
+    ``{raster_base_url}/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<cog>``
+    with colormap + rescale forwarded as query params when set on the
+    layer registry row. ``available=false`` when the COG file is not
+    on disk — operators get a clear "the raster is registered but the
+    artifact is missing" signal instead of a broken map tile.
+    """
+    base = raster_base_url.rstrip("/")
+    resolved: list[dict[str, object]] = []
+    for row in backend.raster_layer_repo().list_published_layers():
+        storage_uri = row.get("storage_uri")
+        if not storage_uri:
+            # Row exists but the silver artifact never landed. Surface
+            # it as unavailable rather than emitting a tile URL that
+            # will 404 on every request.
+            resolved.append(
+                _raster_tile_entry(row, tiles_url_template=None, available=False)
+            )
+            continue
+        host_path = to_host_path(storage_uri)
+        available = host_path.exists() and host_path.stat().st_size > 0
+        cog_url = to_titiler_url(storage_uri)
+        # Percent-encode every value: ``url=`` already is (Path.as_uri()
+        # escapes path chars), but colormap_name and rescale come straight
+        # from the registry, which accepts arbitrary strings. Leaving '&'
+        # or '#' un-escaped would silently truncate the query string.
+        # ``safe=""`` so that ',' in rescale is also encoded consistently.
+        query = [f"url={quote(cog_url, safe=':/')}"]
+        if row.get("colormap_name"):
+            query.append(f"colormap_name={quote(str(row['colormap_name']), safe='')}")
+        if row.get("rescale"):
+            query.append(f"rescale={quote(str(row['rescale']), safe='')}")
+        qs = "&".join(query)
+        tiles_url_template = (
+            f"{base}/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png?{qs}"
+        )
+        resolved.append(
+            _raster_tile_entry(
+                row,
+                tiles_url_template=tiles_url_template,
+                available=available,
+                cog_url=cog_url,
+            )
+        )
+    return resolved
+
+
+def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, object]]:
+    """Turn every enabled aggregation recipe into a tile-sources entry.
+
+    Each enabled recipe → one MVT choropleth source keyed on
+    ``(attribute_key, feature_type_slug)``. The ``attribute_key`` is
+    derived from the recipe's ``attribute_key_prefix`` + the method's
+    canonical suffix (``_sum``, ``_mean``, …); if the recipe overrides
+    via ``params['stats']`` we pick the first entry.
+
+    The frontend nests each overlay under its parent raster via
+    ``parent_raster_layer_slug``. Recipes whose input is an observation
+    (rather than a raster) still produce an overlay entry but don't
+    nest — they're "derived layers" with no pixel parent.
+
+    Value range (min/p05/p95/max) is computed on the fly from
+    ``curated_geo.observation`` so the frontend can pick a colour
+    ramp without a second round-trip. A recipe that's been registered
+    but never run returns ``available=false`` and a null value_range,
+    so the UI can show the toggle as "not yet computed".
+    """
+    base = martin_base.rstrip("/")
+    resolved: list[dict[str, object]] = []
+
+    recipes = backend.aggregation_recipe_repo().list_recipes(enabled_only=True)
+
+    # Build a chain-walking index so observation-input recipes inherit
+    # their transitive raster parent. Otherwise a block→AGEB rollup of
+    # WorldPop observations would appear under "no parent raster" even
+    # though it's derived from the same WorldPop pixels.
+    # Key: the prefix the recipe *writes*; value: the recipe.
+    by_output_prefix = {r["attribute_key_prefix"]: r for r in recipes}
+
+    for recipe in recipes:
+        attribute_key = _attribute_key_for_recipe(recipe)
+        value_range = _aggregation_value_range(backend, attribute_key)
+        available = value_range is not None and value_range["count"] > 0
+        parent_id, parent_slug = _resolve_transitive_raster_parent(
+            recipe, by_output_prefix,
+        )
+        # Append the latest observation-write timestamp as a cache-buster
+        # so MapLibre's in-memory tile cache invalidates when a recipe is
+        # re-run. Without this, a fresh rollup's tiles are masked by the
+        # stale empty tiles the browser fetched before the run.
+        version = _latest_observation_version(backend, attribute_key)
+        query_parts = [
+            f"attribute_key={quote(attribute_key, safe='')}",
+            f"feature_type_slug={quote(recipe['target_feature_type_slug'], safe='')}",
+        ]
+        if version is not None:
+            query_parts.append(f"v={quote(version, safe='')}")
+        query = "&".join(query_parts)
+        tiles_url_template = (
+            f"{base}/aggregation_overlay_tile/{{z}}/{{x}}/{{y}}?{query}"
+        )
+        resolved.append({
+            "layer_id": f"aggregation_overlay::{recipe['id']}",
+            "logical_name": _logical_name_for_recipe(recipe, parent_slug),
+            "description": _description_for_recipe(recipe),
+            "source_mode": "aggregation_overlay",
+            "implemented": True,
+            "available": available,
+            "source_config": {
+                "kind": "vector",
+                "tiles_url_template": tiles_url_template,
+                "source_layer": "aggregation_overlay",
+                "attribute_key": attribute_key,
+                "target_feature_type_slug": recipe["target_feature_type_slug"],
+                "method": recipe["method"],
+                "input_kind": recipe["input_kind"],
+                "parent_raster_layer_id": parent_id,
+                "parent_raster_layer_slug": parent_slug,
+                "value_range": value_range,
+                # z<10 returns empty tiles server-side; surface the floor
+                # so the frontend can set the layer's minzoom to match.
+                "minzoom": 10,
+                "maxzoom": 16,
+            },
+        })
+    return resolved
+
+
+def _resolve_transitive_raster_parent(
+    recipe: dict[str, object],
+    by_output_prefix: dict[str, dict[str, object]],
+) -> tuple[object, object]:
+    """Walk the recipe chain backward until we hit a raster input.
+
+    A recipe with ``input_kind='raster'`` is its own parent: return
+    (input_raster_layer_id, input_raster_layer_slug) directly.
+
+    A recipe with ``input_kind='observation'`` points at another
+    recipe's output prefix via ``input_attribute_key_prefix``. Look it
+    up, recurse. Stops when the chain hits a raster or when the next
+    step is missing / non-raster-derived — in that case there's no
+    meaningful raster parent (e.g. the input prefix was written by a
+    non-recipe worker like a hand-imported CSV).
+
+    Cycle-safe: a ``seen`` set guards against self-referential chains,
+    which the DB's UNIQUE (target, attribute_key_prefix) already makes
+    hard to create but not impossible (an operator could point a recipe
+    at its own output prefix via SQL).
+    """
+    seen: set[str] = set()
+    cursor = recipe
+    while True:
+        recipe_id = str(cursor["id"])
+        if recipe_id in seen:
+            return None, None
+        seen.add(recipe_id)
+        if cursor["input_kind"] == "raster":
+            return cursor.get("input_raster_layer_id"), cursor.get("input_raster_layer_slug")
+        # Observation input — step up to the recipe that produced this prefix.
+        up_prefix = cursor.get("input_attribute_key_prefix")
+        if not up_prefix:
+            return None, None
+        upstream = by_output_prefix.get(up_prefix)
+        if upstream is None:
+            # Input observations exist (e.g. hand-imported) but no recipe
+            # produced them — no raster lineage.
+            return None, None
+        cursor = upstream
+
+
+def _attribute_key_for_recipe(recipe: dict[str, object]) -> str:
+    """Resolve the attribute_key the tile function should render.
+
+    Order of precedence:
+      1. ``params.stats[0]`` — explicit override (e.g. recipe emits
+         both ``_sum`` and ``_count`` but only one is plot-worthy).
+      2. ``<prefix>_<method>`` — the default the raster worker writes
+         when ``params.stats`` is unset (matches
+         ``_METHOD_TO_RASTERSTAT`` in derivations.py).
+    """
+    prefix = str(recipe["attribute_key_prefix"])
+    params = recipe.get("params") or {}
+    stats = params.get("stats") if isinstance(params, dict) else None
+    suffix = stats[0] if stats else recipe["method"]
+    return f"{prefix}_{suffix}"
+
+
+def _logical_name_for_recipe(
+    recipe: dict[str, object], parent_slug: object | None = None,
+) -> str:
+    """Human-readable label shown under each raster in the sidebar.
+
+    When ``parent_slug`` is resolved (the transitive raster ancestor),
+    the label focuses on the grain + method the operator cares about
+    and drops the redundant raster slug — the UI already groups every
+    recipe under that raster's name, so repeating it in every child row
+    is just noise.
+    """
+    target = recipe["target_feature_type_slug"]
+    method = recipe["method"]
+    if parent_slug:
+        if recipe["input_kind"] == "observation":
+            via = recipe.get("input_feature_type_slug")
+            return f"Aggregated to {target} ({method}, via {via})"
+        return f"Aggregated to {target} ({method})"
+    # No raster ancestor — fully-orphan observation chain. Keep the
+    # rollup-style label so the operator can still read the flow.
+    return (
+        f"rollup → {target} "
+        f"({recipe.get('input_feature_type_slug')} · {method})"
+    )
+
+
+def _description_for_recipe(recipe: dict[str, object]) -> str:
+    if recipe["input_kind"] == "raster":
+        parent = recipe.get("input_raster_layer_slug") or "unknown raster"
+        return (
+            f"Zonal {recipe['method']} of {parent} per "
+            f"{recipe['target_feature_type_slug']}"
+        )
+    return (
+        f"Rollup of {recipe.get('input_attribute_key_prefix')} from "
+        f"{recipe.get('input_feature_type_slug')} to "
+        f"{recipe['target_feature_type_slug']} via {recipe['method']}"
+    )
+
+
+def _latest_observation_version(backend, attribute_key: str) -> str | None:
+    """Return a cache-busting token for the current observation set under
+    ``attribute_key``. Uses ``max(updated_at)`` — a monotonic proxy for
+    "these observations were last rewritten at time X". Safe ignoring of
+    sub-second precision: two re-runs of the same recipe within the same
+    second would yield the same token, but in practice the recipe writes
+    take longer than a second and operators reload the page after.
+
+    The Martin tile function ignores unknown query params, so passing
+    ``?v=<epoch>`` doesn't break the SQL — it just makes the URL unique.
+    """
+    conn = backend.connection
+    backend_name = getattr(backend, "name", "")
+    if backend_name == "postgres":
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXTRACT(EPOCH FROM max(updated_at))::bigint
+                FROM curated_geo.observation
+                WHERE is_current AND attribute_key = %s
+                """,
+                (attribute_key,),
+            )
+            row = cur.fetchone()
+    else:  # duckdb
+        row = conn.execute(
+            """
+            SELECT CAST(epoch(max(updated_at)) AS BIGINT)
+            FROM curated_geo.observation
+            WHERE is_current AND attribute_key = ?
+            """,
+            [attribute_key],
+        ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return str(row[0])
+
+
+def _aggregation_value_range(backend, attribute_key: str) -> dict[str, object] | None:
+    """Cheap single-aggregate scan of observations to seed a colour ramp.
+
+    Returns None if the table hasn't received any rows for this key yet
+    (recipe registered but never run) — callers surface that as
+    ``available=false``. The query is bounded by the partial index on
+    ``(feature_id, attribute_key) WHERE is_current`` so cost is roughly
+    O(live observations under this key).
+    """
+    # Raw SQL: the repo interface doesn't expose an aggregate helper and
+    # widening it for one tile-resolver call isn't worth the surface.
+    conn = backend.connection
+    backend_name = getattr(backend, "name", "")
+    if backend_name == "postgres":
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  count(*),
+                  min(value_numeric),
+                  percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
+                  percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
+                  percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
+                  max(value_numeric)
+                FROM curated_geo.observation
+                WHERE is_current AND attribute_key = %s AND value_numeric IS NOT NULL
+                """,
+                (attribute_key,),
+            )
+            count, vmin, p05, p50, p95, vmax = cur.fetchone()
+    else:  # duckdb
+        count, vmin, p05, p50, p95, vmax = conn.execute(
+            """
+            SELECT
+              count(*),
+              min(value_numeric),
+              quantile_cont(value_numeric, 0.05),
+              quantile_cont(value_numeric, 0.50),
+              quantile_cont(value_numeric, 0.95),
+              max(value_numeric)
+            FROM curated_geo.observation
+            WHERE is_current AND attribute_key = ? AND value_numeric IS NOT NULL
+            """,
+            [attribute_key],
+        ).fetchone()
+    if not count:
+        return None
+    return {
+        "count": int(count),
+        "min": float(vmin) if vmin is not None else None,
+        "p05": float(p05) if p05 is not None else None,
+        "p50": float(p50) if p50 is not None else None,
+        "p95": float(p95) if p95 is not None else None,
+        "max": float(vmax) if vmax is not None else None,
+    }
+
+
+def _raster_tile_entry(
+    row: dict[str, object],
+    *,
+    tiles_url_template: str | None,
+    available: bool,
+    cog_url: str | None = None,
+) -> dict[str, object]:
+    return {
+        "layer_id": row["layer_slug"],
+        "logical_name": row.get("logical_name"),
+        "description": row.get("description"),
+        "source_mode": "raster_cog",
+        "implemented": True,
+        "available": available,
+        "source_config": {
+            "kind": "raster",
+            "tiles_url_template": tiles_url_template,
+            "cog_url": cog_url,
+            "colormap_name": row.get("colormap_name"),
+            "rescale": row.get("rescale"),
+            "minzoom": row.get("minzoom"),
+            "maxzoom": row.get("maxzoom"),
+        },
+    }

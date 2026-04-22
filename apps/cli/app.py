@@ -67,6 +67,18 @@ from .tiles import (  # noqa: E402
     list_tile_sources,
     tile_manifest,
 )
+from .raster import (  # noqa: E402
+    PrefixCollisionError,
+    add_derivation,
+    ingest_raster,
+    list_derivations,
+    list_raster_layers,
+    remove_derivation,
+    run_derivation,
+    run_zonal_stats,
+    set_derivation_enabled,
+    set_raster_published,
+)
 
 
 def create_cli() -> dict[str, str]:
@@ -410,6 +422,185 @@ def _build_parser() -> argparse.ArgumentParser:
     overlap_compute.add_argument("--aoi-id")
     overlap_compute.set_defaults(handler=_handle_overlap_compute_all)
 
+    # ── raster ─────────────────────────────────────────────────────────
+    raster_parser = subparsers.add_parser(
+        "raster",
+        help="Single-band raster ingest + registry operations",
+    )
+    raster_subparsers = raster_parser.add_subparsers(dest="raster_command", required=True)
+
+    raster_ingest = raster_subparsers.add_parser(
+        "ingest",
+        help="Register + stage (bronze → silver COG) a single-band raster, "
+             "then insert a raster_layer row so /tile-sources picks it up",
+    )
+    raster_ingest.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    raster_ingest.add_argument("--raw-path", required=True,
+        help="Path to the raw single-band GeoTIFF / COG / NetCDF. "
+             "Multi-band containers (HDF, multi-band NetCDF) are out of v1 "
+             "scope — pre-extract one band with `gdal_translate -b <N>`.")
+    raster_ingest.add_argument("--source-name", required=True,
+        help='e.g. "MODIS LST 2026-01-15 day"')
+    raster_ingest.add_argument("--provider", required=True,
+        help='e.g. "NASA LAADS"')
+    raster_ingest.add_argument("--version", required=True,
+        help="Data version (e.g. acquisition date); rides along on source + asset rows")
+    raster_ingest.add_argument("--layer-slug", required=True,
+        help="Stable slug for the raster_layer row (e.g. lst_day_2026_01_15)")
+    raster_ingest.add_argument("--aggregation-kind",
+        choices=["intensive", "extensive"], default="intensive",
+        help="Drives default zonal-stats; use 'extensive' for count/sum-per-pixel rasters")
+    raster_ingest.add_argument("--logical-name")
+    raster_ingest.add_argument("--description")
+    raster_ingest.add_argument("--colormap-name", help='e.g. "inferno"')
+    raster_ingest.add_argument("--rescale", help='e.g. "270,320" (min,max)')
+    raster_ingest.add_argument("--license")
+    raster_ingest.add_argument("--captured-at",
+        help="ISO-8601 timestamp; stored on file_asset.captured_at")
+    raster_ingest.add_argument("--minzoom", type=int, default=5)
+    raster_ingest.add_argument("--maxzoom", type=int, default=14)
+    raster_ingest.add_argument("--unpublished", action="store_true",
+        help="Register the raster but hide it from /tile-sources until "
+             "`raster publish --slug <slug>` flips it on")
+    raster_ingest.add_argument("--code-version", default="dev")
+    raster_ingest.add_argument("--orchestrator-run-id")
+    raster_ingest.set_defaults(handler=_handle_raster_ingest)
+
+    raster_list = raster_subparsers.add_parser(
+        "list",
+        help="List every registered raster layer (reads explore.raster_layer_v)",
+    )
+    raster_list.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    raster_list.set_defaults(handler=_handle_raster_list)
+
+    raster_publish = raster_subparsers.add_parser(
+        "publish",
+        help="Flip the published flag on a raster_layer row by layer_slug",
+    )
+    raster_publish.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    raster_publish.add_argument("--layer-slug", required=True)
+    raster_publish.add_argument("--unpublish", action="store_true",
+        help="Set published=false instead of true (default: publish)")
+    raster_publish.set_defaults(handler=_handle_raster_publish)
+
+    raster_zonal = raster_subparsers.add_parser(
+        "zonal-stats",
+        help="Compute zonal stats on a raster for every feature of a type, "
+             "writing one observation row per (feature, statistic)",
+    )
+    raster_zonal.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    raster_zonal.add_argument("--source-id", required=True,
+        help="UUID of the raster source (from `raster ingest` output or "
+             "curated_geo.data_source_catalog)")
+    raster_zonal.add_argument("--feature-type", required=True,
+        help="Feature type slug (e.g. 'block', 'ageb') — must be a MEX "
+             "type registered in curated_geo.feature_type_catalog")
+    raster_zonal.add_argument("--attribute-key-prefix", required=True,
+        help="Prefix for the observation attribute_key (e.g. 'lst_day'); "
+             "stats land as '<prefix>_<stat>' (e.g. 'lst_day_mean')")
+    raster_zonal.add_argument("--aoi-id",
+        help="Restrict to features intersecting this AOI; omit for all features of the type")
+    raster_zonal.add_argument("--coverage-threshold", type=float, default=0.5,
+        help="Skip features whose valid/total pixel ratio is below this "
+             "(default 0.5 = 50%%)")
+    raster_zonal.add_argument("--statistics",
+        help="Comma-separated stat names (e.g. 'mean,median,p05,p95'); "
+             "omit to use the aggregation_kind default from raster_layer")
+    raster_zonal.add_argument("--code-version", default="dev")
+    raster_zonal.add_argument("--force", action="store_true",
+        help="Override the prefix-collision check; use only when you have "
+             "verified that co-ownership of the prefix is intentional")
+    raster_zonal.add_argument("--direct-dsn",
+        help="Postgres-only: direct-port DSN for the advisory-lock "
+             "transaction. Defaults to $DATABASE_URL_DIRECT.")
+    raster_zonal.set_defaults(handler=_handle_raster_zonal_stats)
+
+    # ── raster derivation (aggregation recipes, r020) ────────────────────
+    derivation_parser = raster_subparsers.add_parser(
+        "derivation",
+        help="Declarative aggregation recipes: raster→observation and "
+             "observation→observation derivations per target feature grain",
+    )
+    derivation_subparsers = derivation_parser.add_subparsers(
+        dest="derivation_command", required=True,
+    )
+
+    deriv_add = derivation_subparsers.add_parser(
+        "add",
+        help="Register a recipe (raster or observation input). Use 'run' "
+             "to materialise the observations it produces.",
+    )
+    deriv_add.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    deriv_add.add_argument("--input-kind", choices=["raster", "observation"], required=True)
+    deriv_add.add_argument("--raster-layer-slug",
+        help="Required if --input-kind=raster")
+    deriv_add.add_argument("--input-prefix",
+        help="Required if --input-kind=observation (the attribute_key_prefix on the source observations)")
+    deriv_add.add_argument("--input-feature-type",
+        help="Required if --input-kind=observation (grain of the source observations)")
+    deriv_add.add_argument("--target-feature-type", required=True,
+        help="Feature type slug of the output grain (e.g. 'municipality')")
+    deriv_add.add_argument("--attribute-key-prefix", required=True,
+        help="Output prefix — one observation per (feature, <prefix>_<suffix>)")
+    deriv_add.add_argument("--method", required=True,
+        choices=["mean", "weighted_mean", "sum", "min", "max"])
+    deriv_add.add_argument("--weight-basis", choices=["area", "length", "presence"],
+        help="Required with --method=weighted_mean for observation inputs")
+    deriv_add.add_argument("--params",
+        help="JSON blob of method-specific params (e.g. '{\"stats\":[\"sum\",\"count\"]}' "
+             "for raster inputs that want multiple rasterstats primitives)")
+    deriv_add.add_argument("--coverage-threshold", type=float, default=0.5)
+    deriv_add.add_argument("--aoi-id",
+        help="Restrict recipe execution to features inside this AOI")
+    deriv_add.add_argument("--disabled", action="store_true",
+        help="Register the recipe in a disabled state; enable later with "
+             "`derivation enable`")
+    deriv_add.set_defaults(handler=_handle_derivation_add)
+
+    deriv_list = derivation_subparsers.add_parser(
+        "list",
+        help="Show recipes (reads serving_geo.aggregation_recipe_v)",
+    )
+    deriv_list.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    deriv_list.add_argument("--raster-layer-slug",
+        help="Filter to recipes whose input is this raster layer")
+    deriv_list.add_argument("--include-disabled", action="store_true")
+    deriv_list.set_defaults(handler=_handle_derivation_list)
+
+    deriv_enable = derivation_subparsers.add_parser(
+        "enable",
+        help="Flip enabled=true on a recipe (opposite: `derivation disable`)",
+    )
+    deriv_enable.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    deriv_enable.add_argument("--recipe-id", required=True)
+    deriv_enable.add_argument("--disable", action="store_true",
+        help="Set enabled=false instead of true")
+    deriv_enable.set_defaults(handler=_handle_derivation_enable)
+
+    deriv_remove = derivation_subparsers.add_parser(
+        "remove",
+        help="Hard-delete a recipe. Existing observations stay put; "
+             "retire them separately if wanted.",
+    )
+    deriv_remove.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    deriv_remove.add_argument("--recipe-id", required=True)
+    deriv_remove.set_defaults(handler=_handle_derivation_remove)
+
+    deriv_run = derivation_subparsers.add_parser(
+        "run",
+        help="Materialise one recipe by id, OR every enabled recipe for a raster layer",
+    )
+    deriv_run.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    deriv_run.add_argument("--recipe-id",
+        help="UUID of a single recipe to run")
+    deriv_run.add_argument("--raster-layer-slug",
+        help="Slug of a raster layer; runs every enabled recipe whose "
+             "input is that layer")
+    deriv_run.add_argument("--direct-dsn",
+        help="Postgres-only: direct-port DSN used by the critical section's "
+             "dedicated connection. Defaults to $DATABASE_URL_DIRECT.")
+    deriv_run.set_defaults(handler=_handle_derivation_run)
+
     return parser
 
 
@@ -678,6 +869,141 @@ def _handle_overlap_list(args: argparse.Namespace) -> int:
 
 def _handle_overlap_compute_all(args: argparse.Namespace) -> int:
     return _print(compute_overlaps_all(dsn=args.dsn, aoi_id=args.aoi_id))
+
+
+def _handle_raster_ingest(args: argparse.Namespace) -> int:
+    return _print(
+        ingest_raster(
+            dsn=args.dsn,
+            raw_path=args.raw_path,
+            source_name=args.source_name,
+            provider=args.provider,
+            version=args.version,
+            layer_slug=args.layer_slug,
+            aggregation_kind=args.aggregation_kind,
+            logical_name=args.logical_name,
+            description=args.description,
+            colormap_name=args.colormap_name,
+            rescale=args.rescale,
+            license=args.license,
+            captured_at=args.captured_at,
+            minzoom=args.minzoom,
+            maxzoom=args.maxzoom,
+            published=not args.unpublished,
+            code_version=args.code_version,
+            orchestrator_run_id=args.orchestrator_run_id,
+        )
+    )
+
+
+def _handle_raster_list(args: argparse.Namespace) -> int:
+    return _print(list_raster_layers(dsn=args.dsn))
+
+
+def _handle_raster_publish(args: argparse.Namespace) -> int:
+    return _print(
+        set_raster_published(
+            dsn=args.dsn,
+            layer_slug=args.layer_slug,
+            published=not args.unpublish,
+        )
+    )
+
+
+def _handle_raster_zonal_stats(args: argparse.Namespace) -> int:
+    try:
+        return _print(
+            run_zonal_stats(
+                dsn=args.dsn,
+                source_id=args.source_id,
+                feature_type_slug=args.feature_type,
+                attribute_key_prefix=args.attribute_key_prefix,
+                aoi_id=args.aoi_id,
+                coverage_threshold=args.coverage_threshold,
+                statistics=args.statistics,
+                code_version=args.code_version,
+                force=args.force,
+                direct_dsn=args.direct_dsn,
+            )
+        )
+    except PrefixCollisionError as exc:
+        # Exit 2 (not 1) so operator scripts can distinguish "refused
+        # by safety check" from "runtime/DB error". stderr so the
+        # message doesn't pollute pipe-parsable stdout.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _handle_derivation_add(args: argparse.Namespace) -> int:
+    try:
+        return _print(
+            add_derivation(
+                dsn=args.dsn,
+                input_kind=args.input_kind,
+                target_feature_type=args.target_feature_type,
+                attribute_key_prefix=args.attribute_key_prefix,
+                method=args.method,
+                raster_layer_slug=args.raster_layer_slug,
+                input_prefix=args.input_prefix,
+                input_feature_type=args.input_feature_type,
+                weight_basis=args.weight_basis,
+                params_json=args.params,
+                coverage_threshold=args.coverage_threshold,
+                aoi_id=args.aoi_id,
+                enabled=not args.disabled,
+            )
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _handle_derivation_list(args: argparse.Namespace) -> int:
+    try:
+        return _print(
+            list_derivations(
+                dsn=args.dsn,
+                raster_layer_slug=args.raster_layer_slug,
+                include_disabled=args.include_disabled,
+            )
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _handle_derivation_enable(args: argparse.Namespace) -> int:
+    return _print(
+        set_derivation_enabled(
+            dsn=args.dsn,
+            recipe_id=args.recipe_id,
+            enabled=not args.disable,
+        )
+    )
+
+
+def _handle_derivation_remove(args: argparse.Namespace) -> int:
+    return _print(
+        remove_derivation(
+            dsn=args.dsn,
+            recipe_id=args.recipe_id,
+        )
+    )
+
+
+def _handle_derivation_run(args: argparse.Namespace) -> int:
+    try:
+        return _print(
+            run_derivation(
+                dsn=args.dsn,
+                recipe_id=args.recipe_id,
+                raster_layer_slug=args.raster_layer_slug,
+                direct_dsn=args.direct_dsn,
+            )
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:

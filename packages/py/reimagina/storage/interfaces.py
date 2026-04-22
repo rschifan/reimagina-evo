@@ -113,6 +113,29 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def iter_geometries_by_type(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, bytes]]:
+        """Return ``(feature_id, WKB bytes EPSG:4326)`` pairs for every
+        feature of a type. ``aoi_id`` **filters** to features that
+        intersect the AOI — no clipping, callers receive whole feature
+        geometries.
+
+        The method is named ``iter_*`` for caller-side readability, but
+        returns a materialised list for consistency with the sibling
+        by-type methods; cold-path raster zonal stats process at most
+        66k CDMX blocks × ~100 bytes WKB ≈ 6 MB, which is cheaper than
+        the plumbing cost of a streaming generator.
+
+        Earns its place by eliminating backend-specific geometry-fetch
+        branching (Postgres UUID→text, DuckDB UUID→VARCHAR; PostGIS
+        ST_AsBinary vs DuckDB ST_AsWKB).
+        """
+        ...
+
     def centroid_in_parent_counts(
         self,
         *,
@@ -153,6 +176,46 @@ class ObservationRepository(Protocol):
         ingestion_run_id: str,
     ) -> int: ...
 
+    def retire_current_by_prefix(self, *, prefix: str) -> int:
+        """Retire every current observation whose ``attribute_key`` either
+        equals ``:prefix`` exactly or starts with ``:prefix_`` (literal
+        separator, NOT a SQL LIKE wildcard).
+
+        Implementations use ``starts_with(attribute_key, :prefix || '_')``
+        so ``prefix='ndvi'`` does not accidentally retire ``ndvi2_mean``.
+        Retirement is cross-source by design — the ``obs_one_current``
+        SCD invariant is per ``(feature_id, attribute_key)`` regardless
+        of source, and retiring only one source's rows would leave the
+        invariant broken. Callers that want per-source scoping should
+        enforce single-source prefix ownership via
+        ``has_active_prefix`` before calling this.
+
+        Raises ``ValueError`` on empty prefix to prevent catch-all
+        retirement. Returns the number of rows transitioned to
+        ``is_current = false``.
+        """
+        ...
+
+    def has_active_prefix(
+        self,
+        *,
+        prefix: str,
+        excluding_source_id: str,
+    ) -> bool:
+        """Return True iff any ``curated_geo.observation`` row exists with
+        ``is_current = true``, ``source_id != :excluding_source_id``,
+        and an ``attribute_key`` equal to ``:prefix`` or matching
+        ``:prefix_<suffix>`` under the same separator-safe pattern as
+        ``retire_current_by_prefix``.
+
+        No "active source" concept — what matters for SCD safety is
+        whether some other source's current observation already owns
+        the prefix, because both backends retire/upsert on
+        ``(feature_id, attribute_key)`` regardless of source. Published
+        status is irrelevant. Backs the CLI prefix-collision check.
+        """
+        ...
+
 
 class FileAssetRepository(Protocol):
     def register_file_asset(
@@ -168,6 +231,153 @@ class FileAssetRepository(Protocol):
         band_description: dict | None = None,
         captured_at: Any | None = None,
     ) -> str: ...
+
+    def get_by_source(self, source_id: str) -> dict[str, Any] | None:
+        """Return the ``file_asset`` row for a source_id, or None.
+
+        Earns its place by eliminating backend-specific lookup SQL —
+        otherwise every caller writes its own
+        ``SELECT ... WHERE source_id = ?`` pair (Postgres UUID vs
+        DuckDB VARCHAR cast, RealDictCursor vs tuple row). Same
+        branch-elimination rationale as ``iter_geometries_by_type``.
+        """
+        ...
+
+
+class RasterLayerRepository(Protocol):
+    """Registry of raster tile layers — one row per published raster.
+
+    ``curated_geo.raster_layer`` is the canonical write target (r019);
+    read-side methods go through ``serving_geo.raster_layer_v`` so
+    workers honour the "API/workers read only serving_geo" rule.
+
+    Three real consumers earn the Protocol's place: the R2 ingest
+    pipeline (``register_layer``), the R3 zonal-stats worker
+    (``get_by_source`` to read ``aggregation_kind``), and the R4 tile-
+    source resolver (``list_published_layers``).
+    """
+
+    def register_layer(
+        self,
+        *,
+        source_id: str,
+        asset_id: str,
+        layer_slug: str,
+        logical_name: str | None = None,
+        description: str | None = None,
+        colormap_name: str | None = None,
+        rescale: str | None = None,
+        minzoom: int = 5,
+        maxzoom: int = 14,
+        published: bool = True,
+        aggregation_kind: str = "intensive",
+    ) -> str:
+        """Insert a new ``curated_geo.raster_layer`` row. Returns the
+        new row's id. ``aggregation_kind`` must be one of
+        ``{'intensive', 'extensive'}`` (enforced by the DB CHECK).
+        """
+        ...
+
+    def get_by_source(self, source_id: str) -> dict[str, Any] | None:
+        """Return the layer row for a source_id (read from
+        ``serving_geo.raster_layer_v``), or None. Used by the zonal-
+        stats worker to read ``aggregation_kind`` + asset metadata
+        (``storage_uri``, ``crs``, ``resolution_m``).
+        """
+        ...
+
+    def get_by_id(self, layer_id: str) -> dict[str, Any] | None:
+        """Return the layer row for a raster_layer id (read from
+        ``serving_geo.raster_layer_v``), or None. Used by the recipe
+        dispatcher to translate a recipe's ``input_raster_layer_id``
+        (UI-picked) into the ``source_id`` the compute worker wants.
+        ``get_by_source`` is the wrong shape here: a recipe binds to
+        the layer, not the source.
+        """
+        ...
+
+    def list_published_layers(self) -> list[dict[str, Any]]:
+        """Return every ``serving_geo.raster_layer_v`` row where
+        ``published=true``. Used by the tile-source resolver to emit a
+        titiler URL per row. Compute paths read via ``get_by_source``
+        instead — they must not be gated on ``published=true``.
+        """
+        ...
+
+    def set_published(self, *, layer_slug: str, published: bool) -> None:
+        """Flip ``published`` for the row with the given ``layer_slug``.
+        Backs the ``reimagina raster publish`` / ``unpublish`` CLI.
+        """
+        ...
+
+
+class AggregationRecipeRepository(Protocol):
+    """Declarative recipes binding an input source + method + target grain.
+
+    ``curated_geo.aggregation_recipe`` is the canonical write target
+    (r020); read-side methods go through
+    ``serving_geo.aggregation_recipe_v`` so workers honour the
+    "API/workers read only serving_geo" rule.
+
+    One recipe = "produce observations at ``target_feature_type_slug``
+    under ``attribute_key_prefix`` via ``method`` from this input". The
+    input is either a raster (``input_kind='raster'``) or the set of
+    current observations at a finer grain (``input_kind='observation'``);
+    the XOR is enforced by a DB CHECK.
+    """
+
+    def register_recipe(
+        self,
+        *,
+        input_kind: str,
+        target_feature_type_slug: str,
+        attribute_key_prefix: str,
+        method: str,
+        input_raster_layer_id: str | None = None,
+        input_attribute_key_prefix: str | None = None,
+        input_feature_type_slug: str | None = None,
+        weight_basis: str | None = None,
+        params: dict[str, Any] | None = None,
+        coverage_threshold: float = 0.5,
+        aoi_id: str | None = None,
+        enabled: bool = True,
+    ) -> str:
+        """Insert a new recipe row, return the new id. The DB enforces the
+        XOR between raster / observation input shapes.
+        """
+        ...
+
+    def get_recipe(self, recipe_id: str) -> dict[str, Any] | None:
+        """Return a single recipe (from ``serving_geo.aggregation_recipe_v``)
+        or None. Dispatcher looks up by id and branches on ``input_kind``.
+        """
+        ...
+
+    def list_recipes(
+        self,
+        *,
+        input_raster_layer_id: str | None = None,
+        enabled_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """List recipes from ``serving_geo.aggregation_recipe_v``. Filter
+        by raster layer for the common "run all recipes for layer X"
+        command; ``enabled_only`` hides disabled rows so the dispatcher
+        never runs them by accident.
+        """
+        ...
+
+    def set_enabled(self, *, recipe_id: str, enabled: bool) -> None:
+        """Flip ``enabled`` on one recipe. Parallel to
+        ``RasterLayerRepository.set_published``.
+        """
+        ...
+
+    def delete_recipe(self, recipe_id: str) -> None:
+        """Hard-delete a recipe. Observations it produced stay put —
+        operators retire them via ``retire_current_by_prefix`` when
+        they decide the prefix is no longer wanted.
+        """
+        ...
 
 
 class AOIRepository(Protocol):
@@ -233,6 +443,34 @@ class OverlapRepository(Protocol):
         weighted mean to an arithmetic mean. Quality defaults to ``'missing'``
         when the LEFT join misses an indicator row. Callers group by target
         themselves.
+        """
+        ...
+
+    def rollup_observation_child_rows(
+        self,
+        *,
+        input_attribute_key_prefix: str,
+        source_feature_type: str,
+        target_feature_type: str,
+        aoi_id: str | None = None,
+    ) -> list[tuple[str, str, float, float]]:
+        """Return ``(target_id, source_attribute_key, value, overlap_measure)``
+        per (source observation, target feature) overlap pair.
+
+        Reads current observations at ``source_feature_type`` whose
+        ``attribute_key`` starts with ``:prefix`` or equals it exactly
+        (same separator-safe matching as ``retire_current_by_prefix``),
+        joins to ``feature_overlap``, restricts to target features of
+        ``target_feature_type``. Weight is ``overlap_measure`` for the
+        same reason ``rollup_child_rows`` picks it. Callers group by
+        ``(target_id, source_attribute_key)`` and aggregate per group
+        so a prefix that spans multiple stat suffixes (e.g.
+        ``pop_sum`` + ``pop_count``) rolls up each suffix independently.
+
+        Inner join on observation (unlike the LEFT join on indicator_result
+        for the indicator rollup): observations that don't exist aren't
+        "missing", they're absent — workers don't emit placeholder rows
+        for them.
         """
         ...
 
@@ -529,6 +767,10 @@ class StorageBackend(Protocol):
     def observation_repo(self) -> ObservationRepository: ...
 
     def file_asset_repo(self) -> FileAssetRepository: ...
+
+    def raster_layer_repo(self) -> RasterLayerRepository: ...
+
+    def aggregation_recipe_repo(self) -> AggregationRecipeRepository: ...
 
     def aoi_repo(self) -> AOIRepository: ...
 

@@ -19,7 +19,11 @@ from psycopg2.pool import ThreadedConnectionPool
 
 from reimagina.storage import backend_for_connection
 from reimagina.storage.interfaces import StorageBackend
-from reimagina.tiles.defaults import tile_live_base_url, tile_snapshot_base_url
+from reimagina.tiles.defaults import (
+    tile_live_base_url,
+    tile_raster_base_url,
+    tile_snapshot_base_url,
+)
 
 
 def api_dsn() -> str:
@@ -55,6 +59,7 @@ __all__ = [
     "initialise_pool",
     "shutdown_pool",
     "tile_live_base_url",
+    "tile_raster_base_url",
     "tile_snapshot_base_url",
 ]
 

@@ -1246,3 +1246,230 @@ def _fetch_source_ref(conn, feature_id: str) -> str:
             (feature_id,),
         )
         return cur.fetchone()[0]
+
+
+# ─── R1 raster-surface coverage (Postgres) ────────────────────────────────
+
+
+def _r1_seed_raster_source(conn, *, name: str = "r1-test") -> tuple[str, str, str]:
+    """Helper: register a raster source + ingestion_run + file_asset. Returns
+    (source_id, ingestion_run_id, asset_id)."""
+    src_id = cat.register_source(
+        conn,
+        name=name, provider="pytest", storage_type="raster",
+        integration_role="enrichment",
+        storage_uri="file://data/silver/x.cog.tif", version="v1",
+    )
+    run_id = cat.start_ingestion_run(
+        conn,
+        source_id=src_id, orchestrator="pytest",
+        orchestrator_run_id=str(uuid4()),
+        transformation_step="test_seed", code_version="test",
+    )
+    asset_id = backend_for_connection(conn).file_asset_repo().register_file_asset(
+        source_id=src_id, ingestion_run_id=run_id,
+        storage_uri="file://data/silver/x.cog.tif", dataset_version="v1",
+        format="COG", crs="EPSG:4326", resolution_m=30.0,
+    )
+    return src_id, run_id, asset_id
+
+
+def test_r1_feature_iter_geometries_by_type_returns_wkb_per_feature(conn):
+    """iter_geometries_by_type yields one (feature_id, WKB bytes) per feature;
+    AOI scoping filters correctly."""
+    from shapely import wkb as shp_wkb
+
+    source_id = _register_source(
+        conn, name="r1_iter_geom_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+
+    # Two blocks outside + one inside the AOI.
+    for i, wkt in enumerate([
+        "POLYGON((10 10, 11 10, 11 11, 10 11, 10 10))",   # outside AOI
+        "POLYGON((20 20, 21 20, 21 21, 20 21, 20 20))",   # outside AOI
+        "POLYGON((0.2 0.2, 0.4 0.2, 0.4 0.4, 0.2 0.4, 0.2 0.2))",  # inside AOI
+    ]):
+        _insert_feature(
+            conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+            dataset_version="v1", source_record_ref=f"r1-iter-{i}",
+            geometry_wkt=wkt,
+        )
+
+    repo = backend_for_connection(conn).feature_repo()
+
+    # No AOI: all three features.
+    all_geoms = repo.iter_geometries_by_type(type_id=block_type)
+    assert len(all_geoms) == 3
+    for fid, wkb_bytes in all_geoms:
+        assert isinstance(fid, str)
+        assert isinstance(wkb_bytes, bytes) and len(wkb_bytes) > 0
+        # WKB is parseable back to a shapely geom (i.e. valid EPSG:4326 WKB).
+        assert shp_wkb.loads(wkb_bytes).is_valid
+
+    # AOI-scoped: only the feature intersecting the AOI polygon is returned.
+    project_id = _insert_project(conn, name="R1 iter_geom AOI")
+    aoi_id = aoi.create_aoi(
+        conn, project_id=project_id, name="r1-aoi",
+        geometry_wkt="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+    )
+    scoped = repo.iter_geometries_by_type(type_id=block_type, aoi_id=aoi_id)
+    assert len(scoped) == 1
+    assert shp_wkb.loads(scoped[0][1]).is_valid
+
+
+def test_r1_file_asset_get_by_source_round_trip(conn):
+    """register_file_asset then get_by_source returns the same row."""
+    src_id, _run_id, asset_id = _r1_seed_raster_source(conn, name="r1_file_asset_rt")
+    got = backend_for_connection(conn).file_asset_repo().get_by_source(src_id)
+    assert got is not None
+    assert got["id"] == asset_id
+    assert got["source_id"] == src_id
+    assert got["storage_uri"] == "file://data/silver/x.cog.tif"
+    assert got["crs"] == "EPSG:4326"
+    assert float(got["resolution_m"]) == 30.0
+    assert got["format"] == "COG"
+
+    # Unknown source → None, not an exception.
+    assert (
+        backend_for_connection(conn).file_asset_repo().get_by_source(str(uuid4()))
+        is None
+    )
+
+
+def test_r1_retire_current_by_prefix_is_separator_safe(conn):
+    """prefix='ndvi' retires 'ndvi' + 'ndvi_mean' but NOT 'ndvi2_mean'.
+
+    Regression guard for the Postgres E-string escape bug the R1 smoke test
+    caught: ``LIKE :prefix || E'\\_%%' ESCAPE E'\\\\'`` silently drops the
+    backslash because `\\_` isn't a defined E-string escape, reverting `_` to
+    a wildcard. The current implementation uses ``starts_with()`` instead.
+    If a future edit reintroduces LIKE/ESCAPE, this test fires.
+    """
+    source_id = _register_source(
+        conn, name="r1_retire_src",
+        storage_type="tabular", integration_role="enrichment",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    fid = _insert_feature(
+        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="r1-retire-blk",
+        geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
+    )
+    obs_repo = backend_for_connection(conn).observation_repo()
+    obs_repo.bulk_upsert_current(
+        [
+            {"feature_id": fid, "attribute_key": "ndvi",       "value": 0.7, "value_type": "numeric"},
+            {"feature_id": fid, "attribute_key": "ndvi_mean",  "value": 0.5, "value_type": "numeric"},
+            {"feature_id": fid, "attribute_key": "ndvi2_mean", "value": 0.9, "value_type": "numeric"},
+        ],
+        source_id=source_id, ingestion_run_id=run_id,
+    )
+
+    retired = obs_repo.retire_current_by_prefix(prefix="ndvi")
+    assert retired == 2   # 'ndvi' + 'ndvi_mean', NOT 'ndvi2_mean'
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT attribute_key, is_current FROM curated_geo.observation "
+            "WHERE feature_id = %s::uuid ORDER BY attribute_key",
+            (fid,),
+        )
+        rows = {k: v for k, v in cur.fetchall()}
+    assert rows["ndvi"] is False
+    assert rows["ndvi_mean"] is False
+    assert rows["ndvi2_mean"] is True, "ndvi2_mean must NOT have been retired"
+
+
+def test_r1_retire_current_by_prefix_rejects_empty(conn):
+    obs_repo = backend_for_connection(conn).observation_repo()
+    with pytest.raises(ValueError, match="non-empty"):
+        obs_repo.retire_current_by_prefix(prefix="")
+
+
+def test_r1_has_active_prefix_excludes_own_source(conn):
+    """Two sources writing under the same prefix: has_active_prefix(..,
+    excluding_source_id=A) sees B's current row; excluding=B sees A's;
+    excluding both (via a third UUID) sees whichever remains."""
+    src_a = _register_source(
+        conn, name="r1_active_a",
+        storage_type="tabular", integration_role="enrichment",
+    )
+    run_a = _start_run(conn, src_a)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    fid = _insert_feature(
+        conn, type_id=block_type, source_id=src_a, ingestion_run_id=run_a,
+        dataset_version="v1", source_record_ref="r1-active-blk",
+        geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
+    )
+    obs_repo = backend_for_connection(conn).observation_repo()
+    obs_repo.bulk_upsert_current(
+        [{"feature_id": fid, "attribute_key": "lst_mean",
+          "value": 300.0, "value_type": "numeric"}],
+        source_id=src_a, ingestion_run_id=run_a,
+    )
+
+    # Excluding A → no other source has it → False.
+    assert obs_repo.has_active_prefix(prefix="lst", excluding_source_id=src_a) is False
+    # Excluding a random UUID → A still owns it → True.
+    assert obs_repo.has_active_prefix(
+        prefix="lst", excluding_source_id=str(uuid4()),
+    ) is True
+    # Exact prefix match also counts (attribute_key = 'lst_mean' starts with 'lst_').
+    assert obs_repo.has_active_prefix(
+        prefix="lst_mean", excluding_source_id=str(uuid4()),
+    ) is True
+    # Separator-safe: prefix='ls' must NOT match 'lst_mean'.
+    assert obs_repo.has_active_prefix(
+        prefix="ls", excluding_source_id=str(uuid4()),
+    ) is False
+
+
+def test_r1_raster_layer_repo_lifecycle(conn):
+    """register → get_by_source → list_published_layers → set_published(False)
+    → list no longer includes the layer."""
+    src_id, _run_id, asset_id = _r1_seed_raster_source(conn, name="r1_layer_lc")
+    repo = backend_for_connection(conn).raster_layer_repo()
+
+    layer_id = repo.register_layer(
+        source_id=src_id, asset_id=asset_id, layer_slug="r1_lifecycle",
+        logical_name="R1 lifecycle test", aggregation_kind="intensive",
+        colormap_name="viridis", rescale="0,1",
+    )
+    assert layer_id
+
+    fetched = repo.get_by_source(src_id)
+    assert fetched is not None
+    assert fetched["layer_slug"] == "r1_lifecycle"
+    assert fetched["aggregation_kind"] == "intensive"
+    assert fetched["colormap_name"] == "viridis"
+    assert fetched["rescale"] == "0,1"
+    assert fetched["published"] is True
+    # Joined columns from serving_geo.raster_layer_v must be populated.
+    assert fetched["storage_uri"] == "file://data/silver/x.cog.tif"
+    assert fetched["crs"] == "EPSG:4326"
+
+    published = repo.list_published_layers()
+    assert any(r["layer_slug"] == "r1_lifecycle" for r in published)
+
+    repo.set_published(layer_slug="r1_lifecycle", published=False)
+    published_after = repo.list_published_layers()
+    assert not any(r["layer_slug"] == "r1_lifecycle" for r in published_after)
+    # But get_by_source still returns it (published=false; reads aren't gated).
+    still_there = repo.get_by_source(src_id)
+    assert still_there is not None and still_there["published"] is False
+
+
+def test_r1_raster_layer_aggregation_kind_check_constraint(conn):
+    """The CHECK on aggregation_kind enforces {'intensive','extensive'}."""
+    src_id, _run_id, asset_id = _r1_seed_raster_source(conn, name="r1_agg_check")
+    repo = backend_for_connection(conn).raster_layer_repo()
+    with pytest.raises(psycopg2.errors.CheckViolation):
+        repo.register_layer(
+            source_id=src_id, asset_id=asset_id, layer_slug="r1_bad_kind",
+            aggregation_kind="categorical",
+        )
+    conn.rollback()
