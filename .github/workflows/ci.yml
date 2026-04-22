@@ -34,9 +34,9 @@ jobs:
 
       - name: ruff check
         run: ruff check .
-
-      - name: ruff format --check
-        run: ruff format --check .
+      # `ruff format --check` is intentionally not gated yet — the
+      # codebase predates ruff format and needs a dedicated mass-format
+      # PR before we can require it. Tracked as a follow-up.
 
   test-py-unit:
     name: Unit + Contract tests (Python)

@@ -529,7 +529,6 @@ def test_post_commit_finalise_failure_keeps_observations(
     observations were already committed.
     """
     import reimagina.jobs.raster_zonal_stats as rzs
-    from reimagina.data import catalog as cat
 
     seed_feature_types(conn)
     backend = backend_for_connection(conn)
