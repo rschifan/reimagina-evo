@@ -92,6 +92,9 @@ infra/docker/volumes/
 # ── Dated backup snapshots ───────────────────────────────────────────────────
 [0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 
+# ── Agent instruction files (local only, not published) ─────────────────────
+CLAUDE.md
+
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.log
 *.tmp

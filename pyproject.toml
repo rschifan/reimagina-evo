@@ -18,6 +18,7 @@ dependencies = [
     "pyproj>=3.6",
     "fiona>=1.9",
     "pandas>=2.0",
+    "pyarrow>=15.0",
     # Read-side API stack. FastAPI is sync-compatible with the psycopg2
     # storage layer through the default thread-pool dispatch.
     "fastapi>=0.110",
