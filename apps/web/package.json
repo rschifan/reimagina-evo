@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "maplibre-gl": "^4.5.0"
+    "maplibre-gl": "^5.23.0"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.14",
