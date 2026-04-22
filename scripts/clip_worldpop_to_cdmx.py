@@ -10,11 +10,12 @@ import os
 from pathlib import Path
 
 import psycopg2
+import pyproj
 import rasterio
+import shapely.geometry.base
 from rasterio.mask import mask
 from shapely import wkb
 from shapely.ops import transform
-import pyproj
 
 
 DSN = os.environ.get("REIMAGINA_APP_DSN", "postgresql://localhost/reimagina_app")
