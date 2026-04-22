@@ -8,6 +8,9 @@ updates:
       time: "06:00"
       timezone: "Europe/Rome"
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python-minor-and-patch:
         update-types: ["minor", "patch"]
@@ -20,6 +23,9 @@ updates:
       time: "06:00"
       timezone: "Europe/Rome"
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
