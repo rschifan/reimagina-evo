@@ -164,6 +164,24 @@ The subcommand still says `cdmx aoi-from-alcaldia` for back-compat, but
 entidad code. A future PR may rename the subcommand to
 `aoi from-municipality`.
 
+## 4b. Recipe — load amenity points
+
+After Tier 1.6 has shipped, the per-pilot-city POIs land with one CLI call:
+
+```bash
+# Both Tlalpan + Mexicali amenity layers
+reimagina-cli points bootstrap
+
+# Or pick one
+reimagina-cli points bootstrap --layers tlalpan_amenities
+```
+
+Features land as `global:establishment` with attributes
+`{category, capacity, fuente, fecha, entidad}` in `feature.attributes`.
+A future migration may add a more specific `amenity_point` feature type
+when the precision actually earns its keep — until then the existing
+POI type is the right home.
+
 ## 4. Concrete next step
 
 Tier 1 is the unblock. Recommend starting with **step 1.2** — the
