@@ -51,6 +51,7 @@ from .cdmx import (  # noqa: E402
 )
 from .feat import seed_types  # noqa: E402
 from .inegi import bootstrap_inegi_marco  # noqa: E402
+from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
     rollup_indicator,
@@ -385,6 +386,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inegi_marco_bootstrap.add_argument("--code-version", default="dev")
     inegi_marco_bootstrap.set_defaults(handler=_handle_inegi_marco_bootstrap)
+
+    points_parser = subparsers.add_parser(
+        "points",
+        help="Per-pilot-city amenity / POI ingest from the data-lake mirror",
+    )
+    points_subparsers = points_parser.add_subparsers(
+        dest="points_command", required=True,
+    )
+
+    points_bootstrap = points_subparsers.add_parser(
+        "bootstrap",
+        help="Stage + load amenity GeoParquet layers into curated_geo.feature",
+    )
+    points_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    points_bootstrap.add_argument(
+        "--layers",
+        help=(
+            "Comma-separated layer keys. Default: all "
+            "(tlalpan_amenities,mexicali_amenities)."
+        ),
+    )
+    points_bootstrap.add_argument(
+        "--source-root",
+        help="Override the source directory (defaults to data/sources/azure).",
+    )
+    points_bootstrap.add_argument("--code-version", default="dev")
+    points_bootstrap.set_defaults(handler=_handle_points_bootstrap)
 
     indicators_parser = subparsers.add_parser(
         "indicators",
@@ -851,6 +879,18 @@ def _handle_inegi_marco_bootstrap(args: argparse.Namespace) -> int:
             dsn=args.dsn,
             layers=layers,
             cve_ent_filter=cve_ent_filter,
+            source_root=args.source_root,
+            code_version=args.code_version,
+        )
+    )
+
+
+def _handle_points_bootstrap(args: argparse.Namespace) -> int:
+    layers = [k.strip() for k in args.layers.split(",")] if args.layers else None
+    return _print(
+        bootstrap_points(
+            dsn=args.dsn,
+            layers=layers,
             source_root=args.source_root,
             code_version=args.code_version,
         )
