@@ -338,8 +338,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create an AOI whose geometry is the matching MEX:municipality polygon",
     )
     cdmx_aoi.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    cdmx_aoi.add_argument("--cve-ent", default="09",
+                          help="INEGI state code; default 09 (CDMX). Use 02 for Mexicali.")
     cdmx_aoi.add_argument("--cve-mun", required=True,
-                          help="INEGI municipality code, e.g. 015 for Cuauhtémoc")
+                          help="INEGI municipality code, e.g. 015 for Cuauhtémoc, 002 for Mexicali")
     cdmx_aoi.add_argument("--name", required=True)
     cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
     cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
@@ -858,6 +860,7 @@ def _handle_inegi_marco_bootstrap(args: argparse.Namespace) -> int:
 def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
     payload = aoi_from_alcaldia(
         dsn=args.dsn,
+        cve_ent=args.cve_ent,
         cve_mun=args.cve_mun,
         name=args.name,
         project_name=args.project_name,
