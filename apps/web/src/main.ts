@@ -5,18 +5,25 @@
  * prototype avoids external tile dependencies and licensing drift),
  * loads the tile-source catalog + indicator catalog from the API, and
  * wires:
- *   - Spatial-input layer toggles (municipalities / AGEBs / blocks /
- *     buildings) served by Martin's serving_geo.get_tile.
+ *   - AOI picker (Cuauhtémoc / Tlalpan / Mexicali / …) → flies the map
+ *     and re-scopes server-side tile filters via aoi_id.
+ *   - Spatial-input layer toggles served by Martin's serving_geo.get_tile.
  *   - Indicator picker → server-side MVT choropleth via Martin's
  *     serving_geo.indicator_overlay_tile function.
  *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
  *     selected.
  */
 import maplibregl from "maplibre-gl";
-import type { IndicatorSummary, TileSource } from "./api";
+import type { AOIRow, IndicatorSummary, TileSource } from "./api";
 import type { StyleSpecification } from "maplibre-gl";
 
-import { getIndicatorStats, listIndicators, listTileSources } from "./api";
+import {
+  getActiveAoiId,
+  populateAoiSelect,
+  setKnownAois,
+  subscribe as subscribeToAoi,
+} from "./aoi";
+import { getIndicatorStats, listAois, listIndicators, listTileSources } from "./api";
 import {
   activateIndicator,
   choroplethConfig,
@@ -36,12 +43,16 @@ import {
   installInputLayers,
   installAggregationOverlays,
   installRasterLayers,
+  refreshAggregationOverlayAoi,
   wireLayerToggles,
   wireRasterToggles,
 } from "./layers";
 import { TooltipController } from "./tooltip";
 
-const CUAUHTEMOC_CENTER: [number, number] = [-99.137, 19.432];
+// Fallback centre when no AOIs come back from the API. CDMX-Cuauhtémoc
+// remains a reasonable default for the prototype's first deployment.
+const FALLBACK_CENTER: [number, number] = [-99.137, 19.432];
+const FALLBACK_ZOOM = 12;
 
 interface AppState {
   activeIndicator: IndicatorSummary | null;
@@ -73,12 +84,52 @@ function emptyStyle(): StyleSpecification {
 async function loadInitialState(): Promise<{
   sources: TileSource[];
   indicators: IndicatorSummary[];
+  aois: AOIRow[];
 }> {
-  const [sources, indicators] = await Promise.all([
+  const [sources, indicators, aois] = await Promise.all([
     listTileSources(),
     listIndicators(),
+    listAois(),
   ]);
-  return { sources, indicators };
+  return { sources, indicators, aois };
+}
+
+
+function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
+  if (!aoi.bbox) return;
+  const [minLon, minLat, maxLon, maxLat] = aoi.bbox;
+  // fitBounds with a small padding keeps the AOI off the sidebar edge
+  // and gives the user a tiny breathing-room border.
+  map.fitBounds(
+    [
+      [minLon, minLat],
+      [maxLon, maxLat],
+    ],
+    { padding: 40, duration: 700, maxZoom: 14 },
+  );
+}
+
+
+function renderAoiInfo(aoi: AOIRow | null): void {
+  const el = document.getElementById("aoi-info");
+  if (!el) return;
+  if (!aoi) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  const desc = aoi.description ? `<div class="aoi-info-desc">${_escapeHtml(aoi.description)}</div>` : "";
+  el.innerHTML = `<div class="aoi-info-name">${_escapeHtml(aoi.name)}</div>${desc}`;
+}
+
+
+function _escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 
@@ -87,8 +138,9 @@ async function main(): Promise<void> {
 
   let sources: TileSource[];
   let indicators: IndicatorSummary[];
+  let aois: AOIRow[];
   try {
-    ({ sources, indicators } = await loadInitialState());
+    ({ sources, indicators, aois } = await loadInitialState());
   } catch (err) {
     setStatus(`Failed to load API: ${(err as Error).message}`);
     throw err;
@@ -96,13 +148,18 @@ async function main(): Promise<void> {
   const tileCatalog = extractTileSources(sources);
   const overlayConfig = choroplethConfig(sources);
 
+  // Seed the AOI store before anything else so initial tile-source
+  // installs and the first map fitBounds use the resolved active AOI.
+  setKnownAois(aois);
+  const initialAoi = aois.find((a) => a.aoi_id === getActiveAoiId()) ?? null;
+
   const state: AppState = { activeIndicator: null };
 
   const map = new maplibregl.Map({
     container: "map",
     style: emptyStyle(),
-    center: CUAUHTEMOC_CENTER,
-    zoom: 12,
+    center: FALLBACK_CENTER,
+    zoom: FALLBACK_ZOOM,
     maxZoom: 18,
     minZoom: 5,
   });
@@ -118,7 +175,11 @@ async function main(): Promise<void> {
 
     installInputLayers(map, tileCatalog, tooltipController);
     installRasterLayers(map, sources, tooltipController);
-    installAggregationOverlays(map, sources, tooltipController);
+    installAggregationOverlays(map, sources, tooltipController, getActiveAoiId());
+
+    // Centre on the initial AOI's bounds (replaces the old hardcoded
+    // CUAUHTEMOC_CENTER fly-to). Bail to fallback when no AOIs exist.
+    if (initialAoi) flyToAoi(map, initialAoi);
 
     const toggleContainer = document.getElementById("layer-toggles");
     if (toggleContainer) {
@@ -126,9 +187,51 @@ async function main(): Promise<void> {
       wireRasterToggles(toggleContainer, map, sources);
     }
 
+    const aoiSelect = document.getElementById("aoi-select") as HTMLSelectElement | null;
+    if (aoiSelect) populateAoiSelect(aoiSelect);
+
+    // React to any AOI change — picker, localStorage hydration, or a
+    // future programmatic setActiveAoiId call. One central handler
+    // keeps every consumer (map, tiles, ramp) in sync.
+    subscribeToAoi(async (aoi) => {
+      renderAoiInfo(aoi);
+      if (aoi) flyToAoi(map, aoi);
+      refreshAggregationOverlayAoi(map, sources, aoi?.aoi_id ?? null);
+      // Re-render the active indicator so its tile URL + colour ramp
+      // reflect the new AOI scope. No active indicator = no work.
+      if (state.activeIndicator) {
+        await renderIndicator(state.activeIndicator);
+      }
+    });
+
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const legend = document.getElementById("legend");
     const downloads = document.getElementById("downloads");
+
+    async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
+      const aoiId = getActiveAoiId();
+      setStatus(`Loading ${indicator.name} stats…`);
+      const grain = defaultGrain(indicator) ?? undefined;
+      let stats = null;
+      try {
+        stats = await getIndicatorStats(indicator.slug, {
+          feature_type: grain,
+          aoi_id: aoiId ?? undefined,
+        });
+      } catch (err) {
+        console.warn("stats fetch failed, falling back to catalog bounds", err);
+      }
+      const domain = rampDomainFromStats(stats, indicator);
+      activateIndicator(map, overlayConfig, indicator, domain, tooltipController, aoiId);
+      if (legend) renderLegend(legend, indicator, domain);
+      if (downloads) setDownloadAvailability(downloads, true);
+      setStatus(
+        `Showing ${indicator.name} (${indicator.unit ?? "no unit"})` +
+          (domain.fromStats
+            ? ` · ramp ${domain.min.toFixed(2)}–${domain.max.toFixed(2)} (p05–p95).`
+            : "."),
+      );
+    }
 
     if (select) {
       populateIndicatorSelect(select, indicators);
@@ -145,29 +248,7 @@ async function main(): Promise<void> {
         const indicator = indicators.find((i) => i.slug === slug);
         if (!indicator) return;
         state.activeIndicator = indicator;
-        setStatus(`Loading ${indicator.name} stats…`);
-        // Fetch the observed distribution so the ramp uses p05–p95,
-        // not the catalog safety cap. Pin to the same grain the tile
-        // layer will render so ramp + map agree. Failure is non-fatal:
-        // if stats fail we still render with catalog bounds and note
-        // it in the legend.
-        const grain = defaultGrain(indicator) ?? undefined;
-        let stats = null;
-        try {
-          stats = await getIndicatorStats(slug, { feature_type: grain });
-        } catch (err) {
-          console.warn("stats fetch failed, falling back to catalog bounds", err);
-        }
-        const domain = rampDomainFromStats(stats, indicator);
-        activateIndicator(map, overlayConfig, indicator, domain, tooltipController);
-        if (legend) renderLegend(legend, indicator, domain);
-        if (downloads) setDownloadAvailability(downloads, true);
-        setStatus(
-          `Showing ${indicator.name} (${indicator.unit ?? "no unit"})` +
-            (domain.fromStats
-              ? ` · ramp ${domain.min.toFixed(2)}–${domain.max.toFixed(2)} (p05–p95).`
-              : "."),
-        );
+        await renderIndicator(indicator);
       });
     }
 

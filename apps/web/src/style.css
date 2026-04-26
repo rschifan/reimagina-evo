@@ -94,6 +94,21 @@ html, body, .app {
   cursor: not-allowed;
 }
 
+/* Active-AOI summary printed below the picker. Optional info, kept
+   unobtrusive — small text + muted colour so the dropdown stays the
+   primary focal point. */
+.aoi-info {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.aoi-info .aoi-info-name {
+  color: var(--sidebar-fg);
+  font-weight: 600;
+}
+
 .layer-toggles {
   display: flex;
   flex-direction: column;
