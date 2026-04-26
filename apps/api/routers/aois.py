@@ -26,12 +26,20 @@ class AOISummary(BaseModel):
 
 
 class AOIRow(BaseModel):
-    """Minimal AOI record. Geometry omitted — the web app fetches tiles instead."""
+    """Minimal AOI record. Geometry omitted — the web app fetches tiles instead.
+
+    ``bbox`` is ``[min_lon, min_lat, max_lon, max_lat]`` in EPSG:4326,
+    derived from ``ST_Envelope`` so the multi-site web picker can fly
+    the map to an AOI without a separate geometry round-trip. ``None``
+    when the AOI was inserted without a geometry (rare, but possible
+    in fixtures).
+    """
 
     aoi_id: str
     project_id: str
     name: str
     description: str | None = None
+    bbox: list[float] | None = None
 
 
 @router.get("", response_model=list[AOIRow])

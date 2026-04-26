@@ -96,11 +96,12 @@ export function listIndicators(): Promise<IndicatorSummary[]> {
 
 export function getIndicatorStats(
   slug: string,
-  options: { scenario_id?: string; feature_type?: string } = {},
+  options: { scenario_id?: string; feature_type?: string; aoi_id?: string } = {},
 ): Promise<IndicatorValueStats> {
   const params = new URLSearchParams();
   if (options.scenario_id) params.set("scenario_id", options.scenario_id);
   if (options.feature_type) params.set("feature_type", options.feature_type);
+  if (options.aoi_id) params.set("aoi_id", options.aoi_id);
   const qs = params.toString();
   return jsonRequest<IndicatorValueStats>(
     `/indicators/${encodeURIComponent(slug)}/stats${qs ? `?${qs}` : ""}`,
@@ -109,6 +110,23 @@ export function getIndicatorStats(
 
 export function listTileSources(): Promise<TileSource[]> {
   return jsonRequest<TileSource[]>("/tile-sources");
+}
+
+
+export interface AOIRow {
+  aoi_id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  /** [minLon, minLat, maxLon, maxLat] in EPSG:4326. Null when the AOI
+   *  was inserted without geometry (rare). The web picker uses it to
+   *  fly the map on AOI change. */
+  bbox: [number, number, number, number] | null;
+}
+
+
+export function listAois(): Promise<AOIRow[]> {
+  return jsonRequest<AOIRow[]>("/aois");
 }
 
 export function downloadUrl(

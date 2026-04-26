@@ -463,6 +463,30 @@ def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_ea
     assert resp_b.json()["count"] == 1
 
 
+def test_list_aois_returns_bbox_envelope(client, two_aois_one_block_each):
+    """The /aois endpoint exposes ST_Envelope-derived bounds so the web
+    picker can fly the map without a separate geometry round-trip."""
+    fixture = two_aois_one_block_each
+    response = client.get("/aois")
+    assert response.status_code == 200
+    payload = response.json()
+    by_id = {row["aoi_id"]: row for row in payload}
+
+    assert fixture["aoi_a"] in by_id
+    assert fixture["aoi_b"] in by_id
+    bbox_a = by_id[fixture["aoi_a"]]["bbox"]
+    bbox_b = by_id[fixture["aoi_b"]]["bbox"]
+
+    # AOI A's polygon spans (-99.20..-99.10, 19.40..19.50); the bbox must
+    # match those four corners (within FP epsilon) and stay in lon/lat
+    # order for the web client's fitBounds([sw, ne]) to make sense.
+    assert bbox_a == pytest.approx([-99.20, 19.40, -99.10, 19.50])
+    # AOI B is in Mexicali (~115.4 W) — distinctly different bbox so the
+    # picker actually moves the map between selections.
+    assert bbox_b[0] < -115.0
+    assert bbox_b[2] < -115.0
+
+
 def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_each):
     """A junk AOI uuid returns count=0 with all percentile fields None.
     That's the expected shape — same as 'no rows for this slug yet' —
