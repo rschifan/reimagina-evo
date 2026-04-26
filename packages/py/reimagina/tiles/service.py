@@ -432,7 +432,7 @@ def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, o
     by_output_prefix = {r["attribute_key_prefix"]: r for r in recipes}
 
     for recipe in recipes:
-        attribute_key = _attribute_key_for_recipe(recipe)
+        attribute_key = _attribute_key_for_recipe(recipe, backend=backend)
         value_range = _aggregation_value_range(backend, attribute_key)
         available = value_range is not None and value_range["count"] > 0
         parent_id, parent_slug = _resolve_transitive_raster_parent(
@@ -522,21 +522,56 @@ def _resolve_transitive_raster_parent(
         cursor = upstream
 
 
-def _attribute_key_for_recipe(recipe: dict[str, object]) -> str:
+def _attribute_key_for_recipe(
+    recipe: dict[str, object], backend=None,
+) -> str:
     """Resolve the attribute_key the tile function should render.
 
     Order of precedence:
       1. ``params.stats[0]`` — explicit override (e.g. recipe emits
          both ``_sum`` and ``_count`` but only one is plot-worthy).
-      2. ``<prefix>_<method>`` — the default the raster worker writes
-         when ``params.stats`` is unset (matches
-         ``_METHOD_TO_RASTERSTAT`` in derivations.py).
+      2. Observation rollups whose input was a bare prefix (no
+         method suffix) produce a bare output prefix too. Probe the
+         observation table for the bare key first; if present, use it.
+         Census rollups (``censo_2010_pobtot`` → ``censo_2010_pobtot_ageb``)
+         land here.
+      3. ``<prefix>_<method>`` — the raster default and the
+         observation-arm default when the input had a method suffix
+         (e.g. ``pop_worldpop_2020_sum`` → ``..._ageb_sum``).
     """
     prefix = str(recipe["attribute_key_prefix"])
     params = recipe.get("params") or {}
     stats = params.get("stats") if isinstance(params, dict) else None
-    suffix = stats[0] if stats else recipe["method"]
-    return f"{prefix}_{suffix}"
+    if stats:
+        return f"{prefix}_{stats[0]}"
+
+    if backend is not None and recipe.get("input_kind") == "observation":
+        if _observation_key_exists(backend, prefix):
+            return prefix
+
+    return f"{prefix}_{recipe['method']}"
+
+
+def _observation_key_exists(backend, attribute_key: str) -> bool:
+    """True iff at least one current observation row uses the exact key.
+
+    Used by the resolver to detect the bare-prefix output convention
+    that ``observation_rollup`` writes when the input has no method
+    suffix. One indexed point lookup; result is callsite-cached by
+    being invoked once per recipe.
+    """
+    try:
+        with backend.connection.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM curated_geo.observation "
+                "WHERE attribute_key = %s AND is_current LIMIT 1",
+                (attribute_key,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        # If the probe fails for any backend reason (e.g. closed conn
+        # mid-request), fall back to the suffixed convention.
+        return False
 
 
 def _logical_name_for_recipe(
