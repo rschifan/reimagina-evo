@@ -584,6 +584,11 @@ def _logical_name_for_recipe(
     and drops the redundant raster slug — the UI already groups every
     recipe under that raster's name, so repeating it in every child row
     is just noise.
+
+    For orphan observation chains (the census rollup case where every
+    recipe shares the same input_feature_type + method) the label
+    surfaces the input attribute prefix so seven pobtot/pobmas/…
+    recipes don't all collapse to the same string in the picker.
     """
     target = recipe["target_feature_type_slug"]
     method = recipe["method"]
@@ -592,8 +597,14 @@ def _logical_name_for_recipe(
             via = recipe.get("input_feature_type_slug")
             return f"Aggregated to {target} ({method}, via {via})"
         return f"Aggregated to {target} ({method})"
-    # No raster ancestor — fully-orphan observation chain. Keep the
-    # rollup-style label so the operator can still read the flow.
+
+    # No raster ancestor — fully-orphan observation chain. Lead with
+    # the input attribute family so identical (target, method) tuples
+    # stay distinguishable.
+    if recipe["input_kind"] == "observation":
+        input_prefix = recipe.get("input_attribute_key_prefix")
+        if input_prefix:
+            return f"{input_prefix} → {target} ({method})"
     return (
         f"rollup → {target} "
         f"({recipe.get('input_feature_type_slug')} · {method})"
