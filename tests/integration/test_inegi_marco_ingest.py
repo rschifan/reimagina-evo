@@ -98,22 +98,24 @@ def fake_marco_root(tmp_path: Path) -> Path:
         with_cve_mun=False,
     )
 
-    # --- areas_municipales: BC has 1 muni, CDMX has 2 munis ---
-    _write_partition(
-        root / "areas_municipales.parquet", cve_ent="02",
-        rows=[{"CVEGEO": "02002", "NOMGEO": "Mexicali", "CVE_MUN": 2,
+    # --- areas_municipales: BC has 1 muni, CDMX has 2 munis. Real
+    # data lake stores CVE_MUN as a partition directory, NOT as an
+    # in-file column — so each muni gets its own CVE_ENT/CVE_MUN/ path
+    # and the parquet inside is just CVEGEO + NOMGEO + geometry.
+    _write_two_level_partition(
+        root / "areas_municipales.parquet", cve_ent="02", cve_mun="002",
+        rows=[{"CVEGEO": "02002", "NOMGEO": "Mexicali",
                "geom": box(-115.5, 32.0, -115.0, 32.5)}],
-        with_cve_mun=True,
     )
-    _write_partition(
-        root / "areas_municipales.parquet", cve_ent="09",
-        rows=[
-            {"CVEGEO": "09015", "NOMGEO": "Cuauhtémoc", "CVE_MUN": 15,
-             "geom": box(-99.2, 19.4, -99.1, 19.5)},
-            {"CVEGEO": "09012", "NOMGEO": "Tlalpan", "CVE_MUN": 12,
-             "geom": box(-99.3, 19.2, -99.0, 19.4)},
-        ],
-        with_cve_mun=True,
+    _write_two_level_partition(
+        root / "areas_municipales.parquet", cve_ent="09", cve_mun="015",
+        rows=[{"CVEGEO": "09015", "NOMGEO": "Cuauhtémoc",
+               "geom": box(-99.2, 19.4, -99.1, 19.5)}],
+    )
+    _write_two_level_partition(
+        root / "areas_municipales.parquet", cve_ent="09", cve_mun="012",
+        rows=[{"CVEGEO": "09012", "NOMGEO": "Tlalpan",
+               "geom": box(-99.3, 19.2, -99.0, 19.4)}],
     )
     return root
 
@@ -123,9 +125,10 @@ def fake_marco_root(tmp_path: Path) -> Path:
 
 def _write_partition(parquet_dir: Path, *, cve_ent: str,
                      rows: list[dict], with_cve_mun: bool) -> None:
-    """Write one partition (multiple rows) so callers can populate a single
-    CVE_ENT directory with several features in one go (mirrors the real
-    INEGI data lake which has many municipalities under each CVE_ENT)."""
+    """Write one CVE_ENT-only partition. Used for ``areas_estatales``,
+    where the on-disk layout is a single level (CVE_ENT directories
+    only). ``with_cve_mun`` is retained for back-compat callers but
+    must be False for one-level shapes."""
     part = parquet_dir / f"CVE_ENT={cve_ent}"
     part.mkdir(parents=True, exist_ok=True)
     columns = {
@@ -138,6 +141,25 @@ def _write_partition(parquet_dir: Path, *, cve_ent: str,
     if with_cve_mun:
         columns["CVE_MUN"] = pa.array([r["CVE_MUN"] for r in rows], type=pa.int32())
     pq.write_table(pa.table(columns), part / "part-0.parquet")
+
+
+def _write_two_level_partition(
+    parquet_dir: Path, *, cve_ent: str, cve_mun: str, rows: list[dict],
+) -> None:
+    """Write a CVE_ENT/CVE_MUN/ nested partition. Used for the three
+    fine-grain layers (``areas_municipales``, ``agebs_urbanas``,
+    ``manzanas_urbanas``) so the ingest sees CVE_MUN as a partition
+    column rather than an in-file column — matches the real data lake."""
+    part = parquet_dir / f"CVE_ENT={cve_ent}" / f"CVE_MUN={cve_mun}"
+    part.mkdir(parents=True, exist_ok=True)
+    table = pa.table({
+        "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
+        "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
+        "geometry": pa.array(
+            [shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary(),
+        ),
+    })
+    pq.write_table(table, part / "part-0.parquet")
 
 
 def _fetch_features_by_type(conn, type_slug: str, *, dataset_version: str) -> list[dict]:
@@ -211,10 +233,12 @@ def test_bootstrap_loads_attributes_into_jsonb(
 
     cuauhtemoc = by_name["Cuauhtémoc"]
     # attributes is jsonb; psycopg2 returns it as a Python dict.
+    # CVE_ENT and CVE_MUN both come from the nested partition path now
+    # (CVE_ENT=09/CVE_MUN=015/) so they round-trip as the canonical
+    # zero-padded strings — that's what JSONB lookups by aoi_from_alcaldia
+    # need to match.
     assert cuauhtemoc["attributes"]["CVE_ENT"] == "09"
-    # CVE_MUN was an int32 in the source; keep the value coherent
-    # (loader may serialise as int or string — assert by string repr).
-    assert str(cuauhtemoc["attributes"]["CVE_MUN"]) == "15"
+    assert cuauhtemoc["attributes"]["CVE_MUN"] == "015"
     assert cuauhtemoc["attributes"]["NOMGEO"] == "Cuauhtémoc"
     assert cuauhtemoc["dataset_version"] == inegi_marco.INEGI_MARCO_VERSION
 
