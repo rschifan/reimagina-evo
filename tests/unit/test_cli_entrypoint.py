@@ -384,3 +384,58 @@ def test_cli_raster_publish_flips_flag(monkeypatch, capsys):
     exit_code = main(["raster", "publish", "--layer-slug", "my_slug", "--unpublish"])
     assert exit_code == 0
     assert captured["published"] is False
+
+
+def test_cli_cdmx_aoi_from_alcaldia_defaults_to_cdmx(monkeypatch, capsys):
+    """Without --cve-ent the CLI implicitly targets CDMX (CVE_ENT=09) for back-compat."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.aoi_from_alcaldia",
+        lambda **kw: captured.update(kw) or {"status": "ok", **kw},
+    )
+
+    exit_code = main([
+        "cdmx", "aoi-from-alcaldia",
+        "--cve-mun", "015",
+        "--name", "Cuauhtémoc",
+    ])
+    assert exit_code == 0
+    assert captured["cve_ent"] == "09"
+    assert captured["cve_mun"] == "015"
+
+
+def test_cli_cdmx_aoi_from_alcaldia_passes_cve_ent_for_other_states(monkeypatch, capsys):
+    """--cve-ent 02 lets the same command target Mexicali (Baja California)."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.aoi_from_alcaldia",
+        lambda **kw: captured.update(kw) or {"status": "ok", **kw},
+    )
+
+    exit_code = main([
+        "cdmx", "aoi-from-alcaldia",
+        "--cve-ent", "02",
+        "--cve-mun", "002",
+        "--name", "Mexicali",
+        "--project-name", "Reimagina pilots",
+    ])
+    assert exit_code == 0
+    assert captured["cve_ent"] == "02"
+    assert captured["cve_mun"] == "002"
+    assert captured["project_name"] == "Reimagina pilots"
+
+
+def test_cli_cdmx_aoi_from_alcaldia_returns_error_when_missing(monkeypatch, capsys):
+    """Returns exit code 2 when the function reports a missing municipality."""
+    monkeypatch.setattr(
+        "apps.cli.app.aoi_from_alcaldia",
+        lambda **kw: {"status": "missing_municipality", **kw},
+    )
+
+    exit_code = main([
+        "cdmx", "aoi-from-alcaldia",
+        "--cve-ent", "02",
+        "--cve-mun", "002",
+        "--name", "Mexicali",
+    ])
+    assert exit_code == 2

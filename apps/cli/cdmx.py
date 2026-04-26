@@ -73,27 +73,35 @@ def aoi_from_alcaldia(
     dsn: str,
     cve_mun: str,
     name: str,
+    cve_ent: str = "09",
     project_name: str = "CDMX Realistic-Scale Validation",
 ) -> dict[str, Any]:
     """Create an AOI whose geometry is the matching MEX:municipality polygon.
 
-    Looks up the municipality feature by (CVE_ENT=09, CVE_MUN=<cve_mun>), reads
-    its WKT, and calls aoi.create_aoi under a dedicated dev project. Intended
-    for quick scoping of city-scale operations (overlap compute, tile exports,
-    benchmarks). No-op if the municipality isn't loaded yet — emits a status
-    message the caller can act on.
+    Looks up the municipality feature by (CVE_ENT, CVE_MUN), reads its
+    WKT, and calls aoi.create_aoi under a dedicated dev project. Intended
+    for quick scoping of city-scale operations (overlap compute, tile
+    exports, benchmarks). No-op if the municipality isn't loaded yet —
+    emits a status message the caller can act on.
+
+    Despite the name, this works for any Mexican state: pass ``cve_ent``
+    to target Baja California (``02``), CDMX (``09`` — default), etc.
+    The ``alcaldia`` shorthand persists because CDMX was the first pilot.
     """
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
-        row = _fetch_municipality_wkt(backend, cve_mun=cve_mun)
+        row = _fetch_municipality_wkt(backend, cve_ent=cve_ent, cve_mun=cve_mun)
         if row is None:
             return {
                 "dsn": dsn,
                 "status": "missing_municipality",
+                "cve_ent": cve_ent,
                 "cve_mun": cve_mun,
                 "message": (
-                    f"No MEX:municipality feature with CVE_ENT=09 and CVE_MUN={cve_mun} "
-                    f"is loaded. Run `cdmx bootstrap --layers municipalities` first."
+                    f"No MEX:municipality feature with CVE_ENT={cve_ent} and "
+                    f"CVE_MUN={cve_mun} is loaded. For CDMX run "
+                    f"`cdmx bootstrap --layers municipalities`; for other states "
+                    f"run `inegi-marco bootstrap --cve-ent {cve_ent} --layers areas_municipales`."
                 ),
             }
 
@@ -104,7 +112,10 @@ def aoi_from_alcaldia(
             project_id=project_id,
             name=name,
             geometry_wkt=geometry_wkt,
-            description=f"AOI derived from MEX:municipality {cve_mun} ({name}).",
+            description=(
+                f"AOI derived from MEX:municipality "
+                f"CVE_ENT={cve_ent} CVE_MUN={cve_mun} ({name})."
+            ),
         )
         conn.commit()
 
@@ -113,6 +124,7 @@ def aoi_from_alcaldia(
         "status": "ok",
         "aoi_id": aoi_id,
         "project_id": project_id,
+        "cve_ent": cve_ent,
         "cve_mun": cve_mun,
         "municipality_feature_id": str(municipality_id),
         "name": name,
@@ -135,11 +147,13 @@ def _lookup_spec(layer: str) -> cdmx_pipeline.CDMXLayerSpec:
 _DEV_PROJECT_DESCRIPTION = "Dev project for CDMX realistic-scale validation."
 
 
-def _fetch_municipality_wkt(backend, *, cve_mun: str) -> tuple[str, str] | None:
-    """Return (feature_id, geometry_wkt) for the CDMX municipality with the given CVE_MUN."""
+def _fetch_municipality_wkt(
+    backend, *, cve_ent: str, cve_mun: str,
+) -> tuple[str, str] | None:
+    """Return (feature_id, geometry_wkt) for the municipality matching (CVE_ENT, CVE_MUN)."""
     row = backend.feature_repo().find_by_attributes(
         type_slug="municipality",
-        attributes={"CVE_ENT": "09", "CVE_MUN": cve_mun},
+        attributes={"CVE_ENT": cve_ent, "CVE_MUN": cve_mun},
     )
     if row is None:
         return None
