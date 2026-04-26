@@ -140,6 +140,30 @@ Defer until Tier 1 + 2 are stable.
   could power: weekday/weekend visit ratios, OD matrices,
   amenity attractiveness scoring. Heavy work — own milestone.
 
+## 4a. Recipe — seed the three pilot AOIs
+
+After Tier 1.2 has loaded municipalities for `CVE_ENT IN ('02','09')`:
+
+```bash
+# CDMX-Cuauhtémoc — already shipped, kept for completeness.
+reimagina-cli cdmx aoi-from-alcaldia \
+    --cve-ent 09 --cve-mun 015 --name "CDMX · Cuauhtémoc"
+
+# CDMX-Tlalpan — second alcaldía, free given INEGI national coverage.
+reimagina-cli cdmx aoi-from-alcaldia \
+    --cve-ent 09 --cve-mun 012 --name "CDMX · Tlalpan"
+
+# Mexicali — Baja California, paired with phone-data + amenities in the lake.
+reimagina-cli cdmx aoi-from-alcaldia \
+    --cve-ent 02 --cve-mun 002 --name "Mexicali" \
+    --project-name "Reimagina pilots"
+```
+
+The subcommand still says `cdmx aoi-from-alcaldia` for back-compat, but
+`--cve-ent` makes it state-agnostic — Mexicali is just a different
+entidad code. A future PR may rename the subcommand to
+`aoi from-municipality`.
+
 ## 4. Concrete next step
 
 Tier 1 is the unblock. Recommend starting with **step 1.2** — the
