@@ -50,7 +50,7 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
-from .inegi import bootstrap_inegi_marco  # noqa: E402
+from .inegi import bootstrap_inegi_censo, bootstrap_inegi_marco  # noqa: E402
 from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
@@ -386,6 +386,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inegi_marco_bootstrap.add_argument("--code-version", default="dev")
     inegi_marco_bootstrap.set_defaults(handler=_handle_inegi_marco_bootstrap)
+
+    inegi_censo_parser = subparsers.add_parser(
+        "inegi-censo",
+        help="INEGI 2010 census ingest (manzana-level → curated_geo.observation)",
+    )
+    inegi_censo_subparsers = inegi_censo_parser.add_subparsers(
+        dest="inegi_censo_command", required=True,
+    )
+    inegi_censo_bootstrap = inegi_censo_subparsers.add_parser(
+        "bootstrap",
+        help="Read filtered 2010 census parquet, join to features, write observations",
+    )
+    inegi_censo_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    inegi_censo_bootstrap.add_argument(
+        "--cve-ent",
+        action="append",
+        default=[],
+        metavar="CVE_ENT",
+        help=(
+            "INEGI entidad code, e.g. 02 or 9 (auto-normalised). "
+            "Repeatable. If omitted, ingests ALL of Mexico — usually "
+            "not what you want."
+        ),
+    )
+    inegi_censo_bootstrap.add_argument(
+        "--cve-mun",
+        action="append",
+        default=[],
+        metavar="CVE_MUN",
+        help="INEGI municipality code (repeatable). Optional further filter.",
+    )
+    inegi_censo_bootstrap.add_argument(
+        "--columns",
+        help=(
+            "Comma-separated census column names. Default: headline subset "
+            "(pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot, vivpar_hab)."
+        ),
+    )
+    inegi_censo_bootstrap.add_argument(
+        "--source-root",
+        help=(
+            "Override the source directory (defaults to "
+            "data/sources/azure/inegi/censo/manzanas_2010.parquet)."
+        ),
+    )
+    inegi_censo_bootstrap.add_argument("--code-version", default="dev")
+    inegi_censo_bootstrap.set_defaults(handler=_handle_inegi_censo_bootstrap)
 
     points_parser = subparsers.add_parser(
         "points",
@@ -879,6 +926,24 @@ def _handle_inegi_marco_bootstrap(args: argparse.Namespace) -> int:
             dsn=args.dsn,
             layers=layers,
             cve_ent_filter=cve_ent_filter,
+            source_root=args.source_root,
+            code_version=args.code_version,
+        )
+    )
+
+
+def _handle_inegi_censo_bootstrap(args: argparse.Namespace) -> int:
+    columns = (
+        [c.strip() for c in args.columns.split(",")] if args.columns else None
+    )
+    cve_ent_filter = list(args.cve_ent) if args.cve_ent else None
+    cve_mun_filter = list(args.cve_mun) if args.cve_mun else None
+    return _print(
+        bootstrap_inegi_censo(
+            dsn=args.dsn,
+            cve_ent_filter=cve_ent_filter,
+            cve_mun_filter=cve_mun_filter,
+            columns=columns,
             source_root=args.source_root,
             code_version=args.code_version,
         )
