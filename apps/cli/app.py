@@ -50,6 +50,7 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
+from .inegi import bootstrap_inegi_marco  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
     rollup_indicator,
@@ -342,6 +343,46 @@ def _build_parser() -> argparse.ArgumentParser:
     cdmx_aoi.add_argument("--name", required=True)
     cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
     cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
+
+    inegi_marco_parser = subparsers.add_parser(
+        "inegi-marco",
+        help="INEGI Marco Geoestadístico 2024 ingest from the data-lake mirror",
+    )
+    inegi_marco_subparsers = inegi_marco_parser.add_subparsers(
+        dest="inegi_marco_command", required=True,
+    )
+
+    inegi_marco_bootstrap = inegi_marco_subparsers.add_parser(
+        "bootstrap",
+        help="Stage + load INEGI marco layers (filtered by CVE_ENT) into curated_geo.feature",
+    )
+    inegi_marco_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    inegi_marco_bootstrap.add_argument(
+        "--layers",
+        help=(
+            "Comma-separated layer keys. Default: all four "
+            "(areas_estatales,areas_municipales,agebs_urbanas,manzanas_urbanas)."
+        ),
+    )
+    inegi_marco_bootstrap.add_argument(
+        "--cve-ent",
+        action="append",
+        default=[],
+        metavar="CVE_ENT",
+        help=(
+            "INEGI entidad code (e.g. 02 for Baja California, 09 for CDMX). "
+            "Repeatable. If omitted, ingests ALL of Mexico — usually not what you want."
+        ),
+    )
+    inegi_marco_bootstrap.add_argument(
+        "--source-root",
+        help=(
+            "Override the source directory (defaults to "
+            "data/sources/azure/inegi/marco_geostadistico/2024)."
+        ),
+    )
+    inegi_marco_bootstrap.add_argument("--code-version", default="dev")
+    inegi_marco_bootstrap.set_defaults(handler=_handle_inegi_marco_bootstrap)
 
     indicators_parser = subparsers.add_parser(
         "indicators",
@@ -798,6 +839,20 @@ def _handle_cdmx_bootstrap(args: argparse.Namespace) -> int:
 
 def _handle_cdmx_status(args: argparse.Namespace) -> int:
     return _print(cdmx_status(dsn=args.dsn))
+
+
+def _handle_inegi_marco_bootstrap(args: argparse.Namespace) -> int:
+    layers = [k.strip() for k in args.layers.split(",")] if args.layers else None
+    cve_ent_filter = list(args.cve_ent) if args.cve_ent else None
+    return _print(
+        bootstrap_inegi_marco(
+            dsn=args.dsn,
+            layers=layers,
+            cve_ent_filter=cve_ent_filter,
+            source_root=args.source_root,
+            code_version=args.code_version,
+        )
+    )
 
 
 def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
