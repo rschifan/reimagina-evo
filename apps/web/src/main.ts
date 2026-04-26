@@ -98,8 +98,24 @@ async function loadInitialState(): Promise<{
 function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
   if (!aoi.bbox) return;
   const [minLon, minLat, maxLon, maxLat] = aoi.bbox;
-  // fitBounds with a small padding keeps the AOI off the sidebar edge
-  // and gives the user a tiny breathing-room border.
+  const lonSpan = Math.abs(maxLon - minLon);
+  const latSpan = Math.abs(maxLat - minLat);
+  // Wide AOIs (Mexicali = 1.4°, ~100 km) make fitBounds zoom out far
+  // enough that the analysis-unit layers stop rendering — block /
+  // AGEB minzoom is 11 in INPUT_LAYERS. Centring on the bbox centroid
+  // at z=11 gives the user a usable view immediately, even if some of
+  // the AOI is offscreen.
+  const WIDE_AOI_DEGREE_THRESHOLD = 0.5;
+  if (lonSpan > WIDE_AOI_DEGREE_THRESHOLD || latSpan > WIDE_AOI_DEGREE_THRESHOLD) {
+    map.flyTo({
+      center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2],
+      zoom: 11,
+      duration: 700,
+    });
+    return;
+  }
+  // Tight AOIs (Cuauhtémoc, Tlalpan) fit naturally above z=11 — let
+  // fitBounds frame the polygon with a small padding for breathing room.
   map.fitBounds(
     [
       [minLon, minLat],
