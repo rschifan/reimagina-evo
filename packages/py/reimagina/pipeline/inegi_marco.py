@@ -29,6 +29,7 @@ from typing import Any
 from uuid import uuid4
 
 import geopandas as gpd
+import pyarrow as pa
 import pyarrow.dataset as pads
 import shapely.wkb
 
@@ -144,14 +145,22 @@ def read_layer_to_geodataframe(
     ``pyarrow.dataset`` so we never materialise rows for entidades outside
     the pilot scope.
 
+    INEGI codes are **zero-padded strings** (``"09"`` is CDMX, not 9).
+    Pyarrow's default hive-partitioning detection coerces partition values
+    that look numeric to int — that would silently corrupt CVE_ENT for
+    every entidad below 10. We pin the partition schema explicitly to
+    ``string`` to keep the leading zeros intact.
+
     Returns an EPSG:4326 GeoDataFrame.
     """
-    dataset = pads.dataset(str(parquet_dir), format="parquet", partitioning="hive")
+    partitioning = pads.HivePartitioning(pa.schema([("CVE_ENT", pa.string())]))
+    dataset = pads.dataset(str(parquet_dir), format="parquet", partitioning=partitioning)
     if cve_ent_filter:
         # Hive partition values arrive as strings from the directory names.
         # Coerce caller input to str so callers can pass either ['02','09']
-        # or [2, 9] without surprises.
-        filter_values = [str(v) for v in cve_ent_filter]
+        # or [2, 9] without surprises (the latter would otherwise miss
+        # because "9" != "09" in the partition column).
+        filter_values = [_normalise_cve_ent(v) for v in cve_ent_filter]
         flt = pads.field("CVE_ENT").isin(filter_values)
         table = dataset.to_table(filter=flt)
     else:
@@ -164,6 +173,18 @@ def read_layer_to_geodataframe(
         )
     df["geometry"] = df["geometry"].apply(shapely.wkb.loads)
     return gpd.GeoDataFrame(df, geometry="geometry", crs=INEGI_MARCO_SOURCE_CRS)
+
+
+def _normalise_cve_ent(value: int | str) -> str:
+    """Coerce a CVE_ENT input to the canonical 2-digit zero-padded form.
+
+    ``2`` and ``"2"`` and ``"02"`` all become ``"02"``. The data lake's
+    partition directories use the zero-padded string and that's what the
+    in-memory column ends up as after the explicit HivePartitioning above,
+    so the filter has to match the same shape.
+    """
+    text = str(value)
+    return text.zfill(2) if text.isdigit() and len(text) <= 2 else text
 
 
 # ─── Source registration ───────────────────────────────────────────────────
