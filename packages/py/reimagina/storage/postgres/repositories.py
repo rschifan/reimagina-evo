@@ -2105,26 +2105,42 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
         feature_type: str | None = None,
+        aoi_id: str | None = None,
     ) -> dict:
-        clauses = ["indicator_slug = %s", "status = 'current'", "value_numeric IS NOT NULL"]
+        # Aliased so the optional aoi_id EXISTS subquery can reference
+        # the row's feature_id column without column-name shadowing.
+        clauses = [
+            "ir.indicator_slug = %s",
+            "ir.status = 'current'",
+            "ir.value_numeric IS NOT NULL",
+        ]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("scenario_id", scenario_id)
+        clause, extra = _scenario_filter("ir.scenario_id", scenario_id)
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
-            clauses.append("feature_type = %s")
+            clauses.append("ir.feature_type = %s")
             params.append(feature_type)
+        if aoi_id is not None:
+            # EXISTS over JOIN: same shape as the tile functions in
+            # r022 / r023, keeps cardinality stable when a feature
+            # belongs to multiple AOIs.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
+                "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
+            )
+            params.append(aoi_id)
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT
-                  COUNT(*)::bigint                                            AS count,
-                  MIN(value_numeric)                                          AS min,
-                  percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric) AS p05,
-                  percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric) AS p50,
-                  percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric) AS p95,
-                  MAX(value_numeric)                                          AS max
-                FROM curated_geo.indicator_result
+                  COUNT(*)::bigint                                               AS count,
+                  MIN(ir.value_numeric)                                          AS min,
+                  percentile_cont(0.05) WITHIN GROUP (ORDER BY ir.value_numeric) AS p05,
+                  percentile_cont(0.50) WITHIN GROUP (ORDER BY ir.value_numeric) AS p50,
+                  percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
+                  MAX(ir.value_numeric)                                          AS max
+                FROM curated_geo.indicator_result ir
                 WHERE {' AND '.join(clauses)}
                 """,
                 params,

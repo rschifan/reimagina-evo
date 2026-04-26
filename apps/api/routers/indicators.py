@@ -109,11 +109,15 @@ class IndicatorValueStats(BaseModel):
     distribution — not the catalog's `valid_min` / `valid_max` safety
     cap, which is usually orders of magnitude wider than the real range
     and washes the map white.
+
+    ``aoi_id`` (when set) records that the stats reflect only that
+    AOI's features; clients re-render the colour ramp on AOI change.
     """
 
     slug: str
     scenario_id: str | None = None
     feature_type: str | None = None
+    aoi_id: str | None = None
     count: int
     min: float | None = None
     p05: float | None = None
@@ -127,6 +131,14 @@ def get_values_stats(
     slug: str,
     scenario_id: str | None = Query(default=None),
     feature_type: str | None = Query(default=None),
+    aoi_id: str | None = Query(
+        default=None,
+        description=(
+            "Optional AOI scope. When provided, percentiles are computed "
+            "from features overlapping that AOI only — so multi-site UIs "
+            "get a colour ramp tuned to the picked city's distribution."
+        ),
+    ),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> IndicatorValueStats:
     """Return count + percentiles for an indicator's current numeric values."""
@@ -135,11 +147,13 @@ def get_values_stats(
         indicator_slug=slug,
         scenario_id=scenario_id,
         feature_type=feature_type,
+        aoi_id=aoi_id,
     )
     return IndicatorValueStats(
         slug=slug,
         scenario_id=scenario_id,
         feature_type=feature_type,
+        aoi_id=aoi_id,
         **stats,
     )
 

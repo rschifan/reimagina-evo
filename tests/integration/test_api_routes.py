@@ -363,3 +363,116 @@ def test_tile_sources_returns_manifest(client):
     for row in payload:
         assert "source_mode" in row
         assert "source_config" in row
+
+
+# ─── /indicators/{slug}/stats?aoi_id=… ────────────────────────────────
+
+
+@pytest.fixture
+def two_aois_one_block_each(conn):
+    """Seed catalog + two blocks, each in a different AOI, with an
+    indicator value computed for each. Returns a dict the AOI-stats
+    tests use to assert per-AOI scoping.
+
+    AOI A holds the existing 'in-bbox' block with a real compactness
+    value. AOI B holds a different block with its own compactness
+    value, so the two AOIs have non-overlapping populations and the
+    stats endpoint must report different counts.
+    """
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        insert_project as _insert_project,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn, name="aoi_stats_src",
+        storage_type="vector", integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+
+    block_a = _insert_feature(
+        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="aoi-a-blk",
+        geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
+    )
+    block_b = _insert_feature(
+        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
+        dataset_version="v1", source_record_ref="aoi-b-blk",
+        geometry_wkt="POLYGON((-115.470 32.640,-115.467 32.640,-115.467 32.643,-115.470 32.643,-115.470 32.640))",
+    )
+    compute_block_compactness(conn, code_version="test")
+
+    project_a = _insert_project(conn, name="proj-aoi-a")
+    project_b = _insert_project(conn, name="proj-aoi-b")
+    aoi_a = aoi.create_aoi(
+        conn, project_id=project_a, name="AOI A (CDMX)",
+        geometry_wkt="POLYGON((-99.20 19.40,-99.10 19.40,-99.10 19.50,-99.20 19.50,-99.20 19.40))",
+    )
+    aoi_b = aoi.create_aoi(
+        conn, project_id=project_b, name="AOI B (Mexicali)",
+        geometry_wkt="POLYGON((-115.50 32.60,-115.40 32.60,-115.40 32.70,-115.50 32.70,-115.50 32.60))",
+    )
+    # Direct insert into aoi_feature so the test asserts the API's filter
+    # behaviour without depending on compute_overlaps' geometry maths
+    # for tiny test geometries.
+    with conn.cursor() as cur:
+        for aoi_id, feat_id in ((aoi_a, block_a), (aoi_b, block_b)):
+            cur.execute(
+                """
+                INSERT INTO curated_geo.aoi_feature
+                  (aoi_id, feature_id, overlap_basis,
+                   overlap_measure, feature_measure, overlap_ratio)
+                VALUES (%s, %s, 'area', 1.0, 1.0, 1.0)
+                """,
+                (aoi_id, feat_id),
+            )
+    return {
+        "slug": "urban_form_block_compactness",
+        "aoi_a": aoi_a, "block_a": block_a,
+        "aoi_b": aoi_b, "block_b": block_b,
+    }
+
+
+def test_stats_endpoint_includes_aoi_id_in_response(client, two_aois_one_block_each):
+    """The response model echoes the requested aoi_id so clients can
+    correlate the percentiles with the AOI they're rendering."""
+    fixture = two_aois_one_block_each
+    response = client.get(
+        f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_a']}"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["aoi_id"] == fixture["aoi_a"]
+
+
+def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_each):
+    """With two blocks in two AOIs, ?aoi_id=A returns count=1 and
+    ?aoi_id=B returns count=1 — and they're different stats slices,
+    not a Mexico-wide aggregate."""
+    fixture = two_aois_one_block_each
+    resp_all = client.get(f"/indicators/{fixture['slug']}/stats")
+    resp_a = client.get(f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_a']}")
+    resp_b = client.get(f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_b']}")
+
+    assert resp_all.status_code == resp_a.status_code == resp_b.status_code == 200
+    assert resp_all.json()["count"] == 2
+    assert resp_a.json()["count"] == 1
+    assert resp_b.json()["count"] == 1
+
+
+def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_each):
+    """A junk AOI uuid returns count=0 with all percentile fields None.
+    That's the expected shape — same as 'no rows for this slug yet' —
+    so frontends can fall back to catalog bounds without special-casing."""
+    fixture = two_aois_one_block_each
+    bogus = "00000000-0000-0000-0000-000000000001"
+    response = client.get(f"/indicators/{fixture['slug']}/stats?aoi_id={bogus}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 0
+    for key in ("min", "p05", "p50", "p95", "max"):
+        assert payload[key] is None
+    assert payload["aoi_id"] == bogus

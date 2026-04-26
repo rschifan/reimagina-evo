@@ -2445,25 +2445,39 @@ class DuckDBIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
         feature_type: str | None = None,
+        aoi_id: str | None = None,
     ) -> dict:
-        clauses = ["indicator_slug = ?", "status = 'current'", "value_numeric IS NOT NULL"]
+        clauses = [
+            "ir.indicator_slug = ?",
+            "ir.status = 'current'",
+            "ir.value_numeric IS NOT NULL",
+        ]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("CAST(scenario_id AS VARCHAR)", scenario_id, "?")
+        clause, extra = _scenario_filter("CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?")
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
-            clauses.append("feature_type = ?")
+            clauses.append("ir.feature_type = ?")
             params.append(feature_type)
+        if aoi_id is not None:
+            # Mirrors the Postgres EXISTS subquery; DuckDB's planner
+            # handles it identically.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
+                "WHERE af.feature_id = ir.feature_id "
+                "AND CAST(af.aoi_id AS VARCHAR) = ?)"
+            )
+            params.append(aoi_id)
 
         row = self.connection.execute(
             f"""
-            SELECT COUNT(*)                             AS count,
-                   MIN(value_numeric)                   AS min,
-                   quantile_cont(value_numeric, 0.05)   AS p05,
-                   quantile_cont(value_numeric, 0.50)   AS p50,
-                   quantile_cont(value_numeric, 0.95)   AS p95,
-                   MAX(value_numeric)                   AS max
-            FROM curated_geo.indicator_result
+            SELECT COUNT(*)                                AS count,
+                   MIN(ir.value_numeric)                   AS min,
+                   quantile_cont(ir.value_numeric, 0.05)   AS p05,
+                   quantile_cont(ir.value_numeric, 0.50)   AS p50,
+                   quantile_cont(ir.value_numeric, 0.95)   AS p95,
+                   MAX(ir.value_numeric)                   AS max
+            FROM curated_geo.indicator_result ir
             WHERE {' AND '.join(clauses)}
             """,
             params,
