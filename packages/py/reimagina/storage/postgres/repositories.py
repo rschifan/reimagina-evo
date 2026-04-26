@@ -1018,14 +1018,25 @@ class PostgresAOIRepository:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT id::text, project_id::text, name, description
+                SELECT id::text, project_id::text, name, description,
+                       -- ST_Envelope returns the smallest containing rectangle
+                       -- in the same CRS as the geometry (EPSG:4326).
+                       ST_XMin(geometry) AS min_lon,
+                       ST_YMin(geometry) AS min_lat,
+                       ST_XMax(geometry) AS max_lon,
+                       ST_YMax(geometry) AS max_lat
                 FROM curated_geo.area_of_interest
                 ORDER BY name
                 """
             )
             return [
-                {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
-                for aid, pid, name, descr in cur.fetchall()
+                {
+                    "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
+                    "bbox": [min_lon, min_lat, max_lon, max_lat]
+                    if min_lon is not None else None,
+                }
+                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
+                in cur.fetchall()
             ]
 
     def get_aoi(self, aoi_id: str) -> dict | None:

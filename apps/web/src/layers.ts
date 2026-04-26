@@ -318,10 +318,49 @@ function _deriveCogEndpointBase(tilesUrlTemplate: string): string | null {
 }
 
 
+/** Append `aoi_id=<id>` to a Martin tile URL template. The template
+ *  may already carry query string params from upstream (e.g.
+ *  `?attribute_key=…&feature_type_slug=…`), so we use `&` if a `?` is
+ *  already present and `?` otherwise. The `{z}/{x}/{y}` placeholders
+ *  must survive composition — that's why we don't reach for the URL
+ *  constructor here. */
+function _appendAoiId(template: string, aoiId: string): string {
+  const sep = template.includes("?") ? "&" : "?";
+  return `${template}${sep}aoi_id=${encodeURIComponent(aoiId)}`;
+}
+
+
+/** Update every aggregation-overlay source's tile URLs to scope to
+ *  ``aoiId`` (or remove the scoping when ``null``). Called whenever
+ *  the active AOI changes so the visible choropleths re-fetch tiles
+ *  for the picked city. */
+export function refreshAggregationOverlayAoi(
+  map: MapLibreMap,
+  sources: TileSource[],
+  aoiId: string | null,
+): void {
+  for (const src of sources) {
+    if (src.source_mode !== "aggregation_overlay") continue;
+    if (src.available === false) continue;
+    const cfg = src.source_config;
+    if (!cfg.tiles_url_template) continue;
+    const sourceName = aggSourceName(src.layer_id);
+    const source = map.getSource(sourceName) as unknown as
+      { setTiles?: (urls: string[]) => void } | undefined;
+    if (!source || typeof source.setTiles !== "function") continue;
+    const url = aoiId
+      ? _appendAoiId(cfg.tiles_url_template, aoiId)
+      : cfg.tiles_url_template;
+    source.setTiles([url]);
+  }
+}
+
+
 export function installAggregationOverlays(
   map: MapLibreMap,
   sources: TileSource[],
   tooltips?: TooltipController,
+  aoiId?: string | null,
 ): void {
   for (const src of sources) {
     if (src.source_mode !== "aggregation_overlay") continue;
@@ -330,9 +369,12 @@ export function installAggregationOverlays(
     if (!cfg.tiles_url_template) continue;
     const sourceName = aggSourceName(src.layer_id);
     if (map.getSource(sourceName)) continue;
+    const tileUrl = aoiId
+      ? _appendAoiId(cfg.tiles_url_template, aoiId)
+      : cfg.tiles_url_template;
     map.addSource(sourceName, {
       type: "vector",
-      tiles: [cfg.tiles_url_template],
+      tiles: [tileUrl],
       minzoom: cfg.minzoom ?? 10,
       maxzoom: cfg.maxzoom ?? 16,
       promoteId: "feature_id",

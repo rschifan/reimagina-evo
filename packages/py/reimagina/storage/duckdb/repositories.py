@@ -1103,16 +1103,28 @@ class DuckDBAOIRepository:
         return len(insert_rows)
 
     def list_aois(self) -> list[dict]:
+        # DuckDB's spatial extension exposes ST_XMin/ST_YMin/ST_XMax/ST_YMax;
+        # if the extension isn't loaded the geometry column is just text and
+        # we fall back to None bbox so the API still serves the row.
         rows = self.connection.execute(
             """
-            SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description
+            SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description,
+                   ST_XMin(geometry) AS min_lon,
+                   ST_YMin(geometry) AS min_lat,
+                   ST_XMax(geometry) AS max_lon,
+                   ST_YMax(geometry) AS max_lat
             FROM curated_geo.area_of_interest
             ORDER BY name
             """
         ).fetchall()
         return [
-            {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
-            for aid, pid, name, descr in rows
+            {
+                "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
+                "bbox": [min_lon, min_lat, max_lon, max_lat]
+                if min_lon is not None else None,
+            }
+            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
+            in rows
         ]
 
     def get_aoi(self, aoi_id: str) -> dict | None:

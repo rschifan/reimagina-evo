@@ -138,6 +138,7 @@ export function activateIndicator(
   indicator: IndicatorSummary,
   domain: RampDomain,
   tooltips?: TooltipController,
+  aoiId?: string | null,
 ): void {
   removeIndicator(map);
 
@@ -147,6 +148,7 @@ export function activateIndicator(
   const grain = defaultGrain(indicator);
   const params = new URLSearchParams({ indicator_slug: indicator.slug });
   if (grain) params.set("feature_type", grain);
+  if (aoiId) params.set("aoi_id", aoiId);
   const tileUrl = `${config.tilesUrlTemplate}?${params.toString()}`;
 
   // promoteId surfaces MVT feature_id as feature.id so setFeatureState
