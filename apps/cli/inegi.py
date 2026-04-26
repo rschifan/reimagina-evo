@@ -1,7 +1,8 @@
 """CLI helpers for the INEGI Marco Geoestadístico 2024 + Censo 2010 ingests.
 
-Thin wrappers around ``reimagina.pipeline.inegi_marco`` and
-``reimagina.pipeline.inegi_censo`` matching the shape of
+Thin wrappers around ``reimagina.pipeline.inegi_marco``,
+``reimagina.pipeline.inegi_censo``, and
+``reimagina.pipeline.inegi_censo_rollups`` matching the shape of
 ``apps/cli/cdmx.py`` so the broader CLI surface stays consistent.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from reimagina.db import connect
-from reimagina.pipeline import inegi_censo, inegi_marco
+from reimagina.pipeline import inegi_censo, inegi_censo_rollups, inegi_marco
 
 
 def bootstrap_inegi_marco(
@@ -55,3 +56,28 @@ def bootstrap_inegi_censo(
             code_version=code_version,
         )
     return {"dsn": dsn, **dataclasses.asdict(result)}
+
+
+def apply_inegi_censo_rollups(
+    *,
+    dsn: str,
+    columns: list[str] | None = None,
+    target_grains: list[str] | None = None,
+) -> dict[str, Any]:
+    """Seed + run AGEB/municipality rollup recipes for the headline
+    census columns. Idempotent on (target, attribute_key_prefix)."""
+    cols = tuple(columns) if columns else inegi_censo_rollups.HEADLINE_COLUMNS
+    grains = tuple(target_grains) if target_grains else inegi_censo_rollups.TARGET_GRAINS
+    with connect(dsn) as conn:
+        report = inegi_censo_rollups.apply(
+            conn,
+            columns=cols,
+            target_grains=grains,
+            direct_dsn=dsn,
+        )
+    return {
+        "dsn": dsn,
+        "columns": list(cols),
+        "target_grains": list(grains),
+        **dataclasses.asdict(report),
+    }
