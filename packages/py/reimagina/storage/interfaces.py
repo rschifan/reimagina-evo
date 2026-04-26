@@ -675,6 +675,7 @@ class IndicatorResultRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
         feature_type: str | None = None,
+        aoi_id: str | None = None,
     ) -> dict[str, Any]:
         """Summary statistics for a numeric indicator's current values.
 
@@ -682,6 +683,10 @@ class IndicatorResultRepository(Protocol):
         (all `None` when there are no rows). Intended to drive the
         frontend's choropleth colour ramp from the real distribution
         rather than the catalog's safety bounds.
+
+        ``aoi_id`` scopes the stats to that AOI's features only via
+        ``curated_geo.aoi_feature``. Multi-site UIs need this so
+        Mexicali's colour ramp doesn't get pulled by CDMX's distribution.
         """
         ...
 
