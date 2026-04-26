@@ -50,7 +50,11 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
-from .inegi import bootstrap_inegi_censo, bootstrap_inegi_marco  # noqa: E402
+from .inegi import (  # noqa: E402
+    apply_inegi_censo_rollups,
+    bootstrap_inegi_censo,
+    bootstrap_inegi_marco,
+)
 from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
@@ -433,6 +437,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inegi_censo_bootstrap.add_argument("--code-version", default="dev")
     inegi_censo_bootstrap.set_defaults(handler=_handle_inegi_censo_bootstrap)
+
+    inegi_censo_rollups = inegi_censo_subparsers.add_parser(
+        "rollups",
+        help=(
+            "Seed + run AGEB / municipality rollup recipes for the "
+            "headline censo_2010_* attributes. Idempotent: re-running "
+            "reuses existing recipe rows."
+        ),
+    )
+    inegi_censo_rollups.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    inegi_censo_rollups.add_argument(
+        "--columns",
+        help=(
+            "Comma-separated headline columns to roll up. Default: all "
+            "seven (pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot, "
+            "vivpar_hab)."
+        ),
+    )
+    inegi_censo_rollups.add_argument(
+        "--target-grains",
+        default="ageb,municipality",
+        help="Comma-separated target grains. Default 'ageb,municipality'.",
+    )
+    inegi_censo_rollups.set_defaults(handler=_handle_inegi_censo_rollups)
 
     points_parser = subparsers.add_parser(
         "points",
@@ -946,6 +974,20 @@ def _handle_inegi_censo_bootstrap(args: argparse.Namespace) -> int:
             columns=columns,
             source_root=args.source_root,
             code_version=args.code_version,
+        )
+    )
+
+
+def _handle_inegi_censo_rollups(args: argparse.Namespace) -> int:
+    columns = (
+        [c.strip() for c in args.columns.split(",")] if args.columns else None
+    )
+    grains = [g.strip() for g in args.target_grains.split(",") if g.strip()]
+    return _print(
+        apply_inegi_censo_rollups(
+            dsn=args.dsn,
+            columns=columns,
+            target_grains=grains,
         )
     )
 
