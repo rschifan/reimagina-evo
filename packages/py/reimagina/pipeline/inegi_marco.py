@@ -61,6 +61,16 @@ class InegiMarcoLayerSpec:
 
     Mirrors ``CDMXLayerSpec`` from ``pipeline/cdmx.py`` so the
     stage→load shape is fully driven by data, not branching.
+
+    ``partition_cols`` reflects the on-disk hive partitioning, which is
+    different per layer in the data lake:
+    - ``areas_estatales`` is partitioned by ``CVE_ENT`` only.
+    - ``areas_municipales`` / ``agebs_urbanas`` / ``manzanas_urbanas``
+      are partitioned by ``CVE_ENT`` then ``CVE_MUN``.
+    Without an accurate partition schema, pyarrow walks past the inner
+    directory levels silently and the corresponding columns vanish from
+    the resulting frame — that's how the first ingest produced
+    municipalities with no ``CVE_MUN`` attribute.
     """
 
     key: str
@@ -70,6 +80,7 @@ class InegiMarcoLayerSpec:
     name_col: str | None
     attributes_cols: tuple[str, ...]
     display_name: str
+    partition_cols: tuple[str, ...] = ("CVE_ENT",)
 
 
 INEGI_MARCO_STATES = InegiMarcoLayerSpec(
@@ -90,6 +101,7 @@ INEGI_MARCO_MUNICIPALITIES = InegiMarcoLayerSpec(
     name_col="NOMGEO",
     attributes_cols=("CVE_ENT", "CVE_MUN", "NOMGEO"),
     display_name="México · Municipios (INEGI Marco Geoestadístico 2024)",
+    partition_cols=("CVE_ENT", "CVE_MUN"),
 )
 
 INEGI_MARCO_AGEBS = InegiMarcoLayerSpec(
@@ -100,6 +112,7 @@ INEGI_MARCO_AGEBS = InegiMarcoLayerSpec(
     name_col=None,
     attributes_cols=("CVE_ENT", "CVE_MUN", "CVE_LOC", "CVE_AGEB"),
     display_name="México · AGEBs urbanos (INEGI Marco Geoestadístico 2024)",
+    partition_cols=("CVE_ENT", "CVE_MUN"),
 )
 
 INEGI_MARCO_BLOCKS = InegiMarcoLayerSpec(
@@ -110,6 +123,7 @@ INEGI_MARCO_BLOCKS = InegiMarcoLayerSpec(
     name_col=None,
     attributes_cols=("CVE_ENT", "CVE_MUN", "CVE_LOC", "CVE_AGEB", "CVE_MZA", "AMBITO", "TIPOMZA"),
     display_name="México · Manzanas urbanas (INEGI Marco Geoestadístico 2024)",
+    partition_cols=("CVE_ENT", "CVE_MUN"),
 )
 
 LAYER_SPECS: dict[str, InegiMarcoLayerSpec] = {
@@ -138,28 +152,37 @@ def read_layer_to_geodataframe(
     parquet_dir: Path,
     *,
     cve_ent_filter: list[str] | None,
+    partition_cols: tuple[str, ...] = ("CVE_ENT",),
 ) -> gpd.GeoDataFrame:
     """Read a hive-partitioned INEGI marco parquet, decode WKB into shapely.
 
     Filters by ``CVE_ENT`` at scan time via the partition pruning in
-    ``pyarrow.dataset`` so we never materialise rows for entidades outside
-    the pilot scope.
+    ``pyarrow.dataset`` so we never materialise rows for entidades
+    outside the pilot scope.
 
     INEGI codes are **zero-padded strings** (``"09"`` is CDMX, not 9).
-    Pyarrow's default hive-partitioning detection coerces partition values
-    that look numeric to int — that would silently corrupt CVE_ENT for
-    every entidad below 10. We pin the partition schema explicitly to
-    ``string`` to keep the leading zeros intact.
+    Pyarrow's default hive-partitioning detection coerces partition
+    values that look numeric to int — that would silently corrupt
+    CVE_ENT for every entidad below 10. We pin the partition schema
+    explicitly to ``string`` to keep the leading zeros intact.
+
+    ``partition_cols`` describes the directory nesting: the data lake
+    uses ``CVE_ENT/`` for ``areas_estatales`` and ``CVE_ENT/CVE_MUN/``
+    for the other three layers. Without naming all the levels, pyarrow
+    treats the inner directories as opaque path components and silently
+    drops those columns from the projection — that's how the first
+    ingest produced municipalities with no ``CVE_MUN`` attribute.
 
     Returns an EPSG:4326 GeoDataFrame.
     """
-    partitioning = pads.HivePartitioning(pa.schema([("CVE_ENT", pa.string())]))
+    schema_fields = [(col, pa.string()) for col in partition_cols]
+    partitioning = pads.HivePartitioning(pa.schema(schema_fields))
     dataset = pads.dataset(str(parquet_dir), format="parquet", partitioning=partitioning)
     if cve_ent_filter:
-        # Hive partition values arrive as strings from the directory names.
-        # Coerce caller input to str so callers can pass either ['02','09']
-        # or [2, 9] without surprises (the latter would otherwise miss
-        # because "9" != "09" in the partition column).
+        # Hive partition values arrive as strings from the directory
+        # names. Coerce caller input to str so callers can pass either
+        # ['02','09'] or [2, 9] without surprises (the latter would
+        # otherwise miss because "9" != "09" in the partition column).
         filter_values = [_normalise_cve_ent(v) for v in cve_ent_filter]
         flt = pads.field("CVE_ENT").isin(filter_values)
         table = dataset.to_table(filter=flt)
@@ -238,7 +261,11 @@ def stage_layer(
             f"INEGI marco source not found: {parquet_dir}. "
             "Verify the data lake mirror at data/sources/azure/inegi/marco_geostadistico/2024/ exists."
         )
-    gdf = read_layer_to_geodataframe(parquet_dir, cve_ent_filter=cve_ent_filter)
+    gdf = read_layer_to_geodataframe(
+        parquet_dir,
+        cve_ent_filter=cve_ent_filter,
+        partition_cols=spec.partition_cols,
+    )
     if gdf.empty:
         raise ValueError(
             f"No rows for layer {spec.key} with cve_ent_filter={cve_ent_filter}. "
