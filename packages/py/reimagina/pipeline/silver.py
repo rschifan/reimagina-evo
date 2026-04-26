@@ -70,9 +70,13 @@ def read_vector(path: str | Path) -> gpd.GeoDataFrame:
 
     GeoParquet is preferred for large analytical subsets, while GeoJSON and
     other GDAL-supported formats remain supported for smaller/manual inputs.
+
+    The data lake exposes its amenity layers with the ``.geoparquet``
+    suffix; treat it as the same format as ``.parquet`` so callers don't
+    have to fight the dispatch.
     """
     path = Path(path)
-    if path.suffix.lower() == ".parquet":
+    if path.suffix.lower() in {".parquet", ".geoparquet"}:
         return clean_vector(gpd.read_parquet(path))
     return clean_vector(gpd.read_file(path))
 
