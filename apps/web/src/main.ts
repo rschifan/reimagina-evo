@@ -114,7 +114,12 @@ function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
   if (lonSpan > WIDE_AOI_DEGREE_THRESHOLD || latSpan > WIDE_AOI_DEGREE_THRESHOLD) {
     const center: [number, number] = aoi.centroid
       ?? [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
-    map.flyTo({ center, zoom: 11, duration: 700 });
+    // z=12 gives ~25 km of viewport — wide enough to see the urban
+    // structure, tight enough that block / AGEB lines render at a
+    // visible density. Earlier z=11 left huge AOIs feeling empty
+    // because at that zoom over (e.g.) Mexicali, the viewport spans
+    // ~50 km of mostly empty desert with sparse features.
+    map.flyTo({ center, zoom: 12, duration: 700 });
     return;
   }
   // Tight AOIs (Cuauhtémoc, Tlalpan) fit naturally above z=11 — let
