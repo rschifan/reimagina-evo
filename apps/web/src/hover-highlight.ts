@@ -36,8 +36,12 @@ export const HOVER_LINE_WIDTH = 3.5;
 
 
 export interface HoverHighlightConfig {
-  /** MapLibre fill layer id that owns the hover surface. */
-  fillLayerId: string;
+  /** Optional MapLibre fill layer. When present, mousemove fires on
+   *  this layer and the helper updates fill-opacity + fill-outline-color
+   *  case expressions. Layers without a fill (block stroke-only) can
+   *  skip this and pass ``lineLayerId`` instead — hover hits register
+   *  on the line layer directly. */
+  fillLayerId?: string;
   /** Optional matching line layer whose stroke thickens on hover. */
   lineLayerId?: string;
   /** Current default fill-outline-color. Used for the non-hover branch
@@ -58,14 +62,16 @@ export interface HoverHighlightConfig {
 
 
 /**
- * Wire up hover highlighting for a fill (+ optional line) layer pair.
+ * Wire up hover highlighting for a fill / line / fill+line layer combo.
  *
- * Side effects:
- *   - Replaces fill-opacity + fill-outline-color on ``fillLayerId``
- *     with case expressions that react to the ``hover`` feature state.
- *   - Replaces line-color + line-width on ``lineLayerId`` (if passed).
- *   - Registers mousemove / mouseleave handlers on ``fillLayerId``.
- *   - Flips the canvas cursor to ``pointer`` while hovered.
+ * At least one of ``fillLayerId`` or ``lineLayerId`` must resolve to a
+ * registered MapLibre layer. The helper auto-detects which one(s) are
+ * present and:
+ *   - registers mousemove / mouseleave handlers on the hit-target
+ *     layer (fill if present, line otherwise);
+ *   - replaces fill-opacity + fill-outline-color when a fill exists;
+ *   - replaces line-color + line-width when a line exists;
+ *   - flips the canvas cursor to ``pointer`` while hovered.
  *
  * Returns a dispose function that un-registers listeners and clears
  * any residual feature-state. Callers don't need to call it in
@@ -75,11 +81,19 @@ export function enableHoverHighlight(
   map: MapLibreMap,
   cfg: HoverHighlightConfig,
 ): () => void {
-  const fillLayer = map.getLayer(cfg.fillLayerId);
-  if (!fillLayer) return () => undefined;
+  const fillLayer = cfg.fillLayerId ? map.getLayer(cfg.fillLayerId) : null;
+  const lineLayer = cfg.lineLayerId ? map.getLayer(cfg.lineLayerId) : null;
+  // Hit-target priority: fill > line. A fill polygon catches mouse
+  // events across the whole feature interior; a line catches them only
+  // along the stroke pixels. When both are available the fill is
+  // strictly better hover-detection. When only line is available
+  // (block layer = transparent fill), we wire the events on the line.
+  const hitLayer = fillLayer ?? lineLayer;
+  const hitLayerId = fillLayer ? cfg.fillLayerId : cfg.lineLayerId;
+  if (!hitLayer || !hitLayerId) return () => undefined;
 
-  const source = fillLayer.source;
-  const sourceLayer = (fillLayer as unknown as { sourceLayer?: string }).sourceLayer;
+  const source = (hitLayer as unknown as { source?: string }).source;
+  const sourceLayer = (hitLayer as unknown as { sourceLayer?: string }).sourceLayer;
   if (!source || !sourceLayer) {
     // Promoted-id hover needs source + source-layer; bail rather than
     // silently install a no-op handler.
@@ -100,12 +114,14 @@ export function enableHoverHighlight(
     cold,
   ];
 
-  map.setPaintProperty(cfg.fillLayerId, "fill-opacity",
-    hoveredCase(hoverFillOpacity, defaultFillOpacity) as never);
-  map.setPaintProperty(cfg.fillLayerId, "fill-outline-color",
-    hoveredCase(HOVER_OUTLINE_COLOR, defaultOutlineColor) as never);
+  if (cfg.fillLayerId && fillLayer) {
+    map.setPaintProperty(cfg.fillLayerId, "fill-opacity",
+      hoveredCase(hoverFillOpacity, defaultFillOpacity) as never);
+    map.setPaintProperty(cfg.fillLayerId, "fill-outline-color",
+      hoveredCase(HOVER_OUTLINE_COLOR, defaultOutlineColor) as never);
+  }
 
-  if (cfg.lineLayerId && map.getLayer(cfg.lineLayerId)) {
+  if (cfg.lineLayerId && lineLayer) {
     const currentColor = (map.getPaintProperty(cfg.lineLayerId, "line-color")
       ?? defaultOutlineColor) as unknown;
     map.setPaintProperty(cfg.lineLayerId, "line-color",
@@ -145,12 +161,12 @@ export function enableHoverHighlight(
     container.style.cursor = "pointer";
   };
 
-  map.on("mousemove", cfg.fillLayerId, onMove);
-  map.on("mouseleave", cfg.fillLayerId, clearHover);
+  map.on("mousemove", hitLayerId, onMove);
+  map.on("mouseleave", hitLayerId, clearHover);
 
   return () => {
-    map.off("mousemove", cfg.fillLayerId, onMove);
-    map.off("mouseleave", cfg.fillLayerId, clearHover);
+    map.off("mousemove", hitLayerId, onMove);
+    map.off("mouseleave", hitLayerId, clearHover);
     clearHover();
   };
 }

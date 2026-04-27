@@ -190,18 +190,19 @@ export function installInputLayers(
       }));
     }
 
-    // Hover highlight: lift fill opacity slightly and swap outline
-    // colour to the standard yellow so the hovered feature reads on
-    // both dark and light fills.
-    if (hasFill) {
-      enableHoverHighlight(map, {
-        fillLayerId,
-        lineLayerId,
-        defaultFillOpacity: layer.fillOpacity,
-        defaultOutlineColor: layer.lineColor,
-        defaultLineWidth: layer.lineWidth,
-      });
-    }
+    // Hover highlight wires every baseline layer — including the
+    // line-only block layer (transparent fill). enableHoverHighlight
+    // accepts either fillLayerId or lineLayerId; here we pass the fill
+    // when the layer has one, else only the line, so blocks register
+    // hover events on their stroke and feature-state still drives the
+    // line-color + line-width transition.
+    enableHoverHighlight(map, {
+      fillLayerId: hasFill ? fillLayerId : undefined,
+      lineLayerId,
+      defaultFillOpacity: layer.fillOpacity,
+      defaultOutlineColor: layer.lineColor,
+      defaultLineWidth: layer.lineWidth,
+    });
   }
 }
 
