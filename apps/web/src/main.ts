@@ -224,7 +224,15 @@ async function main(): Promise<void> {
     const legend = document.getElementById("legend");
     const downloads = document.getElementById("downloads");
 
+    // Monotonic token bumped on every renderIndicator entry so a slow
+    // stats fetch from request N doesn't overwrite the result of a
+    // newer request N+1. Without this, switching AOI or indicator
+    // rapidly leaves the map showing the older combination's ramp +
+    // tile source — a subtle "stale state" bug Codex flagged.
+    let renderToken = 0;
+
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
+      const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
       setStatus(`Loading ${indicator.name} stats…`);
       const grain = defaultGrain(indicator) ?? undefined;
@@ -237,6 +245,10 @@ async function main(): Promise<void> {
       } catch (err) {
         console.warn("stats fetch failed, falling back to catalog bounds", err);
       }
+      // If a newer call has arrived, drop this result silently — the
+      // caller that bumped the token owns the next render.
+      if (myToken !== renderToken) return;
+
       const domain = rampDomainFromStats(stats, indicator);
       activateIndicator(map, overlayConfig, indicator, domain, tooltipController, aoiId);
       if (legend) renderLegend(legend, indicator, domain);

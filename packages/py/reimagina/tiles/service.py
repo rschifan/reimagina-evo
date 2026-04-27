@@ -1,11 +1,14 @@
 """PMTiles snapshot export and frontend-facing layer source resolution."""
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
+
+import psycopg2
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
@@ -18,6 +21,8 @@ from .defaults import (
     to_titiler_url,
 )
 from .manifest import TileLayerDefinition, get_tile_layer, load_tile_layers
+
+logger = logging.getLogger(__name__)
 
 
 def default_pmtiles_output_dir() -> Path:
@@ -243,23 +248,53 @@ def export_pmtiles_snapshot(
     }
 
 
+_KNOWN_MARTIN_FUNCTION_TAILS = frozenset({
+    "get_tile",
+    "indicator_overlay_tile",
+    "aggregation_overlay_tile",
+})
+
+
 def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:
     """Split a legacy `{base}/{function}` URL into its components.
 
     Older callers pass live_tilejson_base_url = `http://localhost:3000/get_tile`;
-    newer ones will pass `http://localhost:3000`. To avoid a breaking change we
-    tolerate both: the final URL segment is treated as the default Martin
-    function name, falling back to `get_tile` if the URL is already a bare
-    host.
+    newer ones will pass `http://localhost:3000` or, behind a reverse
+    proxy, `https://host/martin`. To avoid a breaking change AND to
+    work behind path-prefixed deployments, only treat the final URL
+    segment as a Martin function name when it actually matches a known
+    function. Otherwise the whole URL is treated as the base, and the
+    default function name (`get_tile`) is used.
+
+    Earlier behaviour split `https://host/martin` into base `https://host`
+    + function `martin` — which generated tile URLs that 404'd in
+    proxy-prefixed deployments. The whitelist below makes that
+    impossible while keeping `http://localhost:3000/get_tile` working.
     """
-    trimmed = live_tilejson_base_url.rstrip("/")
-    try:
-        base, tail = trimmed.rsplit("/", 1)
-    except ValueError:
+    parsed = urlparse(live_tilejson_base_url.rstrip("/"))
+    if not parsed.scheme or not parsed.netloc:
+        # Pre-URL string (e.g. tests passing `localhost:3000`); fall
+        # back to the simple rsplit logic for back-compat.
+        trimmed = live_tilejson_base_url.rstrip("/")
+        try:
+            base, tail = trimmed.rsplit("/", 1)
+        except ValueError:
+            return trimmed, "get_tile"
+        if tail in _KNOWN_MARTIN_FUNCTION_TAILS:
+            return base, tail
         return trimmed, "get_tile"
-    if "://" not in tail and tail:
-        return base, tail
-    return trimmed, "get_tile"
+
+    path = parsed.path or ""
+    if not path:
+        return live_tilejson_base_url.rstrip("/"), "get_tile"
+
+    head, _, tail = path.rpartition("/")
+    if tail in _KNOWN_MARTIN_FUNCTION_TAILS:
+        new_base = f"{parsed.scheme}://{parsed.netloc}{head}"
+        return new_base.rstrip("/"), tail
+    # Anything else (`/martin`, `/api/v1/`, custom path prefix) is
+    # part of the base URL; default to `get_tile` for the function.
+    return live_tilejson_base_url.rstrip("/"), "get_tile"
 
 
 def resolve_tile_sources(
@@ -559,6 +594,12 @@ def _observation_key_exists(backend, attribute_key: str) -> bool:
     that ``observation_rollup`` writes when the input has no method
     suffix. One indexed point lookup; result is callsite-cached by
     being invoked once per recipe.
+
+    On a transient psycopg2 error (closed connection mid-request,
+    server restart) we log + fall back to ``False`` so /tile-sources
+    still serves SOMETHING — but we DON'T swallow programmer errors
+    like a missing column. A bare ``except Exception`` would mask
+    genuine bugs as silent fallback to the suffixed convention.
     """
     try:
         with backend.connection.cursor() as cur:
@@ -568,9 +609,12 @@ def _observation_key_exists(backend, attribute_key: str) -> bool:
                 (attribute_key,),
             )
             return cur.fetchone() is not None
-    except Exception:
-        # If the probe fails for any backend reason (e.g. closed conn
-        # mid-request), fall back to the suffixed convention.
+    except psycopg2.Error as exc:
+        logger.warning(
+            "tile resolver: observation-key probe failed for %r — "
+            "falling back to suffixed convention. Error: %s",
+            attribute_key, exc,
+        )
         return False
 
 
