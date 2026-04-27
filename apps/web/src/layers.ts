@@ -186,14 +186,7 @@ export function installInputLayers(
       tooltips.register(mvtProvider({
         id: `baseline::${layer.layerId}`,
         layerId: hitLayerId,
-        format: (feature) => {
-          const props = feature.properties ?? {};
-          const id = typeof props.feature_id === "string" ? props.feature_id : null;
-          return {
-            title: layer.label,
-            detail: id ? `id: ${id.slice(0, 8)}…` : undefined,
-          };
-        },
+        format: (feature) => _baselineTooltipFormat(layer, feature.properties ?? {}),
       }));
     }
 
@@ -478,6 +471,118 @@ function _fmtNumber(value: number): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+
+/** Per-layer hover tooltip formatter.
+ *
+ * The MVT exposes different fields by zoom (per ``serving_geo.get_tile``):
+ *   - all zooms: id, type_slug, role
+ *   - z >= 11 + role='context': name (so municipalities + states render
+ *     their NOMGEO at city scale)
+ *   - z >= 12: f.attributes flattened to top-level keys
+ *     (CVE_ENT, CVE_MUN, CVE_LOC, CVE_AGEB, CVE_MZA, AMBITO, TIPOMZA)
+ *   - z >= 14: same plus current observations as flat keys
+ *     (censo_2010_pobtot, …, raster zonal-stats outputs, etc.)
+ *
+ * Each layer surfaces whatever's richest at the current zoom — so the
+ * user always sees the most informative thing available without having
+ * to wonder why a tooltip is sparse.
+ */
+function _baselineTooltipFormat(
+  layer: InputLayerSpec,
+  props: Record<string, unknown>,
+): { title: string; detail?: string } | null {
+  const id = typeof props.id === "string" ? props.id : null;
+
+  switch (layer.typeSlug) {
+    case "municipality":
+    case "state": {
+      // ``name`` is always emitted by r010 at z >= 11 (and z >= 8 for
+      // context roles via the role-context branch). Falls back to the
+      // generic layer label if ``name`` is missing for any reason.
+      const name = typeof props.name === "string" ? props.name : null;
+      return {
+        title: name ?? layer.label,
+        detail: layer.typeSlug === "municipality"
+          ? "Alcaldía / municipality"
+          : "Estado / state",
+      };
+    }
+    case "ageb": {
+      const cvegeo = _composeCvegeo(props, /* withMza */ false);
+      return {
+        title: cvegeo ? `AGEB · ${cvegeo}` : "AGEB",
+        detail: _formatPopulationLine(props),
+      };
+    }
+    case "block": {
+      const cvegeo = _composeCvegeo(props, /* withMza */ true);
+      const popLine = _formatPopulationLine(props);
+      return {
+        title: cvegeo ? `Manzana · ${cvegeo}` : "Block (manzana)",
+        detail: popLine ?? (id ? `id: ${id.slice(0, 8)}…` : undefined),
+      };
+    }
+    case "building": {
+      return {
+        title: "Building",
+        detail: id ? `id: ${id.slice(0, 8)}…` : undefined,
+      };
+    }
+    default:
+      return {
+        title: layer.label,
+        detail: id ? `id: ${id.slice(0, 8)}…` : undefined,
+      };
+  }
+}
+
+
+/** Compose the canonical 16-char CVEGEO from MVT-flattened components.
+ *  Returns null when any required piece is missing (z < 12). */
+function _composeCvegeo(
+  props: Record<string, unknown>,
+  withMza: boolean,
+): string | null {
+  const ent = _readString(props, "CVE_ENT");
+  const mun = _readString(props, "CVE_MUN");
+  const loc = _readString(props, "CVE_LOC");
+  const ageb = _readString(props, "CVE_AGEB");
+  if (!ent || !mun || !loc || !ageb) return null;
+  if (!withMza) return `${ent} ${mun} ${loc} ${ageb}`;
+  const mza = _readString(props, "CVE_MZA");
+  if (!mza) return `${ent} ${mun} ${loc} ${ageb}`;
+  return `${ent} ${mun} ${loc} ${ageb} ${mza}`;
+}
+
+
+/** Optional census-population line for blocks / AGEBs that have it.
+ *  Only populated at z >= 14 when the MV merges observations. */
+function _formatPopulationLine(props: Record<string, unknown>): string | undefined {
+  const pob = _readNumber(props, "censo_2010_pobtot");
+  if (pob === null) return undefined;
+  const viv = _readNumber(props, "censo_2010_vivtot");
+  const parts = [`Pop. 2010: ${_fmtNumber(pob)}`];
+  if (viv !== null) parts.push(`viv: ${_fmtNumber(viv)}`);
+  return parts.join(" · ");
+}
+
+
+function _readString(props: Record<string, unknown>, key: string): string | null {
+  const raw = props[key];
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
+
+function _readNumber(props: Record<string, unknown>, key: string): number | null {
+  const raw = props[key];
+  if (typeof raw === "number" && !Number.isNaN(raw)) return raw;
+  if (typeof raw === "string") {
+    const n = Number(raw);
+    return Number.isNaN(n) ? null : n;
+  }
+  return null;
 }
 
 
