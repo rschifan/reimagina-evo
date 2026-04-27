@@ -35,6 +35,14 @@ export interface InputLayerSpec {
 // hierarchy: building → block → AGEB → municipality. This matches
 // how operators reason about "which finer units roll up into this
 // coarser one?".
+//
+// Colour palette is tuned for a dark map background (#0b1220). Earlier
+// values (block lineWidth=0.3 + lineColor=#4b5563, ageb fill 0.05) were
+// effectively invisible at z=11 over Mexicali — the user reported a
+// blank map even though the tile bytes were correct. Lifting widths
+// + lightening colours gives the operator a usable structural skeleton
+// for any AOI that lacks a dense building layer (e.g. Mexicali, where
+// no Overture buildings are ingested).
 export const INPUT_LAYERS: InputLayerSpec[] = [
   {
     layerId: "baseline_live:building",
@@ -57,12 +65,17 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     label: "Blocks (manzanas)",
     fillColor: "transparent",
     fillOpacity: 0,
-    lineColor: "#4b5563",
-    lineWidth: 0.3,
+    lineColor: "#9ca3af",
+    lineWidth: 0.6,
     visible: true,
-    // Match AGEBs at z=11 so blocks remain visible when zoomed out to
-    // city scale — the prior bump to 15 hid them too aggressively.
-    minzoom: 11,
+    // z=8 is the floor the tile function honours for analysis_unit
+    // features (r010 caps role='analysis_unit' at z>=8). The
+    // simplification ladder collapses sub-50m manzanas at z<10, so in
+    // practice the rendered density tapers off naturally — but the
+    // user always sees *something* the moment they zoom in past
+    // country scale. Earlier minzoom=11 hid blocks entirely under z=11
+    // and the user reported the map feeling empty at city scale.
+    minzoom: 8,
   },
   {
     layerId: "baseline_live:ageb",
@@ -70,12 +83,14 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     sourceLayerName: "features",
     typeSlug: "ageb",
     label: "AGEBs",
-    fillColor: "#1f2937",
-    fillOpacity: 0.05,
-    lineColor: "#6b7280",
-    lineWidth: 0.6,
+    fillColor: "#374151",
+    fillOpacity: 0.20,
+    lineColor: "#cbd5e1",
+    lineWidth: 1.2,
     visible: true,
-    minzoom: 11,
+    // AGEBs are ~50× larger than manzanas — they survive even the
+    // z<10 simplification and read clearly at z=8.
+    minzoom: 8,
   },
   {
     layerId: "baseline_live:municipality",
@@ -83,10 +98,10 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     sourceLayerName: "features",
     typeSlug: "municipality",
     label: "Municipalities (alcaldías)",
-    fillColor: "#374151",
-    fillOpacity: 0.10,
-    lineColor: "#9ca3af",
-    lineWidth: 1.2,
+    fillColor: "#475569",
+    fillOpacity: 0.30,
+    lineColor: "#e5e7eb",
+    lineWidth: 2.0,
     visible: true,
     minzoom: 6,
   },

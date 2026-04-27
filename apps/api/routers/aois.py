@@ -30,9 +30,15 @@ class AOIRow(BaseModel):
 
     ``bbox`` is ``[min_lon, min_lat, max_lon, max_lat]`` in EPSG:4326,
     derived from ``ST_Envelope`` so the multi-site web picker can fly
-    the map to an AOI without a separate geometry round-trip. ``None``
-    when the AOI was inserted without a geometry (rare, but possible
-    in fixtures).
+    the map to an AOI without a separate geometry round-trip.
+
+    ``centroid`` is ``[lon, lat]`` from ``ST_PointOnSurface`` — a point
+    guaranteed to lie *inside* the polygon. Plain ``ST_Centroid`` can
+    fall outside concave shapes (Mexicali's municipality is sharply
+    L-shaped around the river delta), and a fly-to outside the polygon
+    drops the user into desert.
+
+    Both are ``None`` when the AOI was inserted without a geometry.
     """
 
     aoi_id: str
@@ -40,6 +46,7 @@ class AOIRow(BaseModel):
     name: str
     description: str | None = None
     bbox: list[float] | None = None
+    centroid: list[float] | None = None
 
 
 @router.get("", response_model=list[AOIRow])

@@ -1018,25 +1018,55 @@ class PostgresAOIRepository:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT id::text, project_id::text, name, description,
+                SELECT aoi.id::text, aoi.project_id::text, aoi.name, aoi.description,
                        -- ST_Envelope returns the smallest containing rectangle
                        -- in the same CRS as the geometry (EPSG:4326).
-                       ST_XMin(geometry) AS min_lon,
-                       ST_YMin(geometry) AS min_lat,
-                       ST_XMax(geometry) AS max_lon,
-                       ST_YMax(geometry) AS max_lat
-                FROM curated_geo.area_of_interest
-                ORDER BY name
+                       ST_XMin(aoi.geometry) AS min_lon,
+                       ST_YMin(aoi.geometry) AS min_lat,
+                       ST_XMax(aoi.geometry) AS max_lon,
+                       ST_YMax(aoi.geometry) AS max_lat,
+                       -- Urban-core centroid: count-weighted average of
+                       -- block centroids inside the AOI. Plain
+                       -- ST_PointOnSurface(geometry) lands somewhere inside
+                       -- the polygon but for huge concave AOIs like Mexicali
+                       -- (mostly desert + a corner urban area) it can land
+                       -- in farmland — the user sees no features at all
+                       -- because blocks are sparse there. Averaging block
+                       -- centroids is naturally pulled toward dense urban
+                       -- areas (more block-points = more weight).
+                       --
+                       -- Falls back to ST_PointOnSurface(geometry) when the
+                       -- AOI has no overlapping blocks yet (fresh ingest).
+                       COALESCE(
+                         (SELECT ST_X(ST_Centroid(ST_Collect(ST_Centroid(f.geometry))))
+                          FROM curated_geo.aoi_feature af
+                          JOIN curated_geo.feature f ON f.id = af.feature_id
+                          WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
+                         ST_X(ST_PointOnSurface(aoi.geometry))
+                       ) AS centroid_lon,
+                       COALESCE(
+                         (SELECT ST_Y(ST_Centroid(ST_Collect(ST_Centroid(f.geometry))))
+                          FROM curated_geo.aoi_feature af
+                          JOIN curated_geo.feature f ON f.id = af.feature_id
+                          WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
+                         ST_Y(ST_PointOnSurface(aoi.geometry))
+                       ) AS centroid_lat
+                FROM curated_geo.area_of_interest aoi
+                ORDER BY aoi.name
                 """
             )
+            rows = cur.fetchall()
             return [
                 {
                     "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
                     "bbox": [min_lon, min_lat, max_lon, max_lat]
                     if min_lon is not None else None,
+                    "centroid": [centroid_lon, centroid_lat]
+                    if centroid_lon is not None else None,
                 }
-                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
-                in cur.fetchall()
+                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
+                    centroid_lon, centroid_lat
+                in rows
             ]
 
     def get_aoi(self, aoi_id: str) -> dict | None:
