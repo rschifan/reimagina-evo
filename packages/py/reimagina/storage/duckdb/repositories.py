@@ -1106,15 +1106,37 @@ class DuckDBAOIRepository:
         # DuckDB's spatial extension exposes ST_XMin/ST_YMin/ST_XMax/ST_YMax;
         # if the extension isn't loaded the geometry column is just text and
         # we fall back to None bbox so the API still serves the row.
+        #
+        # Centroid: prefer the count-weighted block centroid (urban core)
+        # over plain ST_PointOnSurface(aoi.geometry). For huge concave
+        # AOIs like Mexicali (mostly desert), the polygon centroid can
+        # land in farmland with no features visible. Block centroids
+        # cluster in dense urban areas, so the average pulls toward
+        # where the user expects to see data.
         rows = self.connection.execute(
             """
-            SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description,
-                   ST_XMin(geometry) AS min_lon,
-                   ST_YMin(geometry) AS min_lat,
-                   ST_XMax(geometry) AS max_lon,
-                   ST_YMax(geometry) AS max_lat
-            FROM curated_geo.area_of_interest
-            ORDER BY name
+            SELECT CAST(aoi.id AS VARCHAR), CAST(aoi.project_id AS VARCHAR),
+                   aoi.name, aoi.description,
+                   ST_XMin(aoi.geometry) AS min_lon,
+                   ST_YMin(aoi.geometry) AS min_lat,
+                   ST_XMax(aoi.geometry) AS max_lon,
+                   ST_YMax(aoi.geometry) AS max_lat,
+                   COALESCE(
+                     (SELECT ST_X(ST_Centroid(ST_Collect(list(ST_Centroid(f.geometry)))))
+                      FROM curated_geo.aoi_feature af
+                      JOIN curated_geo.feature f ON f.id = af.feature_id
+                      WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
+                     ST_X(ST_PointOnSurface(aoi.geometry))
+                   ) AS centroid_lon,
+                   COALESCE(
+                     (SELECT ST_Y(ST_Centroid(ST_Collect(list(ST_Centroid(f.geometry)))))
+                      FROM curated_geo.aoi_feature af
+                      JOIN curated_geo.feature f ON f.id = af.feature_id
+                      WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
+                     ST_Y(ST_PointOnSurface(aoi.geometry))
+                   ) AS centroid_lat
+            FROM curated_geo.area_of_interest aoi
+            ORDER BY aoi.name
             """
         ).fetchall()
         return [
@@ -1122,8 +1144,11 @@ class DuckDBAOIRepository:
                 "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
                 "bbox": [min_lon, min_lat, max_lon, max_lat]
                 if min_lon is not None else None,
+                "centroid": [centroid_lon, centroid_lat]
+                if centroid_lon is not None else None,
             }
-            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
+            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
+                centroid_lon, centroid_lat
             in rows
         ]
 

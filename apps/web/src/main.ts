@@ -102,16 +102,24 @@ function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
   const latSpan = Math.abs(maxLat - minLat);
   // Wide AOIs (Mexicali = 1.4°, ~100 km) make fitBounds zoom out far
   // enough that the analysis-unit layers stop rendering — block /
-  // AGEB minzoom is 11 in INPUT_LAYERS. Centring on the bbox centroid
-  // at z=11 gives the user a usable view immediately, even if some of
-  // the AOI is offscreen.
+  // AGEB minzoom is 11 in INPUT_LAYERS. Centring at z=11 gives the
+  // user a usable view immediately.
+  //
+  // For wide AOIs we prefer the polygon centroid (ST_PointOnSurface
+  // from /aois) over the bbox centre because the bbox centre falls
+  // outside concave AOIs like Mexicali — the user lands in empty
+  // desert south of the populated city. ST_PointOnSurface is
+  // guaranteed to lie inside the polygon.
   const WIDE_AOI_DEGREE_THRESHOLD = 0.5;
   if (lonSpan > WIDE_AOI_DEGREE_THRESHOLD || latSpan > WIDE_AOI_DEGREE_THRESHOLD) {
-    map.flyTo({
-      center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2],
-      zoom: 11,
-      duration: 700,
-    });
+    const center: [number, number] = aoi.centroid
+      ?? [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
+    // z=12 gives ~25 km of viewport — wide enough to see the urban
+    // structure, tight enough that block / AGEB lines render at a
+    // visible density. Earlier z=11 left huge AOIs feeling empty
+    // because at that zoom over (e.g.) Mexicali, the viewport spans
+    // ~50 km of mostly empty desert with sparse features.
+    map.flyTo({ center, zoom: 12, duration: 700 });
     return;
   }
   // Tight AOIs (Cuauhtémoc, Tlalpan) fit naturally above z=11 — let
@@ -224,7 +232,15 @@ async function main(): Promise<void> {
     const legend = document.getElementById("legend");
     const downloads = document.getElementById("downloads");
 
+    // Monotonic token bumped on every renderIndicator entry so a slow
+    // stats fetch from request N doesn't overwrite the result of a
+    // newer request N+1. Without this, switching AOI or indicator
+    // rapidly leaves the map showing the older combination's ramp +
+    // tile source — a subtle "stale state" bug Codex flagged.
+    let renderToken = 0;
+
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
+      const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
       setStatus(`Loading ${indicator.name} stats…`);
       const grain = defaultGrain(indicator) ?? undefined;
@@ -237,6 +253,10 @@ async function main(): Promise<void> {
       } catch (err) {
         console.warn("stats fetch failed, falling back to catalog bounds", err);
       }
+      // If a newer call has arrived, drop this result silently — the
+      // caller that bumped the token owns the next render.
+      if (myToken !== renderToken) return;
+
       const domain = rampDomainFromStats(stats, indicator);
       activateIndicator(map, overlayConfig, indicator, domain, tooltipController, aoiId);
       if (legend) renderLegend(legend, indicator, domain);

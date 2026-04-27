@@ -119,9 +119,14 @@ export interface AOIRow {
   name: string;
   description: string | null;
   /** [minLon, minLat, maxLon, maxLat] in EPSG:4326. Null when the AOI
-   *  was inserted without geometry (rare). The web picker uses it to
-   *  fly the map on AOI change. */
+   *  was inserted without geometry (rare). */
   bbox: [number, number, number, number] | null;
+  /** [lon, lat] from ST_PointOnSurface — a point guaranteed to lie
+   *  inside the polygon. The picker prefers this over the bbox centre
+   *  for irregular AOIs (Mexicali's municipality is L-shaped around
+   *  the river delta; bbox centre is in agricultural desert south of
+   *  the populated area). Null when the AOI has no geometry. */
+  centroid: [number, number] | null;
 }
 
 
