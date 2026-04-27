@@ -63,8 +63,15 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     sourceLayerName: "features",
     typeSlug: "block",
     label: "Blocks (manzanas)",
-    fillColor: "transparent",
-    fillOpacity: 0,
+    // Fill is a near-zero opacity wash for hit detection only.
+    // MapLibre skips mousemove events on layers with fill-opacity=0,
+    // so a literally-transparent block layer was un-hoverable.
+    // 0.01 alpha is mathematically invisible against the dark
+    // background but registers as a renderable hit-target — the user
+    // sees structurally just the line, but hover works on the whole
+    // polygon interior.
+    fillColor: "#9ca3af",
+    fillOpacity: 0.01,
     lineColor: "#9ca3af",
     lineWidth: 0.6,
     visible: true,
@@ -150,17 +157,12 @@ export function installInputLayers(
     // Industry standard: every polygon layer gets a fill layer, even
     // when the visible style is line-only. The fill catches mousemove
     // events across the entire feature interior — without it, hovering
-    // a 0.6 px-wide block stroke is effectively impossible. Layers
-    // that don't want a visible fill set ``fillColor: "transparent"``
-    // and the helper renders the fill at fillOpacity=0 (still hits).
+    // a 0.6 px-wide block stroke is effectively impossible. The block
+    // spec uses a near-zero alpha (0.01) for the same reason MapLibre
+    // refuses to fire mouse events on layers with fill-opacity=0; an
+    // invisible-but-renderable fill is the standard workaround.
     const fillLayerId = `${layer.sourceName}__fill`;
     const lineLayerId = `${layer.sourceName}__line`;
-    const visualFillOpacity = layer.fillColor === "transparent"
-      ? 0
-      : layer.fillOpacity;
-    const fillColorForRender = layer.fillColor === "transparent"
-      ? "#ffffff"   // arbitrary, never visible at fillOpacity=0
-      : layer.fillColor;
 
     map.addLayer({
       id: fillLayerId,
@@ -169,8 +171,8 @@ export function installInputLayers(
       "source-layer": layer.sourceLayerName,
       layout: { visibility: layer.visible ? "visible" : "none" },
       paint: {
-        "fill-color": fillColorForRender,
-        "fill-opacity": visualFillOpacity,
+        "fill-color": layer.fillColor,
+        "fill-opacity": layer.fillOpacity,
       },
     });
     map.addLayer({
@@ -205,7 +207,7 @@ export function installInputLayers(
     enableHoverHighlight(map, {
       fillLayerId,
       lineLayerId,
-      defaultFillOpacity: visualFillOpacity,
+      defaultFillOpacity: layer.fillOpacity,
       defaultOutlineColor: layer.lineColor,
       defaultLineWidth: layer.lineWidth,
     });
