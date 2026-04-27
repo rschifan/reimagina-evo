@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -131,7 +132,7 @@ def get_values_stats(
     slug: str,
     scenario_id: str | None = Query(default=None),
     feature_type: str | None = Query(default=None),
-    aoi_id: str | None = Query(
+    aoi_id: UUID | None = Query(
         default=None,
         description=(
             "Optional AOI scope. When provided, percentiles are computed "
@@ -143,17 +144,18 @@ def get_values_stats(
 ) -> IndicatorValueStats:
     """Return count + percentiles for an indicator's current numeric values."""
     _ensure_indicator_exists(conn, slug)
+    aoi_id_str = str(aoi_id) if aoi_id is not None else None
     stats = get_backend(conn).indicator_result_repo().value_stats(
         indicator_slug=slug,
         scenario_id=scenario_id,
         feature_type=feature_type,
-        aoi_id=aoi_id,
+        aoi_id=aoi_id_str,
     )
     return IndicatorValueStats(
         slug=slug,
         scenario_id=scenario_id,
         feature_type=feature_type,
-        aoi_id=aoi_id,
+        aoi_id=aoi_id_str,
         **stats,
     )
 

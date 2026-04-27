@@ -94,6 +94,57 @@ def test_health_alias_matches_readiness_shape(client):
     assert set(payload.keys()) == {"status", "db"}
 
 
+def test_tile_server_health_surfaces_db_drift_signal(client, monkeypatch):
+    """The /health/tile-server endpoint must (a) report Martin
+    reachability, (b) print the API's resolved Postgres database
+    name, and (c) include an operator-facing note pointing at the
+    common API↔Martin DB-drift bug. We mock Martin to be reachable
+    here; the failure path is asserted in the next test."""
+    import urllib.request as _urlreq
+
+    class _FakeResponse:
+        status = 200
+
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+
+    monkeypatch.setattr(_urlreq, "urlopen", lambda *_, **__: _FakeResponse())
+    monkeypatch.setenv("REIMAGINA_MARTIN_URL", "http://localhost:3000")
+
+    response = client.get("/health/tile-server")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["martin_reachable"] is True
+    # The API's database name must be reported so operators can
+    # compare against Martin's DSN by eyeball.
+    assert payload["api_database"] is not None
+    # The note must mention the cross-check the operator should run.
+    notes_text = " ".join(payload["notes"])
+    assert "Martin" in notes_text
+    assert "database" in notes_text
+
+
+def test_tile_server_health_returns_503_when_martin_down(client, monkeypatch):
+    """Unreachable Martin → 503 + status=degraded; the operator's
+    load balancer can pull this pod out of rotation when the tile
+    layer is broken even if the API itself is still serving JSON."""
+    import urllib.error
+    import urllib.request as _urlreq
+
+    def _raise(*_, **__):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(_urlreq, "urlopen", _raise)
+    monkeypatch.setenv("REIMAGINA_MARTIN_URL", "http://localhost:3000")
+
+    response = client.get("/health/tile-server")
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["martin_reachable"] is False
+
+
 def test_every_response_carries_request_id(client):
     response = client.get("/health/live")
     assert "x-request-id" in {k.lower() for k in response.headers}

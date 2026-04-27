@@ -35,6 +35,41 @@ def _cors_origins_from_env() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+def _log_resolved_dsn() -> None:
+    """Log the API's resolved Postgres DSN at startup so operators
+    catch DB-mismatch bugs immediately (Codex review HIGH finding).
+
+    The MVT path goes API + Martin → both must point at the same
+    Postgres database. We can't read Martin's DSN, but printing the
+    API's at startup gives operators a reliable cross-check.
+
+    Strips the password component before logging so credentials don't
+    leak into logfiles.
+    """
+    import logging
+    from urllib.parse import urlparse, urlunparse
+    from . import deps
+
+    logger = logging.getLogger("apps.api")
+    raw = deps.api_dsn()
+    try:
+        parts = urlparse(raw)
+        # Replace password with placeholder; preserve everything else.
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        if parts.username:
+            netloc = f"{parts.username}:***@{netloc}"
+        sanitised = urlunparse(parts._replace(netloc=netloc))
+    except Exception:
+        sanitised = "(parse failed — check REIMAGINA_APP_DSN)"
+    logger.info(
+        "API connected to Postgres DSN: %s — verify Martin is on the "
+        "same DB or MVT tiles will be silently empty.",
+        sanitised,
+    )
+
+
 def create_app(
     *,
     allow_origins: Iterable[str] | None = None,
@@ -56,6 +91,7 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if initialise_pool:
             deps.initialise_pool()
+            _log_resolved_dsn()
         try:
             yield
         finally:
