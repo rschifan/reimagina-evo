@@ -151,7 +151,14 @@ export function installInputLayers(
       tiles: [tileUrl],
       minzoom: layer.minzoom ?? 0,
       maxzoom: 16,
-      promoteId: "feature_id",
+      // The baseline tile function (serving_geo.get_tile, r010) emits
+      // the feature uuid as the MVT property literally named ``id`` —
+      // not ``feature_id``. The choropleth + aggregation tile functions
+      // use ``feature_id`` instead, which is why those hover paths
+      // work but the baseline ones silently no-opped: MapLibre's
+      // setFeatureState requires the promoted id to actually exist on
+      // the feature, otherwise hover state has nowhere to attach.
+      promoteId: "id",
     });
 
     // Industry standard: every polygon layer gets a fill layer, even
