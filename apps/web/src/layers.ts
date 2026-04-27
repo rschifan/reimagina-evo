@@ -68,9 +68,14 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     lineColor: "#9ca3af",
     lineWidth: 0.6,
     visible: true,
-    // Match AGEBs at z=11 so blocks remain visible when zoomed out to
-    // city scale — the prior bump to 15 hid them too aggressively.
-    minzoom: 11,
+    // z=8 is the floor the tile function honours for analysis_unit
+    // features (r010 caps role='analysis_unit' at z>=8). The
+    // simplification ladder collapses sub-50m manzanas at z<10, so in
+    // practice the rendered density tapers off naturally — but the
+    // user always sees *something* the moment they zoom in past
+    // country scale. Earlier minzoom=11 hid blocks entirely under z=11
+    // and the user reported the map feeling empty at city scale.
+    minzoom: 8,
   },
   {
     layerId: "baseline_live:ageb",
@@ -83,7 +88,9 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     lineColor: "#cbd5e1",
     lineWidth: 1.2,
     visible: true,
-    minzoom: 11,
+    // AGEBs are ~50× larger than manzanas — they survive even the
+    // z<10 simplification and read clearly at z=8.
+    minzoom: 8,
   },
   {
     layerId: "baseline_live:municipality",
