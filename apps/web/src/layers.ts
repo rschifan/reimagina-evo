@@ -147,21 +147,34 @@ export function installInputLayers(
       promoteId: "feature_id",
     });
 
-    if (layer.fillColor !== "transparent" && layer.fillOpacity > 0) {
-      map.addLayer({
-        id: `${layer.sourceName}__fill`,
-        type: "fill",
-        source: layer.sourceName,
-        "source-layer": layer.sourceLayerName,
-        layout: { visibility: layer.visible ? "visible" : "none" },
-        paint: {
-          "fill-color": layer.fillColor,
-          "fill-opacity": layer.fillOpacity,
-        },
-      });
-    }
+    // Industry standard: every polygon layer gets a fill layer, even
+    // when the visible style is line-only. The fill catches mousemove
+    // events across the entire feature interior — without it, hovering
+    // a 0.6 px-wide block stroke is effectively impossible. Layers
+    // that don't want a visible fill set ``fillColor: "transparent"``
+    // and the helper renders the fill at fillOpacity=0 (still hits).
+    const fillLayerId = `${layer.sourceName}__fill`;
+    const lineLayerId = `${layer.sourceName}__line`;
+    const visualFillOpacity = layer.fillColor === "transparent"
+      ? 0
+      : layer.fillOpacity;
+    const fillColorForRender = layer.fillColor === "transparent"
+      ? "#ffffff"   // arbitrary, never visible at fillOpacity=0
+      : layer.fillColor;
+
     map.addLayer({
-      id: `${layer.sourceName}__line`,
+      id: fillLayerId,
+      type: "fill",
+      source: layer.sourceName,
+      "source-layer": layer.sourceLayerName,
+      layout: { visibility: layer.visible ? "visible" : "none" },
+      paint: {
+        "fill-color": fillColorForRender,
+        "fill-opacity": visualFillOpacity,
+      },
+    });
+    map.addLayer({
+      id: lineLayerId,
       type: "line",
       source: layer.sourceName,
       "source-layer": layer.sourceLayerName,
@@ -172,34 +185,27 @@ export function installInputLayers(
       },
     });
 
-    // Register a tooltip provider per baseline layer — vector features
-    // carry their identity (type_slug + feature_id) in the MVT
-    // properties, so the hover surface is immediately useful without
-    // any extra wiring. If a layer ever has no fill we still probe
-    // the line layer so the hover lands on the stroke.
-    const hasFill = layer.fillColor !== "transparent" && layer.fillOpacity > 0;
-    const fillLayerId = `${layer.sourceName}__fill`;
-    const lineLayerId = `${layer.sourceName}__line`;
-    const hitLayerId = hasFill ? fillLayerId : lineLayerId;
-
+    // Tooltip provider keys off the fill layer so the hit-target is
+    // the polygon interior, not the thin stroke. Same property bag
+    // either way — the format function reads MVT props, doesn't care
+    // which layer caught the hit.
     if (tooltips) {
       tooltips.register(mvtProvider({
         id: `baseline::${layer.layerId}`,
-        layerId: hitLayerId,
+        layerId: fillLayerId,
         format: (feature) => _baselineTooltipFormat(layer, feature.properties ?? {}),
       }));
     }
 
-    // Hover highlight wires every baseline layer — including the
-    // line-only block layer (transparent fill). enableHoverHighlight
-    // accepts either fillLayerId or lineLayerId; here we pass the fill
-    // when the layer has one, else only the line, so blocks register
-    // hover events on their stroke and feature-state still drives the
-    // line-color + line-width transition.
+    // Hover highlight: fill + line both react via feature-state. For
+    // visually-line-only layers (block) the helper still bumps the
+    // fill alpha to ~0.20 on hover so the user gets an unmistakable
+    // "this feature is selected" highlight matching what every other
+    // industry GIS tool does (Felt, Mapbox Studio, kepler.gl).
     enableHoverHighlight(map, {
-      fillLayerId: hasFill ? fillLayerId : undefined,
+      fillLayerId,
       lineLayerId,
-      defaultFillOpacity: layer.fillOpacity,
+      defaultFillOpacity: visualFillOpacity,
       defaultOutlineColor: layer.lineColor,
       defaultLineWidth: layer.lineWidth,
     });
