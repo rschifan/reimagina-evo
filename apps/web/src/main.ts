@@ -102,16 +102,19 @@ function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
   const latSpan = Math.abs(maxLat - minLat);
   // Wide AOIs (Mexicali = 1.4°, ~100 km) make fitBounds zoom out far
   // enough that the analysis-unit layers stop rendering — block /
-  // AGEB minzoom is 11 in INPUT_LAYERS. Centring on the bbox centroid
-  // at z=11 gives the user a usable view immediately, even if some of
-  // the AOI is offscreen.
+  // AGEB minzoom is 11 in INPUT_LAYERS. Centring at z=11 gives the
+  // user a usable view immediately.
+  //
+  // For wide AOIs we prefer the polygon centroid (ST_PointOnSurface
+  // from /aois) over the bbox centre because the bbox centre falls
+  // outside concave AOIs like Mexicali — the user lands in empty
+  // desert south of the populated city. ST_PointOnSurface is
+  // guaranteed to lie inside the polygon.
   const WIDE_AOI_DEGREE_THRESHOLD = 0.5;
   if (lonSpan > WIDE_AOI_DEGREE_THRESHOLD || latSpan > WIDE_AOI_DEGREE_THRESHOLD) {
-    map.flyTo({
-      center: [(minLon + maxLon) / 2, (minLat + maxLat) / 2],
-      zoom: 11,
-      duration: 700,
-    });
+    const center: [number, number] = aoi.centroid
+      ?? [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
+    map.flyTo({ center, zoom: 11, duration: 700 });
     return;
   }
   // Tight AOIs (Cuauhtémoc, Tlalpan) fit naturally above z=11 — let

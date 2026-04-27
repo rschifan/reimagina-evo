@@ -1024,7 +1024,15 @@ class PostgresAOIRepository:
                        ST_XMin(geometry) AS min_lon,
                        ST_YMin(geometry) AS min_lat,
                        ST_XMax(geometry) AS max_lon,
-                       ST_YMax(geometry) AS max_lat
+                       ST_YMax(geometry) AS max_lat,
+                       -- ``ST_PointOnSurface`` is the urban-planning-safe
+                       -- 'centroid': it always lands inside the polygon
+                       -- (regular ``ST_Centroid`` can fall outside concave
+                       -- shapes — which Mexicali's municipality polygon
+                       -- famously is — and a fly-to outside the polygon
+                       -- shows the user empty desert).
+                       ST_X(ST_PointOnSurface(geometry)) AS centroid_lon,
+                       ST_Y(ST_PointOnSurface(geometry)) AS centroid_lat
                 FROM curated_geo.area_of_interest
                 ORDER BY name
                 """
@@ -1034,8 +1042,11 @@ class PostgresAOIRepository:
                     "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
                     "bbox": [min_lon, min_lat, max_lon, max_lat]
                     if min_lon is not None else None,
+                    "centroid": [centroid_lon, centroid_lat]
+                    if centroid_lon is not None else None,
                 }
-                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
+                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
+                    centroid_lon, centroid_lat
                 in cur.fetchall()
             ]
 

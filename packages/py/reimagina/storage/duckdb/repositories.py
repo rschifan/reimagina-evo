@@ -1106,13 +1106,18 @@ class DuckDBAOIRepository:
         # DuckDB's spatial extension exposes ST_XMin/ST_YMin/ST_XMax/ST_YMax;
         # if the extension isn't loaded the geometry column is just text and
         # we fall back to None bbox so the API still serves the row.
+        # ST_PointOnSurface stays inside the polygon (vs ST_Centroid which
+        # can fall outside concave shapes like Mexicali) so the web
+        # picker's fly-to lands somewhere visible to the user.
         rows = self.connection.execute(
             """
             SELECT CAST(id AS VARCHAR), CAST(project_id AS VARCHAR), name, description,
                    ST_XMin(geometry) AS min_lon,
                    ST_YMin(geometry) AS min_lat,
                    ST_XMax(geometry) AS max_lon,
-                   ST_YMax(geometry) AS max_lat
+                   ST_YMax(geometry) AS max_lat,
+                   ST_X(ST_PointOnSurface(geometry)) AS centroid_lon,
+                   ST_Y(ST_PointOnSurface(geometry)) AS centroid_lat
             FROM curated_geo.area_of_interest
             ORDER BY name
             """
@@ -1122,8 +1127,11 @@ class DuckDBAOIRepository:
                 "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
                 "bbox": [min_lon, min_lat, max_lon, max_lat]
                 if min_lon is not None else None,
+                "centroid": [centroid_lon, centroid_lat]
+                if centroid_lon is not None else None,
             }
-            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat
+            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
+                centroid_lon, centroid_lat
             in rows
         ]
 
