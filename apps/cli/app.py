@@ -45,6 +45,7 @@ from .perf import (  # noqa: E402
 )
 from .cdmx import (  # noqa: E402
     aoi_from_alcaldia,
+    aoi_from_state,
     bootstrap_cdmx,
     cdmx_status,
     fetch_cdmx_layer,
@@ -350,6 +351,22 @@ def _build_parser() -> argparse.ArgumentParser:
     cdmx_aoi.add_argument("--name", required=True)
     cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
     cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
+
+    cdmx_aoi_state = cdmx_subparsers.add_parser(
+        "aoi-from-state",
+        help=(
+            "Create an AOI whose geometry is the entire entidad (state) "
+            "polygon — e.g. 'all of CDMX' as one AOI."
+        ),
+    )
+    cdmx_aoi_state.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    cdmx_aoi_state.add_argument(
+        "--cve-ent", required=True,
+        help="INEGI state code, e.g. 09 for CDMX, 02 for Baja California.",
+    )
+    cdmx_aoi_state.add_argument("--name", required=True)
+    cdmx_aoi_state.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
+    cdmx_aoi_state.set_defaults(handler=_handle_cdmx_aoi_from_state)
 
     inegi_marco_parser = subparsers.add_parser(
         "inegi-marco",
@@ -1009,6 +1026,17 @@ def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
         dsn=args.dsn,
         cve_ent=args.cve_ent,
         cve_mun=args.cve_mun,
+        name=args.name,
+        project_name=args.project_name,
+    )
+    _print(payload)
+    return 0 if payload.get("status") == "ok" else 2
+
+
+def _handle_cdmx_aoi_from_state(args: argparse.Namespace) -> int:
+    payload = aoi_from_state(
+        dsn=args.dsn,
+        cve_ent=args.cve_ent,
         name=args.name,
         project_name=args.project_name,
     )

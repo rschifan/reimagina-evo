@@ -68,6 +68,62 @@ def cdmx_status(*, dsn: str) -> dict[str, Any]:
     }
 
 
+def aoi_from_state(
+    *,
+    dsn: str,
+    cve_ent: str,
+    name: str,
+    project_name: str = "CDMX Realistic-Scale Validation",
+) -> dict[str, Any]:
+    """Create an AOI whose geometry is the matching MEX:state polygon.
+
+    Same shape as ``aoi_from_alcaldia`` but for an entire entidad rather
+    than a single municipality. Useful when the operator wants 'all of
+    CDMX' (CVE_ENT=09) or 'all of Baja California' (CVE_ENT=02) as a
+    single AOI rather than per-municipality rows.
+
+    No-op if the state feature isn't loaded yet — emits a status the
+    caller can act on.
+    """
+    with connect(dsn) as conn:
+        backend = backend_for_connection(conn)
+        row = _fetch_state_wkt(backend, cve_ent=cve_ent)
+        if row is None:
+            return {
+                "dsn": dsn,
+                "status": "missing_state",
+                "cve_ent": cve_ent,
+                "message": (
+                    f"No MEX:state feature with CVE_ENT={cve_ent} is loaded. "
+                    f"Run `inegi-marco bootstrap --cve-ent {cve_ent} "
+                    f"--layers areas_estatales` first."
+                ),
+            }
+
+        state_id, geometry_wkt = row
+        project_id = _ensure_dev_project(backend, project_name)
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name=name,
+            geometry_wkt=geometry_wkt,
+            description=(
+                f"AOI derived from MEX:state CVE_ENT={cve_ent} ({name})."
+            ),
+        )
+        conn.commit()
+
+    return {
+        "dsn": dsn,
+        "status": "ok",
+        "aoi_id": aoi_id,
+        "project_id": project_id,
+        "cve_ent": cve_ent,
+        "state_feature_id": str(state_id),
+        "name": name,
+    }
+
+
 def aoi_from_alcaldia(
     *,
     dsn: str,
@@ -154,6 +210,21 @@ def _fetch_municipality_wkt(
     row = backend.feature_repo().find_by_attributes(
         type_slug="municipality",
         attributes={"CVE_ENT": cve_ent, "CVE_MUN": cve_mun},
+    )
+    if row is None:
+        return None
+    return row["id"], row["geometry_wkt"]
+
+
+def _fetch_state_wkt(backend, *, cve_ent: str) -> tuple[str, str] | None:
+    """Return (feature_id, geometry_wkt) for the state matching CVE_ENT.
+
+    INEGI marco_geostadistico ships exactly one ``MEX:state`` row per
+    entidad — the entire CDMX outline for CVE_ENT=09, all of BC for
+    CVE_ENT=02, etc."""
+    row = backend.feature_repo().find_by_attributes(
+        type_slug="state",
+        attributes={"CVE_ENT": cve_ent},
     )
     if row is None:
         return None

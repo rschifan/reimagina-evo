@@ -439,3 +439,41 @@ def test_cli_cdmx_aoi_from_alcaldia_returns_error_when_missing(monkeypatch, caps
         "--name", "Mexicali",
     ])
     assert exit_code == 2
+
+
+def test_cli_cdmx_aoi_from_state_targets_whole_entidad(monkeypatch, capsys):
+    """`cdmx aoi-from-state --cve-ent 09` builds a one-AOI 'all of CDMX'
+    rather than a per-municipality row. No --cve-mun flag — the whole
+    entidad polygon is the geometry."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.aoi_from_state",
+        lambda **kw: captured.update(kw) or {"status": "ok", "aoi_id": "abc", **kw},
+    )
+
+    exit_code = main([
+        "cdmx", "aoi-from-state",
+        "--cve-ent", "09",
+        "--name", "CDMX (all)",
+    ])
+    assert exit_code == 0
+    assert captured["cve_ent"] == "09"
+    assert captured["name"] == "CDMX (all)"
+    # Critical: --cve-mun must not be required for state-level AOIs.
+    assert "cve_mun" not in captured
+
+
+def test_cli_cdmx_aoi_from_state_returns_error_when_missing(monkeypatch, capsys):
+    """Mirrors the alcaldía error path: exit code 2 when the state
+    feature isn't loaded yet."""
+    monkeypatch.setattr(
+        "apps.cli.app.aoi_from_state",
+        lambda **kw: {"status": "missing_state", **kw},
+    )
+
+    exit_code = main([
+        "cdmx", "aoi-from-state",
+        "--cve-ent", "99",
+        "--name", "Nonexistent",
+    ])
+    assert exit_code == 2
