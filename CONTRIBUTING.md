@@ -41,7 +41,7 @@ Run `make help` to see every shortcut. The important ones:
 
 - Python: `ruff check` + `ruff format` (run in CI and pre-commit). Prefer behaviour assertions in tests over implementation-detail assertions.
 - Pre-commit: hooks defined in `.pre-commit-config.yaml` mirror CI. Run `pre-commit run --all-files` to lint/format the whole tree on demand.
-- TypeScript: `tsc --noEmit` must pass.
+- TypeScript: `tsc --noEmit` and `npm test` (vitest) must pass.
 - DB changes: update migrations on **both** backends (Postgres + DuckDB), the `serving_geo` read contract if relevant, and tests — see `CLAUDE.md` → "DB/system change checklist".
 
 ## Reporting bugs / requesting features
