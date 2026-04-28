@@ -1,8 +1,10 @@
 """Observation loading with SCD Type 2 semantics."""
+
 from __future__ import annotations
 from typing import Any
 
 from reimagina.storage import backend_for_connection
+
 
 def upsert_observation(
     conn,
@@ -22,14 +24,18 @@ def upsert_observation(
 
     Returns the new observation UUID.
     """
-    return backend_for_connection(conn).observation_repo().upsert_current(
-        feature_id=feature_id,
-        attribute_key=attribute_key,
-        value_type=value_type,
-        value=value,
-        source_id=source_id,
-        ingestion_run_id=ingestion_run_id,
-        lineage_ref=lineage_ref,
+    return (
+        backend_for_connection(conn)
+        .observation_repo()
+        .upsert_current(
+            feature_id=feature_id,
+            attribute_key=attribute_key,
+            value_type=value_type,
+            value=value,
+            source_id=source_id,
+            ingestion_run_id=ingestion_run_id,
+            lineage_ref=lineage_ref,
+        )
     )
 
 
@@ -47,8 +53,12 @@ def bulk_upsert_observations(
 
     Returns the number of observations inserted.
     """
-    return backend_for_connection(conn).observation_repo().bulk_upsert_current(
-        records,
-        source_id=source_id,
-        ingestion_run_id=ingestion_run_id,
+    return (
+        backend_for_connection(conn)
+        .observation_repo()
+        .bulk_upsert_current(
+            records,
+            source_id=source_id,
+            ingestion_run_id=ingestion_run_id,
+        )
     )

@@ -1,4 +1,5 @@
 """Area of interest management and aoi_feature computation."""
+
 from __future__ import annotations
 
 from reimagina.storage import backend_for_connection
@@ -13,11 +14,15 @@ def create_aoi(
     description: str | None = None,
 ) -> str:
     """Create a project area of interest. Returns the new AOI UUID."""
-    return backend_for_connection(conn).aoi_repo().create_aoi(
-        project_id=project_id,
-        name=name,
-        geometry_wkt=geometry_wkt,
-        description=description,
+    return (
+        backend_for_connection(conn)
+        .aoi_repo()
+        .create_aoi(
+            project_id=project_id,
+            name=name,
+            geometry_wkt=geometry_wkt,
+            description=description,
+        )
     )
 
 

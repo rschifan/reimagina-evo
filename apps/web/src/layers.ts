@@ -10,7 +10,10 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 
 import type { TileSource } from "./api";
+import { fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
+import type { SelectionController } from "./selection";
+import { registerValueAwareLayer } from "./selection-filter";
 import {
   cogPointProvider,
   mvtProvider,
@@ -55,7 +58,12 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     lineColor: "#60a5fa",
     lineWidth: 0,
     visible: false,
-    minzoom: 14,
+    // z11 lets buildings appear at neighbourhood / district scale rather
+    // than only after the user zooms in to street level. Tile size stays
+    // bounded because get_tile applies aggressive ST_Simplify at lower
+    // zooms — 2 M building polygons across CDMX + Mexicali render cleanly
+    // from 11 onward without the renderer choking.
+    minzoom: 11,
   },
   {
     layerId: "baseline_live:block",
@@ -94,7 +102,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.20,
     lineColor: "#cbd5e1",
     lineWidth: 1.2,
-    visible: true,
+    visible: false,
     // AGEBs are ~50× larger than manzanas — they survive even the
     // z<10 simplification and read clearly at z=8.
     minzoom: 8,
@@ -109,7 +117,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.30,
     lineColor: "#e5e7eb",
     lineWidth: 2.0,
-    visible: true,
+    visible: false,
     minzoom: 6,
   },
 ];
@@ -270,6 +278,18 @@ function rasterSourceName(layerId: string): string {
 }
 
 
+function _baselineMinzoomForGrain(typeSlug: string | null | undefined): number | undefined {
+  // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches.
+  // Used by aggregation overlays so a block-grain choropleth lights up
+  // at the same zoom the underlying blocks are visible — the catalog
+  // default of 10 was hiding the censo overlay even at z=8 where
+  // blocks already render.
+  if (!typeSlug) return undefined;
+  const match = INPUT_LAYERS.find((l) => l.typeSlug === typeSlug);
+  return match?.minzoom;
+}
+
+
 function aggSourceName(layerId: string): string {
   // layerId is already namespaced as "aggregation_overlay::<uuid>" on
   // the API side; collapse the separator for MapLibre's source-name
@@ -380,6 +400,11 @@ export function refreshAggregationOverlayAoi(
 }
 
 
+// Disposers for the per-overlay value-aware filter registrations.
+// Mirrors ``choropleth.ts``'s _activeDisposers idiom.
+const _aggregationFilterDisposers: Array<() => void> = [];
+
+
 export function installAggregationOverlays(
   map: MapLibreMap,
   sources: TileSource[],
@@ -396,10 +421,19 @@ export function installAggregationOverlays(
     const tileUrl = aoiId
       ? _appendAoiId(cfg.tiles_url_template, aoiId)
       : cfg.tiles_url_template;
+    // Match the baseline layer's minzoom for the same target grain so
+    // a censo / rollup overlay starts rendering at the same zoom the
+    // user already sees the underlying blocks / AGEBs / munis. The
+    // server catalog still ships ``minzoom: 10`` (legacy default), so
+    // we deliberately *override* it here when we have a baseline
+    // anchor — otherwise the catalog wins and the user has to zoom in
+    // past the baseline floor before the choropleth lights up.
+    const targetMinzoom = _baselineMinzoomForGrain(cfg.target_feature_type_slug);
+    const minzoom = targetMinzoom ?? cfg.minzoom ?? 10;
     map.addSource(sourceName, {
       type: "vector",
       tiles: [tileUrl],
-      minzoom: cfg.minzoom ?? 10,
+      minzoom,
       maxzoom: cfg.maxzoom ?? 16,
       promoteId: "feature_id",
     });
@@ -458,7 +492,7 @@ export function installAggregationOverlays(
           if (Number.isNaN(num)) return null;
           return {
             title,
-            detail: `${attrKey}: ${_fmtNumber(num)}`,
+            detail: `${attrKey}: ${fmtNumber(num)}`,
           };
         },
       }));
@@ -475,18 +509,62 @@ export function installAggregationOverlays(
       defaultLineWidth: 0,
       hoverFillOpacity: 0.85,
     });
+
   }
 }
 
 
-function _fmtNumber(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
-  const abs = Math.abs(value);
-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 3;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+/**
+ * Drain and call every disposer accumulated by
+ * :func:`wireAggregationOverlayClipping`. Call BEFORE re-wiring on
+ * AOI change so ``sourcedata`` listeners don't pile up across
+ * switches.
+ */
+export function clearAggregationOverlayClipping(): void {
+  for (const dispose of _aggregationFilterDisposers) {
+    try {
+      dispose();
+    } catch (err) {
+      // Disposers should never throw; swallow so one bad dispose
+      // doesn't strand the rest with stale filters.
+      console.warn("aggregation clipping dispose:", err);
+    }
+  }
+  _aggregationFilterDisposers.length = 0;
+}
+
+
+/**
+ * Wire every aggregation-overlay layer to clip-on-selection. Called
+ * once after ``enableSelection`` creates the controller. Split from
+ * ``installAggregationOverlays`` because the controller doesn't
+ * exist at install time — terra-draw layers must paint on top of
+ * the mask, mask install happens between data and terra-draw, and
+ * the controller is the output of ``enableSelection`` (which adds
+ * terra-draw's layers).
+ */
+export function wireAggregationOverlayClipping(
+  map: MapLibreMap,
+  sources: TileSource[],
+  controller: SelectionController,
+): void {
+  for (const src of sources) {
+    if (src.source_mode !== "aggregation_overlay") continue;
+    if (src.available === false) continue;
+    const cfg = src.source_config;
+    const sourceName = aggSourceName(src.layer_id);
+    if (!map.getSource(sourceName)) continue;
+    const fillId = `${sourceName}__fill`;
+    const lineId = `${sourceName}__line`;
+    if (!map.getLayer(fillId) && !map.getLayer(lineId)) continue;
+    _aggregationFilterDisposers.push(
+      registerValueAwareLayer(map, controller, {
+        layerIds: [fillId, lineId],
+        sourceName,
+        sourceLayer: cfg.source_layer ?? "aggregation_overlay",
+      }),
+    );
+  }
 }
 
 
@@ -499,7 +577,7 @@ function _fmtNumber(value: number): string {
  *   - z >= 12: f.attributes flattened to top-level keys
  *     (CVE_ENT, CVE_MUN, CVE_LOC, CVE_AGEB, CVE_MZA, AMBITO, TIPOMZA)
  *   - z >= 14: same plus current observations as flat keys
- *     (censo_2010_pobtot, …, raster zonal-stats outputs, etc.)
+ *     (censo_2020_pobtot, …, raster zonal-stats outputs, etc.)
  *
  * Each layer surfaces whatever's richest at the current zoom — so the
  * user always sees the most informative thing available without having
@@ -576,11 +654,11 @@ function _composeCvegeo(
 /** Optional census-population line for blocks / AGEBs that have it.
  *  Only populated at z >= 14 when the MV merges observations. */
 function _formatPopulationLine(props: Record<string, unknown>): string | undefined {
-  const pob = _readNumber(props, "censo_2010_pobtot");
+  const pob = _readNumber(props, "censo_2020_pobtot");
   if (pob === null) return undefined;
-  const viv = _readNumber(props, "censo_2010_vivtot");
-  const parts = [`Pop. 2010: ${_fmtNumber(pob)}`];
-  if (viv !== null) parts.push(`viv: ${_fmtNumber(viv)}`);
+  const viv = _readNumber(props, "censo_2020_vivtot");
+  const parts = [`Pop. 2010: ${fmtNumber(pob)}`];
+  if (viv !== null) parts.push(`viv: ${fmtNumber(viv)}`);
   return parts.join(" · ");
 }
 
@@ -691,8 +769,24 @@ export function wireRasterToggles(
   container: HTMLElement,
   map: MapLibreMap,
   sources: TileSource[],
+  activeAoiId: string | null = null,
 ): void {
-  const groups = groupRastersAndOverlays(sources);
+  // Hide the previous render before re-flowing — wireRasterToggles is
+  // re-invoked on AOI change, so leftover groups would stack.
+  for (const el of Array.from(container.querySelectorAll(".raster-group, .layer-group-heading"))) {
+    el.remove();
+  }
+  // Filter the source list by AOI affinity. An overlay carrying
+  // ``source_config.aois = [aoi_id, ...]`` is shown only for those
+  // AOIs; missing or empty list ⇒ "always visible" (matches the
+  // observation-overlay default for keys with no aoi_feature link).
+  const filtered = sources.filter((s) => {
+    const aois = s.source_config.aois;
+    if (!aois || aois.length === 0) return true;
+    if (activeAoiId === null) return true;
+    return aois.includes(activeAoiId);
+  });
+  const groups = groupRastersAndOverlays(filtered);
   if (groups.length === 0) return;
 
   const heading = document.createElement("div");
@@ -700,11 +794,29 @@ export function wireRasterToggles(
   heading.textContent = "Raster overlays";
   container.append(heading);
 
+  // Mutual-exclusion bookkeeping for aggregation overlays. Two
+  // observation choropleths fighting for the same blocks gives the
+  // user a render-order coin flip — only the top layer's colour ramp
+  // is visible. Enforcing single-selection makes the UI honest about
+  // that constraint and matches the user's mental model of "which
+  // attribute am I looking at right now?".
+  type ExclusiveEntry = {
+    checkbox: HTMLInputElement;
+    show: (visible: boolean) => void;
+  };
+  const exclusiveOverlays: ExclusiveEntry[] = [];
+  const setActiveOverlay = (active: ExclusiveEntry | null): void => {
+    for (const e of exclusiveOverlays) {
+      if (e === active) continue;
+      if (e.checkbox.checked) e.checkbox.checked = false;
+      e.show(false);
+    }
+    if (active) active.show(true);
+  };
+
   for (const group of groups) {
     const details = document.createElement("details");
     details.className = "raster-group";
-    // Open the group by default so the structure is visible without
-    // clicking — collapses can be a later UX pass.
     details.open = true;
 
     const summary = document.createElement("summary");
@@ -739,27 +851,40 @@ export function wireRasterToggles(
       const label =
         agg.logical_name
           ?? `Aggregated to ${target} (${method})${countSuffix}`;
-      details.append(
-        _toggleRow({
-          label,
-          available: agg.available !== false,
-          unavailableReason: agg.available === false
-            ? "recipe registered but never run"
-            : undefined,
-          onChange: (checked) => {
-            const visibility = checked ? "visible" : "none";
-            // Fill + line toggle together: the line layer only
-            // renders on hover (width=0 otherwise), but it still
-            // needs its layout visibility in lockstep so an
-            // invisible fill can't get a hover border on it.
-            for (const id of [aggFillId, aggLineId]) {
-              if (map.getLayer(id)) {
-                map.setLayoutProperty(id, "visibility", visibility);
-              }
-            }
-          },
-        }),
-      );
+
+      const show = (visible: boolean): void => {
+        const visibility = visible ? "visible" : "none";
+        // Fill + line toggle together: the line layer only renders on
+        // hover (width=0 otherwise), but its layout visibility must
+        // stay in lockstep so an invisible fill can't pick up a hover
+        // border.
+        for (const id of [aggFillId, aggLineId]) {
+          if (map.getLayer(id)) {
+            map.setLayoutProperty(id, "visibility", visibility);
+          }
+        }
+      };
+
+      const row = _toggleRow({
+        label,
+        available: agg.available !== false,
+        unavailableReason: agg.available === false
+          ? "recipe registered but never run"
+          : undefined,
+        onChange: (checked) => {
+          const entry = exclusiveOverlays.find((e) => e.checkbox === checkbox);
+          if (!entry) {
+            show(checked);
+            return;
+          }
+          setActiveOverlay(checked ? entry : null);
+        },
+      });
+      // Grab the row's checkbox so we can register it for mutual
+      // exclusion. _toggleRow's first child is always the input.
+      const checkbox = row.querySelector("input[type='checkbox']") as HTMLInputElement;
+      if (checkbox) exclusiveOverlays.push({ checkbox, show });
+      details.append(row);
     }
 
     container.append(details);

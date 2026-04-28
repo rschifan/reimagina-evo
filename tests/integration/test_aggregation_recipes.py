@@ -26,6 +26,7 @@ What these tests catch that existing R3 tests don't:
 - The lineage_ref on rolled-up observations carries the source
   attribute_key so operators can trace where the value came from.
 """
+
 from __future__ import annotations
 
 import os
@@ -72,7 +73,8 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def test_dsn() -> str:
     return os.environ.get(
-        "TEST_DATABASE_URL", "postgresql://localhost/reimagina_test",
+        "TEST_DATABASE_URL",
+        "postgresql://localhost/reimagina_test",
     )
 
 
@@ -81,9 +83,14 @@ def test_dsn() -> str:
 
 def _write_utm_raster(path: Path, data: np.ndarray) -> Path:
     with rasterio.open(
-        path, "w",
-        driver="GTiff", height=data.shape[0], width=data.shape[1], count=1,
-        dtype="float32", crs="EPSG:32614",
+        path,
+        "w",
+        driver="GTiff",
+        height=data.shape[0],
+        width=data.shape[1],
+        count=1,
+        dtype="float32",
+        crs="EPSG:32614",
         transform=from_origin(500_000.0, 2_151_000.0, 30.0, 30.0),
         nodata=-999.0,
     ) as dst:
@@ -93,6 +100,7 @@ def _write_utm_raster(path: Path, data: np.ndarray) -> Path:
 
 def _utm_square_wkt(min_x: float, min_y: float, size: float) -> str:
     from pyproj import Transformer
+
     trans = Transformer.from_crs("EPSG:32614", "EPSG:4326", always_xy=True)
     pts = [
         trans.transform(min_x, min_y),
@@ -123,6 +131,7 @@ def _seed_feature(conn, *, type_id, source_id, run_id, ref, wkt_4326):
 
 def _seed_feature_source(conn) -> tuple[str, str]:
     from reimagina.data import catalog as cat
+
     source_id = cat.register_source(
         conn,
         name=f"r20-test-features-{uuid4()}",
@@ -235,7 +244,10 @@ def _cleanup(
 
 
 def test_raster_recipe_dispatches_to_zonal_stats_worker(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """input_kind='raster' + method='sum' produces exactly one stat
     suffix (``<prefix>_sum``) and observation rows land at the target
@@ -246,7 +258,10 @@ def test_raster_recipe_dispatches_to_zonal_stats_worker(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     feat_a = _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref=f"r20-rast-{uuid4()}",
         wkt_4326=_utm_square_wkt(500_030, 2_150_880, 60.0),
     )
@@ -264,7 +279,8 @@ def test_raster_recipe_dispatches_to_zonal_stats_worker(
             conn,
             raw_path=raster_path,
             source_name=f"r20-rast-src-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r20_rast_layer_{uuid4().hex[:8]}",
             aggregation_kind="extensive",
         )
@@ -287,20 +303,26 @@ def test_raster_recipe_dispatches_to_zonal_stats_worker(
 
         rows = _current_observations_for_prefix(conn, prefix)
         keys = {k for _, k, _, _ in rows}
-        assert keys == {f"{prefix}_sum"}, (
-            f"method='sum' should produce exactly '<prefix>_sum'; got {keys!r}"
-        )
+        assert keys == {
+            f"{prefix}_sum"
+        }, f"method='sum' should produce exactly '<prefix>_sum'; got {keys!r}"
     finally:
         _cleanup(
-            conn, prefix,
+            conn,
+            prefix,
             recipe_ids=[recipe_id] if recipe_id else [],
             feature_ids=[feat_a],
-            source_ids=[ingest.source_id, feat_source_id] if ingest else [feat_source_id],
+            source_ids=[ingest.source_id, feat_source_id]
+            if ingest
+            else [feat_source_id],
         )
 
 
 def test_observation_recipe_rolls_up_to_coarser_grain(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """Seed block-grain observations, declare an observation recipe
     targeting AGEB with method='sum', verify the rollup produced one
@@ -313,17 +335,26 @@ def test_observation_recipe_rolls_up_to_coarser_grain(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     ageb_id = _seed_feature(
-        conn, type_id=ageb_type, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=ageb_type,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref=f"r20-ageb-{uuid4()}",
         wkt_4326=_utm_square_wkt(500_000, 2_150_800, 200.0),
     )
     block_a = _seed_feature(
-        conn, type_id=block_type, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=block_type,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref=f"r20-block-a-{uuid4()}",
         wkt_4326=_utm_square_wkt(500_000, 2_150_800, 60.0),
     )
     block_b = _seed_feature(
-        conn, type_id=block_type, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=block_type,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref=f"r20-block-b-{uuid4()}",
         wkt_4326=_utm_square_wkt(500_100, 2_150_800, 60.0),
     )
@@ -336,6 +367,7 @@ def test_observation_recipe_rolls_up_to_coarser_grain(
     input_prefix = f"r20_in_{uuid4().hex[:8]}"
     output_prefix = f"r20_out_{uuid4().hex[:8]}"
     from reimagina.data import catalog as cat
+
     obs_source = cat.register_source(
         conn,
         name=f"r20-obs-{uuid4()}",
@@ -395,7 +427,7 @@ def test_observation_recipe_rolls_up_to_coarser_grain(
         by_key = {k: (fid, v) for fid, k, v, _ in rows}
         assert set(by_key) == {f"{output_prefix}_sum", f"{output_prefix}_count"}
         assert by_key[f"{output_prefix}_sum"][0] == ageb_id
-        assert by_key[f"{output_prefix}_sum"][1] == pytest.approx(350.0)   # 100 + 250
+        assert by_key[f"{output_prefix}_sum"][1] == pytest.approx(350.0)  # 100 + 250
         assert by_key[f"{output_prefix}_count"][1] == pytest.approx(32.0)  # 16 + 16
 
         # Lineage carries the source attribute_key so operators can trace
@@ -412,7 +444,9 @@ def test_observation_recipe_rolls_up_to_coarser_grain(
         assert lineage["children"] == 2
     finally:
         _cleanup(
-            conn, output_prefix, input_prefix,
+            conn,
+            output_prefix,
+            input_prefix,
             recipe_ids=[recipe_id] if recipe_id else [],
             feature_ids=[block_a, block_b, ageb_id],
             source_ids=(
@@ -473,7 +507,10 @@ def test_run_recipe_refuses_disabled_recipe(conn, test_dsn):
 
 
 def test_run_all_for_raster_runs_every_enabled_recipe(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """``run_all_for_raster`` is the ingest-time / CLI shortcut that
     materialises every enabled recipe whose input is the given layer.
@@ -484,7 +521,10 @@ def test_run_all_for_raster_runs_every_enabled_recipe(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     feat_a = _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref=f"r20-all-{uuid4()}",
         wkt_4326=_utm_square_wkt(500_030, 2_150_880, 60.0),
     )
@@ -503,7 +543,8 @@ def test_run_all_for_raster_runs_every_enabled_recipe(
             conn,
             raw_path=raster_path,
             source_name=f"r20-all-src-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r20_all_layer_{uuid4().hex[:8]}",
             aggregation_kind="extensive",
         )
@@ -531,14 +572,20 @@ def test_run_all_for_raster_runs_every_enabled_recipe(
         conn.commit()
 
         results = run_all_for_raster(
-            conn, raster_layer_id=layer["id"], direct_dsn=test_dsn,
+            conn,
+            raster_layer_id=layer["id"],
+            direct_dsn=test_dsn,
         )
         assert len(results) == 1, "disabled recipe must be skipped"
         assert results[0].attribute_key_prefix == prefix_on
     finally:
         _cleanup(
-            conn, prefix_on, prefix_off,
+            conn,
+            prefix_on,
+            prefix_off,
             recipe_ids=[i for i in (on_id, off_id) if i],
             feature_ids=[feat_a],
-            source_ids=[ingest.source_id, feat_source_id] if ingest else [feat_source_id],
+            source_ids=[ingest.source_id, feat_source_id]
+            if ingest
+            else [feat_source_id],
         )

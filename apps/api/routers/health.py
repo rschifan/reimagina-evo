@@ -13,6 +13,7 @@
    pointing at different Postgres databases — this endpoint exposes
    that drift instead of letting it manifest as silent empty tiles.
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,9 @@ def readiness(response: Response) -> ReadinessResponse:
     db_status = _probe_db()
     if db_status != "reachable":
         response.status_code = 503
-    return ReadinessResponse(status="ok" if db_status == "reachable" else "degraded", db=db_status)
+    return ReadinessResponse(
+        status="ok" if db_status == "reachable" else "degraded", db=db_status
+    )
 
 
 @router.get("/health", response_model=ReadinessResponse)
@@ -120,6 +123,7 @@ def _probe_db() -> str:
     which is exactly the signal the probe is there to give.
     """
     from ..deps import api_dsn
+
     try:
         conn = psycopg2.connect(api_dsn(), connect_timeout=2)
     except psycopg2.Error:
@@ -139,6 +143,7 @@ def _api_database_name() -> str | None:
     """Return the database name the API is connected to. Single-source-of-truth
     for the operator comparing API↔Martin DSNs."""
     from ..deps import api_dsn
+
     try:
         with psycopg2.connect(api_dsn(), connect_timeout=2) as conn:
             with conn.cursor() as cur:

@@ -1,4 +1,5 @@
 """Postgres migration runner built on the existing Alembic setup."""
+
 from __future__ import annotations
 
 from pathlib import Path

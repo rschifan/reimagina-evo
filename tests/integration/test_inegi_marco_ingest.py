@@ -19,6 +19,7 @@ patches ``INEGI_MARCO_VERSION`` to a unique string so its source row is
 genuinely fresh; the session-scoped ``migrated_db`` fixture's
 downgrade-to-base wipes everything at the end.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -80,21 +81,39 @@ def fake_marco_root(tmp_path: Path) -> Path:
 
     # --- areas_estatales: one row per partition ---
     _write_partition(
-        root / "areas_estatales.parquet", cve_ent="02",
-        rows=[{"CVEGEO": "02", "NOMGEO": "Baja California",
-               "geom": box(-117.5, 28.0, -113.0, 33.0)}],
+        root / "areas_estatales.parquet",
+        cve_ent="02",
+        rows=[
+            {
+                "CVEGEO": "02",
+                "NOMGEO": "Baja California",
+                "geom": box(-117.5, 28.0, -113.0, 33.0),
+            }
+        ],
         with_cve_mun=False,
     )
     _write_partition(
-        root / "areas_estatales.parquet", cve_ent="09",
-        rows=[{"CVEGEO": "09", "NOMGEO": "Ciudad de México",
-               "geom": box(-99.4, 19.0, -98.9, 19.6)}],
+        root / "areas_estatales.parquet",
+        cve_ent="09",
+        rows=[
+            {
+                "CVEGEO": "09",
+                "NOMGEO": "Ciudad de México",
+                "geom": box(-99.4, 19.0, -98.9, 19.6),
+            }
+        ],
         with_cve_mun=False,
     )
     _write_partition(
-        root / "areas_estatales.parquet", cve_ent="19",
-        rows=[{"CVEGEO": "19", "NOMGEO": "Nuevo León",
-               "geom": box(-101.0, 23.0, -98.0, 27.0)}],
+        root / "areas_estatales.parquet",
+        cve_ent="19",
+        rows=[
+            {
+                "CVEGEO": "19",
+                "NOMGEO": "Nuevo León",
+                "geom": box(-101.0, 23.0, -98.0, 27.0),
+            }
+        ],
         with_cve_mun=False,
     )
 
@@ -103,19 +122,40 @@ def fake_marco_root(tmp_path: Path) -> Path:
     # in-file column — so each muni gets its own CVE_ENT/CVE_MUN/ path
     # and the parquet inside is just CVEGEO + NOMGEO + geometry.
     _write_two_level_partition(
-        root / "areas_municipales.parquet", cve_ent="02", cve_mun="002",
-        rows=[{"CVEGEO": "02002", "NOMGEO": "Mexicali",
-               "geom": box(-115.5, 32.0, -115.0, 32.5)}],
+        root / "areas_municipales.parquet",
+        cve_ent="02",
+        cve_mun="002",
+        rows=[
+            {
+                "CVEGEO": "02002",
+                "NOMGEO": "Mexicali",
+                "geom": box(-115.5, 32.0, -115.0, 32.5),
+            }
+        ],
     )
     _write_two_level_partition(
-        root / "areas_municipales.parquet", cve_ent="09", cve_mun="015",
-        rows=[{"CVEGEO": "09015", "NOMGEO": "Cuauhtémoc",
-               "geom": box(-99.2, 19.4, -99.1, 19.5)}],
+        root / "areas_municipales.parquet",
+        cve_ent="09",
+        cve_mun="015",
+        rows=[
+            {
+                "CVEGEO": "09015",
+                "NOMGEO": "Cuauhtémoc",
+                "geom": box(-99.2, 19.4, -99.1, 19.5),
+            }
+        ],
     )
     _write_two_level_partition(
-        root / "areas_municipales.parquet", cve_ent="09", cve_mun="012",
-        rows=[{"CVEGEO": "09012", "NOMGEO": "Tlalpan",
-               "geom": box(-99.3, 19.2, -99.0, 19.4)}],
+        root / "areas_municipales.parquet",
+        cve_ent="09",
+        cve_mun="012",
+        rows=[
+            {
+                "CVEGEO": "09012",
+                "NOMGEO": "Tlalpan",
+                "geom": box(-99.3, 19.2, -99.0, 19.4),
+            }
+        ],
     )
     return root
 
@@ -123,8 +163,9 @@ def fake_marco_root(tmp_path: Path) -> Path:
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def _write_partition(parquet_dir: Path, *, cve_ent: str,
-                     rows: list[dict], with_cve_mun: bool) -> None:
+def _write_partition(
+    parquet_dir: Path, *, cve_ent: str, rows: list[dict], with_cve_mun: bool
+) -> None:
     """Write one CVE_ENT-only partition. Used for ``areas_estatales``,
     where the on-disk layout is a single level (CVE_ENT directories
     only). ``with_cve_mun`` is retained for back-compat callers but
@@ -135,7 +176,8 @@ def _write_partition(parquet_dir: Path, *, cve_ent: str,
         "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
         "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
         "geometry": pa.array(
-            [shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary(),
+            [shapely.wkb.dumps(r["geom"]) for r in rows],
+            type=pa.binary(),
         ),
     }
     if with_cve_mun:
@@ -144,7 +186,11 @@ def _write_partition(parquet_dir: Path, *, cve_ent: str,
 
 
 def _write_two_level_partition(
-    parquet_dir: Path, *, cve_ent: str, cve_mun: str, rows: list[dict],
+    parquet_dir: Path,
+    *,
+    cve_ent: str,
+    cve_mun: str,
+    rows: list[dict],
 ) -> None:
     """Write a CVE_ENT/CVE_MUN/ nested partition. Used for the three
     fine-grain layers (``areas_municipales``, ``agebs_urbanas``,
@@ -152,17 +198,22 @@ def _write_two_level_partition(
     column rather than an in-file column — matches the real data lake."""
     part = parquet_dir / f"CVE_ENT={cve_ent}" / f"CVE_MUN={cve_mun}"
     part.mkdir(parents=True, exist_ok=True)
-    table = pa.table({
-        "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
-        "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
-        "geometry": pa.array(
-            [shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary(),
-        ),
-    })
+    table = pa.table(
+        {
+            "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
+            "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
+            "geometry": pa.array(
+                [shapely.wkb.dumps(r["geom"]) for r in rows],
+                type=pa.binary(),
+            ),
+        }
+    )
     pq.write_table(table, part / "part-0.parquet")
 
 
-def _fetch_features_by_type(conn, type_slug: str, *, dataset_version: str) -> list[dict]:
+def _fetch_features_by_type(
+    conn, type_slug: str, *, dataset_version: str
+) -> list[dict]:
     """Scope by ``dataset_version`` so accumulated rows from earlier tests
     in the same session don't leak into the assertions."""
     with conn.cursor() as cur:
@@ -188,7 +239,10 @@ def _fetch_features_by_type(conn, type_slug: str, *, dataset_version: str) -> li
 
 
 def test_bootstrap_filters_to_pilot_states(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path, isolated_source_version: str,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
+    isolated_source_version: str,
 ):
     """End-to-end: stage + load areas_estatales for CVE_ENT IN ('02','09')
     only — Nuevo León (19) must be excluded."""
@@ -210,14 +264,19 @@ def test_bootstrap_filters_to_pilot_states(
     assert silver_path.exists()
     assert isolated_silver_dir in silver_path.parents
 
-    rows = _fetch_features_by_type(conn, "state", dataset_version=isolated_source_version)
+    rows = _fetch_features_by_type(
+        conn, "state", dataset_version=isolated_source_version
+    )
     assert {r["name"] for r in rows} == {"Baja California", "Ciudad de México"}
     # Nuevo León must be absent — partition pruning filtered it out.
     assert "Nuevo León" not in {r["name"] for r in rows}
 
 
 def test_bootstrap_loads_attributes_into_jsonb(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path, isolated_source_version: str,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
+    isolated_source_version: str,
 ):
     """Spec attributes_cols flow through into curated_geo.feature.attributes."""
     inegi_marco.bootstrap(
@@ -227,7 +286,9 @@ def test_bootstrap_loads_attributes_into_jsonb(
         source_root=fake_marco_root,
     )
 
-    rows = _fetch_features_by_type(conn, "municipality", dataset_version=isolated_source_version)
+    rows = _fetch_features_by_type(
+        conn, "municipality", dataset_version=isolated_source_version
+    )
     by_name = {r["name"]: r for r in rows}
     assert set(by_name) == {"Cuauhtémoc", "Tlalpan"}
 
@@ -244,7 +305,10 @@ def test_bootstrap_loads_attributes_into_jsonb(
 
 
 def test_bootstrap_geometry_lands_with_real_area(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path, isolated_source_version: str,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
+    isolated_source_version: str,
 ):
     """WKB-decoded geometry must survive the load with a non-zero area
     (i.e. ``shapely.wkb.loads`` actually ran and the geometry wasn't
@@ -256,7 +320,9 @@ def test_bootstrap_geometry_lands_with_real_area(
         source_root=fake_marco_root,
     )
 
-    rows = _fetch_features_by_type(conn, "municipality", dataset_version=isolated_source_version)
+    rows = _fetch_features_by_type(
+        conn, "municipality", dataset_version=isolated_source_version
+    )
     assert len(rows) == 1
     assert rows[0]["name"] == "Mexicali"
     # ST_Area in EPSG:4326 returns square degrees; the box is 0.5×0.5 = 0.25.
@@ -264,7 +330,9 @@ def test_bootstrap_geometry_lands_with_real_area(
 
 
 def test_bootstrap_registers_source_with_azure_lineage(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     """data_source_catalog.storage_uri keeps the upstream Azure URL even
     though we read the locally-mirrored copy. This is the lineage signal
@@ -295,7 +363,9 @@ def test_bootstrap_registers_source_with_azure_lineage(
 
 
 def test_bootstrap_marks_ingestion_run_succeeded(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     """The Silver→curated step opens an ingestion_run; on success it must
     transition to status='succeeded' with a useful records_written count."""
@@ -320,7 +390,9 @@ def test_bootstrap_marks_ingestion_run_succeeded(
 
 
 def test_bootstrap_is_idempotent_on_source_registration(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     """Re-running bootstrap must reuse the existing data_source_catalog
     row instead of erroring on the (provider, name, version) UNIQUE
@@ -342,7 +414,9 @@ def test_bootstrap_is_idempotent_on_source_registration(
 
 
 def test_bootstrap_rejects_unknown_layer(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     with pytest.raises(ValueError, match="Unknown INEGI marco layer"):
         inegi_marco.bootstrap(
@@ -354,7 +428,9 @@ def test_bootstrap_rejects_unknown_layer(
 
 
 def test_bootstrap_raises_when_filter_matches_nothing(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     """A CVE_ENT filter that matches no partitions is almost always a
     typo; raise loudly rather than silently writing zero rows."""
@@ -368,7 +444,9 @@ def test_bootstrap_raises_when_filter_matches_nothing(
 
 
 def test_bootstrap_loads_states_then_municipalities_in_order(
-    conn, fake_marco_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_marco_root: Path,
+    isolated_silver_dir: Path,
 ):
     """When multiple layers are requested they must follow DEFAULT_LOAD_ORDER
     (coarse → fine), so child grains can later reference their parents."""

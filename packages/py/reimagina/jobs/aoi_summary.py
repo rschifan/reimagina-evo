@@ -5,6 +5,7 @@ Reads the current per-feature indicator values for a given AOI (joining
 aggregates using the indicator's catalog `aggregation_method`, and upserts
 one row per (aoi_id, scenario_id, indicator_id) into `aoi_indicator_summary`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -99,8 +100,7 @@ def summarise_aoi(
     usable = [
         (value, weight)
         for value, weight, quality in children
-        if value is not None
-        and quality not in ("missing", "not_applicable", "failed")
+        if value is not None and quality not in ("missing", "not_applicable", "failed")
     ]
     try:
         aggregated = aggregate(aggregation_method, usable)
@@ -123,9 +123,8 @@ def summarise_aoi(
             aggregation_note=note,
         )
 
-    note = (
-        f"{aggregation_method} over {len(usable)} of {len(children)} children"
-        + ("; prorated" if share_state == "prorated" else "")
+    note = f"{aggregation_method} over {len(usable)} of {len(children)} children" + (
+        "; prorated" if share_state == "prorated" else ""
     )
     summary_repo.upsert_summary(
         aoi_id=aoi_id,
@@ -143,5 +142,3 @@ def summarise_aoi(
         status="current",
         aggregation_note=note,
     )
-
-

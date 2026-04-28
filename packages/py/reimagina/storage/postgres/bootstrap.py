@@ -1,4 +1,5 @@
 """Bootstrap helpers for PostgreSQL/PostGIS environments."""
+
 from __future__ import annotations
 
 from urllib.parse import urlparse

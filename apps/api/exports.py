@@ -11,6 +11,7 @@ into the three shipped download formats:
 Kept side-effect free so they're trivial to unit-test over sample rows
 without a DB.
 """
+
 from __future__ import annotations
 
 import csv
@@ -47,13 +48,15 @@ def indicator_rows_to_csv(rows: Iterable[dict]) -> Iterator[bytes]:
     buffer.truncate(0)
 
     for row in rows:
-        writer.writerow({
-            "feature_id": row["feature_id"],
-            "type_slug": row["type_slug"],
-            "value": _coerce_numeric(row.get("value_numeric")),
-            "quality_flag": row["quality_flag"],
-            "computed_at": _coerce_datetime(row["computed_at"]),
-        })
+        writer.writerow(
+            {
+                "feature_id": row["feature_id"],
+                "type_slug": row["type_slug"],
+                "value": _coerce_numeric(row.get("value_numeric")),
+                "quality_flag": row["quality_flag"],
+                "computed_at": _coerce_datetime(row["computed_at"]),
+            }
+        )
         yield buffer.getvalue().encode("utf-8")
         buffer.seek(0)
         buffer.truncate(0)
@@ -100,18 +103,20 @@ def indicator_rows_to_geojson(rows: Iterable[dict]) -> dict:
         geom = _decode_geometry(row)
         if geom is None:
             continue
-        features.append({
-            "type": "Feature",
-            "id": row["feature_id"],
-            "geometry": geom.__geo_interface__,
-            "properties": {
-                "feature_id": row["feature_id"],
-                "type_slug": row["type_slug"],
-                "value": _coerce_numeric(row.get("value_numeric")),
-                "quality_flag": row["quality_flag"],
-                "computed_at": _coerce_datetime(row["computed_at"]),
-            },
-        })
+        features.append(
+            {
+                "type": "Feature",
+                "id": row["feature_id"],
+                "geometry": geom.__geo_interface__,
+                "properties": {
+                    "feature_id": row["feature_id"],
+                    "type_slug": row["type_slug"],
+                    "value": _coerce_numeric(row.get("value_numeric")),
+                    "quality_flag": row["quality_flag"],
+                    "computed_at": _coerce_datetime(row["computed_at"]),
+                },
+            }
+        )
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -129,13 +134,15 @@ def indicator_rows_to_geoparquet(rows: Iterable[dict]) -> bytes:
         geom = _decode_geometry(row)
         if geom is None:
             continue
-        records.append({
-            "feature_id": row["feature_id"],
-            "type_slug": row["type_slug"],
-            "value": _coerce_numeric(row.get("value_numeric")),
-            "quality_flag": row["quality_flag"],
-            "computed_at": _coerce_datetime(row["computed_at"]),
-        })
+        records.append(
+            {
+                "feature_id": row["feature_id"],
+                "type_slug": row["type_slug"],
+                "value": _coerce_numeric(row.get("value_numeric")),
+                "quality_flag": row["quality_flag"],
+                "computed_at": _coerce_datetime(row["computed_at"]),
+            }
+        )
         geometries.append(geom)
 
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")

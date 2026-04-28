@@ -9,6 +9,7 @@ rate-limits, the caller is instructed to download manually and re-run with
 This module is deliberately portal-agnostic above the URL constants: any
 zipped-shapefile source with a similar structure can be plugged in.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-SOURCES_DIR = Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "sources"
+SOURCES_DIR = (
+    Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "sources"
+)
 CDMX_SOURCES_DIR = SOURCES_DIR / "cdmx"
 
 INEGI_CDMX_STATE_CODE = "09"
@@ -96,7 +99,9 @@ def cached_download(
 
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+            request, timeout=_REQUEST_TIMEOUT_SECONDS
+        ) as response:
             if response.status != 200:
                 raise InegiFetchError(
                     _manual_download_hint(url, portal_url, dest, status=response.status)
@@ -139,7 +144,9 @@ def _manual_download_hint(
     if portal_url is not None:
         lines.append(f"  portal:        {portal_url}")
     lines.append("")
-    lines.append("Download the archive manually from the portal above, then re-run with:")
+    lines.append(
+        "Download the archive manually from the portal above, then re-run with:"
+    )
     lines.append(f"  --from-path {dest}")
     return "\n".join(lines)
 
@@ -160,7 +167,9 @@ def find_shapefile(root: Path, basename: str) -> Path:
     for frentes de manzana). Exact-basename matching avoids ambiguity
     (e.g. `*m.shp` would otherwise match both `09m.shp` and `09fm.shp`).
     """
-    matches = sorted(p for p in root.rglob(basename) if p.is_file() and p.name == basename)
+    matches = sorted(
+        p for p in root.rglob(basename) if p.is_file() and p.name == basename
+    )
     if not matches:
         available = sorted({p.name for p in root.rglob("*.shp")})
         raise FileNotFoundError(

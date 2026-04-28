@@ -11,6 +11,7 @@ against destructive teardown by conftest's name-safety rail), hits the
 API with a real httpx client, and asserts the outcome. On teardown the
 lifespan shuts the pool down — zero leaked connections.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -76,11 +77,14 @@ def test_pool_survives_consecutive_requests(real_conn_client):
         assert response.status_code == 200
 
 
-def test_psycopg_operational_error_produces_structured_503(monkeypatch, real_conn_client):
+def test_psycopg_operational_error_produces_structured_503(
+    monkeypatch, real_conn_client
+):
     """Simulated connectivity outage → 503 + database_unavailable."""
     import psycopg2
 
     from apps.api.deps import get_db_conn
+
     def _broken_conn():
         raise psycopg2.OperationalError("simulated outage")
         yield  # pragma: no cover — makes this a generator fn for the dep
@@ -108,6 +112,7 @@ def test_psycopg_programming_error_produces_500(monkeypatch, real_conn_client):
     import psycopg2
 
     from apps.api.deps import get_db_conn
+
     def _buggy_conn():
         raise psycopg2.ProgrammingError("syntax error at or near ...")
         yield  # pragma: no cover

@@ -13,6 +13,7 @@ Urban context: low scores tend to correlate with historical / irregular
 street patterns (e.g. Cuauhtémoc's colonial centro), high scores with
 planned grids (most post-1950 Mexican block developments).
 """
+
 from __future__ import annotations
 
 import math
@@ -118,5 +119,3 @@ def compute_block_compactness(
         rows_written=rows_written,
         aoi_id=aoi_id,
     )
-
-

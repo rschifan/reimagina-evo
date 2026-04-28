@@ -59,6 +59,14 @@ export interface TileSource {
       p95: number | null;
       max: number | null;
     } | null;
+    /**
+     * AOI affinity for an aggregation_overlay. When non-empty, the
+     * picker shows this overlay only for AOIs in the list. Censo
+     * block-level overlays span both AOIs and surface for either; the
+     * per-AOI WorldPop ingests surface only for their own AOI.
+     * Empty / missing = always visible (defensive default).
+     */
+    aois?: string[] | null;
   };
 }
 
@@ -127,12 +135,67 @@ export interface AOIRow {
    *  the river delta; bbox centre is in agricultural desert south of
    *  the populated area). Null when the AOI has no geometry. */
   centroid: [number, number] | null;
+  /** [minLon, minLat, maxLon, maxLat] envelope of every block loaded
+   *  inside this AOI — i.e. where the actual data lives. Distinct
+   *  from {@link bbox} above: ``bbox`` is the muni polygon envelope,
+   *  which for huge AOIs (Mexicali) covers a lot of empty desert.
+   *  ``features_bbox`` is the urban extent. The picker prefers this
+   *  for fitBounds so the user lands on the populated area, not on
+   *  empty land. Null when no blocks are loaded yet. */
+  features_bbox: [number, number, number, number] | null;
 }
 
 
 export function listAois(): Promise<AOIRow[]> {
   return jsonRequest<AOIRow[]>("/aois");
 }
+
+export interface WithinPolygonRequest {
+  aoi_id: string;
+  polygon: GeoJSON.Polygon;
+  type_slugs: string[];
+}
+
+
+export interface WithinPolygonResultRow {
+  type_slug: string;
+  count: number;
+}
+
+
+export interface WithinPolygonResponse {
+  results: WithinPolygonResultRow[];
+}
+
+
+export async function fetchMetricsWithinPolygon(
+  body: WithinPolygonRequest,
+  init: { signal?: AbortSignal } = {},
+): Promise<WithinPolygonResponse> {
+  // POST not GET because the polygon payload doesn't fit cleanly in a
+  // query string and (more importantly) browsers cache GETs by URL —
+  // we don't want a re-drawn polygon at the same vertices to read a
+  // stale 304. POST + AbortController is also the standard pattern
+  // for "supersede an in-flight request when a newer selection
+  // arrives".
+  const response = await fetch(`${API_BASE}/metrics/within-polygon`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: init.signal,
+  });
+  if (!response.ok) {
+    throw new ApiError(
+      `${response.status} ${response.statusText} on /metrics/within-polygon`,
+      response,
+    );
+  }
+  return response.json() as Promise<WithinPolygonResponse>;
+}
+
 
 export function downloadUrl(
   slug: string,

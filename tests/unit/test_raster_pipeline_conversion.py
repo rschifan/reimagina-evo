@@ -5,6 +5,7 @@ verifies the pipeline's silver output is a valid COG with the right
 metadata. The actual DB-side registration is covered by the integration
 suite.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,6 +23,7 @@ from reimagina.pipeline.raster import (
 
 # ─── Fixtures ─────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def tiny_plain_geotiff(tmp_path: Path) -> Path:
     """Write a 3×3 non-COG single-band GeoTIFF in EPSG:4326 (angular CRS)."""
@@ -29,10 +31,13 @@ def tiny_plain_geotiff(tmp_path: Path) -> Path:
     data = np.arange(9, dtype="float32").reshape(3, 3)
     transform = from_origin(-99.15, 19.45, 0.01, 0.01)
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=3, width=3,
-        count=1, dtype="float32",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
         crs="EPSG:4326",
         transform=transform,
         nodata=-999.0,
@@ -49,10 +54,13 @@ def tiny_utm_geotiff(tmp_path: Path) -> Path:
     # 30m pixel; north-up, axis-aligned, square.
     transform = from_origin(500_000, 2_151_000, 30.0, 30.0)
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=3, width=3,
-        count=1, dtype="float32",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
         crs="EPSG:32614",
         transform=transform,
         nodata=-999.0,
@@ -69,10 +77,13 @@ def two_band_geotiff(tmp_path: Path) -> Path:
     # Non-identity transform — rasterio errors on the identity-ish
     # affine under -W error because GDAL may silently drop it.
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=3, width=3,
-        count=2, dtype="float32",
+        height=3,
+        width=3,
+        count=2,
+        dtype="float32",
         crs="EPSG:4326",
         transform=from_origin(-99.15, 19.45, 0.01, 0.01),
     ) as dst:
@@ -98,8 +109,13 @@ def test_resolution_m_is_none_for_angular_crs(tiny_plain_geotiff):
 def test_resolution_m_is_none_for_non_square_pixels(tmp_path):
     path = tmp_path / "rect.tif"
     with rasterio.open(
-        path, "w",
-        driver="GTiff", height=3, width=3, count=1, dtype="float32",
+        path,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
         crs="EPSG:32614",
         transform=from_origin(500_000, 2_151_000, 30.0, 10.0),  # 30×10
     ) as dst:
@@ -111,12 +127,19 @@ def test_resolution_m_is_none_for_non_square_pixels(tmp_path):
 def test_resolution_m_is_none_for_rotated_transform(tmp_path):
     path = tmp_path / "rot.tif"
     from rasterio.transform import Affine
+
     # 45° rotation — non-zero b / d.
     rot = Affine.rotation(45)
     with rasterio.open(
-        path, "w",
-        driver="GTiff", height=3, width=3, count=1, dtype="float32",
-        crs="EPSG:32614", transform=rot,
+        path,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
+        crs="EPSG:32614",
+        transform=rot,
     ) as dst:
         dst.write(np.zeros((3, 3), dtype="float32"), 1)
     with rasterio.open(path) as src:
@@ -142,7 +165,9 @@ def test_ingest_rejects_multi_band_raster(two_band_geotiff):
         ingest_raster_source(
             conn=object(),  # never touched — the band check runs first
             raw_path=two_band_geotiff,
-            source_name="x", provider="y", version="1",
+            source_name="x",
+            provider="y",
+            version="1",
             layer_slug="test_multiband",
         )
 
@@ -155,7 +180,9 @@ def test_ingest_rejects_missing_file():
         ingest_raster_source(
             conn=object(),
             raw_path=Path("/nowhere/does-not-exist.tif"),
-            source_name="x", provider="y", version="1",
+            source_name="x",
+            provider="y",
+            version="1",
             layer_slug="missing",
         )
 
@@ -170,7 +197,9 @@ def test_ingest_rejects_bad_aggregation_kind(tiny_plain_geotiff):
         ingest_raster_source(
             conn=object(),
             raw_path=tiny_plain_geotiff,
-            source_name="x", provider="y", version="1",
+            source_name="x",
+            provider="y",
+            version="1",
             layer_slug="bad_kind",
             aggregation_kind="categorical",
         )
@@ -187,6 +216,7 @@ def test_cog_conversion_produces_valid_cog(tiny_plain_geotiff, tmp_path):
     format-level property.
     """
     from rasterio.shutil import copy as rio_copy
+
     dst = tmp_path / "tiny.cog.tif"
     rio_copy(str(tiny_plain_geotiff), str(dst), driver="COG")
 

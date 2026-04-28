@@ -28,8 +28,15 @@ dependencies = [
     # rasterio bundles its own GDAL wheel; coexists with fiona's GDAL in
     # practice (verified on the R1 pre-flight clean-venv smoke test).
     "rasterio>=1.3",
-    # Zonal-stats worker (R3). rasterstats itself depends on rasterio,
-    # shapely, and numpy — all already pinned above or transitive.
+    # Zonal-stats worker (R3). exactextract is the area-weighted
+    # aggregator (used by QGIS' Zonal Statistics, recommended in WorldPop
+    # docs) — produces correct sums for sub-pixel polygons by giving
+    # each pixel a fractional-area weight per polygon. Replaces
+    # rasterstats here because rasterstats' default centroid-in-polygon
+    # policy silently drops manzanas smaller than the WorldPop pixel.
+    # rasterstats stays as a transitive dep through other libraries
+    # but is no longer called directly.
+    "exactextract>=0.2",
     "rasterstats>=0.19",
     # Raster tile serving (R4). titiler.core ships the FastAPI router
     # we mount under /cog in apps/api so the API + tile server share a

@@ -5,6 +5,7 @@ test Postgres DB. When the data is missing, the runner raises
 OverlapBenchmarkDataMissing — the test converts that into a pytest skip with
 a clear, actionable message instead of failing.
 """
+
 from __future__ import annotations
 
 import pytest

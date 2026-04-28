@@ -6,6 +6,7 @@ import _register_source, ...``. That cross-test import made one test file
 an implicit fixture library. Keeping the helpers here makes the dependency
 explicit and keeps test files symmetric.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -53,7 +54,10 @@ def insert_feature(
     geometry_wkt: str,
     parent_id: str | None = None,
     feature_id: str | None = None,
+    attributes: dict | None = None,
 ) -> str:
+    import json
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -64,7 +68,7 @@ def insert_feature(
               COALESCE(%s::uuid, gen_random_uuid()),
               %s, %s, %s,
               ST_SetSRID(ST_GeomFromText(%s), 4326),
-              '{}'::jsonb,
+              %s::jsonb,
               %s, %s, %s, %s
             )
             RETURNING id
@@ -75,6 +79,7 @@ def insert_feature(
                 parent_id,
                 source_record_ref,
                 geometry_wkt,
+                json.dumps(attributes or {}),
                 source_id,
                 source_record_ref,
                 ingestion_run_id,

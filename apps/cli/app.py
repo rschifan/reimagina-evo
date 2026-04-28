@@ -1,4 +1,5 @@
 """Developer CLI entrypoint for local bootstrap and first-source workflows."""
+
 from __future__ import annotations
 
 import argparse
@@ -33,8 +34,14 @@ from .overture import (  # noqa: E402
     extract_mexico_city_buildings,
     load_mexico_city_buildings,
     mexico_city_buildings_example,
+    parse_bbox,
     print_extract_sql,
     validate_mexico_city_buildings,
+)
+from reimagina.pipeline.overture import (  # noqa: E402
+    MEXICO_CITY_BBOX,
+    OVERTURE_BUILDINGS_SOURCE_NAME,
+    OVERTURE_DEFAULT_RELEASE,
 )
 from .perf import (  # noqa: E402
     compare_perf_reports,
@@ -51,8 +58,9 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
+from .aoi import delete_aoi, list_aois  # noqa: E402
+from .data import verify_sources  # noqa: E402
 from .inegi import (  # noqa: E402
-    apply_inegi_censo_rollups,
     bootstrap_inegi_censo,
     bootstrap_inegi_marco,
 )
@@ -77,6 +85,7 @@ from .tiles import (  # noqa: E402
 from .raster import (  # noqa: E402
     PrefixCollisionError,
     add_derivation,
+    fetch_worldpop_raster,
     ingest_raster,
     list_derivations,
     list_raster_layers,
@@ -129,9 +138,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "explore",
         help="Read-only inspection commands for the engineer-facing explore schema",
     )
-    explore_subparsers = explore_parser.add_subparsers(dest="explore_command", required=True)
+    explore_subparsers = explore_parser.add_subparsers(
+        dest="explore_command", required=True
+    )
 
-    explore_layers = explore_subparsers.add_parser("layers", help="List the curated exploration catalog")
+    explore_layers = explore_subparsers.add_parser(
+        "layers", help="List the curated exploration catalog"
+    )
     explore_layers.add_argument("--dsn", default=DEFAULT_APP_DSN)
     explore_layers.set_defaults(handler=_handle_explore_layers)
 
@@ -156,8 +169,12 @@ def _build_parser() -> argparse.ArgumentParser:
     explore_serving_stats.add_argument("--dsn", default=DEFAULT_APP_DSN)
     explore_serving_stats.set_defaults(handler=_handle_explore_serving_stats)
 
-    overture_parser = subparsers.add_parser("overture", help="First Overture source operations")
-    overture_subparsers = overture_parser.add_subparsers(dest="overture_command", required=True)
+    overture_parser = subparsers.add_parser(
+        "overture", help="First Overture source operations"
+    )
+    overture_subparsers = overture_parser.add_subparsers(
+        dest="overture_command", required=True
+    )
 
     overture_example = overture_subparsers.add_parser(
         "example",
@@ -173,22 +190,50 @@ def _build_parser() -> argparse.ArgumentParser:
 
     overture_extract = overture_subparsers.add_parser(
         "extract",
-        help="Extract the Mexico City buildings subset to local GeoParquet using DuckDB",
+        help="Extract an Overture buildings subset to local GeoParquet via DuckDB",
     )
     overture_extract.add_argument(
         "--output-path",
         default="data/overture_buildings_mexico_city.parquet",
     )
+    overture_extract.add_argument(
+        "--release",
+        default=OVERTURE_DEFAULT_RELEASE,
+        help="Overture S3 release version (e.g. 2026-04-15.0)",
+    )
+    overture_extract.add_argument(
+        "--bbox",
+        default=",".join(str(v) for v in MEXICO_CITY_BBOX),
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexico City)",
+    )
     overture_extract.set_defaults(handler=_handle_overture_extract)
 
     overture_load = overture_subparsers.add_parser(
         "load",
-        help="Register, stage, and load the Mexico City buildings subset",
+        help="Register, stage, and load an Overture buildings extract",
     )
     overture_load.add_argument("--dsn", default=DEFAULT_APP_DSN)
     overture_load.add_argument("--raw-path", required=True)
     overture_load.add_argument("--orchestrator-run-id")
     overture_load.add_argument("--code-version", default="dev")
+    overture_load.add_argument(
+        "--release",
+        default=OVERTURE_DEFAULT_RELEASE,
+        help="Overture S3 release version this parquet was extracted from "
+        "(stored on data_source_catalog.version + feature.dataset_version)",
+    )
+    overture_load.add_argument(
+        "--source-name",
+        default=OVERTURE_BUILDINGS_SOURCE_NAME,
+        help="data_source_catalog.name. Use a distinct value per AOI to "
+        "avoid collapsing multiple bbox extracts onto the same source row",
+    )
+    overture_load.add_argument(
+        "--aoi-id",
+        help="Optional AOI uuid. When supplied, freshly-loaded buildings "
+        "outside the AOI polygon are deleted post-load — required when "
+        "the bbox is wider than the actual AOI",
+    )
     overture_load.set_defaults(handler=_handle_overture_load)
 
     overture_validate = overture_subparsers.add_parser(
@@ -209,7 +254,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Seed deterministic observations and AOIs for benchmark tiers",
     )
     perf_seed.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    perf_seed.add_argument("--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke")
+    perf_seed.add_argument(
+        "--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke"
+    )
     perf_seed.add_argument("--feature-limit", type=int)
     perf_seed.set_defaults(handler=_handle_perf_seed_observations)
 
@@ -218,7 +265,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run the named benchmark corpus and emit a structured JSON report",
     )
     perf_run.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    perf_run.add_argument("--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke")
+    perf_run.add_argument(
+        "--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke"
+    )
     perf_run.add_argument("--benchmark", action="append", dest="benchmarks")
     perf_run.add_argument("--iterations", type=int)
     perf_run.add_argument("--output-path")
@@ -230,7 +279,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     perf_explain.add_argument("benchmark_name")
     perf_explain.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    perf_explain.add_argument("--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke")
+    perf_explain.add_argument(
+        "--dataset-tier", choices=["smoke", "representative", "stress"], default="smoke"
+    )
     perf_explain.set_defaults(handler=_handle_perf_explain)
 
     perf_report = perf_subparsers.add_parser(
@@ -314,8 +365,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "fetch",
         help="Download (or reuse cached) archive for one CDMX layer",
     )
-    cdmx_fetch.add_argument("--layer", required=True,
-                            choices=("municipalities", "agebs", "blocks", "colonias"))
+    cdmx_fetch.add_argument(
+        "--layer",
+        required=True,
+        choices=("municipalities", "agebs", "blocks", "colonias"),
+    )
     cdmx_fetch.add_argument("--overwrite", action="store_true")
     cdmx_fetch.set_defaults(handler=_handle_cdmx_fetch)
 
@@ -324,11 +378,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fetch + stage + load CDMX layers into curated_geo.feature",
     )
     cdmx_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    cdmx_bootstrap.add_argument("--layers",
-        help="Comma-separated layer keys; default is municipalities,agebs,blocks,colonias")
-    cdmx_bootstrap.add_argument("--from-path", action="append", default=[],
+    cdmx_bootstrap.add_argument(
+        "--layers",
+        help="Comma-separated layer keys; default is municipalities,agebs,blocks,colonias",
+    )
+    cdmx_bootstrap.add_argument(
+        "--from-path",
+        action="append",
+        default=[],
         metavar="LAYER=PATH",
-        help="Use a local archive instead of downloading, e.g. blocks=/path/to/09_ciudaddemexico.zip. Repeatable.")
+        help="Use a local archive instead of downloading, e.g. blocks=/path/to/09_ciudaddemexico.zip. Repeatable.",
+    )
     cdmx_bootstrap.add_argument("--code-version", default="dev")
     cdmx_bootstrap.set_defaults(handler=_handle_cdmx_bootstrap)
 
@@ -344,10 +404,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create an AOI whose geometry is the matching MEX:municipality polygon",
     )
     cdmx_aoi.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    cdmx_aoi.add_argument("--cve-ent", default="09",
-                          help="INEGI state code; default 09 (CDMX). Use 02 for Mexicali.")
-    cdmx_aoi.add_argument("--cve-mun", required=True,
-                          help="INEGI municipality code, e.g. 015 for Cuauhtémoc, 002 for Mexicali")
+    cdmx_aoi.add_argument(
+        "--cve-ent",
+        default="09",
+        help="INEGI state code; default 09 (CDMX). Use 02 for Mexicali.",
+    )
+    cdmx_aoi.add_argument(
+        "--cve-mun",
+        required=True,
+        help="INEGI municipality code, e.g. 015 for Cuauhtémoc, 002 for Mexicali",
+    )
     cdmx_aoi.add_argument("--name", required=True)
     cdmx_aoi.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
     cdmx_aoi.set_defaults(handler=_handle_cdmx_aoi_from_alcaldia)
@@ -361,11 +427,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cdmx_aoi_state.add_argument("--dsn", default=DEFAULT_APP_DSN)
     cdmx_aoi_state.add_argument(
-        "--cve-ent", required=True,
+        "--cve-ent",
+        required=True,
         help="INEGI state code, e.g. 09 for CDMX, 02 for Baja California.",
     )
     cdmx_aoi_state.add_argument("--name", required=True)
-    cdmx_aoi_state.add_argument("--project-name", default="CDMX Realistic-Scale Validation")
+    cdmx_aoi_state.add_argument(
+        "--project-name", default="CDMX Realistic-Scale Validation"
+    )
     cdmx_aoi_state.set_defaults(handler=_handle_cdmx_aoi_from_state)
 
     inegi_marco_parser = subparsers.add_parser(
@@ -373,7 +442,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="INEGI Marco Geoestadístico 2024 ingest from the data-lake mirror",
     )
     inegi_marco_subparsers = inegi_marco_parser.add_subparsers(
-        dest="inegi_marco_command", required=True,
+        dest="inegi_marco_command",
+        required=True,
     )
 
     inegi_marco_bootstrap = inegi_marco_subparsers.add_parser(
@@ -410,14 +480,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inegi_censo_parser = subparsers.add_parser(
         "inegi-censo",
-        help="INEGI 2010 census ingest (manzana-level → curated_geo.observation)",
+        help="INEGI 2020 census ingest (manzana-level → curated_geo.observation)",
     )
     inegi_censo_subparsers = inegi_censo_parser.add_subparsers(
-        dest="inegi_censo_command", required=True,
+        dest="inegi_censo_command",
+        required=True,
     )
     inegi_censo_bootstrap = inegi_censo_subparsers.add_parser(
         "bootstrap",
-        help="Read filtered 2010 census parquet, join to features, write observations",
+        help="Read filtered 2020 census parquet, join to features, write observations",
     )
     inegi_censo_bootstrap.add_argument("--dsn", default=DEFAULT_APP_DSN)
     inegi_censo_bootstrap.add_argument(
@@ -432,59 +503,74 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     inegi_censo_bootstrap.add_argument(
-        "--cve-mun",
-        action="append",
-        default=[],
-        metavar="CVE_MUN",
-        help="INEGI municipality code (repeatable). Optional further filter.",
-    )
-    inegi_censo_bootstrap.add_argument(
         "--columns",
         help=(
             "Comma-separated census column names. Default: headline subset "
-            "(pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot, vivpar_hab)."
+            "(pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot)."
         ),
     )
     inegi_censo_bootstrap.add_argument(
         "--source-root",
         help=(
             "Override the source directory (defaults to "
-            "data/sources/azure/inegi/censo/manzanas_2010.parquet)."
+            "data/sources/azure/inegi/censo/manzanas_2020.parquet)."
         ),
     )
     inegi_censo_bootstrap.add_argument("--code-version", default="dev")
     inegi_censo_bootstrap.set_defaults(handler=_handle_inegi_censo_bootstrap)
 
-    inegi_censo_rollups = inegi_censo_subparsers.add_parser(
-        "rollups",
-        help=(
-            "Seed + run AGEB / municipality rollup recipes for the "
-            "headline censo_2010_* attributes. Idempotent: re-running "
-            "reuses existing recipe rows."
-        ),
+    data_parser = subparsers.add_parser(
+        "data",
+        help="Cross-source operations (smoke tests, manifests)",
     )
-    inegi_censo_rollups.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    inegi_censo_rollups.add_argument(
-        "--columns",
-        help=(
-            "Comma-separated headline columns to roll up. Default: all "
-            "seven (pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot, "
-            "vivpar_hab)."
-        ),
+    data_subparsers = data_parser.add_subparsers(dest="data_command", required=True)
+
+    data_verify = data_subparsers.add_parser(
+        "verify-sources",
+        help="Check that every upstream source listed in the bootstrap "
+        "runbook is reachable before triggering a long ingest",
     )
-    inegi_censo_rollups.add_argument(
-        "--target-grains",
-        default="ageb,municipality",
-        help="Comma-separated target grains. Default 'ageb,municipality'.",
+    data_verify.add_argument(
+        "--release",
+        default=OVERTURE_DEFAULT_RELEASE,
+        help="Overture release to probe on S3",
     )
-    inegi_censo_rollups.set_defaults(handler=_handle_inegi_censo_rollups)
+    data_verify.add_argument(
+        "--worldpop-country",
+        default="MEX",
+        help="ISO3 country code used to probe WorldPop's REST catalogue. "
+        "Default MEX so the smoke test mirrors the runbook.",
+    )
+    data_verify.set_defaults(handler=_handle_data_verify_sources)
+
+    aoi_parser = subparsers.add_parser(
+        "aoi",
+        help="Area-of-interest lifecycle: list, delete (creators live under cdmx)",
+    )
+    aoi_subparsers = aoi_parser.add_subparsers(dest="aoi_command", required=True)
+
+    aoi_list = aoi_subparsers.add_parser(
+        "list", help="List every AOI with bbox + feature count"
+    )
+    aoi_list.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    aoi_list.set_defaults(handler=_handle_aoi_list)
+
+    aoi_delete = aoi_subparsers.add_parser(
+        "delete",
+        help="Delete an AOI by uuid. CASCADE removes aoi_feature rows; "
+        "features themselves are preserved",
+    )
+    aoi_delete.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    aoi_delete.add_argument("--aoi-id", required=True)
+    aoi_delete.set_defaults(handler=_handle_aoi_delete)
 
     points_parser = subparsers.add_parser(
         "points",
         help="Per-pilot-city amenity / POI ingest from the data-lake mirror",
     )
     points_subparsers = points_parser.add_subparsers(
-        dest="points_command", required=True,
+        dest="points_command",
+        required=True,
     )
 
     points_bootstrap = points_subparsers.add_parser(
@@ -557,7 +643,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "overlap",
         help="Feature-to-feature overlap pair declaration and compute",
     )
-    overlap_subparsers = overlap_parser.add_subparsers(dest="overlap_command", required=True)
+    overlap_subparsers = overlap_parser.add_subparsers(
+        dest="overlap_command", required=True
+    )
 
     overlap_declare = overlap_subparsers.add_parser(
         "declare-pair",
@@ -590,44 +678,119 @@ def _build_parser() -> argparse.ArgumentParser:
         "raster",
         help="Single-band raster ingest + registry operations",
     )
-    raster_subparsers = raster_parser.add_subparsers(dest="raster_command", required=True)
+    raster_subparsers = raster_parser.add_subparsers(
+        dest="raster_command", required=True
+    )
 
     raster_ingest = raster_subparsers.add_parser(
         "ingest",
         help="Register + stage (bronze → silver COG) a single-band raster, "
-             "then insert a raster_layer row so /tile-sources picks it up",
+        "then insert a raster_layer row so /tile-sources picks it up",
     )
     raster_ingest.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    raster_ingest.add_argument("--raw-path", required=True,
+    raster_ingest.add_argument(
+        "--raw-path",
+        required=True,
         help="Path to the raw single-band GeoTIFF / COG / NetCDF. "
-             "Multi-band containers (HDF, multi-band NetCDF) are out of v1 "
-             "scope — pre-extract one band with `gdal_translate -b <N>`.")
-    raster_ingest.add_argument("--source-name", required=True,
-        help='e.g. "MODIS LST 2026-01-15 day"')
-    raster_ingest.add_argument("--provider", required=True,
-        help='e.g. "NASA LAADS"')
-    raster_ingest.add_argument("--version", required=True,
-        help="Data version (e.g. acquisition date); rides along on source + asset rows")
-    raster_ingest.add_argument("--layer-slug", required=True,
-        help="Stable slug for the raster_layer row (e.g. lst_day_2026_01_15)")
-    raster_ingest.add_argument("--aggregation-kind",
-        choices=["intensive", "extensive"], default="intensive",
-        help="Drives default zonal-stats; use 'extensive' for count/sum-per-pixel rasters")
+        "Multi-band containers (HDF, multi-band NetCDF) are out of v1 "
+        "scope — pre-extract one band with `gdal_translate -b <N>`.",
+    )
+    raster_ingest.add_argument(
+        "--source-name", required=True, help='e.g. "MODIS LST 2026-01-15 day"'
+    )
+    raster_ingest.add_argument("--provider", required=True, help='e.g. "NASA LAADS"')
+    raster_ingest.add_argument(
+        "--version",
+        required=True,
+        help="Data version (e.g. acquisition date); rides along on source + asset rows",
+    )
+    raster_ingest.add_argument(
+        "--layer-slug",
+        required=True,
+        help="Stable slug for the raster_layer row (e.g. lst_day_2026_01_15)",
+    )
+    raster_ingest.add_argument(
+        "--aggregation-kind",
+        choices=["intensive", "extensive"],
+        default="intensive",
+        help="Drives default zonal-stats; use 'extensive' for count/sum-per-pixel rasters",
+    )
     raster_ingest.add_argument("--logical-name")
     raster_ingest.add_argument("--description")
     raster_ingest.add_argument("--colormap-name", help='e.g. "inferno"')
     raster_ingest.add_argument("--rescale", help='e.g. "270,320" (min,max)')
     raster_ingest.add_argument("--license")
-    raster_ingest.add_argument("--captured-at",
-        help="ISO-8601 timestamp; stored on file_asset.captured_at")
+    raster_ingest.add_argument(
+        "--captured-at", help="ISO-8601 timestamp; stored on file_asset.captured_at"
+    )
     raster_ingest.add_argument("--minzoom", type=int, default=5)
     raster_ingest.add_argument("--maxzoom", type=int, default=14)
-    raster_ingest.add_argument("--unpublished", action="store_true",
+    raster_ingest.add_argument(
+        "--unpublished",
+        action="store_true",
         help="Register the raster but hide it from /tile-sources until "
-             "`raster publish --slug <slug>` flips it on")
+        "`raster publish --slug <slug>` flips it on",
+    )
     raster_ingest.add_argument("--code-version", default="dev")
     raster_ingest.add_argument("--orchestrator-run-id")
     raster_ingest.set_defaults(handler=_handle_raster_ingest)
+
+    raster_fetch_worldpop = raster_subparsers.add_parser(
+        "fetch-worldpop",
+        help="Download a WorldPop country raster from the public REST API "
+        "(cached) and optionally clip it to an AOI polygon. Output is "
+        "a local GeoTIFF ready for `raster ingest --raw-path`.",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--country",
+        required=True,
+        help="ISO3 country code, e.g. MEX. Used to query "
+        "https://www.worldpop.org/rest/data/pop/<dataset>?iso3=<C>",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--year",
+        required=True,
+        type=int,
+        help="Population year (e.g. 2020). Must match a popyear row in "
+        "the WorldPop catalogue for the chosen country + dataset.",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--output-path",
+        required=True,
+        help="Where to write the GeoTIFF the operator passes to "
+        "`raster ingest --raw-path` (e.g. data/worldpop_cdmx.tif)",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Where to cache the country-scale GeoTIFF so re-running "
+        "against another AOI doesn't re-download. Defaults to "
+        "data/cache/worldpop/.",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--dataset",
+        default="wpgp",
+        help="WorldPop dataset slug (default 'wpgp' = per-pixel population).",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--aoi-id",
+        help="When set, clip the country raster to this AOI's polygon "
+        "(read from curated_geo.area_of_interest). Without --aoi-id "
+        "the country raster is copied through verbatim — fine for "
+        "small countries but ~1 GB for Mexico.",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--dsn",
+        default=DEFAULT_APP_DSN,
+        help="DSN used to read the AOI polygon when --aoi-id is given.",
+    )
+    raster_fetch_worldpop.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download the country raster even if cached. Use only "
+        "when a previous fetch finished partial / corrupt.",
+    )
+    raster_fetch_worldpop.set_defaults(handler=_handle_raster_fetch_worldpop)
 
     raster_list = raster_subparsers.add_parser(
         "list",
@@ -642,82 +805,137 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     raster_publish.add_argument("--dsn", default=DEFAULT_APP_DSN)
     raster_publish.add_argument("--layer-slug", required=True)
-    raster_publish.add_argument("--unpublish", action="store_true",
-        help="Set published=false instead of true (default: publish)")
+    raster_publish.add_argument(
+        "--unpublish",
+        action="store_true",
+        help="Set published=false instead of true (default: publish)",
+    )
     raster_publish.set_defaults(handler=_handle_raster_publish)
 
     raster_zonal = raster_subparsers.add_parser(
         "zonal-stats",
         help="Compute zonal stats on a raster for every feature of a type, "
-             "writing one observation row per (feature, statistic)",
+        "writing one observation row per (feature, statistic)",
     )
     raster_zonal.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    raster_zonal.add_argument("--source-id", required=True,
+    raster_zonal.add_argument(
+        "--source-id",
+        required=True,
         help="UUID of the raster source (from `raster ingest` output or "
-             "curated_geo.data_source_catalog)")
-    raster_zonal.add_argument("--feature-type", required=True,
+        "curated_geo.data_source_catalog)",
+    )
+    raster_zonal.add_argument(
+        "--feature-type",
+        required=True,
         help="Feature type slug (e.g. 'block', 'ageb') — must be a MEX "
-             "type registered in curated_geo.feature_type_catalog")
-    raster_zonal.add_argument("--attribute-key-prefix", required=True,
+        "type registered in curated_geo.feature_type_catalog",
+    )
+    raster_zonal.add_argument(
+        "--attribute-key-prefix",
+        required=True,
         help="Prefix for the observation attribute_key (e.g. 'lst_day'); "
-             "stats land as '<prefix>_<stat>' (e.g. 'lst_day_mean')")
-    raster_zonal.add_argument("--aoi-id",
-        help="Restrict to features intersecting this AOI; omit for all features of the type")
-    raster_zonal.add_argument("--coverage-threshold", type=float, default=0.5,
-        help="Skip features whose valid/total pixel ratio is below this "
-             "(default 0.5 = 50%%)")
-    raster_zonal.add_argument("--statistics",
+        "stats land as '<prefix>_<stat>' (e.g. 'lst_day_mean')",
+    )
+    raster_zonal.add_argument(
+        "--aoi-id",
+        help="Restrict to features intersecting this AOI; omit for all features of the type",
+    )
+    raster_zonal.add_argument(
+        "--coverage-threshold",
+        type=float,
+        default=0.0,
+        help="Skip features whose fractional valid-pixel count is below this. "
+        "Default 0.0 — write a row for every polygon that overlaps any "
+        "non-nodata cell. Under exactextract's area-weighting, sub-pixel "
+        "polygons (manzanas < 1 ha) get fractional coverage 0..1; values "
+        ">0 still produce correct area-weighted sums. Raise (e.g. 0.5) "
+        "only when explicitly excluding partially-covered polygons.",
+    )
+    raster_zonal.add_argument(
+        "--statistics",
         help="Comma-separated stat names (e.g. 'mean,median,p05,p95'); "
-             "omit to use the aggregation_kind default from raster_layer")
+        "omit to use the aggregation_kind default from raster_layer",
+    )
     raster_zonal.add_argument("--code-version", default="dev")
-    raster_zonal.add_argument("--force", action="store_true",
+    raster_zonal.add_argument(
+        "--force",
+        action="store_true",
         help="Override the prefix-collision check; use only when you have "
-             "verified that co-ownership of the prefix is intentional")
-    raster_zonal.add_argument("--direct-dsn",
+        "verified that co-ownership of the prefix is intentional",
+    )
+    raster_zonal.add_argument(
+        "--direct-dsn",
         help="Postgres-only: direct-port DSN for the advisory-lock "
-             "transaction. Defaults to $DATABASE_URL_DIRECT.")
+        "transaction. Defaults to $DATABASE_URL_DIRECT.",
+    )
     raster_zonal.set_defaults(handler=_handle_raster_zonal_stats)
 
     # ── raster derivation (aggregation recipes, r020) ────────────────────
     derivation_parser = raster_subparsers.add_parser(
         "derivation",
         help="Declarative aggregation recipes: raster→observation and "
-             "observation→observation derivations per target feature grain",
+        "observation→observation derivations per target feature grain",
     )
     derivation_subparsers = derivation_parser.add_subparsers(
-        dest="derivation_command", required=True,
+        dest="derivation_command",
+        required=True,
     )
 
     deriv_add = derivation_subparsers.add_parser(
         "add",
         help="Register a recipe (raster or observation input). Use 'run' "
-             "to materialise the observations it produces.",
+        "to materialise the observations it produces.",
     )
     deriv_add.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    deriv_add.add_argument("--input-kind", choices=["raster", "observation"], required=True)
-    deriv_add.add_argument("--raster-layer-slug",
-        help="Required if --input-kind=raster")
-    deriv_add.add_argument("--input-prefix",
-        help="Required if --input-kind=observation (the attribute_key_prefix on the source observations)")
-    deriv_add.add_argument("--input-feature-type",
-        help="Required if --input-kind=observation (grain of the source observations)")
-    deriv_add.add_argument("--target-feature-type", required=True,
-        help="Feature type slug of the output grain (e.g. 'municipality')")
-    deriv_add.add_argument("--attribute-key-prefix", required=True,
-        help="Output prefix — one observation per (feature, <prefix>_<suffix>)")
-    deriv_add.add_argument("--method", required=True,
-        choices=["mean", "weighted_mean", "sum", "min", "max"])
-    deriv_add.add_argument("--weight-basis", choices=["area", "length", "presence"],
-        help="Required with --method=weighted_mean for observation inputs")
-    deriv_add.add_argument("--params",
-        help="JSON blob of method-specific params (e.g. '{\"stats\":[\"sum\",\"count\"]}' "
-             "for raster inputs that want multiple rasterstats primitives)")
+    deriv_add.add_argument(
+        "--input-kind", choices=["raster", "observation"], required=True
+    )
+    deriv_add.add_argument(
+        "--raster-layer-slug", help="Required if --input-kind=raster"
+    )
+    deriv_add.add_argument(
+        "--input-prefix",
+        help="Required if --input-kind=observation (the attribute_key_prefix on the source observations)",
+    )
+    deriv_add.add_argument(
+        "--input-feature-type",
+        help="Required if --input-kind=observation (grain of the source observations)",
+    )
+    deriv_add.add_argument(
+        "--target-feature-type",
+        required=True,
+        help="Feature type slug of the output grain (e.g. 'municipality')",
+    )
+    deriv_add.add_argument(
+        "--attribute-key-prefix",
+        required=True,
+        help="Output prefix — one observation per (feature, <prefix>_<suffix>)",
+    )
+    deriv_add.add_argument(
+        "--method",
+        required=True,
+        choices=["mean", "weighted_mean", "sum", "min", "max"],
+    )
+    deriv_add.add_argument(
+        "--weight-basis",
+        choices=["area", "length", "presence"],
+        help="Required with --method=weighted_mean for observation inputs",
+    )
+    deriv_add.add_argument(
+        "--params",
+        help='JSON blob of method-specific params (e.g. \'{"stats":["sum","count"]}\' '
+        "for raster inputs that want multiple rasterstats primitives)",
+    )
     deriv_add.add_argument("--coverage-threshold", type=float, default=0.5)
-    deriv_add.add_argument("--aoi-id",
-        help="Restrict recipe execution to features inside this AOI")
-    deriv_add.add_argument("--disabled", action="store_true",
+    deriv_add.add_argument(
+        "--aoi-id", help="Restrict recipe execution to features inside this AOI"
+    )
+    deriv_add.add_argument(
+        "--disabled",
+        action="store_true",
         help="Register the recipe in a disabled state; enable later with "
-             "`derivation enable`")
+        "`derivation enable`",
+    )
     deriv_add.set_defaults(handler=_handle_derivation_add)
 
     deriv_list = derivation_subparsers.add_parser(
@@ -725,8 +943,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show recipes (reads serving_geo.aggregation_recipe_v)",
     )
     deriv_list.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    deriv_list.add_argument("--raster-layer-slug",
-        help="Filter to recipes whose input is this raster layer")
+    deriv_list.add_argument(
+        "--raster-layer-slug", help="Filter to recipes whose input is this raster layer"
+    )
     deriv_list.add_argument("--include-disabled", action="store_true")
     deriv_list.set_defaults(handler=_handle_derivation_list)
 
@@ -736,14 +955,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     deriv_enable.add_argument("--dsn", default=DEFAULT_APP_DSN)
     deriv_enable.add_argument("--recipe-id", required=True)
-    deriv_enable.add_argument("--disable", action="store_true",
-        help="Set enabled=false instead of true")
+    deriv_enable.add_argument(
+        "--disable", action="store_true", help="Set enabled=false instead of true"
+    )
     deriv_enable.set_defaults(handler=_handle_derivation_enable)
 
     deriv_remove = derivation_subparsers.add_parser(
         "remove",
         help="Hard-delete a recipe. Existing observations stay put; "
-             "retire them separately if wanted.",
+        "retire them separately if wanted.",
     )
     deriv_remove.add_argument("--dsn", default=DEFAULT_APP_DSN)
     deriv_remove.add_argument("--recipe-id", required=True)
@@ -754,14 +974,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Materialise one recipe by id, OR every enabled recipe for a raster layer",
     )
     deriv_run.add_argument("--dsn", default=DEFAULT_APP_DSN)
-    deriv_run.add_argument("--recipe-id",
-        help="UUID of a single recipe to run")
-    deriv_run.add_argument("--raster-layer-slug",
+    deriv_run.add_argument("--recipe-id", help="UUID of a single recipe to run")
+    deriv_run.add_argument(
+        "--raster-layer-slug",
         help="Slug of a raster layer; runs every enabled recipe whose "
-             "input is that layer")
-    deriv_run.add_argument("--direct-dsn",
+        "input is that layer",
+    )
+    deriv_run.add_argument(
+        "--direct-dsn",
         help="Postgres-only: direct-port DSN used by the critical section's "
-             "dedicated connection. Defaults to $DATABASE_URL_DIRECT.")
+        "dedicated connection. Defaults to $DATABASE_URL_DIRECT.",
+    )
     deriv_run.set_defaults(handler=_handle_derivation_run)
 
     return parser
@@ -794,7 +1017,9 @@ def _handle_bootstrap_db(args: argparse.Namespace) -> int:
 def _handle_verify_schema(args: argparse.Namespace) -> int:
     with connect(args.dsn) as conn:
         checks = verify_required_relations(conn)
-    return _print({"dsn": args.dsn, "checks": checks, "all_present": all(checks.values())})
+    return _print(
+        {"dsn": args.dsn, "checks": checks, "all_present": all(checks.values())}
+    )
 
 
 def _handle_overture_example(_args: argparse.Namespace) -> int:
@@ -822,7 +1047,13 @@ def _handle_overture_print_extract_sql(_args: argparse.Namespace) -> int:
 
 
 def _handle_overture_extract(args: argparse.Namespace) -> int:
-    return _print(extract_mexico_city_buildings(output_path=args.output_path))
+    return _print(
+        extract_mexico_city_buildings(
+            output_path=args.output_path,
+            release=args.release,
+            bbox=parse_bbox(args.bbox),
+        )
+    )
 
 
 def _handle_overture_load(args: argparse.Namespace) -> int:
@@ -832,6 +1063,9 @@ def _handle_overture_load(args: argparse.Namespace) -> int:
             raw_path=args.raw_path,
             orchestrator_run_id=args.orchestrator_run_id,
             code_version=args.code_version,
+            release=args.release,
+            source_name=args.source_name,
+            aoi_id=args.aoi_id,
         )
     )
 
@@ -978,33 +1212,15 @@ def _handle_inegi_marco_bootstrap(args: argparse.Namespace) -> int:
 
 
 def _handle_inegi_censo_bootstrap(args: argparse.Namespace) -> int:
-    columns = (
-        [c.strip() for c in args.columns.split(",")] if args.columns else None
-    )
+    columns = [c.strip() for c in args.columns.split(",")] if args.columns else None
     cve_ent_filter = list(args.cve_ent) if args.cve_ent else None
-    cve_mun_filter = list(args.cve_mun) if args.cve_mun else None
     return _print(
         bootstrap_inegi_censo(
             dsn=args.dsn,
             cve_ent_filter=cve_ent_filter,
-            cve_mun_filter=cve_mun_filter,
             columns=columns,
             source_root=args.source_root,
             code_version=args.code_version,
-        )
-    )
-
-
-def _handle_inegi_censo_rollups(args: argparse.Namespace) -> int:
-    columns = (
-        [c.strip() for c in args.columns.split(",")] if args.columns else None
-    )
-    grains = [g.strip() for g in args.target_grains.split(",") if g.strip()]
-    return _print(
-        apply_inegi_censo_rollups(
-            dsn=args.dsn,
-            columns=columns,
-            target_grains=grains,
         )
     )
 
@@ -1019,6 +1235,23 @@ def _handle_points_bootstrap(args: argparse.Namespace) -> int:
             code_version=args.code_version,
         )
     )
+
+
+def _handle_aoi_list(args: argparse.Namespace) -> int:
+    return _print(list_aois(dsn=args.dsn))
+
+
+def _handle_aoi_delete(args: argparse.Namespace) -> int:
+    return _print(delete_aoi(dsn=args.dsn, aoi_id=args.aoi_id))
+
+
+def _handle_data_verify_sources(args: argparse.Namespace) -> int:
+    result = verify_sources(
+        release=args.release,
+        worldpop_country=args.worldpop_country,
+    )
+    _print(result)
+    return 0 if result["all_ok"] else 1
 
 
 def _handle_cdmx_aoi_from_alcaldia(args: argparse.Namespace) -> int:
@@ -1125,6 +1358,21 @@ def _handle_raster_ingest(args: argparse.Namespace) -> int:
             published=not args.unpublished,
             code_version=args.code_version,
             orchestrator_run_id=args.orchestrator_run_id,
+        )
+    )
+
+
+def _handle_raster_fetch_worldpop(args: argparse.Namespace) -> int:
+    return _print(
+        fetch_worldpop_raster(
+            country=args.country,
+            year=args.year,
+            output_path=args.output_path,
+            cache_dir=args.cache_dir,
+            dataset=args.dataset,
+            aoi_id=args.aoi_id,
+            dsn=args.dsn,
+            force=args.force,
         )
     )
 

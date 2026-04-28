@@ -4,6 +4,7 @@ The worker itself is exercised by the integration tests; the pure math has
 its own unit coverage so regressions in the formula itself fail fast without
 requiring a database.
 """
+
 from __future__ import annotations
 
 import math

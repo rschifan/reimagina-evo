@@ -1,4 +1,5 @@
 """CLI helpers for the canonical feature_type_catalog."""
+
 from __future__ import annotations
 
 from reimagina.data.feature import FEATURE_TYPE_ROWS, seed_feature_types

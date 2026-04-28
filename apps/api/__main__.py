@@ -4,6 +4,7 @@ Boots uvicorn with the FastAPI instance created in `apps.api.app`. The port
 and host default to dev-friendly values but respect REIMAGINA_API_HOST /
 REIMAGINA_API_PORT env vars for container / prod use.
 """
+
 from __future__ import annotations
 
 import os

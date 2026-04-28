@@ -92,6 +92,35 @@ export interface HoverHighlightConfig {
  * any residual feature-state. Callers don't need to call it in
  * normal use — the handlers live for the life of the map.
  */
+// ── Global suspend bus ───────────────────────────────────────────────
+//
+// While the user is drawing or editing a selection shape, hover
+// highlighting is the wrong affordance: it competes for the mousedown
+// (vertex drag vs. feature select) and adds visual noise to a
+// committed-attention task. Production map tools (Felt, Mapbox
+// Studio) suppress hover globally during draw, so we expose a single
+// bus that flips every registered hover handler at once. The
+// selection-tool wiring in main.ts toggles this on `startDrawing`
+// and off on `clear`.
+
+let _suspended = false;
+const _clearHoverFns = new Set<() => void>();
+
+
+export function setHoverGloballySuspended(suspended: boolean): void {
+  if (_suspended === suspended) return;
+  _suspended = suspended;
+  if (suspended) {
+    // Clear any in-flight highlight on every registered handler so
+    // a hovered feature doesn't keep its cyan outline through the
+    // draw gesture. Resume restores normal mousemove behaviour.
+    for (const clear of _clearHoverFns) {
+      try { clear(); } catch (err) { console.warn("hover clear:", err); }
+    }
+  }
+}
+
+
 export function enableHoverHighlight(
   map: MapLibreMap,
   cfg: HoverHighlightConfig,
@@ -166,6 +195,13 @@ export function enableHoverHighlight(
   };
 
   const onMove = (e: { features?: Array<{ id?: string | number }> }) => {
+    // Suspended while a selection shape is being drawn or edited.
+    // Returning early keeps mousemove a no-op so the user's drag
+    // intent is unambiguously "edit shape", not "hover feature".
+    if (_suspended) {
+      if (hoveredId !== null) clearHover();
+      return;
+    }
     const next = e.features?.[0]?.id;
     if (next === undefined || next === null) {
       clearHover();
@@ -182,10 +218,14 @@ export function enableHoverHighlight(
 
   map.on("mousemove", hitLayerId, onMove);
   map.on("mouseleave", hitLayerId, clearHover);
+  // Register so the global suspend bus can clear our visible state
+  // synchronously when a draw mode starts.
+  _clearHoverFns.add(clearHover);
 
   return () => {
     map.off("mousemove", hitLayerId, onMove);
     map.off("mouseleave", hitLayerId, clearHover);
+    _clearHoverFns.delete(clearHover);
     clearHover();
   };
 }

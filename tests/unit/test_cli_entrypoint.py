@@ -20,7 +20,9 @@ def test_cli_bootstrap_db_delegates(monkeypatch, capsys):
         lambda **kwargs: {"ok": True, **kwargs},
     )
 
-    exit_code = main(["bootstrap-db", "--app-dsn", "postgresql://localhost/reimagina_dev"])
+    exit_code = main(
+        ["bootstrap-db", "--app-dsn", "postgresql://localhost/reimagina_dev"]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -57,7 +59,10 @@ def test_cli_explore_sources_delegates(monkeypatch, capsys):
 def test_cli_explore_feature_stats_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.list_feature_stats",
-        lambda **kwargs: {"feature_stats": [{"type_slug": "building", "row_count": 1}], **kwargs},
+        lambda **kwargs: {
+            "feature_stats": [{"type_slug": "building", "row_count": 1}],
+            **kwargs,
+        },
     )
 
     exit_code = main(["explore", "feature-stats"])
@@ -70,7 +75,10 @@ def test_cli_explore_feature_stats_delegates(monkeypatch, capsys):
 def test_cli_explore_serving_stats_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.list_serving_stats",
-        lambda **kwargs: {"serving_stats": [{"stat_scope": "all", "row_count": 1}], **kwargs},
+        lambda **kwargs: {
+            "serving_stats": [{"stat_scope": "all", "row_count": 1}],
+            **kwargs,
+        },
     )
 
     exit_code = main(["explore", "serving-stats"])
@@ -146,7 +154,9 @@ def test_cli_perf_run_delegates(monkeypatch, capsys):
         lambda **kwargs: {"passed": True, "benchmarks": [], **kwargs},
     )
 
-    exit_code = main(["perf", "run", "--dataset-tier", "smoke", "--benchmark", "bbox_features_small"])
+    exit_code = main(
+        ["perf", "run", "--dataset-tier", "smoke", "--benchmark", "bbox_features_small"]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -267,14 +277,26 @@ def test_cli_feat_seed_types_delegates(monkeypatch, capsys):
 def test_cli_overlap_declare_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.declare_overlap_pair",
-        lambda **kwargs: {"pair": {"source": "MEX:lot", "target": "MEX:block"}, **kwargs},
+        lambda **kwargs: {
+            "pair": {"source": "MEX:lot", "target": "MEX:block"},
+            **kwargs,
+        },
     )
 
-    exit_code = main([
-        "overlap", "declare-pair",
-        "--source-context", "MEX", "--source-slug", "lot",
-        "--target-context", "MEX", "--target-slug", "block",
-    ])
+    exit_code = main(
+        [
+            "overlap",
+            "declare-pair",
+            "--source-context",
+            "MEX",
+            "--source-slug",
+            "lot",
+            "--target-context",
+            "MEX",
+            "--target-slug",
+            "block",
+        ]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -299,7 +321,10 @@ def test_cli_overlap_compute_all_delegates(monkeypatch, capsys):
 def test_cli_overlap_list_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.list_overlap_pairs",
-        lambda **kwargs: {"pairs": [{"source": "MEX:lot", "target": "MEX:block"}], **kwargs},
+        lambda **kwargs: {
+            "pairs": [{"source": "MEX:lot", "target": "MEX:block"}],
+            **kwargs,
+        },
     )
 
     exit_code = main(["overlap", "list-pairs"])
@@ -319,24 +344,35 @@ def test_cli_raster_ingest_delegates(monkeypatch, capsys):
 
     monkeypatch.setattr("apps.cli.app.ingest_raster", _fake)
 
-    exit_code = main([
-        "raster", "ingest",
-        "--raw-path", "/tmp/x.tif",
-        "--source-name", "Test LST",
-        "--provider", "NASA",
-        "--version", "2026-01-15",
-        "--layer-slug", "lst_2026_01_15",
-        "--aggregation-kind", "intensive",
-        "--colormap-name", "inferno",
-        "--rescale", "270,320",
-    ])
+    exit_code = main(
+        [
+            "raster",
+            "ingest",
+            "--raw-path",
+            "/tmp/x.tif",
+            "--source-name",
+            "Test LST",
+            "--provider",
+            "NASA",
+            "--version",
+            "2026-01-15",
+            "--layer-slug",
+            "lst_2026_01_15",
+            "--aggregation-kind",
+            "intensive",
+            "--colormap-name",
+            "inferno",
+            "--rescale",
+            "270,320",
+        ]
+    )
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["layer_slug"] == "lst_2026_01_15"
     assert received["source_name"] == "Test LST"
     assert received["aggregation_kind"] == "intensive"
     assert received["colormap_name"] == "inferno"
-    assert received["published"] is True   # default
+    assert received["published"] is True  # default
 
 
 def test_cli_raster_ingest_unpublished_flag(monkeypatch, capsys):
@@ -346,13 +382,23 @@ def test_cli_raster_ingest_unpublished_flag(monkeypatch, capsys):
         "apps.cli.app.ingest_raster",
         lambda **kw: captured.update(kw) or {"ok": True},
     )
-    exit_code = main([
-        "raster", "ingest",
-        "--raw-path", "/tmp/x.tif",
-        "--source-name", "X", "--provider", "Y",
-        "--version", "v1", "--layer-slug", "x",
-        "--unpublished",
-    ])
+    exit_code = main(
+        [
+            "raster",
+            "ingest",
+            "--raw-path",
+            "/tmp/x.tif",
+            "--source-name",
+            "X",
+            "--provider",
+            "Y",
+            "--version",
+            "v1",
+            "--layer-slug",
+            "x",
+            "--unpublished",
+        ]
+    )
     assert exit_code == 0
     assert captured["published"] is False
 
@@ -394,17 +440,24 @@ def test_cli_cdmx_aoi_from_alcaldia_defaults_to_cdmx(monkeypatch, capsys):
         lambda **kw: captured.update(kw) or {"status": "ok", **kw},
     )
 
-    exit_code = main([
-        "cdmx", "aoi-from-alcaldia",
-        "--cve-mun", "015",
-        "--name", "Cuauhtémoc",
-    ])
+    exit_code = main(
+        [
+            "cdmx",
+            "aoi-from-alcaldia",
+            "--cve-mun",
+            "015",
+            "--name",
+            "Cuauhtémoc",
+        ]
+    )
     assert exit_code == 0
     assert captured["cve_ent"] == "09"
     assert captured["cve_mun"] == "015"
 
 
-def test_cli_cdmx_aoi_from_alcaldia_passes_cve_ent_for_other_states(monkeypatch, capsys):
+def test_cli_cdmx_aoi_from_alcaldia_passes_cve_ent_for_other_states(
+    monkeypatch, capsys
+):
     """--cve-ent 02 lets the same command target Mexicali (Baja California)."""
     captured: dict = {}
     monkeypatch.setattr(
@@ -412,13 +465,20 @@ def test_cli_cdmx_aoi_from_alcaldia_passes_cve_ent_for_other_states(monkeypatch,
         lambda **kw: captured.update(kw) or {"status": "ok", **kw},
     )
 
-    exit_code = main([
-        "cdmx", "aoi-from-alcaldia",
-        "--cve-ent", "02",
-        "--cve-mun", "002",
-        "--name", "Mexicali",
-        "--project-name", "Reimagina pilots",
-    ])
+    exit_code = main(
+        [
+            "cdmx",
+            "aoi-from-alcaldia",
+            "--cve-ent",
+            "02",
+            "--cve-mun",
+            "002",
+            "--name",
+            "Mexicali",
+            "--project-name",
+            "Reimagina pilots",
+        ]
+    )
     assert exit_code == 0
     assert captured["cve_ent"] == "02"
     assert captured["cve_mun"] == "002"
@@ -432,12 +492,18 @@ def test_cli_cdmx_aoi_from_alcaldia_returns_error_when_missing(monkeypatch, caps
         lambda **kw: {"status": "missing_municipality", **kw},
     )
 
-    exit_code = main([
-        "cdmx", "aoi-from-alcaldia",
-        "--cve-ent", "02",
-        "--cve-mun", "002",
-        "--name", "Mexicali",
-    ])
+    exit_code = main(
+        [
+            "cdmx",
+            "aoi-from-alcaldia",
+            "--cve-ent",
+            "02",
+            "--cve-mun",
+            "002",
+            "--name",
+            "Mexicali",
+        ]
+    )
     assert exit_code == 2
 
 
@@ -451,11 +517,16 @@ def test_cli_cdmx_aoi_from_state_targets_whole_entidad(monkeypatch, capsys):
         lambda **kw: captured.update(kw) or {"status": "ok", "aoi_id": "abc", **kw},
     )
 
-    exit_code = main([
-        "cdmx", "aoi-from-state",
-        "--cve-ent", "09",
-        "--name", "CDMX (all)",
-    ])
+    exit_code = main(
+        [
+            "cdmx",
+            "aoi-from-state",
+            "--cve-ent",
+            "09",
+            "--name",
+            "CDMX (all)",
+        ]
+    )
     assert exit_code == 0
     assert captured["cve_ent"] == "09"
     assert captured["name"] == "CDMX (all)"
@@ -471,9 +542,128 @@ def test_cli_cdmx_aoi_from_state_returns_error_when_missing(monkeypatch, capsys)
         lambda **kw: {"status": "missing_state", **kw},
     )
 
-    exit_code = main([
-        "cdmx", "aoi-from-state",
-        "--cve-ent", "99",
-        "--name", "Nonexistent",
-    ])
+    exit_code = main(
+        [
+            "cdmx",
+            "aoi-from-state",
+            "--cve-ent",
+            "99",
+            "--name",
+            "Nonexistent",
+        ]
+    )
     assert exit_code == 2
+
+
+def test_cli_aoi_list_delegates(monkeypatch, capsys):
+    """`aoi list` is the operator's first stop. It must hit list_aois
+    with the supplied dsn and print whatever the helper returns."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.list_aois",
+        lambda **kw: captured.update(kw) or {"aois": [], **kw},
+    )
+    exit_code = main(["aoi", "list", "--dsn", "postgresql://localhost/x"])
+    assert exit_code == 0
+    assert captured == {"dsn": "postgresql://localhost/x"}
+
+
+def test_cli_aoi_delete_passes_aoi_id(monkeypatch, capsys):
+    """`aoi delete` is the only CLI path to remove an AOI — must be
+    reachable without raw SQL. Pinning the call shape here so a
+    refactor that breaks it gets caught."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.delete_aoi",
+        lambda **kw: captured.update(kw) or {"status": "deleted", **kw},
+    )
+    exit_code = main(
+        [
+            "aoi",
+            "delete",
+            "--dsn",
+            "postgresql://localhost/x",
+            "--aoi-id",
+            "abc-123",
+        ]
+    )
+    assert exit_code == 0
+    assert captured == {"dsn": "postgresql://localhost/x", "aoi_id": "abc-123"}
+
+
+def test_cli_data_verify_sources_returns_nonzero_on_failure(monkeypatch, capsys):
+    """`data verify-sources` is the pre-flight smoke test. It MUST exit
+    non-zero on any failure so the runbook (and CI / make verify-sources)
+    can fail-fast before the operator commits to an hour of ingest."""
+    monkeypatch.setattr(
+        "apps.cli.app.verify_sources",
+        lambda **kw: {"all_ok": False, "checks": [{"label": "x", "ok": False}], **kw},
+    )
+    exit_code = main(["data", "verify-sources", "--release", "9999-01-01.0"])
+    assert exit_code == 1
+
+
+def test_cli_data_verify_sources_returns_zero_on_success(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.verify_sources",
+        lambda **kw: {"all_ok": True, "checks": [], **kw},
+    )
+    exit_code = main(["data", "verify-sources"])
+    assert exit_code == 0
+
+
+def test_cli_overture_extract_passes_release_and_bbox(monkeypatch, capsys):
+    """`overture extract` must accept --release and --bbox so a fresh
+    machine isn't trapped at the previously-hardcoded version. Pinning
+    the call shape so a regression is caught at the CLI boundary."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.extract_mexico_city_buildings",
+        lambda **kw: captured.update(kw) or {"output_path": kw["output_path"]},
+    )
+    # ``--bbox=-100,...`` (= form) avoids argparse misreading the leading
+    # minus as a new flag — same trick operators must use in shell.
+    exit_code = main(
+        [
+            "overture",
+            "extract",
+            "--release",
+            "2026-04-15.0",
+            "--bbox=-100.0,19.0,-99.0,20.0",
+            "--output-path",
+            "data/x.parquet",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["release"] == "2026-04-15.0"
+    assert captured["bbox"] == (-100.0, 19.0, -99.0, 20.0)
+
+
+def test_cli_overture_load_passes_aoi_id(monkeypatch, capsys):
+    """`overture load --aoi-id` triggers the polygon-clip step that
+    prevents bbox-only orphans from persisting."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.load_mexico_city_buildings",
+        lambda **kw: captured.update(kw) or {"records_written": 0},
+    )
+    exit_code = main(
+        [
+            "overture",
+            "load",
+            "--dsn",
+            "postgresql://localhost/x",
+            "--raw-path",
+            "data/x.parquet",
+            "--release",
+            "2026-04-15.0",
+            "--source-name",
+            "Overture Buildings - Mexicali",
+            "--aoi-id",
+            "uuid-1",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["aoi_id"] == "uuid-1"
+    assert captured["release"] == "2026-04-15.0"
+    assert captured["source_name"] == "Overture Buildings - Mexicali"

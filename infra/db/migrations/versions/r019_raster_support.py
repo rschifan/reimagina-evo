@@ -25,6 +25,7 @@ Revision ID: r019
 Revises: r018
 Create Date: 2026-04-23
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -39,15 +40,36 @@ depends_on = None
 _NEW_CATALOG_ROWS = [
     # (schema_name, object_name, logical_name, layer_kind, description,
     #  primary_geometry_column, intended_use, display_order)
-    ("curated_geo", "raster_layer", "raster_layers", "canonical",
-     "Registry of published raster tile layers (one row per registered raster asset)", None,
-     "Inspect registered rasters + their publish status + aggregation_kind", 55),
-    ("serving_geo", "raster_layer_v", "raster_layers_serving", "serving",
-     "App-facing view of raster_layer joined with file_asset metadata (published rasters only)", None,
-     "Inspect what /tile-sources and the zonal-stats worker consume", 115),
-    ("explore", "raster_layer_v", "raster_layer_catalog", "explore",
-     "Engineer view: published raster layers + source/version + storage URI", None,
-     "Audit registered rasters + debug tile-source resolution", 940),
+    (
+        "curated_geo",
+        "raster_layer",
+        "raster_layers",
+        "canonical",
+        "Registry of published raster tile layers (one row per registered raster asset)",
+        None,
+        "Inspect registered rasters + their publish status + aggregation_kind",
+        55,
+    ),
+    (
+        "serving_geo",
+        "raster_layer_v",
+        "raster_layers_serving",
+        "serving",
+        "App-facing view of raster_layer joined with file_asset metadata (published rasters only)",
+        None,
+        "Inspect what /tile-sources and the zonal-stats worker consume",
+        115,
+    ),
+    (
+        "explore",
+        "raster_layer_v",
+        "raster_layer_catalog",
+        "explore",
+        "Engineer view: published raster layers + source/version + storage URI",
+        None,
+        "Audit registered rasters + debug tile-source resolution",
+        940,
+    ),
 ]
 
 

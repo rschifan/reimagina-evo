@@ -5,6 +5,7 @@ Mirrors the shape of `apps/cli/overture.py`: thin wrappers that call into
 surface is intentionally small: fetch, bootstrap, status, and an
 aoi-from-alcaldia convenience command.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,9 +108,7 @@ def aoi_from_state(
             project_id=project_id,
             name=name,
             geometry_wkt=geometry_wkt,
-            description=(
-                f"AOI derived from MEX:state CVE_ENT={cve_ent} ({name})."
-            ),
+            description=(f"AOI derived from MEX:state CVE_ENT={cve_ent} ({name})."),
         )
         conn.commit()
 
@@ -204,7 +203,10 @@ _DEV_PROJECT_DESCRIPTION = "Dev project for CDMX realistic-scale validation."
 
 
 def _fetch_municipality_wkt(
-    backend, *, cve_ent: str, cve_mun: str,
+    backend,
+    *,
+    cve_ent: str,
+    cve_mun: str,
 ) -> tuple[str, str] | None:
     """Return (feature_id, geometry_wkt) for the municipality matching (CVE_ENT, CVE_MUN)."""
     row = backend.feature_repo().find_by_attributes(

@@ -8,6 +8,7 @@ one line, not four.
 Resolved at call time so env-var changes (or test monkeypatches) take
 effect without reloading the module.
 """
+
 from __future__ import annotations
 
 import os
@@ -68,7 +69,9 @@ def host_data_root() -> Path:
     absolute, resolved ``Path`` so callers can use it without worrying
     about the cwd the process started in.
     """
-    return Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))).resolve()
+    return Path(
+        os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))
+    ).resolve()
 
 
 # ── Internal URI parser ──────────────────────────────────────────────
@@ -104,7 +107,9 @@ def parse_internal_uri(uri: str) -> PurePosixPath:
         )
     raw_path = m.group(1) or ""
     if not raw_path:
-        raise ValueError(f"URI {uri!r} has no subpath — data root itself is not addressable.")
+        raise ValueError(
+            f"URI {uri!r} has no subpath — data root itself is not addressable."
+        )
     segments = raw_path.split("/")
     for seg in segments:
         if seg == "":

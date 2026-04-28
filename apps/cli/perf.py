@@ -1,4 +1,5 @@
 """CLI helpers for Postgres/PostGIS performance monitoring."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,9 @@ from reimagina.perf import (
 )
 
 
-def seed_observations(*, dsn: str, dataset_tier: str, feature_limit: int | None = None) -> dict[str, Any]:
+def seed_observations(
+    *, dsn: str, dataset_tier: str, feature_limit: int | None = None
+) -> dict[str, Any]:
     with connect(dsn) as conn:
         result = prepare_benchmark_dataset(
             conn,
@@ -42,12 +45,16 @@ def run_perf_benchmarks(
         )
     payload = {"dsn": dsn, **result}
     if output_path:
-        Path(output_path).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        Path(output_path).write_text(
+            json.dumps(payload, indent=2, sort_keys=True, default=str)
+        )
         payload["output_path"] = output_path
     return payload
 
 
-def explain_query(*, dsn: str, benchmark_name: str, dataset_tier: str) -> dict[str, Any]:
+def explain_query(
+    *, dsn: str, benchmark_name: str, dataset_tier: str
+) -> dict[str, Any]:
     with connect(dsn) as conn:
         return {
             "dsn": dsn,

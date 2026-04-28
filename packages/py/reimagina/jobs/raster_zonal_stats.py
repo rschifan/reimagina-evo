@@ -26,6 +26,7 @@ Design-doc rules encoded here (Rev 7):
   section, so a crash in retire/insert still leaves a well-formed
   ``failed`` run row rather than an orphan ``running`` row.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -37,10 +38,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+import math
+
+import exactextract
+import geopandas as gpd
 import rasterio
-import rasterstats
 from rasterio.warp import transform_geom
 from shapely import wkb as shp_wkb
+from shapely.geometry import shape as shapely_shape
 
 from reimagina.data import catalog as cat
 from reimagina.storage import backend_for_connection, connect
@@ -69,7 +74,9 @@ def _finalise_run_safely(conn, run_id: str, *, status: str, details: dict) -> No
         logger.warning(
             "failed to mark ingestion_run %s as %s; "
             "row may remain in running state. Finalise error: %s",
-            run_id, status, finalise_exc,
+            run_id,
+            status,
+            finalise_exc,
         )
 
 
@@ -84,19 +91,29 @@ class ConcurrentRasterRun(RuntimeError):
     """
 
 
-# Map the worker-facing short names to rasterstats' own names.
-# rasterstats exposes percentiles as ``percentile_<n>`` but the
-# design doc writes them as ``p05`` / ``p95`` for readability. This
-# table is the canonical translation.
-_STAT_ALIAS: dict[str, str] = {
-    "p05": "percentile_5",
-    "p95": "percentile_95",
+# Map worker-facing short names to ``(op_input, op_output)`` for
+# exactextract. ``op_input`` is what we pass to ``exact_extract(...,
+# ops=[...])``; ``op_output`` is the column name exactextract emits in
+# the result DataFrame. They differ for quantile-family stats —
+# exactextract names quantile columns ``quantile_<percent>`` (e.g.
+# ``quantile_5``) regardless of the input syntax.
+_STAT_TO_OP: dict[str, tuple[str, str]] = {
+    "p05": ("quantile(q=0.05)", "quantile_5"),
+    "p95": ("quantile(q=0.95)", "quantile_95"),
+    "median": ("quantile(q=0.5)", "quantile_50"),
+    # exactextract names the standard deviation ``stdev`` (input + output).
+    "std": ("stdev", "stdev"),
 }
 
 
-def _rasterstats_name(stat: str) -> str:
-    """Translate a worker-facing stat name to rasterstats' own name."""
-    return _STAT_ALIAS.get(stat, stat)
+def _exactextract_op(stat: str) -> str:
+    """Translate a worker-facing stat name to its exactextract input op-string."""
+    return _STAT_TO_OP.get(stat, (stat, stat))[0]
+
+
+def _exactextract_output_col(stat: str) -> str:
+    """Translate a worker-facing stat name to its exactextract output column name."""
+    return _STAT_TO_OP.get(stat, (stat, stat))[1]
 
 
 # Default statistic set per aggregation_kind. Extensive rasters (counts,
@@ -169,7 +186,7 @@ def run_raster_zonal_stats(
     feature_type_slug: str,
     attribute_key_prefix: str,
     aoi_id: str | None = None,
-    coverage_threshold: float = 0.5,
+    coverage_threshold: float = 0.0,
     statistics: tuple[str, ...] | None = None,
     code_version: str = "dev",
     direct_dsn: str | None = None,
@@ -189,10 +206,15 @@ def run_raster_zonal_stats(
     pathological case where an intensive raster's default set is too
     wide (or too narrow).
 
-    ``coverage_threshold`` is the fraction of valid pixels required
-    for a feature to contribute rows — below that, the feature is
-    skipped and recorded in the ingestion_run details so operators
-    can distinguish "no data" from "not yet computed".
+    ``coverage_threshold`` is the **fractional valid-pixel count**
+    below which a feature is skipped (no observation rows written).
+    Default 0.0 — write a row for every polygon that intersects any
+    non-nodata cell; under exactextract's area-weighting that's the
+    cheap, conservative answer. Raise it (e.g. 0.5) only when callers
+    explicitly want to exclude polygons whose intersection with the
+    raster is too partial to be trusted; the previous (pre-exactextract)
+    default of 0.5 silently dropped manzanas smaller than the raster
+    pixel and is no longer recommended.
 
     Raises :class:`ConcurrentRasterRun` if another run already holds
     the prefix lock. Raises :class:`RuntimeError` for missing
@@ -211,9 +233,7 @@ def run_raster_zonal_stats(
         statistics = _DEFAULT_STATS_BY_KIND[aggregation_kind]
     raster_path = to_host_path(asset["storage_uri"])
 
-    feature_type_id = backend.feature_repo().get_type_id(
-        "MEX", feature_type_slug
-    )
+    feature_type_id = backend.feature_repo().get_type_id("MEX", feature_type_slug)
 
     # --- Transaction A: ingestion_run row, committed before the
     # critical section begins so a crash below leaves a well-formed
@@ -253,7 +273,8 @@ def run_raster_zonal_stats(
         )
     except Exception as exc:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "RasterZonalStatsError",
@@ -277,7 +298,8 @@ def run_raster_zonal_stats(
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "ConcurrentRasterRun",
@@ -287,7 +309,8 @@ def run_raster_zonal_stats(
         raise
     except Exception as exc:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "RasterZonalStatsError",
@@ -301,7 +324,8 @@ def run_raster_zonal_stats(
     # the failure branches so a flaky MV refresh or status write can't
     # leave the run row in 'running' while the observations are live.
     _finalise_run_safely(
-        conn, ingestion_run_id,
+        conn,
+        ingestion_run_id,
         status="succeeded",
         details={
             "features_in_scope": features_in_scope,
@@ -334,61 +358,98 @@ def _compute_zonal_stats_records(
     statistics: tuple[str, ...],
     coverage_threshold: float,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Open the raster, iterate features, produce observation records.
+    """Open the raster, run area-weighted zonal stats over every
+    in-scope feature, produce observation records.
+
+    Implementation notes
+    --------------------
+    Uses :mod:`exactextract` for the aggregation. Unlike rasterstats'
+    centroid-in-polygon policy (which silently dropped manzanas
+    smaller than the WorldPop 100 m pixel), exactextract gives every
+    pixel a fractional weight equal to ``overlap_area / pixel_area``
+    per polygon. That makes ``sum`` over an extensive raster (e.g.
+    population) numerically conservative — i.e. the sum of per-block
+    sums equals the raster total within float tolerance.
+
+    The fractional weights also let us redefine ``coverage_threshold``
+    cleanly: the ``count`` op returns the **fractional valid-pixel
+    count** for the polygon (= 0 if the polygon doesn't intersect any
+    non-nodata cell, > 0 otherwise). Defaulting the threshold to 0.0
+    means we write a row for every polygon that overlaps the raster
+    extent; a polygon entirely off the raster contributes nothing to
+    the observation table at all.
 
     Returns ``(records, features_in_scope, features_skipped_low_coverage)``.
     No DB writes happen here — the caller owns the critical section.
     """
-    rasterstats_stats = [_rasterstats_name(s) for s in statistics]
-    records: list[dict[str, Any]] = []
-    features_in_scope = 0
-    features_skipped_low_coverage = 0
+    # Map every requested user-facing stat name to its exactextract
+    # ``(input op, output column)`` pair. Stored separately so the
+    # quantile-family stats — whose input syntax (``quantile(q=…)``)
+    # differs from their output column name (``quantile_<percent>``) —
+    # don't desync silently.
+    output_col_for_user: dict[str, str] = {
+        s: _exactextract_output_col(s) for s in statistics
+    }
+    requested_ops = [_exactextract_op(s) for s in statistics]
+    # ``count`` (fractional valid-pixel sum) is always pulled — it's
+    # the gate the threshold check uses below. Avoid duplicates if the
+    # caller already asked for it.
+    if "count" not in requested_ops:
+        requested_ops.append("count")
 
+    feat_ids: list[str] = []
+    geoms: list[Any] = []  # shapely geometries in the raster's CRS
     with rasterio.open(raster_path) as rast:
         target_crs = rast.crs.to_string()
-        nodata = rast.nodata
         feature_rows = backend.feature_repo().iter_geometries_by_type(
             type_id=feature_type_id,
             aoi_id=aoi_id,
         )
-
         for feature_id, wkb_bytes in feature_rows:
-            features_in_scope += 1
             geom_4326 = shp_wkb.loads(bytes(wkb_bytes))
-            geom_native = transform_geom(
-                "EPSG:4326", target_crs, geom_4326.__geo_interface__,
+            geom_native_dict = transform_geom(
+                "EPSG:4326",
+                target_crs,
+                geom_4326.__geo_interface__,
             )
-            # Pass the path, not ``rast``: rasterstats' Raster() always
-            # calls rasterio.open() internally and rejects an already-open
-            # DatasetReader. For cloud-hosted COGs this means one extra
-            # range-read for the IFD header per feature — acceptable for
-            # v1. If that overhead ever shows up in profiling, switch to
-            # reading the band into memory once and passing the ndarray +
-            # ``affine`` + ``nodata`` triple instead.
-            stats = rasterstats.zonal_stats(
-                [geom_native],
-                raster_path,
-                stats=list(rasterstats_stats) + ["count", "nodata"],
-                all_touched=False,
-                geojson_out=False,
-                nodata=nodata,
-            )[0]
+            geoms.append(shapely_shape(geom_native_dict))
+            feat_ids.append(feature_id)
 
-            pixels_valid = stats.get("count", 0) or 0
-            pixels_nodata = stats.get("nodata", 0) or 0
-            total = pixels_valid + pixels_nodata
-            coverage_ratio = (pixels_valid / total) if total > 0 else 0.0
-            if coverage_ratio < coverage_threshold:
-                features_skipped_low_coverage += 1
+    features_in_scope = len(geoms)
+    if features_in_scope == 0:
+        return [], 0, 0
+
+    # Single batched call across all polygons. exactextract is built
+    # for this — feeding it one geometry at a time would re-open the
+    # raster and re-run grid-coverage setup for every iteration.
+    gdf = gpd.GeoDataFrame(
+        {"feature_id": feat_ids},
+        geometry=geoms,
+        crs=target_crs,
+    )
+    df = exactextract.exact_extract(
+        raster_path,
+        gdf,
+        requested_ops,
+        include_cols=["feature_id"],
+        output="pandas",
+    )
+
+    records: list[dict[str, Any]] = []
+    features_skipped_low_coverage = 0
+    for _, row in df.iterrows():
+        coverage = row.get("count")
+        coverage = 0.0 if coverage is None or _is_nan(coverage) else float(coverage)
+        if coverage <= 0.0 or coverage < coverage_threshold:
+            features_skipped_low_coverage += 1
+            continue
+        for user_stat in statistics:
+            value = row.get(output_col_for_user[user_stat])
+            if value is None or _is_nan(value):
                 continue
-
-            for user_stat in statistics:
-                rs_name = _rasterstats_name(user_stat)
-                value = stats.get(rs_name)
-                if value is None:
-                    continue
-                records.append({
-                    "feature_id": feature_id,
+            records.append(
+                {
+                    "feature_id": row["feature_id"],
                     "attribute_key": f"{attribute_key_prefix}_{user_stat}",
                     "value": float(value),
                     "value_type": "numeric",
@@ -396,13 +457,23 @@ def _compute_zonal_stats_records(
                         "kind": "raster_zonal_stats",
                         "asset_id": asset_id,
                         "stat_name": user_stat,
-                        "pixels_valid": pixels_valid,
-                        "pixels_nodata": pixels_nodata,
-                        "coverage_ratio": coverage_ratio,
+                        "fractional_pixel_count": coverage,
                     },
-                })
+                }
+            )
 
     return records, features_in_scope, features_skipped_low_coverage
+
+
+def _is_nan(value: object) -> bool:
+    """``math.isnan`` only accepts floats; pandas may hand us a numpy
+    scalar or a Python None inside a DataFrame cell. This wrapper
+    accepts either and returns False on non-numeric types so callers
+    don't have to litter the read path with try/except."""
+    try:
+        return bool(math.isnan(float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
 
 
 def _run_critical_section(
@@ -528,6 +599,7 @@ def _backend_name(conn) -> str:
     """Return ``'postgres'`` or ``'duckdb'`` for the connection type."""
     import duckdb as _duckdb
     import psycopg2.extensions as _pg_ext
+
     if isinstance(conn, _duckdb.DuckDBPyConnection):
         return "duckdb"
     if isinstance(conn, _pg_ext.connection):
@@ -546,6 +618,7 @@ def _maybe_commit(conn) -> None:
     flag.
     """
     import duckdb as _duckdb
+
     if isinstance(conn, _duckdb.DuckDBPyConnection):
         conn.commit()
         return

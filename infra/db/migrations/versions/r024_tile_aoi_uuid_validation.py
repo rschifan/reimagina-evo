@@ -20,6 +20,7 @@ Revision ID: r024
 Revises: r023
 Create Date: 2026-04-27
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -35,7 +36,9 @@ depends_on = None
 # the standard 8-4-4-4-12 hex shape avoids accidentally matching
 # upstream-formatted variants (e.g. with curly braces) and gives
 # Postgres a literal regex it can short-circuit cheaply.
-_UUID_RE = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+_UUID_RE = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 _INDICATOR_OVERLAY_TILE_BODY = f"""
