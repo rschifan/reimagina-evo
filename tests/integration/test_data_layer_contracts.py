@@ -133,7 +133,10 @@ def test_explore_views_surface_source_and_feature_counts(conn):
     assert any(row["logical_name"] == "feature_type_stats" for row in layers)
 
     sources = backend_for_connection(conn).explore_reader().list_sources()
-    assert any(row["source_id"] == source_id and row["ingestion_run_id"] == run_id for row in sources)
+    assert any(
+        row["source_id"] == source_id and row["ingestion_run_id"] == run_id
+        for row in sources
+    )
 
     feature_stats = backend_for_connection(conn).explore_reader().list_feature_stats()
     assert any(
@@ -144,24 +147,38 @@ def test_explore_views_surface_source_and_feature_counts(conn):
     )
 
     serving_stats = backend_for_connection(conn).explore_reader().list_serving_stats()
-    assert any(row["stat_scope"] == "all" and row["row_count"] >= 1 for row in serving_stats)
+    assert any(
+        row["stat_scope"] == "all" and row["row_count"] >= 1 for row in serving_stats
+    )
 
 
 def test_tile_snapshot_registry_and_source_resolution(conn):
-    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
+    latest = (
+        backend_for_connection(conn)
+        .tile_repo()
+        .get_latest_snapshot(layer_id="admin_reference")
+    )
     assert latest is None
 
-    snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
-        layer_id="admin_reference",
-        artifact_path="/tmp/admin_reference-20260415T120000Z.pmtiles",
-        artifact_uri="http://localhost:3001/admin_reference-20260415T120000Z.pmtiles",
-        snapshot_version="20260415T120000Z",
-        source_relation="serving_geo.admin_v",
-        source_lineage_ref={"latest_successful_ingestion_run_id": None},
+    snapshot_id = (
+        backend_for_connection(conn)
+        .tile_repo()
+        .register_snapshot(
+            layer_id="admin_reference",
+            artifact_path="/tmp/admin_reference-20260415T120000Z.pmtiles",
+            artifact_uri="http://localhost:3001/admin_reference-20260415T120000Z.pmtiles",
+            snapshot_version="20260415T120000Z",
+            source_relation="serving_geo.admin_v",
+            source_lineage_ref={"latest_successful_ingestion_run_id": None},
+        )
     )
     assert snapshot_id
 
-    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
+    latest = (
+        backend_for_connection(conn)
+        .tile_repo()
+        .get_latest_snapshot(layer_id="admin_reference")
+    )
     assert latest is not None
     assert latest["layer_id"] == "admin_reference"
 
@@ -175,7 +192,10 @@ def test_tile_snapshot_registry_and_source_resolution(conn):
     assert by_id["admin_reference"]["available"] is True
     assert by_id["admin_reference"]["source_config"]["url"].endswith(".pmtiles")
     assert by_id["baseline_live"]["source_mode"] == "live_mvt"
-    assert by_id["baseline_live"]["source_config"]["tilejson_url"] == "http://localhost:3000/get_tile"
+    assert (
+        by_id["baseline_live"]["source_config"]["tilejson_url"]
+        == "http://localhost:3000/get_tile"
+    )
 
 
 def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path):
@@ -202,10 +222,17 @@ def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path)
     assert payload["layer_id"] == "admin_reference"
     assert Path(payload["artifact_path"]).exists()
 
-    latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
+    latest = (
+        backend_for_connection(conn)
+        .tile_repo()
+        .get_latest_snapshot(layer_id="admin_reference")
+    )
     assert latest is not None
     assert latest["snapshot_version"] == "20260415T130000Z"
-    assert latest["artifact_uri"] == "http://localhost:3001/admin_reference-20260415T130000Z.pmtiles"
+    assert (
+        latest["artifact_uri"]
+        == "http://localhost:3001/admin_reference-20260415T130000Z.pmtiles"
+    )
 
 
 def test_postgres_index_inventory_covers_lineage_and_fk_paths(conn):
@@ -623,10 +650,14 @@ def test_rls_tenant_isolation_policy_exists(conn):
         )
         rows = {(r[0], r[1]): r[3] for r in cur.fetchall()}
 
-    assert ("app_core", "project") in rows, "Missing tenant_isolation policy on app_core.project"
-    assert ("curated_geo", "area_of_interest") in rows, (
-        "Missing tenant_isolation policy on curated_geo.area_of_interest"
-    )
+    assert (
+        "app_core",
+        "project",
+    ) in rows, "Missing tenant_isolation policy on app_core.project"
+    assert (
+        "curated_geo",
+        "area_of_interest",
+    ) in rows, "Missing tenant_isolation policy on curated_geo.area_of_interest"
     # Both policies must be PERMISSIVE — not restrictive — so that unset setting
     # allows all rows through (existing code without SET LOCAL continues to work).
     assert rows[("app_core", "project")] == "PERMISSIVE"
@@ -704,13 +735,17 @@ def test_overlap_jobs_declare_list_and_compute_all_pairs(conn):
 
     first = overlap_jobs.declare_pair(
         conn,
-        source_context="MEX", source_slug="lot",
-        target_context="MEX", target_slug="block",
+        source_context="MEX",
+        source_slug="lot",
+        target_context="MEX",
+        target_slug="block",
     )
     second = overlap_jobs.declare_pair(
         conn,
-        source_context="MEX", source_slug="lot",
-        target_context="MEX", target_slug="block",
+        source_context="MEX",
+        source_slug="lot",
+        target_context="MEX",
+        target_slug="block",
     )
     assert first == second
 
@@ -753,24 +788,50 @@ def test_overlap_compute_all_pairs_scopes_by_aoi(conn):
     lot_type = feat.get_type_id(conn, "MEX", "lot")
 
     # Two blocks side by side.
-    _insert_feature(conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="blk-L",
-        geometry_wkt="POLYGON((-99.150 19.430,-99.140 19.430,-99.140 19.440,-99.150 19.440,-99.150 19.430))")
-    _insert_feature(conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="blk-R",
-        geometry_wkt="POLYGON((-99.130 19.430,-99.120 19.430,-99.120 19.440,-99.130 19.440,-99.130 19.430))")
+    _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="blk-L",
+        geometry_wkt="POLYGON((-99.150 19.430,-99.140 19.430,-99.140 19.440,-99.150 19.440,-99.150 19.430))",
+    )
+    _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="blk-R",
+        geometry_wkt="POLYGON((-99.130 19.430,-99.120 19.430,-99.120 19.440,-99.130 19.440,-99.130 19.430))",
+    )
     # A lot inside each block.
-    _insert_feature(conn, type_id=lot_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="lot-L",
-        geometry_wkt="POLYGON((-99.148 19.432,-99.142 19.432,-99.142 19.438,-99.148 19.438,-99.148 19.432))")
-    _insert_feature(conn, type_id=lot_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="lot-R",
-        geometry_wkt="POLYGON((-99.128 19.432,-99.122 19.432,-99.122 19.438,-99.128 19.438,-99.128 19.432))")
+    _insert_feature(
+        conn,
+        type_id=lot_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="lot-L",
+        geometry_wkt="POLYGON((-99.148 19.432,-99.142 19.432,-99.142 19.438,-99.148 19.438,-99.148 19.432))",
+    )
+    _insert_feature(
+        conn,
+        type_id=lot_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="lot-R",
+        geometry_wkt="POLYGON((-99.128 19.432,-99.122 19.432,-99.122 19.438,-99.128 19.438,-99.128 19.432))",
+    )
 
     overlap_jobs.declare_pair(
         conn,
-        source_context="MEX", source_slug="lot",
-        target_context="MEX", target_slug="block",
+        source_context="MEX",
+        source_slug="lot",
+        target_context="MEX",
+        target_slug="block",
     )
 
     project_id = _insert_project(conn, name="Overlap AOI Scope Project")
@@ -814,12 +875,16 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
     indicator_id = str(uuid4())
 
     first = summary_repo.upsert_summary(
-        aoi_id=aoi_id, indicator_id=indicator_id, value=1.0,
+        aoi_id=aoi_id,
+        indicator_id=indicator_id,
+        value=1.0,
         aggregation_note="seed",
     )
     # Re-upsert (no scenario) → same id, updated value.
     second = summary_repo.upsert_summary(
-        aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+        aoi_id=aoi_id,
+        indicator_id=indicator_id,
+        value=2.0,
         aggregation_note="reran",
     )
     assert first == second
@@ -831,7 +896,9 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
 
     scenario_id = str(uuid4())
     scenario_summary_id = summary_repo.upsert_summary(
-        aoi_id=aoi_id, indicator_id=indicator_id, value=5.0,
+        aoi_id=aoi_id,
+        indicator_id=indicator_id,
+        value=5.0,
         scenario_id=scenario_id,
     )
     assert scenario_summary_id != first
@@ -844,7 +911,10 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
 
     # Marking the base-city row stale drops it from the serving view.
     summary_repo.upsert_summary(
-        aoi_id=aoi_id, indicator_id=indicator_id, value=2.0, status="stale",
+        aoi_id=aoi_id,
+        indicator_id=indicator_id,
+        value=2.0,
+        status="stale",
     )
     assert summary_repo.list_summaries(aoi_id=aoi_id) == []
 
@@ -894,21 +964,29 @@ def test_summarise_aoi_end_to_end_weighted_mean_postgres(conn):
     # nested → weight ≈1.0) would give the same. A correctly area-weighted
     # mean must be close to the big block's 0.1, i.e. well below 0.3.
     source_id = _register_source(
-        conn, name="aoi_summary_e2e_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="aoi_summary_e2e_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     small_block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="small",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="small",
         geometry_wkt="POLYGON((0 0, 0.001 0, 0.001 0.001, 0 0.001, 0 0))",
     )
     big_block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="big",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="big",
         geometry_wkt="POLYGON((0.002 0, 0.005 0, 0.005 0.003, 0.002 0.003, 0.002 0))",
     )
     aoi_id = aoi.create_aoi(
@@ -1026,7 +1104,11 @@ def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
         assert artifact_path.stat().st_size > 0, "PMTiles artifact is empty"
         assert payload["source_relation"] == "serving_geo.admin_v"
 
-        latest = backend_for_connection(conn).tile_repo().get_latest_snapshot(layer_id="admin_reference")
+        latest = (
+            backend_for_connection(conn)
+            .tile_repo()
+            .get_latest_snapshot(layer_id="admin_reference")
+        )
         assert latest is not None
         assert latest["snapshot_version"] == payload["snapshot_version"]
         assert latest["status"] == "ready"
@@ -1057,7 +1139,10 @@ def test_block_compactness_end_to_end(conn):
     """Postgres: full vertical slice exercising the indicator_result trigger."""
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="compactness_src", storage_type="vector", integration_role="canonical_entity"
+        conn,
+        name="compactness_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
 
@@ -1085,7 +1170,9 @@ def test_block_compactness_end_to_end(conn):
     assert result.rows_written == 2
 
     result_repo = backend_for_connection(conn).indicator_result_repo()
-    current = result_repo.list_current_for_indicator(indicator_slug="urban_form_block_compactness")
+    current = result_repo.list_current_for_indicator(
+        indicator_slug="urban_form_block_compactness"
+    )
     by_ref: dict[str, float] = {}
     for row in current:
         with conn.cursor() as cur:
@@ -1125,7 +1212,10 @@ def test_indicator_applies_to_enforced_by_trigger(conn):
     """
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="applies_to_src", storage_type="vector", integration_role="canonical_entity"
+        conn,
+        name="applies_to_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     muni_type = feat.get_type_id(conn, "MEX", "municipality")
@@ -1158,7 +1248,10 @@ def test_block_building_density_end_to_end(conn):
     """Postgres: building-density vertical slice including trigger bounds."""
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="density_src", storage_type="vector", integration_role="canonical_entity"
+        conn,
+        name="density_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
 
@@ -1167,20 +1260,29 @@ def test_block_building_density_end_to_end(conn):
 
     dense_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="dense",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="dense",
         geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
     )
     sparse_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="sparse",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="sparse",
         geometry_wkt="POLYGON((-99.130 19.430,-99.127 19.430,-99.127 19.433,-99.130 19.433,-99.130 19.430))",
     )
     _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="empty",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="empty",
         geometry_wkt="POLYGON((-99.120 19.430,-99.117 19.430,-99.117 19.433,-99.120 19.433,-99.120 19.430))",
     )
 
@@ -1194,8 +1296,11 @@ def test_block_building_density_end_to_end(conn):
     ]:
         _insert_feature(
             conn,
-            type_id=building_type, source_id=source_id, ingestion_run_id=run_id,
-            dataset_version="v1", source_record_ref=ref,
+            type_id=building_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
             geometry_wkt=(
                 f"POLYGON(({lon} {lat},{lon + 0.0001} {lat},"
                 f"{lon + 0.0001} {lat + 0.0001},{lon} {lat + 0.0001},{lon} {lat}))"
@@ -1208,8 +1313,9 @@ def test_block_building_density_end_to_end(conn):
 
     result_repo = backend_for_connection(conn).indicator_result_repo()
     current = {
-        (row["indicator_slug"],
-         _fetch_source_ref(conn, row["feature_id"])): float(row["value_numeric"])
+        (row["indicator_slug"], _fetch_source_ref(conn, row["feature_id"])): float(
+            row["value_numeric"]
+        )
         for row in result_repo.list_current_for_indicator(
             indicator_slug="urban_form_block_building_density"
         )
@@ -1256,20 +1362,33 @@ def _r1_seed_raster_source(conn, *, name: str = "r1-test") -> tuple[str, str, st
     (source_id, ingestion_run_id, asset_id)."""
     src_id = cat.register_source(
         conn,
-        name=name, provider="pytest", storage_type="raster",
+        name=name,
+        provider="pytest",
+        storage_type="raster",
         integration_role="enrichment",
-        storage_uri="file://data/silver/x.cog.tif", version="v1",
+        storage_uri="file://data/silver/x.cog.tif",
+        version="v1",
     )
     run_id = cat.start_ingestion_run(
         conn,
-        source_id=src_id, orchestrator="pytest",
+        source_id=src_id,
+        orchestrator="pytest",
         orchestrator_run_id=str(uuid4()),
-        transformation_step="test_seed", code_version="test",
+        transformation_step="test_seed",
+        code_version="test",
     )
-    asset_id = backend_for_connection(conn).file_asset_repo().register_file_asset(
-        source_id=src_id, ingestion_run_id=run_id,
-        storage_uri="file://data/silver/x.cog.tif", dataset_version="v1",
-        format="COG", crs="EPSG:4326", resolution_m=30.0,
+    asset_id = (
+        backend_for_connection(conn)
+        .file_asset_repo()
+        .register_file_asset(
+            source_id=src_id,
+            ingestion_run_id=run_id,
+            storage_uri="file://data/silver/x.cog.tif",
+            dataset_version="v1",
+            format="COG",
+            crs="EPSG:4326",
+            resolution_m=30.0,
+        )
     )
     return src_id, run_id, asset_id
 
@@ -1280,21 +1399,29 @@ def test_r1_feature_iter_geometries_by_type_returns_wkb_per_feature(conn):
     from shapely import wkb as shp_wkb
 
     source_id = _register_source(
-        conn, name="r1_iter_geom_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="r1_iter_geom_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
 
     # Two blocks outside + one inside the AOI.
-    for i, wkt in enumerate([
-        "POLYGON((10 10, 11 10, 11 11, 10 11, 10 10))",   # outside AOI
-        "POLYGON((20 20, 21 20, 21 21, 20 21, 20 20))",   # outside AOI
-        "POLYGON((0.2 0.2, 0.4 0.2, 0.4 0.4, 0.2 0.4, 0.2 0.2))",  # inside AOI
-    ]):
+    for i, wkt in enumerate(
+        [
+            "POLYGON((10 10, 11 10, 11 11, 10 11, 10 10))",  # outside AOI
+            "POLYGON((20 20, 21 20, 21 21, 20 21, 20 20))",  # outside AOI
+            "POLYGON((0.2 0.2, 0.4 0.2, 0.4 0.4, 0.2 0.4, 0.2 0.2))",  # inside AOI
+        ]
+    ):
         _insert_feature(
-            conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-            dataset_version="v1", source_record_ref=f"r1-iter-{i}",
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=f"r1-iter-{i}",
             geometry_wkt=wkt,
         )
 
@@ -1312,7 +1439,9 @@ def test_r1_feature_iter_geometries_by_type_returns_wkb_per_feature(conn):
     # AOI-scoped: only the feature intersecting the AOI polygon is returned.
     project_id = _insert_project(conn, name="R1 iter_geom AOI")
     aoi_id = aoi.create_aoi(
-        conn, project_id=project_id, name="r1-aoi",
+        conn,
+        project_id=project_id,
+        name="r1-aoi",
         geometry_wkt="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
     )
     scoped = repo.iter_geometries_by_type(type_id=block_type, aoi_id=aoi_id)
@@ -1349,28 +1478,50 @@ def test_r1_retire_current_by_prefix_is_separator_safe(conn):
     If a future edit reintroduces LIKE/ESCAPE, this test fires.
     """
     source_id = _register_source(
-        conn, name="r1_retire_src",
-        storage_type="tabular", integration_role="enrichment",
+        conn,
+        name="r1_retire_src",
+        storage_type="tabular",
+        integration_role="enrichment",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     fid = _insert_feature(
-        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="r1-retire-blk",
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="r1-retire-blk",
         geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
     )
     obs_repo = backend_for_connection(conn).observation_repo()
     obs_repo.bulk_upsert_current(
         [
-            {"feature_id": fid, "attribute_key": "ndvi",       "value": 0.7, "value_type": "numeric"},
-            {"feature_id": fid, "attribute_key": "ndvi_mean",  "value": 0.5, "value_type": "numeric"},
-            {"feature_id": fid, "attribute_key": "ndvi2_mean", "value": 0.9, "value_type": "numeric"},
+            {
+                "feature_id": fid,
+                "attribute_key": "ndvi",
+                "value": 0.7,
+                "value_type": "numeric",
+            },
+            {
+                "feature_id": fid,
+                "attribute_key": "ndvi_mean",
+                "value": 0.5,
+                "value_type": "numeric",
+            },
+            {
+                "feature_id": fid,
+                "attribute_key": "ndvi2_mean",
+                "value": 0.9,
+                "value_type": "numeric",
+            },
         ],
-        source_id=source_id, ingestion_run_id=run_id,
+        source_id=source_id,
+        ingestion_run_id=run_id,
     )
 
     retired = obs_repo.retire_current_by_prefix(prefix="ndvi")
-    assert retired == 2   # 'ndvi' + 'ndvi_mean', NOT 'ndvi2_mean'
+    assert retired == 2  # 'ndvi' + 'ndvi_mean', NOT 'ndvi2_mean'
 
     with conn.cursor() as cur:
         cur.execute(
@@ -1395,37 +1546,62 @@ def test_r1_has_active_prefix_excludes_own_source(conn):
     excluding_source_id=A) sees B's current row; excluding=B sees A's;
     excluding both (via a third UUID) sees whichever remains."""
     src_a = _register_source(
-        conn, name="r1_active_a",
-        storage_type="tabular", integration_role="enrichment",
+        conn,
+        name="r1_active_a",
+        storage_type="tabular",
+        integration_role="enrichment",
     )
     run_a = _start_run(conn, src_a)
     block_type = feat.get_type_id(conn, "MEX", "block")
     fid = _insert_feature(
-        conn, type_id=block_type, source_id=src_a, ingestion_run_id=run_a,
-        dataset_version="v1", source_record_ref="r1-active-blk",
+        conn,
+        type_id=block_type,
+        source_id=src_a,
+        ingestion_run_id=run_a,
+        dataset_version="v1",
+        source_record_ref="r1-active-blk",
         geometry_wkt="POLYGON((0 0,1 0,1 1,0 1,0 0))",
     )
     obs_repo = backend_for_connection(conn).observation_repo()
     obs_repo.bulk_upsert_current(
-        [{"feature_id": fid, "attribute_key": "lst_mean",
-          "value": 300.0, "value_type": "numeric"}],
-        source_id=src_a, ingestion_run_id=run_a,
+        [
+            {
+                "feature_id": fid,
+                "attribute_key": "lst_mean",
+                "value": 300.0,
+                "value_type": "numeric",
+            }
+        ],
+        source_id=src_a,
+        ingestion_run_id=run_a,
     )
 
     # Excluding A → no other source has it → False.
     assert obs_repo.has_active_prefix(prefix="lst", excluding_source_id=src_a) is False
     # Excluding a random UUID → A still owns it → True.
-    assert obs_repo.has_active_prefix(
-        prefix="lst", excluding_source_id=str(uuid4()),
-    ) is True
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="lst",
+            excluding_source_id=str(uuid4()),
+        )
+        is True
+    )
     # Exact prefix match also counts (attribute_key = 'lst_mean' starts with 'lst_').
-    assert obs_repo.has_active_prefix(
-        prefix="lst_mean", excluding_source_id=str(uuid4()),
-    ) is True
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="lst_mean",
+            excluding_source_id=str(uuid4()),
+        )
+        is True
+    )
     # Separator-safe: prefix='ls' must NOT match 'lst_mean'.
-    assert obs_repo.has_active_prefix(
-        prefix="ls", excluding_source_id=str(uuid4()),
-    ) is False
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="ls",
+            excluding_source_id=str(uuid4()),
+        )
+        is False
+    )
 
 
 def test_r1_raster_layer_repo_lifecycle(conn):
@@ -1435,9 +1611,13 @@ def test_r1_raster_layer_repo_lifecycle(conn):
     repo = backend_for_connection(conn).raster_layer_repo()
 
     layer_id = repo.register_layer(
-        source_id=src_id, asset_id=asset_id, layer_slug="r1_lifecycle",
-        logical_name="R1 lifecycle test", aggregation_kind="intensive",
-        colormap_name="viridis", rescale="0,1",
+        source_id=src_id,
+        asset_id=asset_id,
+        layer_slug="r1_lifecycle",
+        logical_name="R1 lifecycle test",
+        aggregation_kind="intensive",
+        colormap_name="viridis",
+        rescale="0,1",
     )
     assert layer_id
 
@@ -1469,7 +1649,9 @@ def test_r1_raster_layer_aggregation_kind_check_constraint(conn):
     repo = backend_for_connection(conn).raster_layer_repo()
     with pytest.raises(psycopg2.errors.CheckViolation):
         repo.register_layer(
-            source_id=src_id, asset_id=asset_id, layer_slug="r1_bad_kind",
+            source_id=src_id,
+            asset_id=asset_id,
+            layer_slug="r1_bad_kind",
             aggregation_kind="categorical",
         )
     conn.rollback()

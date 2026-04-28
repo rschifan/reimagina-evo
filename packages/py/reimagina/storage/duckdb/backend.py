@@ -1,4 +1,5 @@
 """DuckDB + spatial storage backend wiring."""
+
 from __future__ import annotations
 
 from .migrations import run_duckdb_migrations

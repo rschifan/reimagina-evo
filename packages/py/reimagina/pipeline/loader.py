@@ -1,4 +1,5 @@
 """Silver → curated_geo loader. Routes by storage_type."""
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
@@ -75,9 +76,8 @@ def load_vector_source(
     try:
         backend = backend_for_connection(conn)
         feature_repo = backend.feature_repo()
-        if (
-            Path(silver_path).suffix.lower() == ".parquet"
-            and hasattr(feature_repo, "bulk_insert_features_from_parquet")
+        if Path(silver_path).suffix.lower() == ".parquet" and hasattr(
+            feature_repo, "bulk_insert_features_from_parquet"
         ):
             count = feature_repo.bulk_insert_features_from_parquet(
                 parquet_path=silver_path,
@@ -102,8 +102,9 @@ def load_vector_source(
                 name_col=name_col,
                 attributes_cols=attributes_cols,
             )
-        cat.complete_ingestion_run(conn, run_id, status="succeeded",
-                                   details={"records_written": count})
+        cat.complete_ingestion_run(
+            conn, run_id, status="succeeded", details={"records_written": count}
+        )
         conn.commit()
         return {"ingestion_run_id": run_id, "records_written": count}
     except Exception as exc:
@@ -160,8 +161,9 @@ def load_tabular_source(
         count = obs.bulk_upsert_observations(
             conn, records, source_id=source_id, ingestion_run_id=run_id
         )
-        cat.complete_ingestion_run(conn, run_id, status="succeeded",
-                                   details={"records_written": count})
+        cat.complete_ingestion_run(
+            conn, run_id, status="succeeded", details={"records_written": count}
+        )
         conn.commit()
         return {"ingestion_run_id": run_id, "records_written": count}
     except Exception as exc:

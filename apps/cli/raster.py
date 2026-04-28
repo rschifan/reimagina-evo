@@ -1,16 +1,21 @@
 """CLI helpers for the raster ingest pipeline (R2) + zonal stats (R3).
 
 Subcommands:
-    reimagina raster ingest       — land + stage + register a single-band raster
-    reimagina raster list         — dump the engineer-inspection view of registered layers
-    reimagina raster publish      — flip the published flag on a layer_slug
-    reimagina raster zonal-stats  — write per-feature stats from a raster to observations
+    reimagina raster fetch-worldpop — download (cached) + optionally clip
+                                      a WorldPop country raster, ready
+                                      to feed into ``raster ingest``
+    reimagina raster ingest         — land + stage + register a single-band raster
+    reimagina raster list           — dump the engineer-inspection view of registered layers
+    reimagina raster publish        — flip the published flag on a layer_slug
+    reimagina raster zonal-stats    — write per-feature stats from a raster to observations
 
 Kept as thin argparse wrappers over the pipeline / repo / worker calls
 — all actual logic lives in reimagina.pipeline.raster,
-reimagina.jobs.raster_zonal_stats, and the R1 storage surface. The
-CLI's job is parsing flags + serialising output as JSON.
+reimagina.pipeline.worldpop, reimagina.jobs.raster_zonal_stats, and
+the R1 storage surface. The CLI's job is parsing flags + serialising
+output as JSON.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,6 +31,7 @@ from reimagina.jobs.raster_zonal_stats import (
     ConcurrentRasterRun,
     run_raster_zonal_stats,
 )
+from reimagina.pipeline import worldpop as worldpop_pipeline
 from reimagina.pipeline.raster import ingest_raster_source
 from reimagina.storage import backend_for_connection
 
@@ -104,6 +110,76 @@ def ingest_raster(
     }
 
 
+def fetch_worldpop_raster(
+    *,
+    country: str,
+    year: int,
+    output_path: str | Path,
+    cache_dir: str | Path | None = None,
+    dataset: str = worldpop_pipeline.DEFAULT_DATASET,
+    aoi_id: str | None = None,
+    dsn: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Resolve a WorldPop country raster from the public REST API,
+    optionally clip it to an AOI polygon, and write the result to
+    ``output_path``.
+
+    The output of this helper is exactly what ``raster ingest`` expects
+    via ``--raw-path`` — no post-processing required between the two
+    steps. We deliberately keep the country-scale fetch + the AOI clip
+    inside this CLI helper (not in the lower-level pipeline module) so
+    the DB lookup for the AOI polygon stays in the CLI layer where
+    the connection lifecycle is already managed.
+
+    ``aoi_id`` is required to perform the clip; without it the country
+    raster (~1 GB for Mexico) is copied through verbatim.
+    """
+    aoi_geometry_wkt: str | None = None
+    if aoi_id is not None:
+        if dsn is None:
+            raise ValueError(
+                "fetch_worldpop_raster: dsn is required when aoi_id is given "
+                "— the AOI polygon is read from curated_geo.area_of_interest"
+            )
+        # The AOI repo's ``get_aoi`` deliberately omits geometry to keep
+        # the JSON response slim for the web app. For clipping we need
+        # WKT, so query it directly here. ``ST_AsText(geometry)`` is
+        # cheap (single row, indexed by uuid) and the CLI is the only
+        # caller that needs the full polygon.
+        with connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name, ST_AsText(geometry) "
+                    "FROM curated_geo.area_of_interest WHERE id = %s",
+                    (aoi_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise ValueError(
+                f"fetch_worldpop_raster: AOI id {aoi_id!r} not found in "
+                f"curated_geo.area_of_interest. Run `aoi list` to confirm "
+                f"the uuid."
+            )
+        _aoi_name, aoi_geometry_wkt = row
+        if not aoi_geometry_wkt:
+            raise ValueError(
+                f"AOI {aoi_id!r} has no geometry — clipping requires a "
+                f"polygon. Inspect curated_geo.area_of_interest.geometry "
+                f"for this row."
+            )
+
+    return worldpop_pipeline.fetch(
+        country=country,
+        year=year,
+        output_path=output_path,
+        cache_dir=cache_dir,
+        dataset=dataset,
+        aoi_geometry_wkt=aoi_geometry_wkt,
+        force=force,
+    )
+
+
 def list_raster_layers(*, dsn: str) -> dict[str, Any]:
     """List every raster layer registered in the DB.
 
@@ -140,7 +216,7 @@ def run_zonal_stats(
     feature_type_slug: str,
     attribute_key_prefix: str,
     aoi_id: str | None = None,
-    coverage_threshold: float = 0.5,
+    coverage_threshold: float = 0.0,
     statistics: str | None = None,
     code_version: str = "dev",
     force: bool = False,
@@ -270,7 +346,8 @@ def _check_small_feature_warning(
     except Exception:
         return None
     metrics = backend.feature_repo().geodesic_metrics_by_type(
-        type_id=type_id, aoi_id=aoi_id,
+        type_id=type_id,
+        aoi_id=aoi_id,
     )
     if not metrics:
         return None
@@ -292,12 +369,15 @@ def _check_small_feature_warning(
     return None
 
 
-def set_raster_published(*, dsn: str, layer_slug: str, published: bool) -> dict[str, Any]:
+def set_raster_published(
+    *, dsn: str, layer_slug: str, published: bool
+) -> dict[str, Any]:
     """Flip the published flag on a raster_layer row."""
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
         backend.raster_layer_repo().set_published(
-            layer_slug=layer_slug, published=published,
+            layer_slug=layer_slug,
+            published=published,
         )
     return {
         "dsn": dsn,
@@ -388,11 +468,14 @@ def list_derivations(
     return {"dsn": dsn, "recipes": rows}
 
 
-def set_derivation_enabled(*, dsn: str, recipe_id: str, enabled: bool) -> dict[str, Any]:
+def set_derivation_enabled(
+    *, dsn: str, recipe_id: str, enabled: bool
+) -> dict[str, Any]:
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
         backend.aggregation_recipe_repo().set_enabled(
-            recipe_id=recipe_id, enabled=enabled,
+            recipe_id=recipe_id,
+            enabled=enabled,
         )
         conn.commit()
     return {"dsn": dsn, "recipe_id": recipe_id, "enabled": enabled}

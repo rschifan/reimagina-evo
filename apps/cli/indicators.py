@@ -1,4 +1,5 @@
 """CLI helpers for the indicator layer."""
+
 from __future__ import annotations
 
 from reimagina.db import connect

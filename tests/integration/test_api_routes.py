@@ -8,6 +8,7 @@ response shape.
 
 No real data is committed; every test rolls back cleanly.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -53,17 +54,23 @@ def seeded_block_with_compactness(conn):
         register_source as _register_source,
         start_run as _start_run,
     )
+
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="api_route_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="api_route_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="api-blk-1",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="api-blk-1",
         geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
     )
     compute_block_compactness(conn, code_version="test")
@@ -105,8 +112,11 @@ def test_tile_server_health_surfaces_db_drift_signal(client, monkeypatch):
     class _FakeResponse:
         status = 200
 
-        def __enter__(self): return self
-        def __exit__(self, *_): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
 
     monkeypatch.setattr(_urlreq, "urlopen", lambda *_, **__: _FakeResponse())
     monkeypatch.setenv("REIMAGINA_MARTIN_URL", "http://localhost:3000")
@@ -168,7 +178,9 @@ def test_list_indicators_returns_seeded_catalog(client, conn):
     assert "urban_form_block_building_density" in slugs
 
     # Numeric bounds and aggregation method make it back through the schema.
-    compactness = next(r for r in payload if r["slug"] == "urban_form_block_compactness")
+    compactness = next(
+        r for r in payload if r["slug"] == "urban_form_block_compactness"
+    )
     assert compactness["unit"] == "ratio_0_1"
     assert compactness["valid_max"] == 1.0
     assert compactness["aggregation_method"] == "weighted_mean"
@@ -204,6 +216,7 @@ def test_list_values_404s_on_unknown_slug(client, conn):
 
 def test_list_aois_returns_inserted_row(client, conn):
     from tests.integration._helpers import insert_project as _insert_project
+
     project_id = _insert_project(conn, name="API test project")
     aoi.create_aoi(
         conn,
@@ -229,17 +242,23 @@ def test_features_endpoint_returns_paginated_rows(client, conn):
         register_source as _register_source,
         start_run as _start_run,
     )
+
     source_id = _register_source(
-        conn, name="api_features_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="api_features_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     for i in range(3):
         _insert_feature(
             conn,
-            type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-            dataset_version="v1", source_record_ref=f"pg-{i}",
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=f"pg-{i}",
             geometry_wkt=f"POLYGON(({i} {i}, {i + 1} {i}, {i + 1} {i + 1}, {i} {i + 1}, {i} {i}))",
         )
 
@@ -252,9 +271,7 @@ def test_features_endpoint_returns_paginated_rows(client, conn):
 
 
 def test_stats_endpoint_returns_percentiles(client, seeded_block_with_compactness):
-    response = client.get(
-        f"/indicators/{seeded_block_with_compactness['slug']}/stats"
-    )
+    response = client.get(f"/indicators/{seeded_block_with_compactness['slug']}/stats")
     assert response.status_code == 200
     payload = response.json()
     assert payload["slug"] == seeded_block_with_compactness["slug"]
@@ -267,9 +284,7 @@ def test_stats_endpoint_returns_percentiles(client, seeded_block_with_compactnes
 
 def test_stats_endpoint_returns_empty_for_unseeded_indicator(client, conn):
     seed_catalog(conn)
-    response = client.get(
-        "/indicators/urban_form_block_building_density/stats"
-    )
+    response = client.get("/indicators/urban_form_block_building_density/stats")
     assert response.status_code == 200
     payload = response.json()
     assert payload["count"] == 0
@@ -315,7 +330,9 @@ def test_values_geojson_download_is_valid_featurecollection(
     assert len(payload["features"]) == 1
     feature = payload["features"][0]
     assert feature["geometry"]["type"] == "Polygon"
-    assert feature["properties"]["feature_id"] == seeded_block_with_compactness["block_id"]
+    assert (
+        feature["properties"]["feature_id"] == seeded_block_with_compactness["block_id"]
+    )
     assert feature["properties"]["type_slug"] == "block"
 
 
@@ -347,9 +364,7 @@ def test_values_downloads_404_on_unknown_slug(client, conn):
 
 def test_list_values_rejects_negative_limit_with_422(client, conn):
     seed_catalog(conn)
-    response = client.get(
-        "/indicators/urban_form_block_compactness/values?limit=-1"
-    )
+    response = client.get("/indicators/urban_form_block_compactness/values?limit=-1")
     assert response.status_code == 422
 
 
@@ -390,9 +405,7 @@ def test_csv_download_rejects_zero_limit_with_422(
     assert response.status_code == 422
 
 
-def test_csv_download_respects_limit_override(
-    client, seeded_block_with_compactness
-):
+def test_csv_download_respects_limit_override(client, seeded_block_with_compactness):
     # Only one row exists; limit=1 still returns it.
     response = client.get(
         f"/indicators/{seeded_block_with_compactness['slug']}/values.csv?limit=1"
@@ -436,22 +449,33 @@ def two_aois_one_block_each(conn):
         register_source as _register_source,
         start_run as _start_run,
     )
+
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="aoi_stats_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="aoi_stats_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
 
     block_a = _insert_feature(
-        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="aoi-a-blk",
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="aoi-a-blk",
         geometry_wkt="POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,-99.140 19.433,-99.140 19.430))",
     )
     block_b = _insert_feature(
-        conn, type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref="aoi-b-blk",
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="aoi-b-blk",
         geometry_wkt="POLYGON((-115.470 32.640,-115.467 32.640,-115.467 32.643,-115.470 32.643,-115.470 32.640))",
     )
     compute_block_compactness(conn, code_version="test")
@@ -459,11 +483,15 @@ def two_aois_one_block_each(conn):
     project_a = _insert_project(conn, name="proj-aoi-a")
     project_b = _insert_project(conn, name="proj-aoi-b")
     aoi_a = aoi.create_aoi(
-        conn, project_id=project_a, name="AOI A (CDMX)",
+        conn,
+        project_id=project_a,
+        name="AOI A (CDMX)",
         geometry_wkt="POLYGON((-99.20 19.40,-99.10 19.40,-99.10 19.50,-99.20 19.50,-99.20 19.40))",
     )
     aoi_b = aoi.create_aoi(
-        conn, project_id=project_b, name="AOI B (Mexicali)",
+        conn,
+        project_id=project_b,
+        name="AOI B (Mexicali)",
         geometry_wkt="POLYGON((-115.50 32.60,-115.40 32.60,-115.40 32.70,-115.50 32.70,-115.50 32.60))",
     )
     # Direct insert into aoi_feature so the test asserts the API's filter
@@ -482,8 +510,10 @@ def two_aois_one_block_each(conn):
             )
     return {
         "slug": "urban_form_block_compactness",
-        "aoi_a": aoi_a, "block_a": block_a,
-        "aoi_b": aoi_b, "block_b": block_b,
+        "aoi_a": aoi_a,
+        "block_a": block_a,
+        "aoi_b": aoi_b,
+        "block_b": block_b,
     }
 
 
@@ -505,8 +535,12 @@ def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_ea
     not a Mexico-wide aggregate."""
     fixture = two_aois_one_block_each
     resp_all = client.get(f"/indicators/{fixture['slug']}/stats")
-    resp_a = client.get(f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_a']}")
-    resp_b = client.get(f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_b']}")
+    resp_a = client.get(
+        f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_a']}"
+    )
+    resp_b = client.get(
+        f"/indicators/{fixture['slug']}/stats?aoi_id={fixture['aoi_b']}"
+    )
 
     assert resp_all.status_code == resp_a.status_code == resp_b.status_code == 200
     assert resp_all.json()["count"] == 2

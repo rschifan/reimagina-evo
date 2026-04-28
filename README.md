@@ -22,7 +22,7 @@ Urban planning scenario modelling platform. A feature/observation/indicator/scen
 
 ## Quickstart
 
-Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker (for Martin).
+Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker (for Martin), GDAL ≥3.6 (for `fiona`/`rasterio` — `brew install gdal` on macOS, `apt install libgdal-dev` on Debian/Ubuntu).
 
 ```bash
 # 1. Python deps (uv recommended; pip also works)
@@ -38,6 +38,8 @@ cd apps/web && npm install && npm run dev
 ```
 
 See [`docs/architecture/`](docs/architecture) for per-layer deep-dives.
+For a fresh-machine ingest of all upstream sources, follow
+[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md).
 
 ## Tests
 

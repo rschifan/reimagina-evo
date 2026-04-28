@@ -3,6 +3,7 @@
 DB-free. The actual stage+load behaviour is covered by the integration
 suite at ``tests/integration/test_points_ingest.py``.
 """
+
 from __future__ import annotations
 
 from reimagina.pipeline.points import (
@@ -27,9 +28,9 @@ def test_layer_specs_share_common_attributes_schema():
     downstream queries can rely on a uniform JSONB shape."""
     expected = {"category", "capacity", "fuente", "fecha", "entidad"}
     for spec in LAYER_SPECS.values():
-        assert set(spec.attributes_cols) == expected, (
-            f"spec {spec.key!r} has divergent attributes_cols"
-        )
+        assert (
+            set(spec.attributes_cols) == expected
+        ), f"spec {spec.key!r} has divergent attributes_cols"
 
 
 def test_layer_specs_use_stable_record_id_column():
@@ -58,13 +59,16 @@ def test_specs_carry_azure_lineage_subpath():
 def test_pilot_specs_target_distinct_cities():
     """Tlalpan and Mexicali specs must point at different geoparquets
     and different providers — the symmetry hides bugs otherwise."""
-    assert TLALPAN_AMENITIES.geoparquet_relative != MEXICALI_AMENITIES.geoparquet_relative
+    assert (
+        TLALPAN_AMENITIES.geoparquet_relative != MEXICALI_AMENITIES.geoparquet_relative
+    )
     assert TLALPAN_AMENITIES.provider != MEXICALI_AMENITIES.provider
 
 
 def test_specs_are_immutable():
     """PointsLayerSpec is a frozen dataclass; mutation must raise."""
     import dataclasses
+
     try:
         TLALPAN_AMENITIES.version = "mutated"  # type: ignore[misc]
     except dataclasses.FrozenInstanceError:
@@ -78,10 +82,14 @@ def test_dataclass_signature_supports_minimal_construction():
     ``notes`` — anything beyond those should have defaults so adding a new
     spec stays a one-liner."""
     spec = PointsLayerSpec(
-        key="x", geoparquet_relative="x.geoparquet",
+        key="x",
+        geoparquet_relative="x.geoparquet",
         azure_subpath="x.geoparquet",
-        display_name="X", provider="P", license="L",
-        version="v", notes="n",
+        display_name="X",
+        provider="P",
+        license="L",
+        version="v",
+        notes="n",
     )
     assert spec.source_record_ref_col == "id"
     assert spec.name_col == "category"

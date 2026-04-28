@@ -18,6 +18,7 @@ Contract coverage (per the design doc, R3 phase gate):
 - Advisory-lock contention: a second concurrent worker fails fast with
   :class:`ConcurrentRasterRun` rather than corrupting the SCD snapshot.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,6 +43,7 @@ from reimagina.storage import backend_for_connection
 
 # ─── Fixtures ─────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect bronze + silver writes into tmp_path (mirrors test_raster_ingest)."""
@@ -64,19 +66,25 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def test_dsn() -> str:
     return os.environ.get(
-        "TEST_DATABASE_URL", "postgresql://localhost/reimagina_test",
+        "TEST_DATABASE_URL",
+        "postgresql://localhost/reimagina_test",
     )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
 
+
 def _write_utm_raster(path: Path, data: np.ndarray, *, nodata: float = -999.0) -> Path:
     """Write a single-band UTM-14N GeoTIFF with 30m pixels."""
     h, w = data.shape
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=h, width=w, count=1, dtype="float32",
+        height=h,
+        width=w,
+        count=1,
+        dtype="float32",
         crs="EPSG:32614",
         transform=from_origin(500_000.0, 2_151_000.0, 30.0, 30.0),
         nodata=nodata,
@@ -89,6 +97,7 @@ def _utm_square_wkt(min_x: float, min_y: float, size: float) -> str:
     """Build a UTM-14N square's WKT in EPSG:4326 (so it matches the
     ``curated_geo.feature.geometry`` SRID)."""
     from pyproj import Transformer
+
     trans = Transformer.from_crs("EPSG:32614", "EPSG:4326", always_xy=True)
     pts = [
         trans.transform(min_x, min_y),
@@ -130,6 +139,7 @@ def _seed_feature_source(conn) -> tuple[str, str]:
     """Register a vector source + ingestion_run so features have a
     valid ``source_id`` / ``ingestion_run_id`` to point at."""
     from reimagina.data import catalog as cat
+
     source_id = cat.register_source(
         conn,
         name=f"r3-test-features-{uuid4()}",
@@ -169,8 +179,12 @@ def _current_observations_for_prefix(conn, prefix: str) -> list[tuple[str, str, 
 
 # ─── Tests ────────────────────────────────────────────────────────────
 
+
 def test_happy_path_writes_observations(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """Full-coverage features land one observation row per (feature, stat)."""
     seed_feature_types(conn)
@@ -179,12 +193,18 @@ def test_happy_path_writes_observations(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     feat_a = _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="happy-a",
         wkt_4326=_utm_square_wkt(min_x=500_030, min_y=2_150_880, size=60.0),
     )
     _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="happy-b",
         wkt_4326=_utm_square_wkt(min_x=500_120, min_y=2_150_880, size=60.0),
     )
@@ -201,7 +221,8 @@ def test_happy_path_writes_observations(
             conn,
             raw_path=raster_path,
             source_name=f"r3-happy-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_happy_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -240,7 +261,10 @@ def test_happy_path_writes_observations(
 
 
 def test_rerun_with_narrower_stats_retires_dropped_stats(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """SCD correctness: second run with fewer stats must transition the
     dropped stats' rows to ``is_current = false``."""
@@ -250,7 +274,10 @@ def test_rerun_with_narrower_stats_retires_dropped_stats(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="rerun-a",
         wkt_4326=_utm_square_wkt(min_x=500_030, min_y=2_150_880, size=60.0),
     )
@@ -266,7 +293,8 @@ def test_rerun_with_narrower_stats_retires_dropped_stats(
             conn,
             raw_path=raster_path,
             source_name=f"r3-rerun-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_rerun_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -304,17 +332,27 @@ def test_rerun_with_narrower_stats_retires_dropped_stats(
 
 
 def test_feature_below_coverage_threshold_is_skipped(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
-    """A feature whose valid-pixel ratio is below the threshold
-    produces zero observations and is tallied in the run details."""
+    """A polygon whose **fractional valid-pixel count** is below the
+    threshold produces zero observations and is tallied in the run
+    details. Under exactextract this threshold is in raw fractional-
+    pixel units, not the legacy ratio: a 4-pixel polygon over a
+    raster with only 4 valid cells gets ``count=4.0``, so requiring
+    ``count >= 5.0`` skips it."""
     seed_feature_types(conn)
     backend = backend_for_connection(conn)
     type_id = backend.feature_repo().get_type_id("MEX", "block")
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="cov-skip",
         wkt_4326=_utm_square_wkt(min_x=500_000, min_y=2_150_700, size=300.0),
     )
@@ -330,7 +368,8 @@ def test_feature_below_coverage_threshold_is_skipped(
             conn,
             raw_path=raster_path,
             source_name=f"r3-cov-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_cov_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -342,7 +381,9 @@ def test_feature_below_coverage_threshold_is_skipped(
             feature_type_slug="block",
             attribute_key_prefix="cov",
             statistics=("mean",),
-            coverage_threshold=0.5,
+            # The polygon's fractional valid coverage is 4.0 (four full
+            # pixels of the NW corner). 5.0 forces it below threshold.
+            coverage_threshold=5.0,
             direct_dsn=test_dsn,
         )
         assert result.features_written == 0
@@ -362,7 +403,10 @@ def test_feature_below_coverage_threshold_is_skipped(
 
 
 def test_cli_prefix_collision_refuses_without_force(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """CLI refuses a prefix already owned by another source's current
     observations; ``--force`` bypasses."""
@@ -372,7 +416,10 @@ def test_cli_prefix_collision_refuses_without_force(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     feat_id = _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="pfx-feat",
         wkt_4326=_utm_square_wkt(min_x=500_030, min_y=2_150_880, size=60.0),
     )
@@ -401,7 +448,8 @@ def test_cli_prefix_collision_refuses_without_force(
             conn,
             raw_path=raster_path,
             source_name=f"r3-pfx-source-b-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_pfx_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -434,7 +482,10 @@ def test_cli_prefix_collision_refuses_without_force(
 
 
 def test_advisory_lock_second_concurrent_run_fails_fast(
-    conn, test_dsn, isolated_data_dir, tmp_path,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """Two workers targeting the same prefix must not both proceed.
 
@@ -452,7 +503,10 @@ def test_advisory_lock_second_concurrent_run_fails_fast(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="lock-feat",
         wkt_4326=_utm_square_wkt(min_x=500_030, min_y=2_150_880, size=60.0),
     )
@@ -467,7 +521,8 @@ def test_advisory_lock_second_concurrent_run_fails_fast(
             conn,
             raw_path=raster_path,
             source_name=f"r3-lock-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_lock_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -518,7 +573,11 @@ def test_advisory_lock_second_concurrent_run_fails_fast(
 
 
 def test_post_commit_finalise_failure_keeps_observations(
-    conn, test_dsn, isolated_data_dir, tmp_path, monkeypatch,
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
+    monkeypatch,
 ):
     """If ``complete_ingestion_run`` raises AFTER the critical-section
     commit, observations must remain durable and the worker must NOT
@@ -536,7 +595,10 @@ def test_post_commit_finalise_failure_keeps_observations(
 
     feat_source_id, feat_run_id = _seed_feature_source(conn)
     _seed_feature(
-        conn, type_id=type_id, source_id=feat_source_id, run_id=feat_run_id,
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
         ref="fin-feat",
         wkt_4326=_utm_square_wkt(min_x=500_030, min_y=2_150_880, size=60.0),
     )
@@ -551,7 +613,8 @@ def test_post_commit_finalise_failure_keeps_observations(
             conn,
             raw_path=raster_path,
             source_name=f"r3-fin-{uuid4()}",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug=f"r3_fin_{uuid4().hex[:8]}",
             aggregation_kind="intensive",
         )
@@ -587,6 +650,7 @@ def test_post_commit_finalise_failure_keeps_observations(
 
 # ─── Cleanup ──────────────────────────────────────────────────────────
 
+
 def _cleanup_observations(conn, prefix: str) -> None:
     """Hard-delete every observation row (current and retired) whose
     attribute_key matches the prefix pattern.
@@ -610,3 +674,93 @@ def _cleanup_observations(conn, prefix: str) -> None:
         conn.commit()
     except Exception:
         conn.rollback()
+
+
+def test_subpixel_polygons_get_observations_after_exactextract_switch(
+    conn,
+    test_dsn,
+    isolated_data_dir,
+    tmp_path,
+):
+    """Regression guard for the rasterstats → exactextract migration.
+
+    Pre-migration the worker used ``rasterstats.zonal_stats(...,
+    all_touched=False)`` which only counts pixels whose **centroid**
+    falls inside the polygon — manzanas smaller than a pixel were
+    silently dropped. exactextract instead applies fractional area
+    weights so every polygon that intersects any non-nodata cell gets
+    a row. This test pins that behaviour with a polygon that is 1/9
+    of a pixel — under the old engine it would land zero observations
+    even with coverage_threshold=0.0; under exactextract it must
+    write one row per requested stat.
+    """
+    seed_feature_types(conn)
+    backend = backend_for_connection(conn)
+    type_id = backend.feature_repo().get_type_id("MEX", "block")
+
+    feat_source_id, feat_run_id = _seed_feature_source(conn)
+    # Polygon = 10 m square offset so its centroid lands inside one
+    # 30 m pixel but the polygon itself is much smaller than the
+    # pixel. Centroid-in-polygon engines miss this; area-weighted
+    # engines see it as ~11% of one cell.
+    subpixel_feature_id = _seed_feature(
+        conn,
+        type_id=type_id,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
+        ref="subpixel-tiny",
+        wkt_4326=_utm_square_wkt(min_x=500_032, min_y=2_150_982, size=10.0),
+    )
+
+    raster_path = _write_utm_raster(
+        tmp_path / "subpix.tif",
+        np.full((10, 10), 4.0, dtype="float32"),
+    )
+    conn.commit()
+
+    try:
+        ingest = ingest_raster_source(
+            conn,
+            raw_path=raster_path,
+            source_name=f"r3-subpixel-{uuid4()}",
+            provider="pytest",
+            version="v1",
+            layer_slug=f"r3_subpix_{uuid4().hex[:8]}",
+            aggregation_kind="extensive",
+        )
+        conn.commit()
+        result = run_raster_zonal_stats(
+            conn,
+            source_id=ingest.source_id,
+            feature_type_slug="block",
+            attribute_key_prefix="subpix",
+            statistics=("sum", "count"),
+            direct_dsn=test_dsn,
+        )
+        # Other tests seed blocks that may still be in scope; what
+        # matters here is that THIS sub-pixel block gets observations.
+        assert result.features_written >= 1
+        assert result.observations_written == 2 * result.features_written
+
+        rows = _current_observations_for_prefix(conn, "subpix")
+        rows_for_subpixel = [(f, k, v) for f, k, v in rows if f == subpixel_feature_id]
+        keys_for_subpixel = {k for _, k, _ in rows_for_subpixel}
+        assert keys_for_subpixel == {"subpix_sum", "subpix_count"}, (
+            "Expected both sum and count for the sub-pixel polygon. "
+            "Empty / single-key would mean exactextract dropped this "
+            "polygon — the very regression this test guards against."
+        )
+
+        # Sum = pixel value × fractional coverage; with a uniform
+        # raster of 4.0 and a polygon covering ~1/9 of one pixel, the
+        # area-weighted sum is ~0.44, not 4.0 (which would indicate
+        # ``all_touched=True`` semantics) and not 0.0 (the old
+        # centroid-in-polygon dropper). Wide tolerance because the
+        # polygon's UTM↔4326 round-trip introduces sub-meter shifts.
+        sum_value = next(v for _, k, v in rows_for_subpixel if k == "subpix_sum")
+        assert 0.05 < float(sum_value) < 1.0, (
+            f"area-weighted sum {sum_value} outside the [0.05, 1.0] "
+            "envelope expected for a 10 m polygon × 30 m pixel × value 4.0"
+        )
+    finally:
+        _cleanup_observations(conn, "subpix")

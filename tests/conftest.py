@@ -15,6 +15,7 @@ name does not clearly look like a test DB (contains `test`). If someone
 points TEST_DATABASE_URL at a dev or prod DB, the fixture raises at setup
 instead of silently wiping the data at teardown.
 """
+
 from __future__ import annotations
 import os
 import sys

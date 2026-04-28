@@ -1,4 +1,5 @@
 """Alembic environment — runs migrations against the configured database URL."""
+
 from __future__ import annotations
 import os
 from dotenv import load_dotenv
@@ -19,7 +20,9 @@ def _url() -> str:
 
 
 def run_migrations_offline() -> None:
-    context.configure(url=_url(), literal_binds=True, dialect_opts={"paramstyle": "named"})
+    context.configure(
+        url=_url(), literal_binds=True, dialect_opts={"paramstyle": "named"}
+    )
     with context.begin_transaction():
         context.run_migrations()
 

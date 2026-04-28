@@ -3,6 +3,7 @@
 Download formats (CSV, GeoJSON, GeoParquet) live in a separate
 commit — this module only ships JSON list / detail / value endpoints.
 """
+
 from __future__ import annotations
 
 import json
@@ -81,7 +82,9 @@ def get_indicator(
 @router.get("/{slug}/values", response_model=list[IndicatorValue])
 def list_values(
     slug: str,
-    scenario_id: str | None = Query(default=None, description="Optional scenario filter; base city if omitted"),
+    scenario_id: str | None = Query(
+        default=None, description="Optional scenario filter; base city if omitted"
+    ),
     limit: int = Query(default=1_000, ge=1, le=10_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[IndicatorValue]:
@@ -95,10 +98,14 @@ def list_values(
     if repo.get_indicator(slug) is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
 
-    rows = get_backend(conn).indicator_result_repo().list_current_for_indicator(
-        indicator_slug=slug,
-        scenario_id=scenario_id,
-        limit=limit,
+    rows = (
+        get_backend(conn)
+        .indicator_result_repo()
+        .list_current_for_indicator(
+            indicator_slug=slug,
+            scenario_id=scenario_id,
+            limit=limit,
+        )
     )
     return [IndicatorValue(**_value_row_to_dict(row)) for row in rows]
 
@@ -145,11 +152,15 @@ def get_values_stats(
     """Return count + percentiles for an indicator's current numeric values."""
     _ensure_indicator_exists(conn, slug)
     aoi_id_str = str(aoi_id) if aoi_id is not None else None
-    stats = get_backend(conn).indicator_result_repo().value_stats(
-        indicator_slug=slug,
-        scenario_id=scenario_id,
-        feature_type=feature_type,
-        aoi_id=aoi_id_str,
+    stats = (
+        get_backend(conn)
+        .indicator_result_repo()
+        .value_stats(
+            indicator_slug=slug,
+            scenario_id=scenario_id,
+            feature_type=feature_type,
+            aoi_id=aoi_id_str,
+        )
     )
     return IndicatorValueStats(
         slug=slug,
@@ -176,11 +187,15 @@ def download_values_csv(
     downloads.
     """
     _ensure_indicator_exists(conn, slug)
-    rows = get_backend(conn).indicator_result_repo().list_current_with_geometry(
-        indicator_slug=slug,
-        scenario_id=scenario_id,
-        feature_type=feature_type,
-        limit=limit,
+    rows = (
+        get_backend(conn)
+        .indicator_result_repo()
+        .list_current_with_geometry(
+            indicator_slug=slug,
+            scenario_id=scenario_id,
+            feature_type=feature_type,
+            limit=limit,
+        )
     )
     filename = f"{slug}.csv"
     return StreamingResponse(
@@ -200,11 +215,15 @@ def download_values_geojson(
 ) -> Response:
     """Return a GeoJSON FeatureCollection in one response."""
     _ensure_indicator_exists(conn, slug)
-    rows = get_backend(conn).indicator_result_repo().list_current_with_geometry(
-        indicator_slug=slug,
-        scenario_id=scenario_id,
-        feature_type=feature_type,
-        limit=limit,
+    rows = (
+        get_backend(conn)
+        .indicator_result_repo()
+        .list_current_with_geometry(
+            indicator_slug=slug,
+            scenario_id=scenario_id,
+            feature_type=feature_type,
+            limit=limit,
+        )
     )
     payload = indicator_rows_to_geojson(rows)
     filename = f"{slug}.geojson"
@@ -225,11 +244,15 @@ def download_values_parquet(
 ) -> Response:
     """Return a GeoParquet byte payload (EPSG:4326)."""
     _ensure_indicator_exists(conn, slug)
-    rows = get_backend(conn).indicator_result_repo().list_current_with_geometry(
-        indicator_slug=slug,
-        scenario_id=scenario_id,
-        feature_type=feature_type,
-        limit=limit,
+    rows = (
+        get_backend(conn)
+        .indicator_result_repo()
+        .list_current_with_geometry(
+            indicator_slug=slug,
+            scenario_id=scenario_id,
+            feature_type=feature_type,
+            limit=limit,
+        )
     )
     payload = indicator_rows_to_geoparquet(rows)
     filename = f"{slug}.parquet"

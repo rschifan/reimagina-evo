@@ -12,7 +12,7 @@ def test_api_scaffold_boots():
     paths = {getattr(route, "path", None) for route in app.routes}
     # Representative slice of the read-side surface — if these vanish, something
     # deeper than a rename has broken.
-    assert "/health" in paths          # alias kept for backwards compatibility
+    assert "/health" in paths  # alias kept for backwards compatibility
     assert "/health/live" in paths
     assert "/health/ready" in paths
     assert "/indicators" in paths

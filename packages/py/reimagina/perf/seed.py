@@ -1,4 +1,5 @@
 """Deterministic data preparation for PostGIS performance benchmarks."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -45,7 +46,9 @@ def _feature_extent(conn) -> tuple[float, float, float, float]:
         )
         row = cur.fetchone()
     if row is None or any(value is None for value in row):
-        raise ValueError("No feature extent available. Load canonical features before seeding performance data.")
+        raise ValueError(
+            "No feature extent available. Load canonical features before seeding performance data."
+        )
     return tuple(float(value) for value in row)
 
 
@@ -101,7 +104,9 @@ def _notched_polygon_wkt(bounds: tuple[float, float, float, float]) -> str:
 
 def _ensure_perf_project(conn) -> str:
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM app_core.project WHERE name = %s", (PERF_PROJECT_NAME,))
+        cur.execute(
+            "SELECT id FROM app_core.project WHERE name = %s", (PERF_PROJECT_NAME,)
+        )
         row = cur.fetchone()
         if row:
             return str(row[0])
@@ -153,15 +158,25 @@ def ensure_perf_aois(conn) -> dict[str, str]:
     extent = _feature_extent(conn)
     project_id = _ensure_perf_project(conn)
     geometries = {
-        "bbox_small": _bbox_wkt(_bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)),
-        "bbox_dense": _bbox_wkt(_bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)),
-        "polygon_small": _bbox_wkt(_bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)),
-        "polygon_dense": _notched_polygon_wkt(_bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08)),
+        "bbox_small": _bbox_wkt(
+            _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
+        ),
+        "bbox_dense": _bbox_wkt(
+            _bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
+        ),
+        "polygon_small": _bbox_wkt(
+            _bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)
+        ),
+        "polygon_dense": _notched_polygon_wkt(
+            _bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08)
+        ),
     }
 
     aoi_ids: dict[str, str] = {}
     for key, name in PERF_AOI_NAMES.items():
-        aoi_id = _upsert_aoi(conn, project_id=project_id, name=name, geometry_wkt=geometries[key])
+        aoi_id = _upsert_aoi(
+            conn, project_id=project_id, name=name, geometry_wkt=geometries[key]
+        )
         aoi.compute_aoi_features(conn, aoi_id)
         aoi_ids[key] = aoi_id
     return aoi_ids

@@ -1,4 +1,5 @@
 """Silver zone: clean, reproject, validate before loading into curated_geo."""
+
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -10,7 +11,9 @@ from shapely.ops import transform as shapely_transform
 from shapely.validation import make_valid
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-SILVER_DIR = Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "silver"
+SILVER_DIR = (
+    Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "silver"
+)
 
 
 def _reproject_to_4326(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -28,7 +31,9 @@ def _reproject_to_4326(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         transformer = Transformer.from_crs(gdf.crs, "EPSG:4326", always_xy=True)
         reprojected = gdf.copy()
         reprojected["geometry"] = reprojected["geometry"].apply(
-            lambda g: shapely_transform(transformer.transform, g) if g is not None else g
+            lambda g: shapely_transform(transformer.transform, g)
+            if g is not None
+            else g
         )
         reprojected.set_crs("EPSG:4326", inplace=True, allow_override=True)
         return reprojected

@@ -8,6 +8,7 @@ Revision ID: r015
 Revises: r014
 Create Date: 2026-04-19
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -21,12 +22,26 @@ depends_on = None
 _NEW_CATALOG_ROWS = [
     # (schema_name, object_name, logical_name, layer_kind, description,
     #  primary_geometry_column, intended_use, display_order)
-    ("curated_geo", "aoi_indicator_summary", "aoi_summaries", "canonical",
-     "Cached AOI-level aggregated indicator values", None,
-     "Inspect cached summary rows by AOI", 50),
-    ("serving_geo", "aoi_summary_v", "aoi_summaries_serving", "serving",
-     "App-facing AOI-level summaries (status = current only)", None,
-     "Inspect the read contract for the AOI summary cache", 110),
+    (
+        "curated_geo",
+        "aoi_indicator_summary",
+        "aoi_summaries",
+        "canonical",
+        "Cached AOI-level aggregated indicator values",
+        None,
+        "Inspect cached summary rows by AOI",
+        50,
+    ),
+    (
+        "serving_geo",
+        "aoi_summary_v",
+        "aoi_summaries_serving",
+        "serving",
+        "App-facing AOI-level summaries (status = current only)",
+        None,
+        "Inspect the read contract for the AOI summary cache",
+        110,
+    ),
 ]
 
 

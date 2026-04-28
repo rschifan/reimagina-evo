@@ -1,4 +1,5 @@
 """PostgreSQL/PostGIS storage backend wiring."""
+
 from __future__ import annotations
 
 from .repositories import (

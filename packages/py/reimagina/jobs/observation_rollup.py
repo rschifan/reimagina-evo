@@ -32,6 +32,7 @@ FOLLOW-UP: the private helpers imported from :mod:`raster_zonal_stats`
 them. Imported via their underscore names for now to keep the R3
 commit stable.
 """
+
 from __future__ import annotations
 
 import logging
@@ -151,7 +152,8 @@ def run_observation_rollup(
         )
     except Exception as exc:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "ObservationRollupError",
@@ -172,7 +174,8 @@ def run_observation_rollup(
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "ConcurrentObservationRollup",
@@ -182,7 +185,8 @@ def run_observation_rollup(
         raise
     except Exception as exc:
         _finalise_run_safely(
-            conn, ingestion_run_id,
+            conn,
+            ingestion_run_id,
             status="failed",
             details={
                 "error_code": "ObservationRollupWriteError",
@@ -192,7 +196,8 @@ def run_observation_rollup(
         raise
 
     _finalise_run_safely(
-        conn, ingestion_run_id,
+        conn,
+        ingestion_run_id,
         status="succeeded",
         details={
             "targets_written": targets_written,
@@ -254,26 +259,30 @@ def _compute_rollup_records(
         except (MissingAggregationInputs, UnsupportedAggregationMethod) as exc:
             logger.warning(
                 "observation_rollup: skipping target=%s key=%s: %s",
-                target_id, source_attr_key, exc,
+                target_id,
+                source_attr_key,
+                exc,
             )
             continue
         output_key = _rewrite_prefix(source_attr_key, input_prefix, output_prefix)
         # Record shape matches ObservationRepository.bulk_upsert_current:
         # ``value_type`` + a single ``value`` cell the repo routes into
         # value_numeric / value_text / value_json.
-        records.append({
-            "feature_id": target_id,
-            "attribute_key": output_key,
-            "value_type": "numeric",
-            "value": float(aggregated),
-            "lineage_ref": {
-                "source_attribute_key": source_attr_key,
-                "input_feature_type": input_feature_type,
-                "target_feature_type": target_feature_type,
-                "method": method,
-                "children": len(values_and_weights),
-            },
-        })
+        records.append(
+            {
+                "feature_id": target_id,
+                "attribute_key": output_key,
+                "value_type": "numeric",
+                "value": float(aggregated),
+                "lineage_ref": {
+                    "source_attribute_key": source_attr_key,
+                    "input_feature_type": input_feature_type,
+                    "target_feature_type": target_feature_type,
+                    "method": method,
+                    "children": len(values_and_weights),
+                },
+            }
+        )
         targets.add(target_id)
 
     return records, len(targets)
@@ -291,7 +300,7 @@ def _rewrite_prefix(attribute_key: str, input_prefix: str, output_prefix: str) -
         return output_prefix
     # Separator-safe: the repo's LIKE matches ``:prefix_<suffix>`` only.
     assert attribute_key.startswith(input_prefix + "_")
-    suffix = attribute_key[len(input_prefix) + 1:]
+    suffix = attribute_key[len(input_prefix) + 1 :]
     return f"{output_prefix}_{suffix}"
 
 

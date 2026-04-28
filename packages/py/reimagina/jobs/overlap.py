@@ -4,6 +4,7 @@ Reads declared (source_type, target_type) pairs from the type-pair
 repository and fans out to OverlapRepository.compute_feature_overlaps.
 Kept backend-agnostic: the repositories own all SQL dialect work.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -57,6 +58,8 @@ def compute_all_pairs(conn, *, aoi_id: str | None = None) -> dict[str, Any]:
             pair["target_type_id"],
             aoi_id=aoi_id,
         )
-        per_pair.append({"source": pair["source"], "target": pair["target"], "rows": count})
+        per_pair.append(
+            {"source": pair["source"], "target": pair["target"], "rows": count}
+        )
         total += count
     return {"aoi_id": aoi_id, "pairs": per_pair, "rows_total": total}

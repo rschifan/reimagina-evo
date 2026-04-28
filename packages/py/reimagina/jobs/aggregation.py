@@ -6,6 +6,7 @@ will fetch fine-grain values and weights, then pass them here.
 
 The five supported aggregation methods mirror `indicator_catalog.aggregation_method`.
 """
+
 from __future__ import annotations
 
 import statistics

@@ -1,4 +1,5 @@
 """Unit tests for reimagina.indicators.building_density.count_to_density."""
+
 from __future__ import annotations
 
 import pytest

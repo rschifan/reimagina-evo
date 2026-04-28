@@ -21,6 +21,7 @@ Design choices vs ``pipeline/cdmx.py``:
   balloon to all of Mexico (~tens of millions of blocks). The pilot AOIs
   cover CVE_ENT IN ('02','09'); other entidades are a future op.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -121,13 +122,22 @@ INEGI_MARCO_BLOCKS = InegiMarcoLayerSpec(
     feature_type_slug="block",
     source_record_ref_col="CVEGEO",
     name_col=None,
-    attributes_cols=("CVE_ENT", "CVE_MUN", "CVE_LOC", "CVE_AGEB", "CVE_MZA", "AMBITO", "TIPOMZA"),
+    attributes_cols=(
+        "CVE_ENT",
+        "CVE_MUN",
+        "CVE_LOC",
+        "CVE_AGEB",
+        "CVE_MZA",
+        "AMBITO",
+        "TIPOMZA",
+    ),
     display_name="México · Manzanas urbanas (INEGI Marco Geoestadístico 2024)",
     partition_cols=("CVE_ENT", "CVE_MUN"),
 )
 
 LAYER_SPECS: dict[str, InegiMarcoLayerSpec] = {
-    spec.key: spec for spec in (
+    spec.key: spec
+    for spec in (
         INEGI_MARCO_STATES,
         INEGI_MARCO_MUNICIPALITIES,
         INEGI_MARCO_AGEBS,
@@ -177,7 +187,9 @@ def read_layer_to_geodataframe(
     """
     schema_fields = [(col, pa.string()) for col in partition_cols]
     partitioning = pads.HivePartitioning(pa.schema(schema_fields))
-    dataset = pads.dataset(str(parquet_dir), format="parquet", partitioning=partitioning)
+    dataset = pads.dataset(
+        str(parquet_dir), format="parquet", partitioning=partitioning
+    )
     if cve_ent_filter:
         # Hive partition values arrive as strings from the directory
         # names. Coerce caller input to str so callers can pass either
@@ -361,14 +373,16 @@ def bootstrap(
             orchestrator_run_id=run_id,
             code_version=code_version,
         )
-        per_layer.append({
-            "layer": key,
-            "type_slug": spec.feature_type_slug,
-            "source_id": source_id,
-            "silver_path": str(silver_path),
-            "cve_ent_filter": cve_ent_filter,
-            **load_result,
-        })
+        per_layer.append(
+            {
+                "layer": key,
+                "type_slug": spec.feature_type_slug,
+                "source_id": source_id,
+                "silver_path": str(silver_path),
+                "cve_ent_filter": cve_ent_filter,
+                **load_result,
+            }
+        )
 
     return {
         "orchestrator_run_id": run_id,

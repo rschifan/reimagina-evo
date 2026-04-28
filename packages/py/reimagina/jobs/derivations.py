@@ -19,6 +19,7 @@ The dispatcher is intentionally thin — it exists to translate recipe
 columns into worker kwargs and nothing else. All business logic stays
 in the two workers.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -60,7 +61,9 @@ class RecipeRunResult:
     inner: ZonalStatsResult | ObservationRollupResult
 
 
-def run_recipe(conn, *, recipe_id: str, direct_dsn: str | None = None) -> RecipeRunResult:
+def run_recipe(
+    conn, *, recipe_id: str, direct_dsn: str | None = None
+) -> RecipeRunResult:
     """Fetch the recipe, dispatch to the right arm, normalise the result.
 
     ``direct_dsn`` is forwarded to both workers — required on Postgres
@@ -71,9 +74,7 @@ def run_recipe(conn, *, recipe_id: str, direct_dsn: str | None = None) -> Recipe
     if recipe is None:
         raise UnknownRecipe(f"No aggregation_recipe row with id={recipe_id!r}")
     if not recipe.get("enabled"):
-        raise DisabledRecipe(
-            f"Recipe {recipe_id!r} is disabled; enable before running"
-        )
+        raise DisabledRecipe(f"Recipe {recipe_id!r} is disabled; enable before running")
 
     if recipe["input_kind"] == "raster":
         return _run_raster_recipe(conn, recipe, direct_dsn=direct_dsn)
@@ -100,17 +101,17 @@ def run_all_for_raster(
         input_raster_layer_id=raster_layer_id,
         enabled_only=True,
     )
-    return [
-        run_recipe(conn, recipe_id=r["id"], direct_dsn=direct_dsn)
-        for r in recipes
-    ]
+    return [run_recipe(conn, recipe_id=r["id"], direct_dsn=direct_dsn) for r in recipes]
 
 
 # ─── Arm wrappers ─────────────────────────────────────────────────────
 
 
 def _run_raster_recipe(
-    conn, recipe: dict[str, Any], *, direct_dsn: str | None,
+    conn,
+    recipe: dict[str, Any],
+    *,
+    direct_dsn: str | None,
 ) -> RecipeRunResult:
     # The raster worker takes ``source_id`` (not layer_id). Derive the
     # raster's source_id from the layer row so recipes keep referring
@@ -155,7 +156,10 @@ def _run_raster_recipe(
 
 
 def _run_observation_recipe(
-    conn, recipe: dict[str, Any], *, direct_dsn: str | None,
+    conn,
+    recipe: dict[str, Any],
+    *,
+    direct_dsn: str | None,
 ) -> RecipeRunResult:
     inner = run_observation_rollup(
         conn,
@@ -193,5 +197,3 @@ _METHOD_TO_RASTERSTAT: dict[str, str] = {
     "min": "min",
     "max": "max",
 }
-
-

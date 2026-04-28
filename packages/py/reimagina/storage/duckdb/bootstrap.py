@@ -1,4 +1,5 @@
 """Bootstrap helpers for DuckDB dev/test environments."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,7 +18,9 @@ def ensure_duckdb_database(path: str) -> bool:
     return not existed
 
 
-def bootstrap_duckdb(*, app_path: str, test_path: str) -> dict[str, dict[str, str | bool]]:
+def bootstrap_duckdb(
+    *, app_path: str, test_path: str
+) -> dict[str, dict[str, str | bool]]:
     app_created = ensure_duckdb_database(app_path)
     test_created = ensure_duckdb_database(test_path)
 
@@ -32,6 +35,14 @@ def bootstrap_duckdb(*, app_path: str, test_path: str) -> dict[str, dict[str, st
         run_duckdb_migrations(test_conn)
 
     return {
-        "app": {"dsn": f"duckdb:///{app_path}", "created": app_created, "migrated": True},
-        "test": {"dsn": f"duckdb:///{test_path}", "created": test_created, "migrated": True},
+        "app": {
+            "dsn": f"duckdb:///{app_path}",
+            "created": app_created,
+            "migrated": True,
+        },
+        "test": {
+            "dsn": f"duckdb:///{test_path}",
+            "created": test_created,
+            "migrated": True,
+        },
     }

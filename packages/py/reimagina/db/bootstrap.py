@@ -1,4 +1,5 @@
 """Backend-aware bootstrap helpers for DuckDB dev and Postgres production."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -70,10 +71,14 @@ def bootstrap_local_platform(
             test_path=duckdb_path_from_dsn(test_dsn),
         )
     if app_backend == "postgres" and test_backend == "postgres":
-        return bootstrap_postgres(app_dsn=app_dsn, test_dsn=test_dsn, admin_dsn=admin_dsn)
+        return bootstrap_postgres(
+            app_dsn=app_dsn, test_dsn=test_dsn, admin_dsn=admin_dsn
+        )
     raise ValueError("Mixed backend bootstrap is not supported in one call")
 
 
-def verify_required_relations(conn, relations: list[str] | None = None) -> dict[str, bool]:
+def verify_required_relations(
+    conn, relations: list[str] | None = None
+) -> dict[str, bool]:
     required = relations or REQUIRED_RELATIONS
     return backend_for_connection(conn).verify_required_relations(required)

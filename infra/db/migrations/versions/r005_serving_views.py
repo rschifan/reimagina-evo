@@ -4,6 +4,7 @@ Revision ID: r005
 Revises: r004
 Create Date: 2026-04-12
 """
+
 from __future__ import annotations
 from alembic import op
 
@@ -134,11 +135,20 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for view in [
-        "serving_geo.bus_stops", "serving_geo.trees", "serving_geo.sidewalks",
-        "serving_geo.roads", "serving_geo.municipalities", "serving_geo.lots",
-        "serving_geo.blocks", "serving_geo.admin_v", "serving_geo.detections_v",
-        "serving_geo.pois_v", "serving_geo.infrastructure_v", "serving_geo.analysis_units_v",
-        "serving_geo.feature_aoi_v", "serving_geo.feature_v",
+        "serving_geo.bus_stops",
+        "serving_geo.trees",
+        "serving_geo.sidewalks",
+        "serving_geo.roads",
+        "serving_geo.municipalities",
+        "serving_geo.lots",
+        "serving_geo.blocks",
+        "serving_geo.admin_v",
+        "serving_geo.detections_v",
+        "serving_geo.pois_v",
+        "serving_geo.infrastructure_v",
+        "serving_geo.analysis_units_v",
+        "serving_geo.feature_aoi_v",
+        "serving_geo.feature_v",
         "serving_geo.feature_current_attributes_v",
     ]:
         op.execute(f"DROP VIEW IF EXISTS {view} CASCADE")

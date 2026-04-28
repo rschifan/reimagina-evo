@@ -11,6 +11,7 @@ Centroid-in-polygon is the counting rule: a building is attributed to exactly
 one block, avoiding the double-counting that a geometric-intersection rule
 would produce at block boundaries. Standard convention in urban analysis.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,4 +1,5 @@
 """Operation-shaped storage interfaces for the data layer."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -508,6 +509,23 @@ class ServingReader(Protocol):
         """Return the total number of serving-layer features (optionally filtered by type)."""
         ...
 
+    def count_features_within_polygon(
+        self,
+        *,
+        aoi_id: str,
+        polygon_geojson: str,
+        type_slugs: list[str],
+    ) -> dict[str, int]:
+        """Count features intersecting a GeoJSON polygon, grouped by type_slug.
+
+        Polygon must be a valid GeoJSON Polygon string in EPSG:4326.
+        Returns ``{type_slug: count}`` for every requested type that has at
+        least one intersecting feature; missing types resolve to 0 at the
+        caller. Backends without spatial primitives (DuckDB) raise
+        ``NotImplementedError``.
+        """
+        ...
+
 
 class ExploreReader(Protocol):
     def list_layers(self) -> list[dict[str, Any]]: ...
@@ -754,7 +772,9 @@ class TileSnapshotRepository(Protocol):
 
     def get_latest_snapshot(self, *, layer_id: str) -> dict[str, Any] | None: ...
 
-    def list_snapshots(self, *, layer_id: str | None = None) -> list[dict[str, Any]]: ...
+    def list_snapshots(
+        self, *, layer_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
 class StorageBackend(Protocol):

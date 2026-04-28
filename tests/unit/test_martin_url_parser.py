@@ -9,6 +9,7 @@ proxy deployments where the Martin URL is served at a path prefix
 The fix whitelists known function names. These tests pin both shapes
 so a future regression is caught at unit time.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -35,7 +36,8 @@ from reimagina.tiles.service import _martin_base_and_default_function
     ],
 )
 def test_parser_keeps_legacy_function_extraction(
-    input_url: str, expected: tuple[str, str],
+    input_url: str,
+    expected: tuple[str, str],
 ) -> None:
     assert _martin_base_and_default_function(input_url) == expected
 
@@ -61,7 +63,8 @@ def test_parser_keeps_legacy_function_extraction(
     ],
 )
 def test_parser_preserves_path_prefix(
-    input_url: str, expected: tuple[str, str],
+    input_url: str,
+    expected: tuple[str, str],
 ) -> None:
     assert _martin_base_and_default_function(input_url) == expected
 

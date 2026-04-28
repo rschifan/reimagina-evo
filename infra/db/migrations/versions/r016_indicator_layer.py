@@ -15,6 +15,7 @@ Revision ID: r016
 Revises: r015
 Create Date: 2026-04-19
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -43,9 +44,13 @@ def upgrade() -> None:
             CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at)
         )
     """)
-    op.execute("CREATE INDEX job_run_scenario_idx ON jobs_runtime.job_run (scenario_id)")
+    op.execute(
+        "CREATE INDEX job_run_scenario_idx ON jobs_runtime.job_run (scenario_id)"
+    )
     op.execute("CREATE INDEX job_run_status_idx   ON jobs_runtime.job_run (status)")
-    op.execute("CREATE INDEX job_run_family_idx   ON jobs_runtime.job_run (model_family, status)")
+    op.execute(
+        "CREATE INDEX job_run_family_idx   ON jobs_runtime.job_run (model_family, status)"
+    )
 
     # ── indicator_catalog ──────────────────────────────────────────────────
     op.execute("""
@@ -361,15 +366,36 @@ def upgrade() -> None:
 _NEW_CATALOG_ROWS = [
     # (schema_name, object_name, logical_name, layer_kind, description,
     #  primary_geometry_column, intended_use, display_order)
-    ("curated_geo", "indicator_catalog", "indicator_catalog", "canonical",
-     "Registry of every indicator computed by the platform", None,
-     "See what indicators are defined and how they aggregate", 60),
-    ("curated_geo", "indicator_result", "indicator_results", "canonical",
-     "Long-format computed indicator values per (feature, scenario, indicator)",
-     None, "Inspect raw indicator outputs and lineage", 70),
-    ("serving_geo", "current_indicator_v", "current_indicators", "serving",
-     "App-facing indicator read contract (status = current only) joined with catalog metadata",
-     None, "Inspect the read path API and workers use for indicator values", 120),
+    (
+        "curated_geo",
+        "indicator_catalog",
+        "indicator_catalog",
+        "canonical",
+        "Registry of every indicator computed by the platform",
+        None,
+        "See what indicators are defined and how they aggregate",
+        60,
+    ),
+    (
+        "curated_geo",
+        "indicator_result",
+        "indicator_results",
+        "canonical",
+        "Long-format computed indicator values per (feature, scenario, indicator)",
+        None,
+        "Inspect raw indicator outputs and lineage",
+        70,
+    ),
+    (
+        "serving_geo",
+        "current_indicator_v",
+        "current_indicators",
+        "serving",
+        "App-facing indicator read contract (status = current only) joined with catalog metadata",
+        None,
+        "Inspect the read path API and workers use for indicator values",
+        120,
+    ),
 ]
 
 
@@ -384,9 +410,13 @@ def downgrade() -> None:
             f"WHERE schema_name = '{row[0]}' AND object_name = '{row[1]}'"
         )
     op.execute("DROP VIEW IF EXISTS serving_geo.current_indicator_v")
-    op.execute("DROP TRIGGER IF EXISTS indicator_result_before_write_trigger ON curated_geo.indicator_result")
+    op.execute(
+        "DROP TRIGGER IF EXISTS indicator_result_before_write_trigger ON curated_geo.indicator_result"
+    )
     op.execute("DROP FUNCTION IF EXISTS curated_geo.indicator_result_before_write")
-    op.execute("DROP TRIGGER IF EXISTS indicator_dependency_validate_trigger ON curated_geo.indicator_dependency")
+    op.execute(
+        "DROP TRIGGER IF EXISTS indicator_dependency_validate_trigger ON curated_geo.indicator_dependency"
+    )
     op.execute("DROP FUNCTION IF EXISTS curated_geo.indicator_dependency_validate")
     op.execute("DROP TABLE IF EXISTS curated_geo.indicator_result CASCADE")
     op.execute("DROP TABLE IF EXISTS curated_geo.indicator_dependency CASCADE")
