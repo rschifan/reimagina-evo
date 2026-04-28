@@ -21,7 +21,6 @@ def test_expected_top_level_structure_exists():
         ROOT / "packages" / "py" / "reimagina" / "storage",
         ROOT / "packages" / "py" / "reimagina" / "perf",
         ROOT / "packages" / "py" / "reimagina" / "tiles",
-        ROOT / "packages" / "ts",
         ROOT / "infra" / "db" / "migrations",
         ROOT / "infra" / "db" / "migrations" / "common",
         ROOT / "infra" / "db" / "migrations" / "duckdb",

@@ -36,4 +36,4 @@ repos:
       - id: prettier
         # Limit to web sources / configs — the rest of the repo is
         # Python and is handled by ruff-format above.
-        files: ^(apps/web|packages/ts)/.*\.(ts|tsx|js|jsx|json|css|html|md)$
+        files: ^apps/web/.*\.(ts|tsx|js|jsx|json|css|html|md)$
