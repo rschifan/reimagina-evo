@@ -83,6 +83,9 @@ jobs:
       - name: typecheck + build
         run: npm run build
 
+      - name: vitest
+        run: npm test
+
   test-py-integration:
     name: Integration tests (Postgres + PostGIS) — informational
     runs-on: ubuntu-latest
