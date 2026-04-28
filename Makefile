@@ -51,8 +51,12 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 build-web: ## Typecheck + build the web app.
 	cd apps/web && npm run build
 
+.PHONY: test-web
+test-web: ## Run the web app's vitest suite.
+	cd apps/web && npm test
+
 .PHONY: check
-check: lint test build-web ## Run everything CI gates on. Run before opening a PR.
+check: lint test build-web test-web ## Run everything CI gates on. Run before opening a PR.
 
 # ─── Bootstrap (data ingest entrypoints) ─────────────────────────────────────
 
