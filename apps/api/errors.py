@@ -14,6 +14,7 @@ In every case we return a stable JSON shape and a request_id the
 operator can correlate with server logs. The internal message is never
 echoed back.
 """
+
 from __future__ import annotations
 
 import logging
@@ -59,7 +60,10 @@ async def database_unavailable_handler(
     request_id = _request_id(request)
     log.warning(
         "database unavailable on %s %s (request_id=%s): %s",
-        request.method, request.url.path, request_id, exc,
+        request.method,
+        request.url.path,
+        request_id,
+        exc,
     )
     return _error_response(
         status_code=503,
@@ -79,7 +83,9 @@ async def database_error_handler(request: Request, exc: psycopg2.Error) -> JSONR
     request_id = _request_id(request)
     log.exception(
         "database error on %s %s (request_id=%s)",
-        request.method, request.url.path, request_id,
+        request.method,
+        request.url.path,
+        request_id,
     )
     return _error_response(
         status_code=500,
@@ -94,7 +100,9 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     request_id = _request_id(request)
     log.exception(
         "unhandled error on %s %s (request_id=%s)",
-        request.method, request.url.path, request_id,
+        request.method,
+        request.url.path,
+        request_id,
     )
     return _error_response(
         status_code=500,

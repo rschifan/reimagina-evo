@@ -1,4 +1,5 @@
 """Logical revision order shared across storage backends."""
+
 from __future__ import annotations
 
 REVISIONS = [

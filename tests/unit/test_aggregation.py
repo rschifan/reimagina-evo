@@ -1,4 +1,5 @@
 """Unit tests for the pure aggregation helpers used by the rollup worker."""
+
 from __future__ import annotations
 
 import pytest

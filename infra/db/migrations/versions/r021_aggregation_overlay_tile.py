@@ -28,6 +28,7 @@ Revision ID: r021
 Revises: r020
 Create Date: 2026-04-21
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -40,11 +41,16 @@ depends_on = None
 
 
 _NEW_CATALOG_ROWS = [
-    ("serving_geo", "aggregation_overlay_tile", "aggregation_overlay_tiles", "serving",
-     "Live MVT choropleth for aggregation-recipe observations — martin function source",
-     None,
-     "Call as GET /aggregation_overlay_tile/z/x/y?attribute_key=…&feature_type_slug=…",
-     131),
+    (
+        "serving_geo",
+        "aggregation_overlay_tile",
+        "aggregation_overlay_tiles",
+        "serving",
+        "Live MVT choropleth for aggregation-recipe observations — martin function source",
+        None,
+        "Call as GET /aggregation_overlay_tile/z/x/y?attribute_key=…&feature_type_slug=…",
+        131,
+    ),
 ]
 
 

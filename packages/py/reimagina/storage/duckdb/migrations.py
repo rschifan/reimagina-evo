@@ -1,4 +1,5 @@
 """DuckDB migration runner with revision tracking."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,7 +42,9 @@ def run_duckdb_migrations(connection) -> None:
 
         sql_path = next(base.glob(f"{revision}_*.sql"), None)
         if sql_path is None:
-            raise FileNotFoundError(f"Missing DuckDB migration for revision {revision!r}")
+            raise FileNotFoundError(
+                f"Missing DuckDB migration for revision {revision!r}"
+            )
         connection.execute(sql_path.read_text())
         connection.execute(
             "INSERT INTO _duckdb_migrations (revision) VALUES (?)",

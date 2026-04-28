@@ -5,6 +5,7 @@ a call to `upsert_indicator` here — no migration, no table change. The catalog
 is then read by workers, the API, and UI components that need
 unit / bounds / aggregation-method metadata.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -89,7 +90,9 @@ SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
 )
 
 
-def seed_catalog(conn, specs: tuple[IndicatorSpec, ...] = SHIPPED_INDICATORS) -> list[dict[str, Any]]:
+def seed_catalog(
+    conn, specs: tuple[IndicatorSpec, ...] = SHIPPED_INDICATORS
+) -> list[dict[str, Any]]:
     """Idempotently register every IndicatorSpec in `specs`.
 
     Returns a list of {slug, id} rows, in input order, so callers can map

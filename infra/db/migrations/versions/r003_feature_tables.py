@@ -4,6 +4,7 @@ Revision ID: r003
 Revises: r002
 Create Date: 2026-04-12
 """
+
 from __future__ import annotations
 from alembic import op
 
@@ -81,7 +82,9 @@ def upgrade() -> None:
         )
     """)
 
-    op.execute("CREATE INDEX feature_geometry_gist  ON curated_geo.feature USING GIST (geometry)")
+    op.execute(
+        "CREATE INDEX feature_geometry_gist  ON curated_geo.feature USING GIST (geometry)"
+    )
     op.execute("CREATE INDEX feature_type_slug_idx  ON curated_geo.feature (type_slug)")
     op.execute("CREATE INDEX feature_role_idx       ON curated_geo.feature (role)")
     op.execute("CREATE INDEX feature_parent_idx     ON curated_geo.feature (parent_id)")

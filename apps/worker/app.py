@@ -1,4 +1,5 @@
 """Minimal worker scaffold."""
+
 from __future__ import annotations
 
 
@@ -8,4 +9,3 @@ def create_worker() -> dict[str, str]:
         "namespace": "reimagina",
         "status": "scaffold",
     }
-

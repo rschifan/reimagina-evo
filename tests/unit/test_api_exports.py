@@ -2,6 +2,7 @@
 
 Pure-function coverage over hand-built row dicts — no DB involved.
 """
+
 from __future__ import annotations
 
 import io
@@ -117,7 +118,14 @@ def test_geoparquet_round_trips_through_geopandas():
     payload = indicator_rows_to_geoparquet(rows)
     gdf = gpd.read_parquet(io.BytesIO(payload))
     assert len(gdf) == 2
-    assert set(gdf.columns) >= {"feature_id", "type_slug", "value", "quality_flag", "computed_at", "geometry"}
+    assert set(gdf.columns) >= {
+        "feature_id",
+        "type_slug",
+        "value",
+        "quality_flag",
+        "computed_at",
+        "geometry",
+    }
     assert gdf.crs is not None
     assert gdf.crs.to_epsg() == 4326
     values = sorted(gdf["value"].tolist())

@@ -20,6 +20,7 @@ Revision ID: r022
 Revises: r021
 Create Date: 2026-04-26
 """
+
 from __future__ import annotations
 
 from alembic import op

@@ -19,6 +19,7 @@ same tile bbox covering both, and assert:
 Skipped when ``mapbox_vector_tile`` isn't installed — same posture as
 ``test_indicator_overlay_tile.py``.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -73,7 +74,10 @@ def _decode_overlay(layer_name: str, tile_bytes: bytes) -> list[dict]:
 def _make_aoi(conn, *, project_name: str, aoi_name: str, polygon_wkt: str) -> str:
     project_id = _insert_project(conn, name=project_name)
     return aoi_mod.create_aoi(
-        conn, project_id=project_id, name=aoi_name, geometry_wkt=polygon_wkt,
+        conn,
+        project_id=project_id,
+        name=aoi_name,
+        geometry_wkt=polygon_wkt,
     )
 
 
@@ -102,22 +106,32 @@ def _seed_two_indicator_features(conn) -> tuple[str, str, str, str, str]:
     ``(aoi_a_id, aoi_b_id, feature_a_id, feature_b_id, indicator_slug)``.
     """
     src = _register_source(
-        conn, name=f"tile_aoi_ind_{uuid4().hex[:8]}",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name=f"tile_aoi_ind_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run = _start_run(conn, src)
     block_type = feat.get_type_id(conn, "MEX", "block")
 
-    poly_a = _polygon_at(-99.135, 19.430)   # CDMX-ish
+    poly_a = _polygon_at(-99.135, 19.430)  # CDMX-ish
     poly_b = _polygon_at(-115.470, 32.640)  # Mexicali-ish
     feature_a = _insert_feature(
-        conn, type_id=block_type, source_id=src, ingestion_run_id=run,
-        dataset_version="v1", source_record_ref=f"a-{uuid4().hex[:8]}",
+        conn,
+        type_id=block_type,
+        source_id=src,
+        ingestion_run_id=run,
+        dataset_version="v1",
+        source_record_ref=f"a-{uuid4().hex[:8]}",
         geometry_wkt=poly_a,
     )
     feature_b = _insert_feature(
-        conn, type_id=block_type, source_id=src, ingestion_run_id=run,
-        dataset_version="v1", source_record_ref=f"b-{uuid4().hex[:8]}",
+        conn,
+        type_id=block_type,
+        source_id=src,
+        ingestion_run_id=run,
+        dataset_version="v1",
+        source_record_ref=f"b-{uuid4().hex[:8]}",
         geometry_wkt=poly_b,
     )
 
@@ -138,18 +152,29 @@ def _seed_two_indicator_features(conn) -> tuple[str, str, str, str, str]:
 
     indicator_slug = f"tile_aoi_test_{uuid4().hex[:8]}"
     _insert_indicator_result(
-        conn, slug=indicator_slug,
-        feature_id=feature_a, feature_type="block", value_numeric=11.0,
+        conn,
+        slug=indicator_slug,
+        feature_id=feature_a,
+        feature_type="block",
+        value_numeric=11.0,
     )
     _insert_indicator_result(
-        conn, slug=indicator_slug,
-        feature_id=feature_b, feature_type="block", value_numeric=22.0,
+        conn,
+        slug=indicator_slug,
+        feature_id=feature_b,
+        feature_type="block",
+        value_numeric=22.0,
     )
     return aoi_a, aoi_b, feature_a, feature_b, indicator_slug
 
 
 def _insert_indicator_result(
-    conn, *, slug: str, feature_id: str, feature_type: str, value_numeric: float,
+    conn,
+    *,
+    slug: str,
+    feature_id: str,
+    feature_type: str,
+    value_numeric: float,
 ) -> None:
     """Insert one indicator_result row. Builds the minimum supporting state
     (job_run, indicator_catalog) inline to keep the test self-contained."""
@@ -193,7 +218,8 @@ def _ensure_indicator_in_catalog(conn, *, slug: str) -> str:
 
 def _render_indicator_tile(conn, *, indicator_slug: str, aoi_id: str | None) -> bytes:
     import json
-    z, x, y = 11, 460, 911   # zoom that covers a wide bbox spanning Mexico
+
+    z, x, y = 11, 460, 911  # zoom that covers a wide bbox spanning Mexico
     params: dict = {"indicator_slug": indicator_slug}
     if aoi_id is not None:
         params["aoi_id"] = aoi_id
@@ -227,7 +253,9 @@ def test_indicator_tile_returns_both_features_when_aoi_omitted(conn):
             (slug,),
         )
         all_count = cur.fetchone()[0]
-    assert all_count == 2, "without aoi_id the function must see both features in the indicator"
+    assert (
+        all_count == 2
+    ), "without aoi_id the function must see both features in the indicator"
     # Sanity check the tile path itself still produces some bytes for at
     # least one of the two — proves the function compiles and runs.
     tile = _render_indicator_tile(conn, indicator_slug=slug, aoi_id=None)
@@ -259,9 +287,9 @@ def test_indicator_tile_filters_by_aoi_id(conn):
                 (slug, aoi_id),
             )
             ids = cur.fetchone()[0]
-            assert ids == [expected_feature], (
-                f"aoi_id={aoi_id} should scope to {expected_feature!r} only, got {ids!r}"
-            )
+            assert ids == [
+                expected_feature
+            ], f"aoi_id={aoi_id} should scope to {expected_feature!r} only, got {ids!r}"
 
 
 def test_indicator_tile_unknown_aoi_id_returns_empty(conn):
@@ -296,8 +324,10 @@ def _seed_two_observation_features(conn) -> tuple[str, str, str, str, str]:
     ``(aoi_a, aoi_b, feature_a, feature_b, attribute_key)``.
     """
     src = _register_source(
-        conn, name=f"tile_aoi_obs_{uuid4().hex[:8]}",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name=f"tile_aoi_obs_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run = _start_run(conn, src)
     block_type = feat.get_type_id(conn, "MEX", "block")
@@ -305,23 +335,35 @@ def _seed_two_observation_features(conn) -> tuple[str, str, str, str, str]:
     poly_a = _polygon_at(-99.135, 19.430)
     poly_b = _polygon_at(-115.470, 32.640)
     feature_a = _insert_feature(
-        conn, type_id=block_type, source_id=src, ingestion_run_id=run,
-        dataset_version="v1", source_record_ref=f"oa-{uuid4().hex[:8]}",
+        conn,
+        type_id=block_type,
+        source_id=src,
+        ingestion_run_id=run,
+        dataset_version="v1",
+        source_record_ref=f"oa-{uuid4().hex[:8]}",
         geometry_wkt=poly_a,
     )
     feature_b = _insert_feature(
-        conn, type_id=block_type, source_id=src, ingestion_run_id=run,
-        dataset_version="v1", source_record_ref=f"ob-{uuid4().hex[:8]}",
+        conn,
+        type_id=block_type,
+        source_id=src,
+        ingestion_run_id=run,
+        dataset_version="v1",
+        source_record_ref=f"ob-{uuid4().hex[:8]}",
         geometry_wkt=poly_b,
     )
 
     aoi_a = _make_aoi(
-        conn, project_name=f"obs-proj-a-{uuid4().hex[:6]}",
-        aoi_name="OBS AOI A", polygon_wkt=_polygon_at(-99.135, 19.430, side=0.05),
+        conn,
+        project_name=f"obs-proj-a-{uuid4().hex[:6]}",
+        aoi_name="OBS AOI A",
+        polygon_wkt=_polygon_at(-99.135, 19.430, side=0.05),
     )
     aoi_b = _make_aoi(
-        conn, project_name=f"obs-proj-b-{uuid4().hex[:6]}",
-        aoi_name="OBS AOI B", polygon_wkt=_polygon_at(-115.470, 32.640, side=0.05),
+        conn,
+        project_name=f"obs-proj-b-{uuid4().hex[:6]}",
+        aoi_name="OBS AOI B",
+        polygon_wkt=_polygon_at(-115.470, 32.640, side=0.05),
     )
     _attach_feature_to_aoi(conn, aoi_id=aoi_a, feature_id=feature_a)
     _attach_feature_to_aoi(conn, aoi_id=aoi_b, feature_id=feature_b)
@@ -330,12 +372,21 @@ def _seed_two_observation_features(conn) -> tuple[str, str, str, str, str]:
     obs.bulk_upsert_observations(
         conn,
         [
-            {"feature_id": feature_a, "attribute_key": attribute_key,
-             "value_type": "numeric", "value": 100.0},
-            {"feature_id": feature_b, "attribute_key": attribute_key,
-             "value_type": "numeric", "value": 200.0},
+            {
+                "feature_id": feature_a,
+                "attribute_key": attribute_key,
+                "value_type": "numeric",
+                "value": 100.0,
+            },
+            {
+                "feature_id": feature_b,
+                "attribute_key": attribute_key,
+                "value_type": "numeric",
+                "value": 200.0,
+            },
         ],
-        source_id=src, ingestion_run_id=run,
+        source_id=src,
+        ingestion_run_id=run,
     )
     return aoi_a, aoi_b, feature_a, feature_b, attribute_key
 
@@ -379,9 +430,9 @@ def test_aggregation_tile_filters_by_aoi_id(conn):
                 (key, aoi_id),
             )
             ids = cur.fetchone()[0]
-            assert ids == [expected], (
-                f"aoi_id={aoi_id} should scope to {expected!r} only, got {ids!r}"
-            )
+            assert ids == [
+                expected
+            ], f"aoi_id={aoi_id} should scope to {expected!r} only, got {ids!r}"
 
 
 def test_aggregation_tile_function_runs_with_aoi_id_param(conn):
@@ -390,6 +441,7 @@ def test_aggregation_tile_function_runs_with_aoi_id_param(conn):
     the chosen tile bbox), never raises."""
     aoi_a, _, _, _, key = _seed_two_observation_features(conn)
     import json
+
     z, x, y = 11, 460, 911
     params = {
         "attribute_key": key,
@@ -410,6 +462,7 @@ def test_indicator_tile_function_runs_with_aoi_id_param(conn):
     against the live function, not just the WHERE-clause logic."""
     aoi_a, _, _, _, slug = _seed_two_indicator_features(conn)
     import json
+
     z, x, y = 11, 460, 911
     params = {"indicator_slug": slug, "aoi_id": aoi_a}
     with conn.cursor() as cur:

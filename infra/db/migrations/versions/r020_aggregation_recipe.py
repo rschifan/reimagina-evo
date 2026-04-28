@@ -25,6 +25,7 @@ Revision ID: r020
 Revises: r019
 Create Date: 2026-04-21
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -39,18 +40,36 @@ depends_on = None
 _NEW_CATALOG_ROWS = [
     # (schema, object, logical_name, layer_kind, description,
     #  primary_geometry_column, intended_use, display_order)
-    ("curated_geo", "aggregation_recipe", "aggregation_recipes", "canonical",
-     "Declarative raster→observation and observation→observation derivation bindings",
-     None,
-     "Inspect what recipes produce which observation prefixes at which grain", 56),
-    ("serving_geo", "aggregation_recipe_v", "aggregation_recipes_serving", "serving",
-     "App/worker-facing view of enabled aggregation recipes (hides disabled rows)",
-     None,
-     "Inspect what the derivation dispatcher sees", 116),
-    ("explore", "aggregation_recipe_v", "aggregation_recipe_catalog", "explore",
-     "Engineer view: recipes joined with raster layer slugs + feature type labels",
-     None,
-     "Audit recipes + debug dispatcher input resolution", 945),
+    (
+        "curated_geo",
+        "aggregation_recipe",
+        "aggregation_recipes",
+        "canonical",
+        "Declarative raster→observation and observation→observation derivation bindings",
+        None,
+        "Inspect what recipes produce which observation prefixes at which grain",
+        56,
+    ),
+    (
+        "serving_geo",
+        "aggregation_recipe_v",
+        "aggregation_recipes_serving",
+        "serving",
+        "App/worker-facing view of enabled aggregation recipes (hides disabled rows)",
+        None,
+        "Inspect what the derivation dispatcher sees",
+        116,
+    ),
+    (
+        "explore",
+        "aggregation_recipe_v",
+        "aggregation_recipe_catalog",
+        "explore",
+        "Engineer view: recipes joined with raster layer slugs + feature type labels",
+        None,
+        "Audit recipes + debug dispatcher input resolution",
+        945,
+    ),
 ]
 
 

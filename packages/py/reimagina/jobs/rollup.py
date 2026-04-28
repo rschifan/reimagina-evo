@@ -11,6 +11,7 @@ The worker is synchronous for v1: callers invoke it directly from a CLI or
 an integration test. Once the queue arrives this module is the natural seam
 to enqueue rollup messages from.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -178,7 +179,8 @@ def _write_rollup_row(
     missing_weight = sum(
         child.weight
         for child in children
-        if child.value is None or child.quality_flag in ("missing", "not_applicable", "failed")
+        if child.value is None
+        or child.quality_flag in ("missing", "not_applicable", "failed")
     )
     share_state = classify_missing_share(
         total_weight=total_weight,

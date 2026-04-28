@@ -1,4 +1,5 @@
 """Database connection management via the swappable storage manager."""
+
 from __future__ import annotations
 
 from dotenv import load_dotenv

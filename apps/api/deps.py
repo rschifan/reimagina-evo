@@ -8,6 +8,7 @@ accident. Routers get the backend via get_backend(conn), which keeps
 every route architecturally inside reimagina.storage (no raw SQL in the
 API layer).
 """
+
 from __future__ import annotations
 
 import os

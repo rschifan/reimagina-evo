@@ -33,6 +33,7 @@ Revision ID: r017
 Revises: r016
 Create Date: 2026-04-20
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -138,9 +139,16 @@ def upgrade() -> None:
 _NEW_CATALOG_ROWS = [
     # (schema_name, object_name, logical_name, layer_kind, description,
     #  primary_geometry_column, intended_use, display_order)
-    ("serving_geo", "indicator_overlay_tile", "indicator_overlay_tiles", "serving",
-     "Live MVT choropleth for one indicator — martin function source", None,
-     "Call as GET /indicator_overlay_tile/z/x/y?indicator_slug=…", 130),
+    (
+        "serving_geo",
+        "indicator_overlay_tile",
+        "indicator_overlay_tiles",
+        "serving",
+        "Live MVT choropleth for one indicator — martin function source",
+        None,
+        "Call as GET /indicator_overlay_tile/z/x/y?indicator_slug=…",
+        130,
+    ),
 ]
 
 

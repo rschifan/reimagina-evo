@@ -1,11 +1,14 @@
 """Bronze zone: land raw files into data/bronze/ unchanged."""
+
 from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-BRONZE_DIR = Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "bronze"
+BRONZE_DIR = (
+    Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "bronze"
+)
 
 
 def land_file(source_path: str | Path, source_id: str) -> Path:

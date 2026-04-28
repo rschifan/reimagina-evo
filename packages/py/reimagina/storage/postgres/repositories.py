@@ -1,4 +1,5 @@
 """PostgreSQL/PostGIS repository implementations."""
+
 from __future__ import annotations
 
 import json
@@ -43,7 +44,16 @@ class PostgresSourceCatalogRepository:
                        notes = COALESCE(EXCLUDED.notes, curated_geo.data_source_catalog.notes)
                 RETURNING id
                 """,
-                (name, provider, storage_type, integration_role, storage_uri, version, license, notes),
+                (
+                    name,
+                    provider,
+                    storage_type,
+                    integration_role,
+                    storage_uri,
+                    version,
+                    license,
+                    notes,
+                ),
             )
             return str(cur.fetchone()[0])
 
@@ -98,11 +108,19 @@ class PostgresSourceCatalogRepository:
                 VALUES (%s, %s, %s, %s, %s, 'running')
                 RETURNING id
                 """,
-                (source_id, orchestrator, orchestrator_run_id, transformation_step, code_version),
+                (
+                    source_id,
+                    orchestrator,
+                    orchestrator_run_id,
+                    transformation_step,
+                    code_version,
+                ),
             )
             return str(cur.fetchone()[0])
 
-    def complete_ingestion_run(self, run_id: str, *, status: str, details: dict | None = None) -> None:
+    def complete_ingestion_run(
+        self, run_id: str, *, status: str, details: dict | None = None
+    ) -> None:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
@@ -178,7 +196,9 @@ class PostgresFeatureRepository:
             rows.append(
                 (
                     type_id,
-                    str(row[parent_id_col]) if parent_id_col and parent_id_col in row.index else None,
+                    str(row[parent_id_col])
+                    if parent_id_col and parent_id_col in row.index
+                    else None,
                     str(row[name_col]) if name_col and name_col in row.index else None,
                     row.geometry.wkt,
                     json.dumps(attributes, allow_nan=False),
@@ -237,12 +257,18 @@ class PostgresFeatureRepository:
 
         requested_columns = ["geometry", source_record_ref_col]
         for optional in [name_col, parent_id_col, *(attributes_cols or [])]:
-            if optional and optional in available_columns and optional not in requested_columns:
+            if (
+                optional
+                and optional in available_columns
+                and optional not in requested_columns
+            ):
                 requested_columns.append(optional)
 
         batch_size = 10_000
         inserted_count = 0
-        for batch in parquet_file.iter_batches(batch_size=batch_size, columns=requested_columns):
+        for batch in parquet_file.iter_batches(
+            batch_size=batch_size, columns=requested_columns
+        ):
             rows = []
             for record in batch.to_pylist():
                 attributes: dict = {}
@@ -255,9 +281,15 @@ class PostgresFeatureRepository:
                 rows.append(
                     (
                         type_id,
-                        str(record[parent_id_col]) if parent_id_col and record.get(parent_id_col) else None,
-                        str(record[name_col]) if name_col and record.get(name_col) is not None else None,
-                        psycopg2.Binary(record["geometry"]) if record.get("geometry") is not None else None,
+                        str(record[parent_id_col])
+                        if parent_id_col and record.get(parent_id_col)
+                        else None,
+                        str(record[name_col])
+                        if name_col and record.get(name_col) is not None
+                        else None,
+                        psycopg2.Binary(record["geometry"])
+                        if record.get("geometry") is not None
+                        else None,
                         json.dumps(attributes, allow_nan=False),
                         source_id,
                         str(record[source_record_ref_col]),
@@ -482,7 +514,9 @@ class PostgresObservationRepository:
             )
             return str(cur.fetchone()[0])
 
-    def bulk_upsert_current(self, records: list[dict], *, source_id: str, ingestion_run_id: str) -> int:
+    def bulk_upsert_current(
+        self, records: list[dict], *, source_id: str, ingestion_run_id: str
+    ) -> int:
         if not records:
             return 0
 
@@ -494,17 +528,19 @@ class PostgresObservationRepository:
             value_numeric = r["value"] if r["value_type"] == "numeric" else None
             value_text = r["value"] if r["value_type"] == "text" else None
             value_json = json.dumps(r["value"]) if r["value_type"] == "json" else None
-            insert_rows.append((
-                r["feature_id"],
-                r["attribute_key"],
-                r["value_type"],
-                value_numeric,
-                value_text,
-                value_json,
-                source_id,
-                ingestion_run_id,
-                json.dumps(r["lineage_ref"]) if r.get("lineage_ref") else None,
-            ))
+            insert_rows.append(
+                (
+                    r["feature_id"],
+                    r["attribute_key"],
+                    r["value_type"],
+                    value_numeric,
+                    value_text,
+                    value_json,
+                    source_id,
+                    ingestion_run_id,
+                    json.dumps(r["lineage_ref"]) if r.get("lineage_ref") else None,
+                )
+            )
 
         with self.connection.cursor() as cur:
             # Retire existing current rows in one statement via a VALUES join.
@@ -532,9 +568,7 @@ class PostgresObservationRepository:
                 VALUES %s
                 """,
                 insert_rows,
-                template=(
-                    "(%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, true)"
-                ),
+                template=("(%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, true)"),
                 page_size=len(insert_rows),
             )
         return len(records)
@@ -624,7 +658,9 @@ class PostgresFileAssetRepository:
             return str(cur.fetchone()[0])
 
     def get_by_source(self, source_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, source_id::text, ingestion_run_id::text,
@@ -669,14 +705,26 @@ class PostgresRasterLayerRepository:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (source_id, asset_id, layer_slug, logical_name, description,
-                 colormap_name, rescale, minzoom, maxzoom, published,
-                 aggregation_kind),
+                (
+                    source_id,
+                    asset_id,
+                    layer_slug,
+                    logical_name,
+                    description,
+                    colormap_name,
+                    rescale,
+                    minzoom,
+                    maxzoom,
+                    published,
+                    aggregation_kind,
+                ),
             )
             return str(cur.fetchone()[0])
 
     def get_by_source(self, source_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, source_id::text, asset_id::text,
@@ -694,7 +742,9 @@ class PostgresRasterLayerRepository:
             return dict(row) if row else None
 
     def get_by_id(self, layer_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, source_id::text, asset_id::text,
@@ -712,7 +762,9 @@ class PostgresRasterLayerRepository:
             return dict(row) if row else None
 
     def list_published_layers(self) -> list[dict]:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, source_id::text, asset_id::text,
@@ -782,17 +834,26 @@ class PostgresAggregationRecipeRepository:
                 RETURNING id
                 """,
                 (
-                    input_kind, input_raster_layer_id, input_attribute_key_prefix,
-                    input_feature_type_slug, target_feature_type_slug,
-                    attribute_key_prefix, method, weight_basis,
+                    input_kind,
+                    input_raster_layer_id,
+                    input_attribute_key_prefix,
+                    input_feature_type_slug,
+                    target_feature_type_slug,
+                    attribute_key_prefix,
+                    method,
+                    weight_basis,
                     psycopg2.extras.Json(params or {}),
-                    coverage_threshold, aoi_id, enabled,
+                    coverage_threshold,
+                    aoi_id,
+                    enabled,
                 ),
             )
             return str(cur.fetchone()[0])
 
     def get_recipe(self, recipe_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"SELECT {self._SELECT_COLS} "
                 f"FROM serving_geo.aggregation_recipe_v WHERE id = %s",
@@ -815,7 +876,9 @@ class PostgresAggregationRecipeRepository:
         if enabled_only:
             conditions.append("enabled")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"SELECT {self._SELECT_COLS} "
                 f"FROM serving_geo.aggregation_recipe_v{where} "
@@ -847,7 +910,14 @@ class PostgresAOIRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def create_aoi(self, *, project_id: str, name: str, geometry_wkt: str, description: str | None = None) -> str:
+    def create_aoi(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        geometry_wkt: str,
+        description: str | None = None,
+    ) -> str:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
@@ -862,7 +932,9 @@ class PostgresAOIRepository:
 
     def compute_overlaps(self, aoi_id: str) -> int:
         with self.connection.cursor() as cur:
-            cur.execute("DELETE FROM curated_geo.aoi_feature WHERE aoi_id = %s", (aoi_id,))
+            cur.execute(
+                "DELETE FROM curated_geo.aoi_feature WHERE aoi_id = %s", (aoi_id,)
+            )
             cur.execute(
                 """
                 WITH aoi_raw AS (
@@ -1016,57 +1088,76 @@ class PostgresAOIRepository:
 
     def list_aois(self) -> list[dict]:
         with self.connection.cursor() as cur:
+            # Single-pass aggregation. The earlier shape ran six
+            # correlated subqueries (centroid lon/lat + four extent
+            # corners), each re-doing the
+            # ``aoi_feature × feature`` join — Postgres won't merge
+            # them because they're independent scalar subqueries. With
+            # 1.7 M aoi_feature rows that adds up to ~2.7 s. Folding
+            # everything into one CTE that does the join + aggregation
+            # once drops the endpoint to <100 ms.
             cur.execute(
                 """
+                WITH block_stats AS (
+                    SELECT
+                        af.aoi_id,
+                        ST_Centroid(ST_Collect(ST_Centroid(f.geometry))) AS centroid,
+                        ST_Extent(f.geometry) AS extent_box
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE f.type_slug = 'block'
+                    GROUP BY af.aoi_id
+                )
                 SELECT aoi.id::text, aoi.project_id::text, aoi.name, aoi.description,
-                       -- ST_Envelope returns the smallest containing rectangle
-                       -- in the same CRS as the geometry (EPSG:4326).
+                       -- AOI polygon bbox in EPSG:4326.
                        ST_XMin(aoi.geometry) AS min_lon,
                        ST_YMin(aoi.geometry) AS min_lat,
                        ST_XMax(aoi.geometry) AS max_lon,
                        ST_YMax(aoi.geometry) AS max_lat,
                        -- Urban-core centroid: count-weighted average of
-                       -- block centroids inside the AOI. Plain
-                       -- ST_PointOnSurface(geometry) lands somewhere inside
-                       -- the polygon but for huge concave AOIs like Mexicali
-                       -- (mostly desert + a corner urban area) it can land
-                       -- in farmland — the user sees no features at all
-                       -- because blocks are sparse there. Averaging block
-                       -- centroids is naturally pulled toward dense urban
-                       -- areas (more block-points = more weight).
-                       --
-                       -- Falls back to ST_PointOnSurface(geometry) when the
-                       -- AOI has no overlapping blocks yet (fresh ingest).
-                       COALESCE(
-                         (SELECT ST_X(ST_Centroid(ST_Collect(ST_Centroid(f.geometry))))
-                          FROM curated_geo.aoi_feature af
-                          JOIN curated_geo.feature f ON f.id = af.feature_id
-                          WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
-                         ST_X(ST_PointOnSurface(aoi.geometry))
-                       ) AS centroid_lon,
-                       COALESCE(
-                         (SELECT ST_Y(ST_Centroid(ST_Collect(ST_Centroid(f.geometry))))
-                          FROM curated_geo.aoi_feature af
-                          JOIN curated_geo.feature f ON f.id = af.feature_id
-                          WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
-                         ST_Y(ST_PointOnSurface(aoi.geometry))
-                       ) AS centroid_lat
+                       -- block centroids inside the AOI. Falls back to
+                       -- ST_PointOnSurface(geometry) when the AOI has
+                       -- no overlapping blocks yet (fresh ingest).
+                       COALESCE(ST_X(bs.centroid),
+                                ST_X(ST_PointOnSurface(aoi.geometry))) AS centroid_lon,
+                       COALESCE(ST_Y(bs.centroid),
+                                ST_Y(ST_PointOnSurface(aoi.geometry))) AS centroid_lat,
+                       -- Features bbox = envelope of all blocks loaded
+                       -- inside this AOI. Distinct from the polygon
+                       -- bbox above: a muni like Mexicali is mostly
+                       -- desert with the populated area in one corner,
+                       -- so the polygon bbox would frame mostly empty
+                       -- land. NULL when no blocks are loaded yet —
+                       -- frontend falls back to the polygon bbox.
+                       ST_XMin(bs.extent_box) AS feat_min_lon,
+                       ST_YMin(bs.extent_box) AS feat_min_lat,
+                       ST_XMax(bs.extent_box) AS feat_max_lon,
+                       ST_YMax(bs.extent_box) AS feat_max_lat
                 FROM curated_geo.area_of_interest aoi
+                LEFT JOIN block_stats bs ON bs.aoi_id = aoi.id
                 ORDER BY aoi.name
                 """
             )
             rows = cur.fetchall()
             return [
                 {
-                    "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
+                    "aoi_id": aid,
+                    "project_id": pid,
+                    "name": name,
+                    "description": descr,
                     "bbox": [min_lon, min_lat, max_lon, max_lat]
-                    if min_lon is not None else None,
+                    if min_lon is not None
+                    else None,
                     "centroid": [centroid_lon, centroid_lat]
-                    if centroid_lon is not None else None,
+                    if centroid_lon is not None
+                    else None,
+                    "features_bbox": (
+                        [feat_min_lon, feat_min_lat, feat_max_lon, feat_max_lat]
+                        if feat_min_lon is not None
+                        else None
+                    ),
                 }
-                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
-                    centroid_lon, centroid_lat
-                in rows
+                for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat, centroid_lon, centroid_lat, feat_min_lon, feat_min_lat, feat_max_lon, feat_max_lat in rows
             ]
 
     def get_aoi(self, aoi_id: str) -> dict | None:
@@ -1083,7 +1174,12 @@ class PostgresAOIRepository:
             if row is None:
                 return None
             aid, pid, name, descr = row
-            return {"aoi_id": aid, "project_id": pid, "name": name, "description": descr}
+            return {
+                "aoi_id": aid,
+                "project_id": pid,
+                "name": name,
+                "description": descr,
+            }
 
     def upsert_project_by_name(self, name: str, description: str | None = None) -> str:
         with self.connection.cursor() as cur:
@@ -1249,8 +1345,15 @@ class PostgresOverlapRepository:
         target_feature_type: str,
         scenario_id: str | None = None,
     ) -> list[tuple[str, float | None, float, str]]:
-        scenario_clause, scenario_params = _scenario_filter("ir.scenario_id", scenario_id)
-        params: list = [source_feature_type, target_feature_type, indicator_slug, *scenario_params]
+        scenario_clause, scenario_params = _scenario_filter(
+            "ir.scenario_id", scenario_id
+        )
+        params: list = [
+            source_feature_type,
+            target_feature_type,
+            indicator_slug,
+            *scenario_params,
+        ]
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
@@ -1317,7 +1420,8 @@ class PostgresOverlapRepository:
                 WHERE TRUE{aoi_clause}
                 """,
                 (
-                    source_feature_type, target_feature_type,
+                    source_feature_type,
+                    target_feature_type,
                     input_attribute_key_prefix,
                     input_attribute_key_prefix + "\\_%",
                     *aoi_params,
@@ -1352,7 +1456,9 @@ class PostgresOverlapTypePairRepository:
             return str(cur.fetchone()[0])
 
     def list_pairs(self) -> list[dict]:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT
@@ -1405,7 +1511,9 @@ class PostgresServingReader:
         fetch_limit = limit + 1
 
         if aoi_id:
-            extra_conditions = (" AND " + " AND ".join(conditions)) if conditions else ""
+            extra_conditions = (
+                (" AND " + " AND ".join(conditions)) if conditions else ""
+            )
             sql = f"""
                 SELECT
                     f.id, f.type_slug, f.role, f.name,
@@ -1432,7 +1540,9 @@ class PostgresServingReader:
             """
             params = params + [fetch_limit]
 
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(sql, params)
             rows = [dict(row) for row in cur.fetchall()]
 
@@ -1458,13 +1568,68 @@ class PostgresServingReader:
                 )
             return int(cur.fetchone()[0])
 
+    def count_features_within_polygon(
+        self,
+        *,
+        aoi_id: str,
+        polygon_geojson: str,
+        type_slugs: list[str],
+    ) -> dict[str, int]:
+        # Centroid-based containment query (see migration r027).
+        # ``ST_Covers(polygon, geometry_centroid)`` against the
+        # GiST-indexed ``geometry_centroid`` column is 5-10× faster
+        # than the polygon-vs-polygon intersect it replaced because:
+        #   - the index returns exactly the rows whose centroid bbox
+        #     is in the polygon's bbox (no refilter pass on full
+        #     polygons), and
+        #   - the per-row test is point-in-polygon, not polygon-vs-
+        #     polygon.
+        #
+        # ``ST_Covers`` (not ``ST_Contains``) on purpose: ST_Contains
+        # uses DE-9IM exclusive-boundary semantics — a centroid that
+        # lands EXACTLY on the polygon boundary is excluded. For
+        # grid-aligned manzanas whose ``ST_PointOnSurface`` can fall
+        # on a shared block edge, that produces silent undercount. The
+        # client-side ray-cast PIP in selection-filter.ts is also
+        # ambiguous at the boundary, so the two implementations could
+        # disagree on the same polygon. ST_Covers is the standard
+        # PostGIS recommendation for inclusive containment.
+        #
+        # Trade-off: features that straddle the boundary count if
+        # their centroid is inside or on the boundary, miss otherwise.
+        # Same approximation the legacy client-side path used and the
+        # same one humans intuit as "did the circle catch this?".
+        #
+        # Bounded by aoi_id so a Mexicali selection doesn't
+        # accidentally walk CDMX features. type_slug = ANY(%s) lets
+        # the caller pin the query to the layers actually visible in
+        # the panel.
+        if not type_slugs:
+            return {}
+        sql = """
+            SELECT type_slug, COUNT(*)::bigint AS n
+            FROM serving_geo.feature_aoi_v
+            WHERE aoi_id = %s
+              AND type_slug = ANY(%s)
+              AND ST_Covers(
+                  ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
+                  geometry_centroid
+              )
+            GROUP BY type_slug
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(sql, (aoi_id, list(type_slugs), polygon_geojson))
+            return {row[0]: int(row[1]) for row in cur.fetchall()}
+
 
 class PostgresExploreReader:
     def __init__(self, connection):
         self.connection = connection
 
     def _read_query(self, sql: str) -> list[dict]:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(sql)
             return [dict(row) for row in cur.fetchall()]
 
@@ -1548,7 +1713,9 @@ class PostgresTileSnapshotRepository:
             return str(cur.fetchone()[0])
 
     def get_latest_snapshot(self, *, layer_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT
@@ -1590,7 +1757,9 @@ class PostgresTileSnapshotRepository:
             query += " WHERE layer_id = %s"
             params.append(layer_id)
         query += " ORDER BY created_at DESC, snapshot_version DESC"
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
@@ -1649,7 +1818,14 @@ class PostgresAOISummaryRepository:
                       computed_at      = now()
                     RETURNING id
                     """,
-                    (aoi_id, scenario_id, indicator_id, value, aggregation_note, status),
+                    (
+                        aoi_id,
+                        scenario_id,
+                        indicator_id,
+                        value,
+                        aggregation_note,
+                        status,
+                    ),
                 )
             return str(cur.fetchone()[0])
 
@@ -1661,7 +1837,9 @@ class PostgresAOISummaryRepository:
         scenario_id: str | None = None,
     ) -> dict | None:
         scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"""
                 SELECT id, aoi_id, scenario_id, indicator_id, value,
@@ -1690,7 +1868,9 @@ class PostgresAOISummaryRepository:
             conditions.append("status = 'current'")
 
         where_clause = " AND ".join(conditions)
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"""
                 SELECT id, aoi_id, scenario_id, indicator_id, value,
@@ -1712,7 +1892,9 @@ class PostgresAOISummaryRepository:
     ) -> list[tuple[float | None, float, str]]:
         # Weight = overlap_measure (absolute area inside the AOI); see
         # Protocol docstring for why overlap_ratio is wrong here.
-        scenario_clause, scenario_params = _scenario_filter("ir.scenario_id", scenario_id)
+        scenario_clause, scenario_params = _scenario_filter(
+            "ir.scenario_id", scenario_id
+        )
         params: list = [indicator_slug, *scenario_params, aoi_id]
         with self.connection.cursor() as cur:
             cur.execute(
@@ -1731,12 +1913,17 @@ class PostgresAOISummaryRepository:
                 params,
             )
             return [
-                (float(value) if value is not None else None, float(weight), quality or "missing")
+                (
+                    float(value) if value is not None else None,
+                    float(weight),
+                    quality or "missing",
+                )
                 for value, weight, quality in cur.fetchall()
             ]
 
 
 # ─── Job run ────────────────────────────────────────────────────────────────
+
 
 class PostgresJobRunRepository:
     def __init__(self, connection):
@@ -1796,7 +1983,9 @@ class PostgresJobRunRepository:
             )
 
     def get_job(self, job_run_id: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, scenario_id::text, model_family, status, code_version,
@@ -1810,6 +1999,7 @@ class PostgresJobRunRepository:
 
 
 # ─── Indicator catalog ──────────────────────────────────────────────────────
+
 
 class PostgresIndicatorCatalogRepository:
     def __init__(self, connection):
@@ -1851,14 +2041,25 @@ class PostgresIndicatorCatalogRepository:
                 RETURNING id::text
                 """,
                 (
-                    slug, name, description, model_family, computation_kind, value_type,
-                    unit, valid_min, valid_max, aggregation_method, applies_to,
+                    slug,
+                    name,
+                    description,
+                    model_family,
+                    computation_kind,
+                    value_type,
+                    unit,
+                    valid_min,
+                    valid_max,
+                    aggregation_method,
+                    applies_to,
                 ),
             )
             return str(cur.fetchone()[0])
 
     def get_indicator(self, slug: str) -> dict | None:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, slug, name, description, model_family, computation_kind,
@@ -1871,7 +2072,9 @@ class PostgresIndicatorCatalogRepository:
             return dict(row) if row else None
 
     def list_indicators(self) -> list[dict]:
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 """
                 SELECT id::text, slug, name, description, model_family, computation_kind,
@@ -1921,6 +2124,7 @@ class PostgresIndicatorCatalogRepository:
 
 
 # ─── Indicator result ───────────────────────────────────────────────────────
+
 
 class PostgresIndicatorResultRepository:
     """Writer uses the Postgres trigger for business-rule enforcement."""
@@ -1993,10 +2197,17 @@ class PostgresIndicatorResultRepository:
                 RETURNING id::text
                 """,
                 (
-                    feature_id, scenario_id, indicator_id,
-                    job_run_id, model_version,
-                    value_numeric, value_text, value_json_serialised,
-                    quality_flag, confidence, missing_reason,
+                    feature_id,
+                    scenario_id,
+                    indicator_id,
+                    job_run_id,
+                    model_version,
+                    value_numeric,
+                    value_text,
+                    value_json_serialised,
+                    quality_flag,
+                    confidence,
+                    missing_reason,
                 ),
             )
             return str(cur.fetchone()[0])
@@ -2023,7 +2234,9 @@ class PostgresIndicatorResultRepository:
             indicator_id = str(found[0])
 
             feature_ids = [fid for fid, _ in rows]
-            scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
+            scenario_clause, scenario_params = _scenario_filter(
+                "scenario_id", scenario_id
+            )
             cur.execute(
                 f"""
                 UPDATE curated_geo.indicator_result
@@ -2060,7 +2273,9 @@ class PostgresIndicatorResultRepository:
         scenario_id: str | None = None,
     ) -> dict | None:
         scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"""
                 SELECT * FROM serving_geo.current_indicator_v
@@ -2081,7 +2296,9 @@ class PostgresIndicatorResultRepository:
         scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
         limit_sql = "" if limit is None else "LIMIT %s"
         limit_params: list = [] if limit is None else [limit]
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"""
                 SELECT * FROM serving_geo.current_indicator_v
@@ -2118,7 +2335,9 @@ class PostgresIndicatorResultRepository:
             params.append(feature_type)
         params.append(limit)
 
-        with self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
             cur.execute(
                 f"""
                 SELECT ir.feature_id::text       AS feature_id,

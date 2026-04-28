@@ -4,7 +4,11 @@ Mirrors the JSON shape the CLI already produces via `tiles sources`, so the
 frontend can consume one endpoint and get back fully-qualified tilejson /
 pmtiles URLs without reading the raw manifest file itself.
 """
+
 from __future__ import annotations
+
+import threading
+import time
 
 import psycopg2
 from fastapi import APIRouter, Depends, Query
@@ -20,6 +24,18 @@ from ..deps import (
 )
 
 router = APIRouter(prefix="/tile-sources", tags=["tiles"])
+
+
+# Process-local TTL cache for the resolver result. The resolver does
+# 1+ s of GROUP BY scans + a DISTINCT join on the observation table —
+# none of which change on operator-relevant timescales. A 30 s TTL
+# means a page-reload during the same session is a memory hit, but
+# operators who just ran an ingest still see the new layer within a
+# minute. Keyed by the (live, snapshot, raster) base-URL tuple in
+# case different consumers configure different bases.
+_CACHE_TTL_SECONDS = 30.0
+_cache_lock = threading.Lock()
+_cache: dict[tuple[str | None, str | None, str | None], tuple[float, list]] = {}
 
 
 class TileSource(BaseModel):
@@ -61,12 +77,25 @@ def list_tile_sources(
 ) -> list[TileSource]:
     """Resolve every tile layer (vector manifest, PMTiles snapshot, raster
     layer registry) into a frontend-ready source."""
-    rows = resolve_tile_sources(
-        conn,
-        live_tilejson_base_url=live_tilejson_base_url or tile_live_base_url(),
-        snapshot_base_url=snapshot_base_url or tile_snapshot_base_url(),
-        raster_base_url=raster_base_url or tile_raster_base_url(),
+    cache_key = (
+        live_tilejson_base_url or tile_live_base_url(),
+        snapshot_base_url or tile_snapshot_base_url(),
+        raster_base_url or tile_raster_base_url(),
     )
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+        rows = cached[1]
+    else:
+        rows = resolve_tile_sources(
+            conn,
+            live_tilejson_base_url=cache_key[0],
+            snapshot_base_url=cache_key[1],
+            raster_base_url=cache_key[2],
+        )
+        with _cache_lock:
+            _cache[cache_key] = (now, rows)
     return [
         TileSource(
             layer_id=row["layer_id"],

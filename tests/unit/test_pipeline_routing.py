@@ -1,4 +1,5 @@
 """Unit tests for pipeline routing logic — no database required."""
+
 from __future__ import annotations
 
 import pytest
@@ -40,6 +41,7 @@ def test_clean_vector_drops_null_geometries():
 
 def test_clean_vector_drops_empty_geometries():
     from shapely.geometry import Point as ShapelyPoint
+
     empty = ShapelyPoint()  # empty point
     gdf = gpd.GeoDataFrame(
         {"id": [1, 2]},
@@ -58,7 +60,9 @@ def test_clean_vector_raises_without_crs():
 
 
 def test_clean_vector_preserves_already_4326():
-    polygon = Polygon([(-99.14, 19.43), (-99.13, 19.43), (-99.13, 19.44), (-99.14, 19.44)])
+    polygon = Polygon(
+        [(-99.14, 19.43), (-99.13, 19.43), (-99.13, 19.44), (-99.14, 19.44)]
+    )
     gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[polygon], crs="EPSG:4326")
     result = clean_vector(gdf)
     assert result.crs.to_epsg() == 4326

@@ -19,7 +19,11 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 
 import type { IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
+import { escapeHtml, fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
+import type { SelectionController } from "./selection";
+import { registerValueAwareLayer } from "./selection-filter";
+import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
 import { mvtProvider, type TooltipController } from "./tooltip";
 
 const OVERLAY_SOURCE = "indicator_overlay";
@@ -139,6 +143,7 @@ export function activateIndicator(
   domain: RampDomain,
   tooltips?: TooltipController,
   aoiId?: string | null,
+  selectionController?: SelectionController,
 ): void {
   removeIndicator(map);
 
@@ -167,6 +172,16 @@ export function activateIndicator(
   const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
   const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
+  // Insert below the selection mask so the dim wash sits ON TOP of
+  // the choropleth fill — without ``beforeId`` MapLibre appends the
+  // layer to the end of the stack and the choropleth paints over the
+  // mask, leaving the indicator at full opacity outside the
+  // selection. Falls back to ``undefined`` (top of stack) when no
+  // mask is installed (tests, embedded maps).
+  const maskBeforeId = map.getLayer(SELECTION_MASK_LAYER_ID)
+    ? SELECTION_MASK_LAYER_ID
+    : undefined;
+
   map.addLayer({
     id: OVERLAY_LAYER,
     type: "fill",
@@ -183,7 +198,7 @@ export function activateIndicator(
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
     },
-  });
+  }, maskBeforeId);
 
   // Companion line layer at width 0 so enableHoverHighlight can push
   // it to the standard thick stroke on hover. MapLibre's
@@ -198,7 +213,7 @@ export function activateIndicator(
       "line-color": defaultOutline,
       "line-width": 0,
     },
-  });
+  }, maskBeforeId);
 
   // Wire hover + tooltip via the same helpers every other vector
   // layer in the app uses. Disposers get stashed for removeIndicator
@@ -215,6 +230,21 @@ export function activateIndicator(
     }),
   );
 
+  // Clip the choropleth to the active selection (if any). Value
+  // layers should render features ONLY where the user has selected
+  // — outside the selection, they don't render at all (the spotlight
+  // mask still dims the spatial baseline beneath). When the user
+  // clears the selection, the disposer restores the layer's filter.
+  if (selectionController) {
+    _activeDisposers.push(
+      registerValueAwareLayer(map, selectionController, {
+        layerIds: [OVERLAY_LAYER, OVERLAY_LINE_LAYER],
+        sourceName: OVERLAY_SOURCE,
+        sourceLayer: config.sourceLayer,
+      }),
+    );
+  }
+
   if (tooltips) {
     _activeDisposers.push(
       tooltips.register(mvtProvider({
@@ -226,7 +256,7 @@ export function activateIndicator(
           if (raw === undefined || raw === null) return null;
           const num = typeof raw === "number" ? raw : Number(raw);
           if (Number.isNaN(num)) return null;
-          const formatted = _formatIndicatorValue(num);
+          const formatted = fmtNumber(num);
           const unit = indicator.unit ? ` ${indicator.unit}` : "";
           return {
             title: indicator.name,
@@ -262,17 +292,6 @@ export function removeIndicator(map: MapLibreMap): void {
 }
 
 
-function _formatIndicatorValue(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
-  const abs = Math.abs(value);
-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 3;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
-
-
 export function renderLegend(
   container: HTMLElement,
   indicator: IndicatorSummary,
@@ -303,15 +322,10 @@ export function clearLegend(container: HTMLElement): void {
 }
 
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-
+/** Legend-only formatter — uses ``toFixed`` (no locale separators) so
+ *  the gradient endpoints read as compact engineering numbers rather
+ *  than long thousand-separated strings. Distinct from ``fmtNumber``
+ *  in ``./format`` which is locale-aware for tooltips / panel rows. */
 function formatNumber(value: number): string {
   if (Math.abs(value) >= 100) return value.toFixed(0);
   if (Math.abs(value) >= 1) return value.toFixed(2);

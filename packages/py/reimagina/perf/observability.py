@@ -1,4 +1,5 @@
 """Operational Postgres observability helpers for performance monitoring."""
+
 from __future__ import annotations
 
 from reimagina.storage import backend_for_connection
@@ -39,7 +40,11 @@ def pg_extension_status(conn) -> dict[str, object]:
     )
     setting_map = {row["name"]: row["setting"] for row in settings}
     installed = {row["extname"]: row["extversion"] for row in extensions}
-    preload_libs = {lib.strip() for lib in setting_map.get("shared_preload_libraries", "").split(",") if lib.strip()}
+    preload_libs = {
+        lib.strip()
+        for lib in setting_map.get("shared_preload_libraries", "").split(",")
+        if lib.strip()
+    }
     return {
         "extensions": installed,
         "settings": setting_map,

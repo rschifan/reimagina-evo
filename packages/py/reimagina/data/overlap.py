@@ -4,6 +4,7 @@ The feature_overlap table generalises aoi_feature to feature×feature, enabling
 cross-grain indicator aggregation for both hierarchical and non-hierarchical
 spatial relationships.  See docs/architecture/DATA_LAYER.md.
 """
+
 from __future__ import annotations
 
 from reimagina.storage import backend_for_connection

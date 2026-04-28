@@ -17,6 +17,7 @@ Scope locked by the design doc (Rev 7):
   otherwise stored as NULL.
 - ``asset_extent_geometry`` is intentionally not populated in v1.
 """
+
 from __future__ import annotations
 
 import logging
@@ -237,7 +238,8 @@ def ingest_raster_source(
             logger.warning(
                 "failed to rollback aborted transaction before finalising "
                 "raster ingest run %s: %s",
-                ingestion_run_id, rollback_exc,
+                ingestion_run_id,
+                rollback_exc,
             )
         try:
             cat.complete_ingestion_run(
@@ -251,7 +253,8 @@ def ingest_raster_source(
             logger.warning(
                 "failed to mark raster ingest run %s as failed; "
                 "row may remain in running state. Finalise error: %s",
-                ingestion_run_id, finalise_exc,
+                ingestion_run_id,
+                finalise_exc,
             )
         raise
 
@@ -292,7 +295,9 @@ def _resolution_in_metres(dataset) -> float | None:
         return None
     t = dataset.transform
     # t.b and t.d being 0 means axes-aligned (no rotation / shear).
-    if not (math.isclose(t.b, 0.0, abs_tol=1e-9) and math.isclose(t.d, 0.0, abs_tol=1e-9)):
+    if not (
+        math.isclose(t.b, 0.0, abs_tol=1e-9) and math.isclose(t.d, 0.0, abs_tol=1e-9)
+    ):
         return None
     # Square pixels: |a| == |e|.
     if not math.isclose(abs(t.a), abs(t.e), rel_tol=1e-6):

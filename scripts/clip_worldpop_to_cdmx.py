@@ -4,6 +4,7 @@ Pulls the CDMX boundary as the unioned municipality geometry from the
 running reimagina_app Postgres DB (reprojected to the raster's CRS),
 then writes a masked GeoTIFF ready for `reimagina raster ingest`.
 """
+
 from __future__ import annotations
 
 import os
@@ -59,16 +60,23 @@ def main() -> None:
             geom = geom_wgs84
 
         out_image, out_transform = mask(
-            src, [geom.__geo_interface__], crop=True, filled=True,
+            src,
+            [geom.__geo_interface__],
+            crop=True,
+            filled=True,
         )
-        band_description = (src.descriptions[0] if src.descriptions else None) or "population_count"
+        band_description = (
+            src.descriptions[0] if src.descriptions else None
+        ) or "population_count"
         out_meta = src.meta.copy()
-        out_meta.update({
-            "height": out_image.shape[1],
-            "width": out_image.shape[2],
-            "transform": out_transform,
-            "compress": "deflate",
-        })
+        out_meta.update(
+            {
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform,
+                "compress": "deflate",
+            }
+        )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(OUT, "w", **out_meta) as dst:

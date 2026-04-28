@@ -38,15 +38,28 @@ import {
   setDownloadAvailability,
   wireDownloadButtons,
 } from "./download";
+import { escapeHtml } from "./format";
 import {
+  INPUT_LAYERS,
   extractTileSources,
   installInputLayers,
+  clearAggregationOverlayClipping,
   installAggregationOverlays,
   installRasterLayers,
+  wireAggregationOverlayClipping,
   refreshAggregationOverlayAoi,
   wireLayerToggles,
   wireRasterToggles,
 } from "./layers";
+import {
+  enableSelection,
+  type SelectionController,
+  type SelectionGeometry,
+  type SelectionShape,
+} from "./selection";
+import { installSelectionHandle } from "./selection-handle";
+import { installSelectionMask } from "./selection-mask";
+import { streamMetrics, type MetricResult, type MetricSpec } from "./selection-metrics";
 import { TooltipController } from "./tooltip";
 
 // Fallback centre when no AOIs come back from the API. CDMX-Cuauhtémoc
@@ -96,40 +109,26 @@ async function loadInitialState(): Promise<{
 
 
 function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
-  if (!aoi.bbox) return;
-  const [minLon, minLat, maxLon, maxLat] = aoi.bbox;
-  const lonSpan = Math.abs(maxLon - minLon);
-  const latSpan = Math.abs(maxLat - minLat);
-  // Wide AOIs (Mexicali = 1.4°, ~100 km) make fitBounds zoom out far
-  // enough that the analysis-unit layers stop rendering — block /
-  // AGEB minzoom is 11 in INPUT_LAYERS. Centring at z=11 gives the
-  // user a usable view immediately.
-  //
-  // For wide AOIs we prefer the polygon centroid (ST_PointOnSurface
-  // from /aois) over the bbox centre because the bbox centre falls
-  // outside concave AOIs like Mexicali — the user lands in empty
-  // desert south of the populated city. ST_PointOnSurface is
-  // guaranteed to lie inside the polygon.
-  const WIDE_AOI_DEGREE_THRESHOLD = 0.5;
-  if (lonSpan > WIDE_AOI_DEGREE_THRESHOLD || latSpan > WIDE_AOI_DEGREE_THRESHOLD) {
-    const center: [number, number] = aoi.centroid
-      ?? [(minLon + maxLon) / 2, (minLat + maxLat) / 2];
-    // z=12 gives ~25 km of viewport — wide enough to see the urban
-    // structure, tight enough that block / AGEB lines render at a
-    // visible density. Earlier z=11 left huge AOIs feeling empty
-    // because at that zoom over (e.g.) Mexicali, the viewport spans
-    // ~50 km of mostly empty desert with sparse features.
-    map.flyTo({ center, zoom: 12, duration: 700 });
-    return;
-  }
-  // Tight AOIs (Cuauhtémoc, Tlalpan) fit naturally above z=11 — let
-  // fitBounds frame the polygon with a small padding for breathing room.
+  // Prefer the features bbox over the AOI polygon bbox. For irregular
+  // AOIs (Mexicali muni — mostly desert with the urban core packed in
+  // one corner) the polygon bbox frames the whole muni and the user
+  // ends up looking at empty land. The features bbox is the envelope
+  // of actual loaded blocks, so fitBounds lands them on the urban
+  // extent. Fall back to the polygon bbox when no features have been
+  // loaded yet (e.g. fresh AOI before ingest).
+  const target = aoi.features_bbox ?? aoi.bbox;
+  if (!target) return;
+  const [minLon, minLat, maxLon, maxLat] = target;
+  // ``maxZoom`` caps the fit so a tiny AOI doesn't slingshot past
+  // street level (z=14 keeps analysis-unit layers above their
+  // minzoom=8 with comfortable density). ``padding`` reserves
+  // viewport edges so the polygon isn't clipped behind UI chrome.
   map.fitBounds(
     [
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    { padding: 40, duration: 700, maxZoom: 14 },
+    { padding: 60, duration: 700, maxZoom: 14 },
   );
 }
 
@@ -143,22 +142,24 @@ function renderAoiInfo(aoi: AOIRow | null): void {
     return;
   }
   el.hidden = false;
-  const desc = aoi.description ? `<div class="aoi-info-desc">${_escapeHtml(aoi.description)}</div>` : "";
-  el.innerHTML = `<div class="aoi-info-name">${_escapeHtml(aoi.name)}</div>${desc}`;
+  const desc = aoi.description ? `<div class="aoi-info-desc">${escapeHtml(aoi.description)}</div>` : "";
+  el.innerHTML = `<div class="aoi-info-name">${escapeHtml(aoi.name)}</div>${desc}`;
 }
 
 
-function _escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 
 async function main(): Promise<void> {
   setStatus("Connecting to reimagina API…");
+
+  // Show the spinner immediately so the user has feedback while the
+  // first /aois + /tile-sources round-trip happens (before the map
+  // exists and its dataloading events kick in).
+  const loadingHost = document.getElementById("map-loading");
+  if (loadingHost) {
+    loadingHost.setAttribute("data-loading", "true");
+    loadingHost.setAttribute("aria-hidden", "false");
+  }
 
   let sources: TileSource[];
   let indicators: IndicatorSummary[];
@@ -167,6 +168,7 @@ async function main(): Promise<void> {
     ({ sources, indicators, aois } = await loadInitialState());
   } catch (err) {
     setStatus(`Failed to load API: ${(err as Error).message}`);
+    if (loadingHost) loadingHost.setAttribute("data-loading", "false");
     throw err;
   }
   const tileCatalog = extractTileSources(sources);
@@ -190,6 +192,20 @@ async function main(): Promise<void> {
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
+  // Loading indicator: visible whenever MapLibre has tile fetches in
+  // flight. ``dataloading`` fires per-source-fetch, ``idle`` fires once
+  // every source has finished. ``idle`` is the canonical "nothing to
+  // do" event — using it as the off signal means a missed ``data``
+  // event can't strand the spinner on.
+  const setLoading = (v: boolean) => {
+    if (loadingHost) {
+      loadingHost.setAttribute("data-loading", v ? "true" : "false");
+      loadingHost.setAttribute("aria-hidden", v ? "false" : "true");
+    }
+  };
+  map.on("dataloading", () => setLoading(true));
+  map.on("idle", () => setLoading(false));
+
   map.on("load", () => {
     // Tooltip controller is the only thing that knows how to render
     // hover content. Providers are registered by the installers below
@@ -201,6 +217,44 @@ async function main(): Promise<void> {
     installRasterLayers(map, sources, tooltipController);
     installAggregationOverlays(map, sources, tooltipController, getActiveAoiId());
 
+    // ── Sub-AOI selection tool ─────────────────────────────────────
+    //
+    // Spotlight-mask architecture (Felt / Mapbox-Studio idiom): one
+    // fullscreen fill layer covering the world with the selection
+    // cut out as a hole. Dimming is one constant-cost GPU draw, not
+    // O(N×L) feature-state classifications across N visible features
+    // and L data layers — at CDMX scale that's the difference between
+    // a smooth 60 fps drag and a juddery one.
+    //
+    // Layer order matters: install the mask BEFORE ``enableSelection``
+    // so terra-draw's layers (added inside ``enableSelection``) paint
+    // on top of the mask — otherwise the cyan shape outline gets
+    // covered by the dim wash.
+    const mask = installSelectionMask(map, { dimOpacity: 0.7 });
+    const selectionController = enableSelection(map);
+    mask.bindController(selectionController);
+    // Custom radius handle: a single visible cyan dot on the circle's
+    // rim, mousedown→drag scales the circle uniformly. Industry-
+    // standard "drag the radius" affordance — terra-draw's per-vertex
+    // selection points are hidden for circles in favour of this.
+    // Installed AFTER ``enableSelection`` so the handle layer sits on
+    // top of terra-draw's outline (it should — adding later means it
+    // paints on top in MapLibre's default ordering).
+    installSelectionHandle(map, selectionController);
+    // Clip aggregation overlays to the active selection. Called
+    // after the controller exists so ordering is: data layers →
+    // mask → terra-draw layers, with the value-clipping wired in
+    // after the fact (only mutates layer filters + feature-state).
+    wireAggregationOverlayClipping(map, sources, selectionController);
+    // The wiring functions return disposers for future SPA-teardown
+    // / embed-remount paths. Today the map lives for the lifetime of
+    // the page so we don't store them — call sites in the wiring
+    // functions are testable in isolation against a stub map.
+    _wireSelectionToolbar(selectionController);
+    _wireSelectionPanel(selectionController);
+    // Selection lives at session-only scope; switching AOI clears it
+    // so a circle drawn in CDMX doesn't bleed into Mexicali's view.
+
     // Centre on the initial AOI's bounds (replaces the old hardcoded
     // CUAUHTEMOC_CENTER fly-to). Bail to fallback when no AOIs exist.
     if (initialAoi) flyToAoi(map, initialAoi);
@@ -208,7 +262,7 @@ async function main(): Promise<void> {
     const toggleContainer = document.getElementById("layer-toggles");
     if (toggleContainer) {
       wireLayerToggles(toggleContainer, map);
-      wireRasterToggles(toggleContainer, map, sources);
+      wireRasterToggles(toggleContainer, map, sources, getActiveAoiId());
     }
 
     const aoiSelect = document.getElementById("aoi-select") as HTMLSelectElement | null;
@@ -220,7 +274,27 @@ async function main(): Promise<void> {
     subscribeToAoi(async (aoi) => {
       renderAoiInfo(aoi);
       if (aoi) flyToAoi(map, aoi);
+      // Drain prior aggregation-overlay clipping disposers BEFORE the
+      // selection clear and the rewire below, so each per-overlay
+      // ``sourcedata`` listener is unbound exactly once. Without this
+      // drain, every AOI switch leaks one listener per overlay —
+      // benign at low-AOI counts, but a real per-tile cost over a
+      // long session.
+      clearAggregationOverlayClipping();
       refreshAggregationOverlayAoi(map, sources, aoi?.aoi_id ?? null);
+      // Switching AOI invalidates any active circle/rectangle/polygon
+      // selection — a CDMX-drawn circle has no meaningful intersection
+      // with a Mexicali viewport. Clear up-front so the metrics panel
+      // doesn't keep showing stale numbers.
+      selectionController.clear();
+      // Re-wire the clipping for the new AOI's overlays. Mirrors the
+      // initial install in the map.on("load") block.
+      wireAggregationOverlayClipping(map, sources, selectionController);
+      // Re-render the picker so AOI-scoped observation overlays
+      // (``source_config.aois``) hide on AOIs they don't apply to.
+      if (toggleContainer) {
+        wireRasterToggles(toggleContainer, map, sources, aoi?.aoi_id ?? null);
+      }
       // Re-render the active indicator so its tile URL + colour ramp
       // reflect the new AOI scope. No active indicator = no work.
       if (state.activeIndicator) {
@@ -258,7 +332,10 @@ async function main(): Promise<void> {
       if (myToken !== renderToken) return;
 
       const domain = rampDomainFromStats(stats, indicator);
-      activateIndicator(map, overlayConfig, indicator, domain, tooltipController, aoiId);
+      activateIndicator(
+        map, overlayConfig, indicator, domain,
+        tooltipController, aoiId, selectionController,
+      );
       if (legend) renderLegend(legend, indicator, domain);
       if (downloads) setDownloadAvailability(downloads, true);
       setStatus(
@@ -298,6 +375,168 @@ async function main(): Promise<void> {
   map.on("error", (e) => {
     setStatus(`Map error: ${e.error?.message ?? "unknown"}`);
   });
+}
+
+
+function _wireSelectionToolbar(controller: SelectionController): () => void {
+  const toolbar = document.querySelector(".selection-toolbar");
+  if (!toolbar) return () => undefined;
+  const buttons = Array.from(
+    toolbar.querySelectorAll<HTMLButtonElement>(".selection-toolbar__btn"),
+  );
+  // Active-mode highlighting: the button matching the current draw
+  // shape gets ``aria-pressed=true``. Cleared on every clear/finish
+  // so the user always sees the toolbar's truth.
+  const setPressed = (shape: SelectionShape | null): void => {
+    for (const btn of buttons) {
+      const target = btn.dataset.shape ?? null;
+      btn.setAttribute("aria-pressed", target === shape ? "true" : "false");
+    }
+  };
+  setPressed(null);
+
+  // Stash the per-button click handler so dispose can detach each
+  // listener cleanly. Without this, repeated mounts (HMR, future
+  // map-recreation paths) accumulate stacked handlers on the same
+  // DOM nodes.
+  const clickHandlers = new Map<HTMLButtonElement, () => void>();
+  for (const btn of buttons) {
+    const onClick = (): void => {
+      if (btn.dataset.action === "clear") {
+        controller.clear();
+        setPressed(null);
+        return;
+      }
+      const shape = btn.dataset.shape as SelectionShape | undefined;
+      if (!shape) return;
+      controller.startDrawing(shape);
+      setPressed(shape);
+    };
+    btn.addEventListener("click", onClick);
+    clickHandlers.set(btn, onClick);
+  }
+  // When a shape is finished or cleared via the map (Esc, double-
+  // click), the toolbar still needs to reflect "no active shape" —
+  // subscribe so the visual stays honest.
+  const unsubscribe = controller.subscribe((sel) => {
+    if (sel === null) setPressed(null);
+  });
+
+  return () => {
+    for (const [btn, onClick] of clickHandlers) {
+      btn.removeEventListener("click", onClick);
+    }
+    clickHandlers.clear();
+    unsubscribe();
+  };
+}
+
+
+function _wireSelectionPanel(
+  controller: SelectionController,
+): () => void {
+  const panel = document.getElementById("selection-panel");
+  const list = panel?.querySelector(".selection-panel__metrics") as HTMLDListElement | null;
+  const totalValue = panel?.querySelector(".selection-panel__total-value") as HTMLSpanElement | null;
+  if (!panel || !list) return () => undefined;
+
+  // Default metric specs derived from INPUT_LAYERS. Each one binds a
+  // user-facing label to the canonical ``type_slug`` recognised by
+  // the /metrics/within-polygon endpoint. Future grain additions
+  // land in the panel automatically by extending INPUT_LAYERS — no
+  // wiring change here.
+  const specs: MetricSpec[] = INPUT_LAYERS.map((l) => ({
+    label: `${l.label} selected`,
+    typeSlug: l.typeSlug,
+  }));
+
+  // Supersede in-flight metrics requests when a newer selection
+  // arrives. Same pattern as ``renderIndicator``'s ``renderToken``
+  // — without it, a slow request from N can clobber the result of a
+  // newer request N+1, leaving the panel showing the wrong polygon's
+  // numbers.
+  let inFlight: AbortController | null = null;
+
+  const render = async (selection: SelectionGeometry | null): Promise<void> => {
+    // Abort any in-flight request: either we have a new selection or
+    // the user cleared the panel; the previous result is no longer
+    // wanted regardless.
+    if (inFlight !== null) {
+      inFlight.abort();
+      inFlight = null;
+    }
+    if (selection === null) {
+      panel.hidden = true;
+      list.innerHTML = "";
+      if (totalValue) totalValue.textContent = "0";
+      return;
+    }
+    const aoiId = getActiveAoiId();
+    if (aoiId === null) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    if (totalValue) totalValue.textContent = "…";
+
+    const ctrl = new AbortController();
+    inFlight = ctrl;
+    // Progressive rendering: results stream in as each per-type
+    // request resolves. Small layers (block ~50 ms, ageb ~20 ms,
+    // muni ~10 ms) appear in the panel before the heavy buildings
+    // request settles. The user sees three-of-four numbers in
+    // under 100 ms even when buildings are still in flight.
+    const accumulated = new Map<string, MetricResult>();
+    const repaint = (): void => {
+      let total = 0;
+      for (const r of accumulated.values()) total += r.featuresCounted;
+      if (totalValue) totalValue.textContent = total.toLocaleString();
+      // Show every spec that's resolved — including zero-count rows
+      // (display "0") and per-spec errors (display "—"). Hiding
+      // zero-counts conflated "no features matched" with "fetch
+      // failed" and left the user wondering whether the panel was
+      // mid-load or done. Per-spec rows are cheap (one row per
+      // INPUT_LAYER) so showing all of them is fine.
+      const rows = [...accumulated.values()];
+      list.innerHTML = rows
+        .map(
+          (r) =>
+            `<dt>${escapeHtml(r.spec.label)}</dt><dd>${escapeHtml(r.display)}</dd>`,
+        )
+        .join("");
+    };
+    const onResult = (result: MetricResult): void => {
+      // Drop if a newer request superseded this one while we waited.
+      if (inFlight !== ctrl) return;
+      accumulated.set(result.spec.typeSlug, result);
+      repaint();
+    };
+    try {
+      await streamMetrics(selection, specs, aoiId, onResult, ctrl.signal);
+    } catch (err) {
+      if ((err as { name?: string }).name === "AbortError") return;
+      throw err;
+    }
+    if (inFlight === ctrl) inFlight = null;
+  };
+
+  // Debounced subscription. The endpoint is fast (sub-100 ms for a
+  // small polygon) but firing one HTTP request per terra-draw change
+  // event during a drag burns network + DB cycles for results the
+  // user never sees. 150 ms trailing matches the visual cadence the
+  // operator perceives as "live".
+  const unsubscribe = controller.subscribe(
+    (sel) => { void render(sel); },
+    { debounceMs: 150 },
+  );
+
+  return () => {
+    if (inFlight !== null) {
+      inFlight.abort();
+      inFlight = null;
+    }
+    unsubscribe();
+  };
 }
 
 

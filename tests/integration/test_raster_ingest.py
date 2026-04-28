@@ -7,6 +7,7 @@ Exercises the full pipeline against the migrated Postgres test DB:
 - raster_layer row written with the right aggregation_kind + layer_slug
 - silver COG on disk, valid via rasterio, correct pixel dims
 """
+
 from __future__ import annotations
 
 import os
@@ -29,9 +30,13 @@ def _write_tiny_utm_raster(path: Path) -> Path:
     """3×3 single-band GeoTIFF in EPSG:32614, 30m pixels, metric."""
     data = np.arange(9, dtype="float32").reshape(3, 3)
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=3, width=3, count=1, dtype="float32",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
         crs="EPSG:32614",
         transform=from_origin(500_000, 2_151_000, 30.0, 30.0),
         nodata=-999.0,
@@ -44,9 +49,13 @@ def _write_tiny_4326_raster(path: Path) -> Path:
     """3×3 single-band GeoTIFF in EPSG:4326 (angular)."""
     data = np.arange(9, dtype="float32").reshape(3, 3)
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=3, width=3, count=1, dtype="float32",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
         crs="EPSG:4326",
         transform=from_origin(-99.15, 19.45, 0.01, 0.01),
         nodata=-999.0,
@@ -198,7 +207,9 @@ def test_ingest_4326_raster_leaves_resolution_m_null(conn, isolated_data_dir, tm
 
 
 def test_ingest_failure_after_silver_still_records_failed_run(
-    conn, isolated_data_dir, tmp_path,
+    conn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """If a SQL error fires AFTER silver creation (simulated here via
     a duplicate layer_slug collision), the ingestion_run row must still
@@ -213,7 +224,9 @@ def test_ingest_failure_after_silver_still_records_failed_run(
     ingest_raster_source(
         conn,
         raw_path=raw_a,
-        source_name="collide-a", provider="pytest", version="v1",
+        source_name="collide-a",
+        provider="pytest",
+        version="v1",
         layer_slug="slug_collide",
     )
 
@@ -225,7 +238,9 @@ def test_ingest_failure_after_silver_still_records_failed_run(
         ingest_raster_source(
             conn,
             raw_path=raw_b,
-            source_name="collide-b", provider="pytest", version="v1",
+            source_name="collide-b",
+            provider="pytest",
+            version="v1",
             layer_slug="slug_collide",
         )
 
@@ -274,8 +289,13 @@ def test_ingest_failure_marks_run_failed(conn, isolated_data_dir, tmp_path):
     raw = tmp_path / "two_band.tif"
     data = np.arange(9, dtype="float32").reshape(3, 3)
     with rasterio.open(
-        raw, "w",
-        driver="GTiff", height=3, width=3, count=2, dtype="float32",
+        raw,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=3,
+        count=2,
+        dtype="float32",
         crs="EPSG:4326",
         transform=from_origin(-99.15, 19.45, 0.01, 0.01),
     ) as dst:
@@ -287,7 +307,8 @@ def test_ingest_failure_marks_run_failed(conn, isolated_data_dir, tmp_path):
             conn,
             raw_path=raw,
             source_name="should-not-land",
-            provider="pytest", version="v1",
+            provider="pytest",
+            version="v1",
             layer_slug="multiband_fail",
         )
 
@@ -301,7 +322,9 @@ def test_ingest_failure_marks_run_failed(conn, isolated_data_dir, tmp_path):
         assert cur.fetchone()[0] == 0
 
 
-def test_cli_raster_list_against_real_db(conn, isolated_data_dir, tmp_path, monkeypatch):
+def test_cli_raster_list_against_real_db(
+    conn, isolated_data_dir, tmp_path, monkeypatch
+):
     """Exercises the `raster list` CLI path against a migrated DB.
 
     Covers the explore.raster_layer_v read + the _cursor_compat shim
@@ -314,8 +337,11 @@ def test_cli_raster_list_against_real_db(conn, isolated_data_dir, tmp_path, monk
     ingest_raster_source(
         conn,
         raw_path=raw,
-        source_name="cli-list-test", provider="pytest", version="v1",
-        layer_slug="cli_list_layer", aggregation_kind="extensive",
+        source_name="cli-list-test",
+        provider="pytest",
+        version="v1",
+        layer_slug="cli_list_layer",
+        aggregation_kind="extensive",
     )
     conn.commit()  # list_raster_layers opens its own connection via connect()
 
