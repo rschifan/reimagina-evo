@@ -8,6 +8,7 @@ Thanks for your interest in reimagina-evo.
 make install                      # Python (uv) + web (npm) deps
 cp .env.example .env              # fill DSNs
 alembic upgrade head              # Postgres + DuckDB schema
+pre-commit install                # auto-run lint/format on commit
 ```
 
 Run `make help` to see every shortcut. The important ones:
@@ -38,7 +39,8 @@ Run `make help` to see every shortcut. The important ones:
 
 ## Code quality
 
-- Python: `ruff check` + `ruff format` (run in CI). Prefer behaviour assertions in tests over implementation-detail assertions.
+- Python: `ruff check` + `ruff format` (run in CI and pre-commit). Prefer behaviour assertions in tests over implementation-detail assertions.
+- Pre-commit: hooks defined in `.pre-commit-config.yaml` mirror CI. Run `pre-commit run --all-files` to lint/format the whole tree on demand.
 - TypeScript: `tsc --noEmit` must pass.
 - DB changes: update migrations on **both** backends (Postgres + DuckDB), the `serving_geo` read contract if relevant, and tests — see `CLAUDE.md` → "DB/system change checklist".
 

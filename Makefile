@@ -31,8 +31,9 @@ install: ## Install Python + web dependencies.
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
 
 .PHONY: lint
-lint: ## Run ruff check.
+lint: ## Run ruff check + format-check (mirrors CI).
 	ruff check .
+	ruff format --check .
 
 .PHONY: format
 format: ## Reformat with ruff format (writes changes).
@@ -52,6 +53,16 @@ build-web: ## Typecheck + build the web app.
 
 .PHONY: check
 check: lint test build-web ## Run everything CI gates on. Run before opening a PR.
+
+# ─── Bootstrap (data ingest entrypoints) ─────────────────────────────────────
+
+.PHONY: migrate
+migrate: ## Run all DB migrations on the configured DATABASE_URL.
+	$(PYTHON) -m apps.cli.app bootstrap-db
+
+.PHONY: verify-sources
+verify-sources: ## Smoke-test that every upstream source is reachable.
+	$(PYTHON) -m apps.cli.app data verify-sources
 
 # ─── Dev servers ─────────────────────────────────────────────────────────────
 
