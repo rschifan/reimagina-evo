@@ -1,4 +1,5 @@
 """Benchmark manifest for production-facing PostGIS performance checks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -137,7 +138,7 @@ LIMIT 5000
 # z=8  exercises the low-zoom code path (context-only GIST index + no join).
 _TILE_Z14_SQL = "SELECT serving_geo.get_tile(%s, %s, %s, '{}'::json)"
 _TILE_Z12_SQL = "SELECT serving_geo.get_tile(%s, %s, %s, '{}'::json)"
-_TILE_Z8_SQL  = "SELECT serving_geo.get_tile(%s, %s, %s, '{}'::json)"
+_TILE_Z8_SQL = "SELECT serving_geo.get_tile(%s, %s, %s, '{}'::json)"
 _TILE_FILTERED_SQL = "SELECT serving_geo.get_tile(%s, %s, %s, %s::json)"
 
 
@@ -177,7 +178,11 @@ BENCHMARKS: dict[str, BenchmarkSpec] = {
         sql=_BBOX_FEATURE_SQL,
         parameter_builder="bbox_small",
         expected_node_any_of=("Index Scan", "Bitmap Heap Scan"),
-        expected_index_any_of=("feature_geometry_gist", "feature_block_geom_idx", "feature_lot_geom_idx"),
+        expected_index_any_of=(
+            "feature_geometry_gist",
+            "feature_block_geom_idx",
+            "feature_lot_geom_idx",
+        ),
         hot_tables_no_seq_scan=("feature",),
         row_count_min=1,
         latency_budgets={
@@ -291,7 +296,6 @@ BENCHMARKS: dict[str, BenchmarkSpec] = {
             "stress": LatencyBudget(180, 550, 900),
         },
     ),
-
     # ── Tile benchmarks ────────────────────────────────────────────────────────
     # These measure the full MVT pipeline: GIST scan → simplify → ST_AsMVTGeom
     # → ST_AsMVT.  The tile function is the primary serving path for the
@@ -372,7 +376,12 @@ BENCHMARKS: dict[str, BenchmarkSpec] = {
         ),
         sql=_OVERLAP_DRYRUN_SQL,
         parameter_builder="overlap_block_ageb_cuauhtemoc",
-        expected_node_any_of=("Nested Loop", "Hash Join", "Merge Join", "Bitmap Heap Scan"),
+        expected_node_any_of=(
+            "Nested Loop",
+            "Hash Join",
+            "Merge Join",
+            "Bitmap Heap Scan",
+        ),
         expected_index_any_of=("feature_geometry_gist", "feature_type_idx"),
         hot_tables_no_seq_scan=("feature",),
         row_count_min=1000,

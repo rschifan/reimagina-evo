@@ -7,7 +7,11 @@ from shapely.geometry import Polygon
 
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
-from reimagina.perf import build_observability_report, prepare_benchmark_dataset, run_benchmarks
+from reimagina.perf import (
+    build_observability_report,
+    prepare_benchmark_dataset,
+    run_benchmarks,
+)
 
 
 def test_postgres_perf_smoke_benchmarks_run(conn):
@@ -59,7 +63,9 @@ def test_postgres_perf_smoke_benchmarks_run(conn):
         source_record_ref_col="id",
     )
     assert inserted == len(gdf)
-    cat.complete_ingestion_run(conn, run_id, status="succeeded", details={"records_written": inserted})
+    cat.complete_ingestion_run(
+        conn, run_id, status="succeeded", details={"records_written": inserted}
+    )
 
     prepared = prepare_benchmark_dataset(conn, dataset_tier="smoke", feature_limit=20)
     assert prepared["observation_seed"]["records_written"] > 0

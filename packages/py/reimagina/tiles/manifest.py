@@ -1,4 +1,5 @@
 """Tile layer classification manifest for live MVT and PMTiles snapshots."""
+
 from __future__ import annotations
 
 import json
@@ -30,7 +31,9 @@ def default_manifest_path() -> Path:
     return _repo_root() / "infra" / "tiles" / "layers.json"
 
 
-def load_tile_layers(manifest_path: str | Path | None = None) -> list[TileLayerDefinition]:
+def load_tile_layers(
+    manifest_path: str | Path | None = None,
+) -> list[TileLayerDefinition]:
     path = Path(manifest_path) if manifest_path else default_manifest_path()
     payload = json.loads(path.read_text())
     layers = [
@@ -52,7 +55,9 @@ def load_tile_layers(manifest_path: str | Path | None = None) -> list[TileLayerD
     return layers
 
 
-def get_tile_layer(layer_id: str, manifest_path: str | Path | None = None) -> TileLayerDefinition:
+def get_tile_layer(
+    layer_id: str, manifest_path: str | Path | None = None
+) -> TileLayerDefinition:
     for layer in load_tile_layers(manifest_path):
         if layer.layer_id == layer_id:
             return layer

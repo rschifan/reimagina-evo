@@ -36,7 +36,7 @@
       "implemented": true,
       "source_relation": "serving_geo.indicator_overlay_tile",
       "tile_layer_name": "indicator_overlay",
-      "minzoom": 10,
+      "minzoom": 11,
       "maxzoom": 16,
       "query_params": {
         "indicator_slug": "REQUIRED",

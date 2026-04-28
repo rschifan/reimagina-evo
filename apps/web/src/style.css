@@ -178,6 +178,52 @@ html, body, .app {
   margin-left: 14px;
 }
 
+/* ── Map loading indicator ──────────────────────────────────────── */
+
+/*
+ * Sits inside .map-panel as a sibling of #map. Hidden by default; the
+ * runtime sets ``data-loading`` on the host whenever MapLibre is
+ * fetching tiles or the page is awaiting an async data refresh, and
+ * the [data-loading] selector below makes it visible.
+ *
+ * Centered horizontally over the map, anchored to the top-right area
+ * to avoid covering the legend / sidebar overlap zone.
+ */
+.map-loading {
+  /* Centred over the map so the user's eye doesn't have to hunt for
+   * a tiny corner spinner. ``transform: translate(-50%, -50%)`` keeps
+   * the centring exact regardless of spinner size — top:50% / left:50%
+   * alone would offset by half the spinner's own width/height. Top-
+   * right was the wrong default: that's where MapLibre puts the
+   * NavigationControl, so the spinner overlapped the zoom buttons. */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  display: none;
+  pointer-events: none;
+}
+
+.map-loading[data-loading="true"] {
+  display: block;
+}
+
+.map-loading__spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #22d3ee;       /* matches HOVER_OUTLINE_COLOR family */
+  border-radius: 50%;
+  animation: map-loading-spin 0.85s linear infinite;
+  background: rgba(17, 24, 39, 0.55);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+@keyframes map-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Map hover tooltip ──────────────────────────────────────────── */
 
 .map-tooltip {
@@ -249,4 +295,143 @@ html, body, .app {
 #map {
   position: absolute;
   inset: 0;
+}
+
+
+/* ── Selection toolbar + metrics panel ──────────────────────────── */
+
+/*
+ * Floating toolbar in the top-right of the map (below MapLibre's
+ * built-in zoom control). Buttons are mode-toggles: clicking one
+ * starts the matching draw gesture; the active mode highlights so
+ * the user knows which shape is "armed". The clear button resets
+ * the controller and hides the metrics panel.
+ */
+.selection-toolbar {
+  /* Anchored to the LEFT edge of the map, just inside the sidebar.
+   * Right-side placement (where MapLibre's NavigationControl lives)
+   * crowded the zoom buttons; left-side keeps the draw tools next
+   * to the sidebar where the rest of the layer-related controls
+   * live. */
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(17, 24, 39, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.selection-toolbar__btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--sidebar-fg);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.selection-toolbar__btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.selection-toolbar__btn[aria-pressed="true"] {
+  background: #22d3ee;       /* same cyan as hover-highlight */
+  color: #0b1220;
+}
+
+.selection-toolbar__btn--clear {
+  font-size: 18px;
+  color: var(--muted);
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  padding-top: 4px;
+}
+
+.selection-toolbar__btn--clear:hover {
+  color: #f87171;            /* red-400 */
+}
+
+/*
+ * Metrics panel — one per selection. Sits above the legend on the
+ * left edge of the map, next to the sidebar. main.ts toggles the
+ * ``hidden`` attribute when the selection store emits null/non-null.
+ */
+.selection-panel {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 5;
+  min-width: 200px;
+  max-width: 280px;
+  background: rgba(17, 24, 39, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: var(--sidebar-fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.selection-panel__title {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.selection-panel__metrics {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 4px;
+  column-gap: 12px;
+  font-size: 13px;
+}
+
+.selection-panel__metrics dt {
+  margin: 0;
+  color: var(--muted);
+}
+
+.selection-panel__metrics dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.selection-panel__total {
+  margin: 0 0 8px 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.selection-panel__total-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sidebar-fg);
+}
+
+.selection-panel__total-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }

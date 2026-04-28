@@ -12,6 +12,7 @@ no symlink escapes (via ``Path.resolve()`` + ``relative_to`` check),
 no missing files. Operators who need remote COG access later can
 relax this on a per-deployment basis, but the default is closed.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

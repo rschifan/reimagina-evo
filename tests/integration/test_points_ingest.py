@@ -11,6 +11,7 @@ one test leaking into the next, each test patches the spec's
 ``version`` to a unique string so each run creates its own
 data_source_catalog row.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -39,10 +40,7 @@ def isolated_spec_versions(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """
     import dataclasses
 
-    versioned = {
-        key: f"test-{uuid4().hex[:8]}"
-        for key in points.LAYER_SPECS
-    }
+    versioned = {key: f"test-{uuid4().hex[:8]}" for key in points.LAYER_SPECS}
     fresh: dict[str, points.PointsLayerSpec] = {
         key: dataclasses.replace(spec, version=versioned[key])
         for key, spec in points.LAYER_SPECS.items()
@@ -55,6 +53,7 @@ def isolated_spec_versions(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def isolated_silver_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``silver.save_silver_vector`` writes into ``tmp_path``."""
     import reimagina.pipeline.silver as silver_mod
+
     silver_dir = tmp_path / "silver"
     silver_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(silver_mod, "SILVER_DIR", silver_dir)
@@ -69,17 +68,38 @@ def fake_amenity_root(tmp_path: Path) -> Path:
     _write_amenity_geoparquet(
         root / "sigcdmx" / "amenities" / "exe_amenities_tlalpan_complete.geoparquet",
         rows=[
-            {"id": "T1", "category": "Farmacia", "capacity": 0,
-             "lon": -99.18, "lat": 19.30, "fuente": "sigcdmx", "entidad": 9},
-            {"id": "T2", "category": "Consultorio medico", "capacity": 4,
-             "lon": -99.19, "lat": 19.31, "fuente": "DENUE", "entidad": 9},
+            {
+                "id": "T1",
+                "category": "Farmacia",
+                "capacity": 0,
+                "lon": -99.18,
+                "lat": 19.30,
+                "fuente": "sigcdmx",
+                "entidad": 9,
+            },
+            {
+                "id": "T2",
+                "category": "Consultorio medico",
+                "capacity": 4,
+                "lon": -99.19,
+                "lat": 19.31,
+                "fuente": "DENUE",
+                "entidad": 9,
+            },
         ],
     )
     _write_amenity_geoparquet(
         root / "exe" / "002_mexicali" / "equipamientos.geoparquet",
         rows=[
-            {"id": "M1", "category": "Guarderia", "capacity": 30,
-             "lon": -115.45, "lat": 32.65, "fuente": "DENUE", "entidad": 2},
+            {
+                "id": "M1",
+                "category": "Guarderia",
+                "capacity": 30,
+                "lon": -115.45,
+                "lat": 32.65,
+                "fuente": "DENUE",
+                "entidad": 2,
+            },
         ],
     )
     return root
@@ -132,7 +152,9 @@ def _fetch_features(conn, *, dataset_version: str) -> list[dict]:
 
 
 def test_bootstrap_loads_each_pilot_layer(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     result = points.bootstrap(
@@ -144,26 +166,38 @@ def test_bootstrap_loads_each_pilot_layer(
 
 
 def test_bootstrap_lands_features_as_global_establishment(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     points.bootstrap(
-        conn, layers=["tlalpan_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["tlalpan_amenities"],
+        source_root=fake_amenity_root,
     )
-    rows = _fetch_features(conn, dataset_version=isolated_spec_versions["tlalpan_amenities"])
+    rows = _fetch_features(
+        conn, dataset_version=isolated_spec_versions["tlalpan_amenities"]
+    )
 
     assert len(rows) == 2
     assert {row["type_slug"] for row in rows} == {"establishment"}
 
 
 def test_bootstrap_writes_attributes_to_jsonb(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     points.bootstrap(
-        conn, layers=["tlalpan_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["tlalpan_amenities"],
+        source_root=fake_amenity_root,
     )
-    rows = _fetch_features(conn, dataset_version=isolated_spec_versions["tlalpan_amenities"])
+    rows = _fetch_features(
+        conn, dataset_version=isolated_spec_versions["tlalpan_amenities"]
+    )
     by_id = {r["name"]: r for r in rows}
     farmacia = by_id["Farmacia"]
     assert farmacia["attributes"]["category"] == "Farmacia"
@@ -173,13 +207,19 @@ def test_bootstrap_writes_attributes_to_jsonb(
 
 
 def test_bootstrap_preserves_point_geometry(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     points.bootstrap(
-        conn, layers=["mexicali_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["mexicali_amenities"],
+        source_root=fake_amenity_root,
     )
-    rows = _fetch_features(conn, dataset_version=isolated_spec_versions["mexicali_amenities"])
+    rows = _fetch_features(
+        conn, dataset_version=isolated_spec_versions["mexicali_amenities"]
+    )
     assert len(rows) == 1
     # Coordinates land in EPSG:4326, in the same hemisphere/quadrant
     # as the source — i.e. WGS-84 wasn't dropped or swapped.
@@ -188,11 +228,15 @@ def test_bootstrap_preserves_point_geometry(
 
 
 def test_bootstrap_carries_azure_lineage_in_storage_uri(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     result = points.bootstrap(
-        conn, layers=["mexicali_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["mexicali_amenities"],
+        source_root=fake_amenity_root,
     )
     source_id = result["layers"][0]["source_id"]
     with conn.cursor() as cur:
@@ -207,20 +251,28 @@ def test_bootstrap_carries_azure_lineage_in_storage_uri(
 
 
 def test_bootstrap_is_idempotent_on_source_registration(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     first = points.bootstrap(
-        conn, layers=["tlalpan_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["tlalpan_amenities"],
+        source_root=fake_amenity_root,
     )
     second = points.bootstrap(
-        conn, layers=["tlalpan_amenities"], source_root=fake_amenity_root,
+        conn,
+        layers=["tlalpan_amenities"],
+        source_root=fake_amenity_root,
     )
     assert first["layers"][0]["source_id"] == second["layers"][0]["source_id"]
 
 
 def test_bootstrap_rejects_unknown_layer(
-    conn, fake_amenity_root: Path, isolated_silver_dir: Path,
+    conn,
+    fake_amenity_root: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     with pytest.raises(ValueError, match="Unknown amenity layer"):
@@ -232,7 +284,9 @@ def test_bootstrap_rejects_unknown_layer(
 
 
 def test_bootstrap_raises_when_source_file_missing(
-    conn, tmp_path: Path, isolated_silver_dir: Path,
+    conn,
+    tmp_path: Path,
+    isolated_silver_dir: Path,
     isolated_spec_versions: dict[str, str],
 ):
     """Pointing source_root at an empty directory must fail loudly rather
@@ -241,5 +295,7 @@ def test_bootstrap_raises_when_source_file_missing(
     empty.mkdir()
     with pytest.raises(FileNotFoundError, match="Amenity GeoParquet not found"):
         points.bootstrap(
-            conn, layers=["tlalpan_amenities"], source_root=empty,
+            conn,
+            layers=["tlalpan_amenities"],
+            source_root=empty,
         )

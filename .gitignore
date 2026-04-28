@@ -32,16 +32,9 @@ htmlcov/
 *.duckdb.wal
 
 # ── Local data ───────────────────────────────────────────────────────────────
-data/local/
-data/bronze/
-data/silver/
-data/tiles/
-data/sources/
-data/.DS_Store
-data/*.parquet
-data/*.gpkg
-data/*.geojson
-data/*.tif
+# Anything under data/ is local cache or bootstrap output — never tracked.
+# Bootstrap procedure to re-fetch is documented in docs/BOOTSTRAP.md.
+data/
 data/*.tiff
 data/*.csv
 

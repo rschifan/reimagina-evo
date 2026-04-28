@@ -29,15 +29,34 @@
 import type { Map as MapLibreMap } from "maplibre-gl";
 
 
-/** Standard hover stroke — white, thick enough to read over dense
- *  choropleth fills without drowning out the colour. */
-export const HOVER_OUTLINE_COLOR = "#ffffff";
+/** Standard hover stroke — bright cyan, the colour Felt / Mapbox Studio /
+ *  kepler.gl all use for "selected feature". High contrast on both
+ *  light and dark backgrounds, distinct from any layer's default
+ *  outline so it reads as a state change rather than a normal stroke. */
+export const HOVER_OUTLINE_COLOR = "#22d3ee";
+/** Hover line width — thick enough to read over dense choropleth
+ *  fills without drowning out the data colour. */
 export const HOVER_LINE_WIDTH = 3.5;
+/** Hover fill bump — additive over each layer's default. Matches the
+ *  industry pattern of "lift opacity 15-20% on hover" rather than
+ *  flooding to a fixed value (which felt too aggressive for layers
+ *  whose default is already at 0.30). */
+export const HOVER_FILL_OPACITY_BUMP = 0.20;
+/** Lower bound for hover fill opacity. Keeps the hover legible on
+ *  layers whose default fill is fully transparent (block layer). */
+export const HOVER_FILL_OPACITY_MIN = 0.18;
+/** Upper bound — past this the highlight starts hiding the underlying
+ *  choropleth colour, which is the opposite of helpful. */
+export const HOVER_FILL_OPACITY_MAX = 0.50;
 
 
 export interface HoverHighlightConfig {
-  /** MapLibre fill layer id that owns the hover surface. */
-  fillLayerId: string;
+  /** Optional MapLibre fill layer. When present, mousemove fires on
+   *  this layer and the helper updates fill-opacity + fill-outline-color
+   *  case expressions. Layers without a fill (block stroke-only) can
+   *  skip this and pass ``lineLayerId`` instead — hover hits register
+   *  on the line layer directly. */
+  fillLayerId?: string;
   /** Optional matching line layer whose stroke thickens on hover. */
   lineLayerId?: string;
   /** Current default fill-outline-color. Used for the non-hover branch
@@ -58,36 +77,79 @@ export interface HoverHighlightConfig {
 
 
 /**
- * Wire up hover highlighting for a fill (+ optional line) layer pair.
+ * Wire up hover highlighting for a fill / line / fill+line layer combo.
  *
- * Side effects:
- *   - Replaces fill-opacity + fill-outline-color on ``fillLayerId``
- *     with case expressions that react to the ``hover`` feature state.
- *   - Replaces line-color + line-width on ``lineLayerId`` (if passed).
- *   - Registers mousemove / mouseleave handlers on ``fillLayerId``.
- *   - Flips the canvas cursor to ``pointer`` while hovered.
+ * At least one of ``fillLayerId`` or ``lineLayerId`` must resolve to a
+ * registered MapLibre layer. The helper auto-detects which one(s) are
+ * present and:
+ *   - registers mousemove / mouseleave handlers on the hit-target
+ *     layer (fill if present, line otherwise);
+ *   - replaces fill-opacity + fill-outline-color when a fill exists;
+ *   - replaces line-color + line-width when a line exists;
+ *   - flips the canvas cursor to ``pointer`` while hovered.
  *
  * Returns a dispose function that un-registers listeners and clears
  * any residual feature-state. Callers don't need to call it in
  * normal use — the handlers live for the life of the map.
  */
+// ── Global suspend bus ───────────────────────────────────────────────
+//
+// While the user is drawing or editing a selection shape, hover
+// highlighting is the wrong affordance: it competes for the mousedown
+// (vertex drag vs. feature select) and adds visual noise to a
+// committed-attention task. Production map tools (Felt, Mapbox
+// Studio) suppress hover globally during draw, so we expose a single
+// bus that flips every registered hover handler at once. The
+// selection-tool wiring in main.ts toggles this on `startDrawing`
+// and off on `clear`.
+
+let _suspended = false;
+const _clearHoverFns = new Set<() => void>();
+
+
+export function setHoverGloballySuspended(suspended: boolean): void {
+  if (_suspended === suspended) return;
+  _suspended = suspended;
+  if (suspended) {
+    // Clear any in-flight highlight on every registered handler so
+    // a hovered feature doesn't keep its cyan outline through the
+    // draw gesture. Resume restores normal mousemove behaviour.
+    for (const clear of _clearHoverFns) {
+      try { clear(); } catch (err) { console.warn("hover clear:", err); }
+    }
+  }
+}
+
+
 export function enableHoverHighlight(
   map: MapLibreMap,
   cfg: HoverHighlightConfig,
 ): () => void {
-  const fillLayer = map.getLayer(cfg.fillLayerId);
-  if (!fillLayer) return () => undefined;
+  const fillLayer = cfg.fillLayerId ? map.getLayer(cfg.fillLayerId) : null;
+  const lineLayer = cfg.lineLayerId ? map.getLayer(cfg.lineLayerId) : null;
+  // Hit-target priority: fill > line. A fill polygon catches mouse
+  // events across the whole feature interior; a line catches them only
+  // along the stroke pixels. When both are available the fill is
+  // strictly better hover-detection. When only line is available
+  // (block layer = transparent fill), we wire the events on the line.
+  const hitLayer = fillLayer ?? lineLayer;
+  const hitLayerId = fillLayer ? cfg.fillLayerId : cfg.lineLayerId;
+  if (!hitLayer || !hitLayerId) return () => undefined;
 
-  const source = fillLayer.source;
-  const sourceLayer = (fillLayer as unknown as { sourceLayer?: string }).sourceLayer;
+  const source = (hitLayer as unknown as { source?: string }).source;
+  const sourceLayer = (hitLayer as unknown as { sourceLayer?: string }).sourceLayer;
   if (!source || !sourceLayer) {
     // Promoted-id hover needs source + source-layer; bail rather than
     // silently install a no-op handler.
     return () => undefined;
   }
 
+  const baseDefault = cfg.defaultFillOpacity ?? 0;
   const hoverFillOpacity = cfg.hoverFillOpacity
-    ?? Math.max(0.5, (cfg.defaultFillOpacity ?? 0.35) + 0.15);
+    ?? Math.min(
+      HOVER_FILL_OPACITY_MAX,
+      Math.max(HOVER_FILL_OPACITY_MIN, baseDefault + HOVER_FILL_OPACITY_BUMP),
+    );
   const hoverLineWidth = cfg.hoverLineWidth ?? HOVER_LINE_WIDTH;
   const defaultOutlineColor = cfg.defaultOutlineColor ?? "rgba(0,0,0,0.2)";
   const defaultFillOpacity = cfg.defaultFillOpacity ?? 0;
@@ -100,12 +162,14 @@ export function enableHoverHighlight(
     cold,
   ];
 
-  map.setPaintProperty(cfg.fillLayerId, "fill-opacity",
-    hoveredCase(hoverFillOpacity, defaultFillOpacity) as never);
-  map.setPaintProperty(cfg.fillLayerId, "fill-outline-color",
-    hoveredCase(HOVER_OUTLINE_COLOR, defaultOutlineColor) as never);
+  if (cfg.fillLayerId && fillLayer) {
+    map.setPaintProperty(cfg.fillLayerId, "fill-opacity",
+      hoveredCase(hoverFillOpacity, defaultFillOpacity) as never);
+    map.setPaintProperty(cfg.fillLayerId, "fill-outline-color",
+      hoveredCase(HOVER_OUTLINE_COLOR, defaultOutlineColor) as never);
+  }
 
-  if (cfg.lineLayerId && map.getLayer(cfg.lineLayerId)) {
+  if (cfg.lineLayerId && lineLayer) {
     const currentColor = (map.getPaintProperty(cfg.lineLayerId, "line-color")
       ?? defaultOutlineColor) as unknown;
     map.setPaintProperty(cfg.lineLayerId, "line-color",
@@ -131,6 +195,13 @@ export function enableHoverHighlight(
   };
 
   const onMove = (e: { features?: Array<{ id?: string | number }> }) => {
+    // Suspended while a selection shape is being drawn or edited.
+    // Returning early keeps mousemove a no-op so the user's drag
+    // intent is unambiguously "edit shape", not "hover feature".
+    if (_suspended) {
+      if (hoveredId !== null) clearHover();
+      return;
+    }
     const next = e.features?.[0]?.id;
     if (next === undefined || next === null) {
       clearHover();
@@ -145,12 +216,16 @@ export function enableHoverHighlight(
     container.style.cursor = "pointer";
   };
 
-  map.on("mousemove", cfg.fillLayerId, onMove);
-  map.on("mouseleave", cfg.fillLayerId, clearHover);
+  map.on("mousemove", hitLayerId, onMove);
+  map.on("mouseleave", hitLayerId, clearHover);
+  // Register so the global suspend bus can clear our visible state
+  // synchronously when a draw mode starts.
+  _clearHoverFns.add(clearHover);
 
   return () => {
-    map.off("mousemove", cfg.fillLayerId, onMove);
-    map.off("mouseleave", cfg.fillLayerId, clearHover);
+    map.off("mousemove", hitLayerId, onMove);
+    map.off("mouseleave", hitLayerId, clearHover);
+    _clearHoverFns.delete(clearHover);
     clearHover();
   };
 }

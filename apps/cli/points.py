@@ -3,6 +3,7 @@
 Thin wrappers around ``reimagina.pipeline.points`` matching the shape
 of ``apps/cli/inegi.py`` so the CLI surface stays consistent.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

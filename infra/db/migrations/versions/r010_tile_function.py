@@ -24,6 +24,7 @@ Revision ID: r010
 Revises: r009
 Create Date: 2026-04-14
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -140,6 +141,8 @@ Geometry is simplified at z < 14 and attributes are omitted below z 12 to keep t
 
 
 def downgrade() -> None:
-    op.execute("DROP FUNCTION IF EXISTS serving_geo.get_tile(integer, integer, integer, json)")
+    op.execute(
+        "DROP FUNCTION IF EXISTS serving_geo.get_tile(integer, integer, integer, json)"
+    )
     # DROP INDEX takes just the index name, never a schema-qualified name.
     op.execute("DROP INDEX IF EXISTS feature_context_geom_idx")

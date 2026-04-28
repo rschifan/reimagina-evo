@@ -1,4 +1,5 @@
 """File asset registration for raster / imagery / point-cloud sources."""
+
 from __future__ import annotations
 from datetime import datetime
 
@@ -25,14 +26,18 @@ def register_file_asset(
 
     Returns the new asset UUID.
     """
-    return backend_for_connection(conn).file_asset_repo().register_file_asset(
-        source_id=source_id,
-        ingestion_run_id=ingestion_run_id,
-        storage_uri=storage_uri,
-        dataset_version=dataset_version,
-        format=format,
-        crs=crs,
-        resolution_m=resolution_m,
-        band_description=band_description,
-        captured_at=captured_at,
+    return (
+        backend_for_connection(conn)
+        .file_asset_repo()
+        .register_file_asset(
+            source_id=source_id,
+            ingestion_run_id=ingestion_run_id,
+            storage_uri=storage_uri,
+            dataset_version=dataset_version,
+            format=format,
+            crs=crs,
+            resolution_m=resolution_m,
+            band_description=band_description,
+            captured_at=captured_at,
+        )
     )

@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 from reimagina.data.feature import FEATURE_TYPE_ROWS
 from reimagina.pipeline.overture import (
     OVERTURE_BUILDINGS_MEXICO_CITY,
+    OVERTURE_DEFAULT_RELEASE,
     OVERTURE_PENDING_STORAGE_URI,
     OVERTURE_BUILDINGS_SOURCE_NAME,
     ensure_overture_buildings_source,
@@ -18,7 +19,10 @@ from reimagina.pipeline.overture import (
 
 def test_overture_theme_type_glob_uses_pinned_release():
     glob = overture_theme_type_glob()
-    assert "/release/2026-02-18.0/" in glob
+    # Default release is whatever OVERTURE_DEFAULT_RELEASE is set to —
+    # don't pin a literal here so bumping the constant doesn't drag a
+    # test edit along with it. Verify shape only.
+    assert f"/release/{OVERTURE_DEFAULT_RELEASE}/" in glob
     assert "theme=buildings/type=building/*.parquet" in glob
     assert glob.startswith("s3://")
 
@@ -39,13 +43,23 @@ def test_overture_source_spec_matches_first_source_choice():
 
 
 def test_building_feature_type_is_seeded():
-    assert ("global", "building", "Building", "polygon", "context", None) in FEATURE_TYPE_ROWS
+    assert (
+        "global",
+        "building",
+        "Building",
+        "polygon",
+        "context",
+        None,
+    ) in FEATURE_TYPE_ROWS
 
 
 def test_ensure_overture_source_returns_existing_id(monkeypatch):
     monkeypatch.setattr(
         "reimagina.pipeline.overture.cat.get_source",
-        lambda conn, **kwargs: {"id": "existing-source-id", "storage_uri": OVERTURE_PENDING_STORAGE_URI},
+        lambda conn, **kwargs: {
+            "id": "existing-source-id",
+            "storage_uri": OVERTURE_PENDING_STORAGE_URI,
+        },
     )
 
     source_id = ensure_overture_buildings_source(object())
@@ -60,11 +74,15 @@ def test_extract_overture_buildings_subset_filters_local_geoparquet(tmp_path):
         [
             {
                 "id": "inside",
-                "geometry": Polygon([(-99.1, 19.2), (-99.0, 19.2), (-99.0, 19.3), (-99.1, 19.3)]),
+                "geometry": Polygon(
+                    [(-99.1, 19.2), (-99.0, 19.2), (-99.0, 19.3), (-99.1, 19.3)]
+                ),
             },
             {
                 "id": "outside",
-                "geometry": Polygon([(-90.1, 10.2), (-90.0, 10.2), (-90.0, 10.3), (-90.1, 10.3)]),
+                "geometry": Polygon(
+                    [(-90.1, 10.2), (-90.0, 10.2), (-90.0, 10.3), (-90.1, 10.3)]
+                ),
             },
         ],
         crs="EPSG:4326",
@@ -98,7 +116,10 @@ def test_bootstrap_flow_seeds_feature_types_before_loading(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "reimagina.pipeline.overture.stage_overture_buildings_subset",
-        lambda raw_path, **kwargs: (tmp_path / "bronze.parquet", tmp_path / "silver.parquet"),
+        lambda raw_path, **kwargs: (
+            tmp_path / "bronze.parquet",
+            tmp_path / "silver.parquet",
+        ),
     )
     monkeypatch.setattr(
         "reimagina.pipeline.overture.cat.update_source_storage_uri",

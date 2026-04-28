@@ -42,6 +42,32 @@ export interface TooltipProvider {
 }
 
 
+// ── Global suspend bus ───────────────────────────────────────────────
+//
+// Same pattern as :func:`setHoverGloballySuspended` in
+// hover-highlight.ts. Tooltips are suspended together with hover
+// while the user is drawing or editing a selection shape — modes
+// are mutually exclusive in production map tools (Felt, Mapbox
+// Studio): if you're committed to a draw gesture, no other mousemove
+// affordance should fire.
+let _tooltipGloballySuspended = false;
+const _liveTooltipInstances = new Set<TooltipController>();
+
+
+export function setTooltipGloballySuspended(suspended: boolean): void {
+  if (_tooltipGloballySuspended === suspended) return;
+  _tooltipGloballySuspended = suspended;
+  if (suspended) {
+    // Hide any currently-visible tooltip on every live controller so
+    // a tooltip from before the draw gesture doesn't linger through
+    // the operation.
+    for (const inst of _liveTooltipInstances) {
+      try { inst.hide(); } catch (err) { console.warn("tooltip hide:", err); }
+    }
+  }
+}
+
+
 export class TooltipController {
   private readonly element: HTMLDivElement;
   private readonly providers: TooltipProvider[] = [];
@@ -57,6 +83,11 @@ export class TooltipController {
 
     this.map.on("mousemove", (e) => this.onMove(e));
     this.map.on("mouseout", () => this.hide());
+
+    // Register for the global-suspend bus so the
+    // ``setTooltipGloballySuspended(true)`` call can synchronously
+    // hide our visible tooltip.
+    _liveTooltipInstances.add(this);
   }
 
   /**
@@ -74,6 +105,13 @@ export class TooltipController {
   }
 
   private async onMove(event: MapLayerMouseEvent): Promise<void> {
+    // Globally suspended (e.g. selection draw/edit in flight) — no
+    // tooltip should fire. Hide any in-flight content too in case
+    // the suspension flipped between event arrival and dispatch.
+    if (_tooltipGloballySuspended) {
+      this.hide();
+      return;
+    }
     const reqId = ++this.lastRequestId;
     for (const p of this.providers) {
       if (!this.isAnyLayerVisible(p.layerIds)) continue;
@@ -120,7 +158,7 @@ export class TooltipController {
     this.element.style.display = "block";
   }
 
-  private hide(): void {
+  public hide(): void {
     this.element.style.display = "none";
   }
 }

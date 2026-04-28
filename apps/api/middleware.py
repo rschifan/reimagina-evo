@@ -9,6 +9,7 @@ The id is attached to `request.state.request_id` so handlers and
 exception handlers can log / surface it, and is echoed back in the
 response headers for downstream systems to pick up.
 """
+
 from __future__ import annotations
 
 import uuid

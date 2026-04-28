@@ -14,6 +14,7 @@ layers and PMTiles snapshots. These tests verify:
 - The in-process titiler mount actually serves a real COG via
   ``GET /cog/info``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -63,9 +64,13 @@ def client(conn):
 def _write_utm_raster(path: Path) -> Path:
     data = np.arange(100, dtype="float32").reshape(10, 10)
     with rasterio.open(
-        path, "w",
+        path,
+        "w",
         driver="GTiff",
-        height=10, width=10, count=1, dtype="float32",
+        height=10,
+        width=10,
+        count=1,
+        dtype="float32",
         crs="EPSG:32614",
         transform=from_origin(500_000.0, 2_151_000.0, 30.0, 30.0),
         nodata=-999.0,
@@ -75,7 +80,10 @@ def _write_utm_raster(path: Path) -> Path:
 
 
 def test_tile_sources_emits_aggregation_overlay_nested_under_parent_raster(
-    client, conn, isolated_data_dir, tmp_path,
+    client,
+    conn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """Every enabled aggregation recipe must appear on /tile-sources with
     ``source_mode='aggregation_overlay'`` and its tile-URL keyed on the
@@ -118,7 +126,8 @@ def test_tile_sources_emits_aggregation_overlay_nested_under_parent_raster(
             r for r in response.json() if r["source_mode"] == "aggregation_overlay"
         ]
         entry = next(
-            r for r in overlays
+            r
+            for r in overlays
             if r["source_config"]["attribute_key"] == f"{prefix}_sum"
         )
         cfg = entry["source_config"]
@@ -166,7 +175,10 @@ def test_tile_sources_emits_aggregation_overlay_nested_under_parent_raster(
 
 
 def test_tile_sources_emits_raster_cog_entry_for_published_layer(
-    client, conn, isolated_data_dir, tmp_path,
+    client,
+    conn,
+    isolated_data_dir,
+    tmp_path,
 ):
     raw = _write_utm_raster(tmp_path / "pub.tif")
     slug = f"r4_pub_{uuid4().hex[:8]}"
@@ -203,7 +215,10 @@ def test_tile_sources_emits_raster_cog_entry_for_published_layer(
 
 
 def test_tile_sources_escapes_special_chars_in_registry_params(
-    client, conn, isolated_data_dir, tmp_path,
+    client,
+    conn,
+    isolated_data_dir,
+    tmp_path,
 ):
     """colormap_name / rescale with '&' or '#' must not corrupt the query string."""
     raw = _write_utm_raster(tmp_path / "special.tif")
@@ -224,7 +239,8 @@ def test_tile_sources_escapes_special_chars_in_registry_params(
 
     response = client.get("/tile-sources")
     entry = next(
-        r for r in response.json()
+        r
+        for r in response.json()
         if r.get("source_mode") == "raster_cog" and r["layer_id"] == slug
     )
     tmpl = entry["source_config"]["tiles_url_template"]
@@ -235,7 +251,10 @@ def test_tile_sources_escapes_special_chars_in_registry_params(
 
 
 def test_tile_sources_marks_raster_unavailable_when_silver_missing(
-    client, conn, isolated_data_dir, tmp_path,
+    client,
+    conn,
+    isolated_data_dir,
+    tmp_path,
 ):
     raw = _write_utm_raster(tmp_path / "will_vanish.tif")
     slug = f"r4_gone_{uuid4().hex[:8]}"
@@ -255,14 +274,17 @@ def test_tile_sources_marks_raster_unavailable_when_silver_missing(
 
     response = client.get("/tile-sources")
     entry = next(
-        r for r in response.json()
+        r
+        for r in response.json()
         if r["source_mode"] == "raster_cog" and r["layer_id"] == slug
     )
     assert entry["available"] is False
 
 
 def test_cog_router_serves_info_for_real_raster(
-    client, isolated_data_dir, tmp_path,
+    client,
+    isolated_data_dir,
+    tmp_path,
 ):
     """Smoke-check the mounted titiler router actually opens a COG.
 
@@ -296,9 +318,7 @@ def test_cog_router_rejects_url_outside_data_root(client, isolated_data_dir):
 def test_cog_router_rejects_non_file_scheme(client, isolated_data_dir):
     """Remote URL fetching is off by default — prevents server-side
     request forgery via the tile endpoint."""
-    response = client.get(
-        "/cog/info?url=https://example.com/evil.tif"
-    )
+    response = client.get("/cog/info?url=https://example.com/evil.tif")
     assert response.status_code == 400
     assert "file://" in response.json()["detail"].lower()
 
@@ -317,7 +337,9 @@ def test_cog_router_rejects_path_traversal(client, isolated_data_dir, tmp_path):
 
 
 def test_cog_router_rejects_missing_file_inside_root(
-    client, isolated_data_dir, tmp_path,
+    client,
+    isolated_data_dir,
+    tmp_path,
 ):
     """A well-formed URL whose target isn't on disk returns 404 rather
     than a confusing GDAL-level error."""

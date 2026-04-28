@@ -49,6 +49,34 @@
 
       <section class="map-panel">
         <div id="map"></div>
+        <!-- Loading indicator: visible whenever the map is fetching tiles
+             or the page is performing an async data refresh. CSS hides
+             it by default; main.ts toggles ``data-loading`` on the host
+             element to flip visibility. -->
+        <div id="map-loading" class="map-loading" aria-hidden="true">
+          <div class="map-loading__spinner" role="progressbar" aria-label="Loading"></div>
+        </div>
+        <!-- Selection toolbar: three draw modes + a clear button.
+             main.ts wires data-shape attributes to controller.startDrawing(). -->
+        <div class="selection-toolbar" role="toolbar" aria-label="Selection tools">
+          <button type="button" class="selection-toolbar__btn" data-shape="circle" title="Draw circle selection" aria-label="Draw circle">●</button>
+          <button type="button" class="selection-toolbar__btn" data-shape="rectangle" title="Draw rectangle selection" aria-label="Draw rectangle">▭</button>
+          <button type="button" class="selection-toolbar__btn" data-shape="polygon" title="Draw polygon selection" aria-label="Draw polygon">⬠</button>
+          <button type="button" class="selection-toolbar__btn selection-toolbar__btn--clear" data-action="clear" title="Clear selection" aria-label="Clear selection">×</button>
+        </div>
+        <!-- Per-selection metrics panel. Hidden until the user draws
+             something; main.ts populates from selection-metrics.ts. -->
+        <aside id="selection-panel" class="selection-panel" hidden aria-live="polite">
+          <h3 class="selection-panel__title">Selection</h3>
+          <!-- Headline total: sum of all selected geometries across
+               every counted layer. Useful for at-a-glance "did I
+               actually catch anything" sanity checks. -->
+          <p class="selection-panel__total" data-testid="selection-total">
+            <span class="selection-panel__total-value">0</span>
+            <span class="selection-panel__total-label">geometries selected</span>
+          </p>
+          <dl class="selection-panel__metrics"></dl>
+        </aside>
       </section>
     </main>
 

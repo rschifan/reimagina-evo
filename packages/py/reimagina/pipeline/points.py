@@ -17,6 +17,7 @@ type from r003). A future migration can add a more specific
 ``amenity_point`` type when the difference matters; for now the
 extra precision isn't earning its keep.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -75,7 +76,11 @@ class PointsLayerSpec:
     """``category`` doubles as the human-readable label until a richer
     name column appears in upstream amenity feeds."""
     attributes_cols: tuple[str, ...] = (
-        "category", "capacity", "fuente", "fecha", "entidad",
+        "category",
+        "capacity",
+        "fuente",
+        "fecha",
+        "entidad",
     )
 
 
@@ -184,7 +189,9 @@ def load_layer(
 ) -> dict[str, Any]:
     """Load a staged silver GeoParquet of points into curated_geo.feature."""
     type_id = feat.get_type_id(
-        conn, POINTS_FEATURE_TYPE_CONTEXT, POINTS_FEATURE_TYPE_SLUG,
+        conn,
+        POINTS_FEATURE_TYPE_CONTEXT,
+        POINTS_FEATURE_TYPE_SLUG,
     )
     return load_vector_source(
         conn,
@@ -251,13 +258,15 @@ def bootstrap(
             orchestrator_run_id=run_id,
             code_version=code_version,
         )
-        per_layer.append({
-            "layer": key,
-            "type_slug": POINTS_FEATURE_TYPE_SLUG,
-            "source_id": source_id,
-            "silver_path": str(silver_path),
-            **load_result,
-        })
+        per_layer.append(
+            {
+                "layer": key,
+                "type_slug": POINTS_FEATURE_TYPE_SLUG,
+                "source_id": source_id,
+                "silver_path": str(silver_path),
+                **load_result,
+            }
+        )
 
     return {
         "orchestrator_run_id": run_id,

@@ -1,4 +1,5 @@
 """Benchmark execution, explain parsing, and report comparison."""
+
 from __future__ import annotations
 
 import json
@@ -68,7 +69,9 @@ def _extent_bounds(conn) -> tuple[float, float, float, float]:
         """,
     )
     if row is None or any(value is None for value in row):
-        raise ValueError("No canonical features are loaded. Benchmarks require feature data.")
+        raise ValueError(
+            "No canonical features are loaded. Benchmarks require feature data."
+        )
     return tuple(float(value) for value in row)
 
 
@@ -93,7 +96,9 @@ def _bbox_from_extent(
     )
 
 
-def _polygon_wkt_from_bbox(bounds: tuple[float, float, float, float], *, complex_shape: bool) -> str:
+def _polygon_wkt_from_bbox(
+    bounds: tuple[float, float, float, float], *, complex_shape: bool
+) -> str:
     min_x, min_y, max_x, max_y = bounds
     if not complex_shape:
         return (
@@ -122,7 +127,9 @@ def _polygon_wkt_from_bbox(bounds: tuple[float, float, float, float], *, complex
 def _get_feature_id(conn) -> str:
     row = _query_one(conn, "SELECT id FROM curated_geo.feature ORDER BY id LIMIT 1")
     if row is None:
-        raise ValueError("No canonical features are loaded. Benchmarks require feature data.")
+        raise ValueError(
+            "No canonical features are loaded. Benchmarks require feature data."
+        )
     return str(row[0])
 
 
@@ -131,7 +138,9 @@ def _get_selected_feature_ids(conn, *, count: int) -> list[str]:
         cur.execute("SELECT id FROM curated_geo.feature ORDER BY id LIMIT %s", (count,))
         rows = cur.fetchall()
     if not rows:
-        raise ValueError("No canonical features are loaded. Benchmarks require feature data.")
+        raise ValueError(
+            "No canonical features are loaded. Benchmarks require feature data."
+        )
     return [str(row[0]) for row in rows]
 
 
@@ -172,10 +181,16 @@ def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[objec
         bounds = _bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
         return [*bounds, *bounds]
     if benchmark_name == "polygon_features_small":
-        polygon = _polygon_wkt_from_bbox(_bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03), complex_shape=False)
+        polygon = _polygon_wkt_from_bbox(
+            _bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03),
+            complex_shape=False,
+        )
         return [polygon, polygon]
     if benchmark_name == "polygon_features_dense":
-        polygon = _polygon_wkt_from_bbox(_bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08), complex_shape=True)
+        polygon = _polygon_wkt_from_bbox(
+            _bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08),
+            complex_shape=True,
+        )
         return [polygon, polygon]
     if benchmark_name == "bbox_features_with_current_attributes":
         bounds = _bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
@@ -272,11 +287,7 @@ def _summarize_plan(plan_doc) -> dict[str, object]:
     nodes = _walk_plans(plan)
     node_types = [node.get("Node Type") for node in nodes if node.get("Node Type")]
     index_names = sorted(
-        {
-            node["Index Name"]
-            for node in nodes
-            if node.get("Index Name")
-        }
+        {node["Index Name"] for node in nodes if node.get("Index Name")}
     )
     relation_scans = [
         {
@@ -304,7 +315,9 @@ def _summarize_plan(plan_doc) -> dict[str, object]:
     }
 
 
-def _run_explain_analyze(conn, *, sql: str, params: list[object], statement_timeout_ms: int) -> dict[str, object]:
+def _run_explain_analyze(
+    conn, *, sql: str, params: list[object], statement_timeout_ms: int
+) -> dict[str, object]:
     with conn.cursor() as cur:
         cur.execute("SET LOCAL statement_timeout = %s", (f"{statement_timeout_ms}ms",))
         cur.execute(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}", params)
@@ -312,26 +325,37 @@ def _run_explain_analyze(conn, *, sql: str, params: list[object], statement_time
     return _summarize_plan(plan_doc)
 
 
-def _seq_scan_failure(spec: BenchmarkSpec, *, dataset_summary: dict[str, object], relation_scans: list[dict]) -> bool:
+def _seq_scan_failure(
+    spec: BenchmarkSpec,
+    *,
+    dataset_summary: dict[str, object],
+    relation_scans: list[dict],
+) -> bool:
     large_tables = {
         "feature": int(dataset_summary.get("feature_rows", 0)) > 10_000,
         "observation": int(dataset_summary.get("observation_rows", 0)) > 10_000,
         "aoi_feature": int(dataset_summary.get("feature_rows", 0)) > 10_000,
     }
     for scan in relation_scans:
-        if scan["relation_name"] in spec.hot_tables_no_seq_scan and scan["node_type"] in {"Seq Scan", "Parallel Seq Scan"}:
+        if scan["relation_name"] in spec.hot_tables_no_seq_scan and scan[
+            "node_type"
+        ] in {"Seq Scan", "Parallel Seq Scan"}:
             if large_tables.get(scan["relation_name"], False):
                 return True
     return False
 
 
-def _large_hot_table_present(spec: BenchmarkSpec, *, dataset_summary: dict[str, object]) -> bool:
+def _large_hot_table_present(
+    spec: BenchmarkSpec, *, dataset_summary: dict[str, object]
+) -> bool:
     table_sizes = {
         "feature": int(dataset_summary.get("feature_rows", 0)),
         "observation": int(dataset_summary.get("observation_rows", 0)),
         "aoi_feature": int(dataset_summary.get("feature_rows", 0)),
     }
-    return any(table_sizes.get(table, 0) > 10_000 for table in spec.hot_tables_no_seq_scan)
+    return any(
+        table_sizes.get(table, 0) > 10_000 for table in spec.hot_tables_no_seq_scan
+    )
 
 
 def _evaluate_result(
@@ -348,15 +372,23 @@ def _evaluate_result(
     latest = run_summaries[-1]
     budget = spec.latency_budgets[dataset_tier]
 
-    require_index_discipline = _large_hot_table_present(spec, dataset_summary=dataset_summary)
+    require_index_discipline = _large_hot_table_present(
+        spec, dataset_summary=dataset_summary
+    )
     expected_node_ok = True
     expected_index_ok = True
     if require_index_discipline:
-        expected_node_ok = any(node in latest["node_types"] for node in spec.expected_node_any_of)
+        expected_node_ok = any(
+            node in latest["node_types"] for node in spec.expected_node_any_of
+        )
         if spec.expected_index_any_of:
-            expected_index_ok = any(index in latest["index_names"] for index in spec.expected_index_any_of)
+            expected_index_ok = any(
+                index in latest["index_names"] for index in spec.expected_index_any_of
+            )
     row_count_ok = int(latest["actual_rows"]) >= spec.row_count_min
-    seq_scan_ok = not _seq_scan_failure(spec, dataset_summary=dataset_summary, relation_scans=latest["relation_scans"])
+    seq_scan_ok = not _seq_scan_failure(
+        spec, dataset_summary=dataset_summary, relation_scans=latest["relation_scans"]
+    )
     latency_ok = p50 <= budget.p50_ms and p95 <= budget.p95_ms and p99 <= budget.p99_ms
 
     checks = {
@@ -400,7 +432,9 @@ def _evaluate_result(
     }
 
 
-def explain_benchmark(conn, *, benchmark_name: str, dataset_tier: str) -> dict[str, object]:
+def explain_benchmark(
+    conn, *, benchmark_name: str, dataset_tier: str
+) -> dict[str, object]:
     _require_postgres(conn)
     if benchmark_name not in BENCHMARKS:
         raise ValueError(f"Unknown benchmark: {benchmark_name!r}")
@@ -408,7 +442,9 @@ def explain_benchmark(conn, *, benchmark_name: str, dataset_tier: str) -> dict[s
         raise ValueError(f"Unknown dataset tier: {dataset_tier!r}")
 
     spec = BENCHMARKS[benchmark_name]
-    params = _build_params(conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier)
+    params = _build_params(
+        conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier
+    )
     summary = _run_explain_analyze(
         conn,
         sql=spec.sql,
@@ -475,7 +511,9 @@ def run_benchmarks(
     }
 
 
-def compare_reports(*, baseline_path: str | Path, candidate_path: str | Path) -> dict[str, object]:
+def compare_reports(
+    *, baseline_path: str | Path, candidate_path: str | Path
+) -> dict[str, object]:
     baseline = json.loads(Path(baseline_path).read_text())
     candidate = json.loads(Path(candidate_path).read_text())
     baseline_map = {row["benchmark"]: row for row in baseline.get("benchmarks", [])}

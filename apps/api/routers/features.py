@@ -4,6 +4,7 @@ The endpoint returns feature IDs + attributes, never geometry. The web app
 consumes geometry through Martin's MVT tiles; the API exposes the
 attribute/catalog side so list views and search don't have to parse tiles.
 """
+
 from __future__ import annotations
 
 import psycopg2
@@ -43,12 +44,16 @@ def list_features(
 ) -> FeaturePage:
     """Paginated feature inventory — wraps ServingReader.get_features."""
     try:
-        payload = get_backend(conn).serving_reader().get_features(
-            type_slug=type_slug,
-            role=role,
-            aoi_id=aoi_id,
-            limit=limit,
-            after_cursor=after_cursor,
+        payload = (
+            get_backend(conn)
+            .serving_reader()
+            .get_features(
+                type_slug=type_slug,
+                role=role,
+                aoi_id=aoi_id,
+                limit=limit,
+                after_cursor=after_cursor,
+            )
         )
     except ValueError as exc:
         # decode_cursor raises ValueError for malformed tokens. That's a

@@ -9,6 +9,7 @@ API freely imports domain code.
 Run locally with:
     python -m apps.api
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -24,7 +25,7 @@ from titiler.core.factory import TilerFactory
 from . import deps, errors
 from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
-from .routers import aois, features, health, indicators, tiles
+from .routers import aois, features, health, indicators, metrics, tiles
 
 
 def _cors_origins_from_env() -> list[str]:
@@ -85,7 +86,9 @@ def create_app(
     process-wide Postgres pool — useful for unit tests that exercise the
     app factory without a live database.
     """
-    resolved_origins = list(allow_origins) if allow_origins is not None else _cors_origins_from_env()
+    resolved_origins = (
+        list(allow_origins) if allow_origins is not None else _cors_origins_from_env()
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -116,7 +119,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_origins,
-        allow_methods=["GET", "OPTIONS"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-Id"],
         allow_credentials=False,
@@ -139,6 +142,7 @@ def create_app(
     app.include_router(indicators.router)
     app.include_router(aois.router)
     app.include_router(features.router)
+    app.include_router(metrics.router)
     app.include_router(tiles.router)
     # Raster tiles: mount titiler's standard COG endpoints under /cog so
     # the API + tile server share a process, a dep tree, and an origin.

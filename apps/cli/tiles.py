@@ -1,9 +1,14 @@
 """CLI helpers for hybrid live-MVT and PMTiles tile infrastructure."""
+
 from __future__ import annotations
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection
-from reimagina.tiles import export_pmtiles_snapshot, load_tile_layers, resolve_tile_sources
+from reimagina.tiles import (
+    export_pmtiles_snapshot,
+    load_tile_layers,
+    resolve_tile_sources,
+)
 
 
 def tile_manifest(*, manifest_path: str | None = None) -> dict[str, object]:
@@ -63,5 +68,7 @@ def list_tile_sources(
 
 def list_tile_snapshots(*, dsn: str, layer_id: str | None = None) -> dict[str, object]:
     with connect(dsn) as conn:
-        snapshots = backend_for_connection(conn).tile_repo().list_snapshots(layer_id=layer_id)
+        snapshots = (
+            backend_for_connection(conn).tile_repo().list_snapshots(layer_id=layer_id)
+        )
     return {"dsn": dsn, "snapshots": snapshots}

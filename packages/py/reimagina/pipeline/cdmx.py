@@ -12,6 +12,7 @@ we need for cross-grain indicator aggregation:
 - `blocks`         — ~62k manzanas      (role=analysis_unit)
 - `colonias`       — ~1.8k neighborhoods (role=context)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -136,7 +137,8 @@ CDMX_COLONIAS = CDMXLayerSpec(
 )
 
 LAYER_SPECS: dict[str, CDMXLayerSpec] = {
-    spec.key: spec for spec in (
+    spec.key: spec
+    for spec in (
         CDMX_MUNICIPALITIES,
         CDMX_AGEBS,
         CDMX_BLOCKS,
@@ -151,6 +153,7 @@ DEFAULT_LOAD_ORDER: tuple[str, ...] = ("municipalities", "agebs", "blocks", "col
 
 
 # ─── Fetch ─────────────────────────────────────────────────────────────────
+
 
 def fetch_layer(spec: CDMXLayerSpec, *, overwrite: bool = False) -> Path:
     """Download (or reuse cached) archive for a CDMX layer. Returns the local path."""
@@ -178,6 +181,7 @@ def resolve_source_file(spec: CDMXLayerSpec, archive_path: Path) -> Path:
 
 
 # ─── Source registration + stage ───────────────────────────────────────────
+
 
 def ensure_layer_source(conn, spec: CDMXLayerSpec) -> str:
     """Idempotently register the data_source_catalog row for a CDMX layer."""
@@ -230,6 +234,7 @@ def stage_layer(
 
 # ─── Load ──────────────────────────────────────────────────────────────────
 
+
 def load_layer(
     conn,
     spec: CDMXLayerSpec,
@@ -256,6 +261,7 @@ def load_layer(
 
 
 # ─── End-to-end bootstrap + status ─────────────────────────────────────────
+
 
 def bootstrap_layers(
     conn,
@@ -293,7 +299,9 @@ def bootstrap_layers(
         conn.commit()
 
         bronze_path, silver_path = stage_layer(spec, source_file, source_id=source_id)
-        cat.update_source_storage_uri(conn, source_id, bronze.bronze_uri(source_id, bronze_path.name))
+        cat.update_source_storage_uri(
+            conn, source_id, bronze.bronze_uri(source_id, bronze_path.name)
+        )
         conn.commit()
 
         load_result = load_layer(
@@ -304,14 +312,16 @@ def bootstrap_layers(
             orchestrator_run_id=run_id,
             code_version=code_version,
         )
-        per_layer.append({
-            "layer": key,
-            "type_slug": spec.feature_type_slug,
-            "source_id": source_id,
-            "bronze_path": str(bronze_path),
-            "silver_path": str(silver_path),
-            **load_result,
-        })
+        per_layer.append(
+            {
+                "layer": key,
+                "type_slug": spec.feature_type_slug,
+                "source_id": source_id,
+                "bronze_path": str(bronze_path),
+                "silver_path": str(silver_path),
+                **load_result,
+            }
+        )
 
     return {
         "orchestrator_run_id": run_id,

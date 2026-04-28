@@ -113,7 +113,11 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
             ingestion_run_id=run_id,
         )
 
-        page = backend_for_connection(conn).serving_reader().get_features(type_slug="building")
+        page = (
+            backend_for_connection(conn)
+            .serving_reader()
+            .get_features(type_slug="building")
+        )
         rows = page["features"]
         assert page["next_cursor"] is None
         assert len(rows) == 1
@@ -125,19 +129,33 @@ def test_duckdb_backend_bootstrap_and_basic_serving_flow(tmp_path):
         layer_rows = backend_for_connection(conn).explore_reader().list_layers()
         assert any(row["logical_name"] == "serving_features" for row in layer_rows)
 
-        feature_stats = backend_for_connection(conn).explore_reader().list_feature_stats()
-        assert any(row["type_slug"] == "building" and row["row_count"] == 1 for row in feature_stats)
+        feature_stats = (
+            backend_for_connection(conn).explore_reader().list_feature_stats()
+        )
+        assert any(
+            row["type_slug"] == "building" and row["row_count"] == 1
+            for row in feature_stats
+        )
 
-        serving_stats = backend_for_connection(conn).explore_reader().list_serving_stats()
-        assert any(row["stat_scope"] == "all" and row["row_count"] == 1 for row in serving_stats)
+        serving_stats = (
+            backend_for_connection(conn).explore_reader().list_serving_stats()
+        )
+        assert any(
+            row["stat_scope"] == "all" and row["row_count"] == 1
+            for row in serving_stats
+        )
 
-        snapshot_id = backend_for_connection(conn).tile_repo().register_snapshot(
-            layer_id="admin_reference",
-            artifact_path="/tmp/admin_reference.pmtiles",
-            artifact_uri="http://localhost:3001/admin_reference.pmtiles",
-            snapshot_version="20260415T120000Z",
-            source_relation="serving_geo.admin_v",
-            source_lineage_ref={"latest_successful_ingestion_run_id": None},
+        snapshot_id = (
+            backend_for_connection(conn)
+            .tile_repo()
+            .register_snapshot(
+                layer_id="admin_reference",
+                artifact_path="/tmp/admin_reference.pmtiles",
+                artifact_uri="http://localhost:3001/admin_reference.pmtiles",
+                snapshot_version="20260415T120000Z",
+                source_relation="serving_geo.admin_v",
+                source_lineage_ref={"latest_successful_ingestion_run_id": None},
+            )
         )
         assert snapshot_id
 
@@ -265,7 +283,14 @@ def test_duckdb_aoi_overlaps_polygon_line_point(tmp_path):
         # Polygon feature (building — geometry_family=polygon)
         poly_type_id = feat.get_type_id(conn, "global", "building")
         poly_gdf = gpd.GeoDataFrame(
-            [{"id": "poly-1", "geometry": Polygon([(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)])}],
+            [
+                {
+                    "id": "poly-1",
+                    "geometry": Polygon(
+                        [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]
+                    ),
+                }
+            ],
             crs="EPSG:4326",
         )
         feat.load_features(
@@ -334,15 +359,22 @@ def test_duckdb_aoi_overlaps_polygon_line_point(tmp_path):
             [aoi_id],
         ).fetchall()
 
-        by_basis = {r[0]: {"overlap_measure": r[1], "feature_measure": r[2], "overlap_ratio": r[3]} for r in rows}
+        by_basis = {
+            r[0]: {
+                "overlap_measure": r[1],
+                "feature_measure": r[2],
+                "overlap_ratio": r[3],
+            }
+            for r in rows
+        }
 
         # Polygon (area)
         assert "area" in by_basis, "Missing area row for polygon feature"
         area = by_basis["area"]
         # Spheroid area for ~0.8° × 0.8° polygon is several thousand km²
-        assert area["overlap_measure"] > 1.0, (
-            f"overlap_measure={area['overlap_measure']} looks like degrees², not m²"
-        )
+        assert (
+            area["overlap_measure"] > 1.0
+        ), f"overlap_measure={area['overlap_measure']} looks like degrees², not m²"
         assert area["feature_measure"] > 1.0
         assert 0 < area["overlap_ratio"] <= 1.0
 
@@ -350,9 +382,9 @@ def test_duckdb_aoi_overlaps_polygon_line_point(tmp_path):
         assert "length" in by_basis, "Missing length row for line feature"
         length = by_basis["length"]
         # ~0.8° of longitude at equator ≈ 89 km = 89_000 m
-        assert length["overlap_measure"] > 1.0, (
-            f"overlap_measure={length['overlap_measure']} looks like degrees, not metres"
-        )
+        assert (
+            length["overlap_measure"] > 1.0
+        ), f"overlap_measure={length['overlap_measure']} looks like degrees, not metres"
         assert length["feature_measure"] > 1.0
         assert 0 < length["overlap_ratio"] <= 1.0
 
@@ -403,7 +435,10 @@ def test_duckdb_serving_pagination(tmp_path):
 
         gdf = gpd.GeoDataFrame(
             [
-                {"id": f"b-{i}", "geometry": Polygon([(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)])}
+                {
+                    "id": f"b-{i}",
+                    "geometry": Polygon([(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)]),
+                }
                 for i in range(5)
             ],
             crs="EPSG:4326",
@@ -423,7 +458,11 @@ def test_duckdb_serving_pagination(tmp_path):
         pages = 0
 
         while True:
-            page = backend_for_connection(conn).serving_reader().get_features(type_slug="building", limit=2, after_cursor=cursor)
+            page = (
+                backend_for_connection(conn)
+                .serving_reader()
+                .get_features(type_slug="building", limit=2, after_cursor=cursor)
+            )
             batch = page["features"]
             assert len(batch) <= 2
             seen_ids.extend(row["id"] for row in batch)
@@ -481,9 +520,12 @@ def test_duckdb_feature_overlap_polygon_contains_point(tmp_path):
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, poly_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=poly_type_id, dataset_version="v1",
+            conn,
+            poly_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=poly_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -491,15 +533,18 @@ def test_duckdb_feature_overlap_polygon_contains_point(tmp_path):
         point_type_id = feat.get_type_id(conn, "global", "tree")
         point_gdf = gpd.GeoDataFrame(
             [
-                {"id": "pt-inside",  "geometry": Point(1.0, 1.0)},
+                {"id": "pt-inside", "geometry": Point(1.0, 1.0)},
                 {"id": "pt-outside", "geometry": Point(5.0, 5.0)},
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, point_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=point_type_id, dataset_version="v1",
+            conn,
+            point_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=point_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -531,7 +576,9 @@ def test_duckdb_overlap_jobs_declare_and_compute_all_pairs(tmp_path):
     """
     app_path = tmp_path / "reimagina_overlap_jobs.duckdb"
     test_path = tmp_path / "reimagina_overlap_jobs_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         feat.seed_feature_types(conn)
@@ -561,42 +608,70 @@ def test_duckdb_overlap_jobs_declare_and_compute_all_pairs(tmp_path):
         # degree deltas keep the geometry inside the block and give a
         # well-defined partial-area overlap on WGS84.
         block_gdf = gpd.GeoDataFrame(
-            [{"id": "blk-1", "geometry": Polygon([
-                (-99.140, 19.430), (-99.130, 19.430),
-                (-99.130, 19.440), (-99.140, 19.440),
-            ])}],
+            [
+                {
+                    "id": "blk-1",
+                    "geometry": Polygon(
+                        [
+                            (-99.140, 19.430),
+                            (-99.130, 19.430),
+                            (-99.130, 19.440),
+                            (-99.140, 19.440),
+                        ]
+                    ),
+                }
+            ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, block_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            block_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
         lot_gdf = gpd.GeoDataFrame(
-            [{"id": "lot-1", "geometry": Polygon([
-                (-99.138, 19.432), (-99.134, 19.432),
-                (-99.134, 19.436), (-99.138, 19.436),
-            ])}],
+            [
+                {
+                    "id": "lot-1",
+                    "geometry": Polygon(
+                        [
+                            (-99.138, 19.432),
+                            (-99.134, 19.432),
+                            (-99.134, 19.436),
+                            (-99.138, 19.436),
+                        ]
+                    ),
+                }
+            ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, lot_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=lot_type_id, dataset_version="v1",
+            conn,
+            lot_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=lot_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
         pair1 = overlap_jobs.declare_pair(
             conn,
-            source_context="MEX", source_slug="lot",
-            target_context="MEX", target_slug="block",
+            source_context="MEX",
+            source_slug="lot",
+            target_context="MEX",
+            target_slug="block",
         )
         pair2 = overlap_jobs.declare_pair(
             conn,
-            source_context="MEX", source_slug="lot",
-            target_context="MEX", target_slug="block",
+            source_context="MEX",
+            source_slug="lot",
+            target_context="MEX",
+            target_slug="block",
         )
         assert pair1 == pair2
         row_count = conn.execute(
@@ -629,16 +704,21 @@ def test_duckdb_overlap_jobs_declare_and_compute_all_pairs(tmp_path):
         # Re-run: still one row (upsert), count returned is 1.
         second = overlap_jobs.compute_all_pairs(conn)
         assert second["rows_total"] == 1
-        assert conn.execute(
-            "SELECT COUNT(*) FROM curated_geo.feature_overlap"
-        ).fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT COUNT(*) FROM curated_geo.feature_overlap").fetchone()[
+                0
+            ]
+            == 1
+        )
 
 
 def test_duckdb_overlap_compute_aoi_scoping(tmp_path):
     """aoi_id filters source features: lots outside the AOI produce no overlap rows."""
     app_path = tmp_path / "reimagina_overlap_aoi.duckdb"
     test_path = tmp_path / "reimagina_overlap_aoi_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         feat.seed_feature_types(conn)
@@ -666,49 +746,85 @@ def test_duckdb_overlap_compute_aoi_scoping(tmp_path):
         # Two non-overlapping blocks side by side.
         blocks = gpd.GeoDataFrame(
             [
-                {"id": "blk-L", "geometry": Polygon([
-                    (-99.150, 19.430), (-99.140, 19.430),
-                    (-99.140, 19.440), (-99.150, 19.440),
-                ])},
-                {"id": "blk-R", "geometry": Polygon([
-                    (-99.130, 19.430), (-99.120, 19.430),
-                    (-99.120, 19.440), (-99.130, 19.440),
-                ])},
+                {
+                    "id": "blk-L",
+                    "geometry": Polygon(
+                        [
+                            (-99.150, 19.430),
+                            (-99.140, 19.430),
+                            (-99.140, 19.440),
+                            (-99.150, 19.440),
+                        ]
+                    ),
+                },
+                {
+                    "id": "blk-R",
+                    "geometry": Polygon(
+                        [
+                            (-99.130, 19.430),
+                            (-99.120, 19.430),
+                            (-99.120, 19.440),
+                            (-99.130, 19.440),
+                        ]
+                    ),
+                },
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, blocks,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            blocks,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
         # One lot inside each block.
         lots = gpd.GeoDataFrame(
             [
-                {"id": "lot-L", "geometry": Polygon([
-                    (-99.148, 19.432), (-99.142, 19.432),
-                    (-99.142, 19.438), (-99.148, 19.438),
-                ])},
-                {"id": "lot-R", "geometry": Polygon([
-                    (-99.128, 19.432), (-99.122, 19.432),
-                    (-99.122, 19.438), (-99.128, 19.438),
-                ])},
+                {
+                    "id": "lot-L",
+                    "geometry": Polygon(
+                        [
+                            (-99.148, 19.432),
+                            (-99.142, 19.432),
+                            (-99.142, 19.438),
+                            (-99.148, 19.438),
+                        ]
+                    ),
+                },
+                {
+                    "id": "lot-R",
+                    "geometry": Polygon(
+                        [
+                            (-99.128, 19.432),
+                            (-99.122, 19.432),
+                            (-99.122, 19.438),
+                            (-99.128, 19.438),
+                        ]
+                    ),
+                },
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, lots,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=lot_type_id, dataset_version="v1",
+            conn,
+            lots,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=lot_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
         overlap_jobs.declare_pair(
             conn,
-            source_context="MEX", source_slug="lot",
-            target_context="MEX", target_slug="block",
+            source_context="MEX",
+            source_slug="lot",
+            target_context="MEX",
+            target_slug="block",
         )
 
         # AOI that covers only the LEFT block.
@@ -748,7 +864,9 @@ def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
     """
     app_path = tmp_path / "reimagina_aoi_summary.duckdb"
     test_path = tmp_path / "reimagina_aoi_summary_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         project_id = str(uuid4())
@@ -767,12 +885,16 @@ def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
         indicator_id = str(uuid4())
 
         first_id = summary_repo.upsert_summary(
-            aoi_id=aoi_id, indicator_id=indicator_id, value=1.0,
+            aoi_id=aoi_id,
+            indicator_id=indicator_id,
+            value=1.0,
             aggregation_note="seed",
         )
         # Re-upsert without scenario → same row id, updated value + note.
         second_id = summary_repo.upsert_summary(
-            aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+            aoi_id=aoi_id,
+            indicator_id=indicator_id,
+            value=2.0,
             aggregation_note="reran",
         )
         assert first_id == second_id
@@ -786,7 +908,9 @@ def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
         # Scenario-scoped row is independent.
         scenario_id = str(uuid4())
         scenario_summary_id = summary_repo.upsert_summary(
-            aoi_id=aoi_id, indicator_id=indicator_id, value=5.0,
+            aoi_id=aoi_id,
+            indicator_id=indicator_id,
+            value=5.0,
             scenario_id=scenario_id,
         )
         assert scenario_summary_id != first_id
@@ -795,12 +919,16 @@ def test_duckdb_aoi_summary_upsert_list_and_serving_view(tmp_path):
         base_rows = summary_repo.list_summaries(aoi_id=aoi_id)
         assert [r["value"] for r in base_rows] == [2.0]
 
-        scenario_rows = summary_repo.list_summaries(aoi_id=aoi_id, scenario_id=scenario_id)
+        scenario_rows = summary_repo.list_summaries(
+            aoi_id=aoi_id, scenario_id=scenario_id
+        )
         assert [r["value"] for r in scenario_rows] == [5.0]
 
         # Stale rows fall out of the serving view + default list.
         summary_repo.upsert_summary(
-            aoi_id=aoi_id, indicator_id=indicator_id, value=2.0,
+            aoi_id=aoi_id,
+            indicator_id=indicator_id,
+            value=2.0,
             status="stale",
         )
         assert summary_repo.list_summaries(aoi_id=aoi_id) == []
@@ -866,15 +994,20 @@ def test_duckdb_block_compactness_end_to_end(tmp_path):
         # square gives ~440 m sides so planar-UTM metres are order-of-magnitude
         # right; exact values are asserted via polsby_popper(...).
         square = [
-            (-99.140, 19.430), (-99.136, 19.430),
-            (-99.136, 19.434), (-99.140, 19.434),
+            (-99.140, 19.430),
+            (-99.136, 19.430),
+            (-99.136, 19.434),
+            (-99.140, 19.434),
         ]
         thin_rect = [
-            (-99.130, 19.430), (-99.126, 19.430),
-            (-99.126, 19.4301), (-99.130, 19.4301),
+            (-99.130, 19.430),
+            (-99.126, 19.430),
+            (-99.126, 19.4301),
+            (-99.130, 19.4301),
         ]
         near_circle = []
         import math as _m
+
         cx, cy, r = -99.120, 19.432, 0.002
         for i in range(32):
             theta = 2 * _m.pi * i / 32
@@ -882,7 +1015,7 @@ def test_duckdb_block_compactness_end_to_end(tmp_path):
 
         blocks = gpd.GeoDataFrame(
             [
-                {"id": "sq",  "geometry": Polygon(square)},
+                {"id": "sq", "geometry": Polygon(square)},
                 {"id": "rect", "geometry": Polygon(thin_rect)},
                 {"id": "circle", "geometry": Polygon(near_circle)},
             ],
@@ -972,6 +1105,7 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
     - missing-threshold behaviour (all-missing child set → 'missing' parent).
     """
     import math
+
     app_path = tmp_path / "reimagina_l2_rollup.duckdb"
     test_path = tmp_path / "reimagina_l2_rollup_test.duckdb"
     bootstrap_local_platform(
@@ -1004,12 +1138,14 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
         ageb_type_id = feat.get_type_id(conn, "MEX", "ageb")
 
         def square(lon0: float, lat0: float, side: float) -> Polygon:
-            return Polygon([
-                (lon0, lat0),
-                (lon0 + side, lat0),
-                (lon0 + side, lat0 + side),
-                (lon0, lat0 + side),
-            ])
+            return Polygon(
+                [
+                    (lon0, lat0),
+                    (lon0 + side, lat0),
+                    (lon0 + side, lat0 + side),
+                    (lon0, lat0 + side),
+                ]
+            )
 
         # Two AGEB polygons side by side. Each covers two blocks cleanly.
         ageb_gdf = gpd.GeoDataFrame(
@@ -1020,9 +1156,12 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, ageb_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=ageb_type_id, dataset_version="v1",
+            conn,
+            ageb_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=ageb_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -1039,19 +1178,29 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
         block_gdf = gpd.GeoDataFrame(
             [
                 {"id": "blk-L-sq", "geometry": square(-99.139, 19.431, 0.002)},
-                {"id": "blk-L-rect", "geometry": Polygon([
-                    (-99.137, 19.431), (-99.133, 19.431),
-                    (-99.133, 19.4311), (-99.137, 19.4311),
-                ])},
-                {"id": "blk-R-sq",    "geometry": square(-99.129, 19.431, 0.002)},
+                {
+                    "id": "blk-L-rect",
+                    "geometry": Polygon(
+                        [
+                            (-99.137, 19.431),
+                            (-99.133, 19.431),
+                            (-99.133, 19.4311),
+                            (-99.137, 19.4311),
+                        ]
+                    ),
+                },
+                {"id": "blk-R-sq", "geometry": square(-99.129, 19.431, 0.002)},
                 {"id": "blk-R-circle", "geometry": Polygon(near_circle_pts)},
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, block_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            block_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -1062,11 +1211,17 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
             SET geometry = ST_GeomFromText(?)
             WHERE source_record_ref = 'blk-R-circle'
             """,
-            [Polygon([
-                (-99.126 + 0.0015 * math.cos(2*math.pi*i/32),
-                 19.434  + 0.0015 * math.sin(2*math.pi*i/32))
-                for i in range(32)
-            ]).wkt],
+            [
+                Polygon(
+                    [
+                        (
+                            -99.126 + 0.0015 * math.cos(2 * math.pi * i / 32),
+                            19.434 + 0.0015 * math.sin(2 * math.pi * i / 32),
+                        )
+                        for i in range(32)
+                    ]
+                ).wkt
+            ],
         )
 
         # Compute compactness (block level).
@@ -1075,8 +1230,10 @@ def test_duckdb_rollup_and_aoi_summary_end_to_end(tmp_path):
         # Declare + compute the block→ageb overlap.
         overlap_jobs.declare_pair(
             conn,
-            source_context="MEX", source_slug="block",
-            target_context="MEX", target_slug="ageb",
+            source_context="MEX",
+            source_slug="block",
+            target_context="MEX",
+            target_slug="ageb",
         )
         overlap_jobs.compute_all_pairs(conn)
 
@@ -1154,9 +1311,12 @@ def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
     overlap_ratio weighting.
     """
     import math
+
     app_path = tmp_path / "reimagina_rollup_weight.duckdb"
     test_path = tmp_path / "reimagina_rollup_weight_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         feat.seed_feature_types(conn)
@@ -1184,16 +1344,28 @@ def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
 
         # AGEB covering both blocks.
         ageb_gdf = gpd.GeoDataFrame(
-            [{"id": "big-ageb", "geometry": Polygon([
-                (-99.140, 19.430), (-99.120, 19.430),
-                (-99.120, 19.440), (-99.140, 19.440),
-            ])}],
+            [
+                {
+                    "id": "big-ageb",
+                    "geometry": Polygon(
+                        [
+                            (-99.140, 19.430),
+                            (-99.120, 19.430),
+                            (-99.120, 19.440),
+                            (-99.140, 19.440),
+                        ]
+                    ),
+                }
+            ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, ageb_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=ageb_type_id, dataset_version="v1",
+            conn,
+            ageb_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=ageb_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -1201,33 +1373,44 @@ def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
         # compactness, thin rectangle). We'll confirm the weighted mean
         # gets pulled toward the large block's value (≈ 0 compactness).
         tiny_circle_pts = [
-            (-99.138 + 0.0005 * math.cos(2 * math.pi * i / 32),
-             19.432  + 0.0005 * math.sin(2 * math.pi * i / 32))
+            (
+                -99.138 + 0.0005 * math.cos(2 * math.pi * i / 32),
+                19.432 + 0.0005 * math.sin(2 * math.pi * i / 32),
+            )
             for i in range(32)
         ]
-        large_rect = Polygon([
-            (-99.135, 19.431), (-99.122, 19.431),
-            (-99.122, 19.439), (-99.135, 19.439),
-        ])
+        large_rect = Polygon(
+            [
+                (-99.135, 19.431),
+                (-99.122, 19.431),
+                (-99.122, 19.439),
+                (-99.135, 19.439),
+            ]
+        )
         blocks_gdf = gpd.GeoDataFrame(
             [
                 {"id": "tiny-circle", "geometry": Polygon(tiny_circle_pts)},
-                {"id": "large-rect",   "geometry": large_rect},
+                {"id": "large-rect", "geometry": large_rect},
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, blocks_gdf,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            blocks_gdf,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
         compute_block_compactness(conn, code_version="test")
         overlap_jobs.declare_pair(
             conn,
-            source_context="MEX", source_slug="block",
-            target_context="MEX", target_slug="ageb",
+            source_context="MEX",
+            source_slug="block",
+            target_context="MEX",
+            target_slug="ageb",
         )
         overlap_jobs.compute_all_pairs(conn)
         run_rollup(
@@ -1238,8 +1421,10 @@ def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
             code_version="test",
         )
 
-        tiny_value, large_value = (row[0] for row in conn.execute(
-            """
+        tiny_value, large_value = (
+            row[0]
+            for row in conn.execute(
+                """
             SELECT ir.value_numeric
             FROM curated_geo.indicator_result ir
             JOIN curated_geo.feature f ON f.id = ir.feature_id
@@ -1247,7 +1432,8 @@ def test_duckdb_rollup_weighted_mean_is_area_weighted(tmp_path):
               AND ir.feature_type = 'block' AND ir.status = 'current'
             ORDER BY CASE f.source_record_ref WHEN 'tiny-circle' THEN 0 ELSE 1 END
             """
-        ).fetchall())
+            ).fetchall()
+        )
 
         ageb_value = conn.execute(
             """
@@ -1286,7 +1472,9 @@ def test_duckdb_block_building_density_end_to_end(tmp_path):
     """
     app_path = tmp_path / "reimagina_density.duckdb"
     test_path = tmp_path / "reimagina_density_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         feat.seed_feature_types(conn)
@@ -1315,25 +1503,30 @@ def test_duckdb_block_building_density_end_to_end(tmp_path):
         # Three blocks around Mexico City latitude 19.43°.
         # Each ~0.003° × 0.003° ≈ 330m × 314m ≈ 10.4 ha.
         def square(lon0: float, lat0: float) -> Polygon:
-            return Polygon([
-                (lon0, lat0),
-                (lon0 + 0.003, lat0),
-                (lon0 + 0.003, lat0 + 0.003),
-                (lon0, lat0 + 0.003),
-            ])
+            return Polygon(
+                [
+                    (lon0, lat0),
+                    (lon0 + 0.003, lat0),
+                    (lon0 + 0.003, lat0 + 0.003),
+                    (lon0, lat0 + 0.003),
+                ]
+            )
 
         blocks = gpd.GeoDataFrame(
             [
-                {"id": "dense",  "geometry": square(-99.140, 19.430)},
+                {"id": "dense", "geometry": square(-99.140, 19.430)},
                 {"id": "sparse", "geometry": square(-99.130, 19.430)},
-                {"id": "empty",  "geometry": square(-99.120, 19.430)},
+                {"id": "empty", "geometry": square(-99.120, 19.430)},
             ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, blocks,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            blocks,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -1342,12 +1535,14 @@ def test_duckdb_block_building_density_end_to_end(tmp_path):
         # one in `sparse`, zero in `empty`, one *outside all three* to prove
         # the attribution rule rejects it.
         def bldg(lon: float, lat: float) -> Polygon:
-            return Polygon([
-                (lon, lat),
-                (lon + 0.0001, lat),
-                (lon + 0.0001, lat + 0.0001),
-                (lon, lat + 0.0001),
-            ])
+            return Polygon(
+                [
+                    (lon, lat),
+                    (lon + 0.0001, lat),
+                    (lon + 0.0001, lat + 0.0001),
+                    (lon, lat + 0.0001),
+                ]
+            )
 
         buildings = gpd.GeoDataFrame(
             [
@@ -1360,9 +1555,12 @@ def test_duckdb_block_building_density_end_to_end(tmp_path):
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, buildings,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=building_type_id, dataset_version="v1",
+            conn,
+            buildings,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=building_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
 
@@ -1419,9 +1617,12 @@ def test_duckdb_list_current_with_geometry_round_trips_wkb(tmp_path):
     decodes to is the same geometry we loaded.
     """
     import shapely.wkb
+
     app_path = tmp_path / "reimagina_wkb.duckdb"
     test_path = tmp_path / "reimagina_wkb_test.duckdb"
-    bootstrap_local_platform(app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path))
+    bootstrap_local_platform(
+        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path)
+    )
 
     with connect(_duckdb_dsn(app_path)) as conn:
         feat.seed_feature_types(conn)
@@ -1429,35 +1630,52 @@ def test_duckdb_list_current_with_geometry_round_trips_wkb(tmp_path):
 
         source_id = cat.register_source(
             conn,
-            name="wkb_src", provider="pytest",
-            storage_type="vector", integration_role="canonical_entity",
-            storage_uri="file:///tmp/wkb.geojson", version="v1",
+            name="wkb_src",
+            provider="pytest",
+            storage_type="vector",
+            integration_role="canonical_entity",
+            storage_uri="file:///tmp/wkb.geojson",
+            version="v1",
         )
         run_id = cat.start_ingestion_run(
-            conn, source_id=source_id,
-            orchestrator="pytest", orchestrator_run_id=str(uuid4()),
-            transformation_step="silver_to_curated", code_version="test",
+            conn,
+            source_id=source_id,
+            orchestrator="pytest",
+            orchestrator_run_id=str(uuid4()),
+            transformation_step="silver_to_curated",
+            code_version="test",
         )
         block_type_id = feat.get_type_id(conn, "MEX", "block")
 
-        block_polygon = Polygon([
-            (-99.140, 19.430), (-99.137, 19.430),
-            (-99.137, 19.433), (-99.140, 19.433),
-        ])
+        block_polygon = Polygon(
+            [
+                (-99.140, 19.430),
+                (-99.137, 19.430),
+                (-99.137, 19.433),
+                (-99.140, 19.433),
+            ]
+        )
         blocks = gpd.GeoDataFrame(
             [{"id": "blk-1", "geometry": block_polygon}], crs="EPSG:4326"
         )
         feat.load_features(
-            conn, blocks,
-            source_id=source_id, ingestion_run_id=run_id,
-            type_id=block_type_id, dataset_version="v1",
+            conn,
+            blocks,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            type_id=block_type_id,
+            dataset_version="v1",
             source_record_ref_col="id",
         )
         compute_block_compactness(conn, code_version="test")
 
-        rows = backend_for_connection(conn).indicator_result_repo().list_current_with_geometry(
-            indicator_slug="urban_form_block_compactness",
-            feature_type="block",
+        rows = (
+            backend_for_connection(conn)
+            .indicator_result_repo()
+            .list_current_with_geometry(
+                indicator_slug="urban_form_block_compactness",
+                feature_type="block",
+            )
         )
         assert len(rows) == 1
         row = rows[0]
@@ -1484,7 +1702,8 @@ def test_duckdb_r1_raster_surface(tmp_path):
     app_path = tmp_path / "reimagina.duckdb"
     test_path = tmp_path / "reimagina_test.duckdb"
     bootstrap_local_platform(
-        app_dsn=_duckdb_dsn(app_path), test_dsn=_duckdb_dsn(test_path),
+        app_dsn=_duckdb_dsn(app_path),
+        test_dsn=_duckdb_dsn(test_path),
     )
 
     with connect(_duckdb_dsn(app_path)) as conn:
@@ -1494,23 +1713,38 @@ def test_duckdb_r1_raster_surface(tmp_path):
         # --- Register a vector source + a block feature for iter_geometries_by_type ---
         vec_src_id = cat.register_source(
             conn,
-            name="r1_vec", provider="pytest", storage_type="vector",
+            name="r1_vec",
+            provider="pytest",
+            storage_type="vector",
             integration_role="canonical_entity",
-            storage_uri="file:///tmp/r1.geojson", version="v1",
+            storage_uri="file:///tmp/r1.geojson",
+            version="v1",
         )
         vec_run_id = cat.start_ingestion_run(
-            conn, source_id=vec_src_id, orchestrator="pytest",
+            conn,
+            source_id=vec_src_id,
+            orchestrator="pytest",
             orchestrator_run_id=str(uuid4()),
-            transformation_step="r1_seed", code_version="test",
+            transformation_step="r1_seed",
+            code_version="test",
         )
         block_type = feat.get_type_id(conn, "MEX", "block")
         gdf = gpd.GeoDataFrame(
-            [{"record_ref": "r1-blk", "geometry": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])}],
+            [
+                {
+                    "record_ref": "r1-blk",
+                    "geometry": Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                }
+            ],
             crs="EPSG:4326",
         )
         feat.load_features(
-            conn, gdf, source_id=vec_src_id, ingestion_run_id=vec_run_id,
-            type_id=block_type, dataset_version="v1",
+            conn,
+            gdf,
+            source_id=vec_src_id,
+            ingestion_run_id=vec_run_id,
+            type_id=block_type,
+            dataset_version="v1",
             source_record_ref_col="record_ref",
         )
 
@@ -1525,19 +1759,29 @@ def test_duckdb_r1_raster_surface(tmp_path):
         # --- Register a raster source + file_asset for the rest of R1 ---
         ras_src_id = cat.register_source(
             conn,
-            name="r1_ras", provider="pytest", storage_type="raster",
+            name="r1_ras",
+            provider="pytest",
+            storage_type="raster",
             integration_role="enrichment",
-            storage_uri="file://data/silver/x.cog.tif", version="v1",
+            storage_uri="file://data/silver/x.cog.tif",
+            version="v1",
         )
         ras_run_id = cat.start_ingestion_run(
-            conn, source_id=ras_src_id, orchestrator="pytest",
+            conn,
+            source_id=ras_src_id,
+            orchestrator="pytest",
             orchestrator_run_id=str(uuid4()),
-            transformation_step="r1_raster_seed", code_version="test",
+            transformation_step="r1_raster_seed",
+            code_version="test",
         )
         asset_id = backend.file_asset_repo().register_file_asset(
-            source_id=ras_src_id, ingestion_run_id=ras_run_id,
-            storage_uri="file://data/silver/x.cog.tif", dataset_version="v1",
-            format="COG", crs="EPSG:4326", resolution_m=30.0,
+            source_id=ras_src_id,
+            ingestion_run_id=ras_run_id,
+            storage_uri="file://data/silver/x.cog.tif",
+            dataset_version="v1",
+            format="COG",
+            crs="EPSG:4326",
+            resolution_m=30.0,
         )
 
         # --- FileAssetRepository.get_by_source ---
@@ -1550,9 +1794,12 @@ def test_duckdb_r1_raster_surface(tmp_path):
         # --- RasterLayerRepository lifecycle ---
         raster_repo = backend.raster_layer_repo()
         raster_repo.register_layer(
-            source_id=ras_src_id, asset_id=asset_id,
-            layer_slug="r1_duck_life", aggregation_kind="extensive",
-            colormap_name="inferno", rescale="0,1",
+            source_id=ras_src_id,
+            asset_id=asset_id,
+            layer_slug="r1_duck_life",
+            aggregation_kind="extensive",
+            colormap_name="inferno",
+            rescale="0,1",
         )
         fetched = raster_repo.get_by_source(ras_src_id)
         assert fetched is not None
@@ -1574,26 +1821,54 @@ def test_duckdb_r1_raster_surface(tmp_path):
         obs_repo = backend.observation_repo()
         obs_repo.bulk_upsert_current(
             [
-                {"feature_id": fid, "attribute_key": "ndvi",       "value": 0.7, "value_type": "numeric"},
-                {"feature_id": fid, "attribute_key": "ndvi_mean",  "value": 0.5, "value_type": "numeric"},
-                {"feature_id": fid, "attribute_key": "ndvi2_mean", "value": 0.9, "value_type": "numeric"},
+                {
+                    "feature_id": fid,
+                    "attribute_key": "ndvi",
+                    "value": 0.7,
+                    "value_type": "numeric",
+                },
+                {
+                    "feature_id": fid,
+                    "attribute_key": "ndvi_mean",
+                    "value": 0.5,
+                    "value_type": "numeric",
+                },
+                {
+                    "feature_id": fid,
+                    "attribute_key": "ndvi2_mean",
+                    "value": 0.9,
+                    "value_type": "numeric",
+                },
             ],
-            source_id=ras_src_id, ingestion_run_id=ras_run_id,
+            source_id=ras_src_id,
+            ingestion_run_id=ras_run_id,
         )
 
         # has_active_prefix: another source excluded → sees ras_src_id's rows → True;
         # excluding ras_src_id itself → False.
-        assert obs_repo.has_active_prefix(
-            prefix="ndvi", excluding_source_id=str(uuid4()),
-        ) is True
-        assert obs_repo.has_active_prefix(
-            prefix="ndvi", excluding_source_id=ras_src_id,
-        ) is False
+        assert (
+            obs_repo.has_active_prefix(
+                prefix="ndvi",
+                excluding_source_id=str(uuid4()),
+            )
+            is True
+        )
+        assert (
+            obs_repo.has_active_prefix(
+                prefix="ndvi",
+                excluding_source_id=ras_src_id,
+            )
+            is False
+        )
         # Separator-safe: 'ndv' does not match 'ndvi_mean' because 'ndv_' is
         # not the prefix.
-        assert obs_repo.has_active_prefix(
-            prefix="ndv", excluding_source_id=str(uuid4()),
-        ) is False
+        assert (
+            obs_repo.has_active_prefix(
+                prefix="ndv",
+                excluding_source_id=str(uuid4()),
+            )
+            is False
+        )
 
         # retire_current_by_prefix: 'ndvi' retires 'ndvi' + 'ndvi_mean' but
         # NOT 'ndvi2_mean'. If a future edit reintroduces LIKE/ESCAPE and

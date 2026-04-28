@@ -1,4 +1,5 @@
 """DuckDB repository implementations for local/dev storage."""
+
 from __future__ import annotations
 
 import json
@@ -50,7 +51,14 @@ class DuckDBSourceCatalogRepository:
                        notes = COALESCE(?, notes)
                  WHERE id = ?
                 """,
-                [storage_type, integration_role, storage_uri, license, notes, existing["id"]],
+                [
+                    storage_type,
+                    integration_role,
+                    storage_uri,
+                    license,
+                    notes,
+                    existing["id"],
+                ],
             )
             return str(existing["id"])
 
@@ -61,7 +69,17 @@ class DuckDBSourceCatalogRepository:
               (id, name, provider, storage_type, integration_role, storage_uri, version, license, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [source_id, name, provider, storage_type, integration_role, storage_uri, version, license, notes],
+            [
+                source_id,
+                name,
+                provider,
+                storage_type,
+                integration_role,
+                storage_uri,
+                version,
+                license,
+                notes,
+            ],
         )
         return source_id
 
@@ -112,11 +130,20 @@ class DuckDBSourceCatalogRepository:
               (id, source_id, orchestrator, orchestrator_run_id, transformation_step, code_version, status)
             VALUES (?, ?, ?, ?, ?, ?, 'running')
             """,
-            [run_id, source_id, orchestrator, orchestrator_run_id, transformation_step, code_version],
+            [
+                run_id,
+                source_id,
+                orchestrator,
+                orchestrator_run_id,
+                transformation_step,
+                code_version,
+            ],
         )
         return run_id
 
-    def complete_ingestion_run(self, run_id: str, *, status: str, details: dict | None = None) -> None:
+    def complete_ingestion_run(
+        self, run_id: str, *, status: str, details: dict | None = None
+    ) -> None:
         self.connection.execute(
             """
             UPDATE curated_geo.ingestion_run
@@ -195,8 +222,12 @@ class DuckDBFeatureRepository:
                     "type_id": type_id,
                     "type_slug": type_slug,
                     "role": role,
-                    "parent_id": str(row[parent_id_col]) if parent_id_col and parent_id_col in row.index else None,
-                    "name": str(row[name_col]) if name_col and name_col in row.index else None,
+                    "parent_id": str(row[parent_id_col])
+                    if parent_id_col and parent_id_col in row.index
+                    else None,
+                    "name": str(row[name_col])
+                    if name_col and name_col in row.index
+                    else None,
                     "geometry_wkt": row.geometry.wkt,
                     "attributes_json": json.dumps(attributes, allow_nan=False),
                     "source_id": source_id,
@@ -299,12 +330,15 @@ class DuckDBFeatureRepository:
         source_record_ref_ident = _quote_identifier(source_record_ref_col)
         attr_expr = "'{}'"
         if attributes_cols:
-            present_attr_cols = [col for col in attributes_cols if col in available_columns]
+            present_attr_cols = [
+                col for col in attributes_cols if col in available_columns
+            ]
         else:
             present_attr_cols = []
         if present_attr_cols:
             fields = ", ".join(
-                f"{_quote_identifier(col)} := s.{_quote_identifier(col)}" for col in present_attr_cols
+                f"{_quote_identifier(col)} := s.{_quote_identifier(col)}"
+                for col in present_attr_cols
             )
             attr_expr = f"to_json(struct_pack({fields}))"
         if name_col and name_col in available_columns:
@@ -558,7 +592,9 @@ class DuckDBObservationRepository:
         )
         return observation_id
 
-    def bulk_upsert_current(self, records: list[dict], *, source_id: str, ingestion_run_id: str) -> int:
+    def bulk_upsert_current(
+        self, records: list[dict], *, source_id: str, ingestion_run_id: str
+    ) -> int:
         if not records:
             return 0
 
@@ -571,18 +607,20 @@ class DuckDBObservationRepository:
             value_numeric = r["value"] if r["value_type"] == "numeric" else None
             value_text = r["value"] if r["value_type"] == "text" else None
             value_json = json.dumps(r["value"]) if r["value_type"] == "json" else None
-            insert_rows.append([
-                str(uuid4()),
-                r["feature_id"],
-                r["attribute_key"],
-                r["value_type"],
-                value_numeric,
-                value_text,
-                value_json,
-                source_id,
-                ingestion_run_id,
-                json.dumps(r["lineage_ref"]) if r.get("lineage_ref") else None,
-            ])
+            insert_rows.append(
+                [
+                    str(uuid4()),
+                    r["feature_id"],
+                    r["attribute_key"],
+                    r["value_type"],
+                    value_numeric,
+                    value_text,
+                    value_json,
+                    source_id,
+                    ingestion_run_id,
+                    json.dumps(r["lineage_ref"]) if r.get("lineage_ref") else None,
+                ]
+            )
 
         # Register Arrow tables so we can retire and insert in two SQL statements
         # instead of 2N individual round-trips.
@@ -603,15 +641,23 @@ class DuckDBObservationRepository:
         finally:
             self.connection.unregister(retire_name)
 
-        insert_table = pa.Table.from_pylist([
-            {
-                "id": row[0], "feature_id": row[1], "attribute_key": row[2],
-                "value_type": row[3], "value_numeric": row[4], "value_text": row[5],
-                "value_json": row[6], "source_id": row[7],
-                "ingestion_run_id": row[8], "lineage_ref": row[9],
-            }
-            for row in insert_rows
-        ])
+        insert_table = pa.Table.from_pylist(
+            [
+                {
+                    "id": row[0],
+                    "feature_id": row[1],
+                    "attribute_key": row[2],
+                    "value_type": row[3],
+                    "value_numeric": row[4],
+                    "value_text": row[5],
+                    "value_json": row[6],
+                    "source_id": row[7],
+                    "ingestion_run_id": row[8],
+                    "lineage_ref": row[9],
+                }
+                for row in insert_rows
+            ]
+        )
         insert_name = f"insert_obs_{uuid4().hex}"
         self.connection.register(insert_name, insert_table)
         try:
@@ -759,20 +805,40 @@ class DuckDBFileAssetRepository:
             except (TypeError, ValueError):
                 band_desc = None
         return {
-            "id": row[0], "source_id": row[1], "ingestion_run_id": row[2],
-            "storage_uri": row[3], "format": row[4], "crs": row[5],
-            "resolution_m": row[6], "band_description": band_desc,
-            "captured_at": row[8], "dataset_version": row[9],
+            "id": row[0],
+            "source_id": row[1],
+            "ingestion_run_id": row[2],
+            "storage_uri": row[3],
+            "format": row[4],
+            "crs": row[5],
+            "resolution_m": row[6],
+            "band_description": band_desc,
+            "captured_at": row[8],
+            "dataset_version": row[9],
             "created_at": row[10],
         }
 
 
 class DuckDBRasterLayerRepository:
     _LAYER_COLS = (
-        "id", "source_id", "asset_id", "layer_slug", "logical_name",
-        "description", "colormap_name", "rescale", "minzoom", "maxzoom",
-        "published", "aggregation_kind", "created_at",
-        "storage_uri", "crs", "resolution_m", "format", "band_description",
+        "id",
+        "source_id",
+        "asset_id",
+        "layer_slug",
+        "logical_name",
+        "description",
+        "colormap_name",
+        "rescale",
+        "minzoom",
+        "maxzoom",
+        "published",
+        "aggregation_kind",
+        "created_at",
+        "storage_uri",
+        "crs",
+        "resolution_m",
+        "format",
+        "band_description",
     )
 
     def __init__(self, connection):
@@ -803,9 +869,18 @@ class DuckDBRasterLayerRepository:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                layer_id, source_id, asset_id, layer_slug, logical_name,
-                description, colormap_name, rescale, minzoom, maxzoom,
-                published, aggregation_kind,
+                layer_id,
+                source_id,
+                asset_id,
+                layer_slug,
+                logical_name,
+                description,
+                colormap_name,
+                rescale,
+                minzoom,
+                maxzoom,
+                published,
+                aggregation_kind,
             ],
         )
         return layer_id
@@ -878,11 +953,22 @@ class DuckDBAggregationRecipeRepository:
     """DuckDB-backed recipe registry (r020). Reads via serving view."""
 
     _COLS = (
-        "id", "input_kind", "input_raster_layer_id", "input_raster_layer_slug",
-        "input_attribute_key_prefix", "input_feature_type_slug",
-        "target_feature_type_slug", "attribute_key_prefix",
-        "method", "weight_basis", "params", "coverage_threshold",
-        "aoi_id", "enabled", "created_at", "updated_at",
+        "id",
+        "input_kind",
+        "input_raster_layer_id",
+        "input_raster_layer_slug",
+        "input_attribute_key_prefix",
+        "input_feature_type_slug",
+        "target_feature_type_slug",
+        "attribute_key_prefix",
+        "method",
+        "weight_basis",
+        "params",
+        "coverage_threshold",
+        "aoi_id",
+        "enabled",
+        "created_at",
+        "updated_at",
     )
 
     def __init__(self, connection):
@@ -915,11 +1001,19 @@ class DuckDBAggregationRecipeRepository:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                recipe_id, input_kind, input_raster_layer_id,
-                input_attribute_key_prefix, input_feature_type_slug,
-                target_feature_type_slug, attribute_key_prefix,
-                method, weight_basis, json.dumps(params or {}),
-                coverage_threshold, aoi_id, enabled,
+                recipe_id,
+                input_kind,
+                input_raster_layer_id,
+                input_attribute_key_prefix,
+                input_feature_type_slug,
+                target_feature_type_slug,
+                attribute_key_prefix,
+                method,
+                weight_basis,
+                json.dumps(params or {}),
+                coverage_threshold,
+                aoi_id,
+                enabled,
             ],
         )
         return recipe_id
@@ -986,7 +1080,14 @@ class DuckDBAOIRepository:
     def __init__(self, connection):
         self.connection = connection
 
-    def create_aoi(self, *, project_id: str, name: str, geometry_wkt: str, description: str | None = None) -> str:
+    def create_aoi(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        geometry_wkt: str,
+        description: str | None = None,
+    ) -> str:
         aoi_id = str(uuid4())
         self.connection.execute(
             """
@@ -1016,7 +1117,9 @@ class DuckDBAOIRepository:
 
         geod = Geod(ellps="WGS84")
 
-        self.connection.execute("DELETE FROM curated_geo.aoi_feature WHERE aoi_id = ?", [aoi_id])
+        self.connection.execute(
+            "DELETE FROM curated_geo.aoi_feature WHERE aoi_id = ?", [aoi_id]
+        )
 
         # ── Polygon features (area basis) ─────────────────────────────────
         poly_rows = self.connection.execute(
@@ -1045,7 +1148,16 @@ class DuckDBAOIRepository:
                 continue
             overlap_measure = min(inter_area, feature_area)
             overlap_ratio = min(overlap_measure / feature_area, 1.0)
-            insert_rows.append((aoi_id, feature_id, "area", overlap_measure, feature_area, overlap_ratio))
+            insert_rows.append(
+                (
+                    aoi_id,
+                    feature_id,
+                    "area",
+                    overlap_measure,
+                    feature_area,
+                    overlap_ratio,
+                )
+            )
 
         # ── Line features (length basis) ──────────────────────────────────
         line_rows = self.connection.execute(
@@ -1073,7 +1185,16 @@ class DuckDBAOIRepository:
                 continue
             overlap_measure = min(inter_len, feature_len)
             overlap_ratio = min(overlap_measure / feature_len, 1.0)
-            insert_rows.append((aoi_id, feature_id, "length", overlap_measure, feature_len, overlap_ratio))
+            insert_rows.append(
+                (
+                    aoi_id,
+                    feature_id,
+                    "length",
+                    overlap_measure,
+                    feature_len,
+                    overlap_ratio,
+                )
+            )
 
         # ── Point features (presence basis) ───────────────────────────────
         point_rows = self.connection.execute(
@@ -1134,22 +1255,54 @@ class DuckDBAOIRepository:
                       JOIN curated_geo.feature f ON f.id = af.feature_id
                       WHERE af.aoi_id = aoi.id AND f.type_slug = 'block'),
                      ST_Y(ST_PointOnSurface(aoi.geometry))
-                   ) AS centroid_lat
+                   ) AS centroid_lat,
+                   -- Features bbox = envelope of all blocks loaded
+                   -- inside this AOI. See postgres repo for the
+                   -- rationale; mirrors the same SQL surface so the
+                   -- API behaves identically across backends.
+                   (SELECT ST_XMin(ST_Extent(f.geometry))
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE af.aoi_id = aoi.id AND f.type_slug = 'block')
+                     AS feat_min_lon,
+                   (SELECT ST_YMin(ST_Extent(f.geometry))
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE af.aoi_id = aoi.id AND f.type_slug = 'block')
+                     AS feat_min_lat,
+                   (SELECT ST_XMax(ST_Extent(f.geometry))
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE af.aoi_id = aoi.id AND f.type_slug = 'block')
+                     AS feat_max_lon,
+                   (SELECT ST_YMax(ST_Extent(f.geometry))
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE af.aoi_id = aoi.id AND f.type_slug = 'block')
+                     AS feat_max_lat
             FROM curated_geo.area_of_interest aoi
             ORDER BY aoi.name
             """
         ).fetchall()
         return [
             {
-                "aoi_id": aid, "project_id": pid, "name": name, "description": descr,
+                "aoi_id": aid,
+                "project_id": pid,
+                "name": name,
+                "description": descr,
                 "bbox": [min_lon, min_lat, max_lon, max_lat]
-                if min_lon is not None else None,
+                if min_lon is not None
+                else None,
                 "centroid": [centroid_lon, centroid_lat]
-                if centroid_lon is not None else None,
+                if centroid_lon is not None
+                else None,
+                "features_bbox": (
+                    [feat_min_lon, feat_min_lat, feat_max_lon, feat_max_lat]
+                    if feat_min_lon is not None
+                    else None
+                ),
             }
-            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat,
-                centroid_lon, centroid_lat
-            in rows
+            for aid, pid, name, descr, min_lon, min_lat, max_lon, max_lat, centroid_lon, centroid_lat, feat_min_lon, feat_min_lat, feat_max_lon, feat_max_lat in rows
         ]
 
     def get_aoi(self, aoi_id: str) -> dict | None:
@@ -1285,7 +1438,16 @@ class DuckDBOverlapRepository:
                         continue
                     overlap_measure = min(inter_area, feature_area)
                     overlap_ratio = min(overlap_measure / feature_area, 1.0)
-                    insert_rows.append((src_id, tgt_id, "area", overlap_measure, feature_area, overlap_ratio))
+                    insert_rows.append(
+                        (
+                            src_id,
+                            tgt_id,
+                            "area",
+                            overlap_measure,
+                            feature_area,
+                            overlap_ratio,
+                        )
+                    )
 
         elif source_family == "line":
             result = self.connection.execute(
@@ -1318,7 +1480,16 @@ class DuckDBOverlapRepository:
                         continue
                     overlap_measure = min(inter_len, feature_len)
                     overlap_ratio = min(overlap_measure / feature_len, 1.0)
-                    insert_rows.append((src_id, tgt_id, "length", overlap_measure, feature_len, overlap_ratio))
+                    insert_rows.append(
+                        (
+                            src_id,
+                            tgt_id,
+                            "length",
+                            overlap_measure,
+                            feature_len,
+                            overlap_ratio,
+                        )
+                    )
 
         else:  # point or geometry — presence basis
             pairs = self.connection.execute(
@@ -1332,7 +1503,9 @@ class DuckDBOverlapRepository:
                 """,
                 [target_type_id, *aoi_params, source_type_id],
             ).fetchall()
-            insert_rows = [(src_id, tgt_id, "presence", 1.0, 1.0, 1.0) for src_id, tgt_id in pairs]
+            insert_rows = [
+                (src_id, tgt_id, "presence", 1.0, 1.0, 1.0) for src_id, tgt_id in pairs
+            ]
 
         if insert_rows:
             self.connection.executemany(_UPSERT_SQL, insert_rows)
@@ -1350,7 +1523,12 @@ class DuckDBOverlapRepository:
         scenario_clause, scenario_params = _scenario_filter(
             "CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?"
         )
-        params: list = [source_feature_type, target_feature_type, indicator_slug, *scenario_params]
+        params: list = [
+            source_feature_type,
+            target_feature_type,
+            indicator_slug,
+            *scenario_params,
+        ]
         rows = self.connection.execute(
             f"""
             SELECT CAST(fo.target_feature_id AS VARCHAR),
@@ -1418,8 +1596,10 @@ class DuckDBOverlapRepository:
             WHERE TRUE{aoi_clause}
             """,
             [
-                source_feature_type, target_feature_type,
-                input_attribute_key_prefix, input_attribute_key_prefix,
+                source_feature_type,
+                target_feature_type,
+                input_attribute_key_prefix,
+                input_attribute_key_prefix,
                 *aoi_params,
             ],
         ).fetchall()
@@ -1517,7 +1697,9 @@ class DuckDBServingReader:
         fetch_limit = limit + 1
 
         if aoi_id:
-            extra_conditions = (" AND " + " AND ".join(conditions)) if conditions else ""
+            extra_conditions = (
+                (" AND " + " AND ".join(conditions)) if conditions else ""
+            )
             result = self.connection.execute(
                 f"""
                 SELECT
@@ -1590,16 +1772,37 @@ class DuckDBServingReader:
             ).fetchone()
         return int(row[0])
 
+    def count_features_within_polygon(
+        self,
+        *,
+        aoi_id: str,
+        polygon_geojson: str,
+        type_slugs: list[str],
+    ) -> dict[str, int]:
+        # ST_Intersects on a polygon vs. a GiST-indexed feature column is
+        # PostGIS-specific; DuckDB's ``spatial`` extension supports the
+        # primitive but the serving views don't expose a spatial-indexed
+        # column today. The API only ever calls this method via the
+        # postgres backend (api/deps.py), so a clean error here keeps the
+        # contract honest without forcing a parallel DuckDB
+        # implementation.
+        raise NotImplementedError(
+            "count_features_within_polygon requires PostGIS — DuckDB backend "
+            "does not yet support spatial within-polygon queries.",
+        )
+
 
 # Columns that are stored as JSON in the DB and returned as strings by DuckDB.
 # Only these are JSON-decoded; other string values are left untouched.
-_EXPLORE_JSON_COLUMNS: frozenset[str] = frozenset({
-    "details",
-    "attributes",
-    "band_description",
-    "schema_definition",
-    "lineage_ref",
-})
+_EXPLORE_JSON_COLUMNS: frozenset[str] = frozenset(
+    {
+        "details",
+        "attributes",
+        "band_description",
+        "schema_definition",
+        "lineage_ref",
+    }
+)
 
 
 class DuckDBExploreReader:
@@ -1791,7 +1994,9 @@ class DuckDBAOISummaryRepository:
     ) -> str:
         # Manual upsert: DuckDB's partial unique indexes do not support
         # ON CONFLICT with a predicate, so we do a read-modify-write here.
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        scenario_clause, scenario_params = _scenario_filter(
+            "scenario_id", scenario_id, "?"
+        )
         existing = self.connection.execute(
             f"""
             SELECT CAST(id AS VARCHAR)
@@ -1823,7 +2028,15 @@ class DuckDBAOISummaryRepository:
               (id, aoi_id, scenario_id, indicator_id, value, aggregation_note, status)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [summary_id, aoi_id, scenario_id, indicator_id, value, aggregation_note, status],
+            [
+                summary_id,
+                aoi_id,
+                scenario_id,
+                indicator_id,
+                value,
+                aggregation_note,
+                status,
+            ],
         )
         return summary_id
 
@@ -1834,7 +2047,9 @@ class DuckDBAOISummaryRepository:
         indicator_id: str,
         scenario_id: str | None = None,
     ) -> dict | None:
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        scenario_clause, scenario_params = _scenario_filter(
+            "scenario_id", scenario_id, "?"
+        )
         row = self.connection.execute(
             f"""
             SELECT CAST(id AS VARCHAR), CAST(aoi_id AS VARCHAR),
@@ -1904,7 +2119,11 @@ class DuckDBAOISummaryRepository:
             params,
         ).fetchall()
         return [
-            (float(value) if value is not None else None, float(weight), quality or "missing")
+            (
+                float(value) if value is not None else None,
+                float(weight),
+                quality or "missing",
+            )
             for value, weight, quality in rows
         ]
 
@@ -1992,8 +2211,15 @@ class DuckDBJobRunRepository:
         if row is None:
             return None
         cols = (
-            "id", "scenario_id", "model_family", "status", "code_version",
-            "queued_at", "started_at", "completed_at", "error_message",
+            "id",
+            "scenario_id",
+            "model_family",
+            "status",
+            "code_version",
+            "queued_at",
+            "started_at",
+            "completed_at",
+            "error_message",
         )
         return dict(zip(cols, row))
 
@@ -2035,8 +2261,19 @@ class DuckDBIndicatorCatalogRepository:
                     applies_to = ?
                 WHERE slug = ?
                 """,
-                [name, description, model_family, computation_kind, value_type,
-                 unit, valid_min, valid_max, aggregation_method, applies_to, slug],
+                [
+                    name,
+                    description,
+                    model_family,
+                    computation_kind,
+                    value_type,
+                    unit,
+                    valid_min,
+                    valid_max,
+                    aggregation_method,
+                    applies_to,
+                    slug,
+                ],
             )
             return indicator_id
 
@@ -2048,8 +2285,20 @@ class DuckDBIndicatorCatalogRepository:
                unit, valid_min, valid_max, aggregation_method, applies_to)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [indicator_id, slug, name, description, model_family, computation_kind,
-             value_type, unit, valid_min, valid_max, aggregation_method, applies_to],
+            [
+                indicator_id,
+                slug,
+                name,
+                description,
+                model_family,
+                computation_kind,
+                value_type,
+                unit,
+                valid_min,
+                valid_max,
+                aggregation_method,
+                applies_to,
+            ],
         )
         return indicator_id
 
@@ -2066,8 +2315,17 @@ class DuckDBIndicatorCatalogRepository:
         if row is None:
             return None
         cols = (
-            "id", "slug", "name", "description", "model_family", "computation_kind",
-            "value_type", "unit", "valid_min", "valid_max", "aggregation_method",
+            "id",
+            "slug",
+            "name",
+            "description",
+            "model_family",
+            "computation_kind",
+            "value_type",
+            "unit",
+            "valid_min",
+            "valid_max",
+            "aggregation_method",
             "applies_to",
         )
         return dict(zip(cols, row))
@@ -2082,8 +2340,17 @@ class DuckDBIndicatorCatalogRepository:
             """
         ).fetchall()
         cols = (
-            "id", "slug", "name", "description", "model_family", "computation_kind",
-            "value_type", "unit", "valid_min", "valid_max", "aggregation_method",
+            "id",
+            "slug",
+            "name",
+            "description",
+            "model_family",
+            "computation_kind",
+            "value_type",
+            "unit",
+            "valid_min",
+            "valid_max",
+            "aggregation_method",
             "applies_to",
         )
         return [dict(zip(cols, row)) for row in rows]
@@ -2161,8 +2428,7 @@ def _validate_indicator_result_write(
             f"({applies_to!r}); write quality_flag='not_applicable' to suppress"
         )
     values_set = sum(
-        0 if v is None else 1
-        for v in (value_numeric, value_text, value_json)
+        0 if v is None else 1 for v in (value_numeric, value_text, value_json)
     )
     if quality_flag in ("measured", "estimated", "imputed") and status != "failed":
         if values_set != 1:
@@ -2213,7 +2479,9 @@ class DuckDBIndicatorResultRepository:
             raise ValueError(f"indicator_result.feature_id {feature_id!r} not found")
         return row[0]
 
-    def _lookup_catalog(self, indicator_slug: str) -> tuple[str, list[str], float | None, float | None]:
+    def _lookup_catalog(
+        self, indicator_slug: str
+    ) -> tuple[str, list[str], float | None, float | None]:
         row = self.connection.execute(
             """
             SELECT CAST(id AS VARCHAR), applies_to, valid_min, valid_max
@@ -2244,7 +2512,9 @@ class DuckDBIndicatorResultRepository:
         indicator_id: str,
         scenario_id: str | None,
     ) -> None:
-        scenario_clause, scenario_params = _scenario_filter("CAST(scenario_id AS VARCHAR)", scenario_id, "?")
+        scenario_clause, scenario_params = _scenario_filter(
+            "CAST(scenario_id AS VARCHAR)", scenario_id, "?"
+        )
         self.connection.execute(
             f"""
             UPDATE curated_geo.indicator_result
@@ -2273,7 +2543,9 @@ class DuckDBIndicatorResultRepository:
         model_version: str | None = None,
     ) -> str:
         feature_type = self._lookup_feature_type(feature_id)
-        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(indicator_slug)
+        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(
+            indicator_slug
+        )
         run_scenario, run_code_version = self._lookup_run(job_run_id)
         resolved_model_version = model_version or run_code_version
         _validate_indicator_result_write(
@@ -2308,10 +2580,20 @@ class DuckDBIndicatorResultRepository:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, 'current')
             """,
             [
-                result_id, feature_id, feature_type, scenario_id, indicator_id,
-                indicator_slug, job_run_id, resolved_model_version,
-                value_numeric, value_text, value_json_str,
-                quality_flag, confidence, missing_reason,
+                result_id,
+                feature_id,
+                feature_type,
+                scenario_id,
+                indicator_id,
+                indicator_slug,
+                job_run_id,
+                resolved_model_version,
+                value_numeric,
+                value_text,
+                value_json_str,
+                quality_flag,
+                confidence,
+                missing_reason,
             ],
         )
         return result_id
@@ -2327,7 +2609,9 @@ class DuckDBIndicatorResultRepository:
     ) -> int:
         if not rows:
             return 0
-        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(indicator_slug)
+        indicator_id, applies_to, valid_min, valid_max = self._lookup_catalog(
+            indicator_slug
+        )
         run_scenario, run_code_version = self._lookup_run(job_run_id)
         if scenario_id != run_scenario:
             raise ValueError(
@@ -2370,10 +2654,20 @@ class DuckDBIndicatorResultRepository:
                 indicator_id=indicator_id,
                 scenario_id=scenario_id,
             )
-            insert_batch.append((
-                str(uuid4()), fid, ftype, scenario_id, indicator_id, indicator_slug,
-                job_run_id, run_code_version, value, quality_flag,
-            ))
+            insert_batch.append(
+                (
+                    str(uuid4()),
+                    fid,
+                    ftype,
+                    scenario_id,
+                    indicator_id,
+                    indicator_slug,
+                    job_run_id,
+                    run_code_version,
+                    value,
+                    quality_flag,
+                )
+            )
 
         self.connection.executemany(
             """
@@ -2393,7 +2687,9 @@ class DuckDBIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> dict | None:
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        scenario_clause, scenario_params = _scenario_filter(
+            "scenario_id", scenario_id, "?"
+        )
         row = self.connection.execute(
             f"""
             SELECT * FROM serving_geo.current_indicator_v
@@ -2412,7 +2708,9 @@ class DuckDBIndicatorResultRepository:
         scenario_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict]:
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id, "?")
+        scenario_clause, scenario_params = _scenario_filter(
+            "scenario_id", scenario_id, "?"
+        )
         limit_sql = "" if limit is None else "LIMIT ?"
         limit_params: list = [] if limit is None else [limit]
         rows = self.connection.execute(
@@ -2440,7 +2738,9 @@ class DuckDBIndicatorResultRepository:
         """
         clauses = ["ir.indicator_slug = ?", "ir.status = 'current'"]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?")
+        clause, extra = _scenario_filter(
+            "CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?"
+        )
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
@@ -2465,8 +2765,12 @@ class DuckDBIndicatorResultRepository:
             params,
         ).fetchall()
         cols = (
-            "feature_id", "type_slug", "geometry_wkb",
-            "value_numeric", "quality_flag", "computed_at",
+            "feature_id",
+            "type_slug",
+            "geometry_wkb",
+            "value_numeric",
+            "quality_flag",
+            "computed_at",
         )
         return [
             {
@@ -2490,7 +2794,9 @@ class DuckDBIndicatorResultRepository:
             "ir.value_numeric IS NOT NULL",
         ]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?")
+        clause, extra = _scenario_filter(
+            "CAST(ir.scenario_id AS VARCHAR)", scenario_id, "?"
+        )
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
@@ -2531,12 +2837,25 @@ class DuckDBIndicatorResultRepository:
 
 
 _CURRENT_INDICATOR_V_COLS = (
-    "id", "feature_id", "feature_type", "scenario_id",
-    "indicator_id", "indicator_slug", "indicator_name",
-    "unit", "value_type", "computation_kind",
-    "job_run_id", "model_version",
-    "value_numeric", "value_text", "value_json",
-    "quality_flag", "confidence", "missing_reason", "computed_at",
+    "id",
+    "feature_id",
+    "feature_type",
+    "scenario_id",
+    "indicator_id",
+    "indicator_slug",
+    "indicator_name",
+    "unit",
+    "value_type",
+    "computation_kind",
+    "job_run_id",
+    "model_version",
+    "value_numeric",
+    "value_text",
+    "value_json",
+    "quality_flag",
+    "confidence",
+    "missing_reason",
+    "computed_at",
 )
 
 

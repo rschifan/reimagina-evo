@@ -1,4 +1,5 @@
 """Helpers shared by the Alembic environment and migration-related tests."""
+
 from __future__ import annotations
 
 

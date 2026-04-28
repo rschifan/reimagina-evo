@@ -5,6 +5,7 @@ dependency. The local dev shell had it, but CI may not; the skip keeps
 the main pytest run green while still exercising the function against
 real PostGIS when the decoder is present.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -69,17 +70,23 @@ def test_tile_decodes_with_expected_properties(conn):
         register_source as _register_source,
         start_run as _start_run,
     )
+
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="tile_fn_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="tile_fn_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref=f"tile-{uuid4().hex[:8]}",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref=f"tile-{uuid4().hex[:8]}",
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
     compute_block_compactness(conn, code_version="test")
@@ -93,7 +100,9 @@ def test_tile_decodes_with_expected_properties(conn):
         )
         tile_bytes = bytes(cur.fetchone()[0])
 
-    assert len(tile_bytes) > 0, "tile must not be empty when indicator + feature are in bbox"
+    assert (
+        len(tile_bytes) > 0
+    ), "tile must not be empty when indicator + feature are in bbox"
 
     decoded = mapbox_vector_tile.decode(tile_bytes)
     assert "indicator_overlay" in decoded, f"unexpected layers: {list(decoded)}"
@@ -127,15 +136,20 @@ def test_tile_filters_by_scenario_id(conn):
 
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="tile_scenario_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="tile_scenario_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
     block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref=f"scn-{uuid4().hex[:8]}",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref=f"scn-{uuid4().hex[:8]}",
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
     compute_block_compactness(conn, code_version="test")
@@ -174,9 +188,9 @@ def test_tile_filters_by_scenario_id(conn):
         base_tile = bytes(cur.fetchone()[0])
     base = mapbox_vector_tile.decode(base_tile)["indicator_overlay"]["features"]
     assert len(base) == 1
-    assert abs(base[0]["properties"]["value_numeric"] - 0.42) > 1e-6, (
-        "base tile must not include scenario-scoped rows"
-    )
+    assert (
+        abs(base[0]["properties"]["value_numeric"] - 0.42) > 1e-6
+    ), "base tile must not include scenario-scoped rows"
 
     # Scenario-scoped tile: feature present with value 0.42.
     with conn.cursor() as cur:
@@ -213,8 +227,10 @@ def test_tile_filters_by_feature_type(conn):
 
     seed_catalog(conn)
     source_id = _register_source(
-        conn, name="tile_feature_type_src",
-        storage_type="vector", integration_role="canonical_entity",
+        conn,
+        name="tile_feature_type_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
     )
     run_id = _start_run(conn, source_id)
 
@@ -223,21 +239,29 @@ def test_tile_filters_by_feature_type(conn):
     ageb_type = feat.get_type_id(conn, "MEX", "ageb")
     block_id = _insert_feature(
         conn,
-        type_id=block_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref=f"block-{uuid4().hex[:8]}",
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref=f"block-{uuid4().hex[:8]}",
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
     ageb_id = _insert_feature(
         conn,
-        type_id=ageb_type, source_id=source_id, ingestion_run_id=run_id,
-        dataset_version="v1", source_record_ref=f"ageb-{uuid4().hex[:8]}",
+        type_id=ageb_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref=f"ageb-{uuid4().hex[:8]}",
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
 
     # Write one block row + one AGEB row for the same multi-grain slug.
     backend = backend_for_connection(conn)
     job_run_id = backend.job_run_repo().start_job(
-        model_family="urban_form", code_version="test", status="running",
+        model_family="urban_form",
+        code_version="test",
+        status="running",
     )
     slug = "urban_form_block_building_density"
     result_repo = backend.indicator_result_repo()
@@ -269,16 +293,12 @@ def test_tile_filters_by_feature_type(conn):
             .get("features", [])
         )
 
-    block_only = _render(
-        f'{{"indicator_slug": "{slug}", "feature_type": "block"}}'
-    )
+    block_only = _render(f'{{"indicator_slug": "{slug}", "feature_type": "block"}}')
     assert len(block_only) == 1
     assert block_only[0]["properties"]["feature_id"] == block_id
     assert block_only[0]["properties"]["type_slug"] == "block"
 
-    ageb_only = _render(
-        f'{{"indicator_slug": "{slug}", "feature_type": "ageb"}}'
-    )
+    ageb_only = _render(f'{{"indicator_slug": "{slug}", "feature_type": "ageb"}}')
     assert len(ageb_only) == 1
     assert ageb_only[0]["properties"]["feature_id"] == ageb_id
     assert ageb_only[0]["properties"]["type_slug"] == "ageb"

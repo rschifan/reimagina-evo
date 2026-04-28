@@ -8,6 +8,7 @@ Revision ID: r008
 Revises: r007
 Create Date: 2026-04-14
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -20,7 +21,9 @@ depends_on = None
 # All views that depend on feature_v (built in r005).  Must be recreated after
 # dropping feature_v CASCADE.
 _DEPENDENT_VIEWS = [
-    ("serving_geo.feature_aoi_v", """
+    (
+        "serving_geo.feature_aoi_v",
+        """
         CREATE VIEW serving_geo.feature_aoi_v AS
         SELECT
             af.aoi_id,
@@ -45,31 +48,56 @@ _DEPENDENT_VIEWS = [
             f.updated_at
         FROM serving_geo.feature_v f
         JOIN curated_geo.aoi_feature af ON af.feature_id = f.id
-    """),
-    ("serving_geo.analysis_units_v",
-     "CREATE VIEW serving_geo.analysis_units_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'analysis_unit'"),
-    ("serving_geo.infrastructure_v",
-     "CREATE VIEW serving_geo.infrastructure_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'infrastructure'"),
-    ("serving_geo.pois_v",
-     "CREATE VIEW serving_geo.pois_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'poi'"),
-    ("serving_geo.detections_v",
-     "CREATE VIEW serving_geo.detections_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'detection'"),
-    ("serving_geo.admin_v",
-     "CREATE VIEW serving_geo.admin_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'context'"),
-    ("serving_geo.blocks",
-     "CREATE VIEW serving_geo.blocks AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'block'"),
-    ("serving_geo.lots",
-     "CREATE VIEW serving_geo.lots AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'lot'"),
-    ("serving_geo.municipalities",
-     "CREATE VIEW serving_geo.municipalities AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'municipality'"),
-    ("serving_geo.roads",
-     "CREATE VIEW serving_geo.roads AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'road'"),
-    ("serving_geo.sidewalks",
-     "CREATE VIEW serving_geo.sidewalks AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'sidewalk'"),
-    ("serving_geo.trees",
-     "CREATE VIEW serving_geo.trees AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'tree'"),
-    ("serving_geo.bus_stops",
-     "CREATE VIEW serving_geo.bus_stops AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'bus_stop'"),
+    """,
+    ),
+    (
+        "serving_geo.analysis_units_v",
+        "CREATE VIEW serving_geo.analysis_units_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'analysis_unit'",
+    ),
+    (
+        "serving_geo.infrastructure_v",
+        "CREATE VIEW serving_geo.infrastructure_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'infrastructure'",
+    ),
+    (
+        "serving_geo.pois_v",
+        "CREATE VIEW serving_geo.pois_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'poi'",
+    ),
+    (
+        "serving_geo.detections_v",
+        "CREATE VIEW serving_geo.detections_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'detection'",
+    ),
+    (
+        "serving_geo.admin_v",
+        "CREATE VIEW serving_geo.admin_v AS SELECT * FROM serving_geo.feature_v WHERE role = 'context'",
+    ),
+    (
+        "serving_geo.blocks",
+        "CREATE VIEW serving_geo.blocks AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'block'",
+    ),
+    (
+        "serving_geo.lots",
+        "CREATE VIEW serving_geo.lots AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'lot'",
+    ),
+    (
+        "serving_geo.municipalities",
+        "CREATE VIEW serving_geo.municipalities AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'municipality'",
+    ),
+    (
+        "serving_geo.roads",
+        "CREATE VIEW serving_geo.roads AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'road'",
+    ),
+    (
+        "serving_geo.sidewalks",
+        "CREATE VIEW serving_geo.sidewalks AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'sidewalk'",
+    ),
+    (
+        "serving_geo.trees",
+        "CREATE VIEW serving_geo.trees AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'tree'",
+    ),
+    (
+        "serving_geo.bus_stops",
+        "CREATE VIEW serving_geo.bus_stops AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'bus_stop'",
+    ),
 ]
 
 _FEATURE_V_MV = """
@@ -157,7 +185,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP VIEW serving_geo.feature_v CASCADE")
-    op.execute("DROP MATERIALIZED VIEW IF EXISTS serving_geo.feature_current_attributes_mv CASCADE")
+    op.execute(
+        "DROP MATERIALIZED VIEW IF EXISTS serving_geo.feature_current_attributes_mv CASCADE"
+    )
     op.execute(_FEATURE_V_LIVE)
     for _name, sql in _DEPENDENT_VIEWS:
         op.execute(sql)

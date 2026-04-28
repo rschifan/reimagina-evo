@@ -4,6 +4,7 @@ DB-free: builds a tiny hive-partitioned parquet on disk that mirrors the
 INEGI marco_geostadistico shape (CVE_ENT partition + WKB BLOB geometry
 column) and asserts the reader decodes geometries and respects the filter.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,32 +31,64 @@ def _write_partition(parquet_dir: Path, *, cve_ent: str, rows: list[dict]) -> No
     """
     part_dir = parquet_dir / f"CVE_ENT={cve_ent}"
     part_dir.mkdir(parents=True, exist_ok=True)
-    table = pa.table({
-        "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
-        "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
-        "CVE_MUN": pa.array([r["CVE_MUN"] for r in rows], type=pa.int32()),
-        "geometry": pa.array([shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary()),
-    })
+    table = pa.table(
+        {
+            "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
+            "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
+            "CVE_MUN": pa.array([r["CVE_MUN"] for r in rows], type=pa.int32()),
+            "geometry": pa.array(
+                [shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary()
+            ),
+        }
+    )
     pq.write_table(table, part_dir / "part-0.parquet")
 
 
 @pytest.fixture
 def fake_municipalities(tmp_path: Path) -> Path:
     parquet_dir = tmp_path / "areas_municipales.parquet"
-    _write_partition(parquet_dir, cve_ent="02", rows=[
-        {"CVEGEO": "02002", "NOMGEO": "Mexicali", "CVE_MUN": 2,
-         "geom": box(-115.5, 32.0, -115.0, 32.5)},
-    ])
-    _write_partition(parquet_dir, cve_ent="09", rows=[
-        {"CVEGEO": "09015", "NOMGEO": "Cuauhtémoc", "CVE_MUN": 15,
-         "geom": box(-99.2, 19.4, -99.1, 19.5)},
-        {"CVEGEO": "09012", "NOMGEO": "Tlalpan", "CVE_MUN": 12,
-         "geom": box(-99.3, 19.2, -99.0, 19.4)},
-    ])
-    _write_partition(parquet_dir, cve_ent="19", rows=[
-        {"CVEGEO": "19039", "NOMGEO": "Monterrey", "CVE_MUN": 39,
-         "geom": box(-100.4, 25.6, -100.2, 25.8)},
-    ])
+    _write_partition(
+        parquet_dir,
+        cve_ent="02",
+        rows=[
+            {
+                "CVEGEO": "02002",
+                "NOMGEO": "Mexicali",
+                "CVE_MUN": 2,
+                "geom": box(-115.5, 32.0, -115.0, 32.5),
+            },
+        ],
+    )
+    _write_partition(
+        parquet_dir,
+        cve_ent="09",
+        rows=[
+            {
+                "CVEGEO": "09015",
+                "NOMGEO": "Cuauhtémoc",
+                "CVE_MUN": 15,
+                "geom": box(-99.2, 19.4, -99.1, 19.5),
+            },
+            {
+                "CVEGEO": "09012",
+                "NOMGEO": "Tlalpan",
+                "CVE_MUN": 12,
+                "geom": box(-99.3, 19.2, -99.0, 19.4),
+            },
+        ],
+    )
+    _write_partition(
+        parquet_dir,
+        cve_ent="19",
+        rows=[
+            {
+                "CVEGEO": "19039",
+                "NOMGEO": "Monterrey",
+                "CVE_MUN": 39,
+                "geom": box(-100.4, 25.6, -100.2, 25.8),
+            },
+        ],
+    )
     return parquet_dir
 
 
@@ -102,7 +135,9 @@ def test_read_with_int_filter_coerces_to_string(fake_municipalities: Path) -> No
     assert len(gdf) == 3
 
 
-def test_read_returns_empty_geodataframe_when_filter_misses(fake_municipalities: Path) -> None:
+def test_read_returns_empty_geodataframe_when_filter_misses(
+    fake_municipalities: Path,
+) -> None:
     gdf = read_layer_to_geodataframe(fake_municipalities, cve_ent_filter=["99"])
 
     assert gdf.empty
@@ -126,20 +161,27 @@ def test_layer_specs_cover_the_four_grain_levels() -> None:
 
 
 def _write_two_level_partition(
-    parquet_dir: Path, *, cve_ent: str, cve_mun: str, rows: list[dict],
+    parquet_dir: Path,
+    *,
+    cve_ent: str,
+    cve_mun: str,
+    rows: list[dict],
 ) -> None:
     """Mirror the real data lake's nested partition shape:
     ``<root>/CVE_ENT=09/CVE_MUN=015/part-0.parquet`` with no CVE_MUN
     column inside the parquet files (it's a partition value)."""
     part_dir = parquet_dir / f"CVE_ENT={cve_ent}" / f"CVE_MUN={cve_mun}"
     part_dir.mkdir(parents=True, exist_ok=True)
-    table = pa.table({
-        "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
-        "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
-        "geometry": pa.array(
-            [shapely.wkb.dumps(r["geom"]) for r in rows], type=pa.binary(),
-        ),
-    })
+    table = pa.table(
+        {
+            "CVEGEO": pa.array([r["CVEGEO"] for r in rows], type=pa.string()),
+            "NOMGEO": pa.array([r["NOMGEO"] for r in rows], type=pa.string()),
+            "geometry": pa.array(
+                [shapely.wkb.dumps(r["geom"]) for r in rows],
+                type=pa.binary(),
+            ),
+        }
+    )
     pq.write_table(table, part_dir / "part-0.parquet")
 
 
@@ -153,19 +195,40 @@ def fake_two_level_municipalities(tmp_path: Path) -> Path:
     """
     parquet_dir = tmp_path / "areas_municipales.parquet"
     _write_two_level_partition(
-        parquet_dir, cve_ent="02", cve_mun="002",
-        rows=[{"CVEGEO": "02002", "NOMGEO": "Mexicali",
-               "geom": box(-115.5, 32.0, -115.0, 32.5)}],
+        parquet_dir,
+        cve_ent="02",
+        cve_mun="002",
+        rows=[
+            {
+                "CVEGEO": "02002",
+                "NOMGEO": "Mexicali",
+                "geom": box(-115.5, 32.0, -115.0, 32.5),
+            }
+        ],
     )
     _write_two_level_partition(
-        parquet_dir, cve_ent="09", cve_mun="012",
-        rows=[{"CVEGEO": "09012", "NOMGEO": "Tlalpan",
-               "geom": box(-99.3, 19.2, -99.0, 19.4)}],
+        parquet_dir,
+        cve_ent="09",
+        cve_mun="012",
+        rows=[
+            {
+                "CVEGEO": "09012",
+                "NOMGEO": "Tlalpan",
+                "geom": box(-99.3, 19.2, -99.0, 19.4),
+            }
+        ],
     )
     _write_two_level_partition(
-        parquet_dir, cve_ent="09", cve_mun="015",
-        rows=[{"CVEGEO": "09015", "NOMGEO": "Cuauhtémoc",
-               "geom": box(-99.2, 19.4, -99.1, 19.5)}],
+        parquet_dir,
+        cve_ent="09",
+        cve_mun="015",
+        rows=[
+            {
+                "CVEGEO": "09015",
+                "NOMGEO": "Cuauhtémoc",
+                "geom": box(-99.2, 19.4, -99.1, 19.5),
+            }
+        ],
     )
     return parquet_dir
 
@@ -211,6 +274,7 @@ def test_layer_specs_declare_partition_cols_consistent_with_grain() -> None:
     spec_by_slug = {spec.feature_type_slug: spec for spec in LAYER_SPECS.values()}
     assert spec_by_slug["state"].partition_cols == ("CVE_ENT",)
     for slug in ("municipality", "ageb", "block"):
-        assert spec_by_slug[slug].partition_cols == ("CVE_ENT", "CVE_MUN"), (
-            f"expected nested partition for {slug!r}"
-        )
+        assert spec_by_slug[slug].partition_cols == (
+            "CVE_ENT",
+            "CVE_MUN",
+        ), f"expected nested partition for {slug!r}"
