@@ -15,6 +15,8 @@
  */
 import type { Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl";
 
+import { fmtNumber } from "./format";
+
 
 export interface TooltipContent {
   /** Short label shown bold (layer identity). */
@@ -243,7 +245,7 @@ export function cogPointProvider(opts: {
               ? null
               : {
                   title: opts.title,
-                  detail: opts.unit ? `${_fmt(val)} ${opts.unit}` : _fmt(val),
+                  detail: opts.unit ? `${fmtNumber(val)} ${opts.unit}` : fmtNumber(val),
                 };
           cached = { key, content };
           return content;
@@ -255,12 +257,3 @@ export function cogPointProvider(opts: {
 }
 
 
-function _fmt(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
-  const abs = Math.abs(value);
-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 3;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}

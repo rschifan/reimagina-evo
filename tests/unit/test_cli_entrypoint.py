@@ -591,6 +591,40 @@ def test_cli_aoi_delete_passes_aoi_id(monkeypatch, capsys):
     assert captured == {"dsn": "postgresql://localhost/x", "aoi_id": "abc-123"}
 
 
+def test_cli_aoi_compute_features_runs_all_when_no_aoi_id(monkeypatch, capsys):
+    """`aoi compute-features` (no --aoi-id) reaches every AOI. Pins the
+    fall-through default so a refactor that turns --aoi-id into required
+    breaks the test, not the runbook."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.compute_aoi_features_cli",
+        lambda **kw: captured.update(kw) or {"status": "ok", "aois": []},
+    )
+    exit_code = main(["aoi", "compute-features", "--dsn", "postgresql://localhost/x"])
+    assert exit_code == 0
+    assert captured == {"dsn": "postgresql://localhost/x", "aoi_id": None}
+
+
+def test_cli_aoi_compute_features_passes_aoi_id_when_given(monkeypatch, capsys):
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.compute_aoi_features_cli",
+        lambda **kw: captured.update(kw) or {"status": "ok", "aois": []},
+    )
+    exit_code = main(
+        [
+            "aoi",
+            "compute-features",
+            "--dsn",
+            "postgresql://localhost/x",
+            "--aoi-id",
+            "abc-123",
+        ]
+    )
+    assert exit_code == 0
+    assert captured == {"dsn": "postgresql://localhost/x", "aoi_id": "abc-123"}
+
+
 def test_cli_data_verify_sources_returns_nonzero_on_failure(monkeypatch, capsys):
     """`data verify-sources` is the pre-flight smoke test. It MUST exit
     non-zero on any failure so the runbook (and CI / make verify-sources)

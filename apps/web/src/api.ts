@@ -87,6 +87,16 @@ export class ApiError extends Error {
   }
 }
 
+
+/** True when ``err`` is the AbortError raised by ``fetch`` / ``signal``
+ *  cancellations. Both DOMException-shaped (browsers) and plain-Error-
+ *  shaped (some test runtimes) instances surface ``name === "AbortError"``,
+ *  so name-checking is the portable predicate. Centralised here so the
+ *  two abort-aware request sites stay in lock-step. */
+export function isAbortError(err: unknown): boolean {
+  return (err as { name?: string } | null)?.name === "AbortError";
+}
+
 export interface IndicatorValueStats {
   count: number;
   min: number | null;

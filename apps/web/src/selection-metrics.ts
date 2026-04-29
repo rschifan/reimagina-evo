@@ -20,7 +20,11 @@
  * The same ``renderToken`` pattern that ``main.ts:renderIndicator``
  * uses for stats fetches.
  */
-import { fetchMetricsWithinPolygon, type WithinPolygonResponse } from "./api";
+import {
+  fetchMetricsWithinPolygon,
+  isAbortError,
+  type WithinPolygonResponse,
+} from "./api";
 import type { SelectionGeometry } from "./selection";
 
 
@@ -89,7 +93,7 @@ export async function streamMetrics(
           type_slugs: [spec.typeSlug],
         }, { signal });
       } catch (err) {
-        if ((err as { name?: string }).name === "AbortError") {
+        if (isAbortError(err)) {
           // Propagate so Promise.all rejects with AbortError; the
           // caller's catch already handles the abort case as "drop
           // result" rather than user-visible failure.
