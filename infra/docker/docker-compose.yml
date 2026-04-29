@@ -7,8 +7,8 @@
 #   martin     — Vector tile server — frontend connects here for MVT tiles
 #
 # Quick start:
-#   cp infra/env/.env.example .env          # fill in passwords
-#   docker compose -f infra/docker/docker-compose.yml up -d
+#   cp .env.example .env                    # at repo root; fill in passwords
+#   docker compose -f infra/docker/docker-compose.yml --env-file .env up -d
 #   # Run migrations against postgres directly (not via pgbouncer):
 #   DATABASE_URL=$DATABASE_URL_DIRECT alembic upgrade head
 

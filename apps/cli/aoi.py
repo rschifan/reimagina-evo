@@ -14,7 +14,39 @@ from __future__ import annotations
 
 from typing import Any
 
+from reimagina.data.aoi import compute_aoi_features
 from reimagina.db import connect
+
+
+def compute_features(*, dsn: str, aoi_id: str | None = None) -> dict[str, Any]:
+    """(Re)populate ``curated_geo.aoi_feature`` for one or all AOIs.
+
+    Idempotent — ``compute_aoi_features`` deletes existing rows for the
+    target AOI first. Bootstrap step 6 used to be inline Python; this
+    promotes it to a CLI subcommand so the runbook stays uniformly
+    ``apps.cli.app …`` and the operator can re-run a single AOI without
+    rebuilding the whole matrix."""
+    with connect(dsn) as conn:
+        cur = conn.cursor()
+        if aoi_id is None:
+            cur.execute(
+                "SELECT id::text, name FROM curated_geo.area_of_interest ORDER BY name"
+            )
+            targets = cur.fetchall()
+        else:
+            cur.execute(
+                "SELECT id::text, name FROM curated_geo.area_of_interest WHERE id = %s",
+                (aoi_id,),
+            )
+            targets = cur.fetchall()
+            if not targets:
+                return {"dsn": dsn, "status": "not_found", "aoi_id": aoi_id}
+        results = []
+        for row_id, name in targets:
+            n = compute_aoi_features(conn, row_id)
+            conn.commit()
+            results.append({"aoi_id": row_id, "name": name, "rows_inserted": n})
+    return {"dsn": dsn, "status": "ok", "aois": results}
 
 
 def list_aois(*, dsn: str) -> dict[str, Any]:

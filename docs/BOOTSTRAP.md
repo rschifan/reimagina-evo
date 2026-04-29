@@ -166,20 +166,12 @@ AOI-sized raster.
 ## 6. AOI feature overlap
 
 ```sh
-uv run python -c '
-from reimagina.db import connect
-from reimagina.data.aoi import compute_aoi_features
-import os
-dsn = os.environ["DATABASE_URL"]
-with connect(dsn) as c:
-    cur = c.cursor()
-    cur.execute("SELECT id, name FROM curated_geo.area_of_interest")
-    for aoi_id, name in cur.fetchall():
-        n = compute_aoi_features(c, str(aoi_id))
-        c.commit()
-        print(name, "→", n, "rows")
-'
+uv run python -m apps.cli.app aoi compute-features
 ```
+
+Runs every AOI by default. Pass `--aoi-id <UUID>` to recompute one
+without rebuilding the whole matrix. Idempotent — existing rows for
+each target AOI are deleted first.
 
 This populates `aoi_feature` against the now-loaded buildings + INEGI
 geometries. ~3 min per AOI.

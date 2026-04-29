@@ -20,25 +20,52 @@ Urban planning scenario modelling platform. A feature/observation/indicator/scen
 | `infra/db/` | Alembic migrations + seeds (dual Postgres+DuckDB) |
 | `docs/` | [`SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) (presentation) + [`architecture/`](docs/architecture) (canonical references) |
 
+## Data access (read first)
+
+The pipeline ingests from a private Azure data lake (`cfcetlsadls/raw`)
+that mirrors INEGI 2024 marco geoestadístico, INEGI 2010 census,
+SIGCDMX/EXE amenities, and other upstream sources.
+[`docs/AZURE_DATA_INVENTORY.md`](docs/AZURE_DATA_INVENTORY.md)
+documents the expected layout under `data/sources/azure/`.
+
+You need read access to that container to reproduce the prototype's
+dataset. **Contact the maintainer** for credentials before following the
+bootstrap runbook below.
+
+Without lake access you can still: install the stack, run migrations,
+run unit + contract tests, lint, type-check, and build the web app —
+but ingest steps 2/5/7 in [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) will
+fail at the source-existence check.
+
 ## Quickstart
 
-Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker (for Martin), GDAL ≥3.6 (for `fiona`/`rasterio` — `brew install gdal` on macOS, `apt install libgdal-dev` on Debian/Ubuntu).
+Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker
+(for the local stack), GDAL ≥3.6 (for `fiona`/`rasterio` —
+`brew install gdal` on macOS, `apt install libgdal-dev` on
+Debian/Ubuntu).
 
 ```bash
-# 1. Python deps (uv recommended; pip also works)
-uv sync                 # or: pip install -e '.[dev]'
+# 1. Configure environment
+cp .env.example .env                 # fill in POSTGRES_PASSWORD etc.
 
-# 2. DB schema (Postgres + DuckDB)
-cp .env.example .env    # fill DSNs
-alembic upgrade head
+# 2. Bring up the stack (Postgres + PostGIS + pgbouncer + Martin tiles)
+make stack-up                        # or: docker compose -f infra/docker/docker-compose.yml --env-file .env up -d
 
-# 3. Run the API + web app (two terminals)
-uvicorn apps.api.app:app --reload
-cd apps/web && npm install && npm run dev
+# 3. Install deps + apply migrations
+make install                         # uv + npm
+make migrate                         # alembic upgrade head
+
+# 4. Run dev servers (two terminals)
+make dev-api                         # FastAPI on :8000
+make dev-web                         # Vite on :5173
 ```
 
+If you prefer host-installed Postgres over the compose stack, switch to
+"Path B" inside `.env.example`, run `createdb reimagina_app reimagina_test`
+yourself, and skip step 2.
+
 See [`docs/architecture/`](docs/architecture) for per-layer deep-dives.
-For a fresh-machine ingest of all upstream sources, follow
+For the full fresh-machine data bootstrap, follow
 [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md).
 
 ## Tests
