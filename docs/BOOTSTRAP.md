@@ -176,14 +176,19 @@ each target AOI are deleted first.
 This populates `aoi_feature` against the now-loaded buildings + INEGI
 geometries. ~3 min per AOI.
 
-## 7. INEGI 2010 census + rollups
+## 7. INEGI 2010 census
 
 ```sh
 uv run python -m apps.cli.app inegi-censo bootstrap --cve-ent 09,02
-uv run python -m apps.cli.app inegi-censo rollups
 ```
 
-~10 min total. Rollups depend on the overlap pairs declared in step 4.
+~5 min. Block-grain census attributes land in `curated_geo.observation`.
+
+Rollups (block → AGEB / municipality) are intentionally not a CLI
+subcommand — they're operator-driven through the generic aggregation
+recipe machinery (see `apps/cli/inegi.py` and `raster derivation` /
+`aggregation-recipe` commands). Wire the recipes you actually need,
+when you need them.
 
 ## 8. Indicators
 

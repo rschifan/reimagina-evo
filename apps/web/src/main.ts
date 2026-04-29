@@ -23,7 +23,13 @@ import {
   setKnownAois,
   subscribe as subscribeToAoi,
 } from "./aoi";
-import { getIndicatorStats, listAois, listIndicators, listTileSources } from "./api";
+import {
+  getIndicatorStats,
+  isAbortError,
+  listAois,
+  listIndicators,
+  listTileSources,
+} from "./api";
 import {
   activateIndicator,
   choroplethConfig,
@@ -514,7 +520,7 @@ function _wireSelectionPanel(
     try {
       await streamMetrics(selection, specs, aoiId, onResult, ctrl.signal);
     } catch (err) {
-      if ((err as { name?: string }).name === "AbortError") return;
+      if (isAbortError(err)) return;
       throw err;
     }
     if (inFlight === ctrl) inFlight = null;
