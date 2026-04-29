@@ -35,8 +35,6 @@ htmlcov/
 # Anything under data/ is local cache or bootstrap output — never tracked.
 # Bootstrap procedure to re-fetch is documented in docs/BOOTSTRAP.md.
 data/
-data/*.tiff
-data/*.csv
 
 # ── Environment / secrets ────────────────────────────────────────────────────
 .env
