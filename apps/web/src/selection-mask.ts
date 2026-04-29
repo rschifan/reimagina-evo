@@ -66,8 +66,7 @@ export interface SelectionMaskOptions {
  *  can pass it as a ``beforeId`` when adding their own layers, ensuring
  *  data overlays sit BELOW the dim wash and get dimmed too. */
 export const SELECTION_MASK_LAYER_ID = "__selection_mask__fill";
-/** Default mask source id (companion to the layer id). */
-export const SELECTION_MASK_SOURCE_ID = "__selection_mask";
+const SELECTION_MASK_SOURCE_ID = "__selection_mask";
 
 
 // World-extent outer ring that wraps the selection's outer ring as a
