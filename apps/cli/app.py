@@ -58,6 +58,7 @@ from .cdmx import (  # noqa: E402
     fetch_cdmx_layer,
 )
 from .feat import seed_types  # noqa: E402
+from .aoi import compute_features as compute_aoi_features_cli  # noqa: E402
 from .aoi import delete_aoi, list_aois  # noqa: E402
 from .data import verify_sources  # noqa: E402
 from .inegi import (  # noqa: E402
@@ -563,6 +564,17 @@ def _build_parser() -> argparse.ArgumentParser:
     aoi_delete.add_argument("--dsn", default=DEFAULT_APP_DSN)
     aoi_delete.add_argument("--aoi-id", required=True)
     aoi_delete.set_defaults(handler=_handle_aoi_delete)
+
+    aoi_compute = aoi_subparsers.add_parser(
+        "compute-features",
+        help="(Re)populate aoi_feature for one or all AOIs. Idempotent.",
+    )
+    aoi_compute.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    aoi_compute.add_argument(
+        "--aoi-id",
+        help="Optional. Limit to a single AOI uuid; default runs every AOI.",
+    )
+    aoi_compute.set_defaults(handler=_handle_aoi_compute_features)
 
     points_parser = subparsers.add_parser(
         "points",
@@ -1243,6 +1255,10 @@ def _handle_aoi_list(args: argparse.Namespace) -> int:
 
 def _handle_aoi_delete(args: argparse.Namespace) -> int:
     return _print(delete_aoi(dsn=args.dsn, aoi_id=args.aoi_id))
+
+
+def _handle_aoi_compute_features(args: argparse.Namespace) -> int:
+    return _print(compute_aoi_features_cli(dsn=args.dsn, aoi_id=args.aoi_id))
 
 
 def _handle_data_verify_sources(args: argparse.Namespace) -> int:
