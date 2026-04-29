@@ -70,6 +70,14 @@ verify-sources: ## Smoke-test that every upstream source is reachable.
 
 # ─── Dev servers ─────────────────────────────────────────────────────────────
 
+.PHONY: stack-up
+stack-up: ## Bring up the local Docker stack (Postgres + pgbouncer + Martin).
+	docker compose -f infra/docker/docker-compose.yml --env-file .env up -d
+
+.PHONY: stack-down
+stack-down: ## Tear down the local Docker stack (preserves volumes).
+	docker compose -f infra/docker/docker-compose.yml down
+
 .PHONY: dev-api
 dev-api: ## Start the FastAPI read-side API with reload.
 	uvicorn apps.api.app:app --reload

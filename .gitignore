@@ -10,7 +10,7 @@ dist/
 build/
 .venv/
 venv/
-env/
+/env/
 .env/
 pip-wheel-metadata/
 
@@ -42,9 +42,7 @@ data/*.csv
 .env
 .env.local
 .env.*.local
-infra/env/.env
 !.env.example
-!infra/env/.env.example
 
 # ── Node / TypeScript ────────────────────────────────────────────────────────
 node_modules/
