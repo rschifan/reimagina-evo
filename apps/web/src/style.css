@@ -19,6 +19,10 @@ html, body, .app {
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--sidebar-fg);
+  /* Paint the viewport with the sidebar's dark colour so macOS / iOS
+   * rubber-band scroll and content overflow don't expose the browser's
+   * white default behind the dark UI. */
+  background: var(--sidebar-bg);
 }
 
 .app {
