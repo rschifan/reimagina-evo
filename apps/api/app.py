@@ -20,6 +20,8 @@ import psycopg2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from rio_tiler.errors import PointOutsideBounds
+from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import TilerFactory
 
 from . import deps, errors
@@ -156,6 +158,17 @@ def create_app(
     # ``host_data_root()`` so only registered COGs are servable.
     cog = TilerFactory(path_dependency=validated_cog_path)
     app.include_router(cog.router, prefix="/cog", tags=["raster-tiles"])
+    # Map rio_tiler errors to the right HTTP status codes. Without
+    # these, panning past a raster's footprint floods the console with
+    # 500s — and browsers report 500s on cross-origin tile requests as
+    # "blocked by CORS policy" because Starlette's outermost error
+    # middleware skips the CORS-header pass on uncaught exceptions.
+    # 404 is handled silently by MapLibre as "tile unavailable"; same
+    # status for point reads keeps the picker tooltip from spamming
+    # the console when the cursor is outside the active raster.
+    # titiler's DEFAULT_STATUS_CODES omits PointOutsideBounds — pin it
+    # to 404 explicitly.
+    add_exception_handlers(app, {**DEFAULT_STATUS_CODES, PointOutsideBounds: 404})
     return app
 
 
