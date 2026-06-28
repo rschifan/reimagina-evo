@@ -28,9 +28,6 @@ class PostgresStorageBackend:
     def __init__(self, connection):
         self.connection = connection
 
-    def run_migrations(self) -> None:
-        raise NotImplementedError("Use the postgres migration runner with a DSN")
-
     def verify_required_relations(self, relations: list[str]) -> dict[str, bool]:
         checks: dict[str, bool] = {}
         with self.connection.cursor() as cur:
