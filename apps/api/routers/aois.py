@@ -85,7 +85,8 @@ def list_aois(
     else:
         rows = get_backend(conn).aoi_repo().list_aois()
         with _list_cache_lock:
-            _list_cache = (now, rows)
+            # Stamp after the fetch so a slow query doesn't shorten the TTL.
+            _list_cache = (time.monotonic(), rows)
     return [AOIRow(**row) for row in rows]
 
 

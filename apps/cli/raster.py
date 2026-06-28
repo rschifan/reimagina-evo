@@ -343,7 +343,10 @@ def _check_small_feature_warning(
         return None
     try:
         type_id = backend.feature_repo().get_type_id("MEX", feature_type_slug)
-    except Exception:
+    except ValueError:
+        # Unknown slug — skip the advisory warning. DB/connectivity errors are
+        # left to propagate (the real run hits them too; masking them here hid
+        # genuine failures).
         return None
     metrics = backend.feature_repo().geodesic_metrics_by_type(
         type_id=type_id,
@@ -538,23 +541,14 @@ def run_derivation(
 
 
 def _find_raster_layer_by_slug(backend, layer_slug: str) -> dict | None:
-    """Resolve a raster layer_slug to its row.
+    """Resolve a *published* raster ``layer_slug`` to its row, or ``None``.
 
-    Scans the published list first (cheap in v1 — a handful of rasters
-    per deployment); falls back to the all-layers view for unpublished
-    rows via ``get_by_id`` once a candidate is found. A slug-direct
-    repo lookup would be cleaner but isn't justified for three
-    callsites.
-    """
-    # Get every row via the unpublished-capable get_by_id — but we
-    # need the id first. Use the serving view through a one-off query
-    # on the published list + a simple scan.
+    Scans the published list (cheap in v1 — a handful of rasters per
+    deployment). Unpublished layers are not resolvable by slug here; callers
+    pass a published layer (the common case)."""
     for row in backend.raster_layer_repo().list_published_layers():
         if row["layer_slug"] == layer_slug:
             return row
-    # Unpublished case: widen the scan. list_published_layers filters
-    # published; we accept that unpublished recipes can't be authored
-    # via slug here. Callers pass a published layer (the common case).
     return None
 
 

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_BUILDING_DENSITY
+from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
 
 
@@ -69,14 +70,12 @@ def compute_block_building_density(
     block_type_id = get_type_id(conn, "MEX", "block")
     building_type_id = get_type_id(conn, "global", "building")
 
-    job_run_repo = backend.job_run_repo()
-    job_run_id = job_run_repo.start_job(
+    with job_run(
+        backend,
         model_family=spec.model_family or "urban_form",
         code_version=code_version,
         scenario_id=scenario_id,
-        status="running",
-    )
-    try:
+    ) as job_run_id:
         rows = backend.feature_repo().centroid_in_parent_counts(
             parent_type_id=block_type_id,
             child_type_id=building_type_id,
@@ -93,14 +92,6 @@ def compute_block_building_density(
             job_run_id=job_run_id,
             scenario_id=scenario_id,
         )
-        job_run_repo.complete_job(job_run_id, status="succeeded")
-    except Exception as exc:
-        job_run_repo.complete_job(
-            job_run_id,
-            status="failed",
-            error_message=f"{type(exc).__name__}: {exc}",
-        )
-        raise
 
     return ComputeResult(
         job_run_id=job_run_id,

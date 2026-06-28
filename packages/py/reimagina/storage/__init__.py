@@ -5,11 +5,11 @@ from .manager import (
     DEFAULT_POSTGRES_ADMIN_DSN,
     DEFAULT_TEST_DSN,
     backend_for_connection,
-    backend_for_dsn,
     backend_name_for_dsn,
     connect,
     default_dsn,
     duckdb_path_from_dsn,
+    mask_dsn,
 )
 
 __all__ = [
@@ -17,9 +17,9 @@ __all__ = [
     "DEFAULT_POSTGRES_ADMIN_DSN",
     "DEFAULT_TEST_DSN",
     "backend_for_connection",
-    "backend_for_dsn",
     "backend_name_for_dsn",
     "connect",
     "default_dsn",
     "duckdb_path_from_dsn",
+    "mask_dsn",
 ]
