@@ -15,8 +15,7 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 
-
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+from reimagina.paths import REPO_ROOT
 
 
 def tile_live_base_url() -> str:
@@ -70,7 +69,7 @@ def host_data_root() -> Path:
     about the cwd the process started in.
     """
     return Path(
-        os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))
+        os.environ.get("REIMAGINA_DATA_DIR", str(REPO_ROOT / "data"))
     ).resolve()
 
 
