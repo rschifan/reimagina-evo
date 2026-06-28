@@ -20,6 +20,7 @@ from reimagina.db import (  # noqa: E402
     verify_required_relations,
 )
 from reimagina.storage import mask_dsn  # noqa: E402
+from reimagina.logging_setup import configure_logging  # noqa: E402
 from reimagina.tiles.defaults import (  # noqa: E402
     tile_live_base_url,
     tile_snapshot_base_url,
@@ -1508,6 +1509,7 @@ def _handle_derivation_run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     parser = _build_parser()
     args = parser.parse_args(argv)
     return args.handler(args)

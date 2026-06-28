@@ -53,7 +53,7 @@ def _log_resolved_dsn() -> None:
     from reimagina.storage import mask_dsn
     from . import deps
 
-    logger = logging.getLogger("apps.api")
+    logger = logging.getLogger("reimagina.api")
     raw = deps.api_dsn()
     sanitised = mask_dsn(raw)
     logger.info(
