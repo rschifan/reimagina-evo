@@ -17,12 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from reimagina.jobs.aggregation import (
-    MissingAggregationInputs,
-    UnsupportedAggregationMethod,
-    aggregate,
-    classify_missing_share,
-)
+from reimagina.jobs.aggregation import aggregate_children
+from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
 
 
@@ -76,15 +72,12 @@ def run_rollup(
             f"applies_to set {applies_to!r}. Add it to the catalog before rolling up."
         )
 
-    job_run_repo = backend.job_run_repo()
-    job_run_id = job_run_repo.start_job(
+    with job_run(
+        backend,
         model_family="rollup",
         code_version=code_version,
         scenario_id=scenario_id,
-        status="running",
-    )
-    rows_written = 0
-    try:
+    ) as job_run_id:
         groups = _group_children_by_parent(
             backend=backend,
             indicator_slug=indicator_slug,
@@ -93,6 +86,7 @@ def run_rollup(
             scenario_id=scenario_id,
         )
         result_repo = backend.indicator_result_repo()
+        rows_written = 0
         for target_feature_id, children in groups.items():
             rows_written += _write_rollup_row(
                 result_repo=result_repo,
@@ -104,14 +98,6 @@ def run_rollup(
                 aggregation_method=aggregation_method,
                 missing_threshold=missing_threshold,
             )
-        job_run_repo.complete_job(job_run_id, status="succeeded")
-    except Exception as exc:
-        job_run_repo.complete_job(
-            job_run_id,
-            status="failed",
-            error_message=f"{type(exc).__name__}: {exc}",
-        )
-        raise
 
     return RollupResult(
         job_run_id=job_run_id,
@@ -175,50 +161,19 @@ def _write_rollup_row(
     aggregation_method: str,
     missing_threshold: float,
 ) -> int:
-    total_weight = sum(child.weight for child in children)
-    missing_weight = sum(
-        child.weight
-        for child in children
-        if child.value is None
-        or child.quality_flag in ("missing", "not_applicable", "failed")
-    )
-    share_state = classify_missing_share(
-        total_weight=total_weight,
-        missing_weight=missing_weight,
+    outcome = aggregate_children(
+        [(child.value, child.weight, child.quality_flag) for child in children],
+        method=aggregation_method,
         threshold=missing_threshold,
     )
-    if share_state == "missing":
+    if outcome.status == "missing":
         result_repo.write_result(
             feature_id=target_feature_id,
             indicator_slug=indicator_slug,
             job_run_id=job_run_id,
             scenario_id=scenario_id,
             quality_flag="missing",
-            missing_reason=(
-                f"rollup: missing fraction {missing_weight / total_weight if total_weight > 0 else 1.0:.2f} "
-                f"exceeds threshold {missing_threshold}"
-            ),
-        )
-        return 1
-
-    usable = [
-        (child.value, child.weight)
-        for child in children
-        if child.value is not None
-        and child.quality_flag not in ("missing", "not_applicable", "failed")
-    ]
-    try:
-        aggregated = aggregate(aggregation_method, usable)
-    except (MissingAggregationInputs, UnsupportedAggregationMethod) as exc:
-        # No usable inputs even though total_weight > 0 — write missing so
-        # the parent surfaces the gap rather than silently skipping.
-        result_repo.write_result(
-            feature_id=target_feature_id,
-            indicator_slug=indicator_slug,
-            job_run_id=job_run_id,
-            scenario_id=scenario_id,
-            quality_flag="missing",
-            missing_reason=f"rollup: {type(exc).__name__}: {exc}",
+            missing_reason=f"rollup: {outcome.reason}",
         )
         return 1
 
@@ -228,6 +183,6 @@ def _write_rollup_row(
         job_run_id=job_run_id,
         scenario_id=scenario_id,
         quality_flag="estimated",
-        value_numeric=aggregated,
+        value_numeric=outcome.value,
     )
     return 1

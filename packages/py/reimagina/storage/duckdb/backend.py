@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from .migrations import run_duckdb_migrations
 from .repositories import (
     DuckDBAggregationRecipeRepository,
     DuckDBAOIRepository,
@@ -28,9 +27,6 @@ class DuckDBStorageBackend:
 
     def __init__(self, connection):
         self.connection = connection
-
-    def run_migrations(self) -> None:
-        run_duckdb_migrations(self.connection)
 
     def verify_required_relations(self, relations: list[str]) -> dict[str, bool]:
         checks: dict[str, bool] = {}

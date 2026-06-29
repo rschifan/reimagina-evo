@@ -12,7 +12,6 @@ zipped-shapefile source with a similar structure can be plugged in.
 
 from __future__ import annotations
 
-import os
 import shutil
 import urllib.error
 import urllib.request
@@ -20,10 +19,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-SOURCES_DIR = (
-    Path(os.environ.get("REIMAGINA_DATA_DIR", str(_REPO_ROOT / "data"))) / "sources"
-)
+from reimagina.paths import data_dir
+
+SOURCES_DIR = data_dir() / "sources"
 CDMX_SOURCES_DIR = SOURCES_DIR / "cdmx"
 
 INEGI_CDMX_STATE_CODE = "09"

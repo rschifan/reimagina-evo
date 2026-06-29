@@ -10,12 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reimagina.jobs.aggregation import (
-    MissingAggregationInputs,
-    UnsupportedAggregationMethod,
-    aggregate,
-    classify_missing_share,
-)
+from reimagina.jobs.aggregation import aggregate_children
 from reimagina.storage import backend_for_connection
 
 
@@ -62,24 +57,14 @@ def summarise_aoi(
         indicator_slug=indicator_slug,
         scenario_id=scenario_id,
     )
-    total_weight = sum(child[1] for child in children)
-    missing_weight = sum(
-        weight
-        for value, weight, quality in children
-        if value is None or quality in ("missing", "not_applicable", "failed")
-    )
-    share_state = classify_missing_share(
-        total_weight=total_weight,
-        missing_weight=missing_weight,
+    outcome = aggregate_children(
+        children,
+        method=aggregation_method,
         threshold=missing_threshold,
     )
-
     summary_repo = backend.aoi_summary_repo()
-    if share_state == "missing":
-        note = (
-            f"missing fraction {missing_weight / total_weight if total_weight > 0 else 1.0:.2f} "
-            f"exceeds threshold {missing_threshold}"
-        )
+    if outcome.status == "missing":
+        note = outcome.reason
         summary_repo.upsert_summary(
             aoi_id=aoi_id,
             indicator_id=indicator_id,
@@ -97,39 +82,14 @@ def summarise_aoi(
             aggregation_note=note,
         )
 
-    usable = [
-        (value, weight)
-        for value, weight, quality in children
-        if value is not None and quality not in ("missing", "not_applicable", "failed")
-    ]
-    try:
-        aggregated = aggregate(aggregation_method, usable)
-    except (MissingAggregationInputs, UnsupportedAggregationMethod) as exc:
-        note = f"{type(exc).__name__}: {exc}"
-        summary_repo.upsert_summary(
-            aoi_id=aoi_id,
-            indicator_id=indicator_id,
-            value=None,
-            scenario_id=scenario_id,
-            aggregation_note=note,
-            status="missing",
-        )
-        return AOISummaryResult(
-            aoi_id=aoi_id,
-            indicator_slug=indicator_slug,
-            scenario_id=scenario_id,
-            value=None,
-            status="missing",
-            aggregation_note=note,
-        )
-
-    note = f"{aggregation_method} over {len(usable)} of {len(children)} children" + (
-        "; prorated" if share_state == "prorated" else ""
-    )
+    note = (
+        f"{aggregation_method} over {outcome.usable_count} of "
+        f"{outcome.total_count} children"
+    ) + ("; prorated" if outcome.prorated else "")
     summary_repo.upsert_summary(
         aoi_id=aoi_id,
         indicator_id=indicator_id,
-        value=aggregated,
+        value=outcome.value,
         scenario_id=scenario_id,
         aggregation_note=note,
         status="current",
@@ -138,7 +98,7 @@ def summarise_aoi(
         aoi_id=aoi_id,
         indicator_slug=indicator_slug,
         scenario_id=scenario_id,
-        value=aggregated,
+        value=outcome.value,
         status="current",
         aggregation_note=note,
     )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from uuid import uuid4
 
+from shapely.geometry import Polygon, box
+
 from reimagina.data import aoi, catalog as cat
 from reimagina.storage import backend_for_connection
 
@@ -74,14 +76,7 @@ def _bbox_from_extent(
 
 
 def _bbox_wkt(bounds: tuple[float, float, float, float]) -> str:
-    min_x, min_y, max_x, max_y = bounds
-    return (
-        f"POLYGON(({min_x} {min_y},"
-        f"{max_x} {min_y},"
-        f"{max_x} {max_y},"
-        f"{min_x} {max_y},"
-        f"{min_x} {min_y}))"
-    )
+    return box(*bounds).wkt
 
 
 def _notched_polygon_wkt(bounds: tuple[float, float, float, float]) -> str:
@@ -90,16 +85,18 @@ def _notched_polygon_wkt(bounds: tuple[float, float, float, float]) -> str:
     inner_x = min_x + (max_x - min_x) * 0.35
     mid_y = min_y + (max_y - min_y) * 0.5
     top_y = min_y + (max_y - min_y) * 0.8
-    return (
-        f"POLYGON(({min_x} {min_y},"
-        f"{max_x} {min_y},"
-        f"{max_x} {max_y},"
-        f"{mid_x} {max_y},"
-        f"{mid_x} {top_y},"
-        f"{inner_x} {mid_y},"
-        f"{mid_x} {min_y},"
-        f"{min_x} {min_y}))"
-    )
+    return Polygon(
+        [
+            (min_x, min_y),
+            (max_x, min_y),
+            (max_x, max_y),
+            (mid_x, max_y),
+            (mid_x, top_y),
+            (inner_x, mid_y),
+            (mid_x, min_y),
+            (min_x, min_y),
+        ]
+    ).wkt
 
 
 def _ensure_perf_project(conn) -> str:

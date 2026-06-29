@@ -10,6 +10,7 @@ The five supported aggregation methods mirror `indicator_catalog.aggregation_met
 from __future__ import annotations
 
 import statistics
+from dataclasses import dataclass
 from typing import Sequence
 
 AggregationMethod = str  # 'mean' | 'weighted_mean' | 'sum' | 'min' | 'max'
@@ -82,3 +83,86 @@ def classify_missing_share(
     if share > 0:
         return "prorated"
     return "complete"
+
+
+_MISSING_QUALITY = ("missing", "not_applicable", "failed")
+
+
+@dataclass(frozen=True)
+class AggregateOutcome:
+    """Result of the shared missing-data policy over weighted child values.
+
+    ``reason`` carries the missing explanation with no caller-specific prefix;
+    callers add their own (e.g. ``"rollup: "``) and format their own success note
+    from ``usable_count`` / ``total_count`` / ``prorated``.
+    """
+
+    status: str  # "ok" | "missing"
+    value: float | None
+    usable_count: int
+    total_count: int
+    prorated: bool
+    reason: str | None
+
+
+def aggregate_children(
+    children: Sequence[tuple[float | None, float, str]],
+    *,
+    method: AggregationMethod,
+    threshold: float = 0.5,
+) -> AggregateOutcome:
+    """Apply the shared missing-data policy to ``(value, weight, quality)`` rows.
+
+    Collapses the identical "sum weights → classify_missing_share → drop missing
+    children → aggregate (writing missing on no usable inputs)" sequence that the
+    rollup and AOI-summary workers each hand-wrote. The caller maps the outcome to
+    its own sink (``indicator_result`` row vs AOI summary) and note text.
+    """
+    total_count = len(children)
+    total_weight = sum(weight for _, weight, _ in children)
+    missing_weight = sum(
+        weight
+        for value, weight, quality in children
+        if value is None or quality in _MISSING_QUALITY
+    )
+    share_state = classify_missing_share(
+        total_weight=total_weight,
+        missing_weight=missing_weight,
+        threshold=threshold,
+    )
+    if share_state == "missing":
+        frac = missing_weight / total_weight if total_weight > 0 else 1.0
+        return AggregateOutcome(
+            status="missing",
+            value=None,
+            usable_count=0,
+            total_count=total_count,
+            prorated=False,
+            reason=f"missing fraction {frac:.2f} exceeds threshold {threshold}",
+        )
+
+    usable = [
+        (value, weight)
+        for value, weight, quality in children
+        if value is not None and quality not in _MISSING_QUALITY
+    ]
+    try:
+        value = aggregate(method, usable)
+    except (MissingAggregationInputs, UnsupportedAggregationMethod) as exc:
+        return AggregateOutcome(
+            status="missing",
+            value=None,
+            usable_count=len(usable),
+            total_count=total_count,
+            prorated=False,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+
+    return AggregateOutcome(
+        status="ok",
+        value=value,
+        usable_count=len(usable),
+        total_count=total_count,
+        prorated=(share_state == "prorated"),
+        reason=None,
+    )

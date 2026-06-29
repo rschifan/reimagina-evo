@@ -50,22 +50,12 @@ def _log_resolved_dsn() -> None:
     leak into logfiles.
     """
     import logging
-    from urllib.parse import urlparse, urlunparse
+    from reimagina.storage import mask_dsn
     from . import deps
 
-    logger = logging.getLogger("apps.api")
+    logger = logging.getLogger("reimagina.api")
     raw = deps.api_dsn()
-    try:
-        parts = urlparse(raw)
-        # Replace password with placeholder; preserve everything else.
-        netloc = parts.hostname or ""
-        if parts.port:
-            netloc = f"{netloc}:{parts.port}"
-        if parts.username:
-            netloc = f"{parts.username}:***@{netloc}"
-        sanitised = urlunparse(parts._replace(netloc=netloc))
-    except Exception:
-        sanitised = "(parse failed — check REIMAGINA_APP_DSN)"
+    sanitised = mask_dsn(raw)
     logger.info(
         "API connected to Postgres DSN: %s — verify Martin is on the "
         "same DB or MVT tiles will be silently empty.",

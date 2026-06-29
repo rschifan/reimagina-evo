@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from reimagina.paths import REPO_ROOT
 from typing import Any
 from uuid import uuid4
 
@@ -344,8 +346,7 @@ def bootstrap(
     else:
         root = DEFAULT_SOURCE_ROOT
     if not root.is_absolute():
-        # Anchor at repo root (this file lives at packages/py/reimagina/pipeline/inegi_marco.py).
-        root = Path(__file__).resolve().parents[4] / root
+        root = REPO_ROOT / root
 
     run_id = orchestrator_run_id or str(uuid4())
 
