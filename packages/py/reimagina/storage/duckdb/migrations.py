@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reimagina.paths import REPO_ROOT
+
 from infra.db.migrations.common.manifest import REVISIONS
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[5]
+    return REPO_ROOT
 
 
 def duckdb_revision_dir() -> Path:

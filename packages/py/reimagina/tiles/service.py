@@ -13,6 +13,7 @@ import psycopg2
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
+from reimagina.paths import REPO_ROOT
 
 from .defaults import (
     tile_live_base_url,
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def default_pmtiles_output_dir() -> Path:
-    return Path(__file__).resolve().parents[4] / "data" / "tiles" / "pmtiles"
+    return REPO_ROOT / "data" / "tiles" / "pmtiles"
 
 
 def _postgres_ogr_connection_string(dsn: str) -> str:

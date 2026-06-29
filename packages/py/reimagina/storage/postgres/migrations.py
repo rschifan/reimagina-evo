@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reimagina.paths import REPO_ROOT
+
 from alembic import command
 from alembic.config import Config
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[5]
+    return REPO_ROOT
 
 
 def postgres_alembic_config(dsn: str) -> Config:

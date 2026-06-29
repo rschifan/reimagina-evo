@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from reimagina.paths import REPO_ROOT
+
 
 @dataclass(frozen=True)
 class TileLayerDefinition:
@@ -24,7 +26,7 @@ class TileLayerDefinition:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return REPO_ROOT
 
 
 def default_manifest_path() -> Path:

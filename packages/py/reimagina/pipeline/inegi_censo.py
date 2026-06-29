@@ -27,6 +27,8 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from reimagina.paths import REPO_ROOT
 from typing import Any
 from uuid import uuid4
 
@@ -304,7 +306,7 @@ def bootstrap(
     else:
         root = DEFAULT_SOURCE_ROOT
     if not root.is_absolute():
-        root = Path(__file__).resolve().parents[4] / root
+        root = REPO_ROOT / root
 
     if not root.exists():
         raise FileNotFoundError(
