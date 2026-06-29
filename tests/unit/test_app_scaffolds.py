@@ -9,7 +9,11 @@ def test_api_scaffold_boots():
     """create_app returns a FastAPI instance with the read-side routers mounted."""
     app = create_app(initialise_pool=False)
     assert app.title == "reimagina API"
-    paths = {getattr(route, "path", None) for route in app.routes}
+    # Read paths from the OpenAPI schema, not app.routes: FastAPI >=0.135
+    # stops flattening included routers into app.routes (they become a
+    # single _IncludedRouter with path=None), so the shallow walk misses
+    # every router-mounted route. The schema is stable across versions.
+    paths = set(app.openapi()["paths"])
     # Representative slice of the read-side surface — if these vanish, something
     # deeper than a rename has broken.
     assert "/health" in paths  # alias kept for backwards compatibility

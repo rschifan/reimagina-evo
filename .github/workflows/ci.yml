@@ -98,7 +98,10 @@ jobs:
         env:
           POSTGRES_USER: reimagina
           POSTGRES_PASSWORD: reimagina
-          POSTGRES_DB: reimagina
+          # Named *_test so conftest's destructive migrated_db fixture
+          # (downgrade-to-base on teardown) accepts it; postgis enables
+          # its extension on this DB at init.
+          POSTGRES_DB: reimagina_test
         ports:
           - 5432:5432
         options: >-
@@ -107,7 +110,10 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina"
+      # conftest's migrated_db fixture reads TEST_DATABASE_URL and runs the
+      # migrations itself; the integration tests build storage backends from
+      # this DSN. No standalone alembic step needed.
+      TEST_DATABASE_URL: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
     steps:
       - uses: actions/checkout@v6
 
@@ -125,9 +131,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
-
-      - name: Alembic migrations
-        run: alembic upgrade head
 
       - name: pytest (integration)
         run: pytest tests/integration
