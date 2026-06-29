@@ -1,22 +1,20 @@
-"""End-to-end: impact engine → coordinator → real indicator_result rows.
+"""End-to-end: intake → impact engine → coordinator → real indicator_result rows.
 
-Proves the Phase 3 domain core wires together against Postgres: a geometry
-edit produces a dirty-set, the coordinator runs the shipped indicators'
-real compute fns through the runner registry, and current values land.
+Proves the Phase 3 domain core wires together against Postgres through its
+public entry point: a geometry edit, fed to ``evaluate_scenario``, produces a
+dirty-set, runs the shipped indicators' real compute fns through the runner
+registry, and lands current values.
 """
 
 from __future__ import annotations
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
-    SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
     seed_catalog,
 )
-from reimagina.orchestration.coordinator import run_dirty_set
-from reimagina.orchestration.impact import compute_dirty_set
-from reimagina.orchestration.runners import default_runners
+from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
@@ -54,21 +52,18 @@ def test_geometry_edit_recomputes_shipped_indicators(conn):
     block_id = _seed_block(conn)
 
     # Both shipped indicators read geometry, so a geometry edit dirties both.
-    dirty = compute_dirty_set({"geometry"}, {block_id}, SHIPPED_INDICATORS)
-    assert {u.indicator for u in dirty} == {
-        URBAN_FORM_BLOCK_COMPACTNESS.slug,
-        URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
-    }
-
-    report = run_dirty_set(
+    report = evaluate_scenario(
         conn,
-        dirty,
-        SHIPPED_INDICATORS,
-        default_runners(),
+        changed_attributes={"geometry"},
+        edited_features={block_id},
         aoi_id=None,
         code_version="test",
     )
     assert report.status == "succeeded", report.by_indicator()
+    assert {o.indicator for o in report.outcomes} == {
+        URBAN_FORM_BLOCK_COMPACTNESS.slug,
+        URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+    }
 
     # Compactness landed a bounded current value for the seeded block.
     result = (
