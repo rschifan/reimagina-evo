@@ -91,13 +91,16 @@ class FeatureRepository(Protocol):
         *,
         type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, float, float]]:
         """Return (feature_id, area_m2, perimeter_m) for every feature of a type.
 
         Postgres uses the ``geography`` cast for geodesic measurement; DuckDB
         projects to the locally-appropriate UTM zone and measures in planar
         metres. Scope with ``aoi_id`` to restrict to features intersecting
-        an AOI.
+        an AOI, and/or ``feature_ids`` to restrict to a specific set (the
+        selective-recompute path — only the dirty features). Both narrow the
+        result and compose (AND) when given together.
         """
         ...
 
@@ -143,6 +146,7 @@ class FeatureRepository(Protocol):
         parent_type_id: str,
         child_type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, int, float]]:
         """Return (parent_feature_id, child_count, area_m2) for every parent.
 
@@ -151,7 +155,9 @@ class FeatureRepository(Protocol):
         boundaries). LEFT-joined so parents with zero matching children
         still appear — callers can distinguish 'measured zero' from 'not
         observed'. Area uses the same units/convention as
-        ``geodesic_metrics_by_type`` on the same backend.
+        ``geodesic_metrics_by_type`` on the same backend. Scope with
+        ``aoi_id`` and/or ``feature_ids`` (restricting the *parents* to the
+        selective-recompute set); both compose (AND).
         """
         ...
 

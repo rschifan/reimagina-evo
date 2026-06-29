@@ -327,33 +327,42 @@ class PostgresFeatureRepository:
         *,
         type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, float, float]]:
         # ::geography gives geodesic area/perimeter directly; no reprojection
         # needed. AOI-scoped variant uses the GIST index on AOI + feature.
+        # feature_ids narrows further to the selective-recompute set.
+        id_filter = " AND f.id = ANY(%s::uuid[])" if feature_ids else ""
         with self.connection.cursor() as cur:
             if aoi_id is None:
+                params: list = [type_id]
+                if feature_ids:
+                    params.append(list(feature_ids))
                 cur.execute(
-                    """
+                    f"""
                     SELECT f.id::text,
                            ST_Area(f.geometry::geography),
                            ST_Perimeter(f.geometry::geography)
                     FROM curated_geo.feature f
-                    WHERE f.type_id = %s
+                    WHERE f.type_id = %s{id_filter}
                     """,
-                    (type_id,),
+                    params,
                 )
             else:
+                params = [aoi_id, type_id]
+                if feature_ids:
+                    params.append(list(feature_ids))
                 cur.execute(
-                    """
+                    f"""
                     SELECT f.id::text,
                            ST_Area(f.geometry::geography),
                            ST_Perimeter(f.geometry::geography)
                     FROM curated_geo.feature f
                     JOIN curated_geo.area_of_interest aoi
                       ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
-                    WHERE f.type_id = %s
+                    WHERE f.type_id = %s{id_filter}
                     """,
-                    (aoi_id, type_id),
+                    params,
                 )
             return [
                 (str(fid), float(area), float(perim))
@@ -422,11 +431,17 @@ class PostgresFeatureRepository:
         parent_type_id: str,
         child_type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, int, float]]:
+        # feature_ids restricts the *parents* to the selective-recompute set.
+        id_filter = " AND parent.id = ANY(%s::uuid[])" if feature_ids else ""
         with self.connection.cursor() as cur:
             if aoi_id is None:
+                params: list = [child_type_id, parent_type_id]
+                if feature_ids:
+                    params.append(list(feature_ids))
                 cur.execute(
-                    """
+                    f"""
                     SELECT parent.id::text,
                            COUNT(child.id)::int,
                            ST_Area(parent.geometry::geography)
@@ -435,14 +450,17 @@ class PostgresFeatureRepository:
                            ON child.type_id = %s
                           AND parent.geometry && child.geometry
                           AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
-                    WHERE parent.type_id = %s
+                    WHERE parent.type_id = %s{id_filter}
                     GROUP BY parent.id, parent.geometry
                     """,
-                    (child_type_id, parent_type_id),
+                    params,
                 )
             else:
+                params = [aoi_id, child_type_id, parent_type_id]
+                if feature_ids:
+                    params.append(list(feature_ids))
                 cur.execute(
-                    """
+                    f"""
                     SELECT parent.id::text,
                            COUNT(child.id)::int,
                            ST_Area(parent.geometry::geography)
@@ -453,10 +471,10 @@ class PostgresFeatureRepository:
                            ON child.type_id = %s
                           AND parent.geometry && child.geometry
                           AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
-                    WHERE parent.type_id = %s
+                    WHERE parent.type_id = %s{id_filter}
                     GROUP BY parent.id, parent.geometry
                     """,
-                    (aoi_id, child_type_id, parent_type_id),
+                    params,
                 )
             return [
                 (str(fid), int(count), float(area))
