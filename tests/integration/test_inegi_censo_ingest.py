@@ -132,9 +132,7 @@ def cuauhtemoc_features(conn) -> tuple[str, str]:
         cur.execute(
             "DELETE FROM curated_geo.ingestion_run WHERE source_id = %s", (src,)
         )
-        cur.execute(
-            "DELETE FROM curated_geo.data_source_catalog WHERE id = %s", (src,)
-        )
+        cur.execute("DELETE FROM curated_geo.data_source_catalog WHERE id = %s", (src,))
     conn.commit()
 
 
