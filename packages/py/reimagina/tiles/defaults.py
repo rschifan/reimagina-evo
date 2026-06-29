@@ -68,9 +68,7 @@ def host_data_root() -> Path:
     absolute, resolved ``Path`` so callers can use it without worrying
     about the cwd the process started in.
     """
-    return Path(
-        os.environ.get("REIMAGINA_DATA_DIR", str(REPO_ROOT / "data"))
-    ).resolve()
+    return Path(os.environ.get("REIMAGINA_DATA_DIR", str(REPO_ROOT / "data"))).resolve()
 
 
 # ── Internal URI parser ──────────────────────────────────────────────

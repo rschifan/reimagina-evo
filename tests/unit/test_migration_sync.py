@@ -39,8 +39,8 @@ def _rev_prefixes(directory: Path, suffix: str) -> set[str]:
 def test_duckdb_sql_files_match_manifest() -> None:
     manifest = set(_load_revisions())
     duckdb = _rev_prefixes(DUCKDB_DIR, ".sql")
-    orphan = duckdb - manifest          # a .sql the runner never applies
-    missing = manifest - duckdb          # a manifest rev with no .sql
+    orphan = duckdb - manifest  # a .sql the runner never applies
+    missing = manifest - duckdb  # a manifest rev with no .sql
     assert duckdb == manifest, (
         f"DuckDB .sql files out of sync with manifest REVISIONS — "
         f"orphan(unapplied)={sorted(orphan)} missing(no file)={sorted(missing)}"
@@ -51,7 +51,9 @@ def test_manifest_is_a_prefix_of_alembic() -> None:
     manifest = set(_load_revisions())
     alembic = _rev_prefixes(ALEMBIC_DIR, ".py")
     absent = manifest - alembic
-    assert not absent, f"manifest revisions absent from the Alembic chain: {sorted(absent)}"
+    assert (
+        not absent
+    ), f"manifest revisions absent from the Alembic chain: {sorted(absent)}"
     # DuckDB is frozen at r024; Alembic is the source of truth and may go further,
     # never behind. (No assertion that they are equal — divergence beyond the
     # freeze point is expected and allowed.)
@@ -60,8 +62,10 @@ def test_manifest_is_a_prefix_of_alembic() -> None:
 
 def test_revisions_are_contiguous_and_ordered() -> None:
     revisions = _load_revisions()
-    assert revisions == sorted(revisions), "manifest REVISIONS must be in ascending order"
+    assert revisions == sorted(
+        revisions
+    ), "manifest REVISIONS must be in ascending order"
     numbers = [int(r[1:]) for r in revisions]
-    assert numbers == list(range(numbers[0], numbers[-1] + 1)), (
-        f"manifest REVISIONS has a gap: {revisions}"
-    )
+    assert numbers == list(
+        range(numbers[0], numbers[-1] + 1)
+    ), f"manifest REVISIONS has a gap: {revisions}"
