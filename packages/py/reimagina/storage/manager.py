@@ -66,8 +66,26 @@ def backend_for_connection(connection) -> StorageBackend:
     raise TypeError(f"Unsupported connection type: {type(connection)!r}")
 
 
-def backend_for_dsn(dsn: str | None = None) -> StorageBackend:
-    return backend_for_connection(connect(dsn))
+def mask_dsn(dsn: str | None) -> str:
+    """Return ``dsn`` with any password replaced by ``***`` for safe logging or
+    echo. DSNs without a password (e.g. ``duckdb:///…``) are returned unchanged.
+    """
+    if not dsn:
+        return ""
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parts = urlparse(dsn)
+        if not parts.password:
+            return dsn
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        if parts.username:
+            netloc = f"{parts.username}:***@{netloc}"
+        return urlunparse(parts._replace(netloc=netloc))
+    except Exception:
+        return "(dsn parse failed)"
 
 
 def ensure_duckdb_parent(path: str) -> None:

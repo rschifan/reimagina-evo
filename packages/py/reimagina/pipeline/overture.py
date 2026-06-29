@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,7 @@ OVERTURE_S3_REGION = "us-west-2"
 # on S3 first via ``data verify-sources --release <new>``. The previous
 # value 2026-02-18.0 was never published — keep this in sync with what
 # you actually staged.
-OVERTURE_DEFAULT_RELEASE = "2026-04-15.0"
+OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-04-15.0")
 OVERTURE_BUILDINGS_FILENAME = "overture_buildings_mexico_city.parquet"
 OVERTURE_BUILDINGS_SILVER_FILENAME = "overture_buildings_mexico_city_silver.parquet"
 OVERTURE_BUILDINGS_NOTES = (
