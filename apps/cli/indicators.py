@@ -8,6 +8,7 @@ from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.jobs.rollup import run_rollup
+from reimagina.orchestration.intake import evaluate_scenario
 
 
 def seed_indicator_catalog(*, dsn: str) -> dict[str, object]:
@@ -119,4 +120,37 @@ def summarise_aoi_indicator(
         "value": result.value,
         "status": result.status,
         "aggregation_note": result.aggregation_note,
+    }
+
+
+def evaluate_scenario_cli(
+    *,
+    dsn: str,
+    changed_attributes: list[str],
+    edited_features: list[str],
+    scenario_id: str | None = None,
+    aoi_id: str | None = None,
+    code_version: str = "dev",
+) -> dict[str, object]:
+    """Selectively recompute indicators for a scenario edit.
+
+    Composes the impact engine + coordinator via the orchestration intake
+    entry point and returns the per-unit run report.
+    """
+    with connect(dsn) as conn:
+        report = evaluate_scenario(
+            conn,
+            changed_attributes=changed_attributes,
+            edited_features=edited_features,
+            scenario_id=scenario_id,
+            aoi_id=aoi_id,
+            code_version=code_version,
+        )
+    return {
+        "dsn": dsn,
+        "status": report.status,
+        "outcomes": [
+            {"indicator": o.indicator, "status": o.status.value, "detail": o.detail}
+            for o in report.outcomes
+        ],
     }
