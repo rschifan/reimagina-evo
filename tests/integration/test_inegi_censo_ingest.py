@@ -115,7 +115,27 @@ def cuauhtemoc_features(conn) -> tuple[str, str]:
             geometry_wkt="POLYGON((-99.135 19.43,-99.134 19.43,-99.134 19.431,-99.135 19.431,-99.135 19.43))",
         )
         feature_ids.append(fid)
-    return feature_ids[0], feature_ids[1]
+    yield feature_ids[0], feature_ids[1]
+
+    # Tests using this fixture call bootstrap(), which COMMITS — so the
+    # rollback in the shared `conn` fixture no longer unwinds these seed
+    # rows. Remove them explicitly (FK order: observation → feature → run
+    # → source) so a committed municipality feature doesn't leak into
+    # test_bootstrap_raises_when_no_municipalities_loaded.
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM curated_geo.observation WHERE feature_id IN "
+            "(SELECT id FROM curated_geo.feature WHERE source_id = %s)",
+            (src,),
+        )
+        cur.execute("DELETE FROM curated_geo.feature WHERE source_id = %s", (src,))
+        cur.execute(
+            "DELETE FROM curated_geo.ingestion_run WHERE source_id = %s", (src,)
+        )
+        cur.execute(
+            "DELETE FROM curated_geo.data_source_catalog WHERE id = %s", (src,)
+        )
+    conn.commit()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
