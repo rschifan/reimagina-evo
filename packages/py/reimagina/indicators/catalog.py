@@ -34,6 +34,12 @@ class IndicatorSpec:
     unit: str | None = None
     valid_min: float | None = None
     valid_max: float | None = None
+    # Input attribute keys this indicator reads off a feature. The impact
+    # engine (reimagina.orchestration.impact) seeds the dirty-set from this:
+    # a scenario that edits attribute X invalidates every indicator whose
+    # `reads` contains X. Composite indicators read other indicators, not
+    # attributes, so they leave this empty and declare `depends_on` instead.
+    reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
 
 
@@ -56,6 +62,9 @@ URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
     valid_min=0.0,
     valid_max=500.0,
     aggregation_method="weighted_mean",
+    # Derived from the block polygon (building centroids ÷ block area), so a
+    # geometry edit invalidates it.
+    reads=("geometry",),
     applies_to=("block", "ageb"),
 )
 
@@ -75,6 +84,9 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     valid_min=0.0,
     valid_max=1.0,
     aggregation_method="weighted_mean",
+    # Polsby-Popper is a pure function of the block polygon, so a geometry
+    # edit invalidates it.
+    reads=("geometry",),
     # Indicator is produced directly at the block grain and rolled up to AGEB
     # via feature_overlap. Both grains appear in applies_to so indicator_result
     # rows land cleanly at either level.
