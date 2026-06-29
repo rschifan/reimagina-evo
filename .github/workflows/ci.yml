@@ -114,6 +114,9 @@ jobs:
       # migrations itself; the integration tests build storage backends from
       # this DSN. No standalone alembic step needed.
       TEST_DATABASE_URL: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      # The app pool (deps.api_dsn) reads REIMAGINA_APP_DSN; test_api_routes
+      # exercises a live app against it. Point it at the same migrated DB.
+      REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
     steps:
       - uses: actions/checkout@v6
 
