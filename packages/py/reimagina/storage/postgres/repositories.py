@@ -11,7 +11,9 @@ import psycopg2.extras
 import pyarrow.parquet as pq
 
 from .._utils import normalize_json_value as _normalize_json_value
+from .._utils import route_value as _route_value
 from .._utils import scenario_filter as _scenario_filter
+from .._utils import value_stats_dict as _value_stats_dict
 
 
 class PostgresSourceCatalogRepository:
@@ -479,9 +481,7 @@ class PostgresObservationRepository:
         ingestion_run_id: str,
         lineage_ref: dict | None = None,
     ) -> str:
-        value_numeric = value if value_type == "numeric" else None
-        value_text = value if value_type == "text" else None
-        value_json = json.dumps(value) if value_type == "json" else None
+        value_numeric, value_text, value_json = _route_value(value, value_type)
         with self.connection.cursor() as cur:
             cur.execute(
                 """
@@ -525,9 +525,9 @@ class PostgresObservationRepository:
         insert_rows: list[tuple] = []
         for r in records:
             retire_pairs.append((r["feature_id"], r["attribute_key"]))
-            value_numeric = r["value"] if r["value_type"] == "numeric" else None
-            value_text = r["value"] if r["value_type"] == "text" else None
-            value_json = json.dumps(r["value"]) if r["value_type"] == "json" else None
+            value_numeric, value_text, value_json = _route_value(
+                r["value"], r["value_type"]
+            )
             insert_rows.append(
                 (
                     r["feature_id"],
@@ -2405,12 +2405,5 @@ class PostgresIndicatorResultRepository:
                 """,
                 params,
             )
-            count, vmin, p05, p50, p95, vmax = cur.fetchone()
-        return {
-            "count": int(count),
-            "min": float(vmin) if vmin is not None else None,
-            "p05": float(p05) if p05 is not None else None,
-            "p50": float(p50) if p50 is not None else None,
-            "p95": float(p95) if p95 is not None else None,
-            "max": float(vmax) if vmax is not None else None,
-        }
+            row = cur.fetchone()
+        return _value_stats_dict(row)

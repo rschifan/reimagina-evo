@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import math
 from typing import Any
 
@@ -75,3 +76,32 @@ def decode_cursor(cursor: str) -> tuple[str, str]:
         return ts, fid
     except Exception as exc:
         raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
+
+
+def route_value(value: Any, value_type: str) -> tuple[Any, Any, str | None]:
+    """Split a typed value into ``(value_numeric, value_text, value_json)``.
+
+    The ``value_type`` discriminator selects exactly one non-None scalar column;
+    the json variant is JSON-serialised. Shared verbatim by the observation
+    writers on both backends.
+    """
+    return (
+        value if value_type == "numeric" else None,
+        value if value_type == "text" else None,
+        json.dumps(value) if value_type == "json" else None,
+    )
+
+
+def value_stats_dict(row: tuple) -> dict[str, Any]:
+    """Shape a ``(count, min, p05, p50, p95, max)`` stats row into the serving
+    dict (ints/floats coerced, NULLs preserved as None). Shared by both backends'
+    ``value_stats``."""
+    count, vmin, p05, p50, p95, vmax = row
+    return {
+        "count": int(count),
+        "min": float(vmin) if vmin is not None else None,
+        "p05": float(p05) if p05 is not None else None,
+        "p50": float(p50) if p50 is not None else None,
+        "p95": float(p95) if p95 is not None else None,
+        "max": float(vmax) if vmax is not None else None,
+    }

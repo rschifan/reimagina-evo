@@ -11,7 +11,9 @@ import geopandas as gpd
 import pyarrow as pa
 
 from .._utils import normalize_json_value as _normalize_json_value
+from .._utils import route_value as _route_value
 from .._utils import scenario_filter as _scenario_filter
+from .._utils import value_stats_dict as _value_stats_dict
 
 
 def _rows_as_dicts(result) -> list[dict]:
@@ -557,9 +559,7 @@ class DuckDBObservationRepository:
         ingestion_run_id: str,
         lineage_ref: dict | None = None,
     ) -> str:
-        value_numeric = value if value_type == "numeric" else None
-        value_text = value if value_type == "text" else None
-        value_json = json.dumps(value) if value_type == "json" else None
+        value_numeric, value_text, value_json = _route_value(value, value_type)
         observation_id = str(uuid4())
         self.connection.execute(
             """
@@ -604,9 +604,9 @@ class DuckDBObservationRepository:
         ]
         insert_rows: list[list] = []
         for r in records:
-            value_numeric = r["value"] if r["value_type"] == "numeric" else None
-            value_text = r["value"] if r["value_type"] == "text" else None
-            value_json = json.dumps(r["value"]) if r["value_type"] == "json" else None
+            value_numeric, value_text, value_json = _route_value(
+                r["value"], r["value_type"]
+            )
             insert_rows.append(
                 [
                     str(uuid4()),
@@ -2825,15 +2825,7 @@ class DuckDBIndicatorResultRepository:
             """,
             params,
         ).fetchone()
-        count, vmin, p05, p50, p95, vmax = row
-        return {
-            "count": int(count),
-            "min": float(vmin) if vmin is not None else None,
-            "p05": float(p05) if p05 is not None else None,
-            "p50": float(p50) if p50 is not None else None,
-            "p95": float(p95) if p95 is not None else None,
-            "max": float(vmax) if vmax is not None else None,
-        }
+        return _value_stats_dict(row)
 
 
 _CURRENT_INDICATOR_V_COLS = (
