@@ -70,6 +70,7 @@ from .inegi import (  # noqa: E402
 from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
+    evaluate_scenario_cli,
     rollup_indicator,
     seed_indicator_catalog,
     summarise_aoi_indicator,
@@ -652,6 +653,33 @@ def _build_parser() -> argparse.ArgumentParser:
     indicators_summary.add_argument("--slug", required=True)
     indicators_summary.add_argument("--scenario-id")
     indicators_summary.set_defaults(handler=_handle_indicators_aoi_summary)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate-scenario",
+        help=(
+            "Selectively recompute indicators for a scenario edit "
+            "(impact engine → coordinator)."
+        ),
+    )
+    evaluate_parser.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    evaluate_parser.add_argument(
+        "--changed-attribute",
+        action="append",
+        default=[],
+        metavar="ATTR",
+        help="Attribute key the scenario changed (repeatable); seeds the dirty-set.",
+    )
+    evaluate_parser.add_argument(
+        "--feature",
+        action="append",
+        default=[],
+        metavar="FEATURE_ID",
+        help="Feature id the change applies to (repeatable).",
+    )
+    evaluate_parser.add_argument("--aoi-id")
+    evaluate_parser.add_argument("--scenario-id")
+    evaluate_parser.add_argument("--code-version", default="dev")
+    evaluate_parser.set_defaults(handler=_handle_evaluate_scenario)
 
     overlap_parser = subparsers.add_parser(
         "overlap",
@@ -1309,6 +1337,19 @@ def _handle_indicators_compute(args: argparse.Namespace) -> int:
             slug=args.slug,
             aoi_id=args.aoi_id,
             scenario_id=args.scenario_id,
+            code_version=args.code_version,
+        )
+    )
+
+
+def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
+    return _print(
+        evaluate_scenario_cli(
+            dsn=args.dsn,
+            changed_attributes=args.changed_attribute,
+            edited_features=args.feature,
+            scenario_id=args.scenario_id,
+            aoi_id=args.aoi_id,
             code_version=args.code_version,
         )
     )

@@ -304,6 +304,37 @@ def test_cli_overlap_declare_delegates(monkeypatch, capsys):
     assert payload["source_slug"] == "lot"
 
 
+def test_cli_evaluate_scenario_delegates(monkeypatch, capsys):
+    """`evaluate-scenario` collects repeatable --changed-attribute / --feature
+    and passes them to the orchestration intake helper."""
+    captured: dict = {}
+    monkeypatch.setattr(
+        "apps.cli.app.evaluate_scenario_cli",
+        lambda **kw: captured.update(kw) or {"status": "succeeded", "outcomes": []},
+    )
+    exit_code = main(
+        [
+            "evaluate-scenario",
+            "--dsn",
+            "postgresql://localhost/x",
+            "--changed-attribute",
+            "geometry",
+            "--feature",
+            "b1",
+            "--feature",
+            "b2",
+            "--aoi-id",
+            "a1",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["changed_attributes"] == ["geometry"]
+    assert captured["edited_features"] == ["b1", "b2"]
+    assert captured["aoi_id"] == "a1"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "succeeded"
+
+
 def test_cli_overlap_compute_all_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.compute_overlaps_all",
