@@ -106,7 +106,10 @@ def _near_circle_block() -> Polygon:
     cx, cy, r = -99.120, 19.432, 0.002
     return Polygon(
         [
-            (cx + r * math.cos(2 * math.pi * i / 32), cy + r * math.sin(2 * math.pi * i / 32))
+            (
+                cx + r * math.cos(2 * math.pi * i / 32),
+                cy + r * math.sin(2 * math.pi * i / 32),
+            )
             for i in range(32)
         ]
     )
@@ -311,7 +314,9 @@ def test_geodesic_indicator_parity(conn, duckdb_conn):
     # Compactness ordering is also engine-independent signal worth pinning:
     # thin rectangle ~0, square ~0.78, near-circle ~1.
     compact = pg["urban_form_block_compactness"]
-    assert compact["rect"]["value"] < compact["sq"]["value"] < compact["circle"]["value"]
+    assert (
+        compact["rect"]["value"] < compact["sq"]["value"] < compact["circle"]["value"]
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -345,7 +350,9 @@ def _seed_one_block_for_validation(conn) -> tuple[object, str]:
     block_type_id = feat.get_type_id(conn, "MEX", "block")
     feat.load_features(
         conn,
-        gpd.GeoDataFrame([{"id": "blk-val", "geometry": _SQUARE_BLOCK}], crs="EPSG:4326"),
+        gpd.GeoDataFrame(
+            [{"id": "blk-val", "geometry": _SQUARE_BLOCK}], crs="EPSG:4326"
+        ),
         source_id=source_id,
         ingestion_run_id=run_id,
         type_id=block_type_id,
