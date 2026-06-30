@@ -57,6 +57,7 @@ def compute_block_compactness(
     conn,
     *,
     aoi_id: str | None = None,
+    feature_ids: list[str] | None = None,
     scenario_id: str | None = None,
     code_version: str = "dev",
 ) -> ComputeResult:
@@ -90,6 +91,7 @@ def compute_block_compactness(
         rows = backend.feature_repo().geodesic_metrics_by_type(
             type_id=block_type_id,
             aoi_id=aoi_id,
+            feature_ids=feature_ids,
         )
         numeric_rows = [
             (feature_id, polsby_popper(area_m2=area, perimeter_m=perimeter))

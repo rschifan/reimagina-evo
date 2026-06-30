@@ -3,11 +3,10 @@
 The coordinator (component 8) sequences runners but does not know what computes
 each indicator; this module supplies that binding for the shipped indicators.
 
-Rung-1 scoping caveat: the shipped compute fns are **AOI-scoped** — they
-recompute every block in the AOI, not a specific feature set. So the adapter
-drops the dirty-set's ``features`` for now and forwards ``aoi_id``. Feature-
-level scoping lands when the compute fns accept a feature filter; the Runner
-contract already carries ``features`` so that change is additive.
+The adapter forwards the dirty-set's ``features`` as ``feature_ids`` so the
+compute fns recompute only the dirty features (true selective recompute), and
+``aoi_id`` as a coarser fallback when no feature set is given (e.g. a full
+backfill). The two compose at the SQL layer.
 """
 
 from __future__ import annotations
@@ -22,21 +21,22 @@ from reimagina.indicators.catalog import (
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.orchestration.coordinator import Runner
 
-# An AOI-scoped compute fn: (conn, *, aoi_id, scenario_id, code_version) -> result.
-AoiScopedCompute = Callable[..., object]
+# A compute fn: (conn, *, aoi_id, feature_ids, scenario_id, code_version) -> result.
+IndicatorCompute = Callable[..., object]
 
 
-def _aoi_scoped(compute_fn: AoiScopedCompute) -> Runner:
-    """Adapt an AOI-scoped compute fn to the Runner protocol.
+def _scoped(compute_fn: IndicatorCompute) -> Runner:
+    """Adapt a compute fn to the Runner protocol.
 
-    ``features`` is accepted (Runner contract) but unused until the compute
-    fns support a feature filter — see module docstring.
+    The dirty-set's ``features`` become ``feature_ids`` (recompute only the
+    dirty features); an empty set falls back to ``aoi_id`` scoping.
     """
 
-    def run(conn, *, features, scenario_id, code_version, aoi_id):  # noqa: ARG001
+    def run(conn, *, features, scenario_id, code_version, aoi_id):
         return compute_fn(
             conn,
             aoi_id=aoi_id,
+            feature_ids=list(features) or None,
             scenario_id=scenario_id,
             code_version=code_version,
         )
@@ -47,8 +47,6 @@ def _aoi_scoped(compute_fn: AoiScopedCompute) -> Runner:
 def default_runners() -> dict[str, Runner]:
     """The runner registry for every shipped indicator the coordinator can run."""
     return {
-        URBAN_FORM_BLOCK_COMPACTNESS.slug: _aoi_scoped(compute_block_compactness),
-        URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _aoi_scoped(
-            compute_block_building_density
-        ),
+        URBAN_FORM_BLOCK_COMPACTNESS.slug: _scoped(compute_block_compactness),
+        URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _scoped(compute_block_building_density),
     }

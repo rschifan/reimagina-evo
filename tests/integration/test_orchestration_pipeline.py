@@ -24,7 +24,8 @@ from tests.integration._helpers import (
 )
 
 
-def _seed_block(conn) -> str:
+def _seed_two_blocks(conn) -> tuple[str, str]:
+    """Seed catalog + two disjoint MEX:block features; return their ids."""
     seed_catalog(conn)
     source_id = _register_source(
         conn,
@@ -34,29 +35,39 @@ def _seed_block(conn) -> str:
     )
     run_id = _start_run(conn, source_id)
     block_type = feat.get_type_id(conn, "MEX", "block")
-    return _insert_feature(
-        conn,
-        type_id=block_type,
-        source_id=source_id,
-        ingestion_run_id=run_id,
-        dataset_version="v1",
-        source_record_ref="orch-blk-1",
-        geometry_wkt=(
-            "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
-            "-99.140 19.433,-99.140 19.430))"
-        ),
+
+    def _block(ref: str, wkt: str) -> str:
+        return _insert_feature(
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
+            geometry_wkt=wkt,
+        )
+
+    block_a = _block(
+        "orch-blk-a",
+        "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
+        "-99.140 19.433,-99.140 19.430))",
     )
+    block_b = _block(
+        "orch-blk-b",
+        "POLYGON((-99.130 19.430,-99.127 19.430,-99.127 19.433,"
+        "-99.130 19.433,-99.130 19.430))",
+    )
+    return block_a, block_b
 
 
-def test_geometry_edit_recomputes_shipped_indicators(conn):
-    block_id = _seed_block(conn)
+def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
+    block_a, block_b = _seed_two_blocks(conn)
 
-    # Both shipped indicators read geometry, so a geometry edit dirties both.
+    # Edit block_a only; both shipped indicators read geometry → both dirty.
     report = evaluate_scenario(
         conn,
         changed_attributes={"geometry"},
-        edited_features={block_id},
-        aoi_id=None,
+        edited_features={block_a},
         code_version="test",
     )
     assert report.status == "succeeded", report.by_indicator()
@@ -65,14 +76,14 @@ def test_geometry_edit_recomputes_shipped_indicators(conn):
         URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
     }
 
-    # Compactness landed a bounded current value for the seeded block.
-    result = (
-        backend_for_connection(conn)
-        .indicator_result_repo()
-        .get_current(
-            feature_id=block_id,
-            indicator_slug=URBAN_FORM_BLOCK_COMPACTNESS.slug,
-        )
+    repo = backend_for_connection(conn).indicator_result_repo()
+    edited = repo.get_current(
+        feature_id=block_a, indicator_slug=URBAN_FORM_BLOCK_COMPACTNESS.slug
     )
-    assert result is not None
-    assert 0.0 <= result["value_numeric"] <= 1.0
+    untouched = repo.get_current(
+        feature_id=block_b, indicator_slug=URBAN_FORM_BLOCK_COMPACTNESS.slug
+    )
+    # Selective recompute: only the edited block got a value.
+    assert edited is not None
+    assert 0.0 <= edited["value_numeric"] <= 1.0
+    assert untouched is None
