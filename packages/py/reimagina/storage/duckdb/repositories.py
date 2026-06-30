@@ -409,26 +409,37 @@ class DuckDBFeatureRepository:
         *,
         type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, float, float]]:
         # DuckDB has no geography type; project to UTM 14N (EPSG:32614 —
         # CDMX's local UTM zone) and measure in planar metres. Accurate
         # enough at city scale for urban-form indicators. `always_xy=true`
         # keeps coordinate order stable across ST_Transform's flipped
-        # default on DuckDB-spatial.
+        # default on DuckDB-spatial. feature_ids narrows to the
+        # selective-recompute set via list_contains.
+        id_filter = (
+            " AND list_contains(?, CAST(f.id AS VARCHAR))" if feature_ids else ""
+        )
         if aoi_id is None:
+            params: list = [type_id]
+            if feature_ids:
+                params.append(list(feature_ids))
             rows = self.connection.execute(
-                """
+                f"""
                 SELECT CAST(f.id AS VARCHAR),
                        ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
                        ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
                 FROM curated_geo.feature f
-                WHERE CAST(f.type_id AS VARCHAR) = ?
+                WHERE CAST(f.type_id AS VARCHAR) = ?{id_filter}
                 """,
-                [type_id],
+                params,
             ).fetchall()
         else:
+            params = [aoi_id, type_id]
+            if feature_ids:
+                params.append(list(feature_ids))
             rows = self.connection.execute(
-                """
+                f"""
                 SELECT CAST(f.id AS VARCHAR),
                        ST_Area(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true)),
                        ST_Perimeter(ST_Transform(f.geometry, 'EPSG:4326', 'EPSG:32614', true))
@@ -436,9 +447,9 @@ class DuckDBFeatureRepository:
                 JOIN curated_geo.area_of_interest aoi
                   ON CAST(aoi.id AS VARCHAR) = ?
                   AND ST_Intersects(f.geometry, aoi.geometry)
-                WHERE CAST(f.type_id AS VARCHAR) = ?
+                WHERE CAST(f.type_id AS VARCHAR) = ?{id_filter}
                 """,
-                [aoi_id, type_id],
+                params,
             ).fetchall()
         return [(str(fid), float(area), float(perim)) for fid, area, perim in rows]
 
@@ -503,10 +514,18 @@ class DuckDBFeatureRepository:
         parent_type_id: str,
         child_type_id: str,
         aoi_id: str | None = None,
+        feature_ids: list[str] | None = None,
     ) -> list[tuple[str, int, float]]:
+        # feature_ids restricts the *parents* to the selective-recompute set.
+        id_filter = (
+            " AND list_contains(?, CAST(parent.id AS VARCHAR))" if feature_ids else ""
+        )
         if aoi_id is None:
+            params: list = [child_type_id, parent_type_id]
+            if feature_ids:
+                params.append(list(feature_ids))
             rows = self.connection.execute(
-                """
+                f"""
                 SELECT CAST(parent.id AS VARCHAR),
                        COUNT(child.id),
                        ST_Area(ST_Transform(parent.geometry, 'EPSG:4326', 'EPSG:32614', true))
@@ -515,14 +534,17 @@ class DuckDBFeatureRepository:
                        ON CAST(child.type_id AS VARCHAR) = ?
                       AND ST_Intersects(parent.geometry, child.geometry)
                       AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
-                WHERE CAST(parent.type_id AS VARCHAR) = ?
+                WHERE CAST(parent.type_id AS VARCHAR) = ?{id_filter}
                 GROUP BY parent.id, parent.geometry
                 """,
-                [child_type_id, parent_type_id],
+                params,
             ).fetchall()
         else:
+            params = [aoi_id, child_type_id, parent_type_id]
+            if feature_ids:
+                params.append(list(feature_ids))
             rows = self.connection.execute(
-                """
+                f"""
                 SELECT CAST(parent.id AS VARCHAR),
                        COUNT(child.id),
                        ST_Area(ST_Transform(parent.geometry, 'EPSG:4326', 'EPSG:32614', true))
@@ -534,10 +556,10 @@ class DuckDBFeatureRepository:
                        ON CAST(child.type_id AS VARCHAR) = ?
                       AND ST_Intersects(parent.geometry, child.geometry)
                       AND ST_Within(ST_Centroid(child.geometry), parent.geometry)
-                WHERE CAST(parent.type_id AS VARCHAR) = ?
+                WHERE CAST(parent.type_id AS VARCHAR) = ?{id_filter}
                 GROUP BY parent.id, parent.geometry
                 """,
-                [aoi_id, child_type_id, parent_type_id],
+                params,
             ).fetchall()
         return [(str(fid), int(count), float(area)) for fid, count, area in rows]
 
