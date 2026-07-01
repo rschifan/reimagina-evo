@@ -85,6 +85,37 @@ class RunReport:
         return {o.indicator: o for o in self.outcomes}
 
 
+def _dep_map(registry: Sequence[IndicatorSpec]) -> dict[str, set[str]]:
+    """slug -> the slugs it depends on (its inputs)."""
+    return {spec.slug: {dep for dep, _weight in spec.depends_on} for spec in registry}
+
+
+def next_ready_units(
+    dirty_units: Sequence[DirtyUnit],
+    registry: Sequence[IndicatorSpec],
+    finished: Mapping[str, UnitStatus],
+) -> list[DirtyUnit]:
+    """Units dispatchable now, given the units already finished.
+
+    Shared readiness function for the async distributor (component 8): a unit is
+    ready when it has not finished yet and every one of its *dirty* inputs has
+    finished with ``SUCCEEDED``. A unit whose dirty input failed/skipped is never
+    ready — the caller marks it skipped. ``run_dirty_set`` applies the same rule
+    inline while walking the pre-sorted list.
+    """
+    deps = _dep_map(registry)
+    dirty = {u.indicator for u in dirty_units}
+    return [
+        unit
+        for unit in dirty_units
+        if unit.indicator not in finished
+        and all(
+            finished.get(dep) is UnitStatus.SUCCEEDED
+            for dep in deps.get(unit.indicator, set()) & dirty
+        )
+    ]
+
+
 def run_dirty_set(
     conn: object,
     dirty_units: Sequence[DirtyUnit],
@@ -110,9 +141,7 @@ def run_dirty_set(
     Independent units don't block each other — a failure only stops the units
     that depend on it.
     """
-    deps: dict[str, set[str]] = {
-        spec.slug: {dep for dep, _weight in spec.depends_on} for spec in registry
-    }
+    deps = _dep_map(registry)
     dirty = {u.indicator for u in dirty_units}
     outcomes: dict[str, UnitOutcome] = {}
 
