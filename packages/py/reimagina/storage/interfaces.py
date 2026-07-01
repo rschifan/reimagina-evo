@@ -544,11 +544,14 @@ class ExploreReader(Protocol):
 
 
 class JobRunRepository(Protocol):
-    """Lifecycle of an async worker run (jobs_runtime.job_run).
+    """Provenance record of a compute run (jobs_runtime.job_run).
 
-    Callers always create a row in `queued`, then transition to `running`
-    via claim_job, then terminate via complete_job with 'succeeded' or
-    'failed'. Every indicator_result row must cite a job_run by id.
+    A run is created via start_job (typically straight to 'running' by the
+    job_run lifecycle helper) and terminated via complete_job with 'succeeded'
+    or 'failed'. Every indicator_result row must cite a job_run by id.
+
+    Ops-plane queueing/claiming is owned by the Procrastinate task queue, not
+    here — there is no claim_job.
     """
 
     def start_job(
@@ -559,17 +562,6 @@ class JobRunRepository(Protocol):
         scenario_id: str | None = None,
         status: str = "queued",
     ) -> str: ...
-
-    def claim_job(self, job_run_id: str) -> bool:
-        """Transition the named run from 'queued' → 'running'.
-
-        Returns ``True`` when this call was the one that updated the
-        row, ``False`` when another worker already claimed it or the id
-        is no longer queued. A synchronous in-process worker can ignore
-        the return value; an async worker must check it to avoid
-        double-executing a run.
-        """
-        ...
 
     def complete_job(
         self,
