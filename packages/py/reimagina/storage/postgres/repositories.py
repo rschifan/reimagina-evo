@@ -1968,18 +1968,6 @@ class PostgresJobRunRepository:
             )
             return str(cur.fetchone()[0])
 
-    def claim_job(self, job_run_id: str) -> bool:
-        with self.connection.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE jobs_runtime.job_run
-                SET status = 'running', started_at = COALESCE(started_at, now())
-                WHERE id = %s AND status = 'queued'
-                """,
-                (job_run_id,),
-            )
-            return cur.rowcount == 1
-
     def complete_job(
         self,
         job_run_id: str,
