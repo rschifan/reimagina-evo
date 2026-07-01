@@ -2179,30 +2179,6 @@ class DuckDBJobRunRepository:
         )
         return job_run_id
 
-    def claim_job(self, job_run_id: str) -> bool:
-        cursor = self.connection.execute(
-            """
-            UPDATE jobs_runtime.job_run
-            SET status = 'running',
-                started_at = COALESCE(started_at, now())
-            WHERE CAST(id AS VARCHAR) = ? AND status = 'queued'
-            """,
-            [job_run_id],
-        )
-        # DuckDB exposes rowcount on the cursor after an UPDATE; fall back
-        # to a lookup if it's unavailable (older DuckDB builds return -1).
-        rowcount = getattr(cursor, "rowcount", -1)
-        if rowcount >= 0:
-            return rowcount == 1
-        row = self.connection.execute(
-            """
-            SELECT status FROM jobs_runtime.job_run
-            WHERE CAST(id AS VARCHAR) = ?
-            """,
-            [job_run_id],
-        ).fetchone()
-        return row is not None and row[0] == "running"
-
     def complete_job(
         self,
         job_run_id: str,

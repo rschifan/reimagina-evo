@@ -15,6 +15,7 @@ from reimagina.indicators.catalog import (
     seed_catalog,
 )
 from reimagina.orchestration.intake import evaluate_scenario
+from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
@@ -87,3 +88,27 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     assert edited is not None
     assert 0.0 <= edited["value_numeric"] <= 1.0
     assert untouched is None
+
+
+def test_synchronous_orchestrator_persists_per_unit_state(conn):
+    block_a, _block_b = _seed_two_blocks(conn)
+
+    orch = SynchronousOrchestrator()
+    handle = orch.submit_run(
+        conn,
+        changed_attributes={"geometry"},
+        edited_features={block_a},
+        code_version="test",
+    )
+    assert handle.status is not None
+    assert handle.status.status == "succeeded"
+
+    # get_run reads the persisted jobs_runtime.orchestration_run + job_unit rows.
+    persisted = orch.get_run(conn, handle.run_id)
+    assert persisted is not None
+    assert persisted.status == "succeeded"
+    assert {u.indicator for u in persisted.units} == {
+        URBAN_FORM_BLOCK_COMPACTNESS.slug,
+        URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+    }
+    assert all(u.status == "succeeded" for u in persisted.units)
