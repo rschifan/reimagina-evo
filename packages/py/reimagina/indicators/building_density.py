@@ -17,19 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
+from reimagina.indicators._hamilton_driver import build_indicator_driver
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_BUILDING_DENSITY
+
+# Re-exported for callers/tests that import the kernel from here; the compute
+# below runs it through the Hamilton dataflow, not directly.
+from reimagina.indicators.kernels import count_to_density as count_to_density
 from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
-
-
-_M2_PER_HECTARE = 10_000.0
-
-
-def count_to_density(*, count: int, area_m2: float) -> float:
-    """Buildings per hectare. Returns 0.0 for degenerate areas."""
-    if area_m2 <= 0 or count < 0:
-        return 0.0
-    return count / (area_m2 / _M2_PER_HECTARE)
 
 
 @dataclass(frozen=True)
@@ -83,10 +78,11 @@ def compute_block_building_density(
             aoi_id=aoi_id,
             feature_ids=feature_ids,
         )
-        numeric_rows = [
-            (feature_id, count_to_density(count=count, area_m2=area))
-            for feature_id, count, area in rows
-        ]
+        frame = build_indicator_driver().execute(
+            ["density_result_frame"],
+            inputs={"centroid_counts": rows},
+        )["density_result_frame"]
+        numeric_rows = list(frame.itertuples(index=False, name=None))
         result_repo = backend.indicator_result_repo()
         rows_written = result_repo.bulk_write_numeric_results(
             numeric_rows,
