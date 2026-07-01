@@ -47,6 +47,13 @@ dependencies = [
     # process. Staying on core (no titiler.mosaic / titiler.application)
     # keeps the dep footprint tight.
     "titiler.core>=0.22",
+    # Orchestration compute-graph layer (Phase 3, component 4/11/12a). Hamilton
+    # expresses indicator compute as a dataflow: the resolver + data-version
+    # reuse cache (.with_cache) + OpenLineage lineage all come from this one
+    # library instead of hand-rolled graph/cache/lineage code. The [pandera]
+    # extra powers @check_output validation (component 10).
+    "sf-hamilton[pandera]>=1.83",
+    "openlineage-python>=1.9",
 ]
 
 [project.optional-dependencies]
