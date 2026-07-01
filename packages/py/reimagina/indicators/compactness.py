@@ -16,30 +16,17 @@ planned grids (most post-1950 Mexican block developments).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
+from reimagina.indicators._hamilton_driver import build_indicator_driver
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_COMPACTNESS
+
+# Re-exported for callers/tests that import the kernel from here; the compute
+# below runs it through the Hamilton dataflow, not directly.
+from reimagina.indicators.kernels import polsby_popper as polsby_popper
 from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
-
-
-def polsby_popper(*, area_m2: float, perimeter_m: float) -> float:
-    """Compactness on [0, 1]. Returns 0 for degenerate shapes.
-
-    Pure function so it can be unit-tested and reused outside the worker.
-    Clamps to 1.0 on the top end to absorb floating-point noise that would
-    otherwise trip the valid_max = 1 bound in the catalog.
-    """
-    if area_m2 <= 0 or perimeter_m <= 0:
-        return 0.0
-    value = (4.0 * math.pi * area_m2) / (perimeter_m * perimeter_m)
-    if value < 0:
-        return 0.0
-    if value > 1:
-        return 1.0
-    return value
 
 
 @dataclass(frozen=True)
@@ -93,10 +80,11 @@ def compute_block_compactness(
             aoi_id=aoi_id,
             feature_ids=feature_ids,
         )
-        numeric_rows = [
-            (feature_id, polsby_popper(area_m2=area, perimeter_m=perimeter))
-            for feature_id, area, perimeter in rows
-        ]
+        frame = build_indicator_driver().execute(
+            ["compactness_result_frame"],
+            inputs={"geodesic_metrics": rows},
+        )["compactness_result_frame"]
+        numeric_rows = list(frame.itertuples(index=False, name=None))
         result_repo = backend.indicator_result_repo()
         rows_written = result_repo.bulk_write_numeric_results(
             numeric_rows,
