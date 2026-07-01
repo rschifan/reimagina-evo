@@ -54,6 +54,11 @@ dependencies = [
     # extra powers @check_output validation (component 10).
     "sf-hamilton[pandera]>=1.83",
     "openlineage-python>=1.9",
+    # Declarative indicator_result validation (Phase 3, component 10): one
+    # Pandera bounds schema shared by the storage write path and the Hamilton
+    # @check_output. Declared directly (imported in indicators/validation.py)
+    # rather than leaning on the sf-hamilton[pandera] transitive.
+    "pandera>=0.20",
 ]
 
 [project.optional-dependencies]

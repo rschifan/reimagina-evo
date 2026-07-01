@@ -15,12 +15,25 @@ emit clean input→output lineage.
 from __future__ import annotations
 
 import pandas as pd
+from hamilton.function_modifiers import check_output
 
+from reimagina.indicators.catalog import (
+    URBAN_FORM_BLOCK_BUILDING_DENSITY,
+    URBAN_FORM_BLOCK_COMPACTNESS,
+)
 from reimagina.indicators.kernels import count_to_density, polsby_popper
+from reimagina.indicators.validation import bounds_schema
 
 _RESULT_COLUMNS = ["feature_id", "value_numeric"]
 
 
+@check_output(
+    schema=bounds_schema(
+        valid_min=URBAN_FORM_BLOCK_COMPACTNESS.valid_min,
+        valid_max=URBAN_FORM_BLOCK_COMPACTNESS.valid_max,
+    ),
+    importance="fail",
+)
 def compactness_result_frame(
     geodesic_metrics: list[tuple[str, float, float]],
 ) -> pd.DataFrame:
@@ -33,9 +46,19 @@ def compactness_result_frame(
         (feature_id, polsby_popper(area_m2=area, perimeter_m=perimeter))
         for feature_id, area, perimeter in geodesic_metrics
     ]
-    return pd.DataFrame(rows, columns=_RESULT_COLUMNS)
+    # float64 (not object) so an empty result still satisfies the bounds schema.
+    return pd.DataFrame(rows, columns=_RESULT_COLUMNS).astype(
+        {"value_numeric": "float64"}
+    )
 
 
+@check_output(
+    schema=bounds_schema(
+        valid_min=URBAN_FORM_BLOCK_BUILDING_DENSITY.valid_min,
+        valid_max=URBAN_FORM_BLOCK_BUILDING_DENSITY.valid_max,
+    ),
+    importance="fail",
+)
 def density_result_frame(
     centroid_counts: list[tuple[str, int, float]],
 ) -> pd.DataFrame:
@@ -48,4 +71,7 @@ def density_result_frame(
         (feature_id, count_to_density(count=count, area_m2=area))
         for feature_id, count, area in centroid_counts
     ]
-    return pd.DataFrame(rows, columns=_RESULT_COLUMNS)
+    # float64 (not object) so an empty result still satisfies the bounds schema.
+    return pd.DataFrame(rows, columns=_RESULT_COLUMNS).astype(
+        {"value_numeric": "float64"}
+    )

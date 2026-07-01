@@ -10,6 +10,8 @@ from uuid import uuid4
 import geopandas as gpd
 import pyarrow as pa
 
+from reimagina.indicators.validation import validate_result_rows
+
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 
@@ -2418,69 +2420,6 @@ class DuckDBIndicatorCatalogRepository:
 _INDICATOR_VALUE_COLS = ("value_numeric", "value_text", "value_json")
 
 
-def _validate_indicator_result_write(
-    *,
-    quality_flag: str,
-    status: str,
-    value_numeric: float | None,
-    value_text: str | None,
-    value_json,
-    missing_reason: str | None,
-    feature_type: str,
-    applies_to: list[str],
-    valid_min: float | None,
-    valid_max: float | None,
-    indicator_slug: str,
-    scenario_id_col: str | None,
-    run_scenario: str | None,
-) -> None:
-    """Mirror of the Postgres indicator_result_before_write trigger.
-
-    Runs the same ordered checks so DuckDB users get the same error messages
-    and refusal semantics as Postgres. Called from DuckDBIndicatorResultRepository.
-    """
-    if scenario_id_col != run_scenario:
-        raise ValueError(
-            f"indicator_result.scenario_id ({scenario_id_col!r}) must match "
-            f"job_run.scenario_id ({run_scenario!r})"
-        )
-    if quality_flag != "not_applicable" and feature_type not in applies_to:
-        raise ValueError(
-            f"feature type {feature_type!r} is not in indicator applies_to "
-            f"({applies_to!r}); write quality_flag='not_applicable' to suppress"
-        )
-    values_set = sum(
-        0 if v is None else 1 for v in (value_numeric, value_text, value_json)
-    )
-    if quality_flag in ("measured", "estimated", "imputed") and status != "failed":
-        if values_set != 1:
-            raise ValueError(
-                f"indicator_result: exactly one value column must be set for "
-                f"quality_flag={quality_flag}"
-            )
-    else:
-        if values_set != 0:
-            raise ValueError(
-                f"indicator_result: all value columns must be NULL for "
-                f"quality_flag={quality_flag} / status={status}"
-            )
-    if quality_flag == "missing" and not missing_reason:
-        raise ValueError(
-            "indicator_result.missing_reason is required when quality_flag='missing'"
-        )
-    if value_numeric is not None:
-        if valid_min is not None and value_numeric < valid_min:
-            raise ValueError(
-                f"indicator_result.value_numeric {value_numeric} below valid_min {valid_min} "
-                f"for indicator {indicator_slug!r}"
-            )
-        if valid_max is not None and value_numeric > valid_max:
-            raise ValueError(
-                f"indicator_result.value_numeric {value_numeric} above valid_max {valid_max} "
-                f"for indicator {indicator_slug!r}"
-            )
-
-
 class DuckDBIndicatorResultRepository:
     """Enforces the Postgres before-write-trigger semantics in Python.
 
@@ -2570,19 +2509,22 @@ class DuckDBIndicatorResultRepository:
         )
         run_scenario, run_code_version = self._lookup_run(job_run_id)
         resolved_model_version = model_version or run_code_version
-        _validate_indicator_result_write(
-            quality_flag=quality_flag,
-            status="current",
-            value_numeric=value_numeric,
-            value_text=value_text,
-            value_json=value_json,
-            missing_reason=missing_reason,
-            feature_type=feature_type,
+        validate_result_rows(
+            [
+                {
+                    "value_numeric": value_numeric,
+                    "value_text": value_text,
+                    "value_json": value_json,
+                    "quality_flag": quality_flag,
+                    "status": "current",
+                    "missing_reason": missing_reason,
+                    "feature_type": feature_type,
+                    "scenario_id": scenario_id,
+                }
+            ],
             applies_to=applies_to,
             valid_min=valid_min,
             valid_max=valid_max,
-            indicator_slug=indicator_slug,
-            scenario_id_col=scenario_id,
             run_scenario=run_scenario,
         )
         self._mark_stale(
@@ -2651,26 +2593,34 @@ class DuckDBIndicatorResultRepository:
                 [feature_ids],
             ).fetchall()
         }
-        insert_batch: list[tuple] = []
+        validation_rows: list[dict] = []
         for fid, value in rows:
             ftype = feature_types.get(str(fid))
             if ftype is None:
                 raise ValueError(f"feature_id {fid!r} not found in curated_geo.feature")
-            _validate_indicator_result_write(
-                quality_flag=quality_flag,
-                status="current",
-                value_numeric=value,
-                value_text=None,
-                value_json=None,
-                missing_reason=None,
-                feature_type=ftype,
-                applies_to=applies_to,
-                valid_min=valid_min,
-                valid_max=valid_max,
-                indicator_slug=indicator_slug,
-                scenario_id_col=scenario_id,
-                run_scenario=run_scenario,
+            validation_rows.append(
+                {
+                    "value_numeric": value,
+                    "value_text": None,
+                    "value_json": None,
+                    "quality_flag": quality_flag,
+                    "status": "current",
+                    "missing_reason": None,
+                    "feature_type": ftype,
+                    "scenario_id": scenario_id,
+                }
             )
+        validate_result_rows(
+            validation_rows,
+            applies_to=applies_to,
+            valid_min=valid_min,
+            valid_max=valid_max,
+            run_scenario=run_scenario,
+        )
+
+        insert_batch: list[tuple] = []
+        for (fid, value), vrow in zip(rows, validation_rows):
+            ftype = vrow["feature_type"]
             self._mark_stale(
                 feature_id=fid,
                 indicator_id=indicator_id,
