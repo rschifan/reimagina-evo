@@ -94,11 +94,35 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
 )
 
 
+URBAN_FORM_BLOCK_PLANNED_FLOORS = IndicatorSpec(
+    slug="urban_form_block_planned_floors",
+    name="Planned Floors",
+    description=(
+        "The effective number of floors planned on a block — the base value "
+        "unless a scenario overrides the `floors` attribute. The first "
+        "attribute-reading indicator, so an upzoning what-if (override floors) "
+        "recomputes it while the baseline keeps the base data."
+    ),
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="floors",
+    valid_min=0.0,
+    valid_max=200.0,
+    aggregation_method="weighted_mean",
+    # Reads the `floors` attribute (effective = base ⊕ scenario override), so a
+    # scenario edit to `floors` invalidates it via the impact engine.
+    reads=("floors",),
+    applies_to=("block",),
+)
+
+
 # Indicators Layer 1 / Layer 2 ships with. Order matters: dependencies must
 # be upserted before the composite indicators that reference them.
 SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     URBAN_FORM_BLOCK_COMPACTNESS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
+    URBAN_FORM_BLOCK_PLANNED_FLOORS,
 )
 
 
