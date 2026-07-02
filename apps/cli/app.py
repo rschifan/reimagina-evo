@@ -679,6 +679,13 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--aoi-id")
     evaluate_parser.add_argument("--scenario-id")
     evaluate_parser.add_argument("--code-version", default="dev")
+    evaluate_parser.add_argument(
+        "--async",
+        dest="asynchronous",
+        action="store_true",
+        help="Enqueue on the Procrastinate queue for a worker to drain "
+        "(needs DATABASE_URL_DIRECT + python -m apps.worker); default is synchronous.",
+    )
     evaluate_parser.set_defaults(handler=_handle_evaluate_scenario)
 
     overlap_parser = subparsers.add_parser(
@@ -1351,6 +1358,7 @@ def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
             scenario_id=args.scenario_id,
             aoi_id=args.aoi_id,
             code_version=args.code_version,
+            asynchronous=args.asynchronous,
         )
     )
 

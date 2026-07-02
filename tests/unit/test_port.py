@@ -7,7 +7,12 @@ orchestrator runs entirely in-memory with fake runners here.
 from __future__ import annotations
 
 from reimagina.indicators.catalog import IndicatorSpec
-from reimagina.orchestration.coordinator import UnitStatus, next_ready_units
+from reimagina.orchestration.coordinator import (
+    UnitStatus,
+    next_ready_units,
+    overall_status,
+    plan_wave,
+)
 from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 
@@ -108,3 +113,60 @@ def test_synchronous_orchestrator_reports_partial_on_failure():
 def test_get_run_is_none_without_persistence():
     orch = SynchronousOrchestrator(registry=REG, runners={})
     assert orch.get_run(None, "missing") is None
+
+
+# ── plan_wave (async distributor scheduler) ──────────────────────────────
+
+
+def test_plan_wave_dispatches_the_seeds_first():
+    units = [
+        ("green_coverage", "queued"),
+        ("walkability", "queued"),
+        ("liveability_index", "queued"),
+    ]
+    plan = plan_wave(units, REG)
+    assert set(plan.dispatch) == {"green_coverage", "walkability"}
+    assert plan.skip == ()
+    assert plan.final_status is None  # composite still waiting
+
+
+def test_plan_wave_releases_composite_after_inputs_succeed():
+    units = [
+        ("green_coverage", "succeeded"),
+        ("walkability", "succeeded"),
+        ("liveability_index", "queued"),
+    ]
+    plan = plan_wave(units, REG)
+    assert plan.dispatch == ("liveability_index",)
+    assert plan.final_status is None  # composite now running
+
+
+def test_plan_wave_skips_dependent_of_failed_input():
+    units = [
+        ("green_coverage", "succeeded"),
+        ("walkability", "failed"),
+        ("liveability_index", "queued"),
+    ]
+    plan = plan_wave(units, REG)
+    assert plan.dispatch == ()
+    assert plan.skip == ("liveability_index",)
+    # green succeeded, walk failed, composite skipped → all terminal → final.
+    assert plan.final_status == "partial"
+
+
+def test_plan_wave_finalizes_when_all_terminal():
+    units = [
+        ("green_coverage", "succeeded"),
+        ("walkability", "succeeded"),
+        ("liveability_index", "succeeded"),
+    ]
+    plan = plan_wave(units, REG)
+    assert plan.dispatch == ()
+    assert plan.skip == ()
+    assert plan.final_status == "succeeded"
+
+
+def test_overall_status_rollup():
+    assert overall_status(["succeeded", "succeeded"]) == "succeeded"
+    assert overall_status(["succeeded", "failed"]) == "partial"
+    assert overall_status(["failed", "skipped"]) == "failed"
