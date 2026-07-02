@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import enum
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -114,6 +114,66 @@ def next_ready_units(
             for dep in deps.get(unit.indicator, set()) & dirty
         )
     ]
+
+
+_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
+_UNSATISFIED_STATES = frozenset({"failed", "skipped", "cancelled"})
+
+
+def overall_status(statuses: Iterable[str]) -> str:
+    """Roll unit statuses into a run status: succeeded / partial / failed."""
+    seen = set(statuses)
+    if not seen or seen <= {"succeeded"}:
+        return "succeeded"
+    if "succeeded" in seen:
+        return "partial"
+    return "failed"
+
+
+@dataclass(frozen=True)
+class WavePlan:
+    dispatch: tuple[str, ...]  # queued units whose inputs are satisfied → run now
+    skip: tuple[str, ...]  # queued units with a failed/skipped input → mark skipped
+    final_status: str | None  # set once every unit is terminal, else None
+
+
+def plan_wave(
+    units: Sequence[tuple[str, str]],
+    registry: Sequence[IndicatorSpec],
+) -> WavePlan:
+    """Pure wave scheduler for the async distributor (component 8).
+
+    ``units`` is ``(indicator_slug, status)`` for one run. Returns which queued
+    units to dispatch (all dirty inputs succeeded), which to skip (a dirty input
+    failed/skipped), and the run's final status once nothing is left running.
+    Deterministic and DB-free so it is unit-tested directly; ``advance_run``
+    wraps it with the SQL + enqueue.
+    """
+    deps = _dep_map(registry)
+    all_slugs = {slug for slug, _ in units}
+    finished = {slug: st for slug, st in units if st in _TERMINAL_STATES}
+
+    dispatch: list[str] = []
+    skip: list[str] = []
+    for slug, status in units:
+        if status != "queued":
+            continue
+        deps_of = deps.get(slug, set()) & all_slugs
+        if any(finished.get(dep) in _UNSATISFIED_STATES for dep in deps_of):
+            skip.append(slug)
+        elif all(finished.get(dep) == "succeeded" for dep in deps_of):
+            dispatch.append(slug)
+
+    projected = {
+        slug: ("skipped" if slug in skip else "running" if slug in dispatch else status)
+        for slug, status in units
+    }
+    final = (
+        overall_status(projected.values())
+        if all(st in _TERMINAL_STATES for st in projected.values())
+        else None
+    )
+    return WavePlan(tuple(dispatch), tuple(skip), final)
 
 
 def run_dirty_set(
