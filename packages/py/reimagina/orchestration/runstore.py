@@ -28,6 +28,7 @@ def create_run(
     run_id: str,
     scenario_id: str | None,
     code_version: str,
+    aoi_id: str | None = None,
     status: str = "running",
 ) -> bool:
     """Insert the run envelope. Returns True if persisted, False when skipped."""
@@ -36,10 +37,69 @@ def create_run(
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs_runtime.orchestration_run "
-            "(id, scenario_id, status, code_version) VALUES (%s, %s, %s, %s)",
-            (run_id, scenario_id, status, code_version),
+            "(id, scenario_id, aoi_id, status, code_version) VALUES (%s, %s, %s, %s, %s)",
+            (run_id, scenario_id, aoi_id, status, code_version),
         )
     return True
+
+
+def run_params(conn: Any, run_id: str) -> dict[str, Any] | None:
+    """Return the run-level params the async tasks need to dispatch units."""
+    if not _is_postgres(conn):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT scenario_id::text, aoi_id, code_version "
+            "FROM jobs_runtime.orchestration_run WHERE id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"scenario_id": row[0], "aoi_id": row[1], "code_version": row[2]}
+
+
+def set_unit_status(
+    conn: Any,
+    *,
+    run_id: str,
+    indicator_slug: str,
+    status: str,
+    detail: str | None = None,
+) -> None:
+    if not _is_postgres(conn):
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs_runtime.job_unit SET status = %s, detail = %s, "
+            "started_at = COALESCE(started_at, CASE WHEN %s = 'running' THEN now() END), "
+            "completed_at = CASE WHEN %s IN ('succeeded','failed','skipped','cancelled') "
+            "THEN now() ELSE completed_at END "
+            "WHERE run_id = %s AND indicator_slug = %s",
+            (status, detail, status, status, run_id, indicator_slug),
+        )
+
+
+def list_units(conn: Any, run_id: str) -> list[dict[str, Any]]:
+    """Return ``[{indicator, status, features(list[str]), detail}]`` for a run."""
+    if not _is_postgres(conn):
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT indicator_slug, status, feature_scope, detail "
+            "FROM jobs_runtime.job_unit WHERE run_id = %s ORDER BY indicator_slug",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "indicator": r[0],
+            "status": r[1],
+            "features": list(r[2] or []),
+            "detail": r[3],
+        }
+        for r in rows
+    ]
 
 
 def record_units(conn: Any, *, run_id: str, units: Sequence[dict[str, Any]]) -> None:

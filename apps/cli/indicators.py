@@ -131,12 +131,36 @@ def evaluate_scenario_cli(
     scenario_id: str | None = None,
     aoi_id: str | None = None,
     code_version: str = "dev",
+    asynchronous: bool = False,
 ) -> dict[str, object]:
     """Selectively recompute indicators for a scenario edit.
 
-    Composes the impact engine + coordinator via the orchestration intake
-    entry point and returns the per-unit run report.
+    Default: synchronous — compose impact engine + coordinator inline and return
+    the per-unit report. ``--async`` enqueues the run on the Procrastinate queue
+    for a worker to drain and returns the run_id immediately (needs
+    DATABASE_URL_DIRECT + a running ``python -m apps.worker``).
     """
+    if asynchronous:
+        from reimagina.orchestration.procrastinate_orchestrator import (
+            ProcrastinateOrchestrator,
+        )
+
+        with connect(dsn) as conn:
+            handle = ProcrastinateOrchestrator().submit_run(
+                conn,
+                changed_attributes=changed_attributes,
+                edited_features=edited_features,
+                scenario_id=scenario_id,
+                aoi_id=aoi_id,
+                code_version=code_version,
+            )
+        return {
+            "dsn": dsn,
+            "run_id": handle.run_id,
+            "status": "queued",
+            "mode": "async",
+        }
+
     with connect(dsn) as conn:
         report = evaluate_scenario(
             conn,

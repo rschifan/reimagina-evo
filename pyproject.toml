@@ -59,6 +59,12 @@ dependencies = [
     # @check_output. Declared directly (imported in indicators/validation.py)
     # rather than leaning on the sf-hamilton[pandera] transitive.
     "pandera>=0.20",
+    # Async ops-plane (Phase 3, components 5/6/7/8): Procrastinate is a
+    # Postgres-backed task queue (own durable jobs table, FOR UPDATE SKIP
+    # LOCKED, LISTEN/NOTIFY, retries, dead-letter, queueing locks). Its schema
+    # lives in the `procrastinate` schema (migration r029); the worker/enqueue
+    # paths use DATABASE_URL_DIRECT (LISTEN/NOTIFY needs a direct connection).
+    "procrastinate>=3.0",
 ]
 
 [project.optional-dependencies]
