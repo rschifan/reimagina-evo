@@ -15,7 +15,7 @@ from procrastinate.exceptions import AlreadyEnqueued
 
 from reimagina.db import connect
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
-from reimagina.orchestration import runstore
+from reimagina.orchestration import events, runstore
 from reimagina.orchestration.coordinator import plan_wave
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.runners import default_runners
@@ -61,13 +61,7 @@ def compute_unit(
     runner = default_runners().get(indicator_slug)
     with connect(queue_dsn()) as conn:
         if runner is None:
-            runstore.set_unit_status(
-                conn,
-                run_id=run_id,
-                indicator_slug=indicator_slug,
-                status="skipped",
-                detail="no runner registered",
-            )
+            status, detail = "skipped", "no runner registered"
         else:
             try:
                 runner(
@@ -77,21 +71,18 @@ def compute_unit(
                     code_version=code_version,
                     aoi_id=aoi_id,
                 )
-                runstore.set_unit_status(
-                    conn,
-                    run_id=run_id,
-                    indicator_slug=indicator_slug,
-                    status="succeeded",
-                )
+                status, detail = "succeeded", None
             except Exception as exc:  # noqa: BLE001 — deterministic failure = terminal
                 conn.rollback()
-                runstore.set_unit_status(
-                    conn,
-                    run_id=run_id,
-                    indicator_slug=indicator_slug,
-                    status="failed",
-                    detail=str(exc),
-                )
+                status, detail = "failed", str(exc)
+        runstore.set_unit_status(
+            conn,
+            run_id=run_id,
+            indicator_slug=indicator_slug,
+            status=status,
+            detail=detail,
+        )
+        events.emit(conn, run_id=run_id, indicator=indicator_slug, status=status)
         conn.commit()
     _defer_advance(run_id)
 
@@ -116,13 +107,16 @@ def advance_run(*, run_id: str) -> None:
                 status="skipped",
                 detail="unsatisfied inputs",
             )
+            events.emit(conn, run_id=run_id, indicator=slug, status="skipped")
         for slug in plan.dispatch:
             runstore.set_unit_status(
                 conn, run_id=run_id, indicator_slug=slug, status="running"
             )
+            events.emit(conn, run_id=run_id, indicator=slug, status="running")
             dispatch_features[slug] = features_by[slug]
         if plan.final_status is not None:
             runstore.finalize_run(conn, run_id=run_id, status=plan.final_status)
+            events.emit(conn, run_id=run_id, indicator=None, status=plan.final_status)
         conn.commit()
 
     for slug, features in dispatch_features.items():
