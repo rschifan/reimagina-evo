@@ -1,23 +1,18 @@
 """Coordinator — sequences a dirty-set into actual recompute (component 8).
 
-Rung 1 of the ops-plane ladder in
-docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md §4: a **single-process,
-in-memory** coordinator. It takes the ordered dirty-set from the impact engine
-and runs each indicator's runner in dependency order, skipping any whose dirty
-inputs didn't succeed, and reports a per-unit outcome plus an overall status
-(succeeded / partial / failed — F6 partial-success).
+Two executors share this module's readiness logic
+(docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md §4):
+- ``run_dirty_set`` — the **single-process, in-memory** rung-1 executor: runs
+  each indicator's runner in dependency order, skipping any whose dirty inputs
+  didn't succeed, and returns a per-unit + overall status (F6 partial-success).
+- ``plan_wave`` / ``next_ready_units`` — the pure, DB-free readiness functions
+  the async distributor (``reimagina.orchestration.tasks`` on Procrastinate)
+  wraps to dispatch waves across workers. One readiness rule, two executors.
 
-What it deliberately is *not*, yet:
-- No work queue / `SKIP LOCKED` pop and no durable per-unit task table — those
-  are higher rungs (procrastinate/PgQueuer → Hatchet), pulled in when multiple
-  workers must pull units concurrently. Here the coordinator calls runners
-  directly, in process.
-- It does not open job_run rows: each runner owns its own job_run (see
-  reimagina.indicators.compactness), so run-tracking + provenance already live
-  where the compute happens. The RunReport is the in-memory view across units.
-
-The runner registry (which slug maps to which compute fn) is injected, not
-defined here — that wiring is component 7 (worker pools), the next step.
+Runners (slug → compute fn) are injected, not defined here — that binding is
+``reimagina.orchestration.runners`` (component 7). A runner owns its own
+job_run row (provenance lives where the compute happens); the RunReport is the
+in-memory view across units.
 """
 
 from __future__ import annotations
