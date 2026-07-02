@@ -154,7 +154,12 @@ def evaluate_scenario_cli(
                 aoi_id=aoi_id,
                 code_version=code_version,
             )
-        return {"dsn": dsn, "run_id": handle.run_id, "status": "queued", "mode": "async"}
+        return {
+            "dsn": dsn,
+            "run_id": handle.run_id,
+            "status": "queued",
+            "mode": "async",
+        }
 
     with connect(dsn) as conn:
         report = evaluate_scenario(
