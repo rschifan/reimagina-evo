@@ -27,7 +27,7 @@ from titiler.core.factory import TilerFactory
 from . import deps, errors
 from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
-from .routers import aois, features, health, indicators, metrics, tiles
+from .routers import aois, features, health, indicators, jobs, metrics, tiles
 
 
 def _cors_origins_from_env() -> list[str]:
@@ -136,6 +136,7 @@ def create_app(
     app.include_router(features.router)
     app.include_router(metrics.router)
     app.include_router(tiles.router)
+    app.include_router(jobs.router)
     # Raster tiles: mount titiler's standard COG endpoints under /cog so
     # the API + tile server share a process, a dep tree, and an origin.
     # Splitting titiler into a sidecar (separate uvicorn or Docker) is
