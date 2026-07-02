@@ -18,10 +18,12 @@ from reimagina.indicators.catalog import (
     SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
+    URBAN_FORM_BLOCK_PLANNED_FLOORS,
     IndicatorSpec,
 )
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.indicators.composite import compute_composite
+from reimagina.indicators.planned_floors import compute_planned_floors
 from reimagina.orchestration.coordinator import Runner
 
 # A compute fn: (conn, *, aoi_id, feature_ids, scenario_id, code_version) -> result.
@@ -32,6 +34,7 @@ IndicatorCompute = Callable[..., object]
 _DIRECT_COMPUTE: dict[str, IndicatorCompute] = {
     URBAN_FORM_BLOCK_COMPACTNESS.slug: compute_block_compactness,
     URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: compute_block_building_density,
+    URBAN_FORM_BLOCK_PLANNED_FLOORS.slug: compute_planned_floors,
 }
 
 
