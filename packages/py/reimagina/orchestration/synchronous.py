@@ -41,7 +41,9 @@ class SynchronousOrchestrator:
         aoi_id: str | None = None,
         code_version: str = "dev",
     ) -> RunHandle:
-        runners = default_runners() if self._runners is None else self._runners
+        runners = (
+            default_runners(self._registry) if self._runners is None else self._runners
+        )
         run_id = str(uuid4())
         runstore.create_run(
             conn, run_id=run_id, scenario_id=scenario_id, code_version=code_version
