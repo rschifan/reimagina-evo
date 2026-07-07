@@ -1,3 +1,0 @@
--- r011: Postgres-only Row-Level Security policies.
--- DuckDB does not support RLS; multi-project isolation on this backend
--- is enforced at the application layer (WHERE project_id = ? clauses).

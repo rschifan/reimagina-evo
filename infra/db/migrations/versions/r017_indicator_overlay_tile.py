@@ -27,7 +27,7 @@ MVT properties emitted per feature:
 - value_numeric (double)     — the choropleth value; fill-color reads this
 - quality_flag (text)        — 'measured' / 'estimated' / 'missing' / …
 
-DuckDB has no MVT emitter. Tile serving is Postgres-only.
+Tile serving is Postgres-only (PostGIS MVT emitter).
 
 Revision ID: r017
 Revises: r016

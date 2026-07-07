@@ -16,12 +16,15 @@ while runs are synchronous.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.coordinator import RunReport, Runner, run_dirty_set
 from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.runners import default_runners
+
+logger = logging.getLogger(__name__)
 
 
 def evaluate_scenario(
@@ -42,8 +45,22 @@ def evaluate_scenario(
     defaults to ``default_runners()`` (the shipped indicators); ``registry``
     defaults to the shipped catalog.
     """
+    from reimagina.scenarios.overrides import resolve_change_set
+
     resolved_runners = default_runners() if runners is None else runners
+    changed_attributes, edited_features = resolve_change_set(
+        conn,
+        changed_attributes=changed_attributes,
+        edited_features=edited_features,
+        scenario_id=scenario_id,
+    )
     dirty = compute_dirty_set(changed_attributes, edited_features, registry)
+    if not dirty:
+        logger.warning(
+            "scenario %s produced an empty dirty-set — nothing to recompute "
+            "(check changed_attributes / scenario overrides)",
+            scenario_id,
+        )
     return run_dirty_set(
         conn,
         dirty,

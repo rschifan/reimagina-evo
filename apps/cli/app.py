@@ -37,7 +37,6 @@ from .overture import (  # noqa: E402
     load_mexico_city_buildings,
     mexico_city_buildings_example,
     parse_bbox,
-    print_extract_sql,
     validate_mexico_city_buildings,
 )
 from reimagina.pipeline.overture import (  # noqa: E402
@@ -186,15 +185,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     overture_example.set_defaults(handler=_handle_overture_example)
 
-    overture_extract_sql = overture_subparsers.add_parser(
-        "print-extract-sql",
-        help="Print the DuckDB SQL used to extract the Mexico City GeoParquet subset",
-    )
-    overture_extract_sql.set_defaults(handler=_handle_overture_print_extract_sql)
-
     overture_extract = overture_subparsers.add_parser(
         "extract",
-        help="Extract an Overture buildings subset to local GeoParquet via DuckDB",
+        help="Extract an Overture buildings subset to local GeoParquet",
     )
     overture_extract.add_argument(
         "--output-path",
@@ -1092,10 +1085,6 @@ def _handle_explore_feature_stats(args: argparse.Namespace) -> int:
 
 def _handle_explore_serving_stats(args: argparse.Namespace) -> int:
     return _print(list_serving_stats(dsn=args.dsn))
-
-
-def _handle_overture_print_extract_sql(_args: argparse.Namespace) -> int:
-    return _print(print_extract_sql())
 
 
 def _handle_overture_extract(args: argparse.Namespace) -> int:

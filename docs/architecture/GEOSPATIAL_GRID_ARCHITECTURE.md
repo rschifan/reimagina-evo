@@ -106,7 +106,6 @@ No grid type (H3, S2, fishnet, GHS-POP) is privileged by the schema. All grids r
             │    QUERY / SERVE       │
             │                        │
             │  PostgreSQL / PostGIS  │  ← transactional, relational queries
-            │  DuckDB + GeoParquet   │  ← analytical, bulk read queries
             │  COG HTTP range reads  │  ← raster pixel access
             └────────────────────────┘
 ```
@@ -1430,27 +1429,12 @@ CREATE INDEX ON cell_indicator_result (grid_id, indicator_id, scenario_id)
 
 ### When to move to GeoParquet (analytical layer)
 
-If any of the following apply, export `cell_indicator_result` to GeoParquet on object storage and query via DuckDB:
+If any of the following apply, export `cell_indicator_result` to GeoParquet on object storage:
 
 - Cell count × scenario count × indicator count > 50M rows
 - Analytical queries take more than 2 seconds on warm cache
 - Results are consumed primarily by data science workflows (Jupyter, pandas)
 - Bulk exports for GIS tools are frequent
-
-```python
-# Export to partitioned GeoParquet (runs nightly or after each model run)
-import duckdb
-
-duckdb.execute("""
-    COPY (
-        SELECT grid_id, cell_id, scenario_id, indicator_id, value, run_id, computed_at
-        FROM cell_indicator_result
-        WHERE grid_id = :grid_id
-    )
-    TO 's3://bucket/cell_results/grid_id=:grid_id/'
-    (FORMAT PARQUET, PARTITION_BY (scenario_id, indicator_id))
-""")
-```
 
 ---
 
@@ -1490,7 +1474,7 @@ duckdb.execute("""
 
 ### GeoParquet as the analytical layer standard
 
-**GeoParquet** (geoparquet.org, OGC standard v1.1 2024): The Overture Maps Foundation distributes buildings, roads, and places for the entire planet as partitioned GeoParquet on S3, queryable via DuckDB spatial extension with no PostGIS dependency. This is the recommended format for bulk analytical reads and data sharing.
+**GeoParquet** (geoparquet.org, OGC standard v1.1 2024): The Overture Maps Foundation distributes buildings, roads, and places for the entire planet as partitioned GeoParquet on S3. This is the recommended format for bulk analytical reads and data sharing.
 
 ### exactextract for zonal statistics
 

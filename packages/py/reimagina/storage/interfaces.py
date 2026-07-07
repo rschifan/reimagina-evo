@@ -80,9 +80,9 @@ class FeatureRepository(Protocol):
         """Insert features directly from a GeoParquet file.
 
         Implementations should stream the file in bounded batches rather than
-        materialising it fully in Python.  Both the Postgres and DuckDB backends
-        provide native implementations; the loader falls back to the GeoDataFrame
-        path if a future backend omits this method.
+        materialising it fully in Python. The Postgres backend provides a native
+        implementation; the loader falls back to the GeoDataFrame path if a
+        backend omits this method.
         """
         ...
 
@@ -95,9 +95,8 @@ class FeatureRepository(Protocol):
     ) -> list[tuple[str, float, float]]:
         """Return (feature_id, area_m2, perimeter_m) for every feature of a type.
 
-        Postgres uses the ``geography`` cast for geodesic measurement; DuckDB
-        projects to the locally-appropriate UTM zone and measures in planar
-        metres. Scope with ``aoi_id`` to restrict to features intersecting
+        Postgres uses the ``geography`` cast for geodesic measurement. Scope
+        with ``aoi_id`` to restrict to features intersecting
         an AOI, and/or ``feature_ids`` to restrict to a specific set (the
         selective-recompute path — only the dirty features). Both narrow the
         result and compose (AND) when given together.
@@ -134,9 +133,9 @@ class FeatureRepository(Protocol):
         66k CDMX blocks × ~100 bytes WKB ≈ 6 MB, which is cheaper than
         the plumbing cost of a streaming generator.
 
-        Earns its place by eliminating backend-specific geometry-fetch
-        branching (Postgres UUID→text, DuckDB UUID→VARCHAR; PostGIS
-        ST_AsBinary vs DuckDB ST_AsWKB).
+        Earns its place by giving callers a single geometry-fetch entry
+        point (Postgres UUID→text, PostGIS ST_AsBinary) instead of inlining
+        the SQL at every call site.
         """
         ...
 
@@ -217,7 +216,7 @@ class ObservationRepository(Protocol):
 
         No "active source" concept — what matters for SCD safety is
         whether some other source's current observation already owns
-        the prefix, because both backends retire/upsert on
+        the prefix, because the writer retires/upserts on
         ``(feature_id, attribute_key)`` regardless of source. Published
         status is irrelevant. Backs the CLI prefix-collision check.
         """
@@ -242,11 +241,10 @@ class FileAssetRepository(Protocol):
     def get_by_source(self, source_id: str) -> dict[str, Any] | None:
         """Return the ``file_asset`` row for a source_id, or None.
 
-        Earns its place by eliminating backend-specific lookup SQL —
-        otherwise every caller writes its own
-        ``SELECT ... WHERE source_id = ?`` pair (Postgres UUID vs
-        DuckDB VARCHAR cast, RealDictCursor vs tuple row). Same
-        branch-elimination rationale as ``iter_geometries_by_type``.
+        Earns its place by centralising the lookup SQL — otherwise every
+        caller writes its own ``SELECT ... WHERE source_id = %s`` with the
+        RealDictCursor row handling. Same rationale as
+        ``iter_geometries_by_type``.
         """
         ...
 
@@ -527,8 +525,7 @@ class ServingReader(Protocol):
         Polygon must be a valid GeoJSON Polygon string in EPSG:4326.
         Returns ``{type_slug: count}`` for every requested type that has at
         least one intersecting feature; missing types resolve to 0 at the
-        caller. Backends without spatial primitives (DuckDB) raise
-        ``NotImplementedError``.
+        caller.
         """
         ...
 
@@ -610,11 +607,10 @@ class IndicatorResultRepository(Protocol):
 
     Writers go through write_result, which enforces exactly-one-value-column,
     valid_min/valid_max bounds, applies_to membership, and missing_reason
-    rules — matching the Postgres before-write trigger and giving DuckDB
-    equivalent semantics.
+    rules — matching the Postgres before-write trigger.
 
-    The `current`-status uniqueness guarantee is preserved across both
-    backends: write_result marks any existing `current` row for the same
+    The `current`-status uniqueness guarantee is preserved: write_result
+    marks any existing `current` row for the same
     (feature_id, scenario_id, indicator_id) stale before inserting the new
     one, so reads through serving_geo.current_indicator_v always see at most
     one row per triple.
