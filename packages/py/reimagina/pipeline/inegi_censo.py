@@ -126,10 +126,10 @@ def _build_muni_lookup(conn) -> dict[tuple[str, str], str]:
     are actually loaded.
     """
     with conn.cursor() as cur:
-        # ``attributes->>'KEY' IS NOT NULL`` is the cross-backend (Postgres
-        # + DuckDB) equivalent of Postgres-only ``attributes ? 'KEY'``.
-        # The Python-side filter then drops any row that's missing one of
-        # the three components (NULL would skip the dict entry anyway).
+        # ``attributes->>'KEY' IS NOT NULL`` avoids the psycopg2 ``?``
+        # paramstyle clash the JSONB ``attributes ? 'KEY'`` operator would
+        # trigger. The Python-side filter then drops any row that's missing
+        # one of the three components (NULL would skip the dict entry anyway).
         cur.execute(
             """
             SELECT attributes->>'CVE_ENT', attributes->>'NOMGEO',

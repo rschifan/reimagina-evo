@@ -10,6 +10,8 @@ workers with durability, retries, and queueing locks (dedup).
 
 from __future__ import annotations
 
+import logging
+
 from procrastinate import RetryStrategy
 from procrastinate.exceptions import AlreadyEnqueued
 
@@ -19,6 +21,9 @@ from reimagina.orchestration import events, runstore
 from reimagina.orchestration.coordinator import plan_wave
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.runners import default_runners
+from reimagina.storage import backend_for_connection
+
+logger = logging.getLogger(__name__)
 
 
 def _defer_unit(run_id: str, slug: str, features, params: dict) -> None:
@@ -40,6 +45,35 @@ def _defer_advance(run_id: str) -> None:
         advance_run.configure(queueing_lock=f"advance:{run_id}").defer(run_id=run_id)
     except AlreadyEnqueued:
         pass  # an advance for this run is already queued; it'll see fresh state
+
+
+def _record_failed_job_run(
+    *, indicator_slug: str, scenario_id: str | None, code_version: str, error: str
+) -> None:
+    """Persist a durable ``failed`` job_run on its own connection.
+
+    ``compute_unit`` rolls back the shared connection on a runner exception,
+    which erases the job_run the runner opened — so a failure's provenance must
+    be recorded independently. Best-effort: a failure here must never mask the
+    unit failure it is trying to record.
+    """
+    spec = next((s for s in SHIPPED_INDICATORS if s.slug == indicator_slug), None)
+    model_family = spec.model_family if spec and spec.model_family else "unknown"
+    try:
+        with connect(queue_dsn()) as conn:
+            repo = backend_for_connection(conn).job_run_repo()
+            job_run_id = repo.start_job(
+                model_family=model_family,
+                code_version=code_version,
+                scenario_id=scenario_id,
+                status="running",
+            )
+            repo.complete_job(job_run_id, status="failed", error_message=error)
+            conn.commit()
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        logger.warning(
+            "could not persist failed job_run for %s", indicator_slug, exc_info=True
+        )
 
 
 @app.task(queue="compute", retry=RetryStrategy(max_attempts=3, exponential_wait=2))
@@ -75,6 +109,14 @@ def compute_unit(
             except Exception as exc:  # noqa: BLE001 — deterministic failure = terminal
                 conn.rollback()
                 status, detail = "failed", str(exc)
+                # The rollback above erased the runner's job_run row; record the
+                # failure durably on a separate connection so provenance survives.
+                _record_failed_job_run(
+                    indicator_slug=indicator_slug,
+                    scenario_id=scenario_id,
+                    code_version=code_version,
+                    error=str(exc),
+                )
         runstore.set_unit_status(
             conn,
             run_id=run_id,

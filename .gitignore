@@ -27,10 +27,6 @@ htmlcov/
 .pytype/
 .pyre/
 
-# ── DuckDB ───────────────────────────────────────────────────────────────────
-*.duckdb
-*.duckdb.wal
-
 # ── Local data ───────────────────────────────────────────────────────────────
 # Anything under data/ is local cache or bootstrap output — never tracked.
 # Bootstrap procedure to re-fetch is documented in docs/BOOTSTRAP.md.

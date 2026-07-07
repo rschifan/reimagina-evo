@@ -1,7 +1,7 @@
 """Single-source indicator_result validation (Phase 3, component 10).
 
-One validator, shared by both storage backends, replacing the DuckDB Python
-mirror of the Postgres ``indicator_result_before_write`` trigger. Bounds are a
+One validator mirroring the Postgres ``indicator_result_before_write``
+trigger. Bounds are a
 declarative Pandera schema (also attachable as a Hamilton ``@check_output`` for
 in-graph fail-fast); the cross-column row rules that don't fit a column schema
 (scenario match, applies_to gate, value-column cardinality, missing_reason) stay

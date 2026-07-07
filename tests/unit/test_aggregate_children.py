@@ -2,7 +2,7 @@
 
 This is the fast safety net the codebase lacked: the rollup and AOI-summary
 workers previously hand-wrote this policy and were only exercised by the
-DuckDB integration test.
+integration tests.
 """
 
 from __future__ import annotations

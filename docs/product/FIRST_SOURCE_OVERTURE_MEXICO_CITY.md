@@ -43,13 +43,13 @@ python -m apps.cli.app bootstrap-db
 python -m apps.cli.app verify-schema
 ```
 
-3. Print the pinned DuckDB extraction SQL:
+3. Print the pinned Overture source config (the release and bbox the pyarrow-based extractor will read):
 
 ```bash
-python -m apps.cli.app overture print-extract-sql
+python -m apps.cli.app overture example
 ```
 
-4. Extract only the Mexico City subset to local GeoParquet with DuckDB:
+4. Extract only the Mexico City subset to local GeoParquet. The extract command uses the pyarrow-based extractor, which reads the pinned Overture S3 release and clips it to the bbox:
 
 ```bash
 python -m apps.cli.app overture extract \
@@ -92,7 +92,6 @@ The current implementation provides reusable helpers in:
 
 Key functions:
 
-- `overture_buildings_extract_sql()`
 - `extract_overture_buildings_subset(...)`
 - `bootstrap_overture_buildings_subset(...)`
 - `register_overture_buildings_source(...)`
@@ -105,7 +104,6 @@ Developer CLI entrypoints:
 - `python -m apps.cli.app bootstrap-db`
 - `python -m apps.cli.app verify-schema`
 - `python -m apps.cli.app overture example`
-- `python -m apps.cli.app overture print-extract-sql`
 - `python -m apps.cli.app overture extract --output-path ...`
 - `python -m apps.cli.app overture load --raw-path ...`
 - `python -m apps.cli.app overture validate`

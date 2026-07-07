@@ -188,8 +188,7 @@ def list_raster_layers(*, dsn: str) -> dict[str, Any]:
     slug and publish status.
     """
     with connect(dsn) as conn:
-        with _cursor_compat(conn) as cur:
-            # Both backends define explore.raster_layer_v.
+        with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT layer_slug, published, aggregation_kind,
@@ -555,54 +554,3 @@ def _find_raster_layer_by_slug(backend, layer_slug: str) -> dict | None:
 def as_json(data: dict[str, Any]) -> str:
     """Serialise CLI output consistently."""
     return json.dumps(data, indent=2, sort_keys=True, default=str)
-
-
-class _cursor_compat:
-    """Tiny context manager that yields a cursor-like object from either
-    a psycopg2 connection (``.cursor()`` as a context manager) or a
-    DuckDB connection (``.execute()`` on the connection itself).
-
-    Reading a single explore view in both backends doesn't justify a
-    new repo method; this thin shim keeps the CLI code readable
-    without pushing the query into the storage layer.
-    """
-
-    def __init__(self, conn):
-        self._conn = conn
-        self._is_pg = hasattr(conn, "cursor")
-
-    def __enter__(self):
-        if self._is_pg:
-            self._cur = self._conn.cursor()
-            self._cur.__enter__()
-            return self._cur
-        # DuckDB connection doubles as a cursor; the .execute() call
-        # returns the cursor-like relation we can pull description from.
-        return _DuckCursorAdapter(self._conn)
-
-    def __exit__(self, exc_type, exc, tb):
-        if self._is_pg:
-            return self._cur.__exit__(exc_type, exc, tb)
-        return None
-
-
-class _DuckCursorAdapter:
-    """Shim that exposes a psycopg2-cursor-ish ``execute`` /
-    ``fetchall`` / ``description`` surface over a DuckDB connection.
-    DuckDB's ``execute`` returns a DuckDBPyRelation; we capture it so
-    ``description`` is available after the fetch."""
-
-    def __init__(self, conn):
-        self._conn = conn
-        self._rel = None
-
-    def execute(self, sql: str, params: tuple = ()):
-        self._rel = self._conn.execute(sql, list(params))
-        return self
-
-    def fetchall(self):
-        return self._rel.fetchall()
-
-    @property
-    def description(self):
-        return self._rel.description

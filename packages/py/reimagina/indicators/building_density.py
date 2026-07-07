@@ -53,7 +53,7 @@ def compute_block_building_density(
     building whose centroid falls in an in-scope block is counted regardless
     of whether the building's polygon also touches the AOI). Writes rows
     through `bulk_write_numeric_results` so the block-level uniqueness and
-    validation rules fire the same way on both backends.
+    validation rules fire consistently.
     """
     backend = backend_for_connection(conn)
     spec = URBAN_FORM_BLOCK_BUILDING_DENSITY

@@ -15,7 +15,6 @@ keywords:
   - urban-analytics
   - gis
   - postgis
-  - duckdb
   - maplibre
   - raster
   - scenario-modelling

@@ -12,8 +12,6 @@ Production performance contract for Reimagina.
   2. **live observability**
   3. **performance gates**
 
-DuckDB remains useful for correctness and local development, but it is **not** the backend that decides whether production performance is acceptable.
-
 ## Primary workloads
 
 These are the named workloads the platform must monitor continuously.
@@ -76,11 +74,11 @@ schema change that touches the overlap path.
 
 Loaded dataset:
 
-| Layer | Rows | Load time (Postgres) | Load time (DuckDB) |
-|---|---|---|---|
-| MEX:municipality | 16 | included in 7.1 s total | included in 2.6 s total |
-| MEX:ageb | 2 431 | ″ | ″ |
-| MEX:block (manzanas) | 66 789 | ″ | ″ |
+| Layer | Rows | Load time (Postgres) |
+|---|---|---|
+| MEX:municipality | 16 | included in 7.1 s total |
+| MEX:ageb | 2 431 | ″ |
+| MEX:block (manzanas) | 66 789 | ″ |
 
 Cuauhtémoc AOI (`CVE_MUN=015`): ~34.5 km² planar, ~32 km² after geodesic
 correction. 2 853 MEX:block features intersect the AOI polygon.
@@ -90,7 +88,6 @@ Overlap compute `(MEX:block) → (MEX:ageb)` scoped to Cuauhtémoc:
 | Backend | Rows written | Wall-clock | Per-feature |
 |---|---|---|---|
 | Postgres (PostGIS geography) | 2 853 | 0.92 s | ~0.32 ms |
-| DuckDB (pyproj.Geod) | 2 853 | 3.48 s | ~1.22 ms |
 
 All 2 853 overlap_ratio values equal 1.0 (blocks nest cleanly inside AGEBs —
 the INEGI hierarchy is pre-snapped). `overlap_measure` range: 16.9 m² →

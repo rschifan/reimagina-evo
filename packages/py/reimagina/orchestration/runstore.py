@@ -1,9 +1,8 @@
 """Durable orchestration run/unit state (jobs_runtime.orchestration_run + job_unit).
 
-Postgres-only ops-plane state (component 5). DuckDB is frozen at r024 and has no
-such tables, so every function no-ops there (and for a ``None`` connection in
-unit tests) — the synchronous orchestrator then returns its in-memory RunReport
-view instead of a persisted one.
+Postgres-only ops-plane state (component 5). Every function no-ops for a
+``None`` connection in unit tests — the synchronous orchestrator then returns
+its in-memory RunReport view instead of a persisted one.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ effective value of an attribute for a feature under a scenario is
 ``override ⊕ current observation ⊕ base feature.attributes`` (first non-null
 wins). Baseline (``scenario_id=None``) collapses to ``observation ⊕ base``.
 
-Postgres-only — matches the async/orchestration Postgres path; DuckDB is frozen.
+Postgres-only — matches the async/orchestration Postgres path.
 The impact engine needs no change: an override that edits ``attribute_key`` is
 exactly the ``changed_attributes`` token it already keys the dirty-set off.
 """
@@ -91,3 +91,43 @@ def effective_numeric(
             params,
         )
         return {fid: val for fid, val in cur.fetchall() if val is not None}
+
+
+def scenario_change_set(conn: Any, *, scenario_id: str) -> tuple[set[str], set[str]]:
+    """``(changed_attributes, edited_features)`` implied by a scenario's overrides.
+
+    The override rows *are* the diff a scenario run needs, so reading them back
+    means a caller need not re-declare what changed.
+    """
+    _require_postgres(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT attribute_key, feature_id::text "
+            "FROM curated_geo.scenario_override WHERE scenario_id = %s",
+            (scenario_id,),
+        )
+        rows = cur.fetchall()
+    return {a for a, _ in rows}, {f for _, f in rows}
+
+
+def resolve_change_set(
+    conn: Any,
+    *,
+    changed_attributes: Any,
+    edited_features: Any,
+    scenario_id: str | None,
+) -> tuple[list[str], list[str]]:
+    """Effective change-set: the explicit one when given, else derived from the
+    scenario's overrides. Baseline (no scenario) always uses the explicit lists.
+
+    ponytail: flat union of (attributes, features) — a safe over-approximation.
+    With several overridden attributes a dependent may recompute a feature whose
+    specific attribute didn't change; never wrong, just not minimal. Per-attribute
+    scoping is the upgrade path, moot while only ``floors`` is overridable.
+    """
+    changed = list(changed_attributes or [])
+    features = list(edited_features or [])
+    if changed or not scenario_id:
+        return changed, features
+    attrs, feats = scenario_change_set(conn, scenario_id=scenario_id)
+    return sorted(attrs), sorted(feats)

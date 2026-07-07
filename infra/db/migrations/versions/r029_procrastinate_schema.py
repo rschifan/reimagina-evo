@@ -5,8 +5,7 @@ Procrastinate's own tables/functions/types are installed into a dedicated
 ``procrastinate`` schema so the whole set drops cleanly on downgrade (the
 worker/enqueue connections set ``search_path=procrastinate,public``). Adds
 ``orchestration_run.aoi_id`` so the async distributor can pass run scope to
-``compute_unit``. Postgres-only — DuckDB is frozen and runs the synchronous
-orchestrator.
+``compute_unit``.
 
 Revision ID: r029
 Revises: r028

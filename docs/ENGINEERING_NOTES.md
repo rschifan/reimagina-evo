@@ -155,16 +155,6 @@ add this query to its startup sequence or as a daily pg_cron job.
 
 ---
 
-### DuckDB bulk insert atomicity
-**Location:** `DuckDBFeatureRepository.bulk_insert_features` and 
-`DuckDBObservationRepository.bulk_upsert_current`.  
-**Limitation:** the row count returned is from a separate SELECT COUNT(*) statement 
-issued after the INSERT. Under concurrent writes to the same DuckDB connection the 
-count may not reflect only the current operation's rows. This is an accepted 
-prototype limitation — DuckDB's default isolation does not guarantee 
-statement-level atomicity across separate SQL calls.  
-**Impact:** dev/test only. The Postgres backend does not have this issue.
-
 ### PgBouncer transaction mode and session-level SQL
 The following SQL constructs are incompatible with PgBouncer transaction mode and 
 must use `DATABASE_URL_DIRECT`:

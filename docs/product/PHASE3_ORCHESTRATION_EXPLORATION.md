@@ -1,14 +1,19 @@
 # Phase 3 — Job Orchestration: Design Exploration
 
-Problem class: recompute a dependency graph of geospatial + analytical/ML models
-when a scenario edits the world, across many scenarios and regions. Two
-solutions evaluated against one requirement set: an in-process orchestrator and
-Dagster. Parentheticals marked `(today: …)` name the module that plays a role in
+**Scope.** The job-orchestration subsystem: what runs when a scenario edit
+invalidates part of the indicator dependency graph — selecting the outputs to
+recompute, ordering them by dependency, running the heterogeneous units (SQL/PostGIS,
+Python geometry, optimizers, ML), and handling failure, provenance, and
+observability — across many scenarios and regions.
+
+Two solutions are evaluated against one requirement set: an in-process orchestrator
+and Dagster. Parentheticals marked `(today: …)` name the module that plays a role in
 the current codebase; they are reference only and do not constrain the design.
 
 ## 1. Requirements
 
-Solution-neutral.
+Solution-neutral. (Domain terms — feature, indicator, scenario, dirty-set — are
+defined in §2.0; skim it first if the vocabulary is new.)
 
 ### Functional
 
@@ -54,8 +59,15 @@ daemon, no message broker required.
   (accessibility, housing, green_area, …).
 - **Composite indicator** — an indicator computed from other indicators.
 - **Rollup** — aggregating a fine-grain indicator to a coarser feature
-  (block → AGEB).
+  (block → AGEB). **AGEB** = *Área Geoestadística Básica*, the census block-group
+  grain blocks roll up into.
 - **Dirty-set** — the outputs a given change invalidates and forces to recompute.
+- **Work unit** — the scheduling atom the whole engine moves around:
+  `(scenario, indicator, feature_scope)`, where `feature_scope` is an explicit
+  feature-id set or `ALL`. In code today: `DirtyUnit(indicator, features)` plus the
+  run's `scenario_id`. Dedup (N3), the reuse-cache key (11), and result-store
+  atomicity (9) are all keyed on this triple.
+- **AOI** — area of interest, the geographic region a run is scoped to.
 
 ### 2.1 Components
 
@@ -65,11 +77,15 @@ which input attributes each indicator reads, which other indicators it depends
 on, its valid value bounds, and which feature types it applies to. It is the
 single source the rest of the system consults to know what can be computed and
 what depends on what. Adding a domain or model is adding an entry here.
+
 - Characteristics: declarative; versioned; per-indicator criticality (required
   vs optional inputs) that drives partial-success; the only extension point for
   new outputs.
 - Satisfies: F3, F6, N9.
-- (today: `indicator_catalog`, `indicator_dependency`, `IndicatorSpec`)
+- (today: `indicator_catalog`, `indicator_dependency`, `IndicatorSpec`. Per-indicator
+  criticality (required vs optional input) is **not yet modeled** on `IndicatorSpec`;
+  the coordinator is currently fail-closed — a dependent skips if any *dirty* input
+  fails, while non-dirty inputs keep their current value.)
 
 **2. Intake / run API**
 Role: the entry point that accepts a request to evaluate a scenario — or a
@@ -77,6 +93,7 @@ manual or scheduled or backfill trigger — and opens a *run* (one tracked
 execution). It refuses a duplicate *run* for a scenario currently computing;
 per-unit dedup (one in-flight compute per (scenario, unit)) is enforced
 downstream at the queue (6).
+
 - Characteristics: idempotent; run-level deduplicating; cheap (no compute in the
   request path).
 - Satisfies: F5, N6.
@@ -90,24 +107,38 @@ features (the edited features, their neighborhood for proximity indicators, and
 the parent features they roll up into), then propagates downstream to the
 composites and rollups computed from them. Everything else is left untouched —
 this is what makes recompute *selective* instead of full.
+
 - Characteristics: pure function of (changed attributes + features, registry);
   spatially scoped (feature set + affected parents/AOIs, not indicator-level
   only); downstream-propagating; no side effects.
+- Spatial expansion is an injected `FeatureExpander` (modes: `identity` ·
+  `neighbors` · `rollup_parents` · `full_grain`); it needs a feature graph
+  (parent↔child + spatial neighbours), **not** derivable from the registry — the
+  highest-risk correctness surface for F1, and an identity stub today.
+- Input contract: consumes `(changed_attributes, edited_features)`. Producing that
+  diff from a raw scenario edit (change detection) is upstream — intake (2) /
+  scenario-diff — and **not yet specified**.
 - Satisfies: F1.
-- (today: — ; the attribute→indicator mapping is not declared anywhere)
+- (today: **built** — `orchestration/impact.py` `compute_dirty_set`; the
+  attribute→indicator mapping is declared as `IndicatorSpec.reads`. Feature-
+  expansion is an identity stub — proximity/rollup widening not yet wired.)
 
 **4. Dependency resolver**
 Role: takes the dirty-set and orders it so every input is computed before the
 output that needs it (direct indicators → composites → rollups), and rejects
 cycles. Produces the execution order the coordinator follows.
+
 - Characteristics: topological; cycle-rejecting; derived from the registry.
 - Satisfies: F2, F3.
-- (today: `indicator_dependency` graph + its acyclicity trigger)
+- (today: **built** — topo-ordering folded into `compute_dirty_set`
+  (`graphlib.TopologicalSorter`); the graph is declared by `indicator_dependency`
+  - its acyclicity trigger)
 
 **5. Run / task state**
 Role: the durable record of a run and each unit of work inside it, with status
 (queued / running / succeeded / failed / skipped / cancelled). It is what the UI
 reads and what lets a crashed run resume instead of restarting.
+
 - Characteristics: durable; queryable; one row per unit.
 - Satisfies: F6, N2.
 - (today: `jobs_runtime.job_run`)
@@ -116,6 +147,7 @@ reads and what lets a crashed run resume instead of restarting.
 Role: holds the units ready to run and hands each to exactly one worker, so two
 workers never compute the same unit. Units that keep failing are moved aside
 (dead-letter) instead of looping forever.
+
 - Characteristics: at-least-once delivery; idempotent claim; dead-letter on
   retry-limit.
 - Satisfies: F6, N3, N8.
@@ -128,36 +160,48 @@ Role: the processes that actually run one unit of work each — reading the
 scenario's effective inputs, running the model, producing the output. Different
 work needs different resources, so units are routed to an IO pool, a CPU pool
 (heavy geometry), or a GPU pool. A running unit can be told to stop.
+
 - Characteristics: resource-profiled (IO/CPU/GPU); bounded concurrency;
   cooperatively cancellable.
 - Satisfies: F4, F7, N4.
-- (today: pure compute modules in `reimagina/jobs/*`, run synchronously via the
-  CLI; `apps/worker` is a scaffold — no pool runtime)
+- (today: **partial** — runner registry `orchestration/runners.py`
+  `default_runners` binds slugs to compute fns, run synchronously in-process by
+  the coordinator. No IO/CPU/GPU pools and no cancellation yet; runners are
+  AOI-scoped — they drop the dirty-set's `features`. `apps/worker` stays a scaffold.)
 
 **8. Coordinator**
 Role: the scheduler — the brain of a run. It asks the impact engine for the
 dirty-set, the resolver for the order, dispatches the units that are ready,
 advances the next wave as each completes, and decides the run's final status,
 including partial-success (a non-critical unit failed) and cancellation.
+
 - Characteristics: event-driven; dependency-aware; owns partial-success +
   cancellation logic.
 - Satisfies: F1, F2, F6, F7.
-- (today: —)
+- (today: **built (rung 1)** — `orchestration/coordinator.py`
+  `run_dirty_set`/`RunReport`: sequences the ordered dirty-set, isolates per-unit
+  failure, derives succeeded/partial/failed (F6). In-memory, single-process,
+  sequential (no wave parallelism yet) and no cancellation (F7); each runner owns
+  its own `job_run` row, so the coordinator opens none.)
 
 **9. Result store**
 Role: persists each computed output as the single *current* value for its
 (feature, scenario, indicator), replacing the prior current value atomically so
 a re-run never leaves duplicates or half-states.
+
 - Characteristics: idempotent (replace-in-place); one current value per key;
   provenance-stamped.
-- Satisfies: F1 (single-current invariant). Selectivity itself is on 3/11.
-- (today: `indicator_result` with current/stale status + partial-unique indexes)
+- Satisfies: F1 (single-current invariant). Selectivity itself lives in components 3 and 11.
+- (today: `indicator_result` with current/stale status + partial-unique indexes.
+  Open: *when* a value flips current→stale — at dirty-set time (never serve a
+  known-stale value) vs. at write time (never flash a half-updated set). Undecided.)
 
 **10. Validation**
 Role: checks each output against its declared post-conditions (within bounds,
 acceptable quality) and fails the unit honestly rather than storing a bad value.
 The bounds are **declared once** (on the catalog entry) and enforced by a single
 validator — never re-implemented per backend or per layer.
+
 - Characteristics: per-output; **single declarative source** (no parallel
   re-implementations); fail-closed.
 - Satisfies: F9.
@@ -170,10 +214,22 @@ Role: before running a unit, checks whether its effective inputs (and code
 version) are unchanged from a prior successful run; if so, reuses that result
 and skips the compute. Turns "recompute the dirty-set" into "recompute only what
 actually changed."
+
 - Characteristics: content-addressed (input fingerprint); safe to miss (a miss
   only costs recompute).
 - Satisfies: N5.
 - (today: —)
+
+Three mechanisms skip or store work — keep them distinct:
+
+| Mechanism | Fires when | Keyed on |
+|---|---|---|
+| dirty-set (3, F1) | a scenario edit | changed attributes + edited features |
+| reuse cache (11, N5) | a unit is about to run | content fingerprint of effective inputs + code version |
+| result store (9) | a unit succeeds | authoritative current value per `(feature, scenario, indicator)` |
+
+(Without this split, N5 gets re-implemented as "if `indicator_result` is current,
+skip" — duplicating fingerprint logic in the store.)
 
 **12. Lineage + observability** (two distinct facets)
 Role: (a) **data lineage / provenance (N1, F8)** — records what produced what
@@ -182,6 +238,7 @@ Role: (a) **data lineage / provenance (N1, F8)** — records what produced what
 operators can watch a run advance. Different axes, different tools (a lineage
 event format vs. a status stream); bundled here as one component but realized
 separately.
+
 - Characteristics: vendor-neutral lineage events (a); live status stream (b);
   both queryable after the fact.
 - Satisfies: F8, N1 (a); N2 (b).
@@ -192,7 +249,10 @@ separately.
 Role: the narrow interface the rest of the application depends on to start runs,
 read status, and subscribe to progress — so the whole engine behind it can be
 replaced (e.g. by Dagster) without touching the application.
-- Characteristics: small (~10 methods); stable; implementation-hiding.
+
+- Characteristics: small (~10 methods — e.g. `submit_run` / `get_run` /
+  `subscribe_progress`); stable; implementation-hiding; must **not** leak
+  Hamilton/Dagster types.
 - Satisfies: N8, N9.
 - (today: the repository protocols in `storage/interfaces.py`; no orchestrator
   port)
@@ -206,16 +266,18 @@ simplicity)** is a whole-system property, judged in §4, not a component.
   cache (11) = hand-rolled input fingerprint; worker pools (7) = `asyncio` (IO) +
   `ProcessPoolExecutor` (CPU); queue (6) = Postgres `SKIP LOCKED`; lineage (12) =
   `openlineage-python`. No broker, no daemon.
-- **SOTA enhancement** — a micro-orchestrator (**Hamilton**) subsumes the
-  **resolver (4)**, **reuse cache (11)** (content-addressed `data_version`
-  caching), and **lineage (12)** (OpenLineage, via its materializers): outputs
-  are declared as functions, and the graph, caching, and lineage are derived
-  from that code in-process; it executes only the requested outputs. Trade: one
-  dependency vs. owning graph + caching + lineage code. (Lineage needs the
-  materializer / `@datasaver` metadata.) **Scope:** Hamilton supplies the
-  per-unit *graph + memoization* only — it has no partition abstraction, so the
-  scenario×feature scheduling stays in the impact engine (3) + coordinator (8);
-  Hamilton is invoked per work-unit.
+- **SOTA (state-of-the-art) enhancement** — a micro-orchestrator (**Hamilton**)
+  subsumes the **reuse cache (11)** (content-addressed `data_version` caching) and
+  **lineage (12)** (OpenLineage — a vendor-neutral standard for lineage events —
+  via its materializers), plus the *intra-unit*
+  function graph of one indicator: outputs are declared as functions, and that
+  graph, caching, and lineage are derived from the code in-process; it executes
+  only the requested outputs. Trade: one dependency vs. owning caching + lineage
+  code. (Lineage needs the materializer / `@datasaver` metadata.) **Scope:**
+  Hamilton runs *within* one work-unit and is invoked per work-unit; the
+  *cross-indicator* resolver (4) — ordering the dirty-set across indicators —
+  stays ours (`graphlib`, in the impact engine), and the scenario×feature
+  scheduling stays in 3 + 8 (why, in §4).
 - **Validation realization** — declare bounds once (component 10) and enforce
   with a single declarative validator (e.g. **Pandera** for dataframe checks, or
   Hamilton `@check_output`), not a per-backend re-implementation.
@@ -226,54 +288,82 @@ simplicity)** is a whole-system property, judged in §4, not a component.
 ### 2.3 Reference architecture
 
 ```
- intake API ─► run/task state ◄─► coordinator ──► work queue ──► worker pools
-   (2)             (5)              (8) │  ▲            (6)         (7) IO/CPU/GPU
-                                 impact engine (3)                      │
-                                 + resolver (4) ◄─ catalog/registry (1) │
-                                                                        ▼
-        lineage + telemetry (12) ◄──────── result store (9) ◄── validation (10)
-                                           + reuse cache (11)
+ intake API ─► run/task state ◄─► coordinator ──► work queue ──► reuse cache ──► worker pools
+   (2)             (5)              (8) │  ▲           (6)        (11, gate)      (7) IO/CPU/GPU
+                                impact engine (3)                                       │
+                                + resolver (4) ◄─ catalog/registry (1)                  ▼
+        lineage + telemetry (12) ◄──── result store (9) ◄──────────────────── validation (10)
         orchestrator port (13) wraps the whole engine for the API.
+   (reuse cache (11) gates the worker: a hit short-circuits compute before the pool.)
 ```
 
 ### 2.4 Shared worked example (used again in §3)
 
-**Scenario edit:** convert three avenue blocks into a **linear park**
-(`land_use → green`, raise green attributes). Indicators: `green_coverage`
-(green_area family), `walkability` (accessibility; reads green/land-use),
-composite `liveability_index = 0.4·walkability + 0.3·transit + 0.3·green_coverage`.
-`transit` is untouched.
+**The edit.** Convert three avenue blocks `b1, b2, b3` into a linear park: set
+`land_use = green` and raise `tree_canopy`. So the change is
+`changed_attributes = {land_use, tree_canopy}` on `edited_features = {b1, b2, b3}`.
 
-Registry (1): `liveability_index` depends on `walkability`, `transit`,
-`green_coverage`; `liveability_rollup` rolls `liveability_index` block→AGEB.
+**The registry (1)** — five indicators, declared once:
+
+| indicator | grain | reads (attributes) | depends_on (indicators) |
+|---|---|---|---|
+| `green_coverage` | block | `land_use`, `tree_canopy` | — |
+| `walkability` | block | `land_use` (+ neighbours' green) | — |
+| `transit` | block | transit attrs (untouched) | — |
+| `liveability_index` | block | — | `0.4·walkability + 0.3·transit + 0.3·green_coverage` |
+| `liveability_rollup` | AGEB | — | `liveability_index` (block→AGEB) |
+
+The dirty-set resolves on **two axes** — *which indicators* (attribute reads, then
+downstream dependents) and *which features* each must recompute on (spatial
+expansion). The impact engine returns both as an ordered list of
+`DirtyUnit(indicator, features)`:
 
 ```python
-# impact engine (3): changed attributes + edited features → affected outputs
-changed = {"land_use", "green_density"}              # on the 3 park blocks
-seed = {o for o in registry if o.reads & changed}    # green_coverage, walkability
-seed |= spatial_expand(edited_features)              # + walkability of adjacent blocks
-dirty = downstream_dependents(seed, registry)        # + liveability_index + liveability_rollup
-# transit / fiscal not reached → excluded
+# components 3 + 4 — impact engine: (changed attrs, edited features) → ordered dirty-set
+units = compute_dirty_set(
+    changed_attributes={"land_use", "tree_canopy"},
+    edited_features={"b1", "b2", "b3"},
+    registry=SHIPPED_INDICATORS,
+    expand=feature_expander,            # identity · neighbours · rollup_parents
+)
+# units — DirtyUnit(indicator, features), already topo-ordered:
+#   1. green_coverage      {b1,b2,b3}         seeded: reads land_use + tree_canopy
+#   2. walkability         {b1,b2,b3,b4,b5}   seeded: reads land_use; + adjacent blocks (proximity)
+#      (1 ∥ 2 are independent → one wave)
+#   3. liveability_index   {b1..b5}           downstream of 1 + 2; reuses transit's CURRENT value
+#   4. liveability_rollup  {AGEB_7}           rolls 3 up to the parent AGEB of b1..b5
+#   transit: not seeded, not downstream → absent from the dirty-set
 
-# resolver (4): order so inputs precede dependents
-order = topo(dirty)   # [green_coverage ∥ walkability] → liveability_index → liveability_rollup
-
-# coordinator (8): dispatch waves via queue (6) → worker pools (7)
-for unit in ready(order):
-    if reuse_cache(11).hit(unit): reuse(unit); continue
-    run(unit)                                         # read overrides, compute
-    validate(10); result_store(9).put_current(unit); lineage(12).emit(unit)
+# component 8 — coordinator: run in dependency order, isolate per-unit failure
+report = run_dirty_set(
+    conn, units, registry=SHIPPED_INDICATORS,
+    runners=default_runners(), scenario_id="linear_park",
+)
+# per unit: reuse-cache hit (11)? skip. else compute → validate (10)
+#           → result store: put current value (9) → lineage.emit (12)
 ```
 
-Outcome: `green_coverage` and `walkability` run in parallel, then
-`liveability_index`, then `liveability_rollup` (block→AGEB); `transit`/`fiscal`
-never run; each result is bounds-checked, stored as current, lineage-stamped.
+**Outcome.** Units 1 + 2 form one wave (parallel once worker pools land —
+*sequential at rung 1 today*), then `liveability_index`, then `liveability_rollup`.
+`transit` and every other indicator never run; `liveability_index` reuses
+`transit`'s existing current value. Each result is bounds-checked (10), written as
+the single current value (9), and provenance-stamped (12).
+
+> The indicators here are illustrative. The shipped set today is
+> `urban_form_block_compactness` and `urban_form_block_building_density` — both
+> `reads=("geometry",)`, no composites or rollups yet, and `feature_expander` is
+> still the identity stub, so `features` passes through unwidened.
+
+(Implementation state — what's built in code vs. still design — is tracked separately
+in [`PHASE3_ORCHESTRATION_BUILD_STATUS.md`](./PHASE3_ORCHESTRATION_BUILD_STATUS.md).)
 
 ## 3. Solution B — Dagster
 
 Platform built on **software-defined assets**: each output is an `@asset`
 declaring its upstreams; Dagster owns the graph, a scheduling **daemon**, a
-**web UI**, and a **metadata database**.
+**web UI**, and a **metadata database**. The terms below (`@asset`, partition,
+`eager()`, IO manager, run launcher, executor) are Dagster's own constructs; the
+table maps each to the component (§2) it would play.
 
 | Component / requirement (§1, §2) | Dagster construct |
 |---|---|
@@ -312,77 +402,77 @@ def liveability_rollup(ctx): ...                           # block → AGEB
 def in_range(v): return AssetCheckResult(passed=0 <= v <= 1)
 ```
 
-Editing the park scenario's inputs re-materializes `green_coverage(S)` and
-`walkability(S)` → `liveability_index(S)` → `liveability_rollup(S)`, leaving
-`transit(S)` and every other scenario untouched — same dirty-set, wave, and
-outputs as §2; the engine, not application code, schedules it.
+Same five indicators, same edit (`S = linear_park`). Editing `S`'s inputs
+re-materializes `green_coverage(S)` and `walkability(S)` → `liveability_index(S)`
+→ `liveability_rollup(S)` — the same indicator chain as §2.4 units 1–4 — leaving
+`transit(S)` and every other scenario untouched, scheduled by the engine, not by
+application code.
+
+**Caveat — F1 is not free here.** Partitioning by scenario gives *scenario*-grain
+selectivity, not the *feature*-grain dirty-set of §2: `eager()` re-materializes the
+whole `(S)` partition, so editing three blocks recomputes `walkability(S)` for the
+entire scenario unless you add feature-grain modeling (dynamic per-feature outputs,
+observable-source-asset diffs, or a custom automation condition). Dagster absorbs
+ops, backfills, and observability; the spatial dirty-set logic of the impact engine
+(3) has no free equivalent — it would be rebuilt as a sensor / upstream-diff asset.
 
 ## 4. Comparison + recommendation
 
+A vs B against each requirement:
+
 | Requirement | In-process (A) | Dagster (B) |
 |---|---|---|
-| F1 selective recompute | impact engine + reuse cache | Declarative Automation |
-| F2/F3 order + composite | resolver / Hamilton | native asset graph |
+| F1 selective recompute | impact engine + reuse cache (feature-grain) | Declarative Automation (scenario-grain; feature-grain needs added modeling) |
+| F2/F3 order + composite | resolver (graphlib, ours) + Hamilton intra-unit | native asset graph |
 | F4 heterogeneous + ML | worker pools; bespoke GPU/ML | native executors + MLflow |
 | F8/N1 provenance + lineage | OpenLineage (table-level, free) | lineage UI (column-level paid) |
 | N2 observability | status stream to build | Dagster UI included |
 | N6 backfills | build into intake | native |
 | N7 ops simplicity | **no standing services** | daemon + webserver + metadata DB |
-| N8 scale path | single-node; multi-node = build/swap | native multi-node |
+| N8 scale path | single-node; multi-node = rung 3 (Hatchet) + worker-service extraction, not "no rearchitecture" | native multi-node |
 | N9 extensibility | registry entry + worker, behind port | new asset / Component |
 | Cost to first run | **low** (no infra) | higher (adopt + operate platform) |
 | Main risk | we own every component | platform ops + some paid features |
 
-**Recommendation (SOTA).** A three-layer split — each of the 13 components owned
-exactly once: own the domain core, borrow the compute-graph and ops-plane from
-libraries, keep Dagster as a later option behind the port.
+### 4.1 Final architecture
+
+Three layers; each of the 13 components owned exactly once. Own the domain core,
+borrow the compute-graph (one library — Hamilton) and the ops-plane (Postgres +
+a queue library), keep Dagster behind the port as a later swap.
 
 ```
-orchestration port (13)                                            ← ours
- ├ DOMAIN CORE (ours — domain truth in curated_geo / jobs_runtime):
- │    catalog (1) · intake (2) · impact engine / dirty-set (3) ·
- │    result store (9) · validation (10)
- ├ COMPUTE GRAPH (Hamilton — a library, no daemon / metadata DB):
- │    resolver (4) · reuse cache = data-version caching (11) ·
- │    lineage (12, via materializers).  Runs only the requested outputs.
- └ OPS PLANE (Postgres-backed, escalate only as needed):
+orchestration port (13) — ours; swaps the engine below (e.g. Dagster) without touching the app
+ ├ DOMAIN CORE — ours (domain truth in curated_geo / jobs_runtime)
+ │    catalog (1) · intake (2) · impact engine + cross-indicator resolver (3, 4) · result store (9) · validation bounds (10)
+ ├ COMPUTE GRAPH — Hamilton (library; no daemon, no metadata DB)
+ │    intra-unit function graph · reuse cache = data_version caching (11) · lineage (12, via materializers)
+ │    runs only the requested outputs · validation engine = Pandera / @check_output (10)
+ └ OPS PLANE — Postgres-backed ladder; climb a rung only as scale forces it
       run/task state (5) · queue (6) · worker pools (7) · coordinator (8)
-      SKIP LOCKED (have a claim primitive) → procrastinate / PgQueuer (library)
-      → Hatchet (durable-workflow service)
- (optional Dagster adapter later — behind the port, not a rewrite)
+      rung 1: SKIP LOCKED + in-process → rung 2: procrastinate / PgQueuer → rung 3: Hatchet
 ```
 
-Composition: the impact engine (3) computes the *downstream* dirty-set from
-changed attributes; Hamilton then resolves the *upstream* inputs of those
-requested outputs and skips unchanged ones via data-version caching (11). The
-two directions compose — neither replaces the other. **Hamilton supplies the
-per-unit graph + memoization only**: it has no partition abstraction, so the
-scenario×feature scheduling, backfills, and run-tracking stay in the impact
-engine (3) + coordinator (8). That partition/backfill machinery is exactly what
-Dagster would absorb at maturity — which is why partitioned backfills are a
-switch trigger, not a Hamilton feature.
+**Build vs borrow.** Pure-ours: **1, 2, 3, 4, 9, 13** (domain truth — incl. the
+cross-indicator resolver, `graphlib` folded into the impact engine). Borrowed:
+**11, 12 = Hamilton** (caching + lineage + the intra-unit graph, one dependency);
+**5, 6, 7 = the Postgres ops-plane ladder**. Hybrid: **8** (rung-1 sequencing is
+ours, durable execution → Hatchet later) and **10** (we declare the bounds once, a
+validator engine enforces them). The ladder is not hand-written per-function code:
+rung 1 is a ~10-line claim query; retries, DLQ, cron, and durable execution arrive
+by climbing a rung, not by writing them.
 
-**Build vs borrow.** Custom code ≈ the domain core + a one-query claim; the
-orchestration plumbing is borrowed.
+**Two graph directions compose.** The impact engine (3) walks *downstream* —
+changed attributes → the outputs to recompute. Hamilton walks *upstream* — the
+inputs each requested output needs, skipping unchanged ones via data_version
+caching. Different directions, they compose; neither replaces the other. Hamilton
+has no partition abstraction, so scenario×feature scheduling, backfills, and
+run-tracking stay in 3 + 8 — the exact machinery Dagster absorbs at maturity.
 
-| | Build (domain logic — no tool supplies it) | Borrow |
-|---|---|---|
-| Components | catalog (1) · intake (2) · impact engine (3) · result store (9) · validation (10) · port (13) | graph + caching + lineage (4, 11, 12) = **Hamilton**; run-state + queue + retries + workers (5, 6, 7, 8) = `SKIP LOCKED` → procrastinate/PgQueuer → Hatchet |
-
-The ops-plane ladder is **not** per-function custom code: rung 1 is a ~10-line
-claim query; retries, dead-letter, cron, and durable execution are not
-hand-written — climbing a rung makes the library/service provide them.
-
-**Dual verdict.** *Next step* — the domain core + Hamilton (resolver, caching,
-lineage as one library) + a Postgres ops-plane is preferable to adopting
-Dagster: no daemon, metadata DB, or partition taxonomy, and domain truth stays
-in our schema. *Mature future* — many scenarios × regions, routine backfills, a
-lineage UI, ML/GPU scheduling — Dagster is the benchmark, reached via the
-adapter.
-
-**Switch to Dagster when ≥2 hold:** trained ML models need versioning / GPU
-scheduling; pipelines span many regions with routine backfills; a lineage UI
-becomes a product requirement; execution must go multi-node.
+**Verdict.** *Now* — domain core + Hamilton + Postgres ops-plane: no daemon, no
+metadata DB, no partition taxonomy, domain truth stays in our schema. *Later* —
+Dagster via the port. **Switch when ≥2 hold:** ML models need versioning / GPU
+scheduling · many regions with routine backfills · a lineage UI becomes a product
+requirement · execution must go multi-node.
 
 ## 5. Alternatives — positioning (2026)
 
@@ -391,7 +481,7 @@ components; the §4 design composes the best-fit ones.
 
 | Tool | Covers (components) | Best for | Pick when |
 |---|---|---|---|
-| **Hamilton** | 4, 11, 12 — graph + `data_version` caching + OpenLineage; runs only requested outputs | the compute-graph layer | **now** (top pick). Caveats: lineage needs materializer/`@datasaver` metadata; no partition abstraction — scenario/feature scheduling stays in 3+8 |
+| **Hamilton** | 11, 12 + intra-unit graph — `data_version` caching + OpenLineage + per-unit function DAG; runs only requested outputs | the compute-graph layer | **now** (top pick). Caveats: lineage needs materializer/`@datasaver` metadata; no partition abstraction and no cross-indicator resolver — that ordering (4) + scenario/feature scheduling stay in 3 + 8 |
 | **procrastinate / PgQueuer** | 5, 6 (+ retries, scheduling, locks, DLQ) | Postgres task-queue *library*, no new infra | ops-plane rung above `SKIP LOCKED`, below Hatchet |
 | **Hatchet** | 5, 6, 7, 8 — durable runs/queue/workers/coordinator (Postgres) | durable-workflow *service* | durable execution / dynamic concurrency / monitoring UI needed. Not a lineage platform |
 | **SQLMesh** | SQL-expressible 1, 3, 4, 9, 10, 11, 12 (incremental, plan/apply, audits, free column lineage) | SQL-transform governance | **companion** for warehouse transforms — not central (PostGIS/geometry/ML/overrides aren't SQL) |
@@ -404,19 +494,3 @@ platform, standing infra), **Temporal** (durable sagas — wrong axis), **Windmi
 
 Ranking: compute graph = Hamilton · ops-plane library = procrastinate → Hatchet ·
 SQL companion = SQLMesh · full platform (later) = Dagster · general workflow = Prefect.
-
-## 6. Appendix — Dagster facts (2026)
-
-| Claim | Status |
-|---|---|
-| Core `1.13.10` / libs `0.29.10` (Jun 2026) | current stable |
-| Declarative Automation stable since 1.9; Components GA Sept 2025 | confirmed |
-| Column-level lineage + owner-search are paid (Dagster+) | confirmed |
-| No free managed tier | confirmed |
-| Airflow 3.2 / Prefect 3 narrowing the asset/lineage gap | confirmed |
-| Fit for a PostGIS-per-region + ML workload | inferred — no public benchmark covers it |
-
-Sources: github.com/apache/hamilton · sqlmesh.readthedocs.io ·
-kestra.io/resources/data/prefect-alternatives · windmill.dev/docs/compared_to/kestra ·
-getorchestra.io/blog/top-dagster-alternatives-in-2026 ·
-getbruin.com/blog/best-data-pipeline-tools-2026

@@ -30,8 +30,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 class SubmitRunBody(BaseModel):
-    changed_attributes: list[str]
-    edited_features: list[str]
+    # Optional: when a scenario_id is given and these are omitted, the change-set
+    # is derived from the scenario's overrides (the override rows are the diff).
+    changed_attributes: list[str] | None = None
+    edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
 
@@ -66,13 +68,15 @@ def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
     with connect(api_dsn()) as conn:
         handle = ProcrastinateOrchestrator().submit_run(
             conn,
-            changed_attributes=body.changed_attributes,
-            edited_features=body.edited_features,
+            changed_attributes=body.changed_attributes or [],
+            edited_features=body.edited_features or [],
             scenario_id=body.scenario_id,
             aoi_id=body.aoi_id,
             code_version=code_version(),
         )
-    return SubmitRunResponse(run_id=handle.run_id, status="queued")
+    # "noop" when the run had nothing to recompute; else the queued run_id.
+    status = handle.status.status if handle.status else "queued"
+    return SubmitRunResponse(run_id=handle.run_id, status=status)
 
 
 @router.get("/{run_id}", response_model=RunView)
