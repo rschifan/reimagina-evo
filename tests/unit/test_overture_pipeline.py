@@ -10,7 +10,6 @@ from reimagina.pipeline.overture import (
     OVERTURE_PENDING_STORAGE_URI,
     OVERTURE_BUILDINGS_SOURCE_NAME,
     ensure_overture_buildings_source,
-    overture_buildings_extract_sql,
     extract_overture_buildings_subset,
     overture_theme_type_glob,
     bootstrap_overture_buildings_subset,
@@ -25,14 +24,6 @@ def test_overture_theme_type_glob_uses_pinned_release():
     assert f"/release/{OVERTURE_DEFAULT_RELEASE}/" in glob
     assert "theme=buildings/type=building/*.parquet" in glob
     assert glob.startswith("s3://")
-
-
-def test_overture_extract_sql_targets_geoparquet_subset():
-    sql = overture_buildings_extract_sql()
-    assert "FROM read_parquet(" in sql
-    assert "bbox.xmax >=" in sql
-    assert "bbox.xmin <=" in sql
-    assert "TO 'overture_buildings_mexico_city.parquet' (FORMAT PARQUET)" in sql
 
 
 def test_overture_source_spec_matches_first_source_choice():

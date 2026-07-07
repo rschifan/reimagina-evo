@@ -157,7 +157,7 @@ def evaluate_scenario_cli(
         return {
             "dsn": dsn,
             "run_id": handle.run_id,
-            "status": "queued",
+            "status": handle.status.status if handle.status else "queued",
             "mode": "async",
         }
 

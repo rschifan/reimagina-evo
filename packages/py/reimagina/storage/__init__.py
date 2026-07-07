@@ -1,4 +1,4 @@
-"""Swappable storage backends for local DuckDB and production PostGIS."""
+"""Storage backend and connection routing for production PostGIS."""
 
 from .manager import (
     DEFAULT_DEV_DSN,
@@ -8,7 +8,6 @@ from .manager import (
     backend_name_for_dsn,
     connect,
     default_dsn,
-    duckdb_path_from_dsn,
     mask_dsn,
 )
 
@@ -20,6 +19,5 @@ __all__ = [
     "backend_name_for_dsn",
     "connect",
     "default_dsn",
-    "duckdb_path_from_dsn",
     "mask_dsn",
 ]

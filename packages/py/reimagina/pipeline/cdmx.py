@@ -333,8 +333,7 @@ def bootstrap_layers(
 def layer_status(conn) -> dict[str, int]:
     """Return row counts per MEX feature type_slug in curated_geo.feature.
 
-    Uses the feature_type_stats view so it works on both backends without
-    raw SQL here.
+    Uses the feature_type_stats view so it avoids raw SQL here.
     """
     backend = backend_for_connection(conn)
     stats = backend.explore_reader().list_feature_stats()
