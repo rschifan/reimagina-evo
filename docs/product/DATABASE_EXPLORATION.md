@@ -8,7 +8,7 @@ This project uses three different database layers for three different reasons:
 
 ## Recommended tools
 
-- **DBeaver Community**: the default SQL explorer for both DuckDB and Postgres/PostGIS
+- **DBeaver Community**: the default SQL explorer for Postgres/PostGIS
 - **QGIS**: optional secondary tool for visual map and geometry checks
 
 ## Recommended starting point
@@ -31,14 +31,6 @@ When you open the database in DBeaver, start from the `explore` schema:
 - Use QGIS when you need to inspect spatial layout, overlap behavior, or geometry quality visually.
 
 ## Standard local connections
-
-### DuckDB
-
-Default local file:
-
-```text
-data/local/reimagina.duckdb
-```
 
 ### Postgres/PostGIS
 

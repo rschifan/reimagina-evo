@@ -2,9 +2,7 @@
 indicator_result, serving_geo.current_indicator_v, and supporting triggers.
 
 Brings the Layer 2 contract documented in INDICATORS_LAYER.md + JOB_LAYER.md to
-Postgres. DuckDB gets a thinner mirror via the SQL file (no triggers, no
-partial indexes — DuckDBIndicatorResultRepository enforces the same rules in
-Python).
+Postgres.
 
 scenario_id columns are plain uuid with NO FK — app_core.scenario lands with
 Layer 3 and the FK is added together with the scenario table. indicator_result

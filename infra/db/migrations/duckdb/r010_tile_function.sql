@@ -1,3 +1,0 @@
--- r010: PostGIS-only tile function for martin.
--- DuckDB does not support MVT generation or martin integration.
--- No schema changes for this backend.

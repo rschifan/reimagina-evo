@@ -950,10 +950,6 @@ def test_summarise_aoi_end_to_end_weighted_mean_postgres(conn):
       `aoi_feature.overlap_measure`, not `overlap_ratio`; and
     * the row surfaces through `serving_geo.aoi_summary_v` with the same
       value.
-
-    DuckDB has an analogous test in test_duckdb_storage_contracts; the
-    production backend is Postgres, so covering it directly here is a
-    non-redundant safety net.
     """
     seed_catalog(conn)
     project_id = _insert_project(conn, name="AOI Summary E2E Project")

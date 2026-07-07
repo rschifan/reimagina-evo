@@ -26,7 +26,7 @@ transaction) is reused verbatim from R3 so any two recipes writing
 the same *output* prefix serialize correctly.
 
 FOLLOW-UP: the private helpers imported from :mod:`raster_zonal_stats`
-(``_prefix_lock_key``, ``_run_critical_section``, ``_finalise_run_safely``,
+(``_run_critical_section_postgres``, ``_finalise_run_safely``,
 ``_maybe_commit``) should be extracted into a shared
 ``reimagina.jobs._prefix_writer`` module when a third worker needs
 them. Imported via their underscore names for now to keep the R3
@@ -50,8 +50,7 @@ from reimagina.jobs.raster_zonal_stats import (
     ConcurrentRasterRun,
     _finalise_run_safely,
     _maybe_commit,
-    _run_critical_section,
-    _backend_name,
+    _run_critical_section_postgres,
 )
 from reimagina.storage import backend_for_connection
 
@@ -97,8 +96,7 @@ def run_observation_rollup(
     Contract mirrors :func:`run_raster_zonal_stats` — ``conn`` owns the
     ``ingestion_run`` bookkeeping (committed early), a dedicated
     connection performs the retire+upsert inside a prefix-lock-held
-    transaction on Postgres, DuckDB reuses ``conn`` inside an in-process
-    lock.
+    transaction.
 
     ``method`` must be one of the values accepted by
     :func:`reimagina.jobs.aggregation.aggregate`. ``weight_basis`` is
@@ -163,14 +161,12 @@ def run_observation_rollup(
         raise
 
     try:
-        _run_critical_section(
-            conn=conn,
-            backend_name=_backend_name(conn),
+        _run_critical_section_postgres(
+            direct_dsn=direct_dsn,
             attribute_key_prefix=output_attribute_key_prefix,
             records=records,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
-            direct_dsn=direct_dsn,
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(

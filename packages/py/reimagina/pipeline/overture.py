@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import duckdb
+import pyarrow.compute as pc
+import pyarrow.dataset as pads
+import pyarrow.parquet as pq
+from pyarrow import fs as pafs
 
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
@@ -90,41 +93,54 @@ def overture_theme_type_glob(
     )
 
 
-def overture_buildings_extract_sql(
-    *,
-    output_path: str | Path = OVERTURE_BUILDINGS_FILENAME,
-    source_glob: str | None = None,
-    bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
-    release: str = OVERTURE_DEFAULT_RELEASE,
-) -> str:
-    """Return the DuckDB SQL used to create a local GeoParquet subset.
+def _s3_prefix_from_glob(source_glob: str) -> str:
+    """Strip the ``s3://`` scheme and trailing ``/*.parquet`` glob so a
+    pyarrow dataset / file selector can walk the release directory."""
+    prefix = source_glob.split("://", 1)[-1]
+    if prefix.endswith("/*.parquet"):
+        prefix = prefix[: -len("/*.parquet")]
+    return prefix
 
-    The local output becomes the canonical Bronze artifact for this first source.
-    Remote Overture sources use bbox metadata columns for fast cloud-native
-    filtering; local GeoParquet sources fall back to geometry intersection.
-    """
-    source_glob = source_glob or overture_theme_type_glob(release=release)
+
+def _extract_remote_overture_subset(
+    source_glob: str,
+    output_path: Path,
+    bbox: tuple[float, float, float, float],
+) -> None:
+    """Read the pinned Overture S3 GeoParquet release and write the bbox
+    subset locally. Filters on the GeoParquet ``bbox`` struct columns so
+    pyarrow prunes non-overlapping row groups from row-group statistics
+    without fetching them."""
     min_lon, min_lat, max_lon, max_lat = bbox
-    if str(source_glob).startswith(("s3://", "https://")):
-        where_clause = f"""
-    WHERE
-        bbox.xmax >= {min_lon} AND bbox.xmin <= {max_lon} AND
-        bbox.ymax >= {min_lat} AND bbox.ymin <= {max_lat}
-""".rstrip()
-    else:
-        where_clause = f"""
-    WHERE ST_Intersects(
-        geometry,
-        ST_MakeEnvelope({min_lon}, {min_lat}, {max_lon}, {max_lat})
+    s3 = pafs.S3FileSystem(anonymous=True, region=OVERTURE_S3_REGION)
+    dataset = pads.dataset(
+        _s3_prefix_from_glob(source_glob), filesystem=s3, format="parquet"
     )
-""".rstrip()
-    return f"""
-COPY (
-    SELECT *
-    FROM read_parquet('{source_glob}')
-{where_clause}
-) TO '{Path(output_path)}' (FORMAT PARQUET);
-""".strip()
+    flt = (
+        (pc.field("bbox", "xmax") >= min_lon)
+        & (pc.field("bbox", "xmin") <= max_lon)
+        & (pc.field("bbox", "ymax") >= min_lat)
+        & (pc.field("bbox", "ymin") <= max_lat)
+    )
+    # ponytail: materialises the whole metro subset in memory — fine for a
+    # city bbox; switch to dataset.to_batches() + ParquetWriter if a larger
+    # AOI OOMs.
+    pq.write_table(dataset.to_table(filter=flt), str(output_path))
+
+
+def _extract_local_overture_subset(
+    source_glob: str,
+    output_path: Path,
+    bbox: tuple[float, float, float, float],
+) -> None:
+    """Filter a local GeoParquet to the bbox via geopandas ``.cx`` — a
+    bounding-box spatial slice (geometry intersection with the bbox
+    envelope)."""
+    import geopandas as gpd
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    gdf = gpd.read_parquet(source_glob)
+    gdf.cx[min_lon:max_lon, min_lat:max_lat].to_parquet(output_path)
 
 
 def extract_overture_buildings_subset(
@@ -134,7 +150,13 @@ def extract_overture_buildings_subset(
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
     release: str = OVERTURE_DEFAULT_RELEASE,
 ) -> Path:
-    """Extract an Overture buildings subset from S3 GeoParquet using DuckDB.
+    """Extract an Overture buildings subset to local GeoParquet.
+
+    Remote Overture releases (``s3://…``) are read with pyarrow over an
+    anonymous S3 filesystem and filtered on the GeoParquet ``bbox`` struct
+    columns for cloud-native predicate pushdown. A local GeoParquet
+    ``source_glob`` falls back to a geometry bbox intersection via
+    geopandas. The local output becomes the canonical Bronze artifact.
 
     Defaults match the legacy CDMX bbox. Override ``bbox`` for any other
     AOI (e.g. Mexicali). ``release`` selects the Overture S3 release
@@ -143,23 +165,11 @@ def extract_overture_buildings_subset(
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(":memory:")
-    try:
-        conn.execute("INSTALL spatial; LOAD spatial;")
-        conn.execute("INSTALL httpfs; LOAD httpfs;")
-        effective_glob = source_glob or overture_theme_type_glob(release=release)
-        if effective_glob.startswith("s3://"):
-            conn.execute(f"SET s3_region='{OVERTURE_S3_REGION}';")
-        conn.execute(
-            overture_buildings_extract_sql(
-                output_path=output_path,
-                source_glob=effective_glob,
-                bbox=bbox,
-                release=release,
-            )
-        )
-    finally:
-        conn.close()
+    effective_glob = source_glob or overture_theme_type_glob(release=release)
+    if str(effective_glob).startswith("s3://"):
+        _extract_remote_overture_subset(effective_glob, output_path, bbox)
+    else:
+        _extract_local_overture_subset(effective_glob, output_path, bbox)
     return output_path
 
 

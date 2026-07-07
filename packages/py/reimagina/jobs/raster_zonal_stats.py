@@ -15,11 +15,9 @@ Design-doc rules encoded here (Rev 7):
 - Default statistic set depends on the layer's ``aggregation_kind``:
   intensive rasters (temperature, NDVI) get mean/median/p05/p95/std;
   extensive rasters (population count, area) get sum/count.
-- The retire + insert critical section is guarded by a prefix lock.
-  Postgres uses a transaction-scoped ``pg_try_advisory_xact_lock`` on
-  a dedicated connection so the lock survives pooled callers. DuckDB
-  uses an in-process ``threading.Lock`` (dev/local only; no
-  cross-process guarantee).
+- The retire + insert critical section is guarded by a prefix lock:
+  a transaction-scoped ``pg_try_advisory_xact_lock`` on a dedicated
+  connection so the lock survives pooled callers.
 - Lock contention raises :class:`ConcurrentRasterRun` — a dedicated
   exception so dashboards can filter on the lock-miss error code.
 - The ``ingestion_run`` row is committed **before** the critical
@@ -32,8 +30,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -127,15 +123,6 @@ _DEFAULT_STATS_BY_KIND: dict[str, tuple[str, ...]] = {
 }
 
 
-# Module-level lock registry for the DuckDB path. Process-local only —
-# DuckDB is a dev/local backend and runs in-process, so a threading.Lock
-# dict keyed by prefix is sufficient. A second Python process would
-# bypass this; Postgres's advisory lock is the one that handles real
-# parallelism.
-_DUCKDB_PREFIX_LOCKS: dict[str, threading.Lock] = {}
-_DUCKDB_REGISTRY_LOCK = threading.Lock()
-
-
 def _prefix_lock_key(prefix: str) -> int:
     """Derive the ``pg_try_advisory_xact_lock`` key for a prefix.
 
@@ -151,20 +138,6 @@ def _prefix_lock_key(prefix: str) -> int:
         digest_size=8,
     ).digest()
     return int.from_bytes(digest, byteorder="big", signed=True)
-
-
-@contextmanager
-def _duckdb_prefix_lock(prefix: str):
-    """In-process prefix lock for DuckDB. Raises ``ConcurrentRasterRun``
-    if the lock is already held (non-blocking acquire)."""
-    with _DUCKDB_REGISTRY_LOCK:
-        lock = _DUCKDB_PREFIX_LOCKS.setdefault(prefix, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise ConcurrentRasterRun(prefix)
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 @dataclass(frozen=True)
@@ -196,10 +169,9 @@ def run_raster_zonal_stats(
     The ``conn`` argument is used to write the ``ingestion_run`` row
     (committed before the critical section). The retire + bulk_upsert
     pair runs on a dedicated connection with a transaction-scoped
-    advisory lock — on Postgres the DSN comes from ``direct_dsn`` or
-    the ``DATABASE_URL_DIRECT`` env var (same direct-port connection
-    Martin and the migration runner use). On DuckDB the main ``conn``
-    is reused because DuckDB is single-process.
+    advisory lock — the DSN comes from ``direct_dsn`` or the
+    ``DATABASE_URL_DIRECT`` env var (same direct-port connection Martin
+    and the migration runner use).
 
     ``statistics`` defaults to the kind-appropriate set from
     :data:`_DEFAULT_STATS_BY_KIND`. Callers override only for the
@@ -287,14 +259,12 @@ def run_raster_zonal_stats(
     # the prefix lock. Dedicated connection on Postgres so the
     # transaction-scoped advisory lock survives pooled callers.
     try:
-        _run_critical_section(
-            conn=conn,
-            backend_name=_backend_name(conn),
+        _run_critical_section_postgres(
+            direct_dsn=direct_dsn,
             attribute_key_prefix=attribute_key_prefix,
             records=records,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
-            direct_dsn=direct_dsn,
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(
@@ -476,36 +446,6 @@ def _is_nan(value: object) -> bool:
         return False
 
 
-def _run_critical_section(
-    *,
-    conn,
-    backend_name: str,
-    attribute_key_prefix: str,
-    records: list[dict[str, Any]],
-    source_id: str,
-    ingestion_run_id: str,
-    direct_dsn: str | None,
-) -> None:
-    """Retire + bulk_upsert under the prefix lock, on a dedicated
-    connection where one is needed."""
-    if backend_name == "postgres":
-        _run_critical_section_postgres(
-            direct_dsn=direct_dsn,
-            attribute_key_prefix=attribute_key_prefix,
-            records=records,
-            source_id=source_id,
-            ingestion_run_id=ingestion_run_id,
-        )
-    else:
-        _run_critical_section_duckdb(
-            conn=conn,
-            attribute_key_prefix=attribute_key_prefix,
-            records=records,
-            source_id=source_id,
-            ingestion_run_id=ingestion_run_id,
-        )
-
-
 def _run_critical_section_postgres(
     *,
     direct_dsn: str | None,
@@ -558,70 +498,13 @@ def _run_critical_section_postgres(
         tx_conn.close()
 
 
-def _run_critical_section_duckdb(
-    *,
-    conn,
-    attribute_key_prefix: str,
-    records: list[dict[str, Any]],
-    source_id: str,
-    ingestion_run_id: str,
-) -> None:
-    with _duckdb_prefix_lock(attribute_key_prefix):
-        backend = backend_for_connection(conn)
-        # DuckDB uses per-statement autocommit by default, so retire +
-        # bulk_upsert would commit independently. Wrap both in an
-        # explicit transaction so any failure between them rolls back
-        # the retire — matching the Postgres advisory-lock path where
-        # the two statements share one transaction.
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            backend.observation_repo().retire_current_by_prefix(
-                prefix=attribute_key_prefix,
-            )
-            backend.observation_repo().bulk_upsert_current(
-                records,
-                source_id=source_id,
-                ingestion_run_id=ingestion_run_id,
-            )
-            conn.execute("COMMIT")
-        except Exception:
-            try:
-                conn.execute("ROLLBACK")
-            except Exception as rollback_exc:
-                logger.warning(
-                    "duckdb rollback failed after retire/upsert error: %s",
-                    rollback_exc,
-                )
-            raise
-
-
-def _backend_name(conn) -> str:
-    """Return ``'postgres'`` or ``'duckdb'`` for the connection type."""
-    import duckdb as _duckdb
-    import psycopg2.extensions as _pg_ext
-
-    if isinstance(conn, _duckdb.DuckDBPyConnection):
-        return "duckdb"
-    if isinstance(conn, _pg_ext.connection):
-        return "postgres"
-    raise TypeError(f"Unsupported connection type: {type(conn)!r}")
-
-
 def _maybe_commit(conn) -> None:
-    """Commit on Postgres when the caller isn't in autocommit mode.
+    """Commit unless the caller is already in autocommit mode.
 
-    DuckDB has no explicit transaction boundary at this level (each
-    statement auto-commits in the default mode the CLI uses), and
-    calling ``.commit()`` on it is a no-op but harmless. Postgres
-    callers in autocommit mode raise when ``.commit()`` is called
-    while no transaction is open, so we guard with the autocommit
+    Postgres callers in autocommit mode raise when ``.commit()`` is
+    called while no transaction is open, so we guard with the autocommit
     flag.
     """
-    import duckdb as _duckdb
-
-    if isinstance(conn, _duckdb.DuckDBPyConnection):
-        conn.commit()
-        return
     if getattr(conn, "autocommit", False):
         return
     conn.commit()

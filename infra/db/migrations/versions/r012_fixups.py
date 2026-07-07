@@ -11,11 +11,6 @@ Changes:
      feature_overlap_type_pair(target_type_id) for reverse lookups
      ("which source types overlap with this target?").
 
-The DuckDB counterpart (r012_fixups.sql) adds:
-  - RTREE spatial index on curated_geo.feature.geometry
-  - CHECK constraints on curated_geo.feature_overlap to match Postgres schema
-  - The same target_type_id index
-
 Revision ID: r012
 Revises: r011
 Create Date: 2026-04-14

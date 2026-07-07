@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pyarrow import fs as pafs
+
 from reimagina.pipeline.overture import (
     OVERTURE_DEFAULT_RELEASE,
     OVERTURE_S3_REGION,
@@ -66,25 +68,21 @@ def _check_path(label: str, path: str) -> dict[str, Any]:
 
 
 def _check_overture_release(release: str) -> dict[str, Any]:
-    """HEAD-style check: ask DuckDB to ``glob()`` the Overture S3 release
-    and report whether at least one parquet matches. Cheap (no data
-    transferred) but proves the bucket is reachable + the release exists."""
+    """HEAD-style check: list the Overture S3 release prefix with pyarrow
+    and report whether at least one parquet is present. Cheap (metadata
+    only) but proves the bucket is reachable + the release exists."""
     glob = overture_theme_type_glob(release=release)
+    prefix = glob.split("://", 1)[-1]
+    if prefix.endswith("/*.parquet"):
+        prefix = prefix[: -len("/*.parquet")]
     try:
-        import duckdb  # local import: cli should still load if duckdb is missing
-    except ImportError as exc:  # pragma: no cover — dev env always has duckdb
-        return {
-            "label": f"Overture release {release}",
-            "path": glob,
-            "ok": False,
-            "reason": f"duckdb not installed ({exc})",
-        }
-    conn = duckdb.connect(":memory:")
-    try:
-        conn.execute("INSTALL httpfs; LOAD httpfs;")
-        conn.execute(f"SET s3_region='{OVERTURE_S3_REGION}';")
-        rows = conn.execute(f"SELECT count(*) FROM glob('{glob}')").fetchone()
-        count = int(rows[0]) if rows else 0
+        s3 = pafs.S3FileSystem(anonymous=True, region=OVERTURE_S3_REGION)
+        selector = pafs.FileSelector(prefix, recursive=False, allow_not_found=True)
+        count = sum(
+            1
+            for info in s3.get_file_info(selector)
+            if info.type == pafs.FileType.File and info.path.endswith(".parquet")
+        )
         if count == 0:
             return {
                 "label": f"Overture release {release}",
@@ -105,8 +103,6 @@ def _check_overture_release(release: str) -> dict[str, Any]:
             "ok": False,
             "reason": f"glob_failed: {exc.__class__.__name__}: {exc}",
         }
-    finally:
-        conn.close()
 
 
 def _check_worldpop_rest(

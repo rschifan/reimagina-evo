@@ -684,15 +684,9 @@ def _aoi_display_tokens(backend) -> dict[str, tuple[str, ...]]:
 
     out: dict[str, tuple[str, ...]] = {}
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute("SELECT id::text, name FROM curated_geo.area_of_interest")
-            rows = cur.fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT CAST(id AS VARCHAR), name FROM curated_geo.area_of_interest"
-        ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id::text, name FROM curated_geo.area_of_interest")
+        rows = cur.fetchall()
     for aoi_id, name in rows:
         if not name:
             continue
@@ -774,7 +768,6 @@ def _list_observation_aoi_affinity(
     both AOIs (e.g. the INEGI censo block-level prefixes) surfaces a
     two-element set."""
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
     sql = """
         SELECT DISTINCT o.attribute_key, f.type_slug, af.aoi_id::text
         FROM curated_geo.observation o
@@ -782,14 +775,9 @@ def _list_observation_aoi_affinity(
         JOIN curated_geo.aoi_feature af ON af.feature_id = f.id
         WHERE o.is_current
     """
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-    else:
-        rows = conn.execute(
-            sql.replace("af.aoi_id::text", "CAST(af.aoi_id AS VARCHAR)")
-        ).fetchall()
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
     affinity: dict[tuple[str, str], set[str]] = {}
     for attr_key, type_slug, aoi_id in rows:
         affinity.setdefault((str(attr_key), str(type_slug)), set()).add(str(aoi_id))
@@ -800,25 +788,11 @@ def _list_source_observation_pairs(backend) -> list[tuple[str, str]]:
     """Distinct (attribute_key, feature.type_slug) pairs for current obs.
 
     A single SQL query returns the full pair list; the caller filters
-    out recipe outputs in Python. This keeps the SQL identical between
-    Postgres and DuckDB.
+    out recipe outputs in Python.
     """
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT o.attribute_key, f.type_slug
-                FROM curated_geo.observation o
-                JOIN curated_geo.feature f ON f.id = o.feature_id
-                WHERE o.is_current
-                ORDER BY o.attribute_key, f.type_slug
-                """
-            )
-            rows = cur.fetchall()
-    else:
-        rows = conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
             SELECT DISTINCT o.attribute_key, f.type_slug
             FROM curated_geo.observation o
@@ -826,7 +800,8 @@ def _list_source_observation_pairs(backend) -> list[tuple[str, str]]:
             WHERE o.is_current
             ORDER BY o.attribute_key, f.type_slug
             """
-        ).fetchall()
+        )
+        rows = cur.fetchall()
     return [(str(r[0]), str(r[1])) for r in rows]
 
 
@@ -998,27 +973,16 @@ def _latest_observation_version(backend, attribute_key: str) -> str | None:
     ``?v=<epoch>`` doesn't break the SQL — it just makes the URL unique.
     """
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT EXTRACT(EPOCH FROM max(updated_at))::bigint
-                FROM curated_geo.observation
-                WHERE is_current AND attribute_key = %s
-                """,
-                (attribute_key,),
-            )
-            row = cur.fetchone()
-    else:  # duckdb
-        row = conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
-            SELECT CAST(epoch(max(updated_at)) AS BIGINT)
+            SELECT EXTRACT(EPOCH FROM max(updated_at))::bigint
             FROM curated_geo.observation
-            WHERE is_current AND attribute_key = ?
+            WHERE is_current AND attribute_key = %s
             """,
-            [attribute_key],
-        ).fetchone()
+            (attribute_key,),
+        )
+        row = cur.fetchone()
     if not row or row[0] is None:
         return None
     return str(row[0])
@@ -1035,39 +999,22 @@ def _aggregation_value_ranges_all(backend) -> dict[str, dict[str, object]]:
     in the catalog.
     """
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT attribute_key,
-                       count(*),
-                       min(value_numeric),
-                       percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
-                       percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
-                       percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
-                       max(value_numeric)
-                FROM curated_geo.observation
-                WHERE is_current AND value_numeric IS NOT NULL
-                GROUP BY attribute_key
-                """
-            )
-            rows = cur.fetchall()
-    else:  # duckdb
-        rows = conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
             SELECT attribute_key,
                    count(*),
                    min(value_numeric),
-                   quantile_cont(value_numeric, 0.05),
-                   quantile_cont(value_numeric, 0.50),
-                   quantile_cont(value_numeric, 0.95),
+                   percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
+                   percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
                    max(value_numeric)
             FROM curated_geo.observation
             WHERE is_current AND value_numeric IS NOT NULL
             GROUP BY attribute_key
             """
-        ).fetchall()
+        )
+        rows = cur.fetchall()
     out: dict[str, dict[str, object]] = {}
     for key, count, vmin, p05, p50, p95, vmax in rows:
         if not count:
@@ -1088,28 +1035,17 @@ def _latest_observation_versions_all(backend) -> dict[str, str]:
     Same rationale as :func:`_aggregation_value_ranges_all` — one
     GROUP BY pass instead of N point lookups."""
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT attribute_key,
-                       EXTRACT(EPOCH FROM max(updated_at))::bigint
-                FROM curated_geo.observation
-                WHERE is_current
-                GROUP BY attribute_key
-                """
-            )
-            rows = cur.fetchall()
-    else:
-        rows = conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
-            SELECT attribute_key, CAST(epoch(max(updated_at)) AS BIGINT)
+            SELECT attribute_key,
+                   EXTRACT(EPOCH FROM max(updated_at))::bigint
             FROM curated_geo.observation
             WHERE is_current
             GROUP BY attribute_key
             """
-        ).fetchall()
+        )
+        rows = cur.fetchall()
     return {str(key): str(epoch) for key, epoch in rows if epoch is not None}
 
 
@@ -1125,39 +1061,22 @@ def _aggregation_value_range(backend, attribute_key: str) -> dict[str, object] |
     # Raw SQL: the repo interface doesn't expose an aggregate helper and
     # widening it for one tile-resolver call isn't worth the surface.
     conn = backend.connection
-    backend_name = getattr(backend, "name", "")
-    if backend_name == "postgres":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  count(*),
-                  min(value_numeric),
-                  percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
-                  percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
-                  percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
-                  max(value_numeric)
-                FROM curated_geo.observation
-                WHERE is_current AND attribute_key = %s AND value_numeric IS NOT NULL
-                """,
-                (attribute_key,),
-            )
-            count, vmin, p05, p50, p95, vmax = cur.fetchone()
-    else:  # duckdb
-        count, vmin, p05, p50, p95, vmax = conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
             SELECT
               count(*),
               min(value_numeric),
-              quantile_cont(value_numeric, 0.05),
-              quantile_cont(value_numeric, 0.50),
-              quantile_cont(value_numeric, 0.95),
+              percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
+              percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
+              percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
               max(value_numeric)
             FROM curated_geo.observation
-            WHERE is_current AND attribute_key = ? AND value_numeric IS NOT NULL
+            WHERE is_current AND attribute_key = %s AND value_numeric IS NOT NULL
             """,
-            [attribute_key],
-        ).fetchone()
+            (attribute_key,),
+        )
+        count, vmin, p05, p50, p95, vmax = cur.fetchone()
     if not count:
         return None
     return {

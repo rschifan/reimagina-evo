@@ -327,8 +327,8 @@ def test_cli_raster_list_against_real_db(
 ):
     """Exercises the `raster list` CLI path against a migrated DB.
 
-    Covers the explore.raster_layer_v read + the _cursor_compat shim
-    in apps/cli/raster.py (which unit tests stub out via fakes).
+    Covers the explore.raster_layer_v read in apps/cli/raster.py
+    (which unit tests stub out via fakes).
     """
     from apps.cli.raster import list_raster_layers
 

@@ -87,11 +87,8 @@ jobs:
         run: npm test
 
   test-py-integration:
-    name: Integration tests (Postgres + PostGIS) — informational
+    name: Integration tests (Postgres + PostGIS)
     runs-on: ubuntu-latest
-    # Informational for now; not a required check. Promote to required
-    # once we've seen it stable across a few PRs.
-    continue-on-error: true
     services:
       postgres:
         image: postgis/postgis:16-3.4

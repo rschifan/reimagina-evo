@@ -22,11 +22,8 @@ def test_expected_top_level_structure_exists():
         ROOT / "packages" / "py" / "reimagina" / "perf",
         ROOT / "packages" / "py" / "reimagina" / "tiles",
         ROOT / "infra" / "db" / "migrations",
-        ROOT / "infra" / "db" / "migrations" / "common",
-        ROOT / "infra" / "db" / "migrations" / "duckdb",
         ROOT / "infra" / "db" / "migrations" / "postgres",
         ROOT / "infra" / "db" / "seeds",
-        ROOT / "infra" / "db" / "capability_matrix.md",
         ROOT / "infra" / "tiles",
         ROOT / "docs" / "architecture",
         ROOT / "tests" / "contract",
@@ -77,7 +74,6 @@ def _protocol_methods(protocol_cls: type) -> set[str]:
 @pytest.mark.parametrize(
     "backend_module, backend_cls",
     [
-        ("reimagina.storage.duckdb.backend", "DuckDBStorageBackend"),
         ("reimagina.storage.postgres.backend", "PostgresStorageBackend"),
     ],
 )

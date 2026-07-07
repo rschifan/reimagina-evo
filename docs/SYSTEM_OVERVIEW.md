@@ -80,14 +80,12 @@ in a usable state before the next began.
 introduces `curated_geo.raster_layer` with FK references to
 `data_source_catalog` + `file_asset`, a `CHECK aggregation_kind IN
 ('intensive','extensive')`, and paired read surfaces
-`serving_geo.raster_layer_v` + `explore.raster_layer_v`. The DuckDB
-mirror is [`infra/db/migrations/duckdb/r019_raster_support.sql`](../infra/db/migrations/duckdb/r019_raster_support.sql).
+`serving_geo.raster_layer_v` + `explore.raster_layer_v`.
 
 The repository Protocol that every worker reads through:
 [`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces.py) —
 impls at
-[`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L643)
-and its DuckDB twin.
+[`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L643).
 
 ### R2 — Ingest pipeline
 
@@ -133,8 +131,7 @@ correctness-critical pieces:
   with blake2b into a signed int64 in
   [`_prefix_lock_key`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L122),
   then take `pg_try_advisory_xact_lock` on a dedicated connection
-  (so the transaction-scoped lock survives pooled callers). DuckDB
-  uses a module-level `threading.Lock` dict.
+  (so the transaction-scoped lock survives pooled callers).
 - **Success finalisation routed through the safe path** —
   [`_finalise_run_safely`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L53)
   wraps both failure and success status writes. A flaky MV refresh
@@ -183,9 +180,7 @@ a **declarative binding** on top, not a new formula registry.
 
 ### `curated_geo.aggregation_recipe` (migration `r020`)
 
-[`infra/db/migrations/versions/r020_aggregation_recipe.py`](../infra/db/migrations/versions/r020_aggregation_recipe.py)
-(DuckDB mirror:
-[`duckdb/r020_aggregation_recipe.sql`](../infra/db/migrations/duckdb/r020_aggregation_recipe.sql)).
+[`infra/db/migrations/versions/r020_aggregation_recipe.py`](../infra/db/migrations/versions/r020_aggregation_recipe.py).
 One row per "source → observations at target grain" mapping:
 
 - `input_kind` is `'raster'` or `'observation'`; a DB-level XOR CHECK
@@ -584,14 +579,11 @@ flowchart TB
 
 - **Migration-driven state** — every DB change lands as an Alembic
   revision under
-  [`infra/db/migrations/versions/`](../infra/db/migrations/versions/)
-  with a DuckDB mirror under
-  [`infra/db/migrations/duckdb/`](../infra/db/migrations/duckdb/).
+  [`infra/db/migrations/versions/`](../infra/db/migrations/versions/).
 - **Two review passes** (one Claude, one Codex) landed the
   hardening commits: run-row isolation on ingest, advisory-lock
-  guard tightening, URL encoding, TOCTOU on `validated_cog_path`,
-  DuckDB critical-section atomicity. See commits `6692e21` and
-  `d3cf4f5`.
+  guard tightening, URL encoding, TOCTOU on `validated_cog_path`.
+  See commits `6692e21` and `d3cf4f5`.
 - **254 tests green.** Raster + recipe tests in
   [`tests/integration/test_raster_ingest.py`](../tests/integration/test_raster_ingest.py),
   [`test_raster_zonal_stats.py`](../tests/integration/test_raster_zonal_stats.py),
