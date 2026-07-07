@@ -1,7 +1,7 @@
 """Synchronous in-process orchestrator — the rung-1 implementation of the port.
 
 Runs the impact engine + coordinator inline and persists the per-unit outcome to
-``jobs_runtime`` (Postgres; a no-op on DuckDB). The run is complete when
+``jobs_runtime``. The run is complete when
 ``submit_run`` returns, so the ``RunHandle`` carries the final status. This makes
 the synchronous path *an implementation of the port* rather than the only entry.
 """

@@ -19,7 +19,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-1 | Materialise `feature_current_attributes_mv` | **Done** — r008 |
 | T1-2 | PgBouncer connection pooling | **Done** — docker-compose + martin config |
 | T1-3 | Cursor-based API pagination | **Done** — `_utils.py` + Protocol |
-| T1-4 | `feature_overlap` table | **Done** — r009 schema + `reimagina.jobs.overlap` orchestrator (AOI-scoped) + CLI; realistic-scale validated on real INEGI CDMX geometry (2,853 block→AGEB rows in 0.92 s Postgres / 3.48 s DuckDB for Cuauhtémoc — see `PERFORMANCE.md`); rollup consumer lands Layer 2 |
+| T1-4 | `feature_overlap` table | **Done** — r009 schema + `reimagina.jobs.overlap` orchestrator (AOI-scoped) + CLI; realistic-scale validated on real INEGI CDMX geometry (2,853 block→AGEB rows in 0.92 s Postgres for Cuauhtémoc — see `PERFORMANCE.md`); rollup consumer lands Layer 2 |
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |

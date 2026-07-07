@@ -8,6 +8,7 @@ caller must pass a commit-safe connection (not the API's rollback-scoped pool).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from uuid import uuid4
 
@@ -17,6 +18,8 @@ from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.tasks import advance_run
+
+logger = logging.getLogger(__name__)
 
 
 class ProcrastinateOrchestrator:
@@ -37,6 +40,29 @@ class ProcrastinateOrchestrator:
     ) -> RunHandle:
         queue_dsn()  # fail loudly now if DATABASE_URL_DIRECT is unset
         run_id = str(uuid4())
+
+        from reimagina.scenarios.overrides import resolve_change_set
+
+        changed_attributes, edited_features = resolve_change_set(
+            conn,
+            changed_attributes=changed_attributes,
+            edited_features=edited_features,
+            scenario_id=scenario_id,
+        )
+        dirty = compute_dirty_set(changed_attributes, edited_features, self._registry)
+        if not dirty:
+            # Nothing to recompute — surface a distinct 'noop' instead of a
+            # green run that silently did nothing. (Not persisted: the run
+            # status CHECK has no 'noop'; return-only + log is the backstop.)
+            logger.warning(
+                "run for scenario %s produced an empty dirty-set — nothing to "
+                "recompute (check changed_attributes / scenario overrides)",
+                scenario_id,
+            )
+            return RunHandle(
+                run_id=run_id,
+                status=RunStatus(run_id=run_id, status="noop", units=()),
+            )
         runstore.create_run(
             conn,
             run_id=run_id,
@@ -45,7 +71,6 @@ class ProcrastinateOrchestrator:
             code_version=code_version,
             status="running",
         )
-        dirty = compute_dirty_set(changed_attributes, edited_features, self._registry)
         runstore.record_units(
             conn,
             run_id=run_id,

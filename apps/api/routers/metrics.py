@@ -103,10 +103,6 @@ def count_within_polygon(
                 type_slugs=list(payload.type_slugs),
             )
         )
-    except NotImplementedError as exc:
-        # DuckDB backend doesn't implement spatial within-polygon — 501
-        # rather than 500 so the operator knows it's a capability gap.
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
     except psycopg2.errors.InvalidParameterValue as exc:
         # ST_GeomFromGeoJSON rejects malformed geometry (wrong type,
         # NaN coordinates, non-array structure). Treat as client error.

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_PLANNED_FLOORS, seed_catalog
+from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.scenarios.overrides import apply_override
 from reimagina.storage import backend_for_connection
@@ -87,3 +88,56 @@ def test_scenario_override_changes_planned_floors(conn):
     assert scenario_result is not None
     assert scenario_result["value_numeric"] == 10.0  # the what-if changed it
     assert baseline_after["value_numeric"] == 3.0  # baseline untouched
+
+
+def test_scenario_run_derives_change_set_from_overrides(conn):
+    """A scenario run with NO explicit change-set derives it from the overrides.
+
+    The override rows are the diff — the caller shouldn't have to re-declare
+    what changed. This closes the silent-noop hole where a wrong/omitted
+    changed_attributes yielded a green run that recomputed nothing.
+    """
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="derive_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    ingest = _start_run(conn, source_id)
+    block_id = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=ingest,
+        dataset_version="v1",
+        source_record_ref="drv-blk-1",
+        geometry_wkt=_WKT,
+        attributes={"floors": 3},
+    )
+
+    scenario = str(uuid4())
+    apply_override(
+        conn,
+        scenario_id=scenario,
+        feature_id=block_id,
+        attribute_key="floors",
+        value_numeric=10.0,
+    )
+
+    # No changed_attributes / edited_features — they are derived from the override.
+    report = evaluate_scenario(
+        conn,
+        changed_attributes=[],
+        edited_features=[],
+        scenario_id=scenario,
+        code_version="test",
+    )
+
+    assert _SLUG in {o.indicator for o in report.outcomes}  # it actually ran
+    repo = backend_for_connection(conn).indicator_result_repo()
+    scenario_result = repo.get_current(
+        feature_id=block_id, indicator_slug=_SLUG, scenario_id=scenario
+    )
+    assert scenario_result is not None
+    assert scenario_result["value_numeric"] == 10.0  # derived + recomputed
