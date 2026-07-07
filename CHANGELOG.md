@@ -13,7 +13,7 @@ Until `v1.0.0` the public API, database schema, and CLI contracts are considered
 
 ### Added
 
-- Feature / observation / indicator / scenario data model on PostGIS + DuckDB.
+- Feature / observation / indicator / scenario data model on PostGIS.
 - Bronze → silver → `curated_geo` → `serving_geo` ingest pipeline.
 - Raster ingest with COG conversion; `curated_geo.raster_layer` registry.
 - Declarative aggregation recipes (`curated_geo.aggregation_recipe`) for raster→observation and observation→observation rollups.

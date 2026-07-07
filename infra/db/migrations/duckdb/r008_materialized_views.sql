@@ -1,3 +1,0 @@
--- r008: Postgres-only materialised view for feature_current_attributes.
--- DuckDB does not support materialized views; feature_v continues to join the
--- live feature_current_attributes_v view on this backend.

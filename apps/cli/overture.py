@@ -16,7 +16,6 @@ from reimagina.pipeline.overture import (
     OVERTURE_DEFAULT_RELEASE,
     bootstrap_overture_buildings_subset,
     extract_overture_buildings_subset,
-    overture_buildings_extract_sql,
     validate_overture_buildings_layer,
 )
 
@@ -41,13 +40,7 @@ def mexico_city_buildings_example() -> dict[str, str]:
         "provider": OVERTURE_BUILDINGS_MEXICO_CITY.provider,
         "version": OVERTURE_BUILDINGS_MEXICO_CITY.version,
         "bbox": ",".join(str(v) for v in OVERTURE_BUILDINGS_MEXICO_CITY.bbox),
-        "extract_sql": overture_buildings_extract_sql(),
     }
-
-
-def print_extract_sql() -> dict[str, str]:
-    """Return the DuckDB SQL used to build the local GeoParquet subset."""
-    return {"extract_sql": overture_buildings_extract_sql()}
 
 
 def extract_mexico_city_buildings(
@@ -56,7 +49,7 @@ def extract_mexico_city_buildings(
     release: str = OVERTURE_DEFAULT_RELEASE,
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
 ) -> dict[str, Any]:
-    """Extract an Overture buildings subset to local GeoParquet via DuckDB.
+    """Extract an Overture buildings subset to local GeoParquet.
 
     ``release`` and ``bbox`` are required to support multi-AOI ingest:
     the CLI passes the AOI's bbox so each city pulls only its own

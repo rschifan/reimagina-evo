@@ -11,11 +11,8 @@ Paired read surfaces:
 - `explore.raster_layer_v` — engineer inspection, matching the existing
   `explore.*_v` conventions.
 
-Postgres-specific note: `curated_geo.file_asset.source_id` is already
-`UNIQUE` per r003 (`REFERENCES ... UNIQUE`). The matching DuckDB
-uniqueness lives in the r019 DuckDB mirror via `CREATE UNIQUE INDEX`
-since DuckDB's `ALTER TABLE` can't add a UNIQUE constraint to an
-existing table.
+Note: `curated_geo.file_asset.source_id` is already `UNIQUE` per r003
+(`REFERENCES ... UNIQUE`).
 
 `aggregation_kind` carries the intensive/extensive distinction used by
 the zonal-stats worker to pick default statistics. Categorical rasters

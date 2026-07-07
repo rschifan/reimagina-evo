@@ -4,7 +4,7 @@
 the ``observation`` one-current-per-(feature, attribute) shape. Effective value
 for a scenario = override ⊕ current observation ⊕ base ``feature.attributes``.
 scenario_id is a plain uuid (no FK — the app_core.scenario entity is deferred),
-matching the existing scenario_id convention. Postgres-only; DuckDB is frozen.
+matching the existing scenario_id convention.
 
 Revision ID: r030
 Revises: r029

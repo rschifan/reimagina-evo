@@ -1,4 +1,4 @@
-"""Database connection management via the swappable storage manager."""
+"""Database connection management via the storage manager."""
 
 from __future__ import annotations
 

@@ -7,9 +7,6 @@
 - ``job_run`` gains ``procrastinate_job_id`` linking a provenance row to the
   ops job that ran it (NULL in the synchronous path; populated in Phase 4).
 
-Postgres-only — DuckDB is frozen at r024 and runs the synchronous orchestrator
-with an in-memory RunReport, so it does not persist orchestration state.
-
 Revision ID: r028
 Revises: r027
 Create Date: 2026-07-01
