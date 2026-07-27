@@ -47,7 +47,10 @@ class SubmitRunBody(BaseModel):
 
 
 class SubmitRunResponse(BaseModel):
-    run_id: str
+    # None for a "noop" submit: the dirty-set was empty, so no run row exists
+    # and GET /jobs/{run_id} would 404. Handing back an unusable id makes a
+    # client following the documented poll loop fail after a *successful* submit.
+    run_id: str | None
     status: str
 
 
@@ -61,6 +64,11 @@ class RunView(BaseModel):
     run_id: str
     status: str
     units: list[UnitView] = []
+
+
+def _submit_response(run_id: str, status: str) -> SubmitRunResponse:
+    """Suppress the run_id on a noop — nothing was persisted to poll for."""
+    return SubmitRunResponse(run_id=None if status == "noop" else run_id, status=status)
 
 
 @router.post("", status_code=202, response_model=SubmitRunResponse)
@@ -83,7 +91,7 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
                 code_version=code_version(),
             )
         response.status_code = 200  # completed synchronously, not merely accepted
-        return SubmitRunResponse(run_id=status.run_id, status=status.status)
+        return _submit_response(status.run_id, status.status)
 
     from reimagina.orchestration.procrastinate_orchestrator import (
         ProcrastinateOrchestrator,
@@ -100,7 +108,7 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
         )
     # "noop" when the run had nothing to recompute; else the queued run_id.
     status = handle.status.status if handle.status else "queued"
-    return SubmitRunResponse(run_id=handle.run_id, status=status)
+    return _submit_response(handle.run_id, status)
 
 
 @router.get("/{run_id}", response_model=RunView)
