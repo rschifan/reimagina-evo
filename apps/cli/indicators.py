@@ -131,16 +131,24 @@ def evaluate_scenario_cli(
     scenario_id: str | None = None,
     aoi_id: str | None = None,
     code_version: str = "dev",
-    asynchronous: bool = False,
+    mode: str = "embedded",
+    concurrency: int = 1,
 ) -> dict[str, object]:
     """Selectively recompute indicators for a scenario edit.
 
-    Default: synchronous — compose impact engine + coordinator inline and return
-    the per-unit report. ``--async`` enqueues the run on the Procrastinate queue
-    for a worker to drain and returns the run_id immediately (needs
-    DATABASE_URL_DIRECT + a running ``python -m apps.worker``).
+    ``mode`` selects the orchestrator:
+
+    * ``embedded`` (default) — enqueue on the Procrastinate queue and drain a
+      bounded in-process worker to completion, returning the finished report.
+      The durable queue path (retries, locks, waves) with no separate worker.
+    * ``detach`` — enqueue and return the run_id immediately for a standalone
+      ``python -m apps.worker`` fleet to drain (fire-and-forget).
+    * ``sync`` — the in-process orchestrator (no queue), returns the per-unit
+      report inline.
+
+    ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
     """
-    if asynchronous:
+    if mode == "detach":
         from reimagina.orchestration.procrastinate_orchestrator import (
             ProcrastinateOrchestrator,
         )
@@ -158,23 +166,51 @@ def evaluate_scenario_cli(
             "dsn": dsn,
             "run_id": handle.run_id,
             "status": handle.status.status if handle.status else "queued",
-            "mode": "async",
+            "mode": "detach",
         }
 
+    if mode == "sync":
+        with connect(dsn) as conn:
+            report = evaluate_scenario(
+                conn,
+                changed_attributes=changed_attributes,
+                edited_features=edited_features,
+                scenario_id=scenario_id,
+                aoi_id=aoi_id,
+                code_version=code_version,
+            )
+        return {
+            "dsn": dsn,
+            "mode": "sync",
+            "status": report.status,
+            "outcomes": [
+                {"indicator": o.indicator, "status": o.status.value, "detail": o.detail}
+                for o in report.outcomes
+            ],
+        }
+
+    if mode != "embedded":
+        raise ValueError(f"unknown evaluate-scenario mode: {mode!r}")
+
+    from reimagina.orchestration.embedded import run_embedded
+
     with connect(dsn) as conn:
-        report = evaluate_scenario(
+        status = run_embedded(
             conn,
             changed_attributes=changed_attributes,
             edited_features=edited_features,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
+            concurrency=concurrency,
         )
     return {
         "dsn": dsn,
-        "status": report.status,
-        "outcomes": [
-            {"indicator": o.indicator, "status": o.status.value, "detail": o.detail}
-            for o in report.outcomes
+        "run_id": status.run_id,
+        "mode": "embedded",
+        "status": status.status,
+        "units": [
+            {"indicator": u.indicator, "status": u.status, "detail": u.detail}
+            for u in status.units
         ],
     }

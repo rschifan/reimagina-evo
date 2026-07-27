@@ -1,9 +1,12 @@
 """Intake API (Phase 3, component 2) — submit a scenario evaluation, read status.
 
 ``POST /jobs`` enqueues a run on the Procrastinate queue and returns ``202``
-immediately (no compute in the request path — a worker drains it). The enqueue
-runs on a dedicated committed connection, NOT the API's rollback-scoped pool.
-``GET /jobs/{run_id}`` reads the persisted run + per-unit status.
+immediately (no compute in the request path — a worker drains it). Passing
+``wait: true`` instead drains the run in-request via the embedded worker and
+returns ``200`` with the finished status (a convenience for simple/test clients;
+production stays fire-and-forget). The enqueue runs on a dedicated committed
+connection, NOT the API's rollback-scoped pool. ``GET /jobs/{run_id}`` reads the
+persisted run + per-unit status.
 
 Requires ``DATABASE_URL_DIRECT`` + a running ``python -m apps.worker``.
 """
@@ -17,7 +20,7 @@ import time
 from collections.abc import Iterator
 
 import psycopg2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -36,6 +39,11 @@ class SubmitRunBody(BaseModel):
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
+    # Opt-in: drain the run to completion in-request (embedded worker) and return
+    # the finished status with 200 instead of a 202 + poll. Convenience for
+    # simple/test clients; production should stay fire-and-forget (default) with
+    # a real worker fleet, since this ties up the request for the whole compute.
+    wait: bool = False
 
 
 class SubmitRunResponse(BaseModel):
@@ -56,15 +64,31 @@ class RunView(BaseModel):
 
 
 @router.post("", status_code=202, response_model=SubmitRunResponse)
-def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
+def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     from reimagina.db import connect
-    from reimagina.orchestration.procrastinate_orchestrator import (
-        ProcrastinateOrchestrator,
-    )
     from reimagina.provenance import code_version
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
+    if body.wait:
+        from reimagina.orchestration.embedded import run_embedded
+
+        with connect(api_dsn()) as conn:
+            status = run_embedded(
+                conn,
+                changed_attributes=body.changed_attributes or [],
+                edited_features=body.edited_features or [],
+                scenario_id=body.scenario_id,
+                aoi_id=body.aoi_id,
+                code_version=code_version(),
+            )
+        response.status_code = 200  # completed synchronously, not merely accepted
+        return SubmitRunResponse(run_id=status.run_id, status=status.status)
+
+    from reimagina.orchestration.procrastinate_orchestrator import (
+        ProcrastinateOrchestrator,
+    )
+
     with connect(api_dsn()) as conn:
         handle = ProcrastinateOrchestrator().submit_run(
             conn,

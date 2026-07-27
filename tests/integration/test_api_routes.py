@@ -585,3 +585,66 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
     for key in ("min", "p05", "p50", "p95", "max"):
         assert payload[key] is None
     assert payload["aoi_id"] == bogus
+
+
+# ── POST /jobs — the submit endpoint's two response modes ───────────────────
+#
+# Isolated wiring tests: the enqueue/drain internals (ProcrastinateOrchestrator,
+# run_embedded) are covered deeply in the orchestration suites, so here we mock
+# them and only assert the router wires the modes correctly (default 202+queued
+# vs wait 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
+
+
+def _stub_connect(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake(dsn):
+        yield object()
+
+    monkeypatch.setattr("reimagina.db.connect", _fake)
+
+
+def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
+    from reimagina.orchestration.port import RunHandle
+
+    _stub_connect(monkeypatch)
+    monkeypatch.setattr(
+        "reimagina.orchestration.procrastinate_orchestrator."
+        "ProcrastinateOrchestrator.submit_run",
+        lambda self, conn, **kw: RunHandle(run_id="r-queued", status=None),
+    )
+
+    response = client.post(
+        "/jobs",
+        json={"changed_attributes": ["geometry"], "edited_features": ["f1"]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"run_id": "r-queued", "status": "queued"}
+
+
+def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
+    from reimagina.orchestration.port import RunStatus, UnitStatusView
+
+    _stub_connect(monkeypatch)
+    monkeypatch.setattr(
+        "reimagina.orchestration.embedded.run_embedded",
+        lambda conn, **kw: RunStatus(
+            run_id="r-done",
+            status="succeeded",
+            units=(UnitStatusView("urban_form_block_compactness", "succeeded", None),),
+        ),
+    )
+
+    response = client.post(
+        "/jobs",
+        json={
+            "wait": True,
+            "changed_attributes": ["geometry"],
+            "edited_features": ["f1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "r-done", "status": "succeeded"}

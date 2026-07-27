@@ -331,6 +331,7 @@ def test_cli_evaluate_scenario_delegates(monkeypatch, capsys):
     assert captured["changed_attributes"] == ["geometry"]
     assert captured["edited_features"] == ["b1", "b2"]
     assert captured["aoi_id"] == "a1"
+    assert captured["mode"] == "embedded"  # queue-backed default
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "succeeded"
 

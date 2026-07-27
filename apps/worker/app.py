@@ -12,10 +12,24 @@ def create_worker() -> dict[str, str]:
     return {"app": "worker", "namespace": "reimagina", "status": "ready"}
 
 
-def run_worker(queues: list[str] | None = None) -> None:
-    """Run the Procrastinate worker (blocking) over the given queues."""
+def run_worker(
+    queues: list[str] | None = None,
+    *,
+    concurrency: int = 1,
+    wait: bool = True,
+) -> None:
+    """Run the Procrastinate worker (blocking) over the given queues.
+
+    ``concurrency`` sets how many jobs the worker runs at once; ``wait=False``
+    drains the queue and returns instead of blocking for new jobs (used by the
+    embedded-drain path and the perf harness).
+    """
     from reimagina.orchestration.queue_app import app, queue_dsn
 
     queue_dsn()  # fail loudly if DATABASE_URL_DIRECT is unset
     with app.open():
-        app.run_worker(queues=queues or ["compute", "control"])
+        app.run_worker(
+            queues=queues or ["compute", "control"],
+            concurrency=concurrency,
+            wait=wait,
+        )
