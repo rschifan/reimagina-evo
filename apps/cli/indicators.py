@@ -162,10 +162,12 @@ def evaluate_scenario_cli(
                 aoi_id=aoi_id,
                 code_version=code_version,
             )
+        status = handle.status.status if handle.status else "queued"
         return {
             "dsn": dsn,
-            "run_id": handle.run_id,
-            "status": handle.status.status if handle.status else "queued",
+            # No run row exists for a noop, so the id would 404 on lookup.
+            "run_id": None if status == "noop" else handle.run_id,
+            "status": status,
             "mode": "detach",
         }
 

@@ -68,13 +68,8 @@ class RunReport:
 
     @property
     def status(self) -> str:
-        """Overall run status: succeeded (all ok), failed (none ok), else partial."""
-        seen = {o.status for o in self.outcomes}
-        if not seen or seen == {UnitStatus.SUCCEEDED}:
-            return "succeeded"
-        if UnitStatus.SUCCEEDED in seen:
-            return "partial"
-        return "failed"
+        """Overall run status — one rule, shared with the async distributor."""
+        return overall_status(o.status.value for o in self.outcomes)
 
     def by_indicator(self) -> dict[str, UnitOutcome]:
         return {o.indicator: o for o in self.outcomes}
@@ -116,12 +111,24 @@ _UNSATISFIED_STATES = frozenset({"failed", "skipped", "cancelled"})
 
 
 def overall_status(statuses: Iterable[str]) -> str:
-    """Roll unit statuses into a run status: succeeded / partial / failed."""
+    """Roll unit statuses into a run status.
+
+    succeeded (all ok) / partial (some ok) / cancelled (none ok, none failed,
+    at least one cancelled) / failed (anything else, including an all-skipped
+    run — nothing ran, so the run did not achieve its purpose).
+
+    ``cancelled`` only wins when no unit actually failed: a run that both failed
+    and was cancelled is a failure, and reporting it as cancelled would hide the
+    error. ``orchestration_run.status`` has no ``skipped``, which is why the
+    all-skipped case folds into ``failed`` rather than gaining a fourth value.
+    """
     seen = set(statuses)
     if not seen or seen <= {"succeeded"}:
         return "succeeded"
     if "succeeded" in seen:
         return "partial"
+    if "failed" not in seen and "cancelled" in seen:
+        return "cancelled"
     return "failed"
 
 
