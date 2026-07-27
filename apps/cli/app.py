@@ -673,11 +673,29 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--scenario-id")
     evaluate_parser.add_argument("--code-version", default="dev")
     evaluate_parser.add_argument(
-        "--async",
-        dest="asynchronous",
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Worker concurrency for the embedded drain (default 1; ignored "
+        "for --detach / --sync).",
+    )
+    # Default is embedded: enqueue on the Procrastinate queue + drain a bounded
+    # in-process worker to completion (needs DATABASE_URL_DIRECT). The two flags
+    # opt out — mutually exclusive.
+    mode_group = evaluate_parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--detach",
+        dest="detach",
         action="store_true",
-        help="Enqueue on the Procrastinate queue for a worker to drain "
-        "(needs DATABASE_URL_DIRECT + python -m apps.worker); default is synchronous.",
+        help="Enqueue and return immediately for a standalone "
+        "`python -m apps.worker` fleet to drain (fire-and-forget; needs "
+        "DATABASE_URL_DIRECT).",
+    )
+    mode_group.add_argument(
+        "--sync",
+        dest="sync",
+        action="store_true",
+        help="Run the in-process orchestrator (no queue, no worker).",
     )
     evaluate_parser.set_defaults(handler=_handle_evaluate_scenario)
 
@@ -1339,6 +1357,7 @@ def _handle_indicators_compute(args: argparse.Namespace) -> int:
 
 
 def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
+    mode = "detach" if args.detach else "sync" if args.sync else "embedded"
     return _print(
         evaluate_scenario_cli(
             dsn=args.dsn,
@@ -1347,7 +1366,8 @@ def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
             scenario_id=args.scenario_id,
             aoi_id=args.aoi_id,
             code_version=args.code_version,
-            asynchronous=args.asynchronous,
+            mode=mode,
+            concurrency=args.concurrency,
         )
     )
 
