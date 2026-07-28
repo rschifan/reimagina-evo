@@ -547,8 +547,8 @@ class JobRunRepository(Protocol):
     job_run lifecycle helper) and terminated via complete_job with 'succeeded'
     or 'failed'. Every indicator_result row must cite a job_run by id.
 
-    Ops-plane queueing/claiming is owned by the Procrastinate task queue, not
-    here — there is no claim_job.
+    Ops-plane scheduling and claiming belong to the ops-plane, not here —
+    there is no claim_job.
     """
 
     def start_job(

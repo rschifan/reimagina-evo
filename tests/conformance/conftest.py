@@ -83,13 +83,6 @@ IMPLEMENTATIONS = [
     Implementation(
         mode="dbos", blocking=False, settles=True, failed_run_status="partial"
     ),
-    Implementation(
-        mode="embedded", blocking=True, settles=True, failed_run_status="partial"
-    ),
-    # Needs a `python -m apps.worker` fleet, so nothing drives it here.
-    Implementation(
-        mode="detach", blocking=False, settles=False, failed_run_status="partial"
-    ),
 ]
 
 
@@ -126,9 +119,8 @@ def poison(monkeypatch):
 def seeded(migrated_db):
     """A committed connection with the catalog and one block seeded.
 
-    Committed, not the rollback ``conn`` fixture: a queue worker opens its own
-    connection and would not see uncommitted rows. Cleanup is surgical, and
-    includes any queued jobs a non-blocking submit left behind.
+    Committed, not the rollback ``conn`` fixture: the ops-plane opens its own
+    connections and would not see uncommitted rows. Cleanup is surgical.
 
     Takes ``migrated_db`` explicitly. Bypassing the rollback fixture also
     bypasses the migration it runs, and without this the schema is present
@@ -169,13 +161,9 @@ def seeded(migrated_db):
 
 def _teardown(conn, run_ids, source_id) -> None:
     with conn.cursor() as cur:
-        # A non-blocking submit leaves an undrained job; deleting one fires an
-        # internal trigger that references unqualified procrastinate tables.
-        cur.execute("SET search_path TO procrastinate, public")
-        cur.execute(
-            "DELETE FROM procrastinate.procrastinate_jobs WHERE status = 'todo'"
-        )
-        cur.execute("SET search_path TO public")
+        # No queue table to sweep: this ops-plane's undrained work lives in the
+        # `dbos` schema, which is dropped wholesale with the test database
+        # rather than per test.
         for run_id in run_ids:
             cur.execute(
                 "DELETE FROM jobs_runtime.job_unit WHERE run_id = %s", (run_id,)

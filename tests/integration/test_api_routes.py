@@ -594,10 +594,20 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
 # assert the router wires the modes correctly (default 202+queued vs wait
 # 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
 #
-# Both modes are faked at the same seam — ``factory.get_orchestrator``, asserting
-# on the ``mode`` it is asked for. The wait path used to patch the *function*
-# ``embedded.run_embedded`` instead, which pinned the test to one engine's module
-# layout; it now rides the port like every other path.
+# Both are faked at the same seam — ``factory.get_orchestrator``. The route no
+# longer names a mode at all: with one ops-plane, and one that a single process
+# can both submit to and drain, ``wait`` chooses a response shape rather than an
+# engine.
+
+
+class _StubConn:
+    """Enough connection to satisfy the route: it polls, so it ends read txns."""
+
+    def rollback(self) -> None:
+        pass
+
+    def commit(self) -> None:
+        pass
 
 
 def _stub_connect(monkeypatch):
@@ -605,24 +615,36 @@ def _stub_connect(monkeypatch):
 
     @contextmanager
     def _fake(dsn):
-        yield object()
+        yield _StubConn()
 
     monkeypatch.setattr("reimagina.db.connect", _fake)
 
 
-def _install(monkeypatch, expected_mode, handle):
-    def _get(mode=None):
-        assert mode == expected_mode
-        return type("_Fake", (), {"submit_run": lambda self, conn, **kw: handle})()
+def _install(monkeypatch, handle, *, final=None):
+    """Swap the whole orchestrator out; the route names no engine any more.
 
-    monkeypatch.setattr("reimagina.orchestration.factory.get_orchestrator", _get)
+    ``final`` is what ``get_run`` reports, for the ``wait: true`` path — which
+    now polls, because submitting to a durable-execution library returns as soon
+    as the run is durable rather than when it is done.
+    """
+
+    class _Fake:
+        def submit_run(self, conn, **kw):
+            return handle
+
+        def get_run(self, conn, run_id):
+            return final
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
 
 
 def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
     from reimagina.orchestration.port import RunHandle
 
     _stub_connect(monkeypatch)
-    _install(monkeypatch, "detach", RunHandle(run_id="r-queued", status=None))
+    _install(monkeypatch, RunHandle(run_id="r-queued", status=None))
 
     response = client.post(
         "/jobs",
@@ -639,16 +661,11 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
     _stub_connect(monkeypatch)
     _install(
         monkeypatch,
-        "embedded",
-        RunHandle(
+        RunHandle(run_id="r-done", status=None),
+        final=RunStatus(
             run_id="r-done",
-            status=RunStatus(
-                run_id="r-done",
-                status="succeeded",
-                units=(
-                    UnitStatusView("urban_form_block_compactness", "succeeded", None),
-                ),
-            ),
+            status="succeeded",
+            units=(UnitStatusView("urban_form_block_compactness", "succeeded", None),),
         ),
     )
 

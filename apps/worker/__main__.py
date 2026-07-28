@@ -1,4 +1,4 @@
-"""Entry-point for `python -m apps.worker` — the ops-plane worker."""
+"""Entry-point for `python -m apps.worker` — the DBOS ops-plane worker."""
 
 from __future__ import annotations
 
@@ -13,55 +13,30 @@ if str(_PACKAGES_DIR) not in sys.path:
 
 import argparse  # noqa: E402
 
-from .app import run_dbos_worker, run_worker  # noqa: E402
+from .app import run_dbos_worker  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m apps.worker",
-        description="Drain ops-plane work.",
-    )
-    parser.add_argument(
-        "--engine",
-        choices=("dbos", "procrastinate"),
-        default="dbos",
-        help=(
-            "Which ops-plane to drain (default: dbos). The Procrastinate "
-            "runtime is kept while the two are compared side by side."
+        description=(
+            "Run a DBOS worker: register the workflows, drain the unit queue, "
+            "and recover this executor's own interrupted runs."
         ),
-    )
-    parser.add_argument(
-        "--queues",
-        help=(
-            "Comma-separated queue names to drain. Default: compute,control. "
-            "Run one process per resource profile rather than raising "
-            "--concurrency for blocking compute."
-        ),
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help=(
-            "Jobs run at once in this process (default: 1). Procrastinate runs "
-            "sync tasks in a thread, so raising this does not parallelise "
-            "CPU-bound work and risks starving the worker heartbeat."
+        epilog=(
+            "There are no queue or concurrency flags. Concurrency belongs to "
+            "the registered queue (REIMAGINA_UNIT_CONCURRENCY), not to the "
+            "process, and there is only one queue to drain. Give each process a "
+            "distinct REIMAGINA_EXECUTOR_ID: recovery is scoped by it, and DBOS "
+            "defaults every process to 'local'."
         ),
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = _parse_args(argv)
-    if args.engine == "dbos":
-        run_dbos_worker()
-        return
-    queues = (
-        [q.strip() for q in args.queues.split(",") if q.strip()]
-        if args.queues
-        else None
-    )
-    run_worker(queues, concurrency=args.concurrency)
+    _parse_args(argv)
+    run_dbos_worker()
 
 
 if __name__ == "__main__":

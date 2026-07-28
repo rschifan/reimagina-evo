@@ -1,10 +1,10 @@
 """Progress-event payloads and SSE framing — engine-agnostic.
 
-Split out of ``events.py`` so the two halves can diverge: ``events`` is the
-Postgres LISTEN/NOTIFY transport and dies with the Procrastinate ops-plane,
-while everything here is pure formatting that every ops-plane implementation
-needs. The API route formats whatever the orchestrator's ``subscribe_progress``
-yields, so this module — not the engine — owns the wire shape the web app sees.
+Pure formatting, deliberately separate from any transport. It was split from
+the LISTEN/NOTIFY module that has since been deleted with the queue ops-plane —
+and surviving that deletion untouched is the point: the API route formats
+whatever the orchestrator's ``subscribe_progress`` yields, so this module, not
+the engine, owns the wire shape the web app sees.
 """
 
 from __future__ import annotations

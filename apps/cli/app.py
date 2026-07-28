@@ -673,15 +673,17 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--scenario-id")
     evaluate_parser.add_argument("--code-version", default="dev")
     evaluate_parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help="Worker concurrency for the embedded drain (default 1; ignored "
-        "for --detach / --sync).",
+        "--timeout",
+        type=float,
+        default=600.0,
+        help="Seconds to wait for the run to finish (default 600; ignored for "
+        "--detach / --sync). Unit concurrency is a property of the ops-plane "
+        "queue (REIMAGINA_UNIT_CONCURRENCY), not of this command.",
     )
-    # Default is embedded: enqueue on the Procrastinate queue + drain a bounded
-    # in-process worker to completion (needs DATABASE_URL_DIRECT). The two flags
-    # opt out — mutually exclusive.
+    # Default submits a durable run and waits for it. No standing worker is
+    # needed — the ops-plane is a library, so this process drives the run it
+    # submitted (needs DATABASE_URL_DIRECT). The two flags opt out — mutually
+    # exclusive.
     mode_group = evaluate_parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--detach",
@@ -1367,7 +1369,7 @@ def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
             aoi_id=args.aoi_id,
             code_version=args.code_version,
             mode=mode,
-            concurrency=args.concurrency,
+            timeout_s=args.timeout,
         )
     )
 

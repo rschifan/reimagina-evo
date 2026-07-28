@@ -13,7 +13,6 @@ Two consequences worth stating, because they are the comparison:
   does not touch another executor's — that needs a deliberate sweep against a
   liveness signal, which is not built yet (see the spike report).
 
-The Procrastinate runtime is kept while the two ops-planes are compared.
 """
 
 from __future__ import annotations
@@ -37,26 +36,3 @@ def run_dbos_worker() -> None:
 
     dbos_app.launch()
     threading.Event().wait()  # nothing to poll; the library owns the loops
-
-
-def run_worker(
-    queues: list[str] | None = None,
-    *,
-    concurrency: int = 1,
-    wait: bool = True,
-) -> None:
-    """Run the Procrastinate worker (blocking) over the given queues.
-
-    ``concurrency`` sets how many jobs the worker runs at once; ``wait=False``
-    drains the queue and returns instead of blocking for new jobs (used by the
-    embedded-drain path and the perf harness).
-    """
-    from reimagina.orchestration.queue_app import app, queue_dsn
-
-    queue_dsn()  # fail loudly if DATABASE_URL_DIRECT is unset
-    with app.open():
-        app.run_worker(
-            queues=queues or ["compute", "control"],
-            concurrency=concurrency,
-            wait=wait,
-        )

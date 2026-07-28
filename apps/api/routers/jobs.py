@@ -2,16 +2,17 @@
 
 ``POST /jobs`` enqueues a run and returns ``202`` immediately (no compute in the
 request path — a worker drains it). Passing ``wait: true`` instead drains the
-run in-request via the embedded orchestrator and returns ``200`` with the
+run in-request and returns ``200`` with the
 finished status (a convenience for simple/test clients; production stays
 fire-and-forget). The enqueue runs on a dedicated committed connection, NOT the
 API's rollback-scoped pool. ``GET /jobs/{run_id}`` reads the persisted run +
 per-unit status.
 
 Every path goes through ``orchestration.factory.get_orchestrator`` — this module
-names no engine, so swapping the ops-plane does not touch it. The two modes it
-does name (``detach`` vs ``embedded``) are the 202-vs-200 contract itself, not
-an engine choice.
+names no engine, so swapping the ops-plane does not touch it. ``wait`` selects
+whether to block, not which engine to use: under a durable-execution library one
+process can both submit and drain, so the 202-vs-200 split is a response-shape
+decision rather than a routing one.
 
 Requires ``DATABASE_URL_DIRECT`` + a running ``python -m apps.worker``.
 """
@@ -81,9 +82,7 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     from reimagina.orchestration.factory import get_orchestrator
     from reimagina.provenance import code_version
 
-    # "embedded" drains the run before returning, so its handle carries a
-    # terminal status; the default returns as soon as the work is durable.
-    orchestrator = get_orchestrator("embedded" if body.wait else "detach")
+    orchestrator = get_orchestrator()
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
@@ -96,12 +95,42 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
             aoi_id=body.aoi_id,
             code_version=code_version(),
         )
+        # "noop" when the run had nothing to recompute; else the queued run_id.
+        status = handle.status.status if handle.status else "queued"
+        if body.wait and handle.status is None:
+            status = _await_terminal(orchestrator, conn, handle.run_id)
+            response.status_code = 200  # finished, not merely accepted
+        elif body.wait:
+            response.status_code = 200
 
-    if body.wait:
-        response.status_code = 200  # completed synchronously, not merely accepted
-    # "noop" when the run had nothing to recompute; else the queued run_id.
-    status = handle.status.status if handle.status else "queued"
     return _submit_response(handle.run_id, status)
+
+
+def _await_terminal(orchestrator, conn, run_id: str) -> str:
+    """Poll the port until the run is terminal, bounded by the stream deadline.
+
+    Submitting no longer blocks: the ops-plane is a library, so the run is
+    durable the moment it is accepted and progresses whether or not anyone is
+    waiting. ``wait: true`` is therefore a convenience for simple clients, and
+    the wait belongs here rather than in the port — an engine that needed a
+    separate worker could not implement a blocking submit at all.
+    """
+    from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+    deadline = time.monotonic() + _STREAM_MAX_SECONDS
+    while time.monotonic() < deadline:
+        conn.rollback()  # end the read txn so the next poll sees fresh rows
+        current = orchestrator.get_run(conn, run_id)
+        if current is not None and current.status in RUN_TERMINAL_STATES:
+            return current.status
+        time.sleep(0.25)
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"run {run_id} did not finish within {_STREAM_MAX_SECONDS:.0f}s; "
+            "it is still running — poll GET /jobs/{run_id}"
+        ),
+    )
 
 
 @router.get("/{run_id}", response_model=RunView)

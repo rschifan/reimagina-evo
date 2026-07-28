@@ -9,22 +9,21 @@ This branch runs the **DBOS** ops-plane: durable execution as a library, with
 checkpoints in our own Postgres and no standing service.
 
 ``dbos``
-    Submit a durable workflow and return; a worker drains it. The production
-    default here. Because DBOS is a library rather than a service, the same
-    process can both submit and drain, so this needs no separate fleet to be
-    useful — it only needs one to scale.
+    Submit a durable workflow and return. The production default. Because DBOS
+    is a library rather than a service, the process that submits can also drain,
+    so a worker fleet is how this scales rather than how it works at all.
 ``sync``
-    Compute in-process with no engine at all. No production caller; it exists
-    so the conformance suite has a target needing neither engine nor database,
-    and it is the one path that still runs when the ops-plane is broken.
+    Compute in-process with no engine. No production caller; it exists so the
+    conformance suite has a target needing neither engine nor database, and it
+    is the one path that still runs when the ops-plane is broken.
 
-The Procrastinate modes (``detach``, ``embedded``) are still present while the
-two ops-planes are compared side by side; they go when this branch drops that
-engine.
+Two modes, not four: the queue-based ops-plane and its ``detach`` / ``embedded``
+pair are gone from this branch. What used to distinguish them — enqueue-and-
+return versus enqueue-and-drain-here — is not an engine choice under a durable-
+execution library, because one process can do both.
 
-Imports are deferred into each branch on purpose: every engine pulls its client
-library in at module scope, and ``sync`` must stay importable without any of
-them.
+Imports are deferred on purpose: the engine pulls its client library in at
+module scope, and ``sync`` must stay importable without it.
 """
 
 from __future__ import annotations
@@ -34,9 +33,9 @@ import os
 from reimagina.orchestration.port import Orchestrator
 
 DEFAULT_MODE = "dbos"
-MODES = ("dbos", "detach", "embedded", "sync")
+MODES = ("dbos", "sync")
 
-DURABLE_MODES = ("dbos", "detach", "embedded")
+DURABLE_MODES = ("dbos",)
 """Modes that persist a run somewhere a *different* process can read it.
 
 ``sync`` does not: it keeps run state in memory, per orchestrator instance. That
@@ -66,18 +65,6 @@ def get_orchestrator(mode: str | None = None) -> Orchestrator:
         from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
 
         return DBOSOrchestrator()
-
-    if mode == "detach":
-        from reimagina.orchestration.procrastinate_orchestrator import (
-            ProcrastinateOrchestrator,
-        )
-
-        return ProcrastinateOrchestrator()
-
-    if mode == "embedded":
-        from reimagina.orchestration.embedded import EmbeddedOrchestrator
-
-        return EmbeddedOrchestrator()
 
     if mode == "sync":
         from reimagina.orchestration.synchronous import SynchronousOrchestrator
