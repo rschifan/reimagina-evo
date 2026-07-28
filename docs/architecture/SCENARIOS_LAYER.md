@@ -1,8 +1,8 @@
 # Scenarios Layer
 
-How the platform organizes planning work, defines proposed changes, configures models, runs computations, and surfaces results.
+How the platform records a proposed change to the city, and how that record turns into recomputed indicator results.
 
-**Related documents:** `DATA_LAYER.md` — the city data scenarios read from (never modified). `INDICATORS_LAYER.md` — the computed outputs scenarios produce. `JOB_LAYER.md` — the async execution model, queue architecture, and worker contract.
+**Related documents:** `DATA_LAYER.md` — the city data scenarios read from (never modified). `INDICATORS_LAYER.md` — the computed outputs scenarios produce. `JOB_LAYER.md` — the `Orchestrator` port that executes a scenario run.
 
 ---
 
@@ -13,17 +13,18 @@ A scenario is a named "what if" — a proposed state of the city that has not ha
 The workflow is:
 
 ```
-project  →  scenario  →  interventions + configuration  →  job_run  →  indicator_result
+project  →  scenario_id  →  scenario_override rows  →  submit_run  →  indicator_result
 ```
 
-- **Project** — workspace that groups scenarios and areas of interest.
-- **Scenario** — a named proposed state within a project.
-- **Intervention** — a set of proposed changes to specific features in a scenario.
-- **Configuration** — model input parameters specific to a scenario.
-- **Job run** — an async model execution that computes indicator results for a scenario. Defined and managed in `JOB_LAYER.md`.
-- **Indicator result** — the output. Stored in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
+- **Project** — `app_core.project`, the workspace an area of interest belongs to. The only table in `app_core` (`r001_schemas_and_extensions.py:19-35`).
+- **Scenario** — a bare uuid, not a row. There is no `app_core.scenario` table; every `scenario_id` column is a plain uuid with no FK, deliberately (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`).
+- **Override** — one attribute edit, in `curated_geo.scenario_override` (r030). The override rows *are* the scenario.
+- **Run** — an execution submitted through the `Orchestrator` port. Defined in `JOB_LAYER.md`.
+- **Indicator result** — the output, in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
 
-**The baseline is never touched.** Scenarios read `serving_geo.feature_v`, apply intervention overrides in-memory, run models, and write new `indicator_result` rows tagged with their `scenario_id`.
+**The baseline is never touched.** An override is a *read-time overlay resolved in SQL*, not an edit to `feature` or `observation` and not an in-memory merge inside a worker. The effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins (`scenarios/overrides.py:50`).
+
+⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created — `app_core` contains only `project` (r001:27). The mechanism is `curated_geo.scenario_override`.
 
 ---
 
@@ -31,10 +32,11 @@ project  →  scenario  →  interventions + configuration  →  job_run  →  i
 
 ### app_core.project
 
-Top-level workspace. Groups scenarios, areas of interest, and users.
+Top-level workspace. Groups areas of interest.
 
 ```sql
-CREATE TABLE app_core.project (
+-- r001_schemas_and_extensions.py:27-35
+CREATE TABLE IF NOT EXISTS app_core.project (
   id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   name        text        NOT NULL,
   description text,
@@ -43,182 +45,141 @@ CREATE TABLE app_core.project (
 );
 ```
 
----
-
-### app_core.scenario
-
-A named what-if state within a project. One project can have many scenarios.
-
-```sql
-CREATE TABLE app_core.scenario (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id  uuid        NOT NULL REFERENCES app_core.project(id) ON DELETE CASCADE,
-  name        text        NOT NULL,
-  description text,
-  status      text        NOT NULL DEFAULT 'draft'
-                          CHECK (status IN ('draft','active','archived')),
-  -- draft:    being configured, results may not exist yet
-  -- active:   in use, can run jobs and read results
-  -- archived: no new jobs; results are retained for comparison
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE INDEX scenario_project_idx ON app_core.scenario (project_id);
-```
+It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`). Nothing else in the schema depends on it today.
 
 ---
 
-### app_core.intervention
+### The scenario id — no table
 
-A named set of proposed changes within a scenario. A scenario can have multiple interventions — for example, "Widen sidewalks on Av. Juárez" and "Add park on Block 42" can be two separate interventions in the same scenario.
+A `scenario_id` is minted by the caller and carried on the rows that need it. `curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` all take a plain `uuid` with no foreign key.
 
-```sql
-CREATE TABLE app_core.intervention (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  scenario_id uuid        NOT NULL REFERENCES app_core.scenario(id) ON DELETE CASCADE,
-  name        text        NOT NULL,
-  description text,
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
-);
+This is a recorded decision, not an oversight: `app_core.scenario` was deferred to a later layer and the FK was to be added together with the table (`r016_indicator_layer.py:7-10`). r030 matched the same convention rather than inventing a different one (`r030:5-6`). `NULL` means baseline — the city as it is today.
 
-CREATE INDEX intervention_scenario_idx ON app_core.intervention (scenario_id);
-```
+Two consequences worth stating:
+
+- Nothing enforces that a `scenario_id` refers to anything. A typo'd uuid produces a valid, empty scenario.
+- There is no scenario name, status, or project link in the database. `app_core.project` and a scenario are not connected by any column.
 
 ---
 
-### app_core.intervention_feature
+### curated_geo.scenario_override
 
-Which features an intervention targets, and what changes for each one.
-
-```sql
-CREATE TABLE app_core.intervention_feature (
-  intervention_id     uuid  NOT NULL REFERENCES app_core.intervention(id) ON DELETE CASCADE,
-  feature_id          uuid  NOT NULL REFERENCES curated_geo.feature(id)   ON DELETE CASCADE,
-
-  attribute_overrides jsonb NOT NULL DEFAULT '{}',
-  -- Proposed changes to the feature's attributes for this scenario.
-  -- Models apply these on top of the baseline when computing indicators.
-  -- The baseline feature row is never modified.
-  --
-  -- Examples:
-  --   sidewalk:  {"width_m": 3.5, "has_planters": true, "tree_count": 12}
-  --   block:     {"land_use": "green_area", "green_area_pct": 0.60}
-  --   road:      {"lanes": 2, "has_bike_lane": true, "speed_limit_kmh": 30}
-
-  PRIMARY KEY (intervention_id, feature_id)
-);
-
-CREATE INDEX intervention_feature_feature_idx ON app_core.intervention_feature (feature_id);
-```
-
----
-
-### app_core.configuration
-
-Model input parameters for a scenario — the "knobs" that analytical models read when computing scenario indicators. One row per model family per scenario.
+One attribute edit for one feature under one scenario. Keyed like `observation`'s one-current-per-`(feature, attribute)` shape.
 
 ```sql
-CREATE TABLE app_core.configuration (
-  id           uuid  PRIMARY KEY DEFAULT gen_random_uuid(),
-  scenario_id  uuid  NOT NULL REFERENCES app_core.scenario(id) ON DELETE CASCADE,
-  model_family text  NOT NULL,
-  -- 'accessibility', 'housing', 'green_area', 'fiscal', 'urban_form'
-
-  parameters   jsonb NOT NULL DEFAULT '{}',
-  -- Model-specific input parameters. Examples:
-  --
-  -- accessibility:
-  --   {"walking_speed_kmh": 5, "max_walk_minutes": 15, "include_cycling": true}
-  --
-  -- housing:
-  --   {"avg_floors": 4, "m2_per_unit": 85, "parking_ratio": 0.5,
-  --    "social_housing_pct": 0.30}
-  --
-  -- green_area:
-  --   {"target_canopy_pct": 0.25, "tree_growth_years": 5,
-  --    "min_park_area_m2": 500}
-  --
-  -- fiscal:
-  --   {"tax_rate_pct": 1.2, "assessment_ratio": 0.80}
-
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  updated_at   timestamptz NOT NULL DEFAULT now(),
-
-  UNIQUE (scenario_id, model_family)
+-- r030_scenario_override.py:27-46
+CREATE TABLE curated_geo.scenario_override (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  scenario_id   uuid        NOT NULL,
+  feature_id    uuid        NOT NULL
+                            REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
+  attribute_key text        NOT NULL,
+  value_numeric double precision,
+  value_text    text,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scenario_id, feature_id, attribute_key),
+  CHECK (num_nonnulls(value_numeric, value_text) = 1)
 );
+
+CREATE INDEX scenario_override_lookup_idx
+  ON curated_geo.scenario_override (scenario_id, attribute_key);
 ```
+
+The `CHECK` makes an override exactly one typed value — never both, never neither. The lookup index serves the change-set read below, which filters on `scenario_id` and returns `attribute_key`.
+
+There is no `parameters` / model-configuration table. A scenario expresses itself entirely as per-feature attribute edits; model constants live in code.
 
 ---
 
 ### jobs_runtime.job_run
 
-Defined in `JOB_LAYER.md`. Must be created before `indicator_result` (which references `job_run_id`) and before the use cases below.
+Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by this layer — the runner opens it when the compute starts (`jobs/_lifecycle.py:46`).
 
 ---
 
-## How interventions feed into indicator computation
-
-When a scenario job runs for a given model family, it follows this sequence:
+## How a scenario edit becomes recomputed results
 
 ```
-1. Read canonical baseline via pre-computed aoi_feature
-     SELECT f.*, af.overlap_ratio
-     FROM serving_geo.feature_v f
-     JOIN curated_geo.aoi_feature af
-       ON af.feature_id = f.id
-      AND af.aoi_id     = :aoi_id
-     WHERE f.type_slug IN ('block','lot','road', ...);
-     -- When aoi_id IS NULL: omit the JOIN and read all features of the relevant types.
+1. Record the edit
+     apply_override(conn, scenario_id=…, feature_id=…,
+                    attribute_key="floors", value_numeric=10.0)   overrides.py:25
+     → INSERT … ON CONFLICT (scenario_id, feature_id, attribute_key) DO UPDATE
 
-2. Read intervention overrides for this scenario
-     SELECT inf.feature_id, inf.attribute_overrides
-     FROM app_core.intervention_feature inf
-     JOIN app_core.intervention i ON i.id = inf.intervention_id
-     WHERE i.scenario_id = :scenario_id;
+2. Submit a run
+     orchestrator.submit_run(conn, changed_attributes=…, edited_features=…,
+                             scenario_id=…)                        JOB_LAYER.md
 
-3. Read model configuration for this scenario
-     SELECT parameters
-     FROM app_core.configuration
-     WHERE scenario_id  = :scenario_id
-       AND model_family = :model_family;
+3. Resolve the change-set                                          plan.py:70-72
+     resolve_change_set(...)                                       overrides.py:113
+     -- Explicit lists win. When only a scenario_id is given, the diff is read
+     -- back from that scenario's override rows — the rows are the diff, so a
+     -- caller need not re-declare what changed (overrides.py:96-101).
 
-4. Merge in-memory (never written back to feature tables):
-     effective_attributes = baseline.attributes
-                         || intervention.attribute_overrides   -- overrides win
+4. Derive the dirty-set and run it                                 JOB_LAYER.md
+     -- Every indicator whose declared `reads` intersects the changed
+     -- attributes, plus everything transitively depending on it.
 
-5. Run model using effective_attributes + configuration.parameters
+5. Each runner reads effective values, not baseline values
+     effective_numeric(conn, type_id=…, attribute_key="floors",
+                       scenario_id=…, feature_ids=…)               overrides.py:50
 
-6. Write results to curated_geo.indicator_result with scenario_id = :scenario_id
+6. Results are written to curated_geo.indicator_result with the run's scenario_id
 ```
 
-The baseline is never modified. The scenario result is always a new `indicator_result` row.
+Step 3 is why an override edits `attribute_key` rather than some scenario-specific vocabulary: the key *is* the `changed_attributes` token the impact engine keys the dirty-set off, so no translation layer is needed (`overrides.py:9-10`).
+
+**Scoping is a deliberate over-approximation.** `resolve_change_set` returns a flat union of `(attributes, features)`. With several overridden attributes, a dependent indicator may recompute a feature whose specific attribute did not change — never wrong, just not minimal. Per-attribute scoping is the upgrade path, noted in the code as moot while only `floors` is overridable (`overrides.py:123-126`).
+
+---
+
+## Effective attribute resolution
+
+The overlay is one `COALESCE` over three sources, evaluated in the database (`overrides.py:74-90`):
+
+```sql
+SELECT f.id::text,
+       COALESCE(
+         so.value_numeric,                                          -- scenario override
+         obs.value_numeric,                                         -- current observation
+         NULLIF(f.attributes->>%(key)s, '')::double precision       -- base attribute
+       )
+FROM curated_geo.feature f
+LEFT JOIN curated_geo.observation obs
+       ON obs.feature_id = f.id AND obs.attribute_key = %(key)s AND obs.is_current
+LEFT JOIN curated_geo.scenario_override so
+       ON so.feature_id = f.id AND so.attribute_key = %(key)s
+      AND so.scenario_id = %(scenario)s
+WHERE f.type_id = %(type_id)s
+```
+
+With `scenario_id = NULL` the override join matches nothing and the expression collapses to `observation ⊕ base` — the baseline. The same function therefore serves both modes, which is what makes a base/scenario comparison an apples-to-apples one.
+
+Only features whose effective value is non-null are returned (`overrides.py:60`, `:93`). Postgres only — the function rejects any other backend (`overrides.py:20-22`).
+
+`compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function and writes the result inside a `job_run` context (`indicators/planned_floors.py:30`, `:42-48`).
 
 ---
 
 ## How baseline data participates in scenarios
 
-Scenarios do not replace the baseline city. They sit on top of it. In practice, four different kinds of baseline information participate in a run:
+Scenarios do not replace the baseline city. They sit on top of it. Three kinds of information participate in a run:
 
 | Data role | Where it lives | How scenarios use it |
 |---|---|---|
-| City-defining baseline | `curated_geo.feature` → `serving_geo.feature_v` | Provides the stable objects, geometries, and base attributes that all models start from |
-| Baseline enrichments | `curated_geo.observation` → `serving_geo.feature_v` | Adds read-only evidence such as population, NDVI, sidewalk width, or cellphone footfall |
-| Scenario-editable context | `app_core.intervention_feature.attribute_overrides` | Temporarily overrides selected feature attributes during computation |
-| Scenario-wide assumptions | `app_core.configuration.parameters` | Sets model-family parameters that are not tied to one feature |
+| City-defining baseline | `curated_geo.feature.attributes` | The stable objects, geometries, and base attributes every indicator starts from |
+| Baseline enrichments | `curated_geo.observation` | Read-only evidence — population, NDVI, sidewalk width, footfall — overriding the base attribute when current |
+| Scenario edits | `curated_geo.scenario_override` | Overrides a selected `(feature, attribute)` for one scenario, ranking above both |
 
-This produces one simple rule:
+This produces one rule:
 
 - baseline `feature` and `observation` rows are never edited by a scenario,
-- only the in-memory effective view of a feature changes during computation,
-- outputs are written as new `indicator_result` rows for that scenario.
+- only the resolved effective value differs during computation,
+- outputs are written as new `indicator_result` rows carrying that `scenario_id`.
 
 Examples:
 
-- A scenario may override `sidewalk.width_m` for a corridor, but it does not rewrite the baseline sidewalk feature.
-- A scenario may still use census population, NDVI, or cellphone footfall observations as read-only evidence while recomputing accessibility or green indicators.
-- A new tree-planting intervention changes model inputs through overrides, not by updating the detected-tree baseline rows in place.
+- A scenario may override `floors` for a block without rewriting the block's baseline attributes.
+- A scenario may still use census population or NDVI observations as read-only evidence while recomputing.
 
 ---
 
@@ -256,82 +217,79 @@ A background job then populates `curated_geo.aoi_feature` with the intersection 
 
 ---
 
-### Creating a scenario
+### Recording a scenario edit
 
-```sql
-INSERT INTO app_core.scenario (project_id, name, description, status)
-VALUES (
-  :project_id,
-  'Green Corridor — Av. Juárez',
-  'Convert Av. Juárez into a tree-lined pedestrian priority corridor with widened sidewalks',
-  'draft'
+A scenario begins existing the moment its first override row is written. Mint a uuid client-side and use it.
+
+```python
+from uuid import uuid4
+from reimagina.scenarios.overrides import apply_override
+
+scenario_id = str(uuid4())
+apply_override(
+    conn,
+    scenario_id=scenario_id,
+    feature_id=block_id,
+    attribute_key="floors",
+    value_numeric=10.0,
 )
-RETURNING id; -- :scenario_id
 ```
 
----
+`apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:42-44`).
 
-### Adding an intervention to a scenario
-
-```sql
--- Create the intervention
-INSERT INTO app_core.intervention (scenario_id, name, description)
-VALUES (
-  :scenario_id,
-  'Widen sidewalks on Av. Juárez',
-  'Increase sidewalk width from 1.5m to 3.5m and add tree planters every 8m'
-)
-RETURNING id; -- :intervention_id
-
--- Specify which features change and how
-INSERT INTO app_core.intervention_feature (intervention_id, feature_id, attribute_overrides)
-VALUES
-  (:intervention_id, :sidewalk_segment_1_id,
-   '{"width_m": 3.5, "tree_count": 12, "has_planters": true}'),
-  (:intervention_id, :sidewalk_segment_2_id,
-   '{"width_m": 3.5, "tree_count": 8, "has_planters": true}'),
-  (:intervention_id, :road_av_juarez_id,
-   '{"lanes": 2, "has_bike_lane": true, "speed_limit_kmh": 30}');
-```
-
----
-
-### Configuring model parameters for a scenario
-
-```sql
-INSERT INTO app_core.configuration (scenario_id, model_family, parameters)
-VALUES
-  (:scenario_id, 'accessibility',
-   '{"walking_speed_kmh": 5, "max_walk_minutes": 15, "include_cycling": true}'),
-
-  (:scenario_id, 'green_area',
-   '{"target_canopy_pct": 0.25, "tree_growth_years": 5}'),
-
-  (:scenario_id, 'housing',
-   '{"avg_floors": 4, "m2_per_unit": 85, "social_housing_pct": 0.30}')
-
-ON CONFLICT (scenario_id, model_family) DO UPDATE
-  SET parameters = EXCLUDED.parameters,
-      updated_at = now();
-```
+No CLI command or API route writes override rows today — `apply_override` is called from the what-if integration test (`tests/integration/test_scenario_whatif.py:69`) and from application code directly.
 
 ---
 
 ### Triggering scenario computation
 
-The API creates one `job_run` row per model family affected by the scenario, then enqueues each one.
+Submit a run; the change-set is derived from the override rows when it is not given explicitly.
 
-```sql
-INSERT INTO jobs_runtime.job_run (scenario_id, model_family, status, code_version)
-VALUES
-  (:scenario_id, 'accessibility', 'queued', 'v2.1.0'),
-  (:scenario_id, 'green_area',    'queued', 'v1.3.2'),
-  (:scenario_id, 'housing',       'queued', 'v3.0.1')
-RETURNING id, model_family;
--- Each returned ID is enqueued as a message on its model family's queue.
+```bash
+reimagina evaluate-scenario --scenario-id "$SCENARIO_ID" --changed-attribute floors
 ```
 
-Only model families whose inputs are affected by this scenario's interventions or configuration need to be queued. See `JOB_LAYER.md` for the full worker execution contract, result write pattern, and failure handling.
+The CLI's flags are `--changed-attribute` (repeatable), `--feature` (repeatable), `--scenario-id`, `--aoi-id`, plus the mode flags `--detach` / `--sync` (`apps/cli/app.py:651-700`).
+
+Over HTTP:
+
+```http
+POST /jobs
+{"scenario_id": "…", "changed_attributes": ["floors"]}
+→ 202 {"run_id": "…", "status": "queued"}
+```
+
+Omitting `changed_attributes` and `edited_features` is the supported shape when a `scenario_id` is given — the override rows are the diff (`apps/api/routers/jobs.py:40-41`).
+
+A run whose dirty-set is empty comes back as `{"run_id": null, "status": "noop"}`: nothing was invalidated, no run row exists, and an id would 404 (`jobs.py:53-56`).
+
+See `JOB_LAYER.md` for run modes, run state, and cancellation.
+
+---
+
+### Listing a scenario's overrides
+
+```sql
+SELECT
+  so.feature_id,
+  f.name,
+  f.type_slug,
+  so.attribute_key,
+  so.value_numeric,
+  so.value_text
+FROM curated_geo.scenario_override so
+JOIN serving_geo.feature_v f ON f.id = so.feature_id
+WHERE so.scenario_id = :scenario_id
+ORDER BY f.type_slug, so.attribute_key, so.feature_id;
+```
+
+The same read, reduced to `(changed_attributes, edited_features)`, is what `scenario_change_set` returns for the planner (`overrides.py:96`).
+
+---
+
+### Checking run status for a scenario
+
+See `JOB_LAYER.md` — *The port* (`get_run`), *Progress* (the SSE stream), and *Cancellation*. Status is per run and per unit; there is no per-model-family status to poll.
 
 ---
 
@@ -357,141 +315,94 @@ WHERE af.aoi_id    = :aoi_id
 ORDER BY ci.indicator_slug, f.id;
 ```
 
+`current_indicator_v` filters to `status = 'current'` (`r016:327-350`), so this returns the live result set for that scenario and nothing superseded.
+
 ---
 
-### Comparing two scenarios
+### Comparing a scenario against the baseline
+
+Baseline results are the rows with `scenario_id IS NULL`, written by the same indicator code through the same overlay.
 
 ```sql
 SELECT
   f.id,
   f.name,
-  s1.value_numeric                          AS scenario_a_value,
-  s2.value_numeric                          AS scenario_b_value,
-  s2.value_numeric - s1.value_numeric       AS delta_a_to_b
+  base.value_numeric                        AS baseline_value,
+  scen.value_numeric                        AS scenario_value,
+  scen.value_numeric - base.value_numeric   AS delta
 FROM serving_geo.feature_v f
-JOIN serving_geo.current_indicator_v s1
-  ON s1.feature_id    = f.id
- AND s1.indicator_slug = 'accessibility_walkability'
- AND s1.scenario_id   = :scenario_a_id
-JOIN serving_geo.current_indicator_v s2
-  ON s2.feature_id    = f.id
- AND s2.indicator_slug = 'accessibility_walkability'
- AND s2.scenario_id   = :scenario_b_id
-WHERE f.type_slug = 'block'
-  AND ST_Intersects(f.geometry, :aoi_geometry);
+JOIN serving_geo.current_indicator_v base
+  ON base.feature_id     = f.id
+ AND base.indicator_slug = 'urban_form_block_planned_floors'
+ AND base.scenario_id IS NULL
+JOIN serving_geo.current_indicator_v scen
+  ON scen.feature_id     = f.id
+ AND scen.indicator_slug = 'urban_form_block_planned_floors'
+ AND scen.scenario_id    = :scenario_id
+WHERE f.type_slug = 'block';
 ```
+
+Swap `base.scenario_id IS NULL` for a second `= :scenario_b_id` to compare two scenarios. The shipped slugs are `urban_form_block_compactness`, `urban_form_block_building_density`, `urban_form_block_planned_floors`, and `urban_form_block_composite` (`indicators/catalog.py:47`, `:73`, `:98`, `:121`).
 
 ---
 
-### Getting all interventions and their targets for a scenario
+### Updating an override and recomputing
 
 ```sql
-SELECT
-  i.id               AS intervention_id,
-  i.name             AS intervention_name,
-  f.id               AS feature_id,
-  f.name             AS feature_name,
-  f.type_slug,
-  inf.attribute_overrides
-FROM app_core.intervention i
-JOIN app_core.intervention_feature inf ON inf.intervention_id = i.id
-JOIN serving_geo.feature_v f           ON f.id = inf.feature_id
-WHERE i.scenario_id = :scenario_id
-ORDER BY i.name, f.type_slug, f.id;
+INSERT INTO curated_geo.scenario_override
+  (scenario_id, feature_id, attribute_key, value_numeric)
+VALUES (:scenario_id, :block_id, 'floors', 12.0)
+ON CONFLICT (scenario_id, feature_id, attribute_key)
+DO UPDATE SET value_numeric = EXCLUDED.value_numeric;
 ```
 
----
-
-### Checking job status for a scenario
-
-See `JOB_LAYER.md` — polling, failure handling, and re-queuing patterns are defined there.
+Then submit a run for the scenario. There is no separate "mark stale" step to perform: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts, and the partial unique index `ir_one_current_scenario` enforces one current row per triple (`r016:198-200`).
 
 ---
 
-### Updating an intervention and triggering recomputation
+### Duplicating a scenario
+
+A scenario is its override rows, so cloning one is a single copy.
 
 ```sql
--- Update the override for one feature
-UPDATE app_core.intervention_feature
-SET attribute_overrides = '{"width_m": 4.0, "tree_count": 15, "has_planters": true}'
-WHERE intervention_id = :intervention_id
-  AND feature_id      = :sidewalk_segment_1_id;
-
--- Mark affected indicator results stale (see INDICATORS_LAYER.md for the full query)
--- Then queue new jobs for affected model families (see JOB_LAYER.md for the re-queue pattern).
+INSERT INTO curated_geo.scenario_override
+  (scenario_id, feature_id, attribute_key, value_numeric, value_text)
+SELECT :new_scenario_id, feature_id, attribute_key, value_numeric, value_text
+FROM curated_geo.scenario_override
+WHERE scenario_id = :source_scenario_id;
 ```
 
----
+The copy has no results until a run is submitted for the new id.
 
-### Archiving a scenario
-
-```sql
-UPDATE app_core.scenario
-SET status = 'archived', updated_at = now()
-WHERE id = :scenario_id;
-```
-
-Archived scenarios retain all `indicator_result` rows and can be read for comparison. No new jobs should be queued for them.
-
----
-
-### Duplicating a scenario (copy interventions and configuration)
-
-A scenario can be cloned to create a variation without starting from scratch.
-
-```sql
--- Create the new scenario
-INSERT INTO app_core.scenario (project_id, name, description, status)
-SELECT project_id, :new_name, description, 'draft'
-FROM app_core.scenario WHERE id = :source_scenario_id
-RETURNING id; -- :new_scenario_id
-
--- Copy interventions
-WITH new_interventions AS (
-  INSERT INTO app_core.intervention (scenario_id, name, description)
-  SELECT :new_scenario_id, name, description
-  FROM app_core.intervention WHERE scenario_id = :source_scenario_id
-  RETURNING id, name
-)
-INSERT INTO app_core.intervention_feature (intervention_id, feature_id, attribute_overrides)
-SELECT ni.id, inf.feature_id, inf.attribute_overrides
-FROM app_core.intervention_feature inf
-JOIN app_core.intervention i   ON i.id = inf.intervention_id
-JOIN new_interventions ni      ON ni.name = i.name
-WHERE i.scenario_id = :source_scenario_id;
-
--- Copy configuration
-INSERT INTO app_core.configuration (scenario_id, model_family, parameters)
-SELECT :new_scenario_id, model_family, parameters
-FROM app_core.configuration WHERE scenario_id = :source_scenario_id;
-```
+There is no archive operation: with no scenario row there is no status to set. Results for an unused scenario simply stop being recomputed, and stay readable for comparison.
 
 ---
 
 ## Build order
 
-1. `app_core.project`
-2. `app_core.scenario`
-3. `jobs_runtime.job_run` — defined in `JOB_LAYER.md`; depends on `app_core.scenario`
-4. `app_core.intervention`
-5. `app_core.intervention_feature` — depends on `curated_geo.feature` (from DATA_LAYER)
-6. `app_core.configuration`
+Within this layer:
 
-See `JOB_LAYER.md` for the full cross-document build order.
+1. `app_core.project` — r001, needed by `area_of_interest`
+2. `curated_geo.feature` — DATA_LAYER (r003); `scenario_override.feature_id` references it
+3. `curated_geo.scenario_override` — r030
+
+`scenario_override` is created late (r030) rather than with `project`, because it depends on `feature` and nothing depends on it. See `JOB_LAYER.md` — *Migration order* for how the job-layer tables interleave.
 
 ---
 
-## How the four layers relate
+## How the layers relate
 
 ```
-DATA_LAYER                     SCENARIOS_LAYER           JOB_LAYER               INDICATORS_LAYER
+DATA_LAYER                      SCENARIOS_LAYER            JOB_LAYER              INDICATORS_LAYER
 
-curated_geo.feature ───────►   intervention_feature   ─┐
-curated_geo.observation ───►   configuration          ─┼──► job_run ─────────► indicator_result
-        │                                              │         │
-        └──────────────► serving_geo.feature_v ────────┘         └── reads serving baseline
-                                                                  applies overrides in memory
-                                                                  writes scenario-tagged outputs
+curated_geo.feature ─────────┐
+curated_geo.observation ─────┼──► scenario_override ──► submit_run ──► job_run ──► indicator_result
+        │                    │            │                 │                       (scenario_id NULL
+        │                    └────────────┴── COALESCE ──────┤                        or a uuid)
+        └──► serving_geo.feature_v                           └── runner resolves effective values
+                (map/API reads)                                  writes results citing job_run_id
 ```
 
-The `feature` table is still the shared anchor, but workers read it through `serving_geo.feature_v` so current observations are already merged in. Scenarios contribute only overrides and configuration. Jobs apply those overlays in memory and write their effects to `indicator_result`. The baseline is never modified. See `JOB_LAYER.md` for the full execution flow.
+`feature` is the shared anchor. Scenarios contribute only override rows. A run resolves the three-way overlay in SQL at read time and writes its effects to `indicator_result`. The baseline is never modified.
+
+Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`overrides.py:74-90`).

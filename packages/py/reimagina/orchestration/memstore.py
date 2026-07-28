@@ -1,11 +1,17 @@
 """In-memory run store — the ops-plane-free implementation of the store shape.
 
-Mirrors the subset of ``reimagina.orchestration.runstore``'s signatures that a
-port implementation needs, so either can be injected without an adapter. It
-exists so the synchronous orchestrator — a reference implementation of the port,
-used by tests and by no production path — does not drag `jobs_runtime` along
-with it. An ops-plane that drops those tables can then delete `runstore` without
-touching the synchronous path.
+Mirrors the four ``reimagina.orchestration.runstore`` functions the synchronous
+orchestrator actually calls — ``create_run``, ``record_units``, ``finalize_run``,
+``get_run`` — so either can be injected without an adapter. It exists so that
+orchestrator, a reference implementation of the port used by tests and by no
+production path, does not drag ``jobs_runtime`` along with it: an ops-plane that
+drops those tables can delete ``runstore`` without touching the synchronous path.
+
+Deliberately not a full mirror. ``set_unit_status`` and ``list_units`` were here
+and unused, and the copy of ``set_unit_status`` had drifted — it lacked the
+terminal-state guard ``runstore``'s gained, so the two stores disagreed on the
+one behaviour a mirror is supposed to guarantee. An unused method that can be
+wrong is worse than an absent one.
 
 ``conn`` is accepted and ignored throughout, purely to keep the signatures
 interchangeable with the Postgres store.
@@ -58,28 +64,6 @@ class InMemoryRunStore:
             }
             for u in units
         ]
-
-    def set_unit_status(
-        self,
-        conn: Any,
-        *,
-        run_id: str,
-        indicator_slug: str,
-        status: str,
-        detail: str | None = None,
-    ) -> None:
-        run = self._runs.get(run_id)
-        if run is None:
-            return
-        for unit in run["units"]:
-            if unit["indicator"] == indicator_slug:
-                unit["status"] = status
-                unit["detail"] = detail
-                return
-
-    def list_units(self, conn: Any, run_id: str) -> list[dict[str, Any]]:
-        run = self._runs.get(run_id)
-        return list(run["units"]) if run else []
 
     def finalize_run(self, conn: Any, *, run_id: str, status: str) -> None:
         run = self._runs.get(run_id)

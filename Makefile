@@ -49,7 +49,7 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 
 .PHONY: test-conformance
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
-	$(PYTEST) tests/conformance -v
+	$(PYTEST) tests/conformance -q --no-header -rA
 
 .PHONY: build-web
 build-web: ## Typecheck + build the web app.
@@ -60,7 +60,11 @@ test-web: ## Run the web app's vitest suite.
 	cd apps/web && npm test
 
 .PHONY: check
-check: lint test build-web test-web ## Run everything CI gates on. Run before opening a PR.
+check: lint test build-web test-web ## Lint + the DB-free suites + web. Run before opening a PR.
+	@echo
+	@echo 'Note: CI also runs `make test-integration` and `make test-conformance`,'
+	@echo 'which need Postgres. Run those too before pushing anything that'
+	@echo 'touches the data or ops-plane layers.'
 
 # ─── Bootstrap (data ingest entrypoints) ─────────────────────────────────────
 
