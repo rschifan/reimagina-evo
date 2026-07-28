@@ -88,3 +88,66 @@ def test_event_stream_emits_snapshot_then_closes_for_terminal_run(
                 "DELETE FROM jobs_runtime.orchestration_run WHERE id = %s", (run_id,)
             )
         conn.close()
+
+
+def test_subscribe_progress_streams_live_events_and_filters_other_runs(
+    migrated_db, monkeypatch
+):
+    """Drive the port's LISTEN loop, which no other test reaches.
+
+    Every other subscriber in the suite hits an already-terminal run and returns
+    on the snapshot, so the notify path — the run_id filter and the
+    terminal-event stop — ran nowhere. A regression in the filter leaks another
+    run's progress into a client's SSE stream.
+    """
+    monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
+    from reimagina.orchestration.procrastinate_orchestrator import (
+        ProcrastinateOrchestrator,
+    )
+
+    run_id = str(uuid4())
+    other_run = str(uuid4())
+    conn = psycopg2.connect(_DSN)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO jobs_runtime.orchestration_run "
+                "(id, status, code_version) VALUES (%s, 'running', 'test')",
+                (run_id,),
+            )
+
+        async def _drive():
+            stream = ProcrastinateOrchestrator().subscribe_progress(run_id).__aiter__()
+            first = await stream.__anext__()  # snapshot: running, so it stays open
+
+            emitter = psycopg2.connect(_DSN)
+            emitter.autocommit = True
+            try:
+                # A different run's event must not reach this subscriber.
+                events.emit(
+                    emitter, run_id=other_run, indicator="noise", status="succeeded"
+                )
+                events.emit(
+                    emitter, run_id=run_id, indicator="compactness", status="succeeded"
+                )
+                events.emit(emitter, run_id=run_id, indicator=None, status="succeeded")
+            finally:
+                emitter.close()
+
+            rest = [event async for event in stream]
+            return first, rest
+
+        first, rest = asyncio.run(asyncio.wait_for(_drive(), timeout=15.0))
+
+        assert first.status == "running"
+        assert [(e.indicator, e.status) for e in rest] == [
+            ("compactness", "succeeded"),
+            (None, "succeeded"),
+        ], "the other run's event leaked in, or the terminal event did not stop it"
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.orchestration_run WHERE id = %s", (run_id,)
+            )
+        conn.close()

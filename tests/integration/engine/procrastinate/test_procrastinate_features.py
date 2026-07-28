@@ -201,6 +201,22 @@ def test_embedded_run_finalizes_succeeded(seeded):
     assert _unit_statuses(seeded.conn, status.run_id) == {
         s: "succeeded" for s in _SHIPPED_SLUGS
     }
+
+    # Every job_run the worker opened is attributed to this run, with a pid.
+    # The ambient `current_run` is set inside `compute_unit` — on the worker's
+    # own thread, because a ContextVar does not cross into a thread the setter
+    # never entered — and nothing else asserts that half. Without it, cancel
+    # finds no backends to signal and degrades to bookkeeping, silently.
+    with seeded.conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), count(backend_pid) FROM jobs_runtime.job_run "
+            "WHERE run_id = %s",
+            (status.run_id,),
+        )
+        rows, with_pid = cur.fetchone()
+    assert rows == len(_SHIPPED_SLUGS)
+    assert with_pid == rows
+
     # The compactness result actually landed for the block.
     from reimagina.storage import backend_for_connection
 

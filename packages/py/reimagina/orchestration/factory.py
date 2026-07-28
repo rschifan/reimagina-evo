@@ -33,10 +33,31 @@ from reimagina.orchestration.port import Orchestrator
 DEFAULT_MODE = "detach"
 MODES = ("detach", "embedded", "sync")
 
+DURABLE_MODES = ("detach", "embedded")
+"""Modes that persist a run somewhere a *different* process can read it.
+
+``sync`` does not: it keeps run state in memory, per orchestrator instance. That
+makes it fine as an explicit choice and unusable as a deployment default —
+``POST /jobs`` names its own mode to honour its 200-vs-202 contract, while
+``GET /jobs/{run_id}`` and the SSE route take the configured one, so a global
+``sync`` would have writes going to Postgres and reads coming from an empty
+dict. Hence the environment may only select from this list.
+"""
+
 
 def get_orchestrator(mode: str | None = None) -> Orchestrator:
     """Build the orchestrator for ``mode``, or for ``REIMAGINA_ORCHESTRATOR``."""
-    mode = mode or os.environ.get("REIMAGINA_ORCHESTRATOR") or DEFAULT_MODE
+    if mode is None:
+        mode = os.environ.get("REIMAGINA_ORCHESTRATOR") or DEFAULT_MODE
+        if mode not in DURABLE_MODES:
+            raise ValueError(
+                f"REIMAGINA_ORCHESTRATOR={mode!r} is not a deployable mode. "
+                f"Choose one of: {', '.join(DURABLE_MODES)}. "
+                "A mode that keeps run state in memory cannot be a deployment "
+                "default: this factory builds a fresh instance per call, so the "
+                "request that reads a run is never the one that wrote it. Pass "
+                "such a mode explicitly, and hold on to the instance."
+            )
 
     if mode == "detach":
         from reimagina.orchestration.procrastinate_orchestrator import (

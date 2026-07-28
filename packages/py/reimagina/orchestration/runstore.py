@@ -11,6 +11,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from reimagina.orchestration.port import RUN_TERMINAL_STATES, UNIT_TERMINAL_STATES
 from reimagina.storage import backend_for_connection
 
 
@@ -65,27 +66,42 @@ def set_unit_status(
     indicator_slug: str,
     status: str,
     detail: str | None = None,
-) -> None:
-    """Move a unit's status, unless it is already terminal.
+) -> bool:
+    """Move a unit's status unless it is already terminal; True if it moved.
 
     The terminal guard is what makes cancellation stick. Cancelling marks a
     running unit ``cancelled``, but the worker executing it does not stop — its
     query is cancelled, it catches the resulting error, and it writes ``failed``
     over the top, resurrecting a run that was already closed. A unit that has
     reached a terminal state has reached its final one.
+
+    The return value is not decoration: a caller that announces the transition
+    it just asked for, without checking whether it happened, publishes a status
+    the database refused. That is how an SSE stream ends up reporting ``failed``
+    for a unit ``GET /jobs/{run_id}`` calls ``cancelled``.
     """
     if not _is_postgres(conn):
-        return
+        return False
+    terminal = tuple(sorted(UNIT_TERMINAL_STATES))
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE jobs_runtime.job_unit SET status = %s, detail = %s, "
             "started_at = COALESCE(started_at, CASE WHEN %s = 'running' THEN now() END), "
-            "completed_at = CASE WHEN %s IN ('succeeded','failed','skipped','cancelled') "
-            "THEN now() ELSE completed_at END "
+            "completed_at = CASE WHEN %s IN %s THEN now() ELSE completed_at END "
             "WHERE run_id = %s AND indicator_slug = %s "
-            "AND status NOT IN ('succeeded','failed','skipped','cancelled')",
-            (status, detail, status, status, run_id, indicator_slug),
+            "AND status NOT IN %s",
+            (
+                status,
+                detail,
+                status,
+                status,
+                terminal,
+                run_id,
+                indicator_slug,
+                terminal,
+            ),
         )
+        return cur.rowcount > 0
 
 
 def list_units(conn: Any, run_id: str) -> list[dict[str, Any]]:
@@ -131,15 +147,25 @@ def record_units(conn: Any, *, run_id: str, units: Sequence[dict[str, Any]]) -> 
             )
 
 
-def finalize_run(conn: Any, *, run_id: str, status: str) -> None:
+def finalize_run(conn: Any, *, run_id: str, status: str) -> bool:
+    """Close a run unless it is already closed; True if this call closed it.
+
+    Same guard as ``set_unit_status``, and needed for the same reason. Cancelling
+    closes the run, then the worker that was mid-unit finishes, advances, and
+    finalises again — re-stamping ``completed_at`` with a later ``now()`` and
+    publishing a second run-level terminal event. The first close is the real
+    one: it is when the run stopped being able to change.
+    """
     if not _is_postgres(conn):
-        return
+        return False
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE jobs_runtime.orchestration_run "
-            "SET status = %s, completed_at = now() WHERE id = %s",
-            (status, run_id),
+            "SET status = %s, completed_at = now() "
+            "WHERE id = %s AND status NOT IN %s",
+            (status, run_id, tuple(sorted(RUN_TERMINAL_STATES))),
         )
+        return cur.rowcount > 0
 
 
 def get_run(conn: Any, run_id: str) -> dict[str, Any] | None:
