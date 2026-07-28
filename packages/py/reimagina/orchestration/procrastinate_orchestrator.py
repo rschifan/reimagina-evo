@@ -23,7 +23,7 @@ import psycopg2
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration import events, runstore
-from reimagina.orchestration.impact import compute_dirty_set
+from reimagina.orchestration.plan import noop_handle, plan_run
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
     UNIT_TERMINAL_STATES,
@@ -63,36 +63,21 @@ class ProcrastinateOrchestrator:
         queue_dsn()  # fail loudly now if DATABASE_URL_DIRECT is unset
         run_id = str(uuid4())
 
-        from reimagina.scenarios.overrides import resolve_change_set
-
-        changed_attributes, edited_features = resolve_change_set(
+        plan = plan_run(
             conn,
             changed_attributes=changed_attributes,
             edited_features=edited_features,
             scenario_id=scenario_id,
-        )
-        dirty = compute_dirty_set(changed_attributes, edited_features, self._registry)
-        if not dirty:
-            # Nothing to recompute — surface a distinct 'noop' instead of a
-            # green run that silently did nothing. (Not persisted: the run
-            # status CHECK has no 'noop'; return-only + log is the backstop.)
-            logger.warning(
-                "run for scenario %s produced an empty dirty-set — nothing to "
-                "recompute (check changed_attributes / scenario overrides)",
-                scenario_id,
-            )
-            return RunHandle(
-                run_id=run_id,
-                status=RunStatus(run_id=run_id, status="noop", units=()),
-            )
-        runstore.create_run(
-            conn,
-            run_id=run_id,
-            scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
-            status="running",
+            registry=self._registry,
         )
+        if plan.is_noop:
+            # Nothing to recompute — a distinct status rather than a green run
+            # that silently did nothing, and nothing persisted to hand back.
+            return noop_handle(run_id)
+
+        runstore.create_run(conn, run_id=run_id, status="running", **plan.params)
         runstore.record_units(
             conn,
             run_id=run_id,
@@ -102,7 +87,7 @@ class ProcrastinateOrchestrator:
                     "features": sorted(u.features),
                     "status": "queued",
                 }
-                for u in dirty
+                for u in plan.units
             ],
         )
         conn.commit()  # worker runs on its own connection; it must see the rows

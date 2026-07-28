@@ -19,8 +19,8 @@ from uuid import uuid4
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.coordinator import Runner, run_dirty_set
-from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.memstore import InMemoryRunStore
+from reimagina.orchestration.plan import noop_handle, plan_run
 from reimagina.orchestration.port import (
     RunEvent,
     RunHandle,
@@ -58,20 +58,23 @@ class SynchronousOrchestrator:
             default_runners(self._registry) if self._runners is None else self._runners
         )
         run_id = str(uuid4())
-        self._store.create_run(
-            conn, run_id=run_id, scenario_id=scenario_id, code_version=code_version
-        )
-
-        dirty = compute_dirty_set(changed_attributes, edited_features, self._registry)
-        report = run_dirty_set(
+        plan = plan_run(
             conn,
-            dirty,
-            self._registry,
-            runners,
+            changed_attributes=changed_attributes,
+            edited_features=edited_features,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
+            registry=self._registry,
         )
+        if plan.is_noop:
+            # Same answer the async orchestrators give, and for the same reason:
+            # persisting a run row here would need a 'noop' the status CHECK
+            # does not have.
+            return noop_handle(run_id)
+
+        self._store.create_run(conn, run_id=run_id, **plan.params)
+        report = run_dirty_set(conn, plan.units, self._registry, runners, **plan.params)
 
         by_indicator = report.by_indicator()
         units = [
@@ -81,7 +84,7 @@ class SynchronousOrchestrator:
                 "status": by_indicator[unit.indicator].status.value,
                 "detail": by_indicator[unit.indicator].detail,
             }
-            for unit in dirty
+            for unit in plan.units
         ]
         self._store.record_units(conn, run_id=run_id, units=units)
         self._store.finalize_run(conn, run_id=run_id, status=report.status)
