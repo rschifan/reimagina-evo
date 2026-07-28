@@ -27,8 +27,13 @@ def test_expected_top_level_structure_exists():
         ROOT / "infra" / "tiles",
         ROOT / "docs" / "architecture",
         ROOT / "tests" / "contract",
+        ROOT / "tests" / "conformance",
         ROOT / "tests" / "performance",
         ROOT / "tests" / "e2e",
+        # Engine-coupled tests are quarantined so an ops-plane branch can
+        # drop one subtree without editing the rest of a suite.
+        ROOT / "tests" / "integration" / "engine",
+        ROOT / "tests" / "performance" / "engine",
     ]
     for path in expected:
         assert path.exists(), f"Missing expected path: {path}"
