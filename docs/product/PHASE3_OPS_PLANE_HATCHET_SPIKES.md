@@ -183,3 +183,44 @@ which ever executed.
 Sizing follows directly: `schedule_timeout` must exceed
 `slowest_unit × queued_depth ÷ slots`, or a busy period is indistinguishable
 from an outage.
+
+
+## Port implementation — status
+
+`orchestration/hatchet_orchestrator.py` implements the port; `factory.py` has
+modes `hatchet` and `sync` only. Conformance currently reads:
+
+```
+12 passed, 3 skipped, 3 failed
+```
+
+All three failures are the **same measured property**, not defects:
+`test_a_submitted_run_is_retrievable_by_its_id`,
+`test_cancelling_a_live_run_closes_it`, and
+`test_subscribing_to_a_terminal_run_yields_then_stops` — each needs a run the
+engine can answer for.
+
+**A worker is mandatory, and this is where that stops being a sentence in a
+plan.** `run_no_wait` returns a workflow-run id, but `runs.get()` on it returns
+**404** until a worker has registered the workflow definition with the engine.
+So on this track a run id can exist and be unqueryable, and the port's contract
+that a submitted run is immediately retrievable cannot be honoured by the
+submitting process alone.
+
+The library track has no equivalent: there, the process that submits can also
+drive and answer for the run, and `get_run` falls back to the engine's own
+record during the pre-envelope window.
+
+Closing this means the conformance suite must start a worker for the `hatchet`
+implementation — which is itself the finding. The comparison row is not "one
+engine is slower to answer"; it is **one track requires a second process to
+exist before a run is observable at all**.
+
+### Remaining on this branch
+
+1. Start a worker in the conformance fixture, then re-run; the three failures
+   should resolve and the two partial-success assertions (currently skipped for
+   lack of a worker) should run and confirm `failed` / `cancelled`.
+2. Delete `wave.py`, `runstore.py` and migration r033 dropping
+   `orchestration_run` + `job_unit` — the deletions this track exists to make.
+3. Repurpose `apps/worker` for Hatchet.

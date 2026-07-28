@@ -183,4 +183,4 @@ def test_a_composite_is_skipped_when_a_dirty_input_fails(
         u for u in fetched.units if u.indicator not in (POISONED_SLUG, HEALTHY_SLUG)
     ]
     assert composites, "the shipped DAG must have a downstream unit to skip"
-    assert all(u.status == "skipped" for u in composites)
+    assert all(u.status == impl.skipped_unit_status for u in composites)

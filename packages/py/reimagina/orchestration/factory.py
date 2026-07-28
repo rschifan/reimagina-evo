@@ -5,15 +5,15 @@ ops-plane is a rewrite of *this* file instead of a hunt through the API router,
 the CLI and four test modules — and tests monkeypatch ``get_orchestrator``
 rather than a class path only one implementation has.
 
-The modes match the CLI's ``evaluate-scenario`` flags (``--sync``, ``--detach``,
-and the default) and the API's ``wait`` parameter:
+This branch runs the **Hatchet** ops-plane: a self-hosted engine that owns
+scheduling *and* run state. There is a standing service to operate, and in
+exchange the wave scheduler and the run tables are gone.
 
-``detach``
-    Enqueue and return immediately; a separate worker fleet drains it. The
-    production default.
-``embedded``
-    Enqueue and drain a bounded in-process worker, returning the finished run.
-    No standing worker needed — the interactive default.
+The modes:
+
+``hatchet``
+    Submit to the engine and return. The production default. Unlike the library
+    track, a worker is **mandatory** — nothing runs without one.
 ``sync``
     Compute in-process with no queue at all. No production caller today; it
     exists so the conformance suite has a target that needs no engine and no
@@ -30,10 +30,10 @@ import os
 
 from reimagina.orchestration.port import Orchestrator
 
-DEFAULT_MODE = "detach"
-MODES = ("detach", "embedded", "sync")
+DEFAULT_MODE = "hatchet"
+MODES = ("hatchet", "sync")
 
-DURABLE_MODES = ("detach", "embedded")
+DURABLE_MODES = ("hatchet",)
 """Modes that persist a run somewhere a *different* process can read it.
 
 ``sync`` does not: it keeps run state in memory, per orchestrator instance. That
@@ -59,17 +59,10 @@ def get_orchestrator(mode: str | None = None) -> Orchestrator:
                 "such a mode explicitly, and hold on to the instance."
             )
 
-    if mode == "detach":
-        from reimagina.orchestration.procrastinate_orchestrator import (
-            ProcrastinateOrchestrator,
-        )
+    if mode == "hatchet":
+        from reimagina.orchestration.hatchet_orchestrator import HatchetOrchestrator
 
-        return ProcrastinateOrchestrator()
-
-    if mode == "embedded":
-        from reimagina.orchestration.embedded import EmbeddedOrchestrator
-
-        return EmbeddedOrchestrator()
+        return HatchetOrchestrator()
 
     if mode == "sync":
         from reimagina.orchestration.synchronous import SynchronousOrchestrator
