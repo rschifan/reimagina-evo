@@ -128,12 +128,58 @@ that today distinguish "retry everything" from "retry one unit" cannot.
 Neither is a defect — it is what adopting an engine's status model costs, and it
 is the row the comparison exists to show.
 
-## Not yet run
+## B4 — cancelling a live statement
 
-- **B4 — cancel a live PostGIS unit.** Needs a long-running real compute against
-  the domain database; the engine-side question (does the slot release, does
-  `runner.py` log "still running after cancellation") is unanswered.
-- **B5 — `schedule_timeout` under saturation.** ⚠ The default is **5 minutes**,
-  and queued work is cancelled when it expires. With units that run for minutes
-  and a small slot count this is the most likely production surprise on this
-  track, and it is untested.
+A task holding `SELECT pg_sleep(45)` on a real connection, cancelled ten seconds
+in. Measured:
+
+- the task reports **`CANCELLED`** immediately;
+- the statement **keeps running** — `pg_stat_activity` still shows `pg_sleep` on
+  that backend;
+- the worker logs, verbatim: *"thread … is still running after cancellation.
+  This could cause the thread pool to get blocked and prevent new tasks from
+  running."*
+
+So the slot is **not** released, and Hatchet says so itself.
+`enable_force_kill_sync_threads` defaults false and is not a fix worth having —
+killing a thread mid-transaction is worse than waiting.
+
+This is the same conclusion the DBOS track reached: **neither engine can
+interrupt a thread blocked in a psycopg C call.** It is not a difference between
+the tracks, and the comparison should say so rather than implying either
+solves it.
+
+What actually stops the statement is `pg_cancel_backend`, which needs
+`job_run.backend_pid` (migration r031). That column survives on every branch, so
+this track can use the identical mechanism — the ops-plane is not where the
+answer lives.
+
+## B5 — `schedule_timeout` under saturation
+
+Defaults, read from the SDK:
+
+| | default | our reality |
+|---|---|---|
+| `schedule_timeout` | **5 minutes** | queued work is failed after waiting this long |
+| `execution_timeout` | **60 seconds** | our PostGIS units run for *minutes* |
+
+Both must be overridden on every task. The execution default is the sharper
+one: left alone it kills a real unit a minute in.
+
+Measured with `schedule_timeout=10s`, three tasks, one slot, twenty seconds
+each:
+
+| task | outcome |
+|---|---|
+| 1 | COMPLETED |
+| 2 | **FAILED** |
+| 3 | **FAILED** |
+
+The two that merely *waited too long* report **`FAILED`** — the same status as a
+unit whose compute genuinely broke. Combined with B7, a saturated pool therefore
+produces a run reporting `FAILED`, full of units reporting `FAILED`, none of
+which ever executed.
+
+Sizing follows directly: `schedule_timeout` must exceed
+`slowest_unit × queued_depth ÷ slots`, or a busy period is indistinguishable
+from an outage.
