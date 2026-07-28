@@ -141,3 +141,33 @@ def test_synchronous_orchestrator_defaults_to_an_in_memory_store(conn):
     # Readable through the orchestrator, absent from the ops-plane tables.
     assert orch.get_run(conn, handle.run_id) is not None
     assert runstore.get_run(conn, handle.run_id) is None
+
+
+def test_a_run_stamps_its_id_on_every_job_run_it_opens(conn):
+    """The ambient run must survive the whole executor → runner → compute chain.
+
+    ``current_run`` is set by the executor and read four frames down, inside the
+    job_run lifecycle. Nothing in between mentions it, so only an end-to-end
+    check proves the plumbing is connected — and without it, cancel cannot find
+    a single backend to stop (r031).
+    """
+    block_a, _block_b = _seed_two_blocks(conn)
+
+    handle = SynchronousOrchestrator().submit_run(
+        conn,
+        changed_attributes={"geometry"},
+        edited_features={block_a},
+        code_version="test",
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), count(backend_pid) FROM jobs_runtime.job_run "
+            "WHERE run_id = %s",
+            (handle.run_id,),
+        )
+        rows, with_pid = cur.fetchone()
+
+    # One job_run per unit that actually computed, each carrying a pid.
+    assert rows == len(handle.status.units)
+    assert with_pid == rows
