@@ -17,6 +17,7 @@ from procrastinate.exceptions import AlreadyEnqueued
 
 from reimagina.db import connect
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.jobs._lifecycle import current_run
 from reimagina.orchestration import events, runstore
 from reimagina.orchestration.wave import plan_wave
 from reimagina.orchestration.queue_app import app, queue_dsn
@@ -98,13 +99,16 @@ def compute_unit(
             status, detail = "skipped", "no runner registered"
         else:
             try:
-                runner(
-                    conn,
-                    features=frozenset(feature_scope),
-                    scenario_id=scenario_id,
-                    code_version=code_version,
-                    aoi_id=aoi_id,
-                )
+                # Set here, inside the worker thread that runs the compute — a
+                # ContextVar set by the dispatcher would not be visible here.
+                with current_run(run_id):
+                    runner(
+                        conn,
+                        features=frozenset(feature_scope),
+                        scenario_id=scenario_id,
+                        code_version=code_version,
+                        aoi_id=aoi_id,
+                    )
                 status, detail = "succeeded", None
             except Exception as exc:  # noqa: BLE001 — deterministic failure = terminal
                 conn.rollback()

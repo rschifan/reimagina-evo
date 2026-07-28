@@ -35,6 +35,7 @@ from reimagina.orchestration.port import (
 )
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.tasks import advance_run
+from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
 
@@ -113,17 +114,25 @@ class ProcrastinateOrchestrator:
         )
 
     def cancel_run(self, conn: object, run_id: str) -> bool:
-        """Mark every non-terminal unit ``cancelled`` and close the run.
+        """Stop the run: cancel its live backends, then close its units.
 
-        A unit already executing keeps running: the worker holds a separate
-        connection and nothing here interrupts a blocking PostGIS call. What
-        this does guarantee is that no *further* wave is dispatched —
-        ``plan_wave`` treats ``cancelled`` as terminal, so the next
-        ``advance_run`` finds nothing ready and the run stays closed.
+        Two mechanisms, because one is not enough. Marking units ``cancelled``
+        stops *scheduling* — ``plan_wave`` treats it as terminal, so the next
+        ``advance_run`` finds nothing ready — but the worker already executing a
+        unit holds its own connection and would run to completion; nothing in
+        Python interrupts a blocking PostGIS call. ``pg_cancel_backend`` is what
+        actually stops the statement (r031).
+
+        The worker still finishes its own error handling afterwards and tries to
+        record ``failed``; ``runstore.set_unit_status`` refuses to move a unit
+        out of a terminal state, which is what keeps ``cancelled`` from being
+        overwritten.
         """
         row = runstore.get_run(conn, run_id)
         if row is None or row["status"] in RUN_TERMINAL_STATES:
             return False
+
+        backend_for_connection(conn).job_run_repo().cancel_run_backends(run_id)
 
         statuses = []
         for unit in row["units"]:
