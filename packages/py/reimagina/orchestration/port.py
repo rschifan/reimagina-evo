@@ -6,13 +6,14 @@ in-process executor now, a Procrastinate distributor next, a Dagster adapter
 later) without touching callers. Deliberately leaks no Hamilton/Procrastinate
 types — only plain dataclasses.
 
-``subscribe_progress`` (live SSE stream) lands with the async distributor in a
-later phase; the port stays minimal until it has a real implementation.
+Construct implementations through ``orchestration.factory.get_orchestrator``
+rather than by name: the factory is the one place an ops-plane swap edits, and
+it is the seam tests monkeypatch.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -81,6 +82,23 @@ class RunHandle:
     status: RunStatus | None = None
 
 
+@dataclass(frozen=True)
+class RunEvent:
+    """One progress update, as data — never a pre-formatted SSE string.
+
+    Framing it for the wire is the API route's job (``frames.event_frame``), so
+    an orchestrator never has to know it is feeding an HTTP endpoint.
+
+    ``indicator=None`` marks the run-level event carrying the overall status;
+    that is the event that ends a subscription.
+    """
+
+    run_id: str
+    indicator: str | None
+    status: str
+    detail: str | None = None
+
+
 class Orchestrator(Protocol):
     def submit_run(
         self,
@@ -94,3 +112,26 @@ class Orchestrator(Protocol):
     ) -> RunHandle: ...
 
     def get_run(self, conn: object, run_id: str) -> RunStatus | None: ...
+
+    def cancel_run(self, conn: object, run_id: str) -> bool:
+        """Stop a run; True if it was live, False if unknown or already terminal.
+
+        Marks every non-terminal unit ``cancelled`` and closes the run. It does
+        **not** promise that in-flight compute stops: no engine can interrupt a
+        thread blocked in a psycopg C call, so a unit already executing runs to
+        its next boundary. Killing the backend is a separate mechanism.
+        """
+        ...
+
+    def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]:
+        """Yield progress events until the run-level terminal event, then stop.
+
+        The first event is a snapshot of the run's current status, so a late
+        subscriber is not left waiting on a run that already finished.
+
+        Takes no connection: every engine has its own progress transport
+        (LISTEN/NOTIFY here, workflow streams elsewhere) and none of them is the
+        caller's pooled connection. Async because the service engines expose
+        async iterators; an engine whose stream is a sync generator wraps it.
+        """
+        ...

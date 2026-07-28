@@ -4,22 +4,44 @@
 commits (so the worker's separate connection sees them), then defers the first
 ``advance_run``. It returns immediately — the caller polls ``get_run``. The
 caller must pass a commit-safe connection (not the API's rollback-scoped pool).
+
+``subscribe_progress`` is this engine's progress transport: Postgres
+LISTEN/NOTIFY on its own direct connection, since LISTEN cannot cross PgBouncer
+in transaction mode.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from collections.abc import Iterable, Sequence
+import select
+from collections.abc import AsyncIterator, Iterable, Sequence
 from uuid import uuid4
 
+import psycopg2
+
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
-from reimagina.orchestration import runstore
+from reimagina.orchestration import events, runstore
 from reimagina.orchestration.impact import compute_dirty_set
-from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
+from reimagina.orchestration.port import (
+    RUN_TERMINAL_STATES,
+    UNIT_TERMINAL_STATES,
+    RunEvent,
+    RunHandle,
+    RunStatus,
+    UnitStatusView,
+    overall_status,
+)
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.tasks import advance_run
 
 logger = logging.getLogger(__name__)
+
+# How long one wait on the LISTEN socket blocks before looping. Only bounds how
+# promptly the subscription notices it has been closed — the caller runs its own
+# heartbeat clock, so this is not the keep-alive interval.
+_POLL_SECONDS = 1.0
 
 
 class ProcrastinateOrchestrator:
@@ -104,3 +126,80 @@ class ProcrastinateOrchestrator:
                 for u in row["units"]
             ),
         )
+
+    def cancel_run(self, conn: object, run_id: str) -> bool:
+        """Mark every non-terminal unit ``cancelled`` and close the run.
+
+        A unit already executing keeps running: the worker holds a separate
+        connection and nothing here interrupts a blocking PostGIS call. What
+        this does guarantee is that no *further* wave is dispatched —
+        ``plan_wave`` treats ``cancelled`` as terminal, so the next
+        ``advance_run`` finds nothing ready and the run stays closed.
+        """
+        row = runstore.get_run(conn, run_id)
+        if row is None or row["status"] in RUN_TERMINAL_STATES:
+            return False
+
+        statuses = []
+        for unit in row["units"]:
+            status = unit["status"]
+            if status not in UNIT_TERMINAL_STATES:
+                status = "cancelled"
+                runstore.set_unit_status(
+                    conn,
+                    run_id=run_id,
+                    indicator_slug=unit["indicator"],
+                    status=status,
+                    detail="run cancelled",
+                )
+                events.emit(
+                    conn, run_id=run_id, indicator=unit["indicator"], status=status
+                )
+            statuses.append(status)
+
+        final = overall_status(statuses)
+        runstore.finalize_run(conn, run_id=run_id, status=final)
+        events.emit(conn, run_id=run_id, indicator=None, status=final)
+        conn.commit()
+        return True
+
+    async def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]:
+        """Snapshot, then LISTEN/NOTIFY updates until the run goes terminal.
+
+        Opens its own direct connection — LISTEN needs one that is not
+        transaction-pooled, and the caller's pooled connection is neither
+        long-lived nor safe to block on.
+        """
+        conn = await asyncio.to_thread(psycopg2.connect, queue_dsn())
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(f"LISTEN {events.CHANNEL}")
+
+            # Snapshot AFTER LISTEN, so a finalise landing between the two is
+            # caught by one or the other rather than falling down the gap.
+            current = runstore.get_run(conn, run_id)
+            status = current["status"] if current else "unknown"
+            yield RunEvent(run_id=run_id, indicator=None, status=status)
+            if status in RUN_TERMINAL_STATES:
+                return
+
+            while True:
+                ready, _, _ = await asyncio.to_thread(
+                    select.select, [conn], [], [], _POLL_SECONDS
+                )
+                if not ready:
+                    continue  # the caller owns the keep-alive clock, not us
+                conn.poll()
+                while conn.notifies:
+                    note = conn.notifies.pop(0)
+                    data = json.loads(note.payload)
+                    if data.get("run_id") != run_id:
+                        continue
+                    indicator = data.get("indicator")
+                    status = data.get("status", "")
+                    yield RunEvent(run_id=run_id, indicator=indicator, status=status)
+                    if indicator is None and status in RUN_TERMINAL_STATES:
+                        return
+        finally:
+            conn.close()
