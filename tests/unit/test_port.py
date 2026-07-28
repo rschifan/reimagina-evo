@@ -152,6 +152,47 @@ def test_subscribe_progress_reports_unknown_for_a_missing_run():
     assert [e.status for e in events] == ["unknown"]
 
 
+def test_subscribe_progress_works_with_a_connection_bound_store():
+    """The port gives subscribe_progress no connection, so it must not need one.
+
+    It used to ask the store with ``conn=None``. That is fine for the in-memory
+    default and silently wrong for any store that talks to a database: the
+    Postgres store no-ops on a None connection, so every run — including one
+    just finished — reported ``unknown``.
+    """
+
+    class _ConnectionBoundStore:
+        """Rejects a None connection, the way a real database store no-ops on one."""
+
+        def create_run(self, conn, **kw):
+            assert conn is not None
+            return True
+
+        def record_units(self, conn, **kw):
+            assert conn is not None
+
+        def finalize_run(self, conn, **kw):
+            assert conn is not None
+
+        def get_run(self, conn, run_id):
+            assert conn is not None, "subscribe_progress must not reach the store"
+            return None
+
+    runners = {
+        s: _runner([], s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(
+        registry=REG, runners=runners, store=_ConnectionBoundStore()
+    )
+    handle = orch.submit_run(
+        object(), changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    events = _collect(orch.subscribe_progress(handle.run_id))
+    assert [e.status for e in events] == ["succeeded"]
+
+
 def test_store_is_injectable():
     """Any object with the runstore signatures can back the orchestrator."""
     calls: list[str] = []

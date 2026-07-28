@@ -43,6 +43,10 @@ class SynchronousOrchestrator:
         self._registry = registry
         self._runners = runners
         self._store = store if store is not None else InMemoryRunStore()
+        # run_id -> terminal status, for subscribe_progress. It cannot read the
+        # store: the port gives it no connection (every other engine's progress
+        # transport is its own), and a Postgres-backed store needs one.
+        self._outcomes: dict[str, str] = {}
 
     def submit_run(
         self,
@@ -90,6 +94,7 @@ class SynchronousOrchestrator:
         ]
         self._store.record_units(conn, run_id=run_id, units=units)
         self._store.finalize_run(conn, run_id=run_id, status=report.status)
+        self._outcomes[run_id] = report.status
 
         status = RunStatus(
             run_id=run_id,
@@ -127,10 +132,16 @@ class SynchronousOrchestrator:
         The run is complete before its id escapes, so a subscription can only
         ever report history. It yields the snapshot every implementation opens
         with and closes immediately rather than pretending to stream.
+
+        Answers from runs *this instance* ran, not from the store. The port
+        hands ``subscribe_progress`` no connection — deliberately, since no
+        other engine's progress transport is the caller's pooled connection —
+        so a Postgres-backed store could never be read here, and asking it with
+        a None connection silently returned ``unknown`` for every run,
+        including ones it had just finished.
         """
-        row = self._store.get_run(conn=None, run_id=run_id)
         yield RunEvent(
             run_id=run_id,
             indicator=None,
-            status=row["status"] if row else "unknown",
+            status=self._outcomes.get(run_id, "unknown"),
         )
