@@ -1,0 +1,55 @@
+# Hatchet ops-plane — self-hosted, MIT, no RabbitMQ.
+#
+# `hatchet-lite` bundles the engine, API and dashboard in one container. The
+# production shape is the four-service split (engine / api / dashboard /
+# migration); this is the same software with the same configuration, which is
+# what makes it a legitimate development target rather than a different system.
+#
+# Postgres is NOT in here: it runs on the host, the same instance holding the
+# domain data. That is deliberate — it keeps the comparison honest by not
+# charging this track for a database the other track also needs.
+services:
+  hatchet:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    ports:
+      - "8888:8888"   # dashboard + REST API
+      - "7077:7077"   # gRPC, what the SDK connects to
+    environment:
+      DATABASE_URL: "postgresql://${HATCHET_PG_USER:-rschifan}@host.docker.internal:5432/hatchet?sslmode=disable"
+      DATABASE_POSTGRES_HOST: host.docker.internal
+      DATABASE_POSTGRES_PORT: "5432"
+      DATABASE_POSTGRES_USERNAME: "${HATCHET_PG_USER:-rschifan}"
+      DATABASE_POSTGRES_DB_NAME: hatchet
+      DATABASE_POSTGRES_SSL_MODE: disable
+
+      # No broker to operate. `postgres` is a first-class MIT implementation,
+      # and it is what Hatchet's own release compose uses — so this track costs
+      # zero extra infrastructure beyond the engine itself.
+      SERVER_MSGQUEUE_KIND: postgres
+
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: 0.0.0.0
+      SERVER_GRPC_BROADCAST_ADDRESS: localhost:7077
+      SERVER_GRPC_PORT: "7077"
+      SERVER_URL: http://localhost:8888
+      SERVER_DEFAULT_ENGINE_VERSION: V1
+
+      # Hourly outbound CVE poll to security.hatchet.run, ON by default. The
+      # response is only logged. Off: we did not ask for it, and it is required
+      # for an air-gapped deployment.
+      SERVER_SECURITY_CHECK_ENABLED: "false"
+
+      # ⚠ Not set, deliberately: SERVER_ENFORCE_LIMITS defaults false, and
+      # setting it true inherits stingy built-ins (3 workers, 2000 task runs per
+      # 24h). ⚠ SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD defaults to 720h —
+      # runs older than 30 days are deleted.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: 1gb   # the 64 MB container default is not enough for the engine
+    volumes:
+      - hatchet_config:/config
+volumes:
+  hatchet_config:
