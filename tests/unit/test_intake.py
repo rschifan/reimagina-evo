@@ -5,6 +5,7 @@ from __future__ import annotations
 from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
+    URBAN_FORM_BLOCK_COMPOSITE,
     IndicatorSpec,
 )
 from reimagina.orchestration.intake import evaluate_scenario
@@ -53,7 +54,12 @@ def test_evaluate_scenario_composes_impact_then_coordinator():
 
 
 def test_evaluate_scenario_defaults_to_shipped_registry():
-    # No registry passed → SHIPPED_INDICATORS; a geometry edit dirties both.
+    """A geometry edit dirties both direct indicators *and* the composite.
+
+    This is the shipped DAG's only multi-wave path: the composite is not seeded
+    by any attribute, it is pulled in as a downstream dependent, and it must run
+    after both of its inputs.
+    """
     log: list[str] = []
     report = evaluate_scenario(
         None,
@@ -62,10 +68,36 @@ def test_evaluate_scenario_defaults_to_shipped_registry():
         runners={
             URBAN_FORM_BLOCK_COMPACTNESS.slug: _runner(log, "compactness"),
             URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _runner(log, "density"),
+            URBAN_FORM_BLOCK_COMPOSITE.slug: _runner(log, "composite"),
         },
     )
     assert report.status == "succeeded"
-    assert set(log) == {"compactness", "density"}
+    assert set(log) == {"compactness", "density", "composite"}
+    assert log[-1] == "composite"  # dependent runs after its inputs
+
+
+def test_shipped_composite_skips_when_an_input_fails():
+    """A composite cannot be trusted when a dirty input failed — F6."""
+
+    def _boom(conn, **kwargs):
+        raise RuntimeError("density blew up")
+
+    log: list[str] = []
+    report = evaluate_scenario(
+        None,
+        changed_attributes={"geometry"},
+        edited_features={"b1"},
+        runners={
+            URBAN_FORM_BLOCK_COMPACTNESS.slug: _runner(log, "compactness"),
+            URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _boom,
+            URBAN_FORM_BLOCK_COMPOSITE.slug: _runner(log, "composite"),
+        },
+    )
+    outcomes = report.by_indicator()
+    assert outcomes[URBAN_FORM_BLOCK_BUILDING_DENSITY.slug].status.value == "failed"
+    assert outcomes[URBAN_FORM_BLOCK_COMPOSITE.slug].status.value == "skipped"
+    assert "composite" not in log  # never ran
+    assert report.status == "partial"  # compactness still succeeded
 
 
 def test_evaluate_scenario_nothing_dirty_is_an_empty_success():

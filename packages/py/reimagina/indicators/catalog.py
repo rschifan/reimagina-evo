@@ -117,12 +117,41 @@ URBAN_FORM_BLOCK_PLANNED_FLOORS = IndicatorSpec(
 )
 
 
+URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
+    slug="urban_form_block_composite",
+    name="Urban Form Composite",
+    description=(
+        "Weighted combination of block compactness and building density — the "
+        "shipped composite. Its purpose is structural as much as analytical: "
+        "without a composite the dirty-set is always a single wave, so nothing "
+        "exercises dependency ordering, downstream propagation, or the "
+        "skip-a-dependent-of-a-failed-input rule."
+    ),
+    computation_kind="composite",
+    # Composites must have model_family NULL — indicator_catalog CHECK (r016).
+    value_type="numeric",
+    # Inputs are a 0–1 ratio and a 0–500/ha density, so the weighted sum tops
+    # out near 250; 300 is a safety cap that catches pathological bugs.
+    valid_min=0.0,
+    valid_max=300.0,
+    aggregation_method="weighted_mean",
+    # Reads no attribute: a composite is invalidated through `depends_on`, not
+    # by the impact engine's attribute seeding.
+    depends_on=(
+        (URBAN_FORM_BLOCK_COMPACTNESS.slug, 0.5),
+        (URBAN_FORM_BLOCK_BUILDING_DENSITY.slug, 0.5),
+    ),
+    applies_to=("block",),
+)
+
+
 # Indicators Layer 1 / Layer 2 ships with. Order matters: dependencies must
 # be upserted before the composite indicators that reference them.
 SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     URBAN_FORM_BLOCK_COMPACTNESS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_PLANNED_FLOORS,
+    URBAN_FORM_BLOCK_COMPOSITE,
 )
 
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
+
 from reimagina.db import connect
-from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import seed_catalog
-from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.jobs.rollup import run_rollup
 from reimagina.orchestration.intake import evaluate_scenario
+from reimagina.orchestration.runners import default_runners
 
 
 def seed_indicator_catalog(*, dsn: str) -> dict[str, object]:
@@ -26,44 +27,31 @@ def compute_indicator(
     scenario_id: str | None = None,
     code_version: str = "dev",
 ) -> dict[str, object]:
-    """Dispatch to the concrete compute worker for `slug`."""
-    if slug == "urban_form_block_compactness":
-        with connect(dsn) as conn:
-            result = compute_block_compactness(
-                conn,
-                aoi_id=aoi_id,
-                scenario_id=scenario_id,
-                code_version=code_version,
-            )
-        return {
-            "dsn": dsn,
-            "indicator_slug": result.indicator_slug,
-            "job_run_id": result.job_run_id,
-            "features_considered": result.features_considered,
-            "rows_written": result.rows_written,
-            "aoi_id": result.aoi_id,
-        }
-    if slug == "urban_form_block_building_density":
-        with connect(dsn) as conn:
-            result = compute_block_building_density(
-                conn,
-                aoi_id=aoi_id,
-                scenario_id=scenario_id,
-                code_version=code_version,
-            )
-        return {
-            "dsn": dsn,
-            "indicator_slug": result.indicator_slug,
-            "job_run_id": result.job_run_id,
-            "blocks_considered": result.blocks_considered,
-            "buildings_attributed": result.buildings_attributed,
-            "rows_written": result.rows_written,
-            "aoi_id": result.aoi_id,
-        }
-    raise ValueError(
-        f"Unknown indicator slug: {slug!r}. "
-        "Known slugs: urban_form_block_compactness, urban_form_block_building_density."
-    )
+    """Dispatch to the registered runner for `slug`.
+
+    Delegates to ``default_runners()`` rather than an if/elif per slug, so every
+    registered indicator — direct or composite — is reachable from the CLI the
+    moment it lands in the catalog. The previous hardcoded pair silently omitted
+    ``urban_form_block_planned_floors``.
+    """
+    runners = default_runners()
+    runner = runners.get(slug)
+    if runner is None:
+        known = ", ".join(sorted(runners))
+        raise ValueError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
+
+    with connect(dsn) as conn:
+        # Empty feature set = AOI-scoped (or whole-grain) compute, which is what
+        # the CLI has always done; the dirty-set path passes a real scope.
+        result = runner(
+            conn,
+            features=frozenset(),
+            scenario_id=scenario_id,
+            code_version=code_version,
+            aoi_id=aoi_id,
+        )
+    payload = asdict(result) if is_dataclass(result) else {"result": repr(result)}
+    return {"dsn": dsn, **payload}
 
 
 def rollup_indicator(
