@@ -672,16 +672,14 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--aoi-id")
     evaluate_parser.add_argument("--scenario-id")
     evaluate_parser.add_argument("--code-version", default="dev")
-    evaluate_parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help="Worker concurrency for the embedded drain (default 1; ignored "
-        "for --detach / --sync).",
-    )
-    # Default is embedded: enqueue on the Procrastinate queue + drain a bounded
-    # in-process worker to completion (needs DATABASE_URL_DIRECT). The two flags
-    # opt out — mutually exclusive.
+    # ⚠ No --concurrency flag on this branch. Concurrency belongs to the worker
+    # process (`python -m apps.worker --slots`), not to the submitter: nothing
+    # executes here, so a number passed in could only be ignored. The library
+    # track keeps the flag because there it does something.
+    #
+    # Default is embedded: submit to the engine and block until the run is
+    # terminal. A worker must already be running. The two flags opt out —
+    # mutually exclusive.
     mode_group = evaluate_parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--detach",
@@ -1367,7 +1365,6 @@ def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
             aoi_id=args.aoi_id,
             code_version=args.code_version,
             mode=mode,
-            concurrency=args.concurrency,
         )
     )
 

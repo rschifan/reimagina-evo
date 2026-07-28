@@ -67,12 +67,21 @@ class Implementation:
     failed_run_status: str
     """What a run with one failed and one succeeded unit reports.
 
-    ⚠ On this branch: **``failed``**, not ``partial``. Hatchet's status enum is
-    QUEUED | RUNNING | COMPLETED | CANCELLED | FAILED (measured, spike B7), so a
-    run where three units succeeded and one failed is indistinguishable from a
-    run where everything failed. The library track reports ``partial`` here.
-    That one-word difference between the two branches' tables is the headline
-    result of the whole comparison."""
+    ⚠ **``partial`` on both implementations, and that is a correction.** This
+    field previously said ``failed`` for ``hatchet``, on the reasoning that
+    Hatchet's status enum is QUEUED | RUNNING | COMPLETED | CANCELLED | FAILED
+    (measured, spike B7) and has no word for a run that half-worked.
+
+    The enum still has no such word. But the run's *output* does: the workflow's
+    ``on_failure_task`` reconstructs a per-unit verdict from ``task_run_errors``,
+    ``was_skipped`` and ``task_output``, and ``get_run`` reads that in preference
+    to the enum (spike B8). So the vocabulary survives the engine owning run
+    state; what does not survive is *querying across runs*, which is a property
+    of the storage, not of the status model.
+
+    The headline result of the comparison is therefore not this field. It is
+    that one branch can ``GROUP BY`` its run history and the other must ask the
+    engine one run at a time."""
 
 
 IMPLEMENTATIONS = [
@@ -84,22 +93,99 @@ IMPLEMENTATIONS = [
         failed_run_status="partial",
     ),
     # The branch's own ops-plane. Needs a running engine AND a worker — unlike
-    # the library track, nothing executes without one, which is why `settles` is
-    # False: this process cannot drive its own run.
+    # the library track, nothing executes without one. `settles` is True only
+    # because the `hatchet_worker` fixture starts one in-process; there is no
+    # configuration in which this implementation settles on its own.
     Implementation(
         mode="hatchet",
         blocking=False,
-        settles=False,
+        settles=True,
+        # ⚠ `cancelled`, not `skipped`. The engine cancels a dependent whose
+        # input failed (B3) and the verdict reports what happened rather than
+        # why. The library track's `skipped` carries the reason; this does not,
+        # and no amount of reconstruction recovers it — the engine never knew.
         skipped_unit_status="cancelled",
-        failed_run_status="failed",
+        failed_run_status="partial",
     ),
 ]
+
+
+@pytest.fixture(scope="session")
+def hatchet_worker():
+    """A worker, in this process, for the whole session.
+
+    ⚠ **This fixture is itself a result.** The `sync` implementation needs
+    nothing; `hatchet` needs a reachable engine *and* a second party willing to
+    execute, because a submitted run is not merely un-executed without one — it
+    is un-*observable*: `runs.get()` returns 404 on an id the engine just
+    minted. The library track's suite starts no equivalent, and that asymmetry
+    is the point rather than a fixture detail.
+
+    In-process, in a daemon thread, rather than a subprocess: the `poison`
+    fixture monkeypatches ``runners._DIRECT_COMPUTE``, and ``default_runners``
+    reads that dict at call time inside the task body, so a same-process worker
+    sees the patch and a subprocess would not.
+
+    Session-scoped because worker startup costs seconds of engine registration,
+    and because the DAG declaration is now deterministic across builds — two
+    workers in one session would otherwise be a version-churn hazard.
+    """
+    import os
+    import threading
+
+    if not os.environ.get("HATCHET_CLIENT_TOKEN"):
+        pytest.skip("HATCHET_CLIENT_TOKEN unset — no engine to register with")
+
+    os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
+    from apps.worker.app import run_hatchet_worker
+
+    try:
+        worker = run_hatchet_worker(name="conformance", slots=4, blocking=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"could not build a Hatchet worker: {exc}")
+
+    thread = threading.Thread(target=worker.start, daemon=True)
+    thread.start()
+    _await_registration(worker)
+    yield worker
+    # Daemon thread: the process exits without waiting. Nothing to reclaim —
+    # the engine reassigns an abandoned task's slot on its own.
+
+
+def _await_registration(worker, timeout: float = 30.0) -> None:
+    """Block until the engine will answer for a run, or skip.
+
+    Polling the *symptom* rather than a worker-ready flag: what the suite needs
+    is not "the worker started" but "a submitted run is retrievable", and only
+    the engine can answer that.
+    """
+    import time
+
+    from reimagina.orchestration import hatchet_app
+
+    deadline = time.monotonic() + timeout
+    last: object = "no response"
+    while time.monotonic() < deadline:
+        try:
+            listed = hatchet_app.hatchet.workflows.list()
+            names = {
+                getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
+            }
+            if "reimagina-run" in names:
+                return
+            last = f"registered workflows: {sorted(n for n in names if n)}"
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+        time.sleep(0.5)
+    pytest.skip(f"worker did not register within {timeout}s: {last}")
 
 
 @pytest.fixture(params=IMPLEMENTATIONS, ids=lambda impl: impl.mode)
 def impl(request, migrated_db, monkeypatch) -> Implementation:
     """The implementation under test, with its environment satisfied."""
     monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
+    if request.param.mode == "hatchet":
+        request.getfixturevalue("hatchet_worker")
     return request.param
 
 
@@ -171,21 +257,15 @@ def seeded(migrated_db):
 
 
 def _teardown(conn, run_ids, source_id) -> None:
+    """Clean the domain rows. There is no run state of ours left to clean.
+
+    ⚠ This function used to delete queued jobs, ``job_unit`` and
+    ``orchestration_run``. All three are gone (migration r033) — run state
+    belongs to the engine now, and runs there expire on the engine's own
+    retention schedule rather than being cleaned up by a test. ``run_ids`` is
+    still tracked because the tests read it; nothing here deletes it.
+    """
     with conn.cursor() as cur:
-        # A non-blocking submit leaves an undrained job; deleting one fires an
-        # internal trigger that references unqualified procrastinate tables.
-        cur.execute("SET search_path TO procrastinate, public")
-        cur.execute(
-            "DELETE FROM procrastinate.procrastinate_jobs WHERE status = 'todo'"
-        )
-        cur.execute("SET search_path TO public")
-        for run_id in run_ids:
-            cur.execute(
-                "DELETE FROM jobs_runtime.job_unit WHERE run_id = %s", (run_id,)
-            )
-            cur.execute(
-                "DELETE FROM jobs_runtime.orchestration_run WHERE id = %s", (run_id,)
-            )
         if source_id is not None:
             cur.execute(
                 "DELETE FROM curated_geo.indicator_result WHERE feature_id IN "
@@ -203,20 +283,39 @@ def _teardown(conn, run_ids, source_id) -> None:
                 "DELETE FROM curated_geo.data_source_catalog WHERE id = %s",
                 (source_id,),
             )
+        # LIKE, not `=`: the submit fixture tags each run with its own
+        # version suffix so the dedup window does not collapse them.
         cur.execute(
-            "DELETE FROM jobs_runtime.job_run WHERE code_version = 'conformance'"
+            "DELETE FROM jobs_runtime.job_run WHERE code_version LIKE 'conformance%'"
         )
 
 
 @pytest.fixture
 def submit(orchestrator, seeded):
-    """Submit a real dirty-set run and track it for cleanup."""
+    """Submit a real dirty-set run and track it for cleanup.
+
+    ⚠ ``code_version`` is unique per call, and that is not cosmetic. Every test
+    here submits the same edit to the same feature, seconds apart — which is
+    *exactly* what run-level deduplication exists to collapse. Once the Hatchet
+    workflow declared an idempotency window, five of these tests began failing
+    with ``IdempotencyCollisionError``: the second submit was correctly refused
+    and handed back the first run's id, so tests expecting an independent run
+    got a finished one.
+
+    That is the feature working. A suite that wants N independent runs must
+    present N distinct pieces of work, so each submission gets its own version
+    tag. The alternative — shortening the window for tests — would leave the
+    suite exercising a configuration nothing deploys.
+
+    Recorded because it is a real difference: the library track's suite needs no
+    such care, since nothing there deduplicates unless we write it.
+    """
 
     def _submit(**overrides):
         kwargs = dict(
             changed_attributes={"geometry"},
             edited_features={seeded.block_id},
-            code_version="conformance",
+            code_version=f"conformance-{uuid4().hex[:8]}",
         )
         kwargs.update(overrides)
         handle = orchestrator.submit_run(seeded.conn, **kwargs)

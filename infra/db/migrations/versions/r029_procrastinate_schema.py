@@ -25,7 +25,18 @@ depends_on = None
 def upgrade() -> None:
     op.execute("ALTER TABLE jobs_runtime.orchestration_run ADD COLUMN aoi_id text")
 
-    from procrastinate.schema import SchemaManager
+    # ⚠ Conditional because this branch has dropped the dependency, and a
+    # revision cannot import a library the project no longer installs. The DDL
+    # itself is untouched: rewriting what an applied revision does to a database
+    # breaks alembic history for anything already at r030 or later.
+    #
+    # When the library is absent the install is skipped; when it is present the
+    # schema is created and then dropped again by r033. Both paths end
+    # identically, which is what makes the edit safe.
+    try:
+        from procrastinate.schema import SchemaManager
+    except ImportError:
+        return
 
     op.execute("CREATE SCHEMA IF NOT EXISTS procrastinate")
     # Install Procrastinate's objects into the dedicated schema. SET LOCAL is

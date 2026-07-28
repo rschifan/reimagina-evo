@@ -1,4 +1,4 @@
-"""Entry-point for `python -m apps.worker` — the Procrastinate worker."""
+"""Entry-point for `python -m apps.worker` — the Hatchet ops-plane worker."""
 
 from __future__ import annotations
 
@@ -13,30 +13,32 @@ if str(_PACKAGES_DIR) not in sys.path:
 
 import argparse  # noqa: E402
 
-from .app import run_worker  # noqa: E402
+from .app import run_hatchet_worker  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m apps.worker",
-        description="Run the Procrastinate worker over the orchestration queues.",
-    )
-    parser.add_argument(
-        "--queues",
-        help=(
-            "Comma-separated queue names to drain. Default: compute,control. "
-            "Run one process per resource profile rather than raising "
-            "--concurrency for blocking compute."
+        description=(
+            "Run a Hatchet worker: register the indicator DAG with the engine "
+            "and execute the units it assigns."
+        ),
+        epilog=(
+            "There are no queue flags. Readiness, ordering and dispatch belong "
+            "to the engine, so a worker has nothing to select — it takes what "
+            "it is given. A running engine (HATCHET_CLIENT_TOKEN) and "
+            "DATABASE_URL_DIRECT are both required."
         ),
     )
+    parser.add_argument("--name", help="Worker name shown in the dashboard.")
     parser.add_argument(
-        "--concurrency",
+        "--slots",
         type=int,
-        default=1,
         help=(
-            "Jobs run at once in this process (default: 1). Procrastinate runs "
-            "sync tasks in a thread, so raising this does not parallelise "
-            "CPU-bound work and risks starving the worker heartbeat."
+            "Units run at once in this process (default: "
+            "REIMAGINA_UNIT_CONCURRENCY, or 2). Each in-flight unit holds its "
+            "own database connection for minutes, so budget this against "
+            "max_connections, not against cores."
         ),
     )
     return parser.parse_args(argv)
@@ -44,12 +46,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    queues = (
-        [q.strip() for q in args.queues.split(",") if q.strip()]
-        if args.queues
-        else None
-    )
-    run_worker(queues, concurrency=args.concurrency)
+    run_hatchet_worker(name=args.name, slots=args.slots)
 
 
 if __name__ == "__main__":

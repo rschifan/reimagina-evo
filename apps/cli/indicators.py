@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, is_dataclass
 
 from reimagina.db import connect
@@ -120,27 +121,34 @@ def evaluate_scenario_cli(
     aoi_id: str | None = None,
     code_version: str = "dev",
     mode: str = "embedded",
-    concurrency: int = 1,
 ) -> dict[str, object]:
     """Selectively recompute indicators for a scenario edit.
 
     ``mode`` selects the orchestrator:
 
-    * ``embedded`` (default) — enqueue on the Procrastinate queue and drain a
-      bounded in-process worker to completion, returning the finished report.
-      The durable queue path (retries, locks, waves) with no separate worker.
-    * ``detach`` — enqueue and return the run_id immediately for a standalone
-      ``python -m apps.worker`` fleet to drain (fire-and-forget).
-    * ``sync`` — the in-process orchestrator (no queue), returns the per-unit
-      report inline.
+    * ``embedded`` (default) — submit to the engine and **block until the run is
+      terminal**, returning the finished report.
 
-    ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
+      ⚠ On this branch "embedded" no longer means what the name says. There is
+      no in-process drain, because there is no in-process execution: a standing
+      worker must already be running or this waits forever. It is kept as the
+      default so the CLI's shape matches the other branch, and because "run it
+      and tell me when it's done" is still what a caller wants — but the work
+      happens in another process. On the library track the same flag genuinely
+      does drain the run in-process. That difference is a comparison row.
+    * ``detach`` — submit and return the run_id immediately.
+    * ``sync`` — the in-process orchestrator, no engine and no worker. On this
+      branch it is the *only* path that computes anything without a running
+      Hatchet.
+
+    ``embedded`` and ``detach`` need a reachable engine (``HATCHET_CLIENT_TOKEN``);
+    the worker they depend on needs ``DATABASE_URL_DIRECT``.
     """
     if mode == "detach":
         from reimagina.orchestration.factory import get_orchestrator
 
         with connect(dsn) as conn:
-            handle = get_orchestrator("detach").submit_run(
+            handle = get_orchestrator().submit_run(
                 conn,
                 changed_attributes=changed_attributes,
                 edited_features=edited_features,
@@ -183,25 +191,55 @@ def evaluate_scenario_cli(
     if mode != "embedded":
         raise ValueError(f"unknown evaluate-scenario mode: {mode!r}")
 
-    from reimagina.orchestration.embedded import run_embedded
+    import time
 
+    from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+    orchestrator = get_orchestrator()
     with connect(dsn) as conn:
-        status = run_embedded(
+        handle = orchestrator.submit_run(
             conn,
             changed_attributes=changed_attributes,
             edited_features=edited_features,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
-            concurrency=concurrency,
         )
+        if handle.status and handle.status.status == "noop":
+            return {"dsn": dsn, "run_id": None, "mode": "embedded", "status": "noop",
+                    "units": []}
+
+        # Poll rather than `subscribe_progress`: this is a synchronous CLI
+        # entry point, and spinning up an event loop to consume an async
+        # iterator we only want the *last* value of buys nothing.
+        deadline = time.monotonic() + _EMBEDDED_TIMEOUT_S
+        status = None
+        while time.monotonic() < deadline:
+            status = orchestrator.get_run(conn, handle.run_id)
+            if status and status.status in RUN_TERMINAL_STATES:
+                break
+            time.sleep(1.0)
+        else:
+            # ⚠ Almost always "no worker is running", not "the run is slow" —
+            # nothing executes on this branch without one, and a run with no
+            # worker sits QUEUED indefinitely rather than failing.
+            raise TimeoutError(
+                f"run {handle.run_id} did not finish within "
+                f"{_EMBEDDED_TIMEOUT_S}s. Is a worker running "
+                f"(`python -m apps.worker`)?"
+            )
+
     return {
         "dsn": dsn,
-        "run_id": status.run_id,
+        "run_id": handle.run_id,
         "mode": "embedded",
-        "status": status.status,
+        "status": status.status if status else "unknown",
         "units": [
             {"indicator": u.indicator, "status": u.status, "detail": u.detail}
-            for u in status.units
+            for u in (status.units if status else ())
         ],
     }
+
+
+_EMBEDDED_TIMEOUT_S = float(os.environ.get("REIMAGINA_EMBEDDED_TIMEOUT_S", "3600"))

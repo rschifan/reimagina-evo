@@ -120,6 +120,21 @@ class RunInput(BaseModel):
     code_version: str = "dev"
     concurrency_key: str = "baseline"
 
+    dedup_key: str = ""
+    """Fingerprint of the *work*, for the idempotency window.
+
+    ⚠ Must cover the dirty set and the feature scope, not just the scenario.
+    Keying on ``scenario_id + code_version`` — the obvious choice, and the one
+    written first — deduplicates two *different* edits to one scenario inside
+    the TTL, so the second edit's changes are silently never computed. That is
+    data loss wearing a dedup's clothes. Caught by the conformance suite, which
+    submits repeatedly with identical parameters and started failing the moment
+    idempotency was declared.
+
+    Computed by the submitter because the workflow cannot: CEL has no hashing,
+    and a ``key_expression`` over a list field cannot express "these are the
+    same units with the same features"."""
+
 
 def _topo_order(registry: Sequence[IndicatorSpec]) -> list[IndicatorSpec]:
     """Parents before children — Hatchet needs the object to exist to reference it.
@@ -197,7 +212,7 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
         # starts two identical multi-minute runs. Here it is a config field.
         # Short TTL on purpose — this is a debounce, not a result cache.
         idempotency=TTLBasedIdempotencyConfig(
-            key_expression="input.concurrency_key + ':' + input.code_version",
+            key_expression="input.dedup_key",
             ttl=timedelta(seconds=int(os.environ.get("REIMAGINA_DEDUP_TTL_S", "60"))),
         ),
         # Two runs writing the same scenario's rows concurrently is the hazard
@@ -257,11 +272,15 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
             # library track has nowhere to put this but the process log.
             ctx.log(f"{_slug}: {len(features)} feature(s), attempt {ctx.attempt_number}")
 
-            # One transaction per unit: the write path is stale-then-insert, and
-            # a cancel between the two halves would leave features with no
-            # current value at all.
+            # ⚠ `ctx.workflow_run_id`, NOT `input.run_id`. The submitter cannot
+            # know the id — the engine mints it — so `RunInput.run_id` is an
+            # empty-string placeholder. Reading it here passed `""` into
+            # `job_run.run_id uuid` and every unit died on
+            # `invalid input syntax for type uuid: ""`. The DAG had never once
+            # run end to end; the conformance suite is what caught it, because
+            # nothing before it executed a real unit against a real database.
             with connect(os.environ["DATABASE_URL_DIRECT"]) as conn:
-                with current_run(input.run_id):
+                with current_run(ctx.workflow_run_id):
                     runner(
                         conn,
                         features=features,
@@ -288,11 +307,22 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
     def _verdict(ctx: Context) -> dict:
         """Reconstruct per-unit outcomes from what the engine already knows.
 
-        Three sources, none of which is the status enum:
-          * ``ctx.was_skipped(task)`` — the ``{"skipped": true}`` output
-            sentinel, which is what separates "not dirty" from "computed".
-          * ``ctx.task_run_errors`` — keyed by task name, holds the traceback.
-          * absence of both — the unit succeeded.
+        Four sources, none of which is the status enum. The order matters, and
+        the third check is the one that is easy to get wrong — measured in
+        spike B10:
+
+        | unit was              | error | was_skipped | task_output       |
+        |-----------------------|-------|-------------|-------------------|
+        | computed              | –     | False       | the value         |
+        | failed                | set   | False       | raises *not found*|
+        | **cancelled** (parent failed) | – | **False** | raises *not found*|
+        | skipped (not dirty)   | –     | **True**    | raises *was skipped*|
+
+        ⚠ A cancelled dependent carries **no error and `was_skipped=False`**, so
+        classifying on those two alone reports a composite that never ran as
+        `succeeded` — a wrong value presented as a good one, which is worse than
+        the vocabulary loss this design exists to fix. Absence of an output is
+        what separates it from a real success.
         """
         errors = ctx.task_run_errors
         units_out: dict[str, dict[str, str | None]] = {}
@@ -302,6 +332,12 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
                 status = "failed"
             elif ctx.was_skipped(task):
                 status = "skipped"
+            elif not _produced_output(ctx, task):
+                # Never ran, and not because it was skipped: the engine
+                # cancelled it when a parent failed (spike B3). `cancelled`
+                # rather than `skipped` because that is what happened — the
+                # library track's `skipped` says *why*, and this does not.
+                status = "cancelled"
             else:
                 status = "succeeded"
             units_out[slug] = {
@@ -312,7 +348,7 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
         seen = {u["status"] for u in units_out.values()}
         if "failed" not in seen:
             overall = "succeeded"
-        elif seen & {"succeeded"}:
+        elif "succeeded" in seen:
             overall = "partial"  # ⚠ the word the status enum cannot say
         else:
             overall = "failed"
@@ -333,6 +369,22 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
         return _verdict(ctx)
 
     return workflow, node
+
+
+def _produced_output(ctx: Context, task: Any) -> bool:
+    """Did this task return a value?
+
+    ``ctx.task_output`` raises ``ValueError`` when there is nothing to return —
+    both for a task that failed and for one the engine cancelled before it ran
+    (spike B10). Broad except on purpose: the SDK gives no typed "no output"
+    signal, and any failure to read an output means we cannot claim the unit
+    succeeded.
+    """
+    try:
+        ctx.task_output(task)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 run_workflow, _nodes = build_dag()

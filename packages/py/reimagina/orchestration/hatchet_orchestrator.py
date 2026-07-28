@@ -31,9 +31,13 @@ the state model this track exists to give away.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import AsyncIterator, Iterable, Sequence
 from datetime import datetime, timedelta, timezone
+
+from hatchet_sdk.exceptions import IdempotencyCollisionError
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.plan import noop_handle, plan_run
@@ -109,37 +113,68 @@ class HatchetOrchestrator:
 
             return noop_handle(str(uuid4()))
 
+        dirty = [u.indicator for u in plan.units]
+        features = {u.indicator: sorted(u.features) for u in plan.units}
+        dedup_key = _dedup_key(scenario_id, aoi_id, code_version, dirty, features)
         payload = hatchet_app.RunInput(
             run_id="",  # filled from ctx.workflow_run_id; see the module docstring
-            dirty=[u.indicator for u in plan.units],
-            features={u.indicator: sorted(u.features) for u in plan.units},
+            dirty=dirty,
+            features=features,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
-            # `scenario_id` is nullable, and a None key would collapse every
-            # baseline run into one concurrency bucket where they would cancel
-            # each other. Fall back to the AOI, then to a constant.
-            concurrency_key=scenario_id or aoi_id or "baseline",
-        )
-        ref = hatchet_app.run_workflow.run_no_wait(
-            payload,
-            # This is what buys back the run-level querying we lost by dropping
-            # `orchestration_run`. It round-trips, it is readable inside the
-            # workflow via `ctx.additional_metadata`, and it is a filter in both
-            # `runs.list()` and the dashboard's search box (verified, B8).
+            # What this key must name is **the set of rows two runs would fight
+            # over**, because that is the whole hazard: the write path is
+            # stale-then-insert, so overlapping writers leave features with the
+            # wrong current value.
             #
-            # It is not a substitute for the table — you still cannot GROUP BY —
-            # but "show me every run for this scenario" stops needing one.
-            additional_metadata={
-                k: v
-                for k, v in {
-                    "scenario_id": scenario_id,
-                    "aoi_id": aoi_id,
-                    "code_version": code_version,
-                }.items()
-                if v is not None
-            },
+            # A scenario, or failing that an AOI, is that set. With neither,
+            # there is no shared scope to protect — two baseline runs conflict
+            # only if they touch the same features, which is exactly what
+            # `dedup_key` hashes.
+            #
+            # ⚠ The constant `"baseline"` used here first was wrong, and badly:
+            # it put every scenario-less run in ONE bucket under
+            # `max_runs=1, CANCEL_NEWEST`, so unrelated baseline runs cancelled
+            # each other. In the conformance suite that showed up as a poisoned
+            # unit reporting `cancelled` rather than `failed`; in production it
+            # would have meant a second AOI's recompute silently killing the
+            # first's.
+            concurrency_key=scenario_id or aoi_id or dedup_key,
+            dedup_key=dedup_key,
         )
+        try:
+            ref = hatchet_app.run_workflow.run_no_wait(
+                payload,
+                # This is what buys back the run-level querying we lost by
+                # dropping `orchestration_run`. It round-trips, it is readable
+                # inside the workflow via `ctx.additional_metadata`, and it is a
+                # filter in both `runs.list()` and the dashboard's search box
+                # (verified, B8).
+                #
+                # Not a substitute for the table — you still cannot GROUP BY —
+                # but "show me every run for this scenario" stops needing one.
+                additional_metadata={
+                    k: v
+                    for k, v in {
+                        "scenario_id": scenario_id,
+                        "aoi_id": aoi_id,
+                        "code_version": code_version,
+                    }.items()
+                    if v is not None
+                },
+            )
+        except IdempotencyCollisionError as collision:
+            # A dedup hit is a *success*, not an error: the identical work is
+            # already running and this caller wants to watch it. Returning the
+            # existing run id is what makes the window useful — raising would
+            # force every caller to handle an exception for the case the
+            # feature exists to serve.
+            logger.info(
+                "submit deduplicated onto run %s",
+                collision.existing_run_external_id,
+            )
+            return RunHandle(run_id=collision.existing_run_external_id, status=None)
         return RunHandle(run_id=ref.workflow_run_id, status=None)
 
     # ── Read ────────────────────────────────────────────────────────────────
@@ -333,7 +368,47 @@ class HatchetOrchestrator:
                     return
 
 
-_SCAFFOLDING = frozenset({"plan", "", "summarise_success", "summarise_failure"})
+def _dedup_key(
+    scenario_id: str | None,
+    aoi_id: str | None,
+    code_version: str,
+    dirty: list[str],
+    features: dict[str, list[str]],
+) -> str:
+    """Fingerprint the work, so only *identical* work deduplicates.
+
+    Includes the dirty set and the per-unit feature scope, not just the
+    scenario: two different edits to one scenario inside the TTL are different
+    work and must both run. `sort_keys` because the same edit must fingerprint
+    identically across processes; the feature lists are already sorted by the
+    caller.
+    """
+    payload = json.dumps(
+        {
+            "scenario_id": scenario_id,
+            "aoi_id": aoi_id,
+            "code_version": code_version,
+            "dirty": sorted(dirty),
+            "features": features,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+_SCAFFOLDING = frozenset(
+    {
+        "plan",
+        "",
+        # ⚠ The engine renames a finalizer: `on_failure_task` named
+        # `summarise_failure` is reported as `summarise_failure-on-failure`.
+        # Listing the bare names let `summarise_failure-on-failure` through as
+        # an indicator, and a caller asking what happened to its run got a unit
+        # it had never heard of.
+        "summarise_success-on-success",
+        "summarise_failure-on-failure",
+    }
+)
 
 
 def _strip_suffix(name: str) -> str:

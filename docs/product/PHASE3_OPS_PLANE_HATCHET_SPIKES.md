@@ -319,11 +319,129 @@ measurement ever depends on version churn, spike it then.
   hand-rolled semaphore for the first. Worth a spike before the comparison
   claims a footprint difference.
 
+## Spike B10 — a cancelled dependent looks exactly like a success
+
+Found while wiring the conformance worker, and it would have shipped a wrong
+value as a good one.
+
+`_verdict` classified a unit as `failed` when it had an error, `skipped` when
+`ctx.was_skipped`, and `succeeded` otherwise. A dependent that the engine
+cancelled because its parent failed (B3) has **no error and `was_skipped=False`**
+— so it landed in the `succeeded` branch. A composite that never ran would have
+been reported as a computed value.
+
+Measured, four units in one run:
+
+| unit | `task_run_errors` | `was_skipped` | `task_output` |
+|---|---|---|---|
+| computed | – | `False` | the value |
+| failed | set | `False` | raises *Step output not found* |
+| **cancelled** | – | **`False`** | raises *Step output not found* |
+| skipped (not dirty) | – | **`True`** | raises *was skipped* |
+
+Absence of an output is the discriminator, and it must be checked *after*
+`was_skipped` — a skipped unit also has no output, and calling it `cancelled`
+would lose the one distinction the finalizer exists to preserve.
+
+⚠ Worth stating plainly: this was a bug in the fix for the previous bug. The
+verdict mechanism (B8) is right, but reconstructing status from three partial
+signals has more corner cases than mapping an enum did. The library track pays
+none of this, because it writes the status it means at the moment it means it.
+
+## B11 — what a conformance suite costs once admission control is real
+
+Standing up the worker fixture turned the suite from a mock exercise into the
+first thing on this branch that ran a real unit against a real database. It
+found four bugs in code that had passed review, ruff and 293 unit tests.
+
+**1. The DAG had never worked end to end.** `RunInput.run_id` is an empty-string
+placeholder — the submitter cannot know the id, the engine mints it — and the
+module docstring said it was "filled from `ctx.workflow_run_id`". It was not.
+Every unit passed `""` into `job_run.run_id uuid` and died with
+`invalid input syntax for type uuid: ""`. Nothing before the worker fixture had
+executed a unit, so nothing had noticed.
+
+**2. The engine renames a finalizer.** An `on_failure_task` named
+`summarise_failure` is reported as `summarise_failure-on-failure`. The
+scaffolding filter listed the bare names, so callers saw a phantom unit they
+had never heard of alongside their indicators.
+
+**3. Idempotency collapsed the suite.** Every test submits the same edit to the
+same feature seconds apart — exactly what run-level dedup exists to collapse.
+Five tests began failing with `IdempotencyCollisionError` the moment the window
+was declared. Two consequences:
+
+* the first `key_expression` (`concurrency_key + code_version`) was **wrong and
+  dangerous**: it ignores the dirty set, so two *different* edits to one
+  scenario inside the TTL dedup to one run and the second edit's changes are
+  never computed. Now a hash over scenario, AOI, code version, dirty set and
+  feature scope.
+* a collision now returns the existing run's id instead of raising. A dedup hit
+  is the feature working; making every caller catch an exception for it is not.
+
+**4. The concurrency key put unrelated runs in one bucket.** It fell back to the
+constant `"baseline"` when there was no scenario and no AOI — so *every*
+scenario-less run shared one bucket under `max_runs=1, CANCEL_NEWEST` and
+cancelled its predecessor. The suite surfaced it as a poisoned unit reporting
+`cancelled` rather than `failed`; in production it would have meant one AOI's
+baseline recompute silently killing another's.
+
+The key must name **the set of rows two runs would fight over**, since that is
+the actual hazard — the write path is stale-then-insert, so overlapping writers
+leave features with the wrong current value. A scenario, or failing that an AOI,
+is that set; with neither, two runs conflict only if they touch the same
+features, which is what `dedup_key` already hashes. So the fallback is now the
+dedup key, not a constant.
+
+⚠ Worth recording how the first fix was wrong too: the suite was initially made
+to pass by giving each test a unique `aoi_id`, on the assumption that `aoi_id`
+is unused when a submit names explicit features. It is not — the change broke
+`test_one_failed_unit_does_not_fail_its_independent_siblings[sync]`, on a code
+path with no engine anywhere near it. A test-side workaround for a production
+misconfiguration hid the bug and introduced another; the fix belonged in
+`submit_run`.
+
+### The finding, which is not "we had bugs"
+
+Both #3 and #4 are the engine's admission control behaving exactly as
+configured. Neither has an analogue on the library track, because nothing there
+deduplicates or serialises unless we write it — so the library track's
+conformance suite needs none of this care.
+
+That cuts both ways, and the comparison should say so rather than pick a side:
+
+| | Track A | Track B |
+|---|---|---|
+| run dedup, scenario serialisation | not implemented on any rung | declared, ~6 lines |
+| what a test must do to get an independent run | submit | present distinct work |
+| a submitted run knows its own units | immediately — `record_units` is in the submit transaction | eventually — the engine creates task rows after |
+| a cancel has landed when the call returns | yes | no; accepted ≠ terminal |
+| where the semantics live | code you can read in the repo | engine config, whose effects surface at runtime |
+
+The last two rows are the ones that cost the most time here. Both tracks answer
+`get_run` immediately, but on an engine-owned plane the *answer converges*
+rather than being correct on arrival — a run is retrievable before it reports
+its units, and `cancel_run` returns once the engine has accepted the request,
+not once the run is terminal. Two conformance tests passed by luck and started
+failing when the machine got busy, which is the worst way to learn it.
+
+A declarative feature is not free — it is load-bearing behaviour you did not
+write and cannot step through. Ours were both misconfigured on the first
+attempt, in ways that unit tests could not catch and that would have been data
+loss in production.
+
 ### Remaining on this branch
 
-1. Start a worker in the conformance fixture, then re-run; the three failures
-   should resolve and the two partial-success assertions (currently skipped for
-   lack of a worker) should run and confirm `failed` / `cancelled`.
-2. Delete `wave.py`, `runstore.py` and migration r033 dropping
-   `orchestration_run` + `job_unit` — the deletions this track exists to make.
-3. Repurpose `apps/worker` for Hatchet.
+Nothing from the original list — the worker fixture, the deletions and the
+migration all landed. What is left is shared with the other branch:
+
+1. **Failed units leave no provenance.** `jobs/_lifecycle.job_run` marks a row
+   `failed` on the same connection as the compute, and psycopg2's connection
+   context manager rolls back on exception, so the row goes with it. The
+   deleted `tasks._record_failed_job_run` used a separate connection precisely
+   for this. **Both branches lost it identically**, so it does not distort the
+   comparison, but it is a real F8 regression.
+2. **`rate_limits` and `slot_cost` unmeasured** — the engine-native answer to N
+   workers saturating one Postgres.
+3. Measurement numbers against the `geometry` baseline edit, for the
+   side-by-side.
