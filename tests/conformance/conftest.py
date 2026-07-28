@@ -55,6 +55,15 @@ class Implementation:
     False means a run can be observed in flight — the only way to test a cancel
     that actually cancels something."""
 
+    settles: bool
+    """The run reaches a terminal state without a second process.
+
+    Distinct from ``blocking``, and the distinction matters: an ops-plane can
+    return immediately *and* still drive the run to completion in the submitting
+    process, which is what a durable-execution library buys. Conflating the two
+    silently skipped every partial-success assertion for such an engine — the
+    one property the comparison is most about."""
+
     failed_run_status: str
     """What a run with one failed and one succeeded unit reports.
 
@@ -64,9 +73,23 @@ class Implementation:
 
 
 IMPLEMENTATIONS = [
-    Implementation(mode="sync", blocking=True, failed_run_status="partial"),
-    Implementation(mode="embedded", blocking=True, failed_run_status="partial"),
-    Implementation(mode="detach", blocking=False, failed_run_status="partial"),
+    Implementation(
+        mode="sync", blocking=True, settles=True, failed_run_status="partial"
+    ),
+    # The branch's own ops-plane. Non-blocking but self-settling: a library
+    # needs no standing worker to finish a run. `partial` survives because this
+    # track keeps run state in jobs_runtime rather than adopting an engine's
+    # status enum — the property the comparison is about.
+    Implementation(
+        mode="dbos", blocking=False, settles=True, failed_run_status="partial"
+    ),
+    Implementation(
+        mode="embedded", blocking=True, settles=True, failed_run_status="partial"
+    ),
+    # Needs a `python -m apps.worker` fleet, so nothing drives it here.
+    Implementation(
+        mode="detach", blocking=False, settles=False, failed_run_status="partial"
+    ),
 ]
 
 

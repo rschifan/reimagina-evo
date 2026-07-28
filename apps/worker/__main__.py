@@ -1,4 +1,4 @@
-"""Entry-point for `python -m apps.worker` — the Procrastinate worker."""
+"""Entry-point for `python -m apps.worker` — the ops-plane worker."""
 
 from __future__ import annotations
 
@@ -13,13 +13,22 @@ if str(_PACKAGES_DIR) not in sys.path:
 
 import argparse  # noqa: E402
 
-from .app import run_worker  # noqa: E402
+from .app import run_dbos_worker, run_worker  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m apps.worker",
-        description="Run the Procrastinate worker over the orchestration queues.",
+        description="Drain ops-plane work.",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=("dbos", "procrastinate"),
+        default="dbos",
+        help=(
+            "Which ops-plane to drain (default: dbos). The Procrastinate "
+            "runtime is kept while the two are compared side by side."
+        ),
     )
     parser.add_argument(
         "--queues",
@@ -44,6 +53,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    if args.engine == "dbos":
+        run_dbos_worker()
+        return
     queues = (
         [q.strip() for q in args.queues.split(",") if q.strip()]
         if args.queues
