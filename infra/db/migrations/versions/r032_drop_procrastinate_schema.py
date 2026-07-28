@@ -5,13 +5,16 @@ library. DBOS keeps its checkpoints in the ``dbos`` schema of this same
 database, so the ``procrastinate`` schema — its jobs table, its locks, its
 triggers and its stored functions — has no reader left.
 
-⚠ ``r029`` is deliberately **not** edited to stop creating it. That revision is
-mixed: it adds ``jobs_runtime.orchestration_run.aoi_id``, which this branch
-keeps, *and* installs the Procrastinate schema, which it does not. Rewriting an
-applied revision would break alembic history for any database already at r030 or
-r031, so the schema is created by history and dropped here. A fresh database
-therefore passes briefly through a state it never uses, which is the normal cost
-of immutable migrations.
+⚠ ``r029`` still *declares* the schema — its DDL was not rewritten, because
+changing what an applied revision does to a database breaks alembic history for
+anything already at r030 or later. It was edited in exactly one respect: the
+`procrastinate` import is now conditional, because a revision cannot import a
+dependency the project has dropped. When the library is absent the install is
+skipped; when it is present the schema is created and then dropped here. Both
+paths end identically, which is what makes the edit safe.
+
+So on a fresh database this revision usually drops nothing at all. It exists for
+databases that were migrated while the queue engine was still installed.
 
 What is **not** dropped, and why:
 

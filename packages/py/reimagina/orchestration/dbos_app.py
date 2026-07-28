@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from collections.abc import Sequence
 from dataclasses import asdict
 from typing import Any
@@ -167,10 +168,21 @@ def units_queue() -> Queue:
     return _queue
 
 
+@contextmanager
 def _pg():
+    """A short-lived autocommit connection that is actually closed on exit.
+
+    ``with psycopg2.connect(...) as conn`` scopes the *transaction*, not the
+    connection: it commits or rolls back and leaves the socket open. Every step
+    below used that idiom, so each leaked a connection per call — and the steps
+    run several times per unit, per run.
+    """
     conn = psycopg2.connect(dbos_dsn())
     conn.autocommit = True
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 class _Spec:
@@ -365,9 +377,11 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         wave = plan_wave([(slug, statuses[slug]) for slug in order], registry)
 
         for slug in wave.skip:
-            statuses[slug] = "skipped"
-            s_set_status(run_id, slug, "skipped", "unsatisfied input")
-            _emit(run_id, slug, "skipped", "unsatisfied input")
+            # Announce only what the database accepted, exactly as the settled
+            # path does. A cancel that already closed this unit must not be
+            # overwritten on the wire by a `skipped` the store refused.
+            statuses[slug] = s_settle_unit(run_id, slug, "skipped")
+            _emit(run_id, slug, statuses[slug], "unsatisfied input")
 
         if not wave.dispatch:
             break

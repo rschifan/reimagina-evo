@@ -22,18 +22,18 @@ caller (apps/api/routers/jobs.py, apps/cli/indicators.py)
   │
   ◄─ RunHandle(run_id, status=None)  port.py:80 — durable already; jobs_runtime still empty
   │
-  │   run_workflow(run_id, units, params)                   dbos_app.py:284
-  │     ├─ s_open_run                dbos_app.py:182  → orchestration_run + job_unit
+  │   run_workflow(run_id, units, params)                   dbos_app.py:350
+  │     ├─ s_open_run                dbos_app.py:214  → orchestration_run + job_unit
   │     └─ loop: plan_wave(wave.py:39) → enqueue one unit_workflow per dispatchable unit
-  │           unit_workflow          dbos_app.py:268
-  │             ├─ s_set_status running          dbos_app.py:198 → runstore.set_unit_status
-  │             ├─ s_compute                     dbos_app.py:240
+  │           unit_workflow          dbos_app.py:334
+  │             ├─ s_set_status running          dbos_app.py:230 → runstore.set_unit_status
+  │             ├─ s_compute                     dbos_app.py:272
   │             │     └─ runner(conn, features=…, scenario_id=…)     runners.py:76
   │             │           └─ job_run(…)  jobs/_lifecycle.py:46 → jobs_runtime.job_run
   │             │                  └─ writes curated_geo.indicator_result citing job_run_id
   │             └─ s_set_status succeeded | failed
-  │        ├─ _emit                  dbos_app.py:162 → DBOS.write_stream, from the body only
-  │        └─ s_finalize + close_stream          dbos_app.py:234, :343
+  │        ├─ _emit                  dbos_app.py:194 → DBOS.write_stream, from the body only
+  │        └─ s_finalize + close_stream          dbos_app.py:266, :409
   │
   ├─ get_run(conn, run_id)           → RunStatus + per-unit views
   └─ subscribe_progress(run_id)      → RunEvent stream, framed as SSE by the route
@@ -45,7 +45,7 @@ Three things follow from that shape and are stated plainly here because earlier 
 
 **`job_run` is not opened at submit.** `submit_run` returns before any compute exists; the `job_run` row is opened later, by whatever runs the compute, straight to `running` (`jobs/_lifecycle.py:63-70`, `storage/postgres/repositories.py:1959`). A run that is submitted but never executed leaves no `job_run` row at all.
 
-**Neither is the run envelope.** `orchestration_run` and `job_unit` are written by the workflow's own first step (`dbos_app.py:291` → `:182`), not by the submitter. That is a deliberate inversion of the queue-era shape and the reason `get_run` needs a fallback — see [The engine is the existence oracle](#the-engine-is-the-existence-oracle).
+**Neither is the run envelope.** `orchestration_run` and `job_unit` are written by the workflow's own first step (`dbos_app.py:357` → `:214`), not by the submitter. That is a deliberate inversion of the queue-era shape and the reason `get_run` needs a fallback — see [The engine is the existence oracle](#the-engine-is-the-existence-oracle).
 
 ---
 
@@ -215,7 +215,7 @@ CREATE INDEX job_run_run_idx ON jobs_runtime.job_run (run_id, status) WHERE run_
 
 **The row is opened at compute time, straight to `running`.** `jobs/_lifecycle.job_run` (`_lifecycle.py:46`) is the context manager every compute function uses: `start_job(status="running")`, yield the id, then `complete_job('succeeded')` on clean exit or `complete_job('failed', "<ExcType>: <msg>")` on an exception before re-raising (`_lifecycle.py:63-81`). `started_at` is set by the repository when status is `running`, and `pg_backend_pid()` is evaluated on that same connection because it is the one that will run the compute — "capturing it anywhere else would record a pid nobody needs to cancel" (`repositories.py:1959`, `:1961-1969`).
 
-**`run_id` arrives ambiently, not as a parameter.** `current_run` is a `ContextVar` an executor sets around the call (`_lifecycle.py:28-42`), because threading the id through the `Runner` protocol, two adapter closures, four compute signatures and every test fake — so a standalone CLI compute could pass `None` through all of it — is worse than an ambient (`_lifecycle.py:6-14`). It must be set **inside** whatever executes the unit; a ContextVar does not cross into a thread the setter did not enter (`_lifecycle.py:32-35`, applied at `dbos_app.py:254` and `coordinator.py:157`).
+**`run_id` arrives ambiently, not as a parameter.** `current_run` is a `ContextVar` an executor sets around the call (`_lifecycle.py:28-42`), because threading the id through the `Runner` protocol, two adapter closures, four compute signatures and every test fake — so a standalone CLI compute could pass `None` through all of it — is worse than an ambient (`_lifecycle.py:6-14`). It must be set **inside** whatever executes the unit; a ContextVar does not cross into a thread the setter did not enter (`_lifecycle.py:32-35`, applied at `dbos_app.py:314` and `coordinator.py:157`).
 
 ---
 
@@ -242,15 +242,17 @@ WHERE run_id = %s AND backend_pid IS NOT NULL
 
 **And a rule that follows from it: announce only what the database accepted.** The guard protects the table, not the event stream. A worker that publishes the transition it *asked for* rather than the one that *happened* tells every SSE subscriber `failed` for a unit `GET /jobs/{run_id}` reports `cancelled`. That is why `set_unit_status` returns a bool at all — "the return value is not decoration" (`runstore.py:80-83`) — and why `finalize_run` carries the same guard: the first close is the real one, because it is when the run stopped being able to change (`runstore.py:160-166`).
 
-**And `s_settle_unit` is how this engine honours it.** The parent does not announce the outcome it observed; it writes the unit terminal, re-reads what the row actually holds, and announces *that* (`dbos_app.py:208-230`, `:337-338`). "The store refuses to move a unit out of a terminal state, so what it holds wins over what we asked for — a cancel that landed first must survive" (`dbos_app.py:228-230`). `cancel_run` applies the same discipline at the run level, checking `finalize_run`'s answer and acting on the pre-envelope case rather than assuming (`dbos_orchestrator.py:243-262`).
+**And `s_settle_unit` is how this engine honours it.** The parent does not announce the outcome it observed; it writes the unit terminal, re-reads what the row actually holds, and announces *that* (`dbos_app.py:240-262`, `:403-404`). "The store refuses to move a unit out of a terminal state, so what it holds wins over what we asked for — a cancel that landed first must survive" (`dbos_app.py:260-262`). `cancel_run` applies the same discipline at the run level, checking `finalize_run`'s answer and acting on the pre-envelope case rather than assuming (`dbos_orchestrator.py:243-262`).
 
-The same step also **reconciles a unit its own child can no longer close.** Only the child writes a unit's status, so a child whose process died — and whose recovery attempts ran out — would leave `job_unit` stuck at `running` forever while the parent saw the failure and closed the run. `GET /jobs/{run_id}` would then report a terminal run containing a running unit, contradicting the progress stream, with nothing left to fix it (`dbos_app.py:213-217`).
+The same step also **reconciles a unit its own child can no longer close.** Only the child writes a unit's status, so a child whose process died — and whose recovery attempts ran out — would leave `job_unit` stuck at `running` forever while the parent saw the failure and closed the run. `GET /jobs/{run_id}` would then report a terminal run containing a running unit, contradicting the progress stream, with nothing left to fix it (`dbos_app.py:245-249`).
 
-⚠ One path still announces unchecked: the skip loop writes `skipped` and emits it without consulting the return (`dbos_app.py:301-304`). The window is narrower — `plan_wave` only proposes a skip for a unit currently `queued` — but it is the same shape of bug the rest of this section exists to prevent.
+⚠ One path still announces unchecked: the skip loop writes `skipped` and emits it without consulting the return (`dbos_app.py:367-370`). The window is narrower — `plan_wave` only proposes a skip for a unit currently `queued` — but it is the same shape of bug the rest of this section exists to prevent.
 
 Order matters: the workflow is cancelled and backends signalled first, then units are closed (`dbos_orchestrator.py:224-236`). A run that is unknown or already terminal returns `False` without side effects (`:217-219`). The final roll-up re-reads the units rather than trusting the snapshot it started from: a unit can reach a terminal state in between, and `set_unit_status` then refuses our `cancelled`, so assuming the write landed would report a cancelled run whose units all say they finished (`dbos_orchestrator.py:238-242`).
 
 **A run cancelled before its first step needs the envelope written *by the canceller*.** `finalize_run` finds nothing to close, and doing nothing there is not safe: DBOS checks for cancellation when a step *begins*, so a step already past that check runs to completion — and `s_open_run` would then create the envelope as `running`, permanently, for a run that was cancelled. So the cancel path writes the envelope itself, already terminal. `create_run` is `ON CONFLICT DO NOTHING`, so the workflow's later attempt is a no-op, and `finalize_run` refuses to move a terminal run (`dbos_orchestrator.py:243-262`). This is the idempotency of [`create_run`](#orchestration_run--job_unit-r028--aoi_id-in-r029) being used for something other than crash recovery: two writers, either order, one outcome.
+
+Two further defences live inside `s_compute` rather than in `cancel_run`, because they cover the window `cancel_run` cannot reach — a unit that has not yet opened its `job_run` row, and a result write caught mid-flight. Both are described under [Steps](#steps-every-database-touch-lives-in-one).
 
 The synchronous orchestrator always returns `False`: `submit_run` does not return until the last runner has, so no caller ever holds an id for something still in flight (`synchronous.py:121-127`).
 
@@ -277,7 +279,7 @@ These are not advisory. `runstore` imports the first and third and interpolates 
 
 Two judgements are encoded there. `cancelled` only wins when nothing actually failed — a run that both failed and was cancelled is a failure, and calling it cancelled would hide the error. An all-skipped run folds into `failed` rather than gaining a fourth value, because nothing ran and `orchestration_run.status` has no `skipped` (`port.py:47-54`).
 
-It is called from three places on this branch, all reaching the same answer: the workflow's final roll-up (`dbos_app.py:340`), the cancel path's re-read (`dbos_orchestrator.py:242`), and `RunReport.status` on the sync path (`coordinator.py:91`).
+It is called from three places on this branch, all reaching the same answer: the workflow's final roll-up (`dbos_app.py:406`), the cancel path's re-read (`dbos_orchestrator.py:242`), and `RunReport.status` on the sync path (`coordinator.py:91`).
 
 ### The three database CHECKs disagree
 
@@ -308,10 +310,10 @@ Three layers, three fates:
 
 **`orchestration/frames.py` — permanent.** Payload construction and SSE framing, shared by every implementation. `notify_payload` emits `{run_id, indicator, status}`; `event_frame` wraps it as `data: …\n\n` (`frames.py:17-41`). `RunEvent.detail` is deliberately absent from the wire — no client reads it and `GET /jobs/{run_id}` already carries it per unit (`frames.py:23-25`). It was split out of the LISTEN/NOTIFY module that has since been deleted with the queue ops-plane, and surviving that deletion untouched is exactly the point (`frames.py:3-7`).
 
-**DBOS durable streams — engine-level.** `_emit` writes one `RunEvent`, as a dict, to the workflow's `progress` stream (`dbos_app.py:162-171`, `:41`). Two properties are load-bearing:
+**DBOS durable streams — engine-level.** `_emit` writes one `RunEvent`, as a dict, to the workflow's `progress` stream (`dbos_app.py:194-203`, `:48`). Two properties are load-bearing:
 
-- **It is called from the workflow body, never from a step.** A stream write from a workflow is exactly-once; from a step it is at-least-once, and a duplicated terminal event would close a subscriber's stream early (`dbos_app.py:165-167`).
-- **The stream is closed explicitly** after the terminal event (`dbos_app.py:343`), which is what lets a reader end rather than hang.
+- **It is called from the workflow body, never from a step.** A stream write from a workflow is exactly-once; from a step it is at-least-once, and a duplicated terminal event would close a subscriber's stream early (`dbos_app.py:197-199`).
+- **The stream is closed explicitly** after the terminal event (`dbos_app.py:409`), which is what lets a reader end rather than hang.
 
 Measured before the design was fixed: full replay from offset 0 returns the five unit events plus the run-level `None`, a resume at the end returns nothing, no gap and no duplicate (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:152-164`).
 
@@ -341,7 +343,7 @@ Everything in this section is **engine-level**: it is this branch's answer, and 
 
 A workflow body that rebuilt its unit list from the catalog would therefore not fail loudly on a catalog change mid-run. It would hand one indicator's checkpointed result to another — no exception, no warning, a plausible-looking result. This was **measured, not theorised**: spike 2 ran two workflows over the same units, one reading a module global and one taking its list as input, interrupted both, changed the registry, and resumed. The module-global workflow returned position 0's request for a new indicator answered with the old indicator's recorded output, and the new one never ran at all (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:76-105`).
 
-So the dirty set is derived in `submit_run`, projected to `{slug, features, deps}`, and passed in (`dbos_orchestrator.py:125-141`). `deps` travels with it so the body can rebuild the dependency graph for `plan_wave` without reading the catalog — `_Spec` is the slice of an `IndicatorSpec` the scheduler needs, reconstructed from the workflow's own input (`dbos_app.py:44-46`, `:144-159`).
+So the dirty set is derived in `submit_run`, projected to `{slug, features, deps}`, and passed in (`dbos_orchestrator.py:125-141`). `deps` travels with it so the body can rebuild the dependency graph for `plan_wave` without reading the catalog — `_Spec` is the slice of an `IndicatorSpec` the scheduler needs, reconstructed from the workflow's own input (`dbos_app.py:51-53`, `:176-191`).
 
 The rule generalises to one line: **the workflow body branches only on workflow inputs and step results** (`dbos_app.py:19-21`). Reading a global *inside a step* is fine, because a step's output is checkpointed; it is the body's control flow that must be reproducible.
 
@@ -357,17 +359,22 @@ Nothing has to be reconstructed to do it: the unit list **is** the workflow's in
 
 ### Steps: every database touch lives in one
 
-A workflow body that read Postgres directly would re-read on replay and could see different data than it decided with. DBOS enforces this — a bare DB call in a body raises `DBOSUnexpectedStepError` (`dbos_app.py:174-178`). Each step opens its own autocommit connection to the direct DSN, so its write is committed when the step returns rather than deferred to a caller's transaction (`dbos_app.py:138-141`).
+A workflow body that read Postgres directly would re-read on replay and could see different data than it decided with. DBOS enforces this — a bare DB call in a body raises `DBOSUnexpectedStepError` (`dbos_app.py:206-210`). Each status step opens its own **autocommit** connection to the direct DSN, so its write is committed when the step returns rather than deferred to a caller's transaction (`dbos_app.py:170-173`). `s_compute` is the deliberate exception and opens its own **non-autocommit** one (`dbos_app.py:303`) — see below.
 
 | Step | Does | Definition |
 |---|---|---|
-| `s_open_run` | writes `orchestration_run` + one `job_unit` per unit | `dbos_app.py:182` |
-| `s_set_status` | one guarded unit transition | `dbos_app.py:198` |
-| `s_settle_unit` | forces a unit terminal, returns the status the row actually holds | `dbos_app.py:208` |
-| `s_finalize` | one guarded run close | `dbos_app.py:234` |
-| `s_compute` | one indicator's real compute — minutes of blocking PostGIS | `dbos_app.py:240` |
+| `s_open_run` | writes `orchestration_run` + one `job_unit` per unit | `dbos_app.py:214` |
+| `s_set_status` | one guarded unit transition | `dbos_app.py:230` |
+| `s_settle_unit` | forces a unit terminal, returns the status the row actually holds | `dbos_app.py:240` |
+| `s_finalize` | one guarded run close | `dbos_app.py:266` |
+| `s_compute` | one indicator's real compute — minutes of blocking PostGIS | `dbos_app.py:272` |
 
-**`s_compute` is the one step with retries off** (`retries_allowed=False`, `dbos_app.py:240`). A runner exception is deterministic, so a retry would burn the same minutes to reach the same failure; infrastructure faults surface as a failed connect, which is retried by the step that owns it (`dbos_app.py:243-245`). It is also where `current_run` is set, which is what lets a cancel find the work: the runner opens its own `job_run` row, and the ambient run id plus `pg_backend_pid()` are how `cancel_run` locates the backend to signal (`dbos_app.py:247-249`, applied at `:254`).
+**`s_compute` is the one step with retries off** (`retries_allowed=False`, `dbos_app.py:271`). A runner exception is deterministic, so a retry would burn the same minutes to reach the same failure; infrastructure faults surface as a failed connect, which is retried by the step that owns it (`dbos_app.py:275-277`). It is also where `current_run` is set, which is what lets a cancel find the work: the runner opens its own `job_run` row, and the ambient run id plus `pg_backend_pid()` are how `cancel_run` locates the backend to signal (`dbos_app.py:279-281`, applied at `:314`).
+
+Two further properties of that step are cancellation-safety, and both are stated in its own docstring:
+
+- **One transaction, committed at the end** (`dbos_app.py:283-290`, `:303`). The result write path is stale-then-insert: it flips the previous values to `status='stale'`, then inserts replacements. On an autocommit connection those are two transactions, so a `pg_cancel_backend` landing between them left those features with *zero* `current` rows — and because the workflow is cancelled, recovery never re-runs the step to repair it. `serving_geo` exposes only `current`, so that was a permanent hole in served values. In one transaction a cancel mid-write rolls the flip back with it.
+- **Cancellation is re-checked at the top of the step** (`dbos_app.py:292-297`, `:305-313`). `cancel_run` cannot signal a unit that has not yet opened its `job_run` row — no row, no backend pid — and DBOS's own check already fired when the step began. Without this re-read the unit would run its full compute and commit results for a run already reported terminal. It narrows the window rather than closing it: a cancel arriving after the check still has only `pg_cancel_backend`, which is what the row exists for.
 
 **Steps must be idempotent, and `s_open_run`'s are.** A step's output is recorded only once it completes, so one interrupted partway through re-runs from the top — which is exactly why `runstore.create_run` and `record_units` use `ON CONFLICT DO NOTHING` rather than a bare `INSERT`. That idempotency then earns a second keep: it is also what lets `cancel_run` write the envelope for a run cancelled before its first step, without racing the step that may still write it. See [orchestration_run + job_unit](#orchestration_run--job_unit-r028--aoi_id-in-r029) and [Cancellation](#cancellation).
 
@@ -375,39 +382,39 @@ A workflow body that read Postgres directly would re-read on replay and could se
 
 Two, not seven. `run_workflow` drives the dirty-set wave by wave; `unit_workflow` is one indicator.
 
-`unit_workflow` (`dbos_app.py:268-276`) is three steps: mark `running`, compute, mark `succeeded` — or mark `failed` with a truncated `"<ExcType>: <msg>"` and re-raise, so the parent sees the failure (`:272-274`, `:279-280`).
+`unit_workflow` (`dbos_app.py:334-342`) is three steps: mark `running`, compute, mark `succeeded` — or mark `failed` with a truncated `"<ExcType>: <msg>"` and re-raise, so the parent sees the failure (`:339-341`, `:345-346`).
 
-`run_workflow` (`dbos_app.py:284-344`) opens the run, then loops: `plan_wave` over the in-memory status map, write and announce the skips, enqueue one `unit_workflow` per dispatchable unit, await them, settle each outcome through a step and announce what that step returned, repeat until nothing dispatches; then roll up, finalise, emit the run-level event and close the stream.
+`run_workflow` (`dbos_app.py:350-410`) opens the run, then loops: `plan_wave` over the in-memory status map, write and announce the skips, enqueue one `unit_workflow` per dispatchable unit, await them, settle each outcome through a step and announce what that step returned, repeat until nothing dispatches; then roll up, finalise, emit the run-level event and close the stream.
 
-**Enqueue in a fixed order and await in the same one** (`dbos_app.py:309-320`). Child workflow ids are positional — parent id plus function id — so an as-completed loop would shift the ids of everything after it and mint duplicate children. This is the same positional-replay hazard as spike 2, in its other guise.
+**Enqueue in a fixed order and await in the same one** (`dbos_app.py:375-386`). Child workflow ids are positional — parent id plus function id — so an as-completed loop would shift the ids of everything after it and mint duplicate children. This is the same positional-replay hazard as spike 2, in its other guise.
 
-**Fault isolation is preserved across the boundary.** A child that raises is caught, recorded as `failed`, and the loop continues; `plan_wave` then skips whatever depended on it (`dbos_app.py:321-338`). Exception payloads cross the process boundary intact — spike 4 disproved the plan's assumption that psycopg2 errors carrying a live cursor and `.diag` would not pickle, which is why no `UnitFailed` wrapper exists (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:120-137`).
+**Fault isolation is preserved across the boundary.** A child that raises is caught, recorded as `failed`, and the loop continues; `plan_wave` then skips whatever depended on it (`dbos_app.py:387-404`). Exception payloads cross the process boundary intact — spike 4 disproved the plan's assumption that psycopg2 errors carrying a live cursor and `.diag` would not pickle, which is why no `UnitFailed` wrapper exists (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:120-137`).
 
-**But the body branches on `s_settle_unit`'s return, not on `get_result`** (`dbos_app.py:327-337`). `get_result` *looks* checkpointed and is not: DBOS records it and never reads it back, so a replay re-queries the child's **live** status. If a child were resumed to `SUCCESS` after the parent had already skipped its dependents, the replayed body would take the dispatch branch where the original took the skip branch, the step positions would diverge, and the run would die with `DBOSUnexpectedStepError` — unrecoverable. A step's output *is* genuinely checkpointed, so routing the outcome through one keeps the body reproducible. This is the replay rule from the top of the module applied to the one value that arrives from outside it.
+**But the body branches on `s_settle_unit`'s return, not on `get_result`** (`dbos_app.py:393-403`). `get_result` *looks* checkpointed and is not: DBOS records it and never reads it back, so a replay re-queries the child's **live** status. If a child were resumed to `SUCCESS` after the parent had already skipped its dependents, the replayed body would take the dispatch branch where the original took the skip branch, the step positions would diverge, and the run would die with `DBOSUnexpectedStepError` — unrecoverable. A step's output *is* genuinely checkpointed, so routing the outcome through one keeps the body reproducible. This is the replay rule from the top of the module applied to the one value that arrives from outside it.
 
 ### Configuration, and the four things it must get right
 
-`config()` (`dbos_app.py:83-97`) and `launch()` (`:104-129`).
+`config()` (`dbos_app.py:105-119`) and `launch()` (`:126-161`).
 
-**A direct DSN is mandatory and fails loudly.** `DATABASE_URL_DIRECT` or a `RuntimeError` — because DBOS falls back to a local SQLite file when no database URL is set, so a missing environment variable in production would produce a *working* process with private, unrecoverable checkpoints instead of an error. LISTEN/NOTIFY backs the progress streams and cannot cross PgBouncer in transaction mode, so it must be the direct one (`dbos_app.py:50-67`).
+**A direct DSN is mandatory and fails loudly.** `DATABASE_URL_DIRECT` or a `RuntimeError` — because DBOS falls back to a local SQLite file when no database URL is set, so a missing environment variable in production would produce a *working* process with private, unrecoverable checkpoints instead of an error. LISTEN/NOTIFY backs the progress streams and cannot cross PgBouncer in transaction mode, so it must be the direct one (`dbos_app.py:57-74`).
 
-**`executor_id` must be per-process.** DBOS defaults every process to `local`, and recovery is scoped by executor id — leaving the default turns "recover what this process was running" into "recover what anything was running". Defaults to `<hostname>-<pid>` (`dbos_app.py:70-80`).
+**`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running; on 2.28.0 recovery is not idempotent, so that is a double execution. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
 
-**`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:91-96`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
+**`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
 
-**`worker_concurrency`, not `concurrency`.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around (`dbos_app.py:122-129`). Set by `REIMAGINA_UNIT_CONCURRENCY`, defaulting to 2.
+**`worker_concurrency`, not `concurrency`.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around (`dbos_app.py:154-160`). Set by `REIMAGINA_UNIT_CONCURRENCY`, defaulting to 2.
 
-`launch()` is idempotent *and* locked, because both the API and the CLI call it from a request path and the check and the assignment are not atomic. `DBOS.launch()` marks itself launched **before** it finishes building the system database, so a second thread arriving mid-launch gets "already launched" and then fails in `register_queue` with "System database accessed before DBOS was launched" — one concurrent submit turning into a 500 (`dbos_app.py:104-129`).
+`launch()` is idempotent *and* locked, because both the API and the CLI call it from a request path and the check and the assignment are not atomic. `DBOS.launch()` marks itself launched **before** it finishes building the system database, so a second thread arriving mid-launch gets "already launched" and then fails in `register_queue` with "System database accessed before DBOS was launched" — one concurrent submit turning into a 500 (`dbos_app.py:126-161`).
 
-Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:87`, `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:173-179`).
+Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:109`, `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:173-179`).
 
 ### The worker
 
-`python -m apps.worker` launches DBOS and blocks (`apps/worker/app.py:26-38`). There is no poll loop to write: launching registers the workflow definitions, starts the queue dequeuer and the startup-recovery thread, and then there is nothing to do but stay alive. There are no queue or concurrency flags either — concurrency belongs to the registered queue, and there is one queue (`apps/worker/__main__.py:26-32`).
+`python -m apps.worker` launches DBOS and blocks (`apps/worker/app.py:26-43`). There is no poll loop to write: launching registers the workflow definitions, starts the queue dequeuer and the startup-recovery thread, and then there is nothing to do but stay alive. There are no queue or concurrency flags either — concurrency belongs to the registered queue, and there is one queue (`apps/worker/__main__.py:26-32`).
 
 Two consequences, and they are the comparison:
 
-- **A worker is optional.** The library means the process that submits a run can also drain it; the worker exists to scale out, not to make runs possible (`apps/worker/app.py:9-11`). This is what the conformance suite calls *settles* — non-blocking and still self-completing (`tests/conformance/conftest.py:58-65`).
+- **A worker is optional.** The library means the process that submits a run can also drain it; the worker exists to scale out, not to make runs possible (`apps/worker/app.py:10-11`). This is what the conformance suite calls *settles* — non-blocking and still self-completing (`tests/conformance/conftest.py:58-65`).
 - **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans need a deliberate sweep against a liveness signal, which is not built yet (`apps/worker/app.py:12-14`). Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, a live peer adopted nothing, and a manual sweep from the peer drove the run to completion. The sweep is built last and gated conservatively because the pinned 2.28.0 predates the idempotent-recovery fix, so a sweep fired against a live executor can double-execute (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`, `:191-195`, `pyproject.toml:56-69`).
 
 ---
@@ -517,12 +524,12 @@ What r032 deliberately does *not* drop is recorded in its own docstring: `orches
 | The dirty set is a workflow input | Replay matches steps by position; a body that re-derived its units would misattribute one indicator's result to another, silently (`dbos_app.py:11-21`, spike 2) |
 | The engine is the existence oracle, our tables hold detail | Writing the envelope at submit trades a self-healing window for an orphaned `running` row nothing will drive (`dbos_orchestrator.py:151-164`) |
 | Steps are idempotent | An interrupted step re-runs from the top, so its writes must survive being applied twice (`runstore.py:39-51`, `:135-138`) |
-| Progress is written from the body, never a step | Exactly-once from a workflow, at-least-once from a step; a duplicated terminal event closes a subscriber early (`dbos_app.py:165-167`) |
-| Partial success, not all-or-nothing | One unit's failure must not abort a run, only its dependents (`coordinator.py:122-126`, `dbos_app.py:325-326`) |
+| Progress is written from the body, never a step | Exactly-once from a workflow, at-least-once from a step; a duplicated terminal event closes a subscriber early (`dbos_app.py:197-199`) |
+| Partial success, not all-or-nothing | One unit's failure must not abort a run, only its dependents (`coordinator.py:122-126`, `dbos_app.py:391-392`) |
 | `noop` is return-only | No status CHECK has it, and no run row exists to give it to (`plan.py:19-21`) |
 | Execution state on run/unit, not on `indicator_result` | Execution lifecycle and result lifecycle are different concerns |
 | `job_run` opened at compute time by the runner | Provenance belongs where the compute happens (`coordinator.py:17-19`) |
 | Cancellation needs three mechanisms | Stop scheduling, stop the statement, close the run — none of the three does another's job (`dbos_orchestrator.py:204-211`, `r031:1-13`) |
 | Terminal statuses are immutable, and guards return whether they fired | A cancelled unit must not be resurrected by its own error handling, and a refused write must not be announced (`runstore.py:72-83`) |
-| The parent settles each unit through a step and branches on its return | `get_result` is recorded but never read back, so a replay re-queries a child's live status and can diverge from the original control flow (`dbos_app.py:327-337`) |
+| The parent settles each unit through a step and branches on its return | `get_result` is recorded but never read back, so a replay re-queries a child's live status and can diverge from the original control flow (`dbos_app.py:393-403`) |
 | Never update a failed `job_run` row in place | Append-only audit trail; a re-run opens a new row. A convention, not a constraint — nothing in the schema enforces it |
