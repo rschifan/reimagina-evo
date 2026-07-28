@@ -19,17 +19,23 @@ the same head — so no shared fixture can parametrise across both. The comparis
 is a diff of two runs of the same file:
 
 ```bash
-pytest tests/conformance -v | tee conformance-$(git branch --show-current).txt
+pytest tests/conformance -q --no-header -rA \
+  | grep -E '^(PASSED|SKIPPED|FAILED)' \
+  | sort > conformance-$(git branch --show-current).txt
 ```
 
-Run that on each branch and diff the results. Every line is
-`test_name[mode] PASSED|SKIPPED`, so the diff shows exactly which guarantees
-each ops-plane keeps, which it cannot express, and which it never gets asked.
+Run that on each branch and diff the two files. Each line is
+`STATUS path::test_name[mode]` and nothing else.
+
+⚠ Not `-v`. Its lines carry a trailing `[ 42%]` progress column, so if the two
+branches have different test or skip counts — which is the whole point — every
+percentage shifts and `diff` reports every line as changed. `-rA` also prints
+skip reasons as a separate summary rather than wrapping them mid-line.
 
 ## What each branch edits
 
-`conftest.IMPLEMENTATIONS` — and nothing else. One row per orchestrator the
-branch ships:
+Primarily `conftest.IMPLEMENTATIONS` — one row per orchestrator the branch
+ships:
 
 | field | meaning |
 |---|---|
@@ -48,6 +54,12 @@ a test failure. A conformance suite that forced both branches to answer
 Assertions in `test_port_contract.py` should stay identical across branches. If
 a branch needs to change one, that change is itself a result worth recording in
 the comparison document.
+
+The other thing a branch must edit is `conftest._teardown`. It deletes from
+`procrastinate.procrastinate_jobs`, `jobs_runtime.job_unit` and
+`jobs_runtime.orchestration_run` — all of which an engine-owned ops-plane drops.
+Only `test_port_contract.py` is genuinely engine-agnostic; cleaning up after a
+run means knowing where that engine put it.
 
 ## Preconditions
 

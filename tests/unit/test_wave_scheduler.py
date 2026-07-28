@@ -1,16 +1,14 @@
 """Unit tests for the wave scheduler — pure, no DB.
 
-Covers the readiness rule an engine-owned scheduler would replace:
-next_ready_units / plan_wave, plus the run-status rollup they finalise with.
+Covers the readiness rule an engine-owned scheduler would replace — plan_wave
+— plus the run-status rollup it finalises with.
 """
 
 from __future__ import annotations
 
 from reimagina.indicators.catalog import IndicatorSpec
-from reimagina.orchestration.coordinator import UnitStatus
-from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.port import overall_status
-from reimagina.orchestration.wave import next_ready_units, plan_wave
+from reimagina.orchestration.wave import plan_wave
 
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct"):
@@ -34,44 +32,6 @@ LIVE = _spec(
     depends_on=(("walkability", 0.5), ("green_coverage", 0.5)),
 )
 REG = (GREEN, WALK, LIVE)
-
-
-def _runner(log, name, *, fail=False):
-    def run(conn, *, features, scenario_id, code_version, aoi_id):
-        log.append(name)
-        if fail:
-            raise RuntimeError(f"{name} boom")
-
-    return run
-
-
-def _dirty():
-    return compute_dirty_set({"land_use"}, {"b1"}, REG)
-
-
-def test_next_ready_units_initial_wave_is_the_seeds():
-    ready = next_ready_units(_dirty(), REG, {})
-    assert {u.indicator for u in ready} == {"green_coverage", "walkability"}
-
-
-def test_next_ready_units_releases_composite_when_inputs_succeed():
-    finished = {
-        "green_coverage": UnitStatus.SUCCEEDED,
-        "walkability": UnitStatus.SUCCEEDED,
-    }
-    ready = next_ready_units(_dirty(), REG, finished)
-    assert {u.indicator for u in ready} == {"liveability_index"}
-
-
-def test_next_ready_units_never_releases_on_failed_input():
-    finished = {
-        "green_coverage": UnitStatus.SUCCEEDED,
-        "walkability": UnitStatus.FAILED,
-    }
-    assert next_ready_units(_dirty(), REG, finished) == []
-
-
-# ── plan_wave (async distributor scheduler) ──────────────────────────────
 
 
 def test_plan_wave_dispatches_the_seeds_first():

@@ -1,12 +1,12 @@
 """The one place an :class:`~reimagina.orchestration.port.Orchestrator` is named.
 
-Every caller asks for a mode; nothing outside this module imports a concrete
-orchestrator class. Swapping the ops-plane is then a rewrite of *this* file
-rather than a hunt through the API router, the CLI and four test modules — and
-tests monkeypatch ``get_orchestrator`` instead of a class path that only one
-implementation has.
+Every caller asks for a mode rather than naming a class, so swapping the
+ops-plane is a rewrite of *this* file instead of a hunt through the API router,
+the CLI and four test modules — and tests monkeypatch ``get_orchestrator``
+rather than a class path only one implementation has.
 
-Modes are the vocabulary the CLI already exposes as ``--mode``:
+The modes match the CLI's ``evaluate-scenario`` flags (``--sync``, ``--detach``,
+and the default) and the API's ``wait`` parameter:
 
 ``detach``
     Enqueue and return immediately; a separate worker fleet drains it. The

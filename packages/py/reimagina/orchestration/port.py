@@ -1,10 +1,14 @@
 """Orchestrator port (Phase 3, component 13).
 
 The narrow interface the application depends on to run a scenario evaluation and
-read its status — so the whole engine behind it can be swapped (the synchronous
-in-process executor now, a Procrastinate distributor next, a Dagster adapter
-later) without touching callers. Deliberately leaks no Hamilton/Procrastinate
-types — only plain dataclasses.
+read its status, so the engine behind it can be swapped without touching
+callers. That swap is the point: this repository is about to fork into two
+branches carrying different ops-planes, and everything either branch keeps has
+to be expressible here.
+
+Deliberately leaks no engine types — only plain dataclasses. A signature that
+mentioned a queue, a workflow handle or a run table would be a signature one of
+the two branches could not implement.
 
 Construct implementations through ``orchestration.factory.get_orchestrator``
 rather than by name: the factory is the one place an ops-plane swap edits, and

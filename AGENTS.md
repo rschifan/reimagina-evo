@@ -8,7 +8,7 @@ Operational rules for agents working in this repo.
 - `packages/py/reimagina/`: shared backend namespace
 - `infra/db/`: migrations and seeds
 - `docs/architecture/`: architecture source of truth
-- `tests/`: `unit`, `integration`, `contract`, future `e2e`
+- `tests/`: `unit`, `integration`, `contract`, `conformance`, future `e2e`
 - `tests/performance`: benchmark smoke checks and perf harness coverage
 
 ## Core architecture
@@ -107,6 +107,7 @@ Testing is non-optional.
 | `tests/unit` | pure logic, delegation, config, normalization |
 | `tests/integration` | real PostgreSQL/PostGIS behavior |
 | `tests/contract` | architectural boundaries and repo guardrails |
+| `tests/conformance` | the `Orchestrator` port contract, per implementation |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
 | `docs/architecture/TESTING.md` | DB contract target |
 

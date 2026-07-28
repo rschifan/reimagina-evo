@@ -6,52 +6,27 @@ indicator DAG natively) deletes this module wholesale; one that only provides
 durability keeps it and drives the waves from application code.
 
 The in-process executor (``coordinator.run_dirty_set``) applies the same
-readiness rule inline while walking a pre-sorted list, so the rule is stated
-twice in different shapes on purpose — once for "walk the list", once for
-"given these statuses, what moves now". ``coordinator`` owns the graph
-derivation (``_dep_map``) and ``port`` owns the status vocabulary; both flow
-one way into here, so there is no import cycle.
+readiness rule inline while walking a pre-sorted list, so the rule exists in two
+shapes: once for "walk this ordered list", once for "given these statuses, what
+moves now". ``coordinator`` owns the graph derivation (``_dep_map``) and ``port``
+owns the status vocabulary; both flow one way into here, so there is no import
+cycle.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from reimagina.indicators.catalog import IndicatorSpec
-from reimagina.orchestration.coordinator import UnitStatus, _dep_map
-from reimagina.orchestration.impact import DirtyUnit
+from reimagina.orchestration.coordinator import _dep_map
 from reimagina.orchestration.port import (
     UNIT_TERMINAL_STATES,
     UNIT_UNSATISFIED_STATES,
     overall_status,
 )
 
-__all__ = ["WavePlan", "next_ready_units", "overall_status", "plan_wave"]
-
-
-def next_ready_units(
-    dirty_units: Sequence[DirtyUnit],
-    registry: Sequence[IndicatorSpec],
-    finished: Mapping[str, UnitStatus],
-) -> list[DirtyUnit]:
-    """Units dispatchable now, given the units already finished.
-
-    A unit is ready when it has not finished yet and every one of its *dirty*
-    inputs has finished with ``SUCCEEDED``. A unit whose dirty input
-    failed/skipped is never ready — the caller marks it skipped.
-    """
-    deps = _dep_map(registry)
-    dirty = {u.indicator for u in dirty_units}
-    return [
-        unit
-        for unit in dirty_units
-        if unit.indicator not in finished
-        and all(
-            finished.get(dep) is UnitStatus.SUCCEEDED
-            for dep in deps.get(unit.indicator, set()) & dirty
-        )
-    ]
+__all__ = ["WavePlan", "plan_wave"]
 
 
 @dataclass(frozen=True)

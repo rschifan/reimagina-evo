@@ -13,10 +13,10 @@ Urban planning scenario modelling platform. A feature/observation/indicator/scen
 | Path | Purpose |
 |---|---|
 | `apps/api/` | FastAPI read-side API (tile-sources, indicators, downloads, in-process titiler) |
-| `apps/worker/` | Async job runner (overlap, rollups, raster zonal stats, aggregation recipes) |
+| `apps/worker/` | Ops-plane worker — drains the `compute` + `control` queues that recompute indicators after a scenario edit |
 | `apps/web/` | MapLibre-GL web app (Vite + TypeScript, no framework) |
 | `apps/cli/` | Operator CLI for ingest, publishing, status |
-| `packages/py/reimagina/` | Backend domain packages (`data`, `pipeline`, `storage`, `tiles`, `jobs`) |
+| `packages/py/reimagina/` | Backend domain packages (`data`, `pipeline`, `storage`, `tiles`, `indicators`, `scenarios`, `orchestration`, `jobs`) |
 | `infra/db/` | Alembic migrations + seeds |
 | `docs/` | [`SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) (presentation) + [`architecture/`](docs/architecture) (canonical references) |
 
@@ -73,7 +73,19 @@ For the full fresh-machine data bootstrap, follow
 ```bash
 pytest tests/unit tests/contract       # fast, no services
 pytest tests/integration               # requires Postgres+PostGIS
+pytest tests/conformance               # requires Postgres+PostGIS
 ```
+
+CI gates all three. `tests/performance` is a hand-run harness and is gated
+nowhere.
+
+⚠ A bare `pytest` collects every suite, including `tests/integration` — whose
+session fixture ends by dropping every managed schema from `TEST_DATABASE_URL`.
+Name the suites you want.
+
+`tests/conformance` asserts the `Orchestrator` port contract against each
+implementation the branch ships; see
+[`tests/conformance/README.md`](tests/conformance/README.md).
 
 ## Contributing
 

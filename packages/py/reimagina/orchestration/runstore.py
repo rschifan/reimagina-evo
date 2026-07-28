@@ -1,8 +1,13 @@
 """Durable orchestration run/unit state (jobs_runtime.orchestration_run + job_unit).
 
-Postgres-only ops-plane state (component 5). Every function no-ops for a
-``None`` connection in unit tests — the synchronous orchestrator then returns
-its in-memory RunReport view instead of a persisted one.
+Postgres-only ops-plane state (component 5): the run envelope and one row per
+unit. This is *our* record of a run, which is exactly what an engine that owns
+run state natively replaces — so this module, and both tables, are among the
+things an ops-plane branch may delete outright.
+
+Every function no-ops for a ``None`` connection, which keeps it injectable
+alongside ``memstore.InMemoryRunStore``; the synchronous orchestrator takes the
+in-memory one by default and never touches these tables.
 """
 
 from __future__ import annotations

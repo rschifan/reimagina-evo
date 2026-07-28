@@ -1,17 +1,21 @@
-"""Intake — the single entry point that evaluates a scenario (component 2).
+"""Intake — evaluate a scenario edit in-process and return the per-unit report.
 
-``evaluate_scenario`` is the one call the application, CLI, and API depend on
-to turn a scenario edit into recomputed results: it composes the impact engine
-(what to recompute) and the coordinator (run it). It is also the seam the whole
-engine sits behind — when a second orchestrator arrives (the Dagster adapter in
-PHASE3_ORCHESTRATION_EXPLORATION.md §4), this signature is what it implements,
-so a formal port (component 13) gets extracted then, not speculatively now.
+Composes the impact engine (what to recompute) with the coordinator (run it),
+synchronously: everything has finished by the time the call returns.
 
-Rung-1 scope: synchronous — the coordinator runs in-process before the call
-returns. The design's "cheap intake / no compute in the request path" and
-run-level dedup (refuse a duplicate run for a scenario already computing) both
-belong to the async queue rung (rung 2); there is nothing to dedup against
-while runs are synchronous.
+This is **not** the general entry point any more. The API and the CLI's queue
+modes go through ``orchestration.port.Orchestrator`` via
+``orchestration.factory.get_orchestrator``; the only caller left here is the
+CLI's ``--sync`` mode, which wants the coordinator's richer ``RunReport`` (one
+outcome per unit, with detail) rather than the port's ``RunStatus``.
+
+It survives every ops-plane choice precisely because it needs no ops-plane: no
+queue, no worker, no run tables. That makes it the one path still runnable when
+the engine is down, and the reason ``coordinator.run_dirty_set`` is port-level
+rather than engine-level code.
+
+Run-level dedup is still not implemented anywhere — ``submit_run`` mints a fresh
+run id per call. See PHASE3_ORCHESTRATION_EXPLORATION.md §2.1 component 2.
 """
 
 from __future__ import annotations
