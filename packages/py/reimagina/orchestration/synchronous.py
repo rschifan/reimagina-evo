@@ -1,20 +1,26 @@
-"""Synchronous in-process orchestrator — the rung-1 implementation of the port.
+"""Synchronous in-process orchestrator — the reference implementation of the port.
 
-Runs the impact engine + coordinator inline and persists the per-unit outcome to
-``jobs_runtime``. The run is complete when
-``submit_run`` returns, so the ``RunHandle`` carries the final status. This makes
-the synchronous path *an implementation of the port* rather than the only entry.
+Runs the impact engine + coordinator inline. The run is complete when
+``submit_run`` returns, so the ``RunHandle`` carries the final status.
+
+Run state goes to an injected store, defaulting to an in-memory one. It used to
+write ``jobs_runtime`` directly, which made this module a hybrid — domain
+sequencing plus ops-plane persistence — and coupled the port's reference
+implementation to a schema an engine-owned ops-plane may drop. Pass
+``store=runstore`` to get the old persisting behaviour back; the signatures are
+interchangeable.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 from uuid import uuid4
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
-from reimagina.orchestration import runstore
 from reimagina.orchestration.coordinator import Runner, run_dirty_set
 from reimagina.orchestration.impact import compute_dirty_set
+from reimagina.orchestration.memstore import InMemoryRunStore
 from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
 from reimagina.orchestration.runners import default_runners
 
@@ -27,9 +33,11 @@ class SynchronousOrchestrator:
         *,
         registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
         runners: Mapping[str, Runner] | None = None,
+        store: Any | None = None,
     ) -> None:
         self._registry = registry
         self._runners = runners
+        self._store = store if store is not None else InMemoryRunStore()
 
     def submit_run(
         self,
@@ -45,7 +53,7 @@ class SynchronousOrchestrator:
             default_runners(self._registry) if self._runners is None else self._runners
         )
         run_id = str(uuid4())
-        runstore.create_run(
+        self._store.create_run(
             conn, run_id=run_id, scenario_id=scenario_id, code_version=code_version
         )
 
@@ -70,8 +78,8 @@ class SynchronousOrchestrator:
             }
             for unit in dirty
         ]
-        runstore.record_units(conn, run_id=run_id, units=units)
-        runstore.finalize_run(conn, run_id=run_id, status=report.status)
+        self._store.record_units(conn, run_id=run_id, units=units)
+        self._store.finalize_run(conn, run_id=run_id, status=report.status)
 
         status = RunStatus(
             run_id=run_id,
@@ -83,7 +91,7 @@ class SynchronousOrchestrator:
         return RunHandle(run_id=run_id, status=status)
 
     def get_run(self, conn: object, run_id: str) -> RunStatus | None:
-        row = runstore.get_run(conn, run_id)
+        row = self._store.get_run(conn, run_id)
         if row is None:
             return None
         return RunStatus(
