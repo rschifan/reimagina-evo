@@ -20,8 +20,6 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Iterable, Sequence
 
-from procrastinate import PsycopgConnector
-
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
@@ -30,7 +28,7 @@ from reimagina.orchestration.port import (
     RunStatus,
 )
 from reimagina.orchestration.procrastinate_orchestrator import ProcrastinateOrchestrator
-from reimagina.orchestration.queue_app import _SEARCH_PATH, app, queue_dsn
+from reimagina.orchestration.queue_app import app, bound
 
 # Statuses at which the run is done and the drain loop can stop. ``noop`` is the
 # return-only status submit_run hands back for an empty dirty-set — never
@@ -86,13 +84,12 @@ class EmbeddedOrchestrator:
         Raises ``TimeoutError`` if the run has not finalized within
         ``timeout_s`` (a wedged unit, or a retry backoff longer than the budget).
         """
-        dsn = queue_dsn()  # fail loudly if DATABASE_URL_DIRECT is unset
-        connector = PsycopgConnector(conninfo=dsn, kwargs={"options": _SEARCH_PATH})
-
         # Bind submit + drain to one connector so the deferred jobs and the
         # worker that runs them share a broker (robust vs import-time env
-        # capture).
-        with app.replace_connector(connector):
+        # capture). `bound()` also serializes the swap — it mutates a
+        # module-global, and two concurrent `wait: true` requests would
+        # otherwise interleave their save/restore.
+        with bound():
             handle = self._inner.submit_run(
                 conn,
                 changed_attributes=changed_attributes,

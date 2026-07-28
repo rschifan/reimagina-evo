@@ -15,12 +15,15 @@ def test_record_failed_job_run_writes_failed_row(monkeypatch):
     calls: dict[str, dict] = {}
 
     class _Repo:
-        def start_job(self, *, model_family, code_version, scenario_id, status):
+        def start_job(
+            self, *, model_family, code_version, scenario_id, status, run_id=None
+        ):
             calls["start"] = {
                 "model_family": model_family,
                 "code_version": code_version,
                 "scenario_id": scenario_id,
                 "status": status,
+                "run_id": run_id,
             }
             return "jr-1"
 
@@ -50,6 +53,7 @@ def test_record_failed_job_run_writes_failed_row(monkeypatch):
     monkeypatch.setattr(tasks, "backend_for_connection", lambda conn: _Backend())
 
     tasks._record_failed_job_run(
+        run_id="run-7",
         indicator_slug="urban_form_block_planned_floors",
         scenario_id="s1",
         code_version="test",
@@ -62,6 +66,10 @@ def test_record_failed_job_run_writes_failed_row(monkeypatch):
     assert calls["complete"]["status"] == "failed"
     assert calls["complete"]["error_message"] == "boom"
     assert calls["committed"] is True
+    # The run must be recorded even though this path runs from an `except`,
+    # after the ambient `current_run` scope has already closed. A NULL run_id
+    # here hides a failed unit from cancel and from the per-run timing query.
+    assert calls["start"]["run_id"] == "run-7"
 
 
 def test_record_failed_job_run_is_best_effort(monkeypatch):
@@ -74,6 +82,7 @@ def test_record_failed_job_run_is_best_effort(monkeypatch):
     monkeypatch.setattr(tasks, "connect", _boom)
 
     tasks._record_failed_job_run(
+        run_id="run-8",
         indicator_slug="unknown_slug",
         scenario_id=None,
         code_version="v",
