@@ -139,7 +139,7 @@ def _event_stream(run_id: str) -> Iterator[str]:
     Own direct connection (LISTEN needs a non-transaction-pooled connection),
     filtered to this run, capped lifetime with heartbeats.
     """
-    from reimagina.orchestration import events, runstore
+    from reimagina.orchestration import events, frames, runstore
 
     dsn = os.environ.get("DATABASE_URL_DIRECT") or api_dsn()
     conn = psycopg2.connect(dsn)
@@ -150,10 +150,10 @@ def _event_stream(run_id: str) -> Iterator[str]:
         # Read the snapshot AFTER LISTEN so a finalise between the two isn't lost.
         current = runstore.get_run(conn, run_id)
         status = current["status"] if current else "unknown"
-        yield events.sse_frame(
-            events.notify_payload(run_id=run_id, indicator=None, status=status)
+        yield frames.sse_frame(
+            frames.notify_payload(run_id=run_id, indicator=None, status=status)
         )
-        if events.is_run_terminal(status):
+        if frames.is_run_terminal(status):
             return
         deadline = time.monotonic() + _STREAM_MAX_SECONDS
         while time.monotonic() < deadline:
@@ -164,8 +164,8 @@ def _event_stream(run_id: str) -> Iterator[str]:
                     data = json.loads(note.payload)
                     if data.get("run_id") != run_id:
                         continue
-                    yield events.sse_frame(note.payload)
-                    if data.get("indicator") is None and events.is_run_terminal(
+                    yield frames.sse_frame(note.payload)
+                    if data.get("indicator") is None and frames.is_run_terminal(
                         data.get("status", "")
                     ):
                         return

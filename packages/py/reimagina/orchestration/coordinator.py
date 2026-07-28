@@ -1,13 +1,17 @@
-"""Coordinator — sequences a dirty-set into actual recompute (component 8).
+"""Coordinator — the in-process executor and the graph derivation it shares.
 
-Two executors share this module's readiness logic
-(docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md §4):
-- ``run_dirty_set`` — the **single-process, in-memory** rung-1 executor: runs
-  each indicator's runner in dependency order, skipping any whose dirty inputs
+- ``run_dirty_set`` — the single-process, in-memory executor: runs each
+  indicator's runner in dependency order, skipping any whose dirty inputs
   didn't succeed, and returns a per-unit + overall status (F6 partial-success).
-- ``plan_wave`` / ``next_ready_units`` — the pure, DB-free readiness functions
-  the async distributor (``reimagina.orchestration.tasks`` on Procrastinate)
-  wraps to dispatch waves across workers. One readiness rule, two executors.
+  This is the ``--sync`` path and survives every ops-plane choice.
+- ``_dep_map`` — slug → its input slugs, derived from the registry. Shared with
+  the wave scheduler.
+
+The distributed readiness functions (``plan_wave`` / ``next_ready_units``) moved
+to ``reimagina.orchestration.wave``: an engine that owns scheduling natively
+deletes that module, and keeping it here would make the split a diff inside a
+file rather than a file. The status vocabulary lives in
+``reimagina.orchestration.port``. Imports flow wave → coordinator → port.
 
 Runners (slug → compute fn) are injected, not defined here — that binding is
 ``reimagina.orchestration.runners`` (component 7). A runner owns its own
@@ -19,12 +23,13 @@ from __future__ import annotations
 
 import enum
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.orchestration.impact import DirtyUnit
+from reimagina.orchestration.port import overall_status
 
 logger = logging.getLogger(__name__)
 
@@ -78,104 +83,6 @@ class RunReport:
 def _dep_map(registry: Sequence[IndicatorSpec]) -> dict[str, set[str]]:
     """slug -> the slugs it depends on (its inputs)."""
     return {spec.slug: {dep for dep, _weight in spec.depends_on} for spec in registry}
-
-
-def next_ready_units(
-    dirty_units: Sequence[DirtyUnit],
-    registry: Sequence[IndicatorSpec],
-    finished: Mapping[str, UnitStatus],
-) -> list[DirtyUnit]:
-    """Units dispatchable now, given the units already finished.
-
-    Shared readiness function for the async distributor (component 8): a unit is
-    ready when it has not finished yet and every one of its *dirty* inputs has
-    finished with ``SUCCEEDED``. A unit whose dirty input failed/skipped is never
-    ready — the caller marks it skipped. ``run_dirty_set`` applies the same rule
-    inline while walking the pre-sorted list.
-    """
-    deps = _dep_map(registry)
-    dirty = {u.indicator for u in dirty_units}
-    return [
-        unit
-        for unit in dirty_units
-        if unit.indicator not in finished
-        and all(
-            finished.get(dep) is UnitStatus.SUCCEEDED
-            for dep in deps.get(unit.indicator, set()) & dirty
-        )
-    ]
-
-
-_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
-_UNSATISFIED_STATES = frozenset({"failed", "skipped", "cancelled"})
-
-
-def overall_status(statuses: Iterable[str]) -> str:
-    """Roll unit statuses into a run status.
-
-    succeeded (all ok) / partial (some ok) / cancelled (none ok, none failed,
-    at least one cancelled) / failed (anything else, including an all-skipped
-    run — nothing ran, so the run did not achieve its purpose).
-
-    ``cancelled`` only wins when no unit actually failed: a run that both failed
-    and was cancelled is a failure, and reporting it as cancelled would hide the
-    error. ``orchestration_run.status`` has no ``skipped``, which is why the
-    all-skipped case folds into ``failed`` rather than gaining a fourth value.
-    """
-    seen = set(statuses)
-    if not seen or seen <= {"succeeded"}:
-        return "succeeded"
-    if "succeeded" in seen:
-        return "partial"
-    if "failed" not in seen and "cancelled" in seen:
-        return "cancelled"
-    return "failed"
-
-
-@dataclass(frozen=True)
-class WavePlan:
-    dispatch: tuple[str, ...]  # queued units whose inputs are satisfied → run now
-    skip: tuple[str, ...]  # queued units with a failed/skipped input → mark skipped
-    final_status: str | None  # set once every unit is terminal, else None
-
-
-def plan_wave(
-    units: Sequence[tuple[str, str]],
-    registry: Sequence[IndicatorSpec],
-) -> WavePlan:
-    """Pure wave scheduler for the async distributor (component 8).
-
-    ``units`` is ``(indicator_slug, status)`` for one run. Returns which queued
-    units to dispatch (all dirty inputs succeeded), which to skip (a dirty input
-    failed/skipped), and the run's final status once nothing is left running.
-    Deterministic and DB-free so it is unit-tested directly; ``advance_run``
-    wraps it with the SQL + enqueue.
-    """
-    deps = _dep_map(registry)
-    all_slugs = {slug for slug, _ in units}
-    finished = {slug: st for slug, st in units if st in _TERMINAL_STATES}
-
-    dispatch: list[str] = []
-    skip: list[str] = []
-    for slug, status in units:
-        if status != "queued":
-            continue
-        deps_of = deps.get(slug, set()) & all_slugs
-        if any(finished.get(dep) in _UNSATISFIED_STATES for dep in deps_of):
-            skip.append(slug)
-        elif all(finished.get(dep) == "succeeded" for dep in deps_of):
-            dispatch.append(slug)
-
-    projected = {
-        slug: ("skipped" if slug in skip else "running" if slug in dispatch else status)
-        for slug, status in units
-    }
-    final = (
-        overall_status(projected.values())
-        if all(st in _TERMINAL_STATES for st in projected.values())
-        else None
-    )
-    return WavePlan(tuple(dispatch), tuple(skip), final)
 
 
 def run_dirty_set(
