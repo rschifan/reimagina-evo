@@ -66,6 +66,14 @@ def set_unit_status(
     status: str,
     detail: str | None = None,
 ) -> None:
+    """Move a unit's status, unless it is already terminal.
+
+    The terminal guard is what makes cancellation stick. Cancelling marks a
+    running unit ``cancelled``, but the worker executing it does not stop — its
+    query is cancelled, it catches the resulting error, and it writes ``failed``
+    over the top, resurrecting a run that was already closed. A unit that has
+    reached a terminal state has reached its final one.
+    """
     if not _is_postgres(conn):
         return
     with conn.cursor() as cur:
@@ -74,7 +82,8 @@ def set_unit_status(
             "started_at = COALESCE(started_at, CASE WHEN %s = 'running' THEN now() END), "
             "completed_at = CASE WHEN %s IN ('succeeded','failed','skipped','cancelled') "
             "THEN now() ELSE completed_at END "
-            "WHERE run_id = %s AND indicator_slug = %s",
+            "WHERE run_id = %s AND indicator_slug = %s "
+            "AND status NOT IN ('succeeded','failed','skipped','cancelled')",
             (status, detail, status, status, run_id, indicator_slug),
         )
 

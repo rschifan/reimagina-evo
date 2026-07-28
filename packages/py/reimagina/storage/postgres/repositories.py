@@ -1954,19 +1954,51 @@ class PostgresJobRunRepository:
         code_version: str,
         scenario_id: str | None = None,
         status: str = "queued",
+        run_id: str | None = None,
     ) -> str:
         started_at = "now()" if status == "running" else "NULL"
         with self.connection.cursor() as cur:
+            # pg_backend_pid() is evaluated on THIS connection, which is the one
+            # that will run the compute — that is the whole point. Capturing it
+            # anywhere else would record a pid nobody needs to cancel.
             cur.execute(
                 f"""
                 INSERT INTO jobs_runtime.job_run
-                  (scenario_id, model_family, code_version, status, started_at)
-                VALUES (%s, %s, %s, %s, {started_at})
+                  (scenario_id, model_family, code_version, status, started_at,
+                   run_id, backend_pid)
+                VALUES (%s, %s, %s, %s, {started_at}, %s, pg_backend_pid())
                 RETURNING id::text
                 """,
-                (scenario_id, model_family, code_version, status),
+                (scenario_id, model_family, code_version, status, run_id),
             )
             return str(cur.fetchone()[0])
+
+    def cancel_run_backends(self, run_id: str) -> int:
+        """Cancel the running query of every live backend for ``run_id``.
+
+        The only thing that actually stops in-flight compute. An engine's own
+        cancel is cooperative and lands at the next step boundary, which a
+        minutes-long PostGIS statement does not reach — so without this, "cancel"
+        means "stop scheduling more work" and the current unit runs to
+        completion regardless.
+
+        ``pg_cancel_backend`` cancels the statement, not the session: the
+        runner's psycopg call raises ``QueryCanceled`` and its own error
+        handling takes over. Returns how many backends were signalled; a pid may
+        already be gone, which Postgres reports as False rather than an error.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(*) FILTER (WHERE pg_cancel_backend(backend_pid))
+                FROM jobs_runtime.job_run
+                WHERE run_id = %s
+                  AND backend_pid IS NOT NULL
+                  AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                """,
+                (run_id,),
+            )
+            return int(cur.fetchone()[0])
 
     def complete_job(
         self,

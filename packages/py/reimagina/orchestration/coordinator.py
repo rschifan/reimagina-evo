@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from reimagina.indicators.catalog import IndicatorSpec
+from reimagina.jobs._lifecycle import current_run
 from reimagina.orchestration.impact import DirtyUnit
 from reimagina.orchestration.port import overall_status
 
@@ -107,6 +108,7 @@ def run_dirty_set(
     scenario_id: str | None = None,
     code_version: str = "dev",
     aoi_id: str | None = None,
+    run_id: str | None = None,
 ) -> RunReport:
     """Run the dirty-set in dependency order; return per-unit + overall status.
 
@@ -151,13 +153,15 @@ def run_dirty_set(
             continue
 
         try:
-            runner(
-                conn,
-                features=unit.features,
-                scenario_id=scenario_id,
-                code_version=code_version,
-                aoi_id=aoi_id,
-            )
+            # Ambient, not a runner argument — see jobs._lifecycle.current_run.
+            with current_run(run_id):
+                runner(
+                    conn,
+                    features=unit.features,
+                    scenario_id=scenario_id,
+                    code_version=code_version,
+                    aoi_id=aoi_id,
+                )
             outcomes[slug] = UnitOutcome(slug, UnitStatus.SUCCEEDED)
         except Exception as exc:  # noqa: BLE001 — fault isolation is the point: one unit's failure must not abort the run, only its dependents.
             logger.exception("indicator %s failed", slug)
