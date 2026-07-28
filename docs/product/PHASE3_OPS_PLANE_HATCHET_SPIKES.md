@@ -430,6 +430,54 @@ write and cannot step through. Ours were both misconfigured on the first
 attempt, in ways that unit tests could not catch and that would have been data
 loss in production.
 
+## B12 — a dead worker keeps its registration, and keeps being given work
+
+⚠ **Unresolved. The conformance suite is red because of this, not because of
+the code under test.**
+
+Running the suite repeatedly leaked worker registrations. Each aborted pytest
+process had started an in-process worker; killing the process does not
+deregister it. After several iterations the engine listed **14 workers ACTIVE**,
+six of them `conformance` — one live, five dead — all registered for
+`reimagina-run` and all eligible for its tasks.
+
+The symptom is not an error. It is runs that sit at `status='running'` with
+`units=()` while the engine waits on a process that will never answer:
+
+```
+AssertionError: run aada3a75-… did not settle within 120.0s (last status: running)
+```
+
+Suite wall clock tracked the leak exactly — 62s with few stale workers, 322s
+once six had accumulated — which is what identified the cause.
+
+**Restarting the engine container does not clear them.** Registrations live in
+the engine's own Postgres, so they survive a restart; the list was byte-for-byte
+identical afterwards. Clearing them means recreating the engine database, which
+also discards run history.
+
+### Why this belongs in the comparison rather than in a cleanup script
+
+The library track has no worker registry to leak into. A DBOS process that dies
+leaves rows in `dbos.workflow_status` tagged with its `executor_id`, and the
+recovery story is explicitly about reclaiming them — visible, queryable, and
+documented in that branch's runbook. Here the equivalent state is inside the
+engine, is not obviously enumerable from the client, and outlives a restart.
+
+⚠ What is **not** established: whether the engine eventually expires a worker on
+heartbeat timeout (and simply had not within the observed window), or whether a
+registration persists indefinitely. That distinction decides whether this is an
+operational footnote or a genuine hazard, and it should be settled before the
+side-by-side makes any claim about it. Do not repeat the mistake of the earlier
+`partial` finding by concluding from the first observation.
+
+### Immediate consequence for the suite
+
+`tests/conformance/conftest.py` starts a worker in a daemon thread and lets the
+process exit. That is fine for one run and accumulates across runs. Until B12 is
+settled, a red conformance result must be checked against the worker list before
+being read as a code failure.
+
 ### Remaining on this branch
 
 Nothing from the original list — the worker fixture, the deletions and the
