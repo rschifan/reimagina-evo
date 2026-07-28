@@ -1,11 +1,16 @@
 """Integration: NOTIFY round-trip + the SSE stream generator on a terminal run.
 
 Uses committed connections (LISTEN/NOTIFY crosses connections) with explicit
-cleanup, not the rollback ``conn`` fixture.
+cleanup, not the rollback ``conn`` fixture — but still takes the session
+``migrated_db`` fixture, since skipping the rollback fixture also skips the
+migration it performs. Without it this module only passed when some
+alphabetically-earlier test happened to migrate first, which stopped being true
+the moment it moved into ``engine/``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import select
@@ -26,7 +31,7 @@ def _skip_if_no_pg():
         pytest.skip(f"PostgreSQL unavailable: {exc}")
 
 
-def test_emit_delivers_over_listen_notify():
+def test_emit_delivers_over_listen_notify(migrated_db):
     _skip_if_no_pg()
     run_id = f"listen-{uuid4().hex[:8]}"
     listener = psycopg2.connect(_DSN)
@@ -48,7 +53,9 @@ def test_emit_delivers_over_listen_notify():
         emitter.close()
 
 
-def test_event_stream_emits_snapshot_then_closes_for_terminal_run(monkeypatch):
+def test_event_stream_emits_snapshot_then_closes_for_terminal_run(
+    migrated_db, monkeypatch
+):
     _skip_if_no_pg()
     monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
     from apps.api.routers.jobs import _event_stream
@@ -63,9 +70,15 @@ def test_event_stream_emits_snapshot_then_closes_for_terminal_run(monkeypatch):
                 "(id, status, code_version) VALUES (%s, 'succeeded', 'test')",
                 (run_id,),
             )
+
         # A terminal run → the generator yields one snapshot frame and returns
-        # (it must not block waiting for NOTIFYs).
-        frames = list(_event_stream(run_id))
+        # (it must not block waiting for NOTIFYs). The route drives the
+        # orchestrator's async progress iterator, so it is an async generator —
+        # this is the real LISTEN-backed one, not the unit tests' fake.
+        async def _collect():
+            return [chunk async for chunk in _event_stream(run_id)]
+
+        frames = asyncio.run(_collect())
         assert len(frames) == 1
         payload = json.loads(frames[0].removeprefix("data: ").strip())
         assert payload == {"run_id": run_id, "indicator": None, "status": "succeeded"}

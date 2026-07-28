@@ -4,7 +4,9 @@ The worker's tasks open their OWN connections, so this test can't use the
 rollback-per-test ``conn`` fixture — it seeds on a dedicated committed
 connection and cleans up surgically in a finally. The queue runs on
 ``InMemoryConnector`` (no broker); ``compute_unit`` still hits real Postgres for
-the domain writes. Requires the Postgres service (skips otherwise).
+the domain writes. Requires the Postgres service (skips otherwise), and takes
+``migrated_db`` explicitly — bypassing the rollback ``conn`` fixture also
+bypasses the migration it runs.
 """
 
 from __future__ import annotations
@@ -19,14 +21,16 @@ from procrastinate.testing import InMemoryConnector
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
-    URBAN_FORM_BLOCK_BUILDING_DENSITY,
+    SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_COMPACTNESS,
-    seed_catalog,
+    URBAN_FORM_BLOCK_COMPOSITE,
 )
+from reimagina.orchestration.impact import compute_dirty_set
 
 from tests.integration._helpers import (
     insert_feature as _insert_feature,
     register_source as _register_source,
+    seed_catalog_committed,
     start_run as _start_run,
 )
 
@@ -56,7 +60,7 @@ def _drain_worker():
     asyncio.run(_run())
 
 
-def test_async_run_computes_shipped_indicators_end_to_end(monkeypatch):
+def test_async_run_computes_shipped_indicators_end_to_end(migrated_db, monkeypatch):
     try:
         probe = psycopg2.connect(_DSN)
         probe.close()
@@ -74,7 +78,7 @@ def test_async_run_computes_shipped_indicators_end_to_end(monkeypatch):
     conn = _committed_conn()
     try:
         # Seed catalog + one block, committed so the worker's own connection sees it.
-        seed_catalog(conn)
+        seed_catalog_committed(conn)
         source_id = _register_source(
             conn,
             name=f"async_{uuid4().hex[:8]}",
@@ -104,7 +108,8 @@ def test_async_run_computes_shipped_indicators_end_to_end(monkeypatch):
             assert handle.status is None  # async → caller polls
             _drain_worker()
 
-        # Run finalized succeeded; both shipped units succeeded.
+        # Run finalized succeeded; every dirty unit succeeded — including the
+        # composite, which only becomes runnable in a second wave.
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT status FROM jobs_runtime.orchestration_run WHERE id = %s",
@@ -117,10 +122,11 @@ def test_async_run_computes_shipped_indicators_end_to_end(monkeypatch):
                 (run_id,),
             )
             statuses = dict(cur.fetchall())
-        assert statuses == {
-            URBAN_FORM_BLOCK_COMPACTNESS.slug: "succeeded",
-            URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: "succeeded",
+        expected = {
+            u.indicator for u in compute_dirty_set({"geometry"}, (), SHIPPED_INDICATORS)
         }
+        assert URBAN_FORM_BLOCK_COMPOSITE.slug in expected  # fan-out is exercised
+        assert statuses == dict.fromkeys(expected, "succeeded")
 
         # Compactness result landed for the block.
         from reimagina.storage import backend_for_connection
