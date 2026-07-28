@@ -100,3 +100,23 @@ def insert_project(conn, name: str = "Test Project") -> str:
             (name, "integration test project"),
         )
         return str(cur.fetchone()[0])
+
+
+def seed_catalog_committed(conn) -> None:
+    """``seed_catalog`` on an autocommit connection, in one transaction.
+
+    Tests that need committed writes visible to a worker's own connection set
+    ``autocommit = True``, which breaks catalog seeding: a composite's
+    dependency rows are validated by a deferred constraint trigger asserting the
+    weights sum to 1.0, and under autocommit each row commits — and is checked —
+    alone. Suspend autocommit for the seed so the trigger fires once, at the end,
+    with every row present.
+    """
+    from reimagina.indicators.catalog import seed_catalog
+
+    conn.autocommit = False
+    try:
+        seed_catalog(conn)
+        conn.commit()
+    finally:
+        conn.autocommit = True

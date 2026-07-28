@@ -12,8 +12,10 @@ from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
+    URBAN_FORM_BLOCK_COMPOSITE,
     seed_catalog,
 )
+from reimagina.orchestration import runstore
 from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.storage import backend_for_connection
@@ -64,7 +66,8 @@ def _seed_two_blocks(conn) -> tuple[str, str]:
 def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     block_a, block_b = _seed_two_blocks(conn)
 
-    # Edit block_a only; both shipped indicators read geometry → both dirty.
+    # Edit block_a only. Both direct indicators read geometry, and the composite
+    # is pulled in downstream of them — the shipped DAG's only two-wave path.
     report = evaluate_scenario(
         conn,
         changed_attributes={"geometry"},
@@ -75,6 +78,7 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     assert {o.indicator for o in report.outcomes} == {
         URBAN_FORM_BLOCK_COMPACTNESS.slug,
         URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+        URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
 
     repo = backend_for_connection(conn).indicator_result_repo()
@@ -93,7 +97,10 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
 def test_synchronous_orchestrator_persists_per_unit_state(conn):
     block_a, _block_b = _seed_two_blocks(conn)
 
-    orch = SynchronousOrchestrator()
+    # ``store`` must be passed explicitly: the orchestrator now defaults to an
+    # in-memory store, so the default would round-trip through a dict and this
+    # test would pass without jobs_runtime existing at all.
+    orch = SynchronousOrchestrator(store=runstore)
     handle = orch.submit_run(
         conn,
         changed_attributes={"geometry"},
@@ -110,5 +117,27 @@ def test_synchronous_orchestrator_persists_per_unit_state(conn):
     assert {u.indicator for u in persisted.units} == {
         URBAN_FORM_BLOCK_COMPACTNESS.slug,
         URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+        URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
     assert all(u.status == "succeeded" for u in persisted.units)
+
+
+def test_synchronous_orchestrator_defaults_to_an_in_memory_store(conn):
+    """The default store keeps jobs_runtime out of the port's reference impl.
+
+    Guards the 0.3 seam: an ops-plane that drops those tables must still be able
+    to run the synchronous path, so nothing may reach for them by default.
+    """
+    block_a, _block_b = _seed_two_blocks(conn)
+
+    orch = SynchronousOrchestrator()
+    handle = orch.submit_run(
+        conn,
+        changed_attributes={"geometry"},
+        edited_features={block_a},
+        code_version="test",
+    )
+
+    # Readable through the orchestrator, absent from the ops-plane tables.
+    assert orch.get_run(conn, handle.run_id) is not None
+    assert runstore.get_run(conn, handle.run_id) is None
