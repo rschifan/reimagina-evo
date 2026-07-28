@@ -42,13 +42,19 @@ the overlap benchmark (`perf/runner.py:212-246`):
 python -m apps.cli.app cdmx bootstrap
 ```
 
-⚠ Two stale references to avoid inheriting. `perf/runner.py:246` tells you to run
-`reimagina-cli cdmx bootstrap`, but there is no `[project.scripts]` entry in
-`pyproject.toml` and no such console script — the invocation above is the real
-one. And the plan's "the `PERFORMANCE.md` baseline" points at a file that does
-not exist: there is no `docs/PERFORMANCE.md`. `perf/manifest.py`'s tiers
-(`smoke` / `representative` / `stress`) drive synthetic AOIs for query-plan work,
-which is a different job from this one.
+Existing baseline numbers for this AOI are in
+[`docs/architecture/PERFORMANCE.md`](../architecture/PERFORMANCE.md) — "Baseline
+numbers (Cuauhtémoc, Apr 2026)" — which is where the domain compute times come
+from. This spec adds the ops-plane's cost *on top of* those; it does not restate
+them.
+
+⚠ One stale reference not to inherit: `perf/runner.py:246` tells you to run
+`reimagina-cli cdmx bootstrap`, but `pyproject.toml` has no `[project.scripts]`
+entry and no such console script exists — the invocation above is the real one.
+
+`perf/manifest.py`'s tiers (`smoke` / `representative` / `stress`) drive
+synthetic AOIs for query-plan work, which is a different job from this one; they
+are not the baseline here.
 
 Both branches must run against the same AOI on a freshly migrated database.
 

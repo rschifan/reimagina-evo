@@ -97,7 +97,12 @@ downstream at the queue (6).
 - Characteristics: idempotent; run-level deduplicating; cheap (no compute in the
   request path).
 - Satisfies: F5, N6.
-- (today: run rows via `JobRunRepository.start_job`; no intake endpoint)
+- (today: **built** — `POST /jobs` (`apps/api/routers/jobs.py:78`) submits through
+  the port and returns `202`; `orchestration/intake.py` `evaluate_scenario` is the
+  in-process entry point. Run rows still come from `JobRunRepository.start_job`.
+  Run-level dedup is **not** enforced — `submit_run` mints a fresh `run_id` every
+  call (`orchestration/procrastinate_orchestrator.py:65`); per-unit dedup is the
+  queue's queueing lock (`orchestration/tasks.py:32`).)
 
 **3. Impact engine (dirty-set)**
 Role: given the attributes a scenario changed *and the features they changed
@@ -141,7 +146,11 @@ reads and what lets a crashed run resume instead of restarting.
 
 - Characteristics: durable; queryable; one row per unit.
 - Satisfies: F6, N2.
-- (today: `jobs_runtime.job_run`)
+- (today: **built** — `jobs_runtime.orchestration_run` (the run envelope) +
+  `jobs_runtime.job_unit` (one row per unit, r028), read and written through
+  `orchestration/runstore.py`. `jobs_runtime.job_run` stays *domain provenance*,
+  not scheduler state — which is why r031 gave it `run_id` + `backend_pid`
+  rather than folding it into the run envelope.)
 
 **6. Work queue + claim**
 Role: holds the units ready to run and hands each to exactly one worker, so two
@@ -151,9 +160,14 @@ workers never compute the same unit. Units that keep failing are moved aside
 - Characteristics: at-least-once delivery; idempotent claim; dead-letter on
   retry-limit.
 - Satisfies: F6, N3, N8.
-- (today: a `JobRunRepository.claim_job` contract method (`SELECT … FOR UPDATE
-  SKIP LOCKED`) is defined but not yet wired into any worker; no queue or
-  dead-letter)
+- (today: **built** — a Procrastinate queue owns delivery and claiming
+  (schema r029, app `orchestration/queue_app.py`, tasks `orchestration/tasks.py`),
+  with per-unit dedup as a queueing lock (`unit:{run_id}:{slug}`,
+  `orchestration/tasks.py:32`). `compute_unit` retries transient failures
+  (`RetryStrategy(max_attempts=3, exponential_wait=2)`, `orchestration/tasks.py:92`);
+  a deterministic runner exception is recorded terminal `failed` instead of
+  retried. There is no `claim_job` — `storage/interfaces.py:550` says so in the
+  protocol itself. Still missing: a dead-letter destination for retry exhaustion.)
 
 **7. Worker pools**
 Role: the processes that actually run one unit of work each — reading the
@@ -165,9 +179,18 @@ work needs different resources, so units are routed to an IO pool, a CPU pool
   cooperatively cancellable.
 - Satisfies: F4, F7, N4.
 - (today: **partial** — runner registry `orchestration/runners.py`
-  `default_runners` binds slugs to compute fns, run synchronously in-process by
-  the coordinator. No IO/CPU/GPU pools and no cancellation yet; runners are
-  AOI-scoped — they drop the dirty-set's `features`. `apps/worker` stays a scaffold.)
+  `default_runners` binds slugs to compute fns; units execute in a real worker
+  (`python -m apps.worker`, with `--queues` / `--concurrency`,
+  `apps/worker/__main__.py:24-41`) under the `detach` mode, or in a bounded
+  in-process worker under `embedded` (`orchestration/embedded.py`). Runners are
+  feature-scoped: the dirty-set's `features` are forwarded as `feature_ids`
+  (`orchestration/runners.py:48-55`), with `aoi_id` as the coarser fallback when
+  the set is empty. Cancellation ships (F7) — `port.cancel_run` makes every
+  non-terminal unit `cancelled` and `cancel_run_backends` issues
+  `pg_cancel_backend` over the run's live backends (r031;
+  `storage/postgres/repositories.py:1976`); a unit already inside a psycopg call
+  still runs to its next boundary. Still missing: IO/CPU/GPU pools — one worker
+  process per resource profile is the documented stand-in.)
 
 **8. Coordinator**
 Role: the scheduler — the brain of a run. It asks the impact engine for the
@@ -178,11 +201,21 @@ including partial-success (a non-critical unit failed) and cancellation.
 - Characteristics: event-driven; dependency-aware; owns partial-success +
   cancellation logic.
 - Satisfies: F1, F2, F6, F7.
-- (today: **built (rung 1)** — `orchestration/coordinator.py`
-  `run_dirty_set`/`RunReport`: sequences the ordered dirty-set, isolates per-unit
-  failure, derives succeeded/partial/failed (F6). In-memory, single-process,
-  sequential (no wave parallelism yet) and no cancellation (F7); each runner owns
-  its own `job_run` row, so the coordinator opens none.)
+- (today: **built** — the same readiness rule in two shapes. In-process:
+  `orchestration/coordinator.py` `run_dirty_set`/`RunReport` walks the ordered
+  dirty-set, isolates per-unit failure, derives succeeded/partial/failed (F6).
+  Distributed: `orchestration/wave.py` `plan_wave` is a pure, DB-free wave
+  scheduler — dispatch / skip / final status — driven by
+  `orchestration/tasks.py:152` `advance_run`, which defers a whole wave at once,
+  so parallelism is the worker fleet's, not the coordinator's. Run state persists
+  through `orchestration/runstore.py` rather than in memory, and cancellation
+  ships (F7). Each runner still owns its own `job_run` row, so the coordinator
+  opens none. Two wedges in this path are known and unfixed: `advance_run`
+  commits units `running` and only then enqueues them, outside the transaction
+  (`orchestration/tasks.py:189-192`), and a `compute_unit` whose retries are
+  exhausted never writes its `job_unit` row (`orchestration/tasks.py:109` — only
+  runner exceptions are caught). Either leaves a unit `running` forever, so this
+  path is not deployable as it stands.)
 
 **9. Result store**
 Role: persists each computed output as the single *current* value for its
@@ -193,8 +226,11 @@ a re-run never leaves duplicates or half-states.
   provenance-stamped.
 - Satisfies: F1 (single-current invariant). Selectivity itself lives in components 3 and 11.
 - (today: `indicator_result` with current/stale status + partial-unique indexes.
-  Open: *when* a value flips current→stale — at dirty-set time (never serve a
-  known-stale value) vs. at write time (never flash a half-updated set). Undecided.)
+  **Decided: at write time.** A write marks the existing current row `stale` and
+  inserts the new one `current` in the same transaction — stale-then-insert,
+  `storage/postgres/repositories.py:2217-2234` — so a reader never sees a
+  half-updated set, and the superseded row survives as the redundant-compute
+  measure rather than being overwritten.)
 
 **10. Validation**
 Role: checks each output against its declared post-conditions (within bounds,
@@ -205,9 +241,12 @@ validator — never re-implemented per backend or per layer.
 - Characteristics: per-output; **single declarative source** (no parallel
   re-implementations); fail-closed.
 - Satisfies: F9.
-- (today: enforced by a Postgres write-trigger and separately re-implemented in
-  Python for the dev backend — two definitions to keep in sync; a single
-  declarative validator would collapse them)
+- (today: **built** — `indicators/validation.py` is that single declarative
+  validator: bounds are a Pandera schema (`bounds_schema`, also attachable as a
+  Hamilton `@check_output`), and bounds + `applies_to` originate on
+  `IndicatorSpec`, seeded into `indicator_catalog`. The Postgres write-trigger
+  remains the DB-level backstop reading those same values — one declared source,
+  two enforcement points, not two definitions to keep in sync.)
 
 **11. Reuse cache**
 Role: before running a unit, checks whether its effective inputs (and code
@@ -218,7 +257,11 @@ actually changed."
 - Characteristics: content-addressed (input fingerprint); safe to miss (a miss
   only costs recompute).
 - Satisfies: N5.
-- (today: —)
+- (today: **borrowed, opt-in** — Hamilton `.with_cache()` is wired in
+  `indicators/_hamilton_driver.py:53`, storing under the data dir, gated by
+  `REIMAGINA_HAMILTON_CACHE` and off by default so tests and CI stay
+  deterministic. No run path enables it yet, so N5 is available rather than
+  in force.)
 
 Three mechanisms skip or store work — keep them distinct:
 
@@ -242,8 +285,14 @@ separately.
 - Characteristics: vendor-neutral lineage events (a); live status stream (b);
   both queryable after the fact.
 - Satisfies: F8, N1 (a); N2 (b).
-- (today: provenance columns `job_run.code_version` + `indicator_result.model_version`;
-  no lineage graph and no progress stream)
+- (today: split, as the two facets predicted. (b) **built** — `port.subscribe_progress`
+  over Postgres LISTEN/NOTIFY (`orchestration/events.py`), framed as SSE by
+  `orchestration/frames.py` (the route owns the wire shape, the engine does not)
+  and served at `GET /jobs/{run_id}/events` (`apps/api/routers/jobs.py:169`).
+  (a) **partial** — provenance columns `job_run.code_version` +
+  `indicator_result.model_version`; OpenLineage emission is opt-in, attaching only
+  when `OPENLINEAGE_URL` is set (`indicators/_hamilton_driver.py:31-44`), and there
+  is still no queryable lineage graph.)
 
 **13. Orchestrator interface (port)**
 Role: the narrow interface the rest of the application depends on to start runs,
@@ -254,8 +303,13 @@ replaced (e.g. by Dagster) without touching the application.
   `subscribe_progress`); stable; implementation-hiding; must **not** leak
   Hamilton/Dagster types.
 - Satisfies: N8, N9.
-- (today: the repository protocols in `storage/interfaces.py`; no orchestrator
-  port)
+- (today: **built** — `orchestration/port.py`: the `Orchestrator` protocol
+  (`submit_run` / `get_run` / `cancel_run` / `subscribe_progress`) plus the shared
+  status vocabulary, in plain dataclasses that leak no Hamilton/Procrastinate
+  type. Implementations are named in exactly one place —
+  `orchestration/factory.py`, modes `detach` / `embedded` / `sync` — which is the
+  seam an ops-plane swap edits. The repository protocols in `storage/interfaces.py`
+  are the *storage* port, a different seam.)
 
 Coverage: every F1–F9 + N1–N9 maps to ≥1 component above. **N7 (ops
 simplicity)** is a whole-system property, judged in §4, not a component.
@@ -281,9 +335,10 @@ simplicity)** is a whole-system property, judged in §4, not a component.
 - **Validation realization** — declare bounds once (component 10) and enforce
   with a single declarative validator (e.g. **Pandera** for dataframe checks, or
   Hamilton `@check_output`), not a per-backend re-implementation.
-- **Ops-plane queue ladder** — `SKIP LOCKED` (hand-rolled) → procrastinate /
-  PgQueuer (Postgres task-queue *library*: retries, scheduling, DLQ; no new
-  infra) → Hatchet (durable-workflow *service*) as complexity grows.
+- **Ops-plane realization** — pick a cell on two axes, not a step on a ladder
+  (§4.1): durability substrate (`SKIP LOCKED` → an at-least-once queue such as
+  procrastinate / PgQueuer → a checkpointed workflow engine) crossed with
+  deployment shape (in-process · sidecar worker · standing cluster).
 
 ### 2.3 Reference architecture
 
@@ -343,19 +398,25 @@ report = run_dirty_set(
 #           → result store: put current value (9) → lineage.emit (12)
 ```
 
-**Outcome.** Units 1 + 2 form one wave (parallel once worker pools land —
-*sequential at rung 1 today*), then `liveability_index`, then `liveability_rollup`.
+**Outcome.** Units 1 + 2 form one wave — dispatched together by `plan_wave`, so
+whether they actually overlap is the worker fleet's concurrency, not the
+scheduler's — then `liveability_index`, then `liveability_rollup`.
 `transit` and every other indicator never run; `liveability_index` reuses
 `transit`'s existing current value. Each result is bounds-checked (10), written as
 the single current value (9), and provenance-stamped (12).
 
-> The indicators here are illustrative. The shipped set today is
-> `urban_form_block_compactness` and `urban_form_block_building_density` — both
-> `reads=("geometry",)`, no composites or rollups yet, and `feature_expander` is
-> still the identity stub, so `features` passes through unwidened.
+> The indicators here are illustrative. The shipped set today is four
+> (`indicators/catalog.py:150`): `urban_form_block_compactness` and
+> `urban_form_block_building_density`, both `reads=("geometry",)`;
+> `urban_form_block_planned_floors`, `reads=("floors",)`; and
+> `urban_form_block_composite`, a real composite reading no attribute and
+> weighting the first two 0.5/0.5. So a `geometry` edit is the only one that
+> fans out to two waves. Rollups still do not exist, and `feature_expander` is
+> still the identity stub (`orchestration/impact.py:74`), so `features` passes
+> through unwidened.
 
-(Implementation state — what's built in code vs. still design — is tracked separately
-in [`PHASE3_ORCHESTRATION_BUILD_STATUS.md`](./PHASE3_ORCHESTRATION_BUILD_STATUS.md).)
+(Implementation state — what's built in code vs. still design — is the `(today: …)`
+annotation on each component in §2.1; there is no separate status document.)
 
 ## 3. Solution B — Dagster
 
@@ -429,7 +490,7 @@ A vs B against each requirement:
 | N2 observability | status stream to build | Dagster UI included |
 | N6 backfills | build into intake | native |
 | N7 ops simplicity | **no standing services** | daemon + webserver + metadata DB |
-| N8 scale path | single-node; multi-node = rung 3 (Hatchet) + worker-service extraction, not "no rearchitecture" | native multi-node |
+| N8 scale path | multi-node needs a durable substrate + worker-service extraction (§4.1), not "no rearchitecture" | native multi-node |
 | N9 extensibility | registry entry + worker, behind port | new asset / Component |
 | Cost to first run | **low** (no infra) | higher (adopt + operate platform) |
 | Main risk | we own every component | platform ops + some paid features |
@@ -437,8 +498,8 @@ A vs B against each requirement:
 ### 4.1 Final architecture
 
 Three layers; each of the 13 components owned exactly once. Own the domain core,
-borrow the compute-graph (one library — Hamilton) and the ops-plane (Postgres +
-a queue library), keep Dagster behind the port as a later swap.
+borrow the compute-graph (one library — Hamilton) and the ops-plane (Postgres,
+substrate chosen per the table below), keep Dagster behind the port as a later swap.
 
 ```
 orchestration port (13) — ours; swaps the engine below (e.g. Dagster) without touching the app
@@ -447,19 +508,48 @@ orchestration port (13) — ours; swaps the engine below (e.g. Dagster) without 
  ├ COMPUTE GRAPH — Hamilton (library; no daemon, no metadata DB)
  │    intra-unit function graph · reuse cache = data_version caching (11) · lineage (12, via materializers)
  │    runs only the requested outputs · validation engine = Pandera / @check_output (10)
- └ OPS PLANE — Postgres-backed ladder; climb a rung only as scale forces it
+ └ OPS PLANE — Postgres-backed; two orthogonal axes, not one ladder (table below)
       run/task state (5) · queue (6) · worker pools (7) · coordinator (8)
-      rung 1: SKIP LOCKED + in-process → rung 2: procrastinate / PgQueuer → rung 3: Hatchet
+      durability substrate × deployment shape — Track A and Track B are opposite corners
 ```
+
+**The ops-plane is two axes, not a ladder.** *What guarantees the substrate
+gives* (none → at-least-once → checkpointed workflow) is independent of *where it
+runs* (in this process → a sidecar worker → a standing cluster). Ordering them as
+one line of increasing complexity is wrong on its own terms: it is non-monotone in
+operational cost, because a durable-execution **library** demands *less* of an
+operator than a task queue plus a hand-rolled scheduler, not more.
+
+|  | in-process | sidecar worker | standing cluster |
+|---|---|---|---|
+| **no durability** | `SKIP LOCKED` | | |
+| **at-least-once queue** | | Procrastinate, PgQueuer | |
+| **checkpointed workflow** | **DBOS ← Track A** | | **Hatchet ← Track B**, Temporal |
+
+The two tracks are the opposite corners of the bottom row: **the same durability
+guarantee, the opposite deployment shape.** Both are MIT with no gated tier.
+
+- **Track A — DBOS Transact**, durable execution as a *library*. No standing
+  service; checkpoints land in the same Postgres as the domain data. We **keep**
+  the wave scheduler (8) and borrow only durability, so the `skipped` / `partial`
+  status fidelity of `port.overall_status` survives intact.
+- **Track B — Hatchet**, self-hosted on a Postgres broker. One static DAG; the
+  engine owns scheduling *and* run state, so we **delete** our scheduler — and,
+  accepted deliberately, its run-status enum has no `partial` or `skipped`, so that
+  vocabulary is lost even though the behaviour is not.
+
+Neither is the winner. The branches are permanently non-mergeable and the
+deliverable is a documented side-by-side, not a migration.
 
 **Build vs borrow.** Pure-ours: **1, 2, 3, 4, 9, 13** (domain truth — incl. the
 cross-indicator resolver, `graphlib` folded into the impact engine). Borrowed:
 **11, 12 = Hamilton** (caching + lineage + the intra-unit graph, one dependency);
-**5, 6, 7 = the Postgres ops-plane ladder**. Hybrid: **8** (rung-1 sequencing is
-ours, durable execution → Hatchet later) and **10** (we declare the bounds once, a
-validator engine enforces them). The ladder is not hand-written per-function code:
-rung 1 is a ~10-line claim query; retries, DLQ, cron, and durable execution arrive
-by climbing a rung, not by writing them.
+**5, 6, 7 = the Postgres ops-plane**. Hybrid: **8** — and this is precisely where
+the two tracks diverge: Track A keeps our wave scheduler and borrows only
+durability, Track B hands scheduling to the engine and deletes it. Also hybrid:
+**10** (we declare the bounds once, a validator engine enforces them). None of
+this is hand-written per-function code: retries, DLQ, cron, and durable execution
+come from the substrate, whichever corner of the table it sits in.
 
 **Two graph directions compose.** The impact engine (3) walks *downstream* —
 changed attributes → the outputs to recompute. Hamilton walks *upstream* — the
@@ -468,11 +558,27 @@ caching. Different directions, they compose; neither replaces the other. Hamilto
 has no partition abstraction, so scenario×feature scheduling, backfills, and
 run-tracking stay in 3 + 8 — the exact machinery Dagster absorbs at maturity.
 
-**Verdict.** *Now* — domain core + Hamilton + Postgres ops-plane: no daemon, no
-metadata DB, no partition taxonomy, domain truth stays in our schema. *Later* —
-Dagster via the port. **Switch when ≥2 hold:** ML models need versioning / GPU
-scheduling · many regions with routine backfills · a lineage UI becomes a product
-requirement · execution must go multi-node.
+**Verdict.** *Now* — domain core + Hamilton + a Postgres ops-plane: no metadata
+DB, no partition taxonomy, domain truth stays in our schema. *Later* — Dagster via
+the port, on the same grounds as before: ML models needing versioning / GPU
+scheduling · many regions with routine backfills · a lineage UI as a product
+requirement.
+
+**What distinguishes the two tracks** — not "how much scale", which is what the
+ladder wrongly asked, but four properties that differ in kind:
+
+| | Track A — DBOS (library) | Track B — Hatchet (service) |
+|---|---|---|
+| **Who schedules** | we do — `wave.plan_wave` survives | the engine does — we delete it |
+| **Run state** | co-located with domain data, one Postgres | engine-owned, a second thing to migrate and back up |
+| **To accept a submit** | nothing standing; runs in-process | a standing worker + broker, mandatory |
+| **Progress stream** | ordered and resumable from the checkpoint log | best-effort, and `partial` / `skipped` are not in its vocabulary |
+
+How each of these is *measured* — the metrics, and why they are defined only over
+tables that survive both branches — is fixed in advance in
+[`PHASE3_OPS_PLANE_MEASUREMENT.md`](./PHASE3_OPS_PLANE_MEASUREMENT.md). The
+side-by-side result lands in `PHASE3_OPS_PLANE_TRACKS.md` (forthcoming, written on
+`main` once both branches exist — neither branch can hold both halves).
 
 ## 5. Alternatives — positioning (2026)
 
@@ -482,8 +588,9 @@ components; the §4 design composes the best-fit ones.
 | Tool                         | Covers (components)                                                                                                   | Best for                                      | Pick when                                                                                                                                                                                               |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Hamilton**                 | 11, 12 + intra-unit graph — `data_version` caching + OpenLineage + per-unit function DAG; runs only requested outputs | the compute-graph layer                       | **now** (top pick). Caveats: lineage needs materializer/`@datasaver` metadata; no partition abstraction and no cross-indicator resolver — that ordering (4) + scenario/feature scheduling stay in 3 + 8 |
-| **procrastinate / PgQueuer** | 5, 6 (+ retries, scheduling, locks, DLQ)                                                                              | Postgres task-queue *library*, no new infra   | ops-plane rung above `SKIP LOCKED`, below Hatchet                                                                                                                                                       |
-| **Hatchet**                  | 5, 6, 7, 8 — durable runs/queue/workers/coordinator (Postgres)                                                        | durable-workflow *service*                    | durable execution / dynamic concurrency / monitoring UI needed. Not a lineage platform                                                                                                                  |
+| **procrastinate / PgQueuer** | 5, 6 (+ retries, scheduling, locks, DLQ)                                                                              | Postgres task-queue *library*, no new infra   | at-least-once delivery is enough and the scheduler stays ours — what ships on `main` today                                                                                                              |
+| **DBOS Transact**            | 5, 6 — durable checkpoints in the domain Postgres; scheduling (8) stays ours                                         | durable-execution *library*, no standing service | **Track A**: checkpointed durability without a cluster; keeps `plan_wave` and the `partial`/`skipped` vocabulary                                                                                     |
+| **Hatchet**                  | 5, 6, 7, 8 — durable runs/queue/workers/coordinator (Postgres)                                                        | durable-workflow *service*                    | **Track B**: engine owns scheduling + run state (we delete ours); dynamic concurrency + monitoring UI. Not a lineage platform; no `partial`/`skipped`                                                    |
 | **SQLMesh**                  | SQL-expressible 1, 3, 4, 9, 10, 11, 12 (incremental, plan/apply, audits, free column lineage)                         | SQL-transform governance                      | **companion** for warehouse transforms — not central (PostGIS/geometry/ML/overrides aren't SQL)                                                                                                         |
 | **Dagster**                  | all                                                                                                                   | full asset platform                           | mature scale (benchmark)                                                                                                                                                                                |
 | **Prefect 3**                | 2, 5, 6, 7, 8 — ops/runtime, dynamic + Pythonic                                                                       | general Python workflows / API-triggered jobs | not over Dagster for a durable asset graph + backfills                                                                                                                                                  |
@@ -492,5 +599,6 @@ Not first choice: **Airflow** (task/schedule-centric, heavy), **Kestra** (YAML
 platform, standing infra), **Temporal** (durable sagas — wrong axis), **Windmill**
 (internal-tools lean). Adjacent: **Orchestra** (managed), **Bruin** (all-in-one OSS).
 
-Ranking: compute graph = Hamilton · ops-plane library = procrastinate → Hatchet ·
-SQL companion = SQLMesh · full platform (later) = Dagster · general workflow = Prefect.
+Ranking: compute graph = Hamilton · ops-plane = the two tracks side by side
+(DBOS · Hatchet), not a sequence · SQL companion = SQLMesh · full platform
+(later) = Dagster · general workflow = Prefect.

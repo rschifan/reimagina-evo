@@ -49,7 +49,12 @@ def _defer_advance(run_id: str) -> None:
 
 
 def _record_failed_job_run(
-    *, indicator_slug: str, scenario_id: str | None, code_version: str, error: str
+    *,
+    run_id: str,
+    indicator_slug: str,
+    scenario_id: str | None,
+    code_version: str,
+    error: str,
 ) -> None:
     """Persist a durable ``failed`` job_run on its own connection.
 
@@ -57,6 +62,12 @@ def _record_failed_job_run(
     which erases the job_run the runner opened — so a failure's provenance must
     be recorded independently. Best-effort: a failure here must never mask the
     unit failure it is trying to record.
+
+    ``run_id`` is passed rather than taken from the ambient ``current_run``: this
+    runs from an ``except`` block, and the ambient scope has already closed by
+    then. Leaving it to the ambient would file every failed unit under a NULL
+    run — invisible to `cancel_run_backends` and to the per-run measurement
+    query, which are the two things `run_id` exists for.
     """
     spec = next((s for s in SHIPPED_INDICATORS if s.slug == indicator_slug), None)
     model_family = spec.model_family if spec and spec.model_family else "unknown"
@@ -68,6 +79,7 @@ def _record_failed_job_run(
                 code_version=code_version,
                 scenario_id=scenario_id,
                 status="running",
+                run_id=run_id,
             )
             repo.complete_job(job_run_id, status="failed", error_message=error)
             conn.commit()
@@ -116,19 +128,23 @@ def compute_unit(
                 # The rollback above erased the runner's job_run row; record the
                 # failure durably on a separate connection so provenance survives.
                 _record_failed_job_run(
+                    run_id=run_id,
                     indicator_slug=indicator_slug,
                     scenario_id=scenario_id,
                     code_version=code_version,
                     error=str(exc),
                 )
-        runstore.set_unit_status(
+        # Announce only what the database accepted. A cancelled run has already
+        # written this unit's terminal status; publishing our own on top would
+        # tell every SSE subscriber `failed` for a unit GET reports `cancelled`.
+        if runstore.set_unit_status(
             conn,
             run_id=run_id,
             indicator_slug=indicator_slug,
             status=status,
             detail=detail,
-        )
-        events.emit(conn, run_id=run_id, indicator=indicator_slug, status=status)
+        ):
+            events.emit(conn, run_id=run_id, indicator=indicator_slug, status=status)
         conn.commit()
     _defer_advance(run_id)
 
@@ -145,23 +161,30 @@ def advance_run(*, run_id: str) -> None:
         )
         features_by = {u["indicator"]: u["features"] for u in units}
 
+        # Every write below is announced only if it landed — a cancelled run has
+        # already made its units terminal, and re-announcing over the top would
+        # reopen a stream the cancel closed. Not dispatching a refused unit is
+        # the load-bearing half: it is what stops a cancelled run from starting
+        # more compute.
         for slug in plan.skip:
-            runstore.set_unit_status(
+            if runstore.set_unit_status(
                 conn,
                 run_id=run_id,
                 indicator_slug=slug,
                 status="skipped",
                 detail="unsatisfied inputs",
-            )
-            events.emit(conn, run_id=run_id, indicator=slug, status="skipped")
+            ):
+                events.emit(conn, run_id=run_id, indicator=slug, status="skipped")
         for slug in plan.dispatch:
-            runstore.set_unit_status(
+            if not runstore.set_unit_status(
                 conn, run_id=run_id, indicator_slug=slug, status="running"
-            )
+            ):
+                continue
             events.emit(conn, run_id=run_id, indicator=slug, status="running")
             dispatch_features[slug] = features_by[slug]
-        if plan.final_status is not None:
-            runstore.finalize_run(conn, run_id=run_id, status=plan.final_status)
+        if plan.final_status is not None and runstore.finalize_run(
+            conn, run_id=run_id, status=plan.final_status
+        ):
             events.emit(conn, run_id=run_id, indicator=None, status=plan.final_status)
         conn.commit()
 

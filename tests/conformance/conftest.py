@@ -100,12 +100,17 @@ def poison(monkeypatch):
 
 
 @pytest.fixture
-def seeded():
+def seeded(migrated_db):
     """A committed connection with the catalog and one block seeded.
 
     Committed, not the rollback ``conn`` fixture: a queue worker opens its own
     connection and would not see uncommitted rows. Cleanup is surgical, and
     includes any queued jobs a non-blocking submit left behind.
+
+    Takes ``migrated_db`` explicitly. Bypassing the rollback fixture also
+    bypasses the migration it runs, and without this the schema is present
+    only because some other fixture happened to ask for it first — the exact
+    ordering dependency that broke the engine tests when they moved.
     """
     try:
         psycopg2.connect(_DSN).close()

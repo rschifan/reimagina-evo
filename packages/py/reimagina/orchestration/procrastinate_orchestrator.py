@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import select
 from collections.abc import AsyncIterator, Iterable, Sequence
 from uuid import uuid4
 
@@ -33,16 +32,11 @@ from reimagina.orchestration.port import (
     UnitStatusView,
     overall_status,
 )
-from reimagina.orchestration.queue_app import app, queue_dsn
+from reimagina.orchestration.queue_app import app, bound, queue_dsn
 from reimagina.orchestration.tasks import advance_run
 from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
-
-# How long one wait on the LISTEN socket blocks before looping. Only bounds how
-# promptly the subscription notices it has been closed — the caller runs its own
-# heartbeat clock, so this is not the keep-alive interval.
-_POLL_SECONDS = 1.0
 
 
 class ProcrastinateOrchestrator:
@@ -93,7 +87,9 @@ class ProcrastinateOrchestrator:
         )
         conn.commit()  # worker runs on its own connection; it must see the rows
 
-        with app.open():
+        # `bound()` rather than a bare `app.open()`: the module-global
+        # connector may have captured an empty DSN at import time.
+        with bound(), app.open():
             advance_run.configure(queueing_lock=f"advance:{run_id}").defer(
                 run_id=run_id
             )
@@ -134,26 +130,27 @@ class ProcrastinateOrchestrator:
 
         backend_for_connection(conn).job_run_repo().cancel_run_backends(run_id)
 
-        statuses = []
         for unit in row["units"]:
-            status = unit["status"]
-            if status not in UNIT_TERMINAL_STATES:
-                status = "cancelled"
-                runstore.set_unit_status(
-                    conn,
-                    run_id=run_id,
-                    indicator_slug=unit["indicator"],
-                    status=status,
-                    detail="run cancelled",
-                )
+            if unit["status"] in UNIT_TERMINAL_STATES:
+                continue
+            if runstore.set_unit_status(
+                conn,
+                run_id=run_id,
+                indicator_slug=unit["indicator"],
+                status="cancelled",
+                detail="run cancelled",
+            ):
                 events.emit(
-                    conn, run_id=run_id, indicator=unit["indicator"], status=status
+                    conn, run_id=run_id, indicator=unit["indicator"], status="cancelled"
                 )
-            statuses.append(status)
 
-        final = overall_status(statuses)
-        runstore.finalize_run(conn, run_id=run_id, status=final)
-        events.emit(conn, run_id=run_id, indicator=None, status=final)
+        # Roll up from a fresh read, not from the snapshot above. A worker can
+        # commit `succeeded` between the two, and set_unit_status then refuses
+        # our `cancelled` — so assuming the write landed would report a run
+        # cancelled whose units all say they finished.
+        final = overall_status(u["status"] for u in runstore.list_units(conn, run_id))
+        if runstore.finalize_run(conn, run_id=run_id, status=final):
+            events.emit(conn, run_id=run_id, indicator=None, status=final)
         conn.commit()
         return True
 
@@ -163,8 +160,14 @@ class ProcrastinateOrchestrator:
         Opens its own direct connection — LISTEN needs one that is not
         transaction-pooled, and the caller's pooled connection is neither
         long-lived nor safe to block on.
+
+        The connect is synchronous on purpose. Doing it in a thread creates a
+        window where the subscriber is cancelled mid-connect: the thread cannot
+        be interrupted, so the socket still opens, but the generator's cleanup
+        has already run and nothing ever closes it. One local connect is cheap
+        enough that removing the window is the better trade.
         """
-        conn = await asyncio.to_thread(psycopg2.connect, queue_dsn())
+        conn = psycopg2.connect(queue_dsn())
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
@@ -178,22 +181,33 @@ class ProcrastinateOrchestrator:
             if status in RUN_TERMINAL_STATES:
                 return
 
-            while True:
-                ready, _, _ = await asyncio.to_thread(
-                    select.select, [conn], [], [], _POLL_SECONDS
-                )
-                if not ready:
-                    continue  # the caller owns the keep-alive clock, not us
-                conn.poll()
-                while conn.notifies:
-                    note = conn.notifies.pop(0)
-                    data = json.loads(note.payload)
-                    if data.get("run_id") != run_id:
-                        continue
-                    indicator = data.get("indicator")
-                    status = data.get("status", "")
-                    yield RunEvent(run_id=run_id, indicator=indicator, status=status)
-                    if indicator is None and status in RUN_TERMINAL_STATES:
-                        return
+            # The event loop watches the socket directly. Waiting in a thread
+            # instead would leave that thread blocked in select() on this
+            # connection's fd while cancellation ran the cleanup below and
+            # closed it — and Postgres hands the freed fd straight to the next
+            # connection in the process, so the stray select lands on someone
+            # else's socket.
+            loop = asyncio.get_running_loop()
+            readable = asyncio.Event()
+            loop.add_reader(conn.fileno(), readable.set)
+            try:
+                while True:
+                    await readable.wait()
+                    readable.clear()
+                    conn.poll()
+                    while conn.notifies:
+                        note = conn.notifies.pop(0)
+                        data = json.loads(note.payload)
+                        if data.get("run_id") != run_id:
+                            continue
+                        indicator = data.get("indicator")
+                        status = data.get("status", "")
+                        yield RunEvent(
+                            run_id=run_id, indicator=indicator, status=status
+                        )
+                        if indicator is None and status in RUN_TERMINAL_STATES:
+                            return
+            finally:
+                loop.remove_reader(conn.fileno())
         finally:
             conn.close()
