@@ -75,6 +75,13 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["packages/py/reimagina"]
 
+[tool.ruff]
+# Ruff only infers target-version from project.requires-python when this file
+# is the *discovered* config, which requires a [tool.ruff] table to exist at
+# all. Without it ruff falls back to its py38 default and flags 3.10+ builtins
+# (e.g. F821 on `anext`). Set explicitly so the two never drift.
+target-version = "py311"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
