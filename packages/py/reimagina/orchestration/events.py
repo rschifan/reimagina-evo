@@ -1,4 +1,8 @@
-"""Run telemetry (Phase 3, component 12b) — Postgres LISTEN/NOTIFY + SSE frames.
+"""Run telemetry transport — Postgres LISTEN/NOTIFY.
+
+Only the transport lives here. Payload construction and SSE framing moved to
+``reimagina.orchestration.frames``, which every ops-plane implementation shares;
+this module is specific to the Postgres-queue ops-plane and goes away with it.
 
 Tasks ``emit`` a status change on one fixed channel; the SSE endpoint LISTENs
 and filters by run_id. A unit event carries ``indicator``; the run-level
@@ -8,15 +12,11 @@ stream to close.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from reimagina.orchestration.frames import notify_payload
+
 CHANNEL = "job_events"
-_RUN_TERMINAL = frozenset({"succeeded", "partial", "failed", "cancelled"})
-
-
-def notify_payload(*, run_id: str, indicator: str | None, status: str) -> str:
-    return json.dumps({"run_id": run_id, "indicator": indicator, "status": status})
 
 
 def emit(conn: Any, *, run_id: str, indicator: str | None, status: str) -> None:
@@ -40,12 +40,3 @@ def emit(conn: Any, *, run_id: str, indicator: str | None, status: str) -> None:
                 notify_payload(run_id=run_id, indicator=indicator, status=status),
             ),
         )
-
-
-def sse_frame(payload: str) -> str:
-    """Format a JSON payload as one Server-Sent Events data frame."""
-    return f"data: {payload}\n\n"
-
-
-def is_run_terminal(status: str) -> bool:
-    return status in _RUN_TERMINAL

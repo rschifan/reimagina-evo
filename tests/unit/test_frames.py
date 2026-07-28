@@ -1,10 +1,10 @@
-"""Unit tests for run telemetry event formatting — pure, no DB."""
+"""Unit tests for progress-event payloads and SSE framing — pure, no DB."""
 
 from __future__ import annotations
 
 import json
 
-from reimagina.orchestration.events import (
+from reimagina.orchestration.frames import (
     is_run_terminal,
     notify_payload,
     sse_frame,

@@ -18,7 +18,7 @@ from procrastinate.exceptions import AlreadyEnqueued
 from reimagina.db import connect
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
 from reimagina.orchestration import events, runstore
-from reimagina.orchestration.coordinator import plan_wave
+from reimagina.orchestration.wave import plan_wave
 from reimagina.orchestration.queue_app import app, queue_dsn
 from reimagina.orchestration.runners import default_runners
 from reimagina.storage import backend_for_connection
