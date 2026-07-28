@@ -78,6 +78,57 @@ def test_synchronous_orchestrator_reports_partial_on_failure():
     assert by_status["liveability_index"] == "skipped"
 
 
-def test_get_run_is_none_without_persistence():
+def test_get_run_is_none_for_an_unknown_run():
     orch = SynchronousOrchestrator(registry=REG, runners={})
     assert orch.get_run(None, "missing") is None
+
+
+def test_submitted_run_round_trips_through_the_default_store():
+    """The in-memory store makes submit → get_run work with no database.
+
+    Previously the orchestrator wrote straight to jobs_runtime, so a run
+    submitted on a None connection silently vanished and get_run returned None.
+    """
+    log: list[str] = []
+    runners = {
+        s: _runner(log, s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(registry=REG, runners=runners)
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    fetched = orch.get_run(None, handle.run_id)
+    assert fetched is not None
+    assert fetched.status == "succeeded"
+    assert {u.indicator for u in fetched.units} == {
+        "green_coverage",
+        "walkability",
+        "liveability_index",
+    }
+
+
+def test_store_is_injectable():
+    """Any object with the runstore signatures can back the orchestrator."""
+    calls: list[str] = []
+
+    class _RecordingStore:
+        def create_run(self, conn, **kw):
+            calls.append("create_run")
+            return True
+
+        def record_units(self, conn, **kw):
+            calls.append("record_units")
+
+        def finalize_run(self, conn, **kw):
+            calls.append("finalize_run")
+
+        def get_run(self, conn, run_id):
+            return None
+
+    SynchronousOrchestrator(
+        registry=REG, runners={}, store=_RecordingStore()
+    ).submit_run(None, changed_attributes={"land_use"}, edited_features={"b1"})
+
+    assert calls == ["create_run", "record_units", "finalize_run"]
