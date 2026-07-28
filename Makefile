@@ -47,6 +47,10 @@ test: ## Run fast Python tests (unit + contract).
 test-integration: ## Run integration tests (requires Postgres + PostGIS running).
 	$(PYTEST) tests/integration -q
 
+.PHONY: test-conformance
+test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
+	$(PYTEST) tests/conformance -v
+
 .PHONY: build-web
 build-web: ## Typecheck + build the web app.
 	cd apps/web && npm run build
