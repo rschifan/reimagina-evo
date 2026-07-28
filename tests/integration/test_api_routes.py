@@ -589,10 +589,15 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
 
 # ── POST /jobs — the submit endpoint's two response modes ───────────────────
 #
-# Isolated wiring tests: the enqueue/drain internals (ProcrastinateOrchestrator,
-# run_embedded) are covered deeply in the orchestration suites, so here we mock
-# them and only assert the router wires the modes correctly (default 202+queued
-# vs wait 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
+# Isolated wiring tests: the enqueue/drain internals are covered deeply in the
+# orchestration suites, so here we swap the whole orchestrator out and only
+# assert the router wires the modes correctly (default 202+queued vs wait
+# 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
+#
+# Both modes are faked at the same seam — ``factory.get_orchestrator``, asserting
+# on the ``mode`` it is asked for. The wait path used to patch the *function*
+# ``embedded.run_embedded`` instead, which pinned the test to one engine's module
+# layout; it now rides the port like every other path.
 
 
 def _stub_connect(monkeypatch):
@@ -605,15 +610,19 @@ def _stub_connect(monkeypatch):
     monkeypatch.setattr("reimagina.db.connect", _fake)
 
 
+def _install(monkeypatch, expected_mode, handle):
+    def _get(mode=None):
+        assert mode == expected_mode
+        return type("_Fake", (), {"submit_run": lambda self, conn, **kw: handle})()
+
+    monkeypatch.setattr("reimagina.orchestration.factory.get_orchestrator", _get)
+
+
 def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
     from reimagina.orchestration.port import RunHandle
 
     _stub_connect(monkeypatch)
-    monkeypatch.setattr(
-        "reimagina.orchestration.procrastinate_orchestrator."
-        "ProcrastinateOrchestrator.submit_run",
-        lambda self, conn, **kw: RunHandle(run_id="r-queued", status=None),
-    )
+    _install(monkeypatch, "detach", RunHandle(run_id="r-queued", status=None))
 
     response = client.post(
         "/jobs",
@@ -625,15 +634,21 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
 
 
 def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
-    from reimagina.orchestration.port import RunStatus, UnitStatusView
+    from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
 
     _stub_connect(monkeypatch)
-    monkeypatch.setattr(
-        "reimagina.orchestration.embedded.run_embedded",
-        lambda conn, **kw: RunStatus(
+    _install(
+        monkeypatch,
+        "embedded",
+        RunHandle(
             run_id="r-done",
-            status="succeeded",
-            units=(UnitStatusView("urban_form_block_compactness", "succeeded", None),),
+            status=RunStatus(
+                run_id="r-done",
+                status="succeeded",
+                units=(
+                    UnitStatusView("urban_form_block_compactness", "succeeded", None),
+                ),
+            ),
         ),
     )
 

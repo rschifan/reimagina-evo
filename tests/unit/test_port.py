@@ -7,6 +7,8 @@ tests live in test_wave_scheduler.py.
 
 from __future__ import annotations
 
+import asyncio
+
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 
@@ -107,6 +109,47 @@ def test_submitted_run_round_trips_through_the_default_store():
         "walkability",
         "liveability_index",
     }
+
+
+def _collect(agen):
+    async def _run():
+        return [event async for event in agen]
+
+    return asyncio.run(_run())
+
+
+def test_cancel_is_always_false_here():
+    """No run is ever in flight: submit_run does not return until it is over."""
+    orch = SynchronousOrchestrator(registry=REG, runners={})
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+    assert orch.cancel_run(None, handle.run_id) is False
+
+
+def test_subscribe_progress_yields_the_final_status_then_stops():
+    log: list[str] = []
+    runners = {
+        s: _runner(log, s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(registry=REG, runners=runners)
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    events = _collect(orch.subscribe_progress(handle.run_id))
+
+    assert len(events) == 1
+    assert events[0].indicator is None  # run-level: the event that closes a stream
+    assert events[0].status == "succeeded"
+
+
+def test_subscribe_progress_reports_unknown_for_a_missing_run():
+    """A subscriber must terminate on a bad id, not block forever."""
+    orch = SynchronousOrchestrator(registry=REG, runners={})
+    events = _collect(orch.subscribe_progress("missing"))
+    assert [e.status for e in events] == ["unknown"]
 
 
 def test_store_is_injectable():

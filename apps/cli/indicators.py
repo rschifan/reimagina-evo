@@ -137,12 +137,10 @@ def evaluate_scenario_cli(
     ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
     """
     if mode == "detach":
-        from reimagina.orchestration.procrastinate_orchestrator import (
-            ProcrastinateOrchestrator,
-        )
+        from reimagina.orchestration.factory import get_orchestrator
 
         with connect(dsn) as conn:
-            handle = ProcrastinateOrchestrator().submit_run(
+            handle = get_orchestrator("detach").submit_run(
                 conn,
                 changed_attributes=changed_attributes,
                 edited_features=edited_features,
@@ -160,6 +158,9 @@ def evaluate_scenario_cli(
         }
 
     if mode == "sync":
+        # Not via the factory: this path returns the coordinator's per-unit
+        # RunReport, which is a richer shape than the port's RunStatus and is
+        # what the CLI has always printed.
         with connect(dsn) as conn:
             report = evaluate_scenario(
                 conn,

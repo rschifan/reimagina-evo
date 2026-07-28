@@ -13,7 +13,7 @@ interchangeable.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -21,7 +21,12 @@ from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.coordinator import Runner, run_dirty_set
 from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.memstore import InMemoryRunStore
-from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
+from reimagina.orchestration.port import (
+    RunEvent,
+    RunHandle,
+    RunStatus,
+    UnitStatusView,
+)
 from reimagina.orchestration.runners import default_runners
 
 
@@ -101,4 +106,26 @@ class SynchronousOrchestrator:
                 UnitStatusView(u["indicator"], u["status"], u["detail"])
                 for u in row["units"]
             ),
+        )
+
+    def cancel_run(self, conn: object, run_id: str) -> bool:
+        """Always False — a run here is already over by the time anyone has its id.
+
+        ``submit_run`` does not return until the last runner has, so there is no
+        window in which a caller holds a run_id for something still in flight.
+        """
+        return False
+
+    async def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]:
+        """One run-level event with the final status, then stop.
+
+        The run is complete before its id escapes, so a subscription can only
+        ever report history. It yields the snapshot every implementation opens
+        with and closes immediately rather than pretending to stream.
+        """
+        row = self._store.get_run(conn=None, run_id=run_id)
+        yield RunEvent(
+            run_id=run_id,
+            indicator=None,
+            status=row["status"] if row else "unknown",
         )
