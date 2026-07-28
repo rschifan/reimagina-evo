@@ -30,10 +30,13 @@ def test_expected_top_level_structure_exists():
         ROOT / "tests" / "conformance",
         ROOT / "tests" / "performance",
         ROOT / "tests" / "e2e",
-        # Engine-coupled tests are quarantined so an ops-plane branch can
-        # drop one subtree without editing the rest of a suite.
-        ROOT / "tests" / "integration" / "engine",
-        ROOT / "tests" / "performance" / "engine",
+        # ⚠ `tests/{integration,performance}/engine` used to be listed here as
+        # the quarantine for engine-coupled tests. They are gone, and that is
+        # the quarantine working rather than a regression: it existed so an
+        # ops-plane branch could drop one subtree without editing the rest of a
+        # suite, and this branch dropped its only occupant (Procrastinate).
+        # Hatchet's engine-coupled coverage is the conformance suite, which
+        # starts a real worker — see tests/conformance/conftest.py.
     ]
     for path in expected:
         assert path.exists(), f"Missing expected path: {path}"

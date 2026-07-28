@@ -89,13 +89,14 @@ Two signatures encode decisions worth keeping:
 
 | Mode | Implementation | Behaviour |
 |---|---|---|
-| `detach` (default) | `ProcrastinateOrchestrator` | Enqueue and return; a separate worker fleet drains it. `factory.py:62` |
-| `embedded` | `EmbeddedOrchestrator` | Enqueue on the same durable queue, then drain a bounded in-process worker and return the finished run. `factory.py:69` |
-| `sync` | `SynchronousOrchestrator` | Compute in-process, no queue. No production caller — it exists so the conformance suite has a target needing no engine. `factory.py:74` |
+| `hatchet` (default) | `HatchetOrchestrator` | Submit to the engine and return. A worker is **mandatory** — nothing runs without one. |
+| `sync` | `SynchronousOrchestrator` | Compute in-process, no engine, no worker. No production caller — it exists so the conformance suite has a target needing neither. |
 
-Mode resolution is `argument → REIMAGINA_ORCHESTRATOR → "detach"`, and an unknown mode raises rather than falling back (`factory.py:79`).
+⚠ Two modes, not three. `detach` and `embedded` named *orchestrators* on the queue rung; here they are CLI behaviours over the one engine — `--detach` submits and returns, the default blocks until the run is terminal. Both go through `hatchet`.
 
-**The environment may only select a durable mode.** `DURABLE_MODES = ("detach", "embedded")` (`factory.py:36`); `REIMAGINA_ORCHESTRATOR=sync` is rejected with an explanation rather than honoured. `sync` keeps run state in memory *per orchestrator instance*, and the factory builds a fresh instance per call — so as a deployment default it would have `POST /jobs` writing to Postgres while `GET /jobs/{run_id}` and the SSE route read an empty dict. It stays available as an explicit argument, for a caller that holds on to the instance (`factory.py:37-45`, `:50-60`).
+Mode resolution is `argument → REIMAGINA_ORCHESTRATOR → "hatchet"`, and an unknown mode raises rather than falling back.
+
+**The environment may only select a durable mode.** `DURABLE_MODES = ("hatchet",)`; `REIMAGINA_ORCHESTRATOR=sync` is rejected with an explanation rather than honoured. `sync` keeps run state in memory *per orchestrator instance*, and the factory builds a fresh instance per call — so as a deployment default it would have `POST /jobs` writing to Postgres while `GET /jobs/{run_id}` and the SSE route read an empty dict. It stays available as an explicit argument, for a caller that holds on to the instance (`factory.py:37-45`, `:50-60`).
 
 The API picks a mode from the request contract, not from an engine preference: `embedded` when `wait: true` (200 with a finished status), `detach` otherwise (202 + poll) — `apps/api/routers/jobs.py:86`, `:100`. The CLI exposes the same three through `--detach` / `--sync` (`apps/cli/app.py:1360`, `apps/cli/indicators.py:127-137`).
 
@@ -149,23 +150,28 @@ Runners are injected, never defined here. `orchestration/runners.py:76` binds sl
 
 ---
 
-## Run state — three tables, two owners
+## Run state — one table, one owner
 
 | Table | Owner | Written by | Fate |
 |---|---|---|---|
-| `jobs_runtime.orchestration_run` | ops-plane | `runstore.create_run` / `finalize_run` | dropped on Track B |
-| `jobs_runtime.job_unit` | ops-plane | `runstore.record_units` / `set_unit_status` | dropped on Track B |
-| `jobs_runtime.job_run` | domain | `jobs/_lifecycle.job_run` | survives both |
+| `jobs_runtime.job_run` | domain | `jobs/_lifecycle.job_run` | survives on both branches |
 
-### orchestration_run + job_unit (r028)
+⚠ `jobs_runtime.orchestration_run` and `jobs_runtime.job_unit` **are dropped on this branch** (migration r033), together with `orchestration/runstore.py`. That deletion is what the track is for: the engine owns run state end to end, and keeping a parallel copy would be re-adopting the model being given away.
 
-One `orchestration_run` row per `submit_run` — the envelope `get_run` reads. One `job_unit` row per `DirtyUnit`, unique on `(run_id, indicator_slug)`, carrying the unit's `feature_scope` as jsonb (`infra/db/migrations/versions/r028_orchestration_run_and_job_unit.py:26-59`).
+`orchestration/memstore.py` survives — it backs the synchronous orchestrator, which needs somewhere to keep run state and must not need a database to do it.
 
-Both are reached only through `orchestration/runstore.py`, which no-ops for a non-Postgres connection so unit tests need no database (`runstore.py:18-22`). `orchestration/memstore.py` mirrors the same signatures in memory so either can be injected without an adapter — which is what keeps the synchronous orchestrator from dragging `jobs_runtime` along with it (`memstore.py:1-12`, `synchronous.py:8-11`).
+### Where the run vocabulary lives now
 
-Both mutators are **guarded and return whether the write landed**: `set_unit_status` refuses to move a terminal unit (`runstore.py:62`, `:104`) and `finalize_run` refuses to re-close a closed run (`runstore.py:150`, `:168`). The guards are not hand-written status lists — the SQL takes its terminal tuples straight from the port's frozensets (`runstore.py:14`, `:85`, `:166`), so the vocabulary in `port.py` is literally what the database enforces here.
+Not in a table. The workflow's `on_failure_task` / `on_success_task` reconstruct a per-unit verdict and return it as the run's **output**, which `runs.get_result()` serves even for a run whose status is FAILED. `get_run` prefers that verdict and falls back to the status enum only while a run is still in flight.
 
-Two columns exist but are never written by any code path: `job_unit.job_run_id` (r028:53) and `job_run.procrastinate_job_id` (r028:67). r031's docstring records why the first one matters — the missing unit→run edge is exactly what made cancellation impossible before `job_run.run_id` existed (`r031_job_run_cancellation.py:17-21`).
+| | Track A | Track B |
+|---|---|---|
+| `partial` / `skipped` expressible | yes | yes, in the run output |
+| queryable across runs | `SELECT … GROUP BY` | one run at a time, via the engine |
+| survives the engine being down | yes | no |
+| expires | no | yes — engine retention, 720 h by default |
+
+`additional_metadata` (scenario, AOI, code version) is stamped on every submit and is a filter in `runs.list()` and the dashboard, so "every run for this scenario" still works. It is a lookup key, not an aggregate.
 
 ### job_run (r016, extended by r031)
 
@@ -288,32 +294,34 @@ The subscriber (`procrastinate_orchestrator.py:155-211`) opens its own direct co
 
 ---
 
-## The current engine — Procrastinate
+## The engine — Hatchet
 
-Everything in this section is **engine-level** and is replaced on both branches. It is documented so the two tracks have a concrete "from".
+Self-hosted, MIT, Postgres as the broker (`SERVER_MSGQUEUE_KIND=postgres`); no RabbitMQ. The queue-based Procrastinate plane that used to be documented here is **deleted on this branch** — `tasks.py`, `queue_app.py`, `events.py`, `procrastinate_orchestrator.py`, `embedded.py` and `perf/procrastinate_bench.py` are gone, along with `wave.py` and `runstore.py`. See `docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md` for what it was.
 
-**Two queues, not seven.** `compute` runs one indicator's runner; `control` walks readiness and dispatches the next wave.
+**One workflow, one task per indicator.** `orchestration/hatchet_app.py::build_dag` declares the graph at import from `SHIPPED_INDICATORS`: a `plan` task publishes the dirty set, every indicator is a task parented on `plan` plus its own dependencies, and `skip_if` skips the ones that are not dirty. Readiness, ordering, fan-out, failure propagation and retries are the engine's. There is no wave loop to read.
 
-| Task | Queue | Definition |
-|---|---|---|
-| `compute_unit` | `compute` | `tasks.py:92` |
-| `advance_run` | `control` | `tasks.py:152` |
+⚠ `skip_if` means *skip when the expression is true*, so the condition is negated — `!('slug' in output.dirty)`. The un-negated form runs exactly the indicators it should have left alone while every task reports COMPLETED (spike B1).
 
-`python -m apps.worker` drains exactly those two (`apps/worker/app.py:32-34`). There is **no per-model-family queue and no dead-letter queue**. Retry policy is `RetryStrategy(max_attempts=3, exponential_wait=2)` on `compute_unit` only (`tasks.py:92`); nothing routes exhausted jobs anywhere.
+**The declaration must be byte-identical across processes.** The API and the worker both call `build_dag()` at import. Two SDK defaults make that false unless overridden: `ParentCondition.readable_data_key` embeds `datetime.now(UTC).isoformat()`, and `BaseCondition.or_group_id` is `Field(default_factory=uuid4)`. Both are derived from the slug instead (spike B9).
 
-**Dedup is a queueing lock.** `unit:{run_id}:{slug}` and `advance:{run_id}`; `AlreadyEnqueued` is swallowed, since an already-queued advance will see fresh state anyway (`tasks.py:30-48`).
+**Timeouts are ours, because the defaults are wrong for this workload.** `execution_timeout` defaults to 60 *seconds* against units that run for minutes; `schedule_timeout` defaults to 5 minutes, and queued work that waits longer reports FAILED — indistinguishable from broken compute. Set via `task_defaults` from `REIMAGINA_UNIT_TIMEOUT_MIN` / `REIMAGINA_QUEUE_TIMEOUT_HOURS` (spike B5).
 
-**Failure taxonomy.** A failed `connect` is transient infra and propagates, so Procrastinate retries. A runner exception is deterministic and is recorded as a terminal `failed` with no retry — and the run still advances, so dependents skip (`tasks.py:103-107`).
+**Failure taxonomy.** Retries with exponential backoff are on by default (`REIMAGINA_UNIT_RETRIES`, default 2) because the engine, not us, distinguishes a dropped connection from a broken runner. A genuinely deterministic failure — a missing runner registration — raises `NonRetryableException` and is not retried.
 
-**Why failed provenance needs a second connection.** `compute_unit` rolls back the shared connection on a runner exception, which erases the `job_run` row the runner opened. `_record_failed_job_run` re-records it on its own connection, best-effort, and passes `run_id` explicitly because the ambient `current_run` scope has already closed inside an `except` block — leaving it ambient would file every failed unit under a NULL run, invisible to both `cancel_run_backends` and the per-run measurement query (`tasks.py:51-89`, `:128-136`).
+**Admission control is declared, not coded.** Both were unimplemented on every previous rung:
 
-**Wave loop.** `advance_run` reads the units, calls `plan_wave`, writes `skipped` for the unsatisfiable and `running` for the dispatchable, finalises when `plan.final_status` is set, commits, and only then defers the next `compute_unit` batch (`tasks.py:153-192`). Every one of those writes is checked, and a refused unit is neither announced nor dispatched — see [Cancellation](#cancellation).
+| Concern | Mechanism |
+|---|---|
+| Two concurrent writers on one scenario's rows | `ConcurrencyExpression(input.concurrency_key, max_runs=1, CANCEL_NEWEST)` |
+| A double-clicked Save starting two identical runs | `TTLBasedIdempotencyConfig(key_expression="input.dedup_key")` |
 
-**Connection requirements.** `DATABASE_URL_DIRECT` is mandatory and fails loudly (`queue_app.py:22-30`); the pooled app DSN cannot hold LISTEN/NOTIFY. Procrastinate's own tables live in schema `procrastinate` (r029), so connections set `search_path=procrastinate,public` (`queue_app.py:19`). `submit_run` requires a commit-safe connection, not the API's rollback-scoped pool — which is why the API opens a dedicated one (`procrastinate_orchestrator.py:5-7`, `apps/api/routers/jobs.py:88-90`).
+⚠ `CANCEL_NEWEST`, not `CANCEL_IN_PROGRESS`: cancellation is cooperative and nothing interrupts a blocking psycopg call, so cancelling the in-flight run would start the new one while the old one is still writing. The cost is that a second edit arriving mid-run is *dropped* rather than queued.
 
-**Embedded is the same queue.** `EmbeddedOrchestrator` delegates submit to `ProcrastinateOrchestrator` and then drains a bounded in-process worker (`wait=False`) in a loop until the run finalises or `timeout_s` expires; reading, cancelling and subscribing delegate unchanged (`embedded.py:41-134`). Its terminal set is `RUN_TERMINAL_STATES | {"noop"}` (`embedded.py:38`).
+⚠ `dedup_key` is a hash of the scenario, AOI, code version, dirty set **and feature scope** — not just the scenario. Keying on scenario alone deduplicates two *different* edits inside the TTL, so the second edit's changes are never computed. A collision returns the existing run's id rather than raising, because a dedup hit is the feature working.
 
-**Bench.** `perf/procrastinate_bench.py` times enqueue and drain of a no-op job. It is engine-specific by construction and cannot be generalised behind the port, because the port's granularity is a *run* (`docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md`, opening scope note).
+**Connection requirements.** `DATABASE_URL_DIRECT` is mandatory for the worker — unit runners open their own connection to the domain database, which is not the engine's — and `run_hatchet_worker` fails at startup rather than letting every unit die minutes later. `HATCHET_CLIENT_TOKEN` is needed to *import* `hatchet_app` at all, since it constructs `Hatchet()` at module scope.
+
+**A worker is mandatory.** Not an optimisation: nothing executes without one, and a submitted run is not even *observable* until a worker has registered the workflow — `runs.get()` returns 404 on an id the engine just minted (spike B0).
 
 ---
 
@@ -340,7 +348,8 @@ Hatchet, self-hosted: durable execution as a **service**. The engine owns schedu
 - Postgres as the broker (`SERVER_MSGQUEUE_KIND=postgres`); no RabbitMQ.
 - A standing worker is mandatory — there is no in-process mode.
 - Dashboard included.
-- **Accepted, decided cost:** Hatchet's run-status enum has no `partial` and no `skipped`. The *behaviour* survives — independent branches complete, dependents are cancelled — but that vocabulary is lost. The conformance suite is where this shows up: `Implementation.failed_run_status` exists precisely so a branch declares whatever it does say, and "the difference between the two tables is the finding, not a failure" (`tests/conformance/conftest.py:58-63`).
+- **The vocabulary survives; the queryability does not.** Hatchet's status *enum* has no `partial` and no `skipped` — measured, spike B7. An earlier draft of this document concluded the words were therefore lost. They are not: the workflow's `on_failure_task` reconstructs a per-unit verdict from `task_run_errors`, `was_skipped` and `task_output`, and `get_run` reads that in preference to the enum (spike B8). What is actually lost is *querying across runs* — aggregates, joins and indexes over run history. `additional_metadata` narrows it to a lookup key, so "every run for this scenario" still works; "how many scenarios partially failed this week" does not.
+- ⚠ Reconstructing a verdict from three partial signals has more corner cases than mapping an enum. A dependent the engine cancelled has no error *and* `was_skipped=False`, so it reads as a success unless absence of output is also checked (spike B10). The library track pays none of this, because it writes the status it means when it means it.
 
 ### The ladder this supersedes
 
