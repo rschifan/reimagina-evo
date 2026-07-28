@@ -125,14 +125,23 @@ def test_falls_back_to_the_enum_while_in_flight(patched):
 
 
 def test_scaffolding_is_not_reported_as_an_indicator(patched):
-    """`plan` and the two finalizers are ours, not units a caller asked for."""
+    """`plan` and the two finalizers are ours, not units a caller asked for.
+
+    ⚠ The finalizer names here are the ones the **engine reports**, not the ones
+    declared in `build_dag`: an `on_failure_task` named `summarise_failure` comes
+    back as `summarise_failure-on-failure`. An earlier version of this test used
+    the declared names, so it passed against code that let the real ones through
+    — a test encoding an assumption about a system rather than an observation of
+    it. Taken from a live run's task list.
+    """
     patched(
         _details(
             "RUNNING",
             output=None,
             tasks=[
                 _task("plan-1785250189225", "COMPLETED"),
-                _task("summarise_failure-1785250189647", "COMPLETED"),
+                _task("summarise_failure-on-failure-1785254706601", "COMPLETED"),
+                _task("summarise_success-on-success-1785254706615", "CANCELLED"),
                 _task("compactness-1785250189293", "RUNNING"),
             ],
         )
