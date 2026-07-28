@@ -134,3 +134,10 @@ jobs:
 
       - name: pytest (integration)
         run: pytest tests/integration
+
+      # The Orchestrator port contract, asserted against every implementation
+      # this branch ships. Runs here rather than in the unit job because it
+      # needs Postgres, and separately from the integration step so an
+      # ops-plane branch's conformance output is its own diffable artifact.
+      - name: pytest (conformance)
+        run: pytest tests/conformance
