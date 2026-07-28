@@ -17,10 +17,15 @@ checkpoints in our own Postgres and no standing service.
     conformance suite has a target needing neither engine nor database, and it
     is the one path that still runs when the ops-plane is broken.
 
-Two modes, not four: the queue-based ops-plane and its ``detach`` / ``embedded``
-pair are gone from this branch. What used to distinguish them — enqueue-and-
-return versus enqueue-and-drain-here — is not an engine choice under a durable-
-execution library, because one process can do both.
+Two modes, not four. ``detach`` and ``embedded`` used to be *engines* — enqueue
+and return, versus enqueue and drain in a bounded in-process worker. Under a
+durable-execution library that is not an engine choice at all, because one
+process can do both, so asking the factory for either now raises.
+
+⚠ The CLI still spells its ``--detach`` flag and its default the same way, and
+that is not an oversight: there they name whether the *caller* waits, which is
+a real choice and belongs to the caller. Same words, different layer. See
+``apps/cli/indicators.py``.
 
 Imports are deferred on purpose: the engine pulls its client library in at
 module scope, and ``sync`` must stay importable without it.

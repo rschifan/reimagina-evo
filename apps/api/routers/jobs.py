@@ -44,7 +44,7 @@ class SubmitRunBody(BaseModel):
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
-    # Opt-in: drain the run to completion in-request (embedded worker) and return
+    # Opt-in: wait for the run to finish and return
     # the finished status with 200 instead of a 202 + poll. Convenience for
     # simple/test clients; production should stay fire-and-forget (default) with
     # a real worker fleet, since this ties up the request for the whole compute.

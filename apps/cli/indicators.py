@@ -125,9 +125,11 @@ def evaluate_scenario_cli(
 ) -> dict[str, object]:
     """Selectively recompute indicators for a scenario edit.
 
-    ``mode`` selects how the run is driven, not which engine runs it — there is
-    one ops-plane, and because it is a library rather than a service the same
-    process can both submit and drain:
+    ``mode`` selects whether this command waits, not which engine runs the work —
+    there is one ops-plane, and because it is a library rather than a service the
+    same process can both submit and drain. (``orchestration.factory`` uses the
+    words ``detach``/``embedded`` for engines and rejects them; here they name
+    caller behaviour. Same words, different layer.)
 
     * ``embedded`` (default) — submit and wait for the run to finish, returning
       the per-unit report. No standing worker needed; this process drives it.
