@@ -38,7 +38,7 @@ from tests.integration._helpers import (
 )
 
 
-try:  # noqa: SIM105
+try:
     import mapbox_vector_tile  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover
     mapbox_vector_tile = None

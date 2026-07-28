@@ -103,7 +103,7 @@ def test_backends_implement_every_protocol_method(
         return_cls is not None
     ), f"{backend_cls}.{repo_getter} is missing a return annotation"
     if isinstance(return_cls, str):
-        return_cls = eval(return_cls, backend_mod.__dict__)  # noqa: S307
+        return_cls = eval(return_cls, backend_mod.__dict__)
 
     missing = _protocol_methods(protocol_cls) - _protocol_methods(return_cls)
     assert not missing, f"{return_cls.__name__} missing Protocol methods from {protocol_name}: {sorted(missing)}"

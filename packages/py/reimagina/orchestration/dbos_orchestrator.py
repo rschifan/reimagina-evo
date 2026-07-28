@@ -14,7 +14,9 @@ than starting a second one.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
 from uuid import uuid4
 
@@ -33,6 +35,39 @@ from reimagina.orchestration.port import (
 from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
+
+_CLIENT = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def _client():
+    """One shared read-only DBOS client for this process.
+
+    ``DBOSClient`` is not a handle — constructing one builds a SQLAlchemy engine
+    with its own five-connection pool and opens a connection eagerly to check
+    the database. Building one per call leaked an engine and a connection every
+    time, on a path polled several times a second while a run is in flight.
+
+    Shared rather than context-managed because it is stateless for reads and
+    lives as long as the process does. Never ``destroy()``ed for the same
+    reason: there is no scope to tie it to.
+    """
+    global _CLIENT
+    if _CLIENT is None:
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                from dbos import DBOSClient
+
+                from reimagina.orchestration import dbos_app
+
+                # use_listen_notify: without it read_stream degrades to polling
+                # once a second, which is the latency the SSE endpoint exists to
+                # avoid.
+                _CLIENT = DBOSClient(
+                    system_database_url=dbos_app.dbos_dsn(), use_listen_notify=True
+                )
+    return _CLIENT
+
 
 # DBOS's workflow-status enum mapped onto ours, for the window before the run
 # envelope exists. Only ever consulted when jobs_runtime has nothing yet, so a
@@ -148,12 +183,7 @@ class DBOSOrchestrator:
         been touched — which is what lets the envelope be written by the
         workflow rather than by the submitter.
         """
-        from dbos import DBOSClient
-
-        from reimagina.orchestration import dbos_app
-
-        client = DBOSClient(system_database_url=dbos_app.dbos_dsn())
-        found = client.list_workflows(workflow_ids=[run_id])
+        found = _client().list_workflows(workflow_ids=[run_id])
         if not found:
             return None
         args = (found[0].input or {}).get("args", ())
@@ -211,9 +241,24 @@ class DBOSOrchestrator:
         units = runstore.list_units(conn, run_id)
         final = overall_status(u["status"] for u in units) if units else "cancelled"
         if not runstore.finalize_run(conn, run_id=run_id, status=final):
-            # No envelope yet — the workflow was cancelled before its first
-            # step. The engine's own CANCELLED status is the whole record, and
-            # get_run reports it.
+            # No envelope yet: the cancel landed inside the window between
+            # `submit_run` returning and the workflow's first step writing it.
+            #
+            # Doing nothing here is not safe. DBOS checks for cancellation when
+            # a step *begins*, so a step already past that check runs to
+            # completion — and `s_open_run` would then create the envelope as
+            # `running`, permanently, for a run that was cancelled. Writing the
+            # envelope ourselves, already terminal, closes that: `create_run` is
+            # ON CONFLICT DO NOTHING so the workflow's later attempt is a no-op,
+            # and `finalize_run` refuses to move a terminal run.
+            runstore.create_run(
+                conn,
+                run_id=run_id,
+                scenario_id=None,
+                aoi_id=None,
+                code_version="cancelled-before-start",
+                status=final,
+            )
             logger.info("cancelled run %s before its envelope was written", run_id)
         conn.commit()
         return True
@@ -227,30 +272,28 @@ class DBOSOrchestrator:
         need not host the workflow definitions — the API can follow a run a
         worker is executing.
 
-        ``read_stream`` is a *synchronous* generator that blocks on
-        LISTEN/NOTIFY, so it runs on a worker thread and hands events back
-        through a queue. Pulling it with ``asyncio.to_thread`` per item would
-        leave a thread blocked inside the generator when the subscriber
-        disconnects, still holding the connection this coroutine is about to
-        close.
+        ``read_stream`` is a *synchronous* generator that blocks until the
+        stream closes, so it runs on a thread and hands events back through a
+        queue.
+
+        The thread is **dedicated and daemonised, not borrowed from the default
+        executor**. A future returned by ``run_in_executor`` cannot be
+        cancelled once its callable is running, and this callable blocks for as
+        long as the run does — so an SSE client that disconnects one second into
+        a twenty-minute run used to leave a thread pinned for the remaining
+        nineteen, pushing into a queue nobody drained. The default executor caps
+        at ``min(32, cpu+4)`` and is shared with every ``asyncio.to_thread`` in
+        the process, so roughly thirty such disconnects would deadlock the API's
+        entire thread-offload path.
+
+        It still cannot be interrupted — that is a property of the underlying
+        generator, not of how it is scheduled. What changes is the blast radius:
+        a leaked thread here is one daemon thread that dies with the process
+        instead of a permanent hole in a shared pool.
         """
-        from dbos import DBOSClient
+        import threading as _threading
 
         from reimagina.orchestration import dbos_app
-
-        client = DBOSClient(system_database_url=dbos_app.dbos_dsn())
-        loop = asyncio.get_running_loop()
-        events: asyncio.Queue = asyncio.Queue()
-        _DONE = object()
-
-        def _pump() -> None:
-            try:
-                for payload in client.read_stream(run_id, dbos_app.PROGRESS_STREAM):
-                    loop.call_soon_threadsafe(events.put_nowait, payload)
-            except Exception as exc:  # noqa: BLE001 — surfaced as stream end
-                logger.warning("progress stream for %s ended: %s", run_id, exc)
-            finally:
-                loop.call_soon_threadsafe(events.put_nowait, _DONE)
 
         # A snapshot first, so a subscriber that arrives after the run finished
         # is told the outcome instead of waiting for events that will never come.
@@ -260,11 +303,34 @@ class DBOSOrchestrator:
             if snapshot.status in RUN_TERMINAL_STATES:
                 return
 
-        task = loop.run_in_executor(None, _pump)
+        loop = asyncio.get_running_loop()
+        events: asyncio.Queue = asyncio.Queue()
+        done = object()
+        stop = _threading.Event()
+
+        def _pump() -> None:
+            try:
+                for payload in _client().read_stream(run_id, dbos_app.PROGRESS_STREAM):
+                    if stop.is_set():
+                        return
+                    # The loop may already be closed if the process is shutting
+                    # down; there is no subscriber left to care either way.
+                    with contextlib.suppress(RuntimeError):
+                        loop.call_soon_threadsafe(events.put_nowait, payload)
+            except Exception as exc:  # noqa: BLE001 — surfaced as stream end
+                logger.warning("progress stream for %s ended: %s", run_id, exc)
+            finally:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(events.put_nowait, done)
+
+        thread = _threading.Thread(
+            target=_pump, name=f"dbos-progress-{run_id[:8]}", daemon=True
+        )
+        thread.start()
         try:
             while True:
                 payload = await events.get()
-                if payload is _DONE:
+                if payload is done:
                     return
                 yield RunEvent(
                     run_id=payload.get("run_id", run_id),
@@ -273,7 +339,10 @@ class DBOSOrchestrator:
                     detail=payload.get("detail"),
                 )
         finally:
-            task.cancel()
+            # Tells the pump to stop at its next event. It cannot be woken any
+            # sooner, so the thread outlives this generator until the stream
+            # produces something or closes.
+            stop.set()
 
     def _snapshot(self, run_id: str) -> RunEvent | None:
         """The run-level status, read without the caller's connection.

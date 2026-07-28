@@ -33,10 +33,9 @@ dependencies = [
     # each pixel a fractional-area weight per polygon. Replaces
     # rasterstats here because rasterstats' default centroid-in-polygon
     # policy silently drops manzanas smaller than the WorldPop pixel.
-    # rasterstats stays as a transitive dep through other libraries
-    # but is no longer called directly.
+    # rasterstats is not declared: nothing imports it, and it still resolves
+    # transitively for whatever does.
     "exactextract>=0.2",
-    "rasterstats>=0.19",
     # Raster tile serving (R4). titiler.core ships the FastAPI router
     # we mount under /cog in apps/api so the API + tile server share a
     # process. Staying on core (no titiler.mosaic / titiler.application)

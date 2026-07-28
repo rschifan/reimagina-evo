@@ -161,9 +161,18 @@ def seeded(migrated_db):
 
 def _teardown(conn, run_ids, source_id) -> None:
     with conn.cursor() as cur:
-        # No queue table to sweep: this ops-plane's undrained work lives in the
-        # `dbos` schema, which is dropped wholesale with the test database
-        # rather than per test.
+        # The engine's own state must go too. Runs accumulate in
+        # `dbos.workflow_status`, and a suite that cleaned only `jobs_runtime`
+        # left hundreds of finished and cancelled workflows behind — enough to
+        # make later tests in the same session behave differently from the same
+        # tests run alone. Children are `<parent-id>-<n>`, so the prefix match
+        # catches the unit workflows with their run.
+        for run_id in run_ids:
+            cur.execute(
+                "DELETE FROM dbos.workflow_status "
+                "WHERE workflow_uuid = %s OR workflow_uuid LIKE %s",
+                (run_id, f"{run_id}-%"),
+            )
         for run_id in run_ids:
             cur.execute(
                 "DELETE FROM jobs_runtime.job_unit WHERE run_id = %s", (run_id,)

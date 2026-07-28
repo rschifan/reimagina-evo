@@ -24,6 +24,7 @@ checkpointed — it is the body's control flow that must be reproducible.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import asdict
 from typing import Any
@@ -97,23 +98,35 @@ def config() -> DBOSConfig:
 
 
 _queue: Queue | None = None
+_LAUNCH_LOCK = threading.Lock()
 
 
 def launch() -> None:
-    """Register config, start DBOS, and bind the unit queue. Idempotent."""
+    """Register config, start DBOS, and bind the unit queue. Idempotent.
+
+    Locked, because the check and the assignment are not atomic and both the
+    API and the CLI call this from a request path. ``DBOS.launch()`` marks
+    itself launched *before* it finishes building the system database, so a
+    second thread arriving mid-launch would get "already launched", then fail
+    in ``register_queue`` with "System database accessed before DBOS was
+    launched" — turning one concurrent submit into a 500.
+    """
     global _queue
     if _queue is not None:
         return
-    DBOS(config=config())
-    DBOS.launch()
-    # After launch, per the deprecation of constructing Queue() directly.
-    # worker_concurrency, not concurrency: the global limit also counts PENDING
-    # workflows from earlier application versions, which a blue-green deploy
-    # deliberately leaves lying around.
-    _queue = DBOS.register_queue(
-        UNITS_QUEUE,
-        worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
-    )
+    with _LAUNCH_LOCK:
+        if _queue is not None:
+            return
+        DBOS(config=config())
+        DBOS.launch()
+        # After launch, per the deprecation of constructing Queue() directly.
+        # worker_concurrency, not concurrency: the global limit also counts
+        # PENDING workflows from earlier application versions, which a
+        # blue-green deploy deliberately leaves lying around.
+        _queue = DBOS.register_queue(
+            UNITS_QUEUE,
+            worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
+        )
 
 
 def units_queue() -> Queue:
@@ -189,6 +202,32 @@ def s_set_status(
         return runstore.set_unit_status(
             conn, run_id=run_id, indicator_slug=slug, status=status, detail=detail
         )
+
+
+@DBOS.step()
+def s_settle_unit(run_id: str, slug: str, outcome: str) -> str:
+    """Force a unit terminal and return the status the database actually holds.
+
+    Two jobs, both needed.
+
+    It reconciles. Only the child writes a unit's status, so a child whose
+    process died — and whose recovery attempts ran out — leaves ``job_unit``
+    stuck at ``running`` forever, while the parent sees the failure and closes
+    the run. ``GET /jobs/{id}`` would then report a terminal run containing a
+    running unit, contradicting the progress stream, with nothing to fix it.
+
+    And it makes the outcome checkpointed. The parent branches on the return
+    value, not on ``get_result``, so a replay reads a recorded status rather
+    than re-querying a child whose live status may since have moved.
+    """
+    with _pg() as conn:
+        runstore.set_unit_status(
+            conn, run_id=run_id, indicator_slug=slug, status=outcome
+        )
+        rows = {u["indicator"]: u["status"] for u in runstore.list_units(conn, run_id)}
+    # The store refuses to move a unit out of a terminal state, so what it holds
+    # wins over what we asked for — a cancel that landed first must survive.
+    return rows.get(slug, outcome)
 
 
 @DBOS.step()
@@ -282,9 +321,20 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         for slug, handle in handles:
             try:
                 handle.get_result()
-                statuses[slug] = "succeeded"
+                outcome = "succeeded"
             except Exception:  # noqa: BLE001 — fault isolation is the point
-                statuses[slug] = "failed"
+                outcome = "failed"
+            # Settle through a step, and branch on what the step returns.
+            #
+            # `get_result` looks checkpointed but is not: DBOS records it and
+            # never reads it back, so a replay re-queries the child's *live*
+            # status. If a child were resumed to SUCCESS after the parent had
+            # already skipped its dependents, the replayed body would take the
+            # dispatch branch instead of the skip branch and the step positions
+            # would diverge — DBOSUnexpectedStepError, run unrecoverable.
+            # A step's output is genuinely checkpointed, so branching on that
+            # keeps the body reproducible.
+            statuses[slug] = s_settle_unit(run_id, slug, outcome)
             _emit(run_id, slug, statuses[slug])
 
     final = overall_status(statuses.values())

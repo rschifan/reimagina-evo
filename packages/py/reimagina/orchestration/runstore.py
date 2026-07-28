@@ -61,22 +61,6 @@ def create_run(
     return True
 
 
-def run_params(conn: Any, run_id: str) -> dict[str, Any] | None:
-    """Return the run-level params the async tasks need to dispatch units."""
-    if not _is_postgres(conn):
-        return None
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT scenario_id::text, aoi_id, code_version "
-            "FROM jobs_runtime.orchestration_run WHERE id = %s",
-            (run_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    return {"scenario_id": row[0], "aoi_id": row[1], "code_version": row[2]}
-
-
 def set_unit_status(
     conn: Any,
     *,

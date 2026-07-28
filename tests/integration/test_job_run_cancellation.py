@@ -125,7 +125,7 @@ def test_cancel_run_backends_stops_a_live_statement(migrated_db):
             with worker.cursor() as cur:
                 started.set()
                 cur.execute("SELECT pg_sleep(30)")
-        except BaseException as exc:  # noqa: BLE001 — the cancel is the assertion
+        except BaseException as exc:
             error.append(exc)
 
     try:
