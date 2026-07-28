@@ -558,6 +558,7 @@ class JobRunRepository(Protocol):
         code_version: str,
         scenario_id: str | None = None,
         status: str = "queued",
+        run_id: str | None = None,
     ) -> str: ...
 
     def complete_job(
@@ -569,6 +570,15 @@ class JobRunRepository(Protocol):
     ) -> None: ...
 
     def get_job(self, job_run_id: str) -> dict[str, Any] | None: ...
+
+    def cancel_run_backends(self, run_id: str) -> int:
+        """Cancel the in-flight query of every live backend for ``run_id``.
+
+        The ops-plane's own cancel only stops *scheduling*; interrupting a
+        statement already executing needs the database. Returns the number of
+        backends signalled.
+        """
+        ...
 
 
 class IndicatorCatalogRepository(Protocol):

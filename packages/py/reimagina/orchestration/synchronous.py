@@ -74,7 +74,9 @@ class SynchronousOrchestrator:
             return noop_handle(run_id)
 
         self._store.create_run(conn, run_id=run_id, **plan.params)
-        report = run_dirty_set(conn, plan.units, self._registry, runners, **plan.params)
+        report = run_dirty_set(
+            conn, plan.units, self._registry, runners, run_id=run_id, **plan.params
+        )
 
         by_indicator = report.by_indicator()
         units = [
