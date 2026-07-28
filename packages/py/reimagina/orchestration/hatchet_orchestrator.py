@@ -1,16 +1,31 @@
 """The Orchestrator port over Hatchet.
 
-This is where the track's central trade becomes concrete. The engine owns run
-state, so ``get_run`` does not read a table we wrote — it reads the engine's and
-translates. Everything the engine's vocabulary cannot say is lost here, and the
-losses are listed in ``_RUN_STATUS_FOR`` and ``_UNIT_STATUS_FOR`` rather than
-hidden in the mapping code.
+The engine owns run state, so ``get_run`` reads no table of ours. What it reads
+is **the run's output, not its status** — and that distinction is the whole
+correction to the first cut of this module.
+
+The first version mapped Hatchet's status enum onto our vocabulary and
+documented, at length, what the enum could not say: no ``partial``, no
+``skipped``. Both statements are true of the enum and both were the wrong thing
+to build on. ``on_failure_task`` runs precisely when some units succeeded and
+one did not, ``ctx.was_skipped`` separates "not dirty" from "computed", and the
+finalizer's return value is what ``runs.get_result()`` serves — even for a run
+whose status is FAILED. Measured in spike B8.
+
+So the vocabulary survives. What actually differs from the library track is
+**where it lives**:
+
+    Track A  our table   — joinable, indexable, aggregable with SQL
+    Track B  run output  — one run at a time, through the engine
+
+"How many scenarios partially failed this week" is a ``GROUP BY`` on one track
+and N+1 engine round-trips on the other. That is the comparison row, and it is a
+sharper one than "the engine is lossy" because it survives contact with the
+evidence.
 
 **The run id is Hatchet's workflow run id.** There is no ``orchestration_run``
 table on this branch to hold a mapping, and inventing one would be re-adopting
-the state model this track exists to give away. The workflow learns its own id
-from ``ctx.workflow_run_id`` at execution time, which is why ``RunInput.run_id``
-is not passed in by the submitter.
+the state model this track exists to give away.
 """
 
 from __future__ import annotations
@@ -18,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterable, Sequence
+from datetime import datetime, timedelta, timezone
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.plan import noop_handle, plan_run
@@ -32,49 +48,30 @@ from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
 
-# ── What the engine's vocabulary costs us ───────────────────────────────────
-#
-# Measured in spike B7, not inferred. Hatchet's enum is
-# QUEUED | RUNNING | COMPLETED | CANCELLED | FAILED — there is no `partial` and
-# no `skipped`, so two distinctions the library track keeps are gone:
-#
-#   * a run where some units succeeded and one failed reports FAILED, with no
-#     way to say the rest worked. Callers cannot tell "retry everything" from
-#     "retry one unit".
-#   * a unit skipped because it was not dirty reports COMPLETED — identical to
-#     one that actually computed. Only `ctx.was_skipped` or the engine's
-#     internal `initial_state` column can tell them apart, and neither is
-#     visible through the REST status this maps from.
-#
-# Both are the accepted cost of letting the engine own run state. They are
-# stated here rather than smoothed over, because a mapping that quietly
-# invented `partial` would be reporting something the engine does not know.
-
+# Used only until the finalizer has written a verdict — i.e. while the run is
+# still going. Once it is terminal the verdict supersedes all of this.
 _RUN_STATUS_FOR = {
     "QUEUED": "queued",
     "RUNNING": "running",
     "COMPLETED": "succeeded",
     "CANCELLED": "cancelled",
-    # ⚠ Not `partial`. A run with one failed unit and three succeeded ones
-    # arrives here as FAILED, and nothing in the engine's answer distinguishes
-    # it from a run where everything failed.
     "FAILED": "failed",
 }
 
 _UNIT_STATUS_FOR = {
     "QUEUED": "queued",
     "RUNNING": "running",
-    # ⚠ Covers both "computed successfully" and "skipped because not dirty".
+    # ⚠ In-flight only. COMPLETED covers both "computed" and "skipped because
+    # not dirty"; the finalizer's `ctx.was_skipped` is what tells them apart,
+    # and it has not run yet at this point.
     "COMPLETED": "succeeded",
-    # A dependent whose input failed lands here. The library track calls this
-    # `skipped`, which says *why*; CANCELLED does not.
     "CANCELLED": "cancelled",
     "FAILED": "failed",
 }
 
 
 class HatchetOrchestrator:
-    """Scheduling and run state both belong to the engine."""
+    """Scheduling, run state and the verdict all belong to the engine."""
 
     def __init__(
         self, *, registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS
@@ -112,10 +109,6 @@ class HatchetOrchestrator:
 
             return noop_handle(str(uuid4()))
 
-        # The dirty set is derived here, not inside `plan`. Same reasoning as
-        # the library track: the catalog can change between submit and
-        # execution, and a graph that re-derived its own work would disagree
-        # with the one that was scheduled.
         payload = hatchet_app.RunInput(
             run_id="",  # filled from ctx.workflow_run_id; see the module docstring
             dirty=[u.indicator for u in plan.units],
@@ -123,14 +116,36 @@ class HatchetOrchestrator:
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
+            # `scenario_id` is nullable, and a None key would collapse every
+            # baseline run into one concurrency bucket where they would cancel
+            # each other. Fall back to the AOI, then to a constant.
+            concurrency_key=scenario_id or aoi_id or "baseline",
         )
-        ref = hatchet_app.run_workflow.run_no_wait(payload)
+        ref = hatchet_app.run_workflow.run_no_wait(
+            payload,
+            # This is what buys back the run-level querying we lost by dropping
+            # `orchestration_run`. It round-trips, it is readable inside the
+            # workflow via `ctx.additional_metadata`, and it is a filter in both
+            # `runs.list()` and the dashboard's search box (verified, B8).
+            #
+            # It is not a substitute for the table — you still cannot GROUP BY —
+            # but "show me every run for this scenario" stops needing one.
+            additional_metadata={
+                k: v
+                for k, v in {
+                    "scenario_id": scenario_id,
+                    "aoi_id": aoi_id,
+                    "code_version": code_version,
+                }.items()
+                if v is not None
+            },
+        )
         return RunHandle(run_id=ref.workflow_run_id, status=None)
 
     # ── Read ────────────────────────────────────────────────────────────────
 
     def get_run(self, conn: object, run_id: str) -> RunStatus | None:
-        """Translate the engine's answer. Nothing of ours is read.
+        """Prefer the finalizer's verdict; fall back to status while in flight.
 
         `conn` is unused, and that is the point: this branch has no run tables.
         The signature keeps it because the port must stay implementable by a
@@ -149,18 +164,37 @@ class HatchetOrchestrator:
         run = getattr(details, "run", details)
         engine_status = _name(getattr(run, "status", None))
 
+        verdict = _verdict_of(run)
+        if verdict is not None:
+            return RunStatus(
+                run_id=run_id,
+                status=verdict["overall"],
+                units=tuple(
+                    sorted(
+                        (
+                            UnitStatusView(slug, u.get("status", "queued"), u.get("detail"))
+                            for slug, u in verdict.get("units", {}).items()
+                        ),
+                        key=lambda u: u.indicator,
+                    )
+                ),
+            )
+
+        # Still running: no verdict yet, so translate what the engine has.
         units: list[UnitStatusView] = []
         for task in getattr(details, "tasks", None) or []:
             slug = getattr(task, "display_name", None) or getattr(task, "step_id", "")
             slug = slug.rsplit(":", 1)[-1]  # "workflow:task" -> "task"
-            if slug in ("plan", ""):
-                continue  # scaffolding, not an indicator
+            # ⚠ The engine suffixes a timestamp to display_name
+            # ("compactness-1785250189293"), and the finalizer tasks are not
+            # indicators. Both must go or callers see phantom units.
+            slug = _strip_suffix(slug)
+            if slug in _SCAFFOLDING:
+                continue
             units.append(
                 UnitStatusView(
                     slug,
-                    _UNIT_STATUS_FOR.get(
-                        _name(getattr(task, "status", None)), "queued"
-                    ),
+                    _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued"),
                     getattr(task, "error_message", None),
                 )
             )
@@ -196,42 +230,129 @@ class HatchetOrchestrator:
         backend_for_connection(conn).job_run_repo().cancel_run_backends(run_id)
         return True
 
+    def cancel_scenario(
+        self, conn: object, scenario_id: str, *, lookback: timedelta = timedelta(days=7)
+    ) -> list[str]:
+        """Cancel every in-flight run for a scenario, by meaning rather than id.
+
+        Not part of the port — Track A has no equivalent to offer, so putting it
+        in the Protocol would force a hand-rolled implementation there purely to
+        satisfy the shape. It is here because it is the operation an operator
+        actually wants ("stop everything for this scenario"), and it is the
+        concrete evidence for a comparison row: selecting work by *metadata*
+        rather than by id is an engine capability, not something we wrote.
+
+        Still two halves, because B4 has not stopped being true — the engine
+        cancel is one call, the statement kill is per-run. `lookback` exists
+        because `RunFilter.since` is required; the engine's own default
+        retention is 720 h, so a week is generous for anything still running.
+        """
+        from hatchet_sdk import BulkCancelReplayOpts, RunFilter, V1TaskStatus
+
+        from reimagina.orchestration import hatchet_app
+
+        client = hatchet_app.hatchet.runs
+        since = datetime.now(timezone.utc) - lookback
+        live = [V1TaskStatus.RUNNING, V1TaskStatus.QUEUED]
+        meta = {"scenario_id": scenario_id}
+
+        listed = client.list(
+            since=since, statuses=live, additional_metadata=meta, limit=500
+        )
+        ids = [
+            rid
+            for rid in (
+                getattr(getattr(row, "metadata", None), "id", None)
+                for row in (getattr(listed, "rows", None) or [])
+            )
+            if rid
+        ]
+
+        client.bulk_cancel(
+            BulkCancelReplayOpts(
+                filters=RunFilter(
+                    since=since, statuses=live, additional_metadata=meta
+                )
+            )
+        )
+        repo = backend_for_connection(conn).job_run_repo()
+        for run_id in ids:
+            repo.cancel_run_backends(run_id)
+        return ids
+
     # ── Subscribe ───────────────────────────────────────────────────────────
 
     async def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]:
         """Follow the run, ending on a terminal status.
 
-        ⚠ Polls rather than streaming. Hatchet has `subscribe_to_stream`, but it
-        carries only whatever a task chose to `put_stream` — payloads with no
-        task identity, on a call that swallows its own exceptions. It cannot
-        answer "which indicator, what status", which is exactly what a
-        `RunEvent` is. Reconstructing that would mean every task publishing its
-        own identity, i.e. rebuilding the status vocabulary this track gave
-        away.
+        Push-driven, with one deliberate compromise. Hatchet's gRPC run-event
+        listener delivers a `StepRunEvent` the moment a task starts, completes,
+        fails or is cancelled — no polling interval, no wasted round-trips. But
+        `StepRunEvent` carries only `(type, payload)`:
+        `run_event_listener.py:66-68`. There is no task identity on it, so it
+        cannot answer "which indicator", which is exactly what a `RunEvent` is.
 
-        So the honest implementation is a poll, and the cost is real: the
-        library track pushes ordered, offset-resumable events from the workflow
-        itself. That difference belongs in the comparison.
+        So the listener is the *wakeup* and `get_run` is the *answer*. That is
+        strictly better than the fixed 1 s poll it replaces — an idle run costs
+        nothing and a status change is reported immediately — while being honest
+        that the engine's event feed alone is not sufficient.
+
+        ⚠ The library track needs neither half: `DBOS.write_stream` is written
+        by the workflow body, so it carries identity, ordering and a resumable
+        offset. Reconstructing that here would mean every task publishing its
+        own identity, i.e. rebuilding the vocabulary this track delegates.
         """
+        from reimagina.orchestration import hatchet_app
+
         seen: dict[str, str] = {}
-        while True:
+
+        async def emit() -> AsyncIterator[RunEvent]:
+            """Diff the engine's current answer against what we already sent."""
             status = await asyncio.to_thread(self.get_run, None, run_id)
             if status is None:
                 yield RunEvent(run_id=run_id, indicator=None, status="unknown")
                 return
-
             for unit in status.units:
                 if seen.get(unit.indicator) != unit.status:
                     seen[unit.indicator] = unit.status
                     yield RunEvent(run_id, unit.indicator, unit.status, unit.detail)
-
             if status.status in RUN_TERMINAL_STATES:
                 yield RunEvent(run_id, None, status.status)
+
+        async for event in emit():  # whatever already happened before we attached
+            yield event
+            if event.indicator is None:
                 return
-            await asyncio.sleep(_POLL_SECONDS)
+
+        listener = hatchet_app.hatchet.listener.stream(run_id)
+        async for _wakeup in listener:
+            async for event in emit():
+                yield event
+                if event.indicator is None:
+                    listener.stop_signal = True
+                    return
 
 
-_POLL_SECONDS = 1.0
+_SCAFFOLDING = frozenset({"plan", "", "summarise_success", "summarise_failure"})
+
+
+def _strip_suffix(name: str) -> str:
+    """`compactness-1785250189293` -> `compactness`.
+
+    The engine appends a millisecond timestamp to task display names. Only strip
+    a trailing all-digit segment, so an indicator slug that legitimately ends in
+    a hyphenated word survives.
+    """
+    head, _, tail = name.rpartition("-")
+    return head if head and tail.isdigit() else name
+
+
+def _verdict_of(run: object) -> dict | None:
+    """The finalizer's output, if it has run and looks like a verdict."""
+    output = getattr(run, "output", None)
+    if isinstance(output, dict) and "overall" in output and "units" in output:
+        return output
+    return None
 
 
 def _name(value: object) -> str:
