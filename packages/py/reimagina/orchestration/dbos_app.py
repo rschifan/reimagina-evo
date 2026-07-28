@@ -23,6 +23,7 @@ checkpointed — it is the body's control flow that must be reproducible.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
@@ -103,6 +104,31 @@ def _executor_id() -> str:
     return f"{os.uname().nodename}:{role}"
 
 
+def _assert_domain_database(dsn: str) -> None:
+    """Refuse to launch against a database that is not ours.
+
+    DBOS prefers making things work over failing: pointed at a database that
+    does not exist it **creates one** and installs its schema, so a typo in
+    ``DATABASE_URL_DIRECT`` produces a perfectly healthy-looking process whose
+    checkpoints live somewhere nobody knows about. (Given no URL at all it falls
+    back to a local SQLite file, which ``dbos_dsn`` already refuses.)
+
+    Checking for a domain table catches all of it at startup — wrong DSN,
+    unmigrated database, or the right host and the wrong environment — instead
+    of at the first submit, when a run is already in flight.
+    """
+    with contextlib.closing(psycopg2.connect(dsn)) as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('jobs_runtime.job_run')")
+        if cur.fetchone()[0] is None:
+            raise RuntimeError(
+                f"{dsn.rsplit('@', 1)[-1]} is not a migrated reimagina database "
+                "(jobs_runtime.job_run is missing). DBOS creates a database "
+                "rather than failing when one is absent, so a typo here would "
+                "otherwise start cleanly and write checkpoints nowhere useful. "
+                "Check DATABASE_URL_DIRECT, and run `make migrate`."
+            )
+
+
 def config() -> DBOSConfig:
     cfg: DBOSConfig = {
         "name": "reimagina",
@@ -140,6 +166,7 @@ def launch() -> None:
     with _LAUNCH_LOCK:
         if _queue is not None:
             return
+        _assert_domain_database(dbos_dsn())
         cfg = config()
         if not os.environ.get("REIMAGINA_EXECUTOR_ID"):
             logger.warning(
