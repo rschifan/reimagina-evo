@@ -23,6 +23,7 @@ checkpointed — it is the body's control flow that must be reproducible.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Sequence
@@ -34,9 +35,15 @@ from dbos import DBOS, DBOSConfig, Queue
 
 from reimagina.jobs._lifecycle import current_run
 from reimagina.orchestration import runstore
-from reimagina.orchestration.port import RunEvent, overall_status
+from reimagina.orchestration.port import (
+    RUN_TERMINAL_STATES,
+    RunEvent,
+    overall_status,
+)
 from reimagina.orchestration.runners import default_runners
 from reimagina.orchestration.wave import plan_wave
+
+logger = logging.getLogger(__name__)
 
 PROGRESS_STREAM = "progress"
 UNITS_QUEUE = "units"
@@ -68,16 +75,31 @@ def dbos_dsn() -> str:
 
 
 def _executor_id() -> str:
-    """Identify this process. DBOS defaults every process to ``local``.
+    """Identify this process. It must be **stable across restarts and unique
+    between concurrent processes**, and getting either wrong is silent.
 
-    Recovery is scoped by executor id, so leaving the default makes every
-    process claim to be the same one — which turns "recover what this process
-    was running" into "recover what anything was running".
+    Recovery is scoped by executor id: at launch a process reclaims the
+    workflows recorded against its own id and no others.
+
+    - Not stable → a restarted process has a new identity and reclaims
+      *nothing*. Its predecessor's in-flight runs are orphaned with no error,
+      and durable execution quietly stops being durable. A pid-derived id does
+      exactly this, which is what this used to be.
+    - Not unique → a starting process reclaims work a live peer is still
+      running. On dbos 2.28.0 recovery is not idempotent, so that is a double
+      execution — worse than the failure it was trying to repair.
+
+    Nothing derivable satisfies both for every topology, so the default assumes
+    the common one — at most one process per role per host — and the role keeps
+    an API and a worker on the same host distinct. Beyond that, set
+    ``REIMAGINA_EXECUTOR_ID`` per replica; a StatefulSet pod name or a systemd
+    instance name is the right shape.
     """
-    return (
-        os.environ.get("REIMAGINA_EXECUTOR_ID")
-        or f"{os.uname().nodename}-{os.getpid()}"
-    )
+    explicit = os.environ.get("REIMAGINA_EXECUTOR_ID")
+    if explicit:
+        return explicit
+    role = os.environ.get("REIMAGINA_EXECUTOR_ROLE", "app")
+    return f"{os.uname().nodename}:{role}"
 
 
 def config() -> DBOSConfig:
@@ -117,7 +139,17 @@ def launch() -> None:
     with _LAUNCH_LOCK:
         if _queue is not None:
             return
-        DBOS(config=config())
+        cfg = config()
+        if not os.environ.get("REIMAGINA_EXECUTOR_ID"):
+            logger.warning(
+                "REIMAGINA_EXECUTOR_ID is unset; using %r. Crash recovery only "
+                "reclaims work recorded against this exact id, so it must be "
+                "stable across restarts and unique between concurrent "
+                "processes. Set it per replica when running more than one "
+                "process per role on a host.",
+                cfg["executor_id"],
+            )
+        DBOS(config=cfg)
         DBOS.launch()
         # After launch, per the deprecation of constructing Queue() directly.
         # worker_concurrency, not concurrency: the global limit also counts
@@ -247,18 +279,52 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     ``current_run`` is what lets a cancel find this work: the runner opens its
     own job_run row, and the ambient run id plus ``pg_backend_pid()`` are how
     ``cancel_run`` locates the backend to signal (migration r031).
+
+    **One transaction, committed at the end.** The write path is
+    stale-then-insert: it flips the previous values to ``status='stale'`` and
+    then inserts replacements. On an autocommit connection those are two
+    transactions, so a ``pg_cancel_backend`` landing between them left those
+    features with *zero* current rows — and because the workflow is cancelled,
+    recovery never re-runs the step to repair it. ``serving_geo`` exposes only
+    ``current``, so that was a permanent hole in served values. In one
+    transaction, a cancel mid-write rolls the flip back with it.
+
+    **Cancellation is re-checked here.** ``cancel_run`` cannot signal a unit
+    that has not yet opened its ``job_run`` row — no row, no backend pid — and
+    DBOS's own check already fired when this step began. Without this the unit
+    would run its full compute and commit results for a run already reported
+    terminal. A narrowing, not a closing: a cancel arriving after this check
+    still has only ``pg_cancel_backend``, which is what the row exists for.
     """
     runner = default_runners().get(slug)
     if runner is None:
         raise LookupError(f"no runner registered for {slug!r}")
-    with _pg() as conn, current_run(run_id):
-        runner(
-            conn,
-            features=frozenset(features),
-            scenario_id=params.get("scenario_id"),
-            code_version=params.get("code_version", "dev"),
-            aoi_id=params.get("aoi_id"),
-        )
+
+    conn = psycopg2.connect(dbos_dsn())  # NOT autocommit — see above
+    try:
+        row = runstore.get_run(conn, run_id)
+        if row is not None and row["status"] in RUN_TERMINAL_STATES:
+            logger.info(
+                "skipping %s for run %s: the run is already %s",
+                slug,
+                run_id,
+                row["status"],
+            )
+            return
+        with current_run(run_id):
+            runner(
+                conn,
+                features=frozenset(features),
+                scenario_id=params.get("scenario_id"),
+                code_version=params.get("code_version", "dev"),
+                aoi_id=params.get("aoi_id"),
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ── Workflows ───────────────────────────────────────────────────────────────

@@ -30,9 +30,14 @@ def run_dbos_worker() -> None:
     by executor id and DBOS defaults every process to ``local``, so sharing it
     would make each process claim the others' in-flight work.
     """
+    import os
     import threading
 
     from reimagina.orchestration import dbos_app
 
+    # Distinguishes this process from the API on the same host, so each
+    # reclaims only its own interrupted work. Explicit REIMAGINA_EXECUTOR_ID
+    # still wins.
+    os.environ.setdefault("REIMAGINA_EXECUTOR_ROLE", "worker")
     dbos_app.launch()
     threading.Event().wait()  # nothing to poll; the library owns the loops
