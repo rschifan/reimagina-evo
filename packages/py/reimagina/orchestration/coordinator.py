@@ -73,7 +73,20 @@ class RunReport:
 
     @property
     def status(self) -> str:
-        """Overall run status — one rule, shared with the async distributor."""
+        """Overall run status — one rule, shared with the async distributor.
+
+        No outcomes means the dirty-set was empty, which is ``noop``, not a
+        vacuous success: nothing was invalidated, so no run happened. The async
+        orchestrators already answered that way, and reporting ``succeeded``
+        here made the same edit look different through ``--sync``.
+
+        ``overall_status`` itself is unchanged — it rolls up *unit* statuses and
+        feeds ``orchestration_run.status``, whose CHECK has no ``noop``. A
+        persisted run always has at least one unit, so it never sees the empty
+        case.
+        """
+        if not self.outcomes:
+            return "noop"
         return overall_status(o.status.value for o in self.outcomes)
 
     def by_indicator(self) -> dict[str, UnitOutcome]:

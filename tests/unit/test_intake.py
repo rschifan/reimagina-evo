@@ -100,8 +100,13 @@ def test_shipped_composite_skips_when_an_input_fails():
     assert report.status == "partial"  # compactness still succeeded
 
 
-def test_evaluate_scenario_nothing_dirty_is_an_empty_success():
-    # An attribute no indicator reads → empty dirty-set → no-op success.
+def test_evaluate_scenario_nothing_dirty_is_a_noop():
+    """An attribute no indicator reads → empty dirty-set → ``noop``.
+
+    Not ``succeeded``: nothing was invalidated, so no run happened. This used to
+    report a vacuous success while the async orchestrators returned ``noop`` for
+    the identical edit, so the answer depended on which entry point you used.
+    """
     report = evaluate_scenario(
         None,
         changed_attributes={"owner_name"},
@@ -109,4 +114,18 @@ def test_evaluate_scenario_nothing_dirty_is_an_empty_success():
         runners={},
     )
     assert report.outcomes == ()
-    assert report.status == "succeeded"
+    assert report.status == "noop"
+
+
+def test_the_sync_and_async_paths_agree_on_a_noop():
+    """The whole point of the shared prelude: one answer, both entry points."""
+    from reimagina.orchestration.synchronous import SynchronousOrchestrator
+
+    kwargs = dict(changed_attributes={"owner_name"}, edited_features={"b1"})
+    sync_report = evaluate_scenario(None, runners={}, **kwargs)
+    handle = SynchronousOrchestrator(runners={}).submit_run(None, **kwargs)
+
+    assert sync_report.status == "noop"
+    assert handle.status is not None
+    assert handle.status.status == "noop"
+    assert handle.status.units == ()
