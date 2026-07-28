@@ -170,3 +170,27 @@ def test_overall_status_rollup():
     assert overall_status(["succeeded", "succeeded"]) == "succeeded"
     assert overall_status(["succeeded", "failed"]) == "partial"
     assert overall_status(["failed", "skipped"]) == "failed"
+
+
+def test_overall_status_cancelled():
+    """A cancelled run must not report as failed — but a real failure wins."""
+    assert overall_status(["cancelled"]) == "cancelled"
+    assert overall_status(["cancelled", "skipped"]) == "cancelled"
+    # a unit actually failed: reporting 'cancelled' would hide the error
+    assert overall_status(["cancelled", "failed"]) == "failed"
+    # any success still makes it partial, cancellation or not
+    assert overall_status(["succeeded", "cancelled"]) == "partial"
+
+
+def test_run_report_status_shares_the_rollup_rule():
+    """RunReport used to re-implement the rule; it must now delegate."""
+    from reimagina.orchestration.coordinator import RunReport, UnitOutcome, UnitStatus
+
+    report = RunReport(
+        (
+            UnitOutcome("a", UnitStatus.SUCCEEDED),
+            UnitOutcome("b", UnitStatus.FAILED),
+        )
+    )
+    assert report.status == "partial"
+    assert RunReport(()).status == "succeeded"
