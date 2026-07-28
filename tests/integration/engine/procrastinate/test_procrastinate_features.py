@@ -26,10 +26,12 @@ from procrastinate.exceptions import AlreadyEnqueued
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
+    SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
-    seed_catalog,
+    URBAN_FORM_BLOCK_COMPOSITE,
 )
+from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.embedded import _TERMINAL, _drain_once, run_embedded
 from reimagina.orchestration.procrastinate_orchestrator import ProcrastinateOrchestrator
 from reimagina.orchestration.queue_app import _SEARCH_PATH, app
@@ -37,6 +39,7 @@ from reimagina.orchestration.queue_app import _SEARCH_PATH, app
 from tests.integration._helpers import (
     insert_feature as _insert_feature,
     register_source as _register_source,
+    seed_catalog_committed,
     start_run as _start_run,
 )
 
@@ -45,10 +48,17 @@ _BLOCK_WKT = (
     "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
     "-99.140 19.433,-99.140 19.430))"
 )
+# What a geometry edit actually dirties, derived rather than listed: the unit
+# under test is the distributor (does it dispatch every dirty unit to
+# completion), not the impact engine, and a hardcoded pair silently went stale
+# the moment the composite shipped.
 _SHIPPED_SLUGS = {
-    URBAN_FORM_BLOCK_COMPACTNESS.slug,
-    URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+    u.indicator for u in compute_dirty_set({"geometry"}, (), SHIPPED_INDICATORS)
 }
+# Anchor: the set must span two waves, or these tests stop proving fan-out.
+assert URBAN_FORM_BLOCK_COMPOSITE.slug in _SHIPPED_SLUGS
+assert URBAN_FORM_BLOCK_COMPACTNESS.slug in _SHIPPED_SLUGS
+assert URBAN_FORM_BLOCK_BUILDING_DENSITY.slug in _SHIPPED_SLUGS
 
 
 def _committed_conn():
@@ -112,7 +122,7 @@ def seeded(migrated_db, monkeypatch):
     run_ids: list[str] = []
     source_id = None
     try:
-        seed_catalog(conn)
+        seed_catalog_committed(conn)
         source_id = _register_source(
             conn,
             name=f"proc_{uuid4().hex[:8]}",

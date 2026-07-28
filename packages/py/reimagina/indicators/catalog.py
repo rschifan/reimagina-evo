@@ -162,6 +162,15 @@ def seed_catalog(
 
     Returns a list of {slug, id} rows, in input order, so callers can map
     slugs back to catalog ids without a second round-trip.
+
+    ⚠ Must run inside a single transaction, not on an autocommit connection.
+    A composite's dependency rows are written one at a time and validated by a
+    DEFERRABLE INITIALLY DEFERRED constraint trigger that checks the weights sum
+    to 1.0 (``r016_indicator_layer``). In one transaction the trigger fires at
+    COMMIT with every row present; under autocommit each INSERT commits alone,
+    so the first row of a 0.5/0.5 composite fails the check by itself with
+    ``indicator_dependency: weights must sum to 1.0 (got 0.5)``. ``db.connect``
+    is not autocommit, so the production seed paths are fine.
     """
     backend = backend_for_connection(conn)
     repo = backend.indicator_catalog_repo()
