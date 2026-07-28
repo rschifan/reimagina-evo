@@ -141,7 +141,7 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     # Wrapping the await in a timeout would cancel it mid-flight, which leaves
     # an async generator unresumable — the keep-alive would break the stream it
     # exists to keep open.
-    pending = asyncio.ensure_future(events.__anext__())
+    pending = asyncio.ensure_future(anext(events))
     try:
         while time.monotonic() < deadline:
             done, _ = await asyncio.wait({pending}, timeout=_HEARTBEAT_SECONDS)
@@ -152,7 +152,7 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
                 event = pending.result()
             except StopAsyncIteration:
                 return
-            pending = asyncio.ensure_future(events.__anext__())
+            pending = asyncio.ensure_future(anext(events))
             yield frames.event_frame(event)
             if event.indicator is None and frames.is_run_terminal(event.status):
                 return
