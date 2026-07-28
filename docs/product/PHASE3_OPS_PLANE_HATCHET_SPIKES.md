@@ -216,6 +216,109 @@ implementation — which is itself the finding. The comparison row is not "one
 engine is slower to answer"; it is **one track requires a second process to
 exist before a run is observable at all**.
 
+## Spike B8 — is `partial` actually inexpressible?
+
+**The answer is no, and it invalidates part of what this document said.**
+
+Spikes B7 and the first port implementation both recorded the status enum's
+limits as an "accepted fidelity loss": no `partial`, no `skipped`, therefore the
+vocabulary is gone. The first half is true. The conclusion was wrong, because it
+only ever looked at the run's *status*.
+
+A run's **output** is arbitrary JSON, and `on_failure_task` is a shipped hook
+that runs when a workflow did not fully succeed — including when it half
+succeeded. Three tasks, one failing, one skipped as non-dirty, one succeeding,
+submitted with `additional_metadata`. The finalizer returned:
+
+```json
+{"overall": "partial",
+ "verdict": {"ok_unit":    {"skipped": false, "error": null},
+             "clean_unit": {"skipped": true,  "error": null},
+             "doomed":     {"skipped": false,
+                            "error": "RuntimeError: boom: this unit fails..."}},
+ "error_keys": ["doomed"],
+ "additional_metadata": {"scenario_id": "s-42", "aoi_id": "cuauhtemoc",
+                         "traceparent": "00-4629d223...-01"}}
+```
+
+Everything the enum could not say is in there:
+
+| claim | verdict |
+|---|---|
+| `on_failure_task` fires on *partial* failure | yes — and reports COMPLETED itself |
+| `ctx.was_skipped(task)` separates skipped from computed | yes — `clean_unit` true, `ok_unit` false |
+| `ctx.task_run_errors` is keyed by task name | yes — `["doomed"]`, with the traceback |
+| `runs.get_result()` works on a **FAILED** run | yes — serves the finalizer's output |
+| `additional_metadata` round-trips and is queryable | yes — `runs.list(additional_metadata=...)` matched |
+
+⚠ The run's status is still `FAILED`. Nothing here changes the enum; the
+verdict lives beside it. A dashboard, an alert or an operator reading status
+alone still sees a red run with no way to tell which units survived.
+
+### What the comparison row actually is
+
+Not "the engine is lossy". It is **where the vocabulary lives**:
+
+| | Track A | Track B |
+|---|---|---|
+| `partial` / `skipped` expressible | yes | yes, in the run output |
+| queryable across runs | `SELECT ... GROUP BY` | one run at a time, via the engine |
+| survives the engine being down | yes, it is our table | no |
+| costs a table to maintain | yes | no |
+
+"How many scenarios partially failed this week" is a `GROUP BY` on one track and
+N+1 round-trips on the other. `additional_metadata` narrows the gap — scenario
+and AOI are filters in `runs.list()` and in the dashboard's search box — but it
+is a lookup key, not an aggregate.
+
+**A bonus nobody asked for:** the engine injects `traceparent` into every run's
+metadata. OTel trace context is free here and absent on the library track.
+
+## Spike B9 — the DAG declaration is not deterministic
+
+Two `build_dag()` calls in one process, a second apart, serialise to **different
+bytes**. Two independent causes, both defaults:
+
+```
+identical: False
+timestamps embedded in proto: ['2026-07-28T14:51:55.281644+00:00', ...]
+or_group_id: "11ae4d08-..."  vs  "49153afa-..."
+```
+
+* `ParentCondition.__init__` defaults `readable_data_key` to
+  `parent.name + ":" + expression + ":" + datetime.now(UTC).isoformat()`
+  (`hatchet_sdk/conditions.py:118-128`) — a microsecond timestamp that reaches
+  the wire.
+* `BaseCondition.or_group_id` is `Field(default_factory=uuid4)`
+  (`conditions.py:41-44`) — a fresh random UUID per condition, per build.
+
+This matters here specifically because **the API and the worker both call
+`build_dag()` at import**. Left alone they describe the same workflow
+differently every time either process starts.
+
+Fixed by deriving both from the slug (`readable_data_key=f"dirty:{slug}"`,
+`or_group_id=uuid5(ns, ...)`). Verified: identical bytes across a second
+boundary.
+
+⚠ Not established: what the engine *does* with a changed definition under an
+existing name — whether it versions, overwrites or rejects. The fix is cheap and
+obviously more correct, so it was applied without settling that; if a
+measurement ever depends on version churn, spike it then.
+
+## Also measured while here
+
+* **A valid `HATCHET_CLIENT_TOKEN` is needed to import the module at all.**
+  `hatchet_app` constructs `Hatchet()` at module scope, so unit tests that touch
+  only the verdict-reading logic still need a credential. Track A's modules
+  import with no engine credential of any kind. This is a CI constraint, not
+  just an inconvenience.
+* **Unused capability, deliberately.** `rate_limits` (engine-enforced, global,
+  cross-worker) is the right answer to N workers saturating one Postgres, and
+  `slot_cost` weights a heavy unit against light ones. Neither is wired up
+  because neither has been measured, and the library track would need a
+  hand-rolled semaphore for the first. Worth a spike before the comparison
+  claims a footprint difference.
+
 ### Remaining on this branch
 
 1. Start a worker in the conformance fixture, then re-run; the three failures
