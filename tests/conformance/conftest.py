@@ -55,18 +55,44 @@ class Implementation:
     False means a run can be observed in flight — the only way to test a cancel
     that actually cancels something."""
 
+    settles: bool
+    """The run reaches a terminal state without a second process."""
+
+    skipped_unit_status: str
+    """What a unit that never ran because its input failed reports.
+
+    ``skipped`` where we own unit state — it says *why*. The engine calls it
+    ``cancelled``, which does not (spike B3)."""
+
     failed_run_status: str
     """What a run with one failed and one succeeded unit reports.
 
-    ``partial`` where we own run state. An engine that owns it natively may have
-    no such value; that branch declares whatever it does say here, and the
-    difference between the two tables is the finding, not a failure."""
+    ⚠ On this branch: **``failed``**, not ``partial``. Hatchet's status enum is
+    QUEUED | RUNNING | COMPLETED | CANCELLED | FAILED (measured, spike B7), so a
+    run where three units succeeded and one failed is indistinguishable from a
+    run where everything failed. The library track reports ``partial`` here.
+    That one-word difference between the two branches' tables is the headline
+    result of the whole comparison."""
 
 
 IMPLEMENTATIONS = [
-    Implementation(mode="sync", blocking=True, failed_run_status="partial"),
-    Implementation(mode="embedded", blocking=True, failed_run_status="partial"),
-    Implementation(mode="detach", blocking=False, failed_run_status="partial"),
+    Implementation(
+        mode="sync",
+        blocking=True,
+        settles=True,
+        skipped_unit_status="skipped",
+        failed_run_status="partial",
+    ),
+    # The branch's own ops-plane. Needs a running engine AND a worker — unlike
+    # the library track, nothing executes without one, which is why `settles` is
+    # False: this process cannot drive its own run.
+    Implementation(
+        mode="hatchet",
+        blocking=False,
+        settles=False,
+        skipped_unit_status="cancelled",
+        failed_run_status="failed",
+    ),
 ]
 
 
