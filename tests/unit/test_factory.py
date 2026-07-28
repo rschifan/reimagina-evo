@@ -42,16 +42,14 @@ def test_default_mode_is_used_when_nothing_is_specified(monkeypatch):
 
 
 def test_env_var_selects_the_mode(monkeypatch):
-    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "embedded")
-    assert type(get_orchestrator()) is type(get_orchestrator("embedded"))
+    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "hatchet")
+    assert type(get_orchestrator()) is type(get_orchestrator("hatchet"))
 
 
 def test_explicit_mode_beats_the_env_var(monkeypatch):
-    """A caller that names a mode means it — POST /jobs picks embedded vs detach
-    to honour its own 200-vs-202 contract, which deployment config must not
-    silently override."""
-    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "embedded")
-    assert type(get_orchestrator("detach")) is not type(get_orchestrator("embedded"))
+    """A caller that names a mode means it, whatever deployment config says."""
+    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "hatchet")
+    assert type(get_orchestrator("sync")) is not type(get_orchestrator("hatchet"))
 
 
 def test_a_memory_backed_mode_cannot_be_the_deployment_default(monkeypatch):
