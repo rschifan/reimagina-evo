@@ -149,4 +149,8 @@ def test_run_report_status_shares_the_rollup_rule():
         )
     )
     assert report.status == "partial"
-    assert RunReport(()).status == "succeeded"
+    # An empty report is the one case it does NOT delegate: no outcomes means
+    # the dirty-set was empty, which is 'noop'. `overall_status` still answers
+    # 'succeeded' there, because it rolls up units for a run that has some.
+    assert RunReport(()).status == "noop"
+    assert overall_status(()) == "succeeded"
