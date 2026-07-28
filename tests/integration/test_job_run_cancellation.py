@@ -232,3 +232,42 @@ def test_a_terminal_unit_cannot_be_resurrected(conn):
         detail="QueryCanceled",
     )
     assert _status() == "cancelled"
+
+
+def test_the_run_envelope_can_be_written_twice(conn):
+    """The step that opens a run must survive being re-run.
+
+    A durable-execution step records its output only once it completes, so a
+    step interrupted partway through starts again from the top on recovery. A
+    bare INSERT would then fail on the primary key — permanently — meaning a
+    crash during a run's own first step made that run unrecoverable. Which is
+    the exact failure durable execution exists to prevent.
+    """
+    from reimagina.orchestration import runstore
+
+    run_id = "77777777-7777-7777-7777-777777777777"
+    units = [{"indicator": "urban_form_block_compactness", "features": ["f1"]}]
+    params = {"scenario_id": None, "aoi_id": None, "code_version": "test"}
+
+    runstore.create_run(conn, run_id=run_id, **params)
+    runstore.record_units(
+        conn, run_id=run_id, units=[{**u, "status": "queued"} for u in units]
+    )
+
+    # The unit progresses, then the opening step re-runs after a crash.
+    runstore.set_unit_status(
+        conn,
+        run_id=run_id,
+        indicator_slug="urban_form_block_compactness",
+        status="succeeded",
+    )
+    runstore.create_run(conn, run_id=run_id, **params)
+    runstore.record_units(
+        conn, run_id=run_id, units=[{**u, "status": "queued"} for u in units]
+    )
+
+    rows = runstore.list_units(conn, run_id)
+    assert len(rows) == 1, "the re-run duplicated the unit"
+    assert (
+        rows[0]["status"] == "succeeded"
+    ), "the re-run reset a finished unit to queued — it would recompute"
