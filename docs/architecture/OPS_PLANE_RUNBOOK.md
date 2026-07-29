@@ -158,7 +158,6 @@ every branch precisely because of this — the answer lives outside both engines
 | `REIMAGINA_QUEUE_TIMEOUT_HOURS` | 6 | ⚠ Hatchet's default is **5 minutes**, and timed-out queued work reports FAILED — indistinguishable from broken compute |
 | `REIMAGINA_UNIT_RETRIES` | 2 | with backoff; `NonRetryableException` opts out deterministic failures |
 | `REIMAGINA_DEDUP_TTL_S` | 60 | idempotency window — a debounce, not a result cache |
-| `REIMAGINA_OUTBOX_CRON` | `* * * * *` | Hatchet cron which publishes committed scenario edits from the transactional outbox |
 
 ⚠ `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` defaults to **720h — runs
 older than 30 days are deleted.** On this track that is the run history, since
