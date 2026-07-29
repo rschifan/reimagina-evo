@@ -61,7 +61,7 @@ from pydantic import BaseModel
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
-from reimagina.orchestration.impact import compute_dirty_set
+from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.runners import default_runners
 
 # ⚠ Both Hatchet defaults are wrong for this workload, measured in spike B5.
@@ -137,21 +137,13 @@ class RunInput(BaseModel):
 
 
 def _topo_order(registry: Sequence[IndicatorSpec]) -> list[IndicatorSpec]:
-    """Parents before children — Hatchet needs the object to exist to reference it.
-
-    Reuses the impact engine's ordering rather than re-deriving one, so the
-    declaration order and the dirty-set order cannot drift. That ordering is
-    deterministic across processes (a `sorted()` in ``impact.py``), which matters
-    here: the API and the worker both build this graph, and two processes that
-    disagreed about it would be running different workflows under one name.
-    """
-    everything = {s.slug for s in registry}
-    ordered = compute_dirty_set({a for s in registry for a in s.reads}, (), registry)
+    """Parents before children for Hatchet's static task declaration."""
+    dependencies = {
+        spec.slug: {dependency for dependency, _weight in spec.depends_on}
+        for spec in registry
+    }
     by_slug = {s.slug: s for s in registry}
-    out = [by_slug[u.indicator] for u in ordered if u.indicator in everything]
-    # Anything no attribute seeds still needs a node.
-    out += [s for s in registry if s.slug not in {o.slug for o in out}]
-    return out
+    return [by_slug[slug] for slug in topological_order(dependencies)]
 
 
 # Any fixed UUID; it only namespaces the uuid5 derivation below.
@@ -192,10 +184,21 @@ def _skip_unless_dirty(plan: Any, slug: str) -> list[ParentCondition]:
     return [condition]
 
 
-def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
-    """Declare one task per indicator. This is the whole scheduler."""
+def build_dag(
+    registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
+    *,
+    name: str = "reimagina-run",
+):
+    """Declare one task per indicator. This is the whole scheduler.
+
+    ``name`` exists so a caller can declare a *second*, differently-shaped graph
+    without touching this one. Two different DAGs under one name is engine-side
+    behaviour we have not established (spike B9) — whether it versions,
+    overwrites or rejects — so anything that needs its own topology takes its own
+    name rather than finding out. The workload suite uses ``reimagina-bench-*``.
+    """
     workflow = hatchet.workflow(
-        name="reimagina-run",
+        name=name,
         input_validator=RunInput,
         # Set once, not threaded through every task() call in the loop below.
         task_defaults=TaskDefaults(
