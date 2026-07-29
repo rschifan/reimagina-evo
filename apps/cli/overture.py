@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.pipeline.overture import (
     MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_MEXICO_CITY,
@@ -83,7 +83,7 @@ def load_mexico_city_buildings(
     polygon — required when the bbox is wider than the actual AOI
     (true for every real city extract from a rectangular S3 query).
     """
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         return bootstrap_overture_buildings_subset(
             conn,
             raw_path=raw_path,
@@ -98,7 +98,7 @@ def load_mexico_city_buildings(
 
 def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
     """Inspect the serving layer after the Overture buildings load."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         return validate_overture_buildings_layer(conn)
 
 

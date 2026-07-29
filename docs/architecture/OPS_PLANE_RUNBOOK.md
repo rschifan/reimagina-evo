@@ -88,8 +88,8 @@ Run**, then paste a `RunInput`:
 ⚠ `dirty` is computed by the submitter, not by the workflow — trigger it by hand
 and you are asserting the dirty set yourself. Useful for testing one unit,
 wrong for anything real. Note also that `concurrency_key` collides with live
-runs: `max_runs=1` with `CANCEL_NEWEST` means a hand-triggered run sharing a key
-with an in-flight one **is cancelled**, not queued.
+runs: `max_runs=1` with `GROUP_ROUND_ROBIN` queues a hand-triggered run behind
+the in-flight writer for that scope.
 
 ### If the dashboard will not load
 
@@ -152,13 +152,13 @@ every branch precisely because of this — the answer lives outside both engines
 
 | variable | unset behaviour | why it matters |
 |---|---|---|
-| `HATCHET_CLIENT_TOKEN` | **import fails** | `hatchet_app` constructs `Hatchet()` at module scope, so even unit tests need it |
-| `DATABASE_URL_DIRECT` | unit runners fail | the engine's DSN is separate from the domain one |
+| `HATCHET_CLIENT_TOKEN` | client/worker startup fails | required to register workflows and call the engine; pure imports do not need it |
+| `DATABASE_URL_DIRECT` | submit/worker startup fails | planning and execution must resolve to the same migrated domain database |
 | `REIMAGINA_UNIT_TIMEOUT_MIN` | 120 | ⚠ Hatchet's own default is **60 seconds** — it would kill a healthy unit a minute in |
 | `REIMAGINA_QUEUE_TIMEOUT_HOURS` | 6 | ⚠ Hatchet's default is **5 minutes**, and timed-out queued work reports FAILED — indistinguishable from broken compute |
 | `REIMAGINA_UNIT_RETRIES` | 2 | with backoff; `NonRetryableException` opts out deterministic failures |
 | `REIMAGINA_DEDUP_TTL_S` | 60 | idempotency window — a debounce, not a result cache |
-| `REIMAGINA_RECOMPUTE_CRON` | no cron | set to e.g. `0 3 * * *` for a nightly baseline |
+| `REIMAGINA_OUTBOX_CRON` | `* * * * *` | Hatchet cron which publishes committed scenario edits from the transactional outbox |
 
 ⚠ `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` defaults to **720h — runs
 older than 30 days are deleted.** On this track that is the run history, since
@@ -169,7 +169,9 @@ bounded only by disk.
 
 Stated plainly so nobody discovers it at 3am:
 
-- **No load test**, never run multi-worker beyond a spike, never deployed.
+- **No unbounded baseline cron.** A whole-database recompute has no safe scope
+  contract. Submit bounded AOI/scenario work explicitly; add a dedicated
+  baseline selector before automating it.
 - **`rate_limits` and `slot_cost` are not wired up.** They are the engine-native
   answer to N workers saturating one Postgres, and unmeasured.
 - **`ctx.refresh_timeout` is not wired up**, so a wedged unit burns the full

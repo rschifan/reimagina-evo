@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+from contextlib import closing
 from dataclasses import asdict, is_dataclass
 
-from reimagina.db import connect
+from reimagina.db import connect, managed_connection
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.jobs.rollup import run_rollup
@@ -15,7 +16,7 @@ from reimagina.orchestration.runners import default_runners
 
 def seed_indicator_catalog(*, dsn: str) -> dict[str, object]:
     """Idempotently register every shipped indicator in indicator_catalog."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         seeded = seed_catalog(conn)
     return {"dsn": dsn, "seeded": seeded, "count": len(seeded)}
 
@@ -41,7 +42,7 @@ def compute_indicator(
         known = ", ".join(sorted(runners))
         raise ValueError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
 
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         # Empty feature set = AOI-scoped (or whole-grain) compute, which is what
         # the CLI has always done; the dirty-set path passes a real scope.
         result = runner(
@@ -65,7 +66,7 @@ def rollup_indicator(
     code_version: str = "dev",
 ) -> dict[str, object]:
     """Roll an indicator up from a source grain to a coarser target grain."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = run_rollup(
             conn,
             indicator_slug=slug,
@@ -94,7 +95,7 @@ def summarise_aoi_indicator(
     scenario_id: str | None = None,
 ) -> dict[str, object]:
     """Compute and upsert one aoi_indicator_summary row."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = summarise_aoi(
             conn,
             aoi_id=aoi_id,
@@ -147,15 +148,16 @@ def evaluate_scenario_cli(
     if mode == "detach":
         from reimagina.orchestration.factory import get_orchestrator
 
-        with connect(dsn) as conn:
-            handle = get_orchestrator().submit_run(
-                conn,
-                changed_attributes=changed_attributes,
-                edited_features=edited_features,
-                scenario_id=scenario_id,
-                aoi_id=aoi_id,
-                code_version=code_version,
-            )
+        with closing(connect(dsn)) as conn:
+            with conn:
+                handle = get_orchestrator().submit_run(
+                    conn,
+                    changed_attributes=changed_attributes,
+                    edited_features=edited_features,
+                    scenario_id=scenario_id,
+                    aoi_id=aoi_id,
+                    code_version=code_version,
+                )
         status = handle.status.status if handle.status else "queued"
         return {
             "dsn": dsn,
@@ -169,15 +171,16 @@ def evaluate_scenario_cli(
         # Not via the factory: this path returns the coordinator's per-unit
         # RunReport, which is a richer shape than the port's RunStatus and is
         # what the CLI has always printed.
-        with connect(dsn) as conn:
-            report = evaluate_scenario(
-                conn,
-                changed_attributes=changed_attributes,
-                edited_features=edited_features,
-                scenario_id=scenario_id,
-                aoi_id=aoi_id,
-                code_version=code_version,
-            )
+        with closing(connect(dsn)) as conn:
+            with conn:
+                report = evaluate_scenario(
+                    conn,
+                    changed_attributes=changed_attributes,
+                    edited_features=edited_features,
+                    scenario_id=scenario_id,
+                    aoi_id=aoi_id,
+                    code_version=code_version,
+                )
         return {
             "dsn": dsn,
             "mode": "sync",
@@ -197,38 +200,45 @@ def evaluate_scenario_cli(
     from reimagina.orchestration.port import RUN_TERMINAL_STATES
 
     orchestrator = get_orchestrator()
-    with connect(dsn) as conn:
-        handle = orchestrator.submit_run(
-            conn,
-            changed_attributes=changed_attributes,
-            edited_features=edited_features,
-            scenario_id=scenario_id,
-            aoi_id=aoi_id,
-            code_version=code_version,
-        )
-        if handle.status and handle.status.status == "noop":
-            return {"dsn": dsn, "run_id": None, "mode": "embedded", "status": "noop",
-                    "units": []}
-
-        # Poll rather than `subscribe_progress`: this is a synchronous CLI
-        # entry point, and spinning up an event loop to consume an async
-        # iterator we only want the *last* value of buys nothing.
-        deadline = time.monotonic() + _EMBEDDED_TIMEOUT_S
-        status = None
-        while time.monotonic() < deadline:
-            status = orchestrator.get_run(conn, handle.run_id)
-            if status and status.status in RUN_TERMINAL_STATES:
-                break
-            time.sleep(1.0)
-        else:
-            # ⚠ Almost always "no worker is running", not "the run is slow" —
-            # nothing executes on this branch without one, and a run with no
-            # worker sits QUEUED indefinitely rather than failing.
-            raise TimeoutError(
-                f"run {handle.run_id} did not finish within "
-                f"{_EMBEDDED_TIMEOUT_S}s. Is a worker running "
-                f"(`python -m apps.worker`)?"
+    with closing(connect(dsn)) as conn:
+        with conn:
+            handle = orchestrator.submit_run(
+                conn,
+                changed_attributes=changed_attributes,
+                edited_features=edited_features,
+                scenario_id=scenario_id,
+                aoi_id=aoi_id,
+                code_version=code_version,
             )
+    if handle.status and handle.status.status == "noop":
+        return {
+            "dsn": dsn,
+            "run_id": None,
+            "mode": "embedded",
+            "status": "noop",
+            "units": [],
+        }
+
+    # Poll rather than `subscribe_progress`: this is a synchronous CLI entry
+    # point, and spinning up an event loop to consume an async iterator we only
+    # want the *last* value of buys nothing. Hatchet owns status, so do not hold
+    # the planning connection open for the potentially long wait.
+    deadline = time.monotonic() + _EMBEDDED_TIMEOUT_S
+    status = None
+    while time.monotonic() < deadline:
+        status = orchestrator.get_run(None, handle.run_id)
+        if status and status.status in RUN_TERMINAL_STATES:
+            break
+        time.sleep(1.0)
+    else:
+        # ⚠ Almost always "no worker is running", not "the run is slow" —
+        # nothing executes on this branch without one, and a run with no worker
+        # sits QUEUED indefinitely rather than failing.
+        raise TimeoutError(
+            f"run {handle.run_id} did not finish within "
+            f"{_EMBEDDED_TIMEOUT_S}s. Is a worker running "
+            f"(`python -m apps.worker`)?"
+        )
 
     return {
         "dsn": dsn,

@@ -10,6 +10,7 @@ from shapely.geometry import Polygon, box
 from reimagina.data import aoi, catalog as cat
 from reimagina.storage import backend_for_connection
 
+from .geometry import bbox_around_feature, bbox_from_extent
 from .manifest import DATASET_TIERS
 
 
@@ -52,27 +53,6 @@ def _feature_extent(conn) -> tuple[float, float, float, float]:
             "No feature extent available. Load canonical features before seeding performance data."
         )
     return tuple(float(value) for value in row)
-
-
-def _bbox_from_extent(
-    extent: tuple[float, float, float, float],
-    *,
-    width_ratio: float,
-    height_ratio: float,
-) -> tuple[float, float, float, float]:
-    min_x, min_y, max_x, max_y = extent
-    width = max_x - min_x
-    height = max_y - min_y
-    center_x = min_x + width / 2
-    center_y = min_y + height / 2
-    half_width = max(width * width_ratio / 2, 0.0001)
-    half_height = max(height * height_ratio / 2, 0.0001)
-    return (
-        center_x - half_width,
-        center_y - half_height,
-        center_x + half_width,
-        center_y + half_height,
-    )
 
 
 def _bbox_wkt(bounds: tuple[float, float, float, float]) -> str:
@@ -155,17 +135,13 @@ def ensure_perf_aois(conn) -> dict[str, str]:
     extent = _feature_extent(conn)
     project_id = _ensure_perf_project(conn)
     geometries = {
-        "bbox_small": _bbox_wkt(
-            _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
-        ),
-        "bbox_dense": _bbox_wkt(
-            _bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
-        ),
+        "bbox_small": _bbox_wkt(bbox_around_feature(conn)),
+        "bbox_dense": _bbox_wkt(bbox_around_feature(conn)),
         "polygon_small": _bbox_wkt(
-            _bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)
+            bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)
         ),
         "polygon_dense": _notched_polygon_wkt(
-            _bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08)
+            bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08)
         ),
     }
 

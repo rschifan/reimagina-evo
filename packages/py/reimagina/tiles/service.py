@@ -11,7 +11,7 @@ from urllib.parse import quote, urlparse
 
 import psycopg2
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
 from reimagina.paths import REPO_ROOT
 
@@ -229,7 +229,7 @@ def export_pmtiles_snapshot(
         else output_path.resolve().as_uri()
     )
 
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         lineage = {
             "source_relation": layer.source_relation,
             **_latest_lineage_marker(conn),

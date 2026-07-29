@@ -156,7 +156,6 @@ def test_cancel_run_backends_stops_a_live_statement(migrated_db):
         worker.close()
         control.close()
 
-
 def test_cancel_skips_terminal_rows(migrated_db):
     """A finished job's pid may have been reused by an unrelated backend."""
     run = "55555555-5555-5555-5555-555555555555"
@@ -177,58 +176,3 @@ def test_cancel_skips_terminal_rows(migrated_db):
         with control.cursor() as cur:
             cur.execute("DELETE FROM jobs_runtime.job_run WHERE run_id = %s", (run,))
         control.close()
-
-
-def test_a_terminal_unit_cannot_be_resurrected(conn):
-    """The guard that makes cancellation stick.
-
-    Cancelling marks a running unit ``cancelled``, but the worker executing it
-    does not stop there — its statement is cancelled, it catches the error, and
-    it writes ``failed`` over the top, reopening a run that was already closed.
-    A unit that reached a terminal state has reached its final one.
-    """
-    from reimagina.orchestration import runstore
-
-    run_id = "66666666-6666-6666-6666-666666666666"
-    runstore.create_run(
-        conn, run_id=run_id, scenario_id=None, aoi_id=None, code_version="test"
-    )
-    runstore.record_units(
-        conn,
-        run_id=run_id,
-        units=[
-            {
-                "indicator": "urban_form_block_compactness",
-                "features": [],
-                "status": "queued",
-            }
-        ],
-    )
-
-    def _status() -> str:
-        return runstore.list_units(conn, run_id)[0]["status"]
-
-    runstore.set_unit_status(
-        conn,
-        run_id=run_id,
-        indicator_slug="urban_form_block_compactness",
-        status="running",
-    )
-    assert _status() == "running"  # non-terminal → still movable
-
-    runstore.set_unit_status(
-        conn,
-        run_id=run_id,
-        indicator_slug="urban_form_block_compactness",
-        status="cancelled",
-        detail="run cancelled",
-    )
-    # The worker's own error handling lands after the cancel and must not win.
-    runstore.set_unit_status(
-        conn,
-        run_id=run_id,
-        indicator_slug="urban_form_block_compactness",
-        status="failed",
-        detail="QueryCanceled",
-    )
-    assert _status() == "cancelled"

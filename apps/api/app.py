@@ -128,6 +128,9 @@ def create_app(
         psycopg2.InterfaceError, errors.database_unavailable_handler
     )
     app.add_exception_handler(psycopg2.Error, errors.database_error_handler)
+    from reimagina.orchestration.hatchet_orchestrator import HatchetUnavailable
+
+    app.add_exception_handler(HatchetUnavailable, errors.hatchet_unavailable_handler)
     app.add_exception_handler(Exception, errors.unhandled_error_handler)
 
     app.include_router(health.router)
