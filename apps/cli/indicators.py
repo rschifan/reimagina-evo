@@ -169,7 +169,14 @@ def evaluate_scenario_cli(
 
     from reimagina.orchestration.factory import get_orchestrator
 
-    orchestrator = get_orchestrator("dbos")
+    if mode == "embedded":
+        # Local convenience mode deliberately owns an executor. Production API
+        # processes stay client-only; this is an explicit caller choice.
+        from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
+
+        orchestrator = DBOSOrchestrator(execution_mode="dev")
+    else:
+        orchestrator = get_orchestrator("dbos")
     with connect(dsn) as conn:
         handle = orchestrator.submit_run(
             conn,

@@ -6,16 +6,17 @@ where the mistake is easy to repeat.
 
 ## What is running
 
-There is no engine to deploy. DBOS is a library, so the ops-plane is however
-many processes import it:
+There is no orchestration service to deploy. DBOS is a library backed by the
+application Postgres, but production separates submitters from executors:
 
 | process | required | why |
 |---|---|---|
 | API (`apps/api`) | yes | accepts submits, serves status and the SSE stream |
-| worker (`python -m apps.worker`) | **no** | scales throughput; a run submitted by the API is driven by the API if nothing else picks it up |
+| worker (`python -m apps.worker`) | **yes in production** | executes queued runs and units; scale this fleet for compute throughput |
 
-A worker is not required for correctness. If throughput is fine without one,
-not running one is a supported configuration — that is the point of a library.
+For local development, `REIMAGINA_DBOS_EXECUTION_MODE=dev` permits one-process
+execution. Do not use it for API deployments: it lets a web request process
+compete with PostGIS compute for CPU, memory, and database connections.
 
 Checkpoints live in the **same database** as the domain data, under the `dbos`
 schema. There is no second database to back up, and a `pg_dump -n curated_geo -n
@@ -27,8 +28,13 @@ jobs_runtime` is still coherent on its own.
 |---|---|---|
 | `DATABASE_URL_DIRECT` | **startup fails** | Without it DBOS writes checkpoints to a local SQLite file. Guarded. |
 | — pointing at a wrong DSN | **startup fails** | DBOS *creates* a database rather than failing, so a typo would otherwise start cleanly and checkpoint nowhere useful. Guarded by a domain-table check. |
+| — naming a different database from the API DSN | **submit fails** | Planning must not read one database while DBOS executes in another. Guarded by a server-side database-name check. |
+| `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | API-safe default. Use `executor` for workers and explicit `dev` only for local one-process execution. |
 | `REIMAGINA_EXECUTOR_ID` | derives `<hostname>:<role>`, logs a warning | Recovery reclaims **only** work recorded against this exact id. Must be stable across restarts *and* unique between live processes — see below. |
+| `REIMAGINA_RUN_CONCURRENCY` | 2 | Parent workflows per executor on the `runs` queue. |
 | `REIMAGINA_UNIT_CONCURRENCY` | 2 | Units per process. Non-numeric fails at startup. |
+| `REIMAGINA_EXECUTOR_HEARTBEAT_S` | 30 | Worker heartbeat interval; must be positive. |
+| `REIMAGINA_PROGRESS_SUBSCRIBERS` | 32 | Maximum in-process DBOS progress stream pumps; excess SSE clients reconnect. |
 | `REIMAGINA_APP_VERSION` | derived from workflow source | ⚠ **Sticky.** DBOS records versions in `dbos.application_versions`; once you set one, every process on a different version logs "not the latest version" until something newer is recorded. Set it deliberately or never. |
 
 ### The executor id is the thing to get right
@@ -68,9 +74,9 @@ Read the two status columns together:
 | ours | engine | meaning |
 |---|---|---|
 | `running` | `PENDING` | normal, in flight |
-| `running` | `ENQUEUED` | waiting for a queue slot — check `REIMAGINA_UNIT_CONCURRENCY` |
+| `running` | `ENQUEUED` | parent waiting for a `runs` slot — check `REIMAGINA_RUN_CONCURRENCY`; child waits are visible as queued units and use `REIMAGINA_UNIT_CONCURRENCY` |
 | `running` | `SUCCESS`/`ERROR` | the workflow finished without closing the run. A bug; capture it. |
-| `running` | *no row* | the run was submitted against a different database, or the engine's rows were purged |
+| `running` | *no row* | DBOS state was purged or the database was restored inconsistently; new submissions reject direct-DSN/database mismatches |
 | `running` | `PENDING`, `executor_id` of a process that no longer exists | **orphaned** — see below |
 
 ## An orphaned run
@@ -80,7 +86,10 @@ SELECT executor_id, count(*) FROM dbos.workflow_status
 WHERE status = 'PENDING' GROUP BY executor_id;
 ```
 
-If an `executor_id` there belongs to no live process, its runs are stuck.
+Inspect `explore.ops_executor_health_v` before declaring an executor dead. It
+records the worker's direct-Postgres heartbeat and its age without requiring a
+control-plane service. If an `executor_id` there belongs to no live process,
+its runs are stuck.
 **There is no automatic recovery across executors on this branch** — a process
 reclaims only its own id, at startup. Options, in order of preference:
 
@@ -92,7 +101,8 @@ reclaims only its own id, at startup. Options, in order of preference:
 Do **not** reach for `DBOS._recover_pending_workflows` to sweep another
 executor's work. It is a private method, and on 2.28.0 recovery is not
 idempotent — if the "dead" executor is actually alive, that is a double
-execution. The sweep is deliberately unbuilt until dbos 2.29.
+execution. The sweep is deliberately unbuilt until the pinned DBOS version has
+an idempotent cross-executor recovery guarantee verified in this repository.
 
 ## A unit that will not stop
 
@@ -153,7 +163,8 @@ Budget as `processes × (4 + REIMAGINA_UNIT_CONCURRENCY)` against
 
 Stated plainly so nobody discovers it at 3am:
 
-- **No cross-executor recovery.** Waiting on dbos 2.29's idempotent recovery.
+- **No cross-executor recovery.** Heartbeats support diagnosis only; reclaiming
+  another executor's work remains unsafe until idempotent recovery is verified.
 - **No metrics.** No counters, no histograms, nothing to alert on. Diagnosis is
   the SQL above.
 - **Never load-tested**, never run multi-process beyond a two-process spike,

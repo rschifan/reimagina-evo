@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
 from uuid import uuid4
@@ -38,10 +39,14 @@ logger = logging.getLogger(__name__)
 
 _CLIENT = None
 _CLIENT_LOCK = threading.Lock()
+_PROGRESS_SLOTS = threading.BoundedSemaphore(
+    int(os.environ.get("REIMAGINA_PROGRESS_SUBSCRIBERS", "32"))
+)
+_PROGRESS_BUFFER = 128
 
 
 def _client():
-    """One shared read-only DBOS client for this process.
+    """One shared DBOS client for this process.
 
     ``DBOSClient`` is not a handle — constructing one builds a SQLAlchemy engine
     with its own five-connection pool and opens a connection eagerly to check
@@ -87,9 +92,13 @@ class DBOSOrchestrator:
     """Durable execution with no standing service."""
 
     def __init__(
-        self, *, registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS
+        self,
+        *,
+        registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
+        execution_mode: str | None = None,
     ) -> None:
         self._registry = registry
+        self._execution_mode = execution_mode
 
     # ── Submit ──────────────────────────────────────────────────────────────
 
@@ -103,11 +112,9 @@ class DBOSOrchestrator:
         aoi_id: str | None = None,
         code_version: str = "dev",
     ) -> RunHandle:
-        from dbos import DBOS, SetWorkflowID
-
         from reimagina.orchestration import dbos_app
 
-        dbos_app.launch()
+        dbos_app.assert_same_domain_database(conn)
         run_id = str(uuid4())
 
         plan = plan_run(
@@ -131,7 +138,7 @@ class DBOSOrchestrator:
             spec.slug: [dep for dep, _weight in spec.depends_on]
             for spec in self._registry
         }
-        units = [
+        units: list[dbos_app.UnitInput] = [
             {
                 "slug": unit.indicator,
                 "features": sorted(unit.features),
@@ -139,9 +146,42 @@ class DBOSOrchestrator:
             }
             for unit in plan.units
         ]
+        params: dbos_app.RunParams = {
+            "code_version": code_version,
+            "scenario_id": scenario_id,
+            "aoi_id": aoi_id,
+        }
+        dbos_app.validate_workflow_input(units, params)
 
-        with SetWorkflowID(run_id):
-            DBOS.start_workflow(dbos_app.run_workflow, run_id, units, plan.params)
+        mode = self._execution_mode or dbos_app.execution_mode()
+        if mode not in {"client", "executor", "dev"}:
+            raise ValueError(f"unknown DBOS execution mode: {mode!r}")
+        if mode == "client":
+            # A client does not import or launch an executor. DBOS persists the
+            # named workflow and its complete input atomically in its system
+            # database; a worker with the definitions later dequeues it.
+            from dbos import EnqueueOptions
+
+            _client().enqueue(
+                EnqueueOptions(
+                    workflow_name=dbos_app.run_workflow.__name__,
+                    queue_name=dbos_app.RUNS_QUEUE,
+                    workflow_id=run_id,
+                ),
+                run_id,
+                units,
+                params,
+            )
+        else:
+            # ``dev`` intentionally self-executes; an executor process does
+            # the same when it is also an interactive submitter.
+            dbos_app.launch()
+            from dbos import SetWorkflowID
+
+            with SetWorkflowID(run_id):
+                dbos_app.runs_queue().enqueue(
+                    dbos_app.run_workflow, run_id, units, params
+                )
 
         return RunHandle(run_id=run_id, status=None)
 
@@ -210,18 +250,13 @@ class DBOSOrchestrator:
         boundary. ``pg_cancel_backend`` is what actually interrupts that
         statement (r031). Marking the units closes the run in our own vocabulary.
         """
-        from dbos import DBOS
-
-        from reimagina.orchestration import dbos_app
-
         current = self.get_run(conn, run_id)
         if current is None or current.status in RUN_TERMINAL_STATES:
             return False
 
-        dbos_app.launch()
         # cancel_children: the units are child workflows, and leaving them
         # schedulable would let the next wave start after the run was closed.
-        DBOS.cancel_workflow(run_id, cancel_children=True)
+        _client().cancel_workflow(run_id, cancel_children=True)
         backend_for_connection(conn).job_run_repo().cancel_run_backends(run_id)
 
         for unit in current.units:
@@ -287,9 +322,9 @@ class DBOSOrchestrator:
         entire thread-offload path.
 
         It still cannot be interrupted — that is a property of the underlying
-        generator, not of how it is scheduled. What changes is the blast radius:
-        a leaked thread here is one daemon thread that dies with the process
-        instead of a permanent hole in a shared pool.
+        generator, not of how it is scheduled. A process-wide slot limit bounds
+        the remaining daemon threads, and the bounded handoff queue turns a
+        slow SSE consumer into a reconnect rather than unbounded memory growth.
         """
         import threading as _threading
 
@@ -303,10 +338,24 @@ class DBOSOrchestrator:
             if snapshot.status in RUN_TERMINAL_STATES:
                 return
 
+        if not _PROGRESS_SLOTS.acquire(blocking=False):
+            raise RuntimeError("progress subscriber capacity reached; reconnect shortly")
+
         loop = asyncio.get_running_loop()
-        events: asyncio.Queue = asyncio.Queue()
+        events: asyncio.Queue = asyncio.Queue(maxsize=_PROGRESS_BUFFER)
         done = object()
         stop = _threading.Event()
+
+        def _offer(payload) -> None:
+            """Run in the event loop; keep the producer bounded on overflow."""
+            if events.full():
+                logger.warning("progress subscriber for %s fell behind", run_id)
+                stop.set()
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    events.get_nowait()
+                events.put_nowait(done)
+                return
+            events.put_nowait(payload)
 
         def _pump() -> None:
             try:
@@ -316,12 +365,12 @@ class DBOSOrchestrator:
                     # The loop may already be closed if the process is shutting
                     # down; there is no subscriber left to care either way.
                     with contextlib.suppress(RuntimeError):
-                        loop.call_soon_threadsafe(events.put_nowait, payload)
+                        loop.call_soon_threadsafe(_offer, payload)
             except Exception as exc:  # noqa: BLE001 — surfaced as stream end
                 logger.warning("progress stream for %s ended: %s", run_id, exc)
             finally:
                 with contextlib.suppress(RuntimeError):
-                    loop.call_soon_threadsafe(events.put_nowait, done)
+                    loop.call_soon_threadsafe(_offer, done)
 
         thread = _threading.Thread(
             target=_pump, name=f"dbos-progress-{run_id[:8]}", daemon=True
@@ -343,6 +392,7 @@ class DBOSOrchestrator:
             # sooner, so the thread outlives this generator until the stream
             # produces something or closes.
             stop.set()
+            _PROGRESS_SLOTS.release()
 
     def _snapshot(self, run_id: str) -> RunEvent | None:
         """The run-level status, read without the caller's connection.

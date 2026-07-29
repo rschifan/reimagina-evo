@@ -1694,6 +1694,15 @@ class PostgresExploreReader:
             """
         )
 
+    def list_executor_health(self) -> list[dict]:
+        return self._read_query(
+            """
+            SELECT *
+            FROM explore.ops_executor_health_v
+            ORDER BY heartbeat_at DESC, executor_id
+            """
+        )
+
 
 class PostgresTileSnapshotRepository:
     def __init__(self, connection):
@@ -1955,8 +1964,28 @@ class PostgresJobRunRepository:
         scenario_id: str | None = None,
         status: str = "queued",
         run_id: str | None = None,
+        started_at: datetime | None = None,
     ) -> str:
-        started_at = "now()" if status == "running" else "NULL"
+        # ⚠ clock_timestamp(), NOT now(). A unit opens its job_run row, runs its
+        # compute, and completes the row all on one connection inside ONE
+        # transaction — and now() is transaction_timestamp(), constant for that
+        # whole transaction. With now() on both ends, every finished unit
+        # recorded completed_at == started_at, so `sum(completed_at -
+        # started_at)` — the runner-time query the ops-plane measurement spec is
+        # written around — returned 00:00:00 on every row ever written.
+        # clock_timestamp() is the wall clock at statement time, which is what
+        # "when did this unit start" actually means. The recovered-provenance
+        # path supplies its original start for both queued_at and started_at;
+        # otherwise queued_at is stamped here. Both database ordering checks
+        # therefore remain true.
+        started_at_sql = (
+            "%s"
+            if started_at is not None
+            else "clock_timestamp()"
+            if status == "running"
+            else "NULL"
+        )
+        queued_at_sql = "%s" if started_at is not None else "clock_timestamp()"
         with self.connection.cursor() as cur:
             # pg_backend_pid() is evaluated on THIS connection, which is the one
             # that will run the compute — that is the whole point. Capturing it
@@ -1964,12 +1993,14 @@ class PostgresJobRunRepository:
             cur.execute(
                 f"""
                 INSERT INTO jobs_runtime.job_run
-                  (scenario_id, model_family, code_version, status, started_at,
+                  (scenario_id, model_family, code_version, status, queued_at, started_at,
                    run_id, backend_pid)
-                VALUES (%s, %s, %s, %s, {started_at}, %s, pg_backend_pid())
+                VALUES (%s, %s, %s, %s, {queued_at_sql}, {started_at_sql}, %s, pg_backend_pid())
                 RETURNING id::text
                 """,
-                (scenario_id, model_family, code_version, status, run_id),
+                ((scenario_id, model_family, code_version, status, started_at, started_at, run_id)
+                 if started_at is not None
+                 else (scenario_id, model_family, code_version, status, run_id)),
             )
             return str(cur.fetchone()[0])
 
@@ -2012,9 +2043,9 @@ class PostgresJobRunRepository:
                 """
                 UPDATE jobs_runtime.job_run
                 SET status = %s,
-                    completed_at = now(),
+                    completed_at = clock_timestamp(),
                     error_message = %s,
-                    started_at = COALESCE(started_at, now())
+                    started_at = COALESCE(started_at, clock_timestamp())
                 WHERE id = %s
                 """,
                 (status, error_message, job_run_id),

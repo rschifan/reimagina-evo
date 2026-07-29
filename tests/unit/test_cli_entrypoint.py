@@ -88,6 +88,22 @@ def test_cli_explore_serving_stats_delegates(monkeypatch, capsys):
     assert payload["serving_stats"][0]["stat_scope"] == "all"
 
 
+def test_cli_explore_executor_health_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.list_executor_health",
+        lambda **kwargs: {
+            "executor_health": [{"executor_id": "worker-a"}],
+            **kwargs,
+        },
+    )
+
+    exit_code = main(["explore", "executor-health"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["executor_health"][0]["executor_id"] == "worker-a"
+
+
 def test_cli_overture_load_delegates(monkeypatch, capsys, tmp_path):
     raw_path = tmp_path / "buildings.parquet"
     raw_path.write_text("placeholder")

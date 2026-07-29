@@ -26,6 +26,7 @@ from reimagina.tiles.defaults import (  # noqa: E402
     tile_snapshot_base_url,
 )
 from .explore import (  # noqa: E402
+    list_executor_health,
     list_feature_stats,
     list_layers,
     list_serving_stats,
@@ -171,6 +172,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     explore_serving_stats.add_argument("--dsn", default=DEFAULT_APP_DSN)
     explore_serving_stats.set_defaults(handler=_handle_explore_serving_stats)
+
+    explore_executor_health = explore_subparsers.add_parser(
+        "executor-health",
+        help="Show DBOS executor liveness from explore.ops_executor_health_v",
+    )
+    explore_executor_health.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    explore_executor_health.set_defaults(handler=_handle_explore_executor_health)
 
     overture_parser = subparsers.add_parser(
         "overture", help="First Overture source operations"
@@ -1105,6 +1113,10 @@ def _handle_explore_feature_stats(args: argparse.Namespace) -> int:
 
 def _handle_explore_serving_stats(args: argparse.Namespace) -> int:
     return _print(list_serving_stats(dsn=args.dsn))
+
+
+def _handle_explore_executor_health(args: argparse.Namespace) -> int:
+    return _print(list_executor_health(dsn=args.dsn))
 
 
 def _handle_overture_extract(args: argparse.Namespace) -> int:

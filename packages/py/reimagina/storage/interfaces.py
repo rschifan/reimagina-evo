@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Protocol
+from datetime import datetime
 
 import geopandas as gpd
 
@@ -539,6 +540,8 @@ class ExploreReader(Protocol):
 
     def list_serving_stats(self) -> list[dict[str, Any]]: ...
 
+    def list_executor_health(self) -> list[dict[str, Any]]: ...
+
 
 class JobRunRepository(Protocol):
     """Provenance record of a compute run (jobs_runtime.job_run).
@@ -559,6 +562,7 @@ class JobRunRepository(Protocol):
         scenario_id: str | None = None,
         status: str = "queued",
         run_id: str | None = None,
+        started_at: datetime | None = None,
     ) -> str: ...
 
     def complete_job(

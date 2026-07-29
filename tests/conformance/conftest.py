@@ -90,6 +90,9 @@ IMPLEMENTATIONS = [
 def impl(request, migrated_db, monkeypatch) -> Implementation:
     """The implementation under test, with its environment satisfied."""
     monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
+    # The production default is client-only. Conformance proves the explicit
+    # one-process developer/executor mode separately from deployment policy.
+    monkeypatch.setenv("REIMAGINA_DBOS_EXECUTION_MODE", "dev")
     return request.param
 
 
@@ -167,12 +170,21 @@ def _teardown(conn, run_ids, source_id) -> None:
         # make later tests in the same session behave differently from the same
         # tests run alone. Children are `<parent-id>-<n>`, so the prefix match
         # catches the unit workflows with their run.
-        for run_id in run_ids:
-            cur.execute(
-                "DELETE FROM dbos.workflow_status "
-                "WHERE workflow_uuid = %s OR workflow_uuid LIKE %s",
-                (run_id, f"{run_id}-%"),
-            )
+        #
+        # ⚠ Guarded, because the schema is DBOS's to create and it does so at
+        # `launch()`. On a database DBOS has never launched against, the `sync`
+        # implementation's teardown runs *before* any `dbos` test has launched
+        # anything, and an unguarded DELETE fails with `UndefinedTable` — a
+        # whole-suite failure on a fresh database that disappears on the second
+        # run, which is the worst way to meet a test suite.
+        cur.execute("SELECT to_regclass('dbos.workflow_status')")
+        if cur.fetchone()[0] is not None:
+            for run_id in run_ids:
+                cur.execute(
+                    "DELETE FROM dbos.workflow_status "
+                    "WHERE workflow_uuid = %s OR workflow_uuid LIKE %s",
+                    (run_id, f"{run_id}-%"),
+                )
         for run_id in run_ids:
             cur.execute(
                 "DELETE FROM jobs_runtime.job_unit WHERE run_id = %s", (run_id,)

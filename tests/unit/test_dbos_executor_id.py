@@ -58,11 +58,12 @@ def test_the_worker_entrypoint_claims_its_own_role(monkeypatch):
     monkeypatch.setattr(
         "reimagina.orchestration.dbos_app.launch", lambda: launched.append(True)
     )
+    monkeypatch.setattr("reimagina.orchestration.executor_health.heartbeat", lambda: None)
 
     from apps.worker.app import run_dbos_worker
 
     # Stop before the blocking wait; the role is set before launch.
-    monkeypatch.setattr("threading.Event.wait", lambda self, *a, **k: None)
+    monkeypatch.setattr("apps.worker.app._wait_for_shutdown", lambda stop: None)
     run_dbos_worker()
 
     assert launched == [True]

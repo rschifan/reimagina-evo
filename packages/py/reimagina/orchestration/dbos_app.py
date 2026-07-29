@@ -5,8 +5,9 @@ schema, so there is nothing to deploy and nothing to back up separately. We keep
 the wave scheduler (``orchestration.wave``) and borrow only durability: this
 module is what an engine that owned scheduling would let us delete.
 
-Both the API and the worker import it, because DBOS can only recover or start a
-workflow whose definition is present in the process doing so.
+Executors import this module to recover and run workflow definitions. API
+processes use ``DBOSClient`` to enqueue named workflows and do not launch an
+executor in the production-default ``client`` mode.
 
 **The replay rule that shapes everything here.** DBOS matches replayed steps by
 ``(position, function name)``. Our design calls the *same* step function once per
@@ -30,13 +31,16 @@ import threading
 from contextlib import contextmanager
 from collections.abc import Sequence
 from dataclasses import asdict
-from typing import Any
+from datetime import datetime, timezone
+from graphlib import CycleError
+from typing import Literal, NotRequired, TypedDict
 
 import psycopg2
 from dbos import DBOS, DBOSConfig, Queue
 
-from reimagina.jobs._lifecycle import current_run
+from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration import runstore
+from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
     RunEvent,
@@ -48,12 +52,43 @@ from reimagina.orchestration.wave import plan_wave
 logger = logging.getLogger(__name__)
 
 PROGRESS_STREAM = "progress"
+RUNS_QUEUE = "runs"
 UNITS_QUEUE = "units"
 
-# One dirty unit, projected to something JSON/pickle-safe. `deps` is carried so
-# the workflow body can rebuild the dependency graph for `plan_wave` without
-# reading the catalog — see the replay rule above.
-UnitInput = dict[str, Any]
+ExecutionMode = Literal["client", "executor", "dev"]
+
+
+class UnitInput(TypedDict):
+    """Stable, JSON-safe workflow input for one dirty indicator."""
+
+    slug: str
+    features: list[str]
+    deps: list[str]
+
+
+class RunParams(TypedDict):
+    """Stable workflow input. Add fields here before a workflow consumes them."""
+
+    code_version: str
+    scenario_id: NotRequired[str | None]
+    aoi_id: NotRequired[str | None]
+
+
+def execution_mode() -> ExecutionMode:
+    """Whether this process may execute durable workflows.
+
+    Production web processes are clients by default: they submit, read, cancel,
+    and stream, but do not execute PostGIS. Workers explicitly opt into
+    ``executor``. ``dev`` is deliberately explicit so local CLI and integration
+    tests can retain one-process execution without making it a production
+    deployment accident.
+    """
+    value = os.environ.get("REIMAGINA_DBOS_EXECUTION_MODE", "client")
+    if value not in {"client", "executor", "dev"}:
+        raise RuntimeError(
+            "REIMAGINA_DBOS_EXECUTION_MODE must be one of: client, executor, dev"
+        )
+    return value  # type: ignore[return-value]
 
 
 def dbos_dsn() -> str:
@@ -129,6 +164,35 @@ def _assert_domain_database(dsn: str) -> None:
             )
 
 
+def assert_same_domain_database(conn) -> None:
+    """Ensure the planner and DBOS checkpoints share one database.
+
+    The API's application DSN may use a pooled, least-privilege role while
+    DBOS needs a direct connection. Different roles are fine; different
+    databases are catastrophic: planning reads one environment and workers
+    execute the durable workflow in another. Compare the server-side database
+    identity rather than DSN text, because PgBouncer and URLs with different
+    credentials are normal.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_database()")
+        caller_database = cur.fetchone()[0]
+    with contextlib.closing(psycopg2.connect(dbos_dsn())) as direct, direct.cursor() as cur:
+        cur.execute("SELECT current_database(), to_regclass('jobs_runtime.job_run')")
+        direct_database, domain_table = cur.fetchone()
+    if domain_table is None:
+        raise RuntimeError(
+            "DATABASE_URL_DIRECT does not point at a migrated reimagina database "
+            "(jobs_runtime.job_run is missing)"
+        )
+    if caller_database != direct_database:
+        raise RuntimeError(
+            "the submit connection and DATABASE_URL_DIRECT name different "
+            f"databases ({caller_database!r} != {direct_database!r}); refusing "
+            "to plan in one database and execute in another"
+        )
+
+
 def config() -> DBOSConfig:
     cfg: DBOSConfig = {
         "name": "reimagina",
@@ -146,12 +210,13 @@ def config() -> DBOSConfig:
     return cfg
 
 
-_queue: Queue | None = None
+_runs_queue: Queue | None = None
+_units_queue: Queue | None = None
 _LAUNCH_LOCK = threading.Lock()
 
 
 def launch() -> None:
-    """Register config, start DBOS, and bind the unit queue. Idempotent.
+    """Launch an executor and bind the run and unit queues. Idempotent.
 
     Locked, because the check and the assignment are not atomic and both the
     API and the CLI call this from a request path. ``DBOS.launch()`` marks
@@ -160,11 +225,11 @@ def launch() -> None:
     in ``register_queue`` with "System database accessed before DBOS was
     launched" — turning one concurrent submit into a 500.
     """
-    global _queue
-    if _queue is not None:
+    global _runs_queue, _units_queue
+    if _runs_queue is not None and _units_queue is not None:
         return
     with _LAUNCH_LOCK:
-        if _queue is not None:
+        if _runs_queue is not None and _units_queue is not None:
             return
         _assert_domain_database(dbos_dsn())
         cfg = config()
@@ -183,16 +248,26 @@ def launch() -> None:
         # worker_concurrency, not concurrency: the global limit also counts
         # PENDING workflows from earlier application versions, which a
         # blue-green deploy deliberately leaves lying around.
-        _queue = DBOS.register_queue(
+        _runs_queue = DBOS.register_queue(
+            RUNS_QUEUE,
+            worker_concurrency=int(os.environ.get("REIMAGINA_RUN_CONCURRENCY", "2")),
+        )
+        _units_queue = DBOS.register_queue(
             UNITS_QUEUE,
             worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
         )
 
 
-def units_queue() -> Queue:
-    if _queue is None:
+def runs_queue() -> Queue:
+    if _runs_queue is None:
         raise RuntimeError("dbos_app.launch() must run before a run is submitted")
-    return _queue
+    return _runs_queue
+
+
+def units_queue() -> Queue:
+    if _units_queue is None:
+        raise RuntimeError("dbos_app.launch() must run before a run is submitted")
+    return _units_queue
 
 
 @contextmanager
@@ -228,6 +303,34 @@ class _Spec:
 
 def _as_registry(units: Sequence[UnitInput]) -> tuple[_Spec, ...]:
     return tuple(_Spec(u["slug"], u["deps"]) for u in units)
+
+
+def validate_workflow_input(units: Sequence[UnitInput], params: RunParams) -> None:
+    """Reject malformed persisted inputs before replay can make them opaque."""
+    seen: set[str] = set()
+    for unit in units:
+        slug = unit.get("slug")
+        features = unit.get("features")
+        deps = unit.get("deps")
+        if not isinstance(slug, str) or not slug:
+            raise ValueError("workflow unit slug must be a non-empty string")
+        if slug in seen:
+            raise ValueError(f"workflow contains duplicate unit {slug!r}")
+        if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
+            raise ValueError(f"workflow unit {slug!r} has invalid feature ids")
+        if not isinstance(deps, list) or not all(isinstance(dep, str) for dep in deps):
+            raise ValueError(f"workflow unit {slug!r} has invalid dependencies")
+        seen.add(slug)
+    # ``plan_wave`` intentionally ignores dependencies outside this dirty set:
+    # their current values are inputs, not work in this run. Within the set a
+    # cycle can never make progress, so reject it before persisting a workflow
+    # which would otherwise remain queued forever.
+    try:
+        topological_order({u["slug"]: u["deps"] for u in units}, nodes=seen)
+    except CycleError as exc:
+        raise ValueError(f"workflow dependency cycle: {exc.args[1]!r}") from exc
+    if not isinstance(params.get("code_version"), str) or not params["code_version"]:
+        raise ValueError("workflow params require a non-empty code_version")
 
 
 def _emit(run_id: str, indicator: str | None, status: str, detail: str | None = None):
@@ -340,6 +443,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
         raise LookupError(f"no runner registered for {slug!r}")
 
     conn = psycopg2.connect(dbos_dsn())  # NOT autocommit — see above
+    started_at = datetime.now(timezone.utc)
     try:
         row = runstore.get_run(conn, run_id)
         if row is not None and row["status"] in RUN_TERMINAL_STATES:
@@ -359,8 +463,20 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 aoi_id=params.get("aoi_id"),
             )
         conn.commit()
-    except BaseException:
+    except BaseException as exc:
         conn.rollback()
+        # That rollback just erased the `failed` job_run the runner opened — it
+        # was written on this connection. Re-record it on its own, or a unit
+        # that burned minutes and failed leaves no provenance at all.
+        record_failed_job_run(
+            conn.dsn,
+            run_id=run_id,
+            indicator_slug=slug,
+            scenario_id=params.get("scenario_id"),
+            code_version=params.get("code_version", "dev"),
+            error=f"{type(exc).__name__}: {exc}",
+            started_at=started_at,
+        )
         raise
     finally:
         conn.close()
