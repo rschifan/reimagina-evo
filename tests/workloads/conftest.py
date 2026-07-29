@@ -148,10 +148,16 @@ def conn(bench_db):
 
 @pytest.fixture(scope="session", autouse=True)
 def _sweep_bench_rows(bench_db):
-    """Delete rows this suite wrote, on the way *in*.
+    """Clear this suite's leftovers — application rows *and* engine work.
 
     On the way in rather than out, for the same reason the worker reaping is:
-    a killed run leaves rows behind and teardown never gets to argue about it.
+    a killed run leaves both behind and teardown never gets to argue about it.
+
+    ⚠ The engine half is not optional. Application rows only describe what ran;
+    a killed session also leaves runs QUEUED or RUNNING in Hatchet, and those go
+    to the next session's worker the moment it registers. The suite then
+    measures a backlog it never submitted and reports it as dispatch latency — a
+    benchmark quietly inheriting another run's queue.
     """
     with psycopg2.connect(_DSN) as scrub:
         scrub.autocommit = True
@@ -159,7 +165,31 @@ def _sweep_bench_rows(bench_db):
             cur.execute(
                 "DELETE FROM jobs_runtime.job_run WHERE code_version LIKE 'bench-%'"
             )
+    _cancel_stale_bench_runs()
     yield
+
+
+def _cancel_stale_bench_runs() -> None:
+    """Cancel any bench run the engine still considers live."""
+    if not os.environ.get("HATCHET_CLIENT_TOKEN"):
+        return
+    from reimagina.orchestration import hatchet_app
+
+    try:
+        runs = hatchet_app.get_hatchet().runs
+        listed = runs.list(limit=500)
+        stale = [
+            row.metadata.id
+            for row in (getattr(listed, "rows", None) or [])
+            if str(getattr(row, "workflow_name", "")).startswith("reimagina-bench-")
+            and str(getattr(row, "status", "")).rsplit(".", 1)[-1]
+            in {"QUEUED", "RUNNING"}
+        ]
+        if stale:
+            _LOG.warning("cancelling %d stale bench run(s)", len(stale))
+            runs.bulk_cancel(ids=stale)
+    except Exception as exc:  # noqa: BLE001 — engine reachability is checked later
+        _LOG.warning("could not clear stale bench runs: %s", exc)
 
 
 # ── The engine side ─────────────────────────────────────────────────────────
@@ -185,13 +215,15 @@ def bench_workflows():
     from reimagina.orchestration import hatchet_app
     from reimagina.perf.workloads import WORKLOADS
 
-    built = {}
-    for workload in WORKLOADS:
-        workflow, _nodes = hatchet_app.build_dag(
+    # Keep the (workflow, nodes) pair `build_dag` returns: `install` patches
+    # `hatchet_app._dag` with it, and that global is a pair precisely so the two
+    # halves can never come from different builds.
+    return {
+        workload.id: hatchet_app.build_dag(
             workload.registry, name=f"reimagina-bench-{workload.id}"
         )
-        built[workload.id] = workflow
-    return built
+        for workload in WORKLOADS
+    }
 
 
 @pytest.fixture(scope="session")
@@ -208,8 +240,8 @@ def bench_worker(bench_workflows, bench_db):
     os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
     _reap_stale_workers()
 
-    worker = hatchet_app.hatchet.worker(
-        WORKER_NAME, slots=SLOTS, workflows=list(bench_workflows.values())
+    worker = hatchet_app.get_hatchet().worker(
+        WORKER_NAME, slots=SLOTS, workflows=[wf for wf, _nodes in bench_workflows.values()]
     )
     thread = threading.Thread(target=worker.start, daemon=True)
     thread.start()
@@ -273,7 +305,7 @@ def _reap_stale_workers() -> None:
     from reimagina.orchestration import hatchet_app
 
     try:
-        listed = hatchet_app.hatchet.workers.list()
+        listed = hatchet_app.get_hatchet().workers.list()
     except Exception as exc:  # noqa: BLE001 — reachability is checked elsewhere
         _LOG.warning("could not list workers to reap: %s", exc)
         return
@@ -285,7 +317,7 @@ def _reap_stale_workers() -> None:
         if not worker_id:
             continue
         try:
-            hatchet_app.hatchet.workers.pause(worker_id)
+            hatchet_app.get_hatchet().workers.pause(worker_id)
             _LOG.info("paused stale bench worker %s", worker_id)
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("could not pause stale worker %s: %s", worker_id, exc)
@@ -298,7 +330,7 @@ def _await_registration(expected: set[str], timeout: float = 60.0) -> None:
     last: object = "no response"
     while time.monotonic() < deadline:
         try:
-            listed = hatchet_app.hatchet.workflows.list()
+            listed = hatchet_app.get_hatchet().workflows.list()
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }
@@ -345,12 +377,12 @@ def install(monkeypatch, request):
         from reimagina.orchestration import hatchet_app
         from reimagina.orchestration.hatchet_orchestrator import HatchetOrchestrator
 
-        # `submit_run` dereferences `hatchet_app.run_workflow` at call time, so
-        # pointing the module attribute at this workload's workflow is what
-        # routes the submit. The worker already has every bench workflow
-        # registered, so nothing on the engine side has to change.
+        # `submit_run` resolves the workflow through `get_run_workflow()` at call
+        # time, which reads `_dag` — so pointing that global at this workload's
+        # (workflow, nodes) pair is what routes the submit. The worker already
+        # has every bench workflow registered, so the engine side is unchanged.
         workflows = request.getfixturevalue("bench_workflows")
-        monkeypatch.setattr(hatchet_app, "run_workflow", workflows[workload.id])
+        monkeypatch.setattr(hatchet_app, "_dag", workflows[workload.id])
         return HatchetOrchestrator(registry=workload.registry)
 
     return _install
@@ -368,15 +400,29 @@ def run_once(orchestrator, conn, workload, impl: Implementation) -> dict:
     """
     # ⚠ A fresh code_version per submit, or the engine's idempotency window
     # (TTL 60s, keyed on the work's fingerprint) folds repetitions 2 and 3 onto
-    # repetition 1 and the suite measures one run three times. It also keeps the
-    # concurrency key unique, so repetitions do not queue behind one another.
+    # repetition 1 and the suite measures one run three times.
     code_version = f"bench-{uuid4().hex[:8]}"
+
+    # ⚠ And a fresh scenario_id, which is a *different* problem the comment here
+    # used to claim code_version solved. It does not: `code_version` feeds only
+    # `dedup_key`, while `concurrency_key` is `scenario_id or aoi_id or
+    # "baseline"`. With neither id, every repetition of every workload landed in
+    # one `max_runs=1` bucket and reps 2-3 queued behind rep 1 — so the measured
+    # submit-to-terminal window included queue wait and the report attributed it
+    # to engine dispatch.
+    #
+    # scenario_id is the right lever, not aoi_id: it is a bare uuid with no
+    # foreign key in any migration, and with non-empty changed_attributes
+    # `resolve_change_set` returns early and never reads it, so planning is
+    # untouched. aoi_id would reach the runner as compute scope.
+    scenario_id = str(uuid4())
 
     t_submit = db_now(conn)
     handle = orchestrator.submit_run(
         conn,
         changed_attributes=set(workload.changed_attributes),
         edited_features={_BENCH_FEATURE},
+        scenario_id=scenario_id,
         code_version=code_version,
     )
 
@@ -390,6 +436,7 @@ def run_once(orchestrator, conn, workload, impl: Implementation) -> dict:
     return {
         "run_id": handle.run_id,
         "code_version": code_version,
+        "scenario_id": scenario_id,
         "status": status.status if status else None,
         "unit_statuses": {u.indicator: u.status for u in (status.units if status else ())},
         "records": records,
