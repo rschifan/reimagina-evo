@@ -23,6 +23,16 @@ from reimagina.orchestration.port import (
     UnitStatusView,
 )
 
+_RUN_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+"""A well-formed run id.
+
+⚠ Not a convenience string like ``run-123``. The routes type ``run_id``
+as ``uuid.UUID`` so a malformed id is rejected at the boundary with 422
+rather than reaching the engine client — where it raises a validation
+error carrying no HTTP status, which the orchestrator cannot tell from an
+outage and reports as a retryable 503. These tests exercise the routes,
+not that guard, so they need an id that gets past it."""
+
 
 class _FakeConnection:
     def close(self) -> None:
@@ -75,7 +85,7 @@ def test_get_jobs_returns_run_status(monkeypatch):
     app = create_app(initialise_pool=False)
     app.dependency_overrides[get_db_conn] = _fake_conn
     with TestClient(app) as client:
-        resp = client.get("/jobs/run-123")
+        resp = client.get(f"/jobs/{_RUN_ID}")
     app.dependency_overrides.clear()
     assert resp.status_code == 200
     body = resp.json()
@@ -96,7 +106,7 @@ def test_get_jobs_404_when_missing(monkeypatch):
     app = create_app(initialise_pool=False)
     app.dependency_overrides[get_db_conn] = _fake_conn
     with TestClient(app) as client:
-        resp = client.get("/jobs/missing")
+        resp = client.get(f"/jobs/{_RUN_ID}")
     app.dependency_overrides.clear()
     assert resp.status_code == 404
 
@@ -167,7 +177,7 @@ def test_events_streams_the_orchestrators_progress(monkeypatch):
     app = create_app(initialise_pool=False)
     app.dependency_overrides[get_db_conn] = _fake_conn
     with TestClient(app) as client:
-        resp = client.get("/jobs/run-123/events")
+        resp = client.get(f"/jobs/{_RUN_ID}/events")
         body = resp.text
     app.dependency_overrides.clear()
 
@@ -194,6 +204,103 @@ def test_events_404s_for_an_unknown_run(monkeypatch):
     app = create_app(initialise_pool=False)
     app.dependency_overrides[get_db_conn] = _fake_conn
     with TestClient(app) as client:
-        resp = client.get("/jobs/missing/events")
+        resp = client.get(f"/jobs/{_RUN_ID}/events")
     app.dependency_overrides.clear()
     assert resp.status_code == 404
+
+
+# ── Boundary validation and stream failure ──────────────────────────────────
+
+
+def test_a_malformed_run_id_is_rejected_at_the_boundary(monkeypatch):
+    """422, not 503.
+
+    ⚠ The regression this pins is subtle. `run_id` used to be `str`, so a
+    malformed id reached the engine client, whose own length validation raises a
+    pydantic error carrying no HTTP status — which `_is_not_found` could not
+    distinguish from an outage, so the orchestrator raised "unavailable" and the
+    caller got **503 with Retry-After**, told to retry a request that can never
+    succeed. Typing the parameter deletes the whole special case.
+    """
+
+    class _FakeOrchestrator:
+        def get_run(self, conn, run_id):  # pragma: no cover - must not be reached
+            raise AssertionError("a malformed id must not reach the orchestrator")
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    def _fake_conn():
+        yield object()
+
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = _fake_conn
+    with TestClient(app) as client:
+        detail = client.get("/jobs/not-a-uuid")
+        events = client.get("/jobs/not-a-uuid/events")
+    app.dependency_overrides.clear()
+
+    assert detail.status_code == 422
+    assert events.status_code == 422
+
+
+def test_wait_false_is_accepted_and_wait_true_is_not(monkeypatch):
+    """`wait: false` asked for the only behaviour this endpoint still has.
+
+    Removing the field while forbidding extras rejected it with 422 — breaking
+    clients that merely spelled out the former default. Rejecting `true`, which
+    used to run a worker inside the request, is the actual contract change.
+    """
+
+    def _fake_connect(dsn=None):
+        return _FakeConnection()
+
+    monkeypatch.setattr("reimagina.db.connect", _fake_connect)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            return RunHandle(run_id=_RUN_ID, status=None)
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    body = {"changed_attributes": ["geometry"], "edited_features": ["b1"]}
+    with TestClient(create_app(initialise_pool=False)) as client:
+        accepted = client.post("/jobs", json={**body, "wait": False})
+        rejected = client.post("/jobs", json={**body, "wait": True})
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 422
+
+
+def test_an_outage_midstream_yields_one_error_frame_then_closes(monkeypatch):
+    """The stream cannot become a 503 once its headers are on the wire.
+
+    Starlette refuses to run a registered handler after the response has
+    started, so an orchestrator failure mid-stream used to just stop the
+    stream — indistinguishable, to a client, from a run that finished.
+    """
+
+    class _FakeOrchestrator:
+        def get_run(self, conn, run_id):
+            return RunStatus(run_id=run_id, status="running", units=())
+
+        async def subscribe_progress(self, run_id):
+            yield RunEvent(run_id, "urban_form_block_compactness", "running")
+            raise RuntimeError("engine went away")
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    def _fake_conn():
+        yield object()
+
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = _fake_conn
+    with TestClient(app) as client:
+        body = client.get(f"/jobs/{_RUN_ID}/events").text
+    app.dependency_overrides.clear()
+
+    assert body.count("event: error") == 1, body
+    assert json.loads(
+        body.split("event: error\n", 1)[1].splitlines()[0].removeprefix("data: ")
+    ) == {"reason": "orchestrator_unavailable"}
+    # The reason is a fixed token; the underlying message never reaches the wire.
+    assert "engine went away" not in body
