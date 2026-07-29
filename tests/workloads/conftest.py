@@ -167,6 +167,11 @@ def _sweep_bench_rows(bench_db):
             )
     _cancel_stale_bench_runs()
     yield
+    # And again on the way out, so an ordinary run does not hand its leftovers to
+    # the next one. Setup still carries the weight — a killed session never
+    # reaches here — but leaving the engine dirty after a clean run is what lets
+    # a backlog accumulate unnoticed between sessions.
+    _cancel_stale_bench_runs()
 
 
 def _cancel_stale_bench_runs() -> None:
