@@ -8,6 +8,7 @@ is what an ops-plane branch edits.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ import pytest
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
+    SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
 )
@@ -30,6 +32,8 @@ from tests.integration._helpers import (
     start_run as _start_run,
 )
 
+_LOG = logging.getLogger(__name__)
+
 _DSN = os.environ.get("TEST_DATABASE_URL", "postgresql://localhost/reimagina_test")
 _BLOCK_WKT = (
     "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
@@ -41,6 +45,16 @@ _BLOCK_WKT = (
 # would not distinguish `partial` from `failed`.
 POISONED_SLUG = URBAN_FORM_BLOCK_BUILDING_DENSITY.slug
 HEALTHY_SLUG = URBAN_FORM_BLOCK_COMPACTNESS.slug
+
+COMPOSITE_SLUGS = frozenset(
+    s.slug for s in SHIPPED_INDICATORS if s.computation_kind == "composite"
+)
+"""Downstream units, taken from the catalog rather than assumed.
+
+⚠ Not "everything that is not the two slugs above". The catalog ships three
+*direct* indicators, and the baseline `geometry` edit dirties only two of them —
+so exclusion also catches `planned_floors`, which is legitimately `skipped` for
+a quite different reason than a composite whose input failed."""
 
 
 @dataclass(frozen=True)
@@ -139,6 +153,8 @@ def hatchet_worker():
     os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
     from apps.worker.app import run_hatchet_worker
 
+    _reap_stale_workers()
+
     try:
         worker = run_hatchet_worker(name="conformance", slots=4, blocking=False)
     except Exception as exc:  # noqa: BLE001
@@ -148,8 +164,55 @@ def hatchet_worker():
     thread.start()
     _await_registration(worker)
     yield worker
-    # Daemon thread: the process exits without waiting. Nothing to reclaim —
-    # the engine reassigns an abandoned task's slot on its own.
+
+    # ⚠ `exit_gracefully()` stops the local worker loop; it does **not**
+    # deregister. Measured: after a clean session teardown the engine still
+    # listed the worker ACTIVE and still eligible for `reimagina-run` tasks.
+    # That is why `_reap_stale_workers` runs on setup and this call does not
+    # carry the weight — cleanup on the way out cannot be relied on, so the
+    # next session cleans up on the way in.
+    try:
+        worker.exit_gracefully()
+    except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
+        _LOG.warning("worker did not stop cleanly: %s", exc)
+
+
+def _reap_stale_workers() -> None:
+    """Pause every `conformance` worker the engine still believes in.
+
+    ⚠ The load-bearing half of B12, and it runs on **setup** for a reason: a
+    worker registration lives in the engine's database and survives both the
+    process that made it and a restart of the engine itself. A killed pytest
+    run — or, as measured, an ordinary clean one — leaves it ACTIVE and still
+    eligible for tasks, so the engine hands work to a process that no longer
+    exists and the run sits at `running` with no units until the suite's
+    timeouts fire.
+
+    The symptom is invisible in the failures themselves; what gives it away is
+    suite wall clock drifting run over run (62s → 322s) on unchanged code.
+
+    Every `conformance` worker found here is by definition stale: only one live
+    one exists at a time, and it has not been started yet.
+    """
+    from reimagina.orchestration import hatchet_app
+
+    try:
+        listed = hatchet_app.hatchet.workers.list()
+    except Exception as exc:  # noqa: BLE001 — engine reachability checked later
+        _LOG.warning("could not list workers to reap: %s", exc)
+        return
+
+    for row in getattr(listed, "rows", None) or []:
+        if getattr(row, "name", None) != "conformance":
+            continue
+        worker_id = getattr(getattr(row, "metadata", None), "id", None)
+        if not worker_id:
+            continue
+        try:
+            hatchet_app.hatchet.workers.pause(worker_id)
+            _LOG.info("paused stale conformance worker %s", worker_id)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("could not pause stale worker %s: %s", worker_id, exc)
 
 
 def _await_registration(worker, timeout: float = 30.0) -> None:

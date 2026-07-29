@@ -60,7 +60,7 @@ from hatchet_sdk import (
 from pydantic import BaseModel
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
-from reimagina.jobs._lifecycle import current_run
+from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.runners import default_runners
 
@@ -279,7 +279,8 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
             # `invalid input syntax for type uuid: ""`. The DAG had never once
             # run end to end; the conformance suite is what caught it, because
             # nothing before it executed a real unit against a real database.
-            with connect(os.environ["DATABASE_URL_DIRECT"]) as conn:
+            conn = connect(os.environ["DATABASE_URL_DIRECT"])
+            try:
                 with current_run(ctx.workflow_run_id):
                     runner(
                         conn,
@@ -289,6 +290,26 @@ def build_dag(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS):
                         aoi_id=input.aoi_id,
                     )
                 conn.commit()
+            except BaseException as exc:
+                conn.rollback()
+                # That rollback just erased the `failed` job_run the runner
+                # opened — it was written on this connection. Re-record it on
+                # its own, or a unit that burned minutes and failed leaves no
+                # provenance at all. Once per attempt, deliberately: each retry
+                # really is a separate failed execution.
+                record_failed_job_run(
+                    conn.dsn,
+                    run_id=ctx.workflow_run_id,
+                    indicator_slug=_slug,
+                    scenario_id=input.scenario_id,
+                    code_version=input.code_version,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            finally:
+                # `with connect(...)` scopes the transaction, not the socket,
+                # so the previous shape leaked a connection per unit per run.
+                conn.close()
             return {"slug": _slug, "features": len(features)}
 
         node[spec.slug] = workflow.task(

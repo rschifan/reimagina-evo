@@ -67,3 +67,34 @@ Postgres (`TEST_DATABASE_URL`, default `postgresql://localhost/reimagina_test`).
 Everything skips cleanly without it. The suite seeds on a committed connection
 and tears down surgically, because a queue worker opens its own connection and
 cannot see uncommitted rows.
+
+## Running it
+
+```bash
+export HATCHET_CLIENT_TOKEN=...            # a running engine is required
+export TEST_DATABASE_URL=postgresql://localhost/reimagina_test_conf
+pytest tests/conformance -p no:randomly
+```
+
+⚠ **Give this suite its own database.** `migrated_db` tears down with
+`alembic downgrade base`, which drops every tracked schema. Two pytest sessions
+sharing one database will pull the schema out from under each other — observed
+as 13 fixture errors reading
+`relation "curated_geo.indicator_result" does not exist`, in a run whose own
+code was fine. The name must contain `test` or the fixture refuses to run.
+
+⚠ **A stale worker will make this suite lie.** Worker registrations live in the
+engine's database, survive the process that made them, survive an engine
+restart, and are *not* removed by `Worker.exit_gracefully()`. A leaked one stays
+eligible for `reimagina-run` tasks, so the engine hands work to a process that
+no longer exists and runs sit at `running` with no units until the timeouts
+fire. The fixture pauses stale `conformance` workers on setup for this reason.
+
+If results look wrong, check the registry before the code:
+
+```bash
+python -c "from hatchet_sdk import Hatchet; print([(w.name, str(w.status)) for w in Hatchet().workers.list().rows])"
+```
+
+The tell is **suite wall clock**, not the failures: 62s → 322s across unchanged
+code is a leak, not a regression.
