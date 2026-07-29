@@ -20,14 +20,22 @@ import pytest
 
 from reimagina.orchestration.port import RUN_TERMINAL_STATES
 
-from .conftest import HEALTHY_SLUG, POISONED_SLUG
+from .conftest import COMPOSITE_SLUGS, HEALTHY_SLUG, POISONED_SLUG
 
 _SUBSCRIBE_TIMEOUT = 10.0
 _SETTLE_TIMEOUT = 120.0
 """Generous: a real unit is PostGIS over real geometry, not a stub."""
 
-_CONVERGE_TIMEOUT = 20.0
-"""For state the engine reaches shortly, not work it has to do."""
+_CONVERGE_TIMEOUT = 60.0
+"""For state the engine reaches on its own, not work it has to do.
+
+⚠ Sized for the *first* submit of a session, not the steady state. A freshly
+registered worker and a freshly declared workflow make the engine do one-time
+bookkeeping before task rows appear, and 20 s was enough on a warm engine and
+not on a cold one — which showed up as `test_a_submitted_run_is_retrievable`
+passing and failing across otherwise identical runs. Sixty seconds is still an
+order of magnitude below `_SETTLE_TIMEOUT`, because this waits on the engine
+catching up with itself rather than on PostGIS."""
 
 
 def _drain(agen) -> list:
@@ -185,7 +193,9 @@ def test_cancelling_a_live_run_closes_it(submit, orchestrator, seeded, impl):
     handle = submit()
     orchestrator.cancel_run(seeded.conn, handle.run_id)
 
-    fetched = orchestrator.get_run(seeded.conn, handle.run_id)
+    # Waits for the same reason `_make_terminal` does: the engine returns from
+    # cancel once it has accepted the request, not once the run is terminal.
+    fetched = _await_terminal(orchestrator, seeded.conn, handle.run_id)
     assert fetched is not None
     assert fetched.status in RUN_TERMINAL_STATES
 
@@ -269,8 +279,13 @@ def test_a_composite_is_skipped_when_a_dirty_input_fails(
     )
     assert fetched is not None
 
-    composites = [
-        u for u in fetched.units if u.indicator not in (POISONED_SLUG, HEALTHY_SLUG)
-    ]
+    # ⚠ Identify composites from the catalog, not by excluding the two units
+    # this test names. The catalog ships **three** direct indicators, and a
+    # `geometry` edit does not dirty `planned_floors` — so "everything else"
+    # mixes a genuinely skipped direct indicator in with the composite, and the
+    # `all(...)` below then compares two different correct answers and fails.
+    composites = [u for u in fetched.units if u.indicator in COMPOSITE_SLUGS]
     assert composites, "the shipped DAG must have a downstream unit to skip"
-    assert all(u.status == impl.skipped_unit_status for u in composites)
+    assert all(u.status == impl.skipped_unit_status for u in composites), {
+        u.indicator: u.status for u in composites
+    }

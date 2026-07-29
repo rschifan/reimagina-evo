@@ -341,20 +341,33 @@ class HatchetOrchestrator:
 
         seen: dict[str, str] = {}
 
-        async def emit() -> AsyncIterator[RunEvent]:
-            """Diff the engine's current answer against what we already sent."""
+        async def emit(*, snapshot: bool = False) -> AsyncIterator[RunEvent]:
+            """Diff the engine's current answer against what we already sent.
+
+            ``snapshot`` marks the first read, taken before anything has been
+            sent. If the run is *already* terminal then, the subscriber is late:
+            it gets the outcome and nothing else. Replaying every unit
+            transition first would be a history lesson for a caller that only
+            asked how the run ended, and it would put a unit event where the
+            port's contract puts the run-level one.
+            """
             status = await asyncio.to_thread(self.get_run, None, run_id)
             if status is None:
                 yield RunEvent(run_id=run_id, indicator=None, status="unknown")
                 return
-            for unit in status.units:
-                if seen.get(unit.indicator) != unit.status:
-                    seen[unit.indicator] = unit.status
-                    yield RunEvent(run_id, unit.indicator, unit.status, unit.detail)
-            if status.status in RUN_TERMINAL_STATES:
+            terminal = status.status in RUN_TERMINAL_STATES
+            if not (snapshot and terminal):
+                for unit in status.units:
+                    if seen.get(unit.indicator) != unit.status:
+                        seen[unit.indicator] = unit.status
+                        yield RunEvent(
+                            run_id, unit.indicator, unit.status, unit.detail
+                        )
+            if terminal:
                 yield RunEvent(run_id, None, status.status)
 
-        async for event in emit():  # whatever already happened before we attached
+        # Whatever already happened before we attached.
+        async for event in emit(snapshot=True):
             yield event
             if event.indicator is None:
                 return
