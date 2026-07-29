@@ -64,18 +64,29 @@ def run_hatchet_worker(
     if resolved_slots < 1:
         raise ValueError("worker slots must be at least 1")
 
+    from reimagina.db import connect, verify_required_relations
     from reimagina.orchestration import hatchet_app
-    from reimagina.orchestration.database_identity import assert_same_domain_database
-    from reimagina.db import connect
 
     # Validate the target is migrated before the worker advertises a workflow.
+    #
+    # ⚠ Not `assert_same_domain_database`. That compares a caller connection
+    # against a direct DSN, and here both sides are DATABASE_URL_DIRECT — so the
+    # identity half was tautologically true and bought a second connection to
+    # prove it. Only the migrated-check ever did work; this is that check, on
+    # the connection already open, through the helper that already exists.
     with closing(connect(os.environ["DATABASE_URL_DIRECT"])) as conn:
-        assert_same_domain_database(conn, os.environ["DATABASE_URL_DIRECT"])
+        present = verify_required_relations(conn, ["jobs_runtime.job_run"])
+    missing = sorted(relation for relation, ok in present.items() if not ok)
+    if missing:
+        raise RuntimeError(
+            f"DATABASE_URL_DIRECT does not point at a migrated reimagina database "
+            f"(missing: {', '.join(missing)})"
+        )
 
     worker = hatchet_app.get_hatchet().worker(
         name or os.environ.get("REIMAGINA_WORKER_NAME", "reimagina-worker"),
         slots=resolved_slots,
-        workflows=[hatchet_app.get_run_workflow(), hatchet_app.get_outbox_workflow()],
+        workflows=[hatchet_app.get_run_workflow()],
     )
     if not blocking:
         return worker

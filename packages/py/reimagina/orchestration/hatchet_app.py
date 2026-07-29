@@ -42,9 +42,9 @@ more honest comparison row than "the engine is lossy".
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 from collections.abc import Sequence
-from contextlib import closing
 from datetime import timedelta
 from typing import Any
 
@@ -101,16 +101,40 @@ UNIT_RETRIES = int(os.environ.get("REIMAGINA_UNIT_RETRIES", "2"))
 # The API reads run state but does not need SDK configuration until a request
 # actually touches Hatchet. Keeping construction lazy makes pure unit tests and
 # worker preflight validation independent of a dashboard token.
+#
+# ⚠ Two locks, not one, and not zero.
+#
+# Not zero: `POST /jobs` is a *sync* def, so FastAPI runs it on the anyio
+# threadpool. Two concurrent requests against a cold process would each see the
+# global as None, each construct a client and each build the DAG — two gRPC
+# channels with their background threads, one of them overwritten and leaked.
+#
+# Not one: `build_dag()` calls `get_hatchet()`, so a single non-reentrant lock
+# held across DAG construction would deadlock on that nested acquire. Separate
+# locks, always taken in this order (dag -> client), cannot.
+_CLIENT_LOCK = threading.Lock()
+_DAG_LOCK = threading.Lock()
+
 hatchet: Hatchet | None = None
-run_workflow: Any | None = None
-_nodes: dict[str, Any] | None = None
-outbox_workflow: Any | None = None
+
+_dag: tuple[Any, dict[str, Any]] | None = None
+"""The declared workflow and its nodes, together.
+
+⚠ One tuple rather than a `run_workflow` global beside a `_nodes` global. Those
+two could disagree: `get_run_workflow()` returned early whenever `run_workflow`
+was set, without ever assigning `_nodes`, so `nodes()` either tripped its own
+assert or handed back nodes belonging to a different graph. A tuple cannot be
+half-assigned.
+"""
 
 
 def get_hatchet() -> Hatchet:
     global hatchet
-    if hatchet is None:
-        hatchet = Hatchet()
+    if hatchet is not None:  # fast path: no lock once constructed
+        return hatchet
+    with _CLIENT_LOCK:
+        if hatchet is None:
+            hatchet = Hatchet()
     return hatchet
 
 
@@ -250,7 +274,6 @@ def build_dag(
             max_runs=1,
             limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
         ),
-        on_events=["scenario:edited"],
     )
 
     @workflow.task(execution_timeout=timedelta(minutes=5), retries=1)
@@ -301,7 +324,13 @@ def build_dag(
                         aoi_id=input.aoi_id,
                     )
                 conn.commit()
-            except BaseException as exc:
+            except Exception as exc:
+                # ⚠ `Exception`, never `BaseException`. The wider clause caught
+                # KeyboardInterrupt, SystemExit and CancelledError and re-raised
+                # them as `NonRetryableException` — which subclasses `Exception`
+                # — so a worker being shut down recorded a healthy unit as a
+                # permanent failure. A signal is not a unit outcome; let it go.
+                # `finally: conn.close()` still runs either way.
                 conn.rollback()
                 # That rollback just erased the `failed` job_run the runner
                 # opened — it was written on this connection. Re-record it on
@@ -405,102 +434,44 @@ def build_dag(
     return workflow, node
 
 
-def get_run_workflow() -> Any:
-    """Return the lazily declared production DAG.
+def _get_dag() -> tuple[Any, dict[str, Any]]:
+    """Declare the production DAG once, atomically.
 
-    ``run_workflow`` remains replaceable for the workload suite, whose distinct
-    workflow names intentionally exercise alternate static DAG shapes.
+    ``_dag`` stays replaceable for the workload suite, whose distinct workflow
+    names intentionally exercise alternate static DAG shapes — but it is
+    replaced as a *pair*, so the workflow and the nodes describing it can never
+    come from different builds.
     """
-    global run_workflow, _nodes
-    if run_workflow is None:
-        run_workflow, _nodes = build_dag()
-    return run_workflow
+    global _dag
+    if _dag is not None:  # fast path: no lock once built
+        return _dag
+    with _DAG_LOCK:
+        if _dag is None:
+            _dag = build_dag()
+    return _dag
+
+
+def get_run_workflow() -> Any:
+    return _get_dag()[0]
 
 
 def nodes() -> dict[str, Any]:
-    get_run_workflow()
-    assert _nodes is not None
-    return _nodes
-
-
-def get_outbox_workflow() -> Any:
-    """A Hatchet-scheduled bridge from the transactional outbox to events."""
-    global outbox_workflow
-    if outbox_workflow is not None:
-        return outbox_workflow
-
-    from pydantic import BaseModel
-    from reimagina.db import connect
-    from reimagina.orchestration.outbox import claim_pending, mark_delivered, mark_failed
-    from reimagina.orchestration.plan import plan_run
-    from reimagina.orchestration.hatchet_orchestrator import _dedup_key
-
-    class OutboxInput(BaseModel):
-        pass
-
-    workflow = get_hatchet().workflow(
-        name="reimagina-outbox",
-        input_validator=OutboxInput,
-        on_crons=[os.environ.get("REIMAGINA_OUTBOX_CRON", "* * * * *")],
-        concurrency=1,
-        task_defaults=TaskDefaults(execution_timeout=timedelta(minutes=5), retries=2),
-    )
-
-    @workflow.task()
-    def publish_scenario_edits(_input: OutboxInput, ctx: Context) -> dict[str, int]:
-        direct_dsn = os.environ["DATABASE_URL_DIRECT"]
-        with closing(connect(direct_dsn)) as conn:
-            events = claim_pending(conn)
-            conn.commit()
-        delivered = 0
-        for event in events:
-            try:
-                with closing(connect(direct_dsn)) as conn:
-                    plan = plan_run(
-                        conn,
-                        changed_attributes=event.changed_attributes,
-                        edited_features=event.edited_features,
-                        scenario_id=event.scenario_id,
-                    )
-                    if plan.is_noop:
-                        mark_delivered(conn, event.id, event.claim_token)
-                        conn.commit()
-                        continue
-                    dirty = [unit.indicator for unit in plan.units]
-                    features = {unit.indicator: sorted(unit.features) for unit in plan.units}
-                    payload = RunInput(
-                        run_id="",
-                        dirty=dirty,
-                        features=features,
-                        scenario_id=event.scenario_id,
-                        code_version=os.environ.get("REIMAGINA_CODE_VERSION", "dev"),
-                        concurrency_key=event.scenario_id,
-                        dedup_key=_dedup_key(
-                            event.scenario_id,
-                            None,
-                            os.environ.get("REIMAGINA_CODE_VERSION", "dev"),
-                            dirty,
-                            features,
-                        ),
-                    )
-                get_hatchet().event.push("scenario:edited", payload.model_dump(mode="json"))
-                with closing(connect(direct_dsn)) as conn:
-                    mark_delivered(conn, event.id, event.claim_token)
-                    conn.commit()
-                delivered += 1
-            except Exception as exc:  # noqa: BLE001 - persisted retry record
-                with closing(connect(direct_dsn)) as conn:
-                    mark_failed(conn, event.id, event.claim_token, exc)
-                    conn.commit()
-                ctx.log(f"outbox event {event.id} failed: {type(exc).__name__}: {exc}")
-        return {"delivered": delivered, "claimed": len(events)}
-
-    outbox_workflow = workflow
-    return workflow
+    return _get_dag()[1]
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Return whether retrying a rolled-back unit can plausibly make progress."""
+    """Return whether retrying a rolled-back unit can plausibly make progress.
+
+    ⚠ The cancellation check must come first, because `QueryCanceled` inherits
+    from `OperationalError` and the broad clause below would otherwise claim it.
+    `cancel_run` stops a unit with `pg_cancel_backend`, so classifying that as
+    retryable hands the engine a cancelled unit to run again — up to
+    `REIMAGINA_UNIT_RETRIES` more times, each free to burn the full
+    `REIMAGINA_UNIT_TIMEOUT_MIN`. The same exception arrives from a role-level
+    `statement_timeout`, where retrying is equally pointless.
+    """
+    if isinstance(exc, psycopg2.errors.QueryCanceled):
+        return False
     if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
         return True
     code = getattr(exc, "pgcode", None)

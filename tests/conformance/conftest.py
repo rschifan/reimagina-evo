@@ -8,6 +8,7 @@ is what an ops-plane branch edits.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -165,16 +166,46 @@ def hatchet_worker():
     _await_registration(worker)
     yield worker
 
-    # ⚠ `exit_gracefully()` stops the local worker loop; it does **not**
-    # deregister. Measured: after a clean session teardown the engine still
-    # listed the worker ACTIVE and still eligible for `reimagina-run` tasks.
-    # That is why `_reap_stale_workers` runs on setup and this call does not
-    # carry the weight — cleanup on the way out cannot be relied on, so the
-    # next session cleans up on the way in.
-    try:
-        worker.exit_gracefully()
-    except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
-        _LOG.warning("worker did not stop cleanly: %s", exc)
+    _stop_worker(worker)
+
+
+def _stop_worker(worker, timeout: float = 20.0) -> None:
+    """Actually stop the worker, so the session can exit.
+
+    ⚠ Two SDK facts make the obvious `worker.exit_gracefully()` wrong, both
+    measured rather than read:
+
+    1. **`exit_gracefully` is `async def`.** Calling it from sync code returns a
+       coroutine that is never awaited — Python only warns — so it does nothing
+       at all. This suite made exactly that call, which is the likeliest reason
+       its workers were observed surviving a "clean" shutdown.
+
+    2. **The action listener is a spawned child process, not a thread**
+       (`multiprocessing.get_context("spawn")`), and it is not a daemon. Python
+       joins non-daemon children at interpreter exit, so a listener that never
+       stops hangs the whole session *after the last test passed* — no output
+       and no failing test. Observed here the moment the worker started building
+       again: 17 passed, then an indefinite hang in teardown.
+
+    Drive the coroutine on the worker's own loop, then verify the child is gone
+    and terminate it if not. `_reap_stale_workers` on setup still carries the
+    deregistration weight; this only ensures the process can exit.
+    """
+    loop = getattr(worker, "_loop", None)
+    if loop is not None and loop.is_running():
+        try:
+            asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
+                timeout=timeout
+            )
+        except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
+            _LOG.warning("graceful worker stop failed: %s", exc)
+
+    for attr in ("_action_listener_process", "_durable_action_listener_process"):
+        proc = getattr(worker, attr, None)
+        if proc is not None and proc.is_alive():
+            _LOG.warning("%s survived graceful stop; terminating", attr)
+            proc.terminate()
+            proc.join(timeout=5.0)
 
 
 def _reap_stale_workers() -> None:
@@ -197,7 +228,7 @@ def _reap_stale_workers() -> None:
     from reimagina.orchestration import hatchet_app
 
     try:
-        listed = hatchet_app.hatchet.workers.list()
+        listed = hatchet_app.get_hatchet().workers.list()
     except Exception as exc:  # noqa: BLE001 — engine reachability checked later
         _LOG.warning("could not list workers to reap: %s", exc)
         return
@@ -209,7 +240,7 @@ def _reap_stale_workers() -> None:
         if not worker_id:
             continue
         try:
-            hatchet_app.hatchet.workers.pause(worker_id)
+            hatchet_app.get_hatchet().workers.pause(worker_id)
             _LOG.info("paused stale conformance worker %s", worker_id)
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("could not pause stale worker %s: %s", worker_id, exc)
@@ -230,7 +261,7 @@ def _await_registration(worker, timeout: float = 30.0) -> None:
     last: object = "no response"
     while time.monotonic() < deadline:
         try:
-            listed = hatchet_app.hatchet.workflows.list()
+            listed = hatchet_app.get_hatchet().workflows.list()
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }
