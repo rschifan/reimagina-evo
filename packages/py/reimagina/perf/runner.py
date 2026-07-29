@@ -10,7 +10,7 @@ from statistics import median
 
 from reimagina.storage import backend_for_connection
 
-from .geometry import bbox_around_feature, bbox_from_extent
+from .geometry import bbox_around_feature, bbox_from_extent, feature_extent
 from .manifest import BENCHMARKS, DATASET_TIERS, BenchmarkSpec
 from .seed import PERF_AOI_NAMES
 
@@ -52,28 +52,6 @@ def _dataset_summary(conn) -> dict[str, object]:
         "observation_rows": int(observation_row[0]),
         "current_observation_rows": int(observation_row[1]),
     }
-
-
-def _extent_bounds(conn) -> tuple[float, float, float, float]:
-    row = _query_one(
-        conn,
-        """
-        SELECT
-          ST_XMin(extent::geometry),
-          ST_YMin(extent::geometry),
-          ST_XMax(extent::geometry),
-          ST_YMax(extent::geometry)
-        FROM (
-          SELECT ST_Extent(geometry) AS extent
-          FROM curated_geo.feature
-        ) bounds
-        """,
-    )
-    if row is None or any(value is None for value in row):
-        raise ValueError(
-            "No canonical features are loaded. Benchmarks require feature data."
-        )
-    return tuple(float(value) for value in row)
 
 
 def _polygon_wkt_from_bbox(
@@ -149,31 +127,41 @@ def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[objec
 
     # Benchmarks that work off the real INEGI geometry resolve their own
     # references (AOI + type ids) and should not require the generic
-    # _extent_bounds probe, which fails when synthetic fixture data is absent.
+    # feature_extent probe, which fails when synthetic fixture data is absent.
     if benchmark_name == "overlap_block_to_ageb_cuauhtemoc":
         return _build_overlap_block_ageb_cuauhtemoc_params(conn)
 
-    extent = _extent_bounds(conn)
+    # ⚠ Called per branch, not once up front. `feature_extent` is a full-table
+    # ST_Extent aggregate — the most expensive probe in this file — and four of
+    # the branches below never use it.
     if benchmark_name == "bbox_features_small":
         bounds = bbox_around_feature(conn)
         return [*bounds, *bounds]
     if benchmark_name == "bbox_features_dense":
-        bounds = bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
+        bounds = bbox_from_extent(
+            feature_extent(conn), width_ratio=0.08, height_ratio=0.08
+        )
         return [*bounds, *bounds]
     if benchmark_name == "polygon_features_small":
         polygon = _polygon_wkt_from_bbox(
-            bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03),
+            bbox_from_extent(
+                feature_extent(conn), width_ratio=0.03, height_ratio=0.03
+            ),
             complex_shape=False,
         )
         return [polygon, polygon]
     if benchmark_name == "polygon_features_dense":
         polygon = _polygon_wkt_from_bbox(
-            bbox_from_extent(extent, width_ratio=0.1, height_ratio=0.08),
+            bbox_from_extent(
+                feature_extent(conn), width_ratio=0.1, height_ratio=0.08
+            ),
             complex_shape=True,
         )
         return [polygon, polygon]
     if benchmark_name == "bbox_features_with_current_attributes":
-        bounds = bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08)
+        bounds = bbox_from_extent(
+            feature_extent(conn), width_ratio=0.08, height_ratio=0.08
+        )
         return [*bounds, *bounds]
     if benchmark_name == "selected_features_current_observations":
         return [_get_selected_feature_ids(conn, count=tier.selected_feature_count)]
