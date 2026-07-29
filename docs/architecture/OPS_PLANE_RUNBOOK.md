@@ -148,6 +148,54 @@ WHERE jr.run_id = :run_id AND jr.status NOT IN ('succeeded','failed','cancelled'
 `pg_cancel_backend(backend_pid)` is what actually ends it. `job_run` survives on
 every branch precisely because of this — the answer lives outside both engines.
 
+⚠ Cancelling this way raises `QueryCanceled` in the runner, which **inherits from
+`OperationalError`** — the class the retry classifier treats as transient. It is
+tested for first and classified non-retryable, so a unit you stopped stays
+stopped. Reorder those checks and the engine re-runs a cancelled unit up to
+`REIMAGINA_UNIT_RETRIES` more times, each free to burn a full
+`REIMAGINA_UNIT_TIMEOUT_MIN`. `tests/unit/test_unit_retry_policy.py` fails if the
+order is swapped.
+
+## Two databases, one plane
+
+The API derives a plan on its own connection; the worker executes it against
+`DATABASE_URL_DIRECT`. If those are not the same server *and* the same database,
+the API produces a plan for rows the worker never sees — silent and total.
+
+`assert_same_domain_database` compares
+`(current_database(), inet_server_addr(), current_setting('port'))` on both sides
+and fails closed when one reports a server address and the other does not.
+
+| rejected alternative | why |
+|---|---|
+| `current_database()` alone | two servers both hosting `reimagina` compare equal — the staging/production split the guard exists to catch |
+| `inet_server_port()` | NULL over a Unix socket, which is exactly where two local clusters need telling apart |
+| `pg_control_system()` | the precise answer, and superuser-only: on managed Postgres the app role gets permission-denied on **every submit** |
+
+Residual limitation, stated rather than implied: with both sides on Unix sockets
+`inet_server_addr()` is NULL on each, so identity rests on database name plus
+port. Sound wherever sockets mean localhost — an assumption about deployment
+shape, not proof of identity.
+
+The direct-side probe is memoised per DSN; the caller side is read every request.
+
+## `GET /jobs/{run_id}/events` — the error frame
+
+The stream can fail after its headers are on the wire, and at that point the
+status code is settled: a 503 is no longer reachable. The route emits one
+terminal frame instead, then closes.
+
+```
+event: error
+data: {"reason":"orchestrator_unavailable"}
+```
+
+An SSE **event type**, not a run status — `RUN_TERMINAL_STATES` is the port's
+closed vocabulary and a transport failure is not an orchestration outcome. A
+client that does not know `error` sees the stream close, as before, minus the
+ambiguity with a run that simply finished. The reason is a fixed token; the
+underlying exception text never reaches the wire.
+
 ## Configuration that will bite you
 
 | variable | unset behaviour | why it matters |
