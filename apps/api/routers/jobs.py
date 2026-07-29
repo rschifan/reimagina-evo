@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from typing import Literal
+from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException
@@ -40,6 +42,17 @@ class SubmitRunBody(BaseModel):
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
+
+    wait: Literal[False] = False
+    """Accepted only as ``false``; ``true`` is a 422.
+
+    ⚠ Declared rather than left to ``extra="forbid"``. ``wait`` used to start a
+    worker inside the request, which is gone — but it defaulted to ``false``, so
+    forbidding the key outright also rejected clients that merely spelled out
+    that default and asked for the only behaviour this endpoint still has.
+    Rejecting ``true`` is the contract change; rejecting ``false`` was
+    collateral.
+    """
 
 
 class SubmitRunResponse(BaseModel):
@@ -94,14 +107,20 @@ def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
 
 @router.get("/{run_id}", response_model=RunView)
 def get_run(
-    run_id: str,
+    run_id: UUID,
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> RunView:
+    """⚠ ``run_id: UUID``, not ``str``. A run id *is* a uuid, and typing it as
+    one rejects a malformed id here, with 422, instead of letting it reach the
+    engine client — whose own length validation raises a pydantic error carrying
+    no HTTP status, which the orchestrator then cannot tell from an outage and
+    reports as a retryable 503. Validating at the boundary deletes that whole
+    special case."""
     from reimagina.orchestration.factory import get_orchestrator
 
-    status = get_orchestrator().get_run(conn, run_id)
+    status = get_orchestrator().get_run(conn, str(run_id))
     if status is None:
-        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+        raise HTTPException(status_code=404, detail=f"run {str(run_id)!r} not found")
     return RunView(
         run_id=status.run_id,
         status=status.status,
@@ -140,6 +159,25 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
                 event = pending.result()
             except StopAsyncIteration:
                 return
+            except Exception:  # noqa: BLE001 — see below; silence is worse
+                # ⚠ The response is already 200 with its headers on the wire, so
+                # the registered 503 handler cannot run: Starlette raises
+                # "response already started" rather than replacing it. Letting
+                # the exception escape therefore just stops the stream, which a
+                # client cannot distinguish from a completed run.
+                #
+                # Broad on purpose, and engine-agnostic on purpose: whatever
+                # went wrong reading progress, the caller needs to be told the
+                # stream ended badly, and this module names no engine. Normal
+                # termination is `StopAsyncIteration`, caught above; a client
+                # disconnect is `CancelledError`, a BaseException, and still
+                # propagates.
+                #
+                # A fixed reason string, never the exception text — the
+                # orchestrator's message carries the run id and its `__cause__`
+                # carries engine internals. Neither belongs on a public stream.
+                yield frames.error_frame("orchestrator_unavailable")
+                return
             pending = asyncio.ensure_future(anext(events))
             yield frames.event_frame(event)
             if event.indicator is None and frames.is_run_terminal(event.status):
@@ -156,11 +194,13 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
 
 @router.get("/{run_id}/events")
 def stream_run_events(
-    run_id: str,
+    run_id: UUID,
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> StreamingResponse:
     from reimagina.orchestration.factory import get_orchestrator
 
-    if get_orchestrator().get_run(conn, run_id) is None:
-        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
-    return StreamingResponse(_event_stream(run_id), media_type="text/event-stream")
+    if get_orchestrator().get_run(conn, str(run_id)) is None:
+        raise HTTPException(status_code=404, detail=f"run {str(run_id)!r} not found")
+    return StreamingResponse(
+        _event_stream(str(run_id)), media_type="text/event-stream"
+    )
