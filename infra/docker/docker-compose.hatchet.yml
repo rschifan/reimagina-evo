@@ -22,6 +22,25 @@ services:
       DATABASE_POSTGRES_DB_NAME: hatchet
       DATABASE_POSTGRES_SSL_MODE: disable
 
+      # ⚠ Measured, not guessed: left at its default this engine opened **94 of
+      # the host's 100 connections** and held them at idle, so the next thing to
+      # connect — the API, a worker, or a test suite — got "sorry, too many
+      # clients already". The workload suite skipped its whole run that way,
+      # reporting a missing database rather than a full one.
+      #
+      # This is the price of the sharing decision above, not an argument against
+      # it: an engine co-located on the domain database has to be told it is a
+      # guest. The library track has no equivalent knob because it has no
+      # standing service to bound.
+      #
+      # ⚠ It bounds one pool, not the engine's total. Measured at idle:
+      # 94 connections before, 47 after — the engine keeps several pools and
+      # only one of them honours this. Enough to unblock the suite, not enough
+      # to call the footprint small; the honest number for the comparison is
+      # "~47 idle connections on a shared Postgres", not "20".
+      DATABASE_MAX_CONNS: "20"
+      DATABASE_MIN_CONNS: "2"
+
       # No broker to operate. `postgres` is a first-class MIT implementation,
       # and it is what Hatchet's own release compose uses — so this track costs
       # zero extra infrastructure beyond the engine itself.
