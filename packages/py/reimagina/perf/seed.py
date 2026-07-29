@@ -10,7 +10,7 @@ from shapely.geometry import Polygon, box
 from reimagina.data import aoi, catalog as cat
 from reimagina.storage import backend_for_connection
 
-from .geometry import bbox_around_feature, bbox_from_extent
+from .geometry import bbox_around_feature, bbox_from_extent, feature_extent
 from .manifest import DATASET_TIERS
 
 
@@ -30,29 +30,6 @@ def _require_postgres(conn) -> None:
     backend = backend_for_connection(conn)
     if backend.name != "postgres":
         raise ValueError("Performance seeding is Postgres/PostGIS-only.")
-
-
-def _feature_extent(conn) -> tuple[float, float, float, float]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-              ST_XMin(extent::geometry),
-              ST_YMin(extent::geometry),
-              ST_XMax(extent::geometry),
-              ST_YMax(extent::geometry)
-            FROM (
-              SELECT ST_Extent(geometry) AS extent
-              FROM curated_geo.feature
-            ) bounds
-            """
-        )
-        row = cur.fetchone()
-    if row is None or any(value is None for value in row):
-        raise ValueError(
-            "No feature extent available. Load canonical features before seeding performance data."
-        )
-    return tuple(float(value) for value in row)
 
 
 def _bbox_wkt(bounds: tuple[float, float, float, float]) -> str:
@@ -132,11 +109,23 @@ def _upsert_aoi(conn, *, project_id: str, name: str, geometry_wkt: str) -> str:
 
 def ensure_perf_aois(conn) -> dict[str, str]:
     _require_postgres(conn)
-    extent = _feature_extent(conn)
+    extent = feature_extent(conn)
     project_id = _ensure_perf_project(conn)
+    # One probe, reused: the anchor is deterministic, so a second call would
+    # only cost a round trip to get the same four floats.
+    anchor = bbox_around_feature(conn)
     geometries = {
-        "bbox_small": _bbox_wkt(bbox_around_feature(conn)),
-        "bbox_dense": _bbox_wkt(bbox_around_feature(conn)),
+        "bbox_small": _bbox_wkt(anchor),
+        # ⚠ Sized for density, centred on the anchor. Both keys were the same
+        # single-feature envelope, so `aoi_membership_read` measured a one-row
+        # AOI under a "dense" label. Sizing from the extent alone (what this was
+        # before) is the other failure: that box is centred on the extent's
+        # midpoint and contains nothing when the data is clustered off-centre.
+        "bbox_dense": _bbox_wkt(
+            bbox_from_extent(
+                extent, width_ratio=0.08, height_ratio=0.08, around=anchor
+            )
+        ),
         "polygon_small": _bbox_wkt(
             bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)
         ),

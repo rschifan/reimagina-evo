@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import psycopg2
 import pytest
+from hatchet_sdk import NonRetryableException
 
 from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
@@ -91,8 +92,9 @@ def run_id(migrated_db, monkeypatch):
 def unit(run_id, monkeypatch):
     """The shipped DAG's unit task, callable without an engine.
 
-    ``_nodes`` is the graph built at import — the one that actually runs — not a
-    second ``build_dag()`` shaped like it.
+    ``nodes()`` returns the graph the module actually runs — built lazily and
+    cached as one ``(workflow, nodes)`` pair — not a second ``build_dag()``
+    shaped like it.
 
     ⚠ Not ``Task.mock_run``, which is the SDK's own no-engine harness. Its mock
     context answers ``workflow_run_id`` with the literal string
@@ -130,7 +132,12 @@ def unit(run_id, monkeypatch):
 
 
 def test_a_failed_unit_leaves_a_failed_job_run_for_its_run(unit, run_id):
-    with pytest.raises(RuntimeError):
+    # ⚠ NonRetryableException, not RuntimeError. The task body classifies a
+    # deterministic failure and re-raises it wrapped, so the runner's own
+    # RuntimeError never reaches the caller — `pytest.raises(RuntimeError)` here
+    # could not match, and only looked green because this module skips without a
+    # token. The wrap is what tells the engine not to retry.
+    with pytest.raises(NonRetryableException):
         unit(_doomed_runner)()
 
     rows = _job_runs(os.environ["DATABASE_URL_DIRECT"], run_id)
