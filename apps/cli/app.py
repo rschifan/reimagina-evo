@@ -16,7 +16,7 @@ from reimagina.db import (  # noqa: E402
     DEFAULT_APP_DSN,
     DEFAULT_TEST_DSN,
     bootstrap_local_platform,
-    connect,
+    managed_connection,
     verify_required_relations,
 )
 from reimagina.storage import mask_dsn  # noqa: E402
@@ -1076,7 +1076,7 @@ def _handle_bootstrap_db(args: argparse.Namespace) -> int:
 
 
 def _handle_verify_schema(args: argparse.Namespace) -> int:
-    with connect(args.dsn) as conn:
+    with managed_connection(args.dsn) as conn:
         checks = verify_required_relations(conn)
     return _print(
         {"dsn": args.dsn, "checks": checks, "all_present": all(checks.values())}

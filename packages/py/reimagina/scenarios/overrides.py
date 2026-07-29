@@ -45,6 +45,16 @@ def apply_override(
             """,
             (scenario_id, feature_id, attribute_key, value_numeric, value_text),
         )
+    # This stays in the caller's transaction. A committed override can therefore
+    # never be lost merely because Hatchet is temporarily unreachable.
+    from reimagina.orchestration.outbox import enqueue_scenario_edit
+
+    enqueue_scenario_edit(
+        conn,
+        scenario_id=scenario_id,
+        changed_attributes=[attribute_key],
+        edited_features=[feature_id],
+    )
 
 
 def effective_numeric(

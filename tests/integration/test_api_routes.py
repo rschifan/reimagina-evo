@@ -587,12 +587,12 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
     assert payload["aoi_id"] == bogus
 
 
-# ── POST /jobs — the submit endpoint's two response modes ───────────────────
+# ── POST /jobs — asynchronous Hatchet submission ────────────────────────────
 #
 # Isolated wiring tests: the enqueue/drain internals are covered deeply in the
 # orchestration suites, so here we swap the whole orchestrator out and only
-# assert the router wires the modes correctly (default 202+queued vs wait
-# 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
+# assert the router uses the default durable orchestrator and returns 202.
+# ``connect`` is stubbed so no real DB/engine is touched.
 #
 # Both modes are faked at the same seam — ``factory.get_orchestrator``, asserting
 # on the ``mode`` it is asked for. The wait path used to patch the *function*
@@ -601,11 +601,8 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
 
 
 def _stub_connect(monkeypatch):
-    from contextlib import contextmanager
-
-    @contextmanager
     def _fake(dsn):
-        yield object()
+        return type("_FakeConnection", (), {"close": lambda self: None})()
 
     monkeypatch.setattr("reimagina.db.connect", _fake)
 
@@ -622,7 +619,7 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
     from reimagina.orchestration.port import RunHandle
 
     _stub_connect(monkeypatch)
-    _install(monkeypatch, "detach", RunHandle(run_id="r-queued", status=None))
+    _install(monkeypatch, None, RunHandle(run_id="r-queued", status=None))
 
     response = client.post(
         "/jobs",
@@ -633,25 +630,7 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
     assert response.json() == {"run_id": "r-queued", "status": "queued"}
 
 
-def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
-    from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
-
-    _stub_connect(monkeypatch)
-    _install(
-        monkeypatch,
-        "embedded",
-        RunHandle(
-            run_id="r-done",
-            status=RunStatus(
-                run_id="r-done",
-                status="succeeded",
-                units=(
-                    UnitStatusView("urban_form_block_compactness", "succeeded", None),
-                ),
-            ),
-        ),
-    )
-
+def test_submit_run_rejects_removed_wait_mode(client, monkeypatch):
     response = client.post(
         "/jobs",
         json={
@@ -661,5 +640,4 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
         },
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"run_id": "r-done", "status": "succeeded"}
+    assert response.status_code == 422

@@ -44,9 +44,11 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import timedelta
 from typing import Any
 
+import psycopg2
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -57,7 +59,7 @@ from hatchet_sdk import (
     TaskDefaults,
     TTLBasedIdempotencyConfig,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
@@ -96,7 +98,20 @@ UNIT_SCHEDULE_TIMEOUT = timedelta(
 # and `NonRetryableException` opts a genuinely deterministic failure out.
 UNIT_RETRIES = int(os.environ.get("REIMAGINA_UNIT_RETRIES", "2"))
 
-hatchet = Hatchet()
+# The API reads run state but does not need SDK configuration until a request
+# actually touches Hatchet. Keeping construction lazy makes pure unit tests and
+# worker preflight validation independent of a dashboard token.
+hatchet: Hatchet | None = None
+run_workflow: Any | None = None
+_nodes: dict[str, Any] | None = None
+outbox_workflow: Any | None = None
+
+
+def get_hatchet() -> Hatchet:
+    global hatchet
+    if hatchet is None:
+        hatchet = Hatchet()
+    return hatchet
 
 
 class RunInput(BaseModel):
@@ -113,8 +128,8 @@ class RunInput(BaseModel):
     """
 
     run_id: str
-    dirty: list[str] = []
-    features: dict[str, list[str]] = {}
+    dirty: list[str] = Field(default_factory=list)
+    features: dict[str, list[str]] = Field(default_factory=dict)
     scenario_id: str | None = None
     aoi_id: str | None = None
     code_version: str = "dev"
@@ -188,6 +203,7 @@ def build_dag(
     registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
     *,
     name: str = "reimagina-run",
+    client: Hatchet | None = None,
 ):
     """Declare one task per indicator. This is the whole scheduler.
 
@@ -197,7 +213,7 @@ def build_dag(
     overwrites or rejects — so anything that needs its own topology takes its own
     name rather than finding out. The workload suite uses ``reimagina-bench-*``.
     """
-    workflow = hatchet.workflow(
+    workflow = (client or get_hatchet()).workflow(
         name=name,
         input_validator=RunInput,
         # Set once, not threaded through every task() call in the loop below.
@@ -222,28 +238,19 @@ def build_dag(
         # that matters: the write path is stale-then-insert, so overlapping
         # writers interleave and leave features with the wrong current value.
         #
-        # ⚠ CANCEL_NEWEST, not CANCEL_IN_PROGRESS, and the difference is safety:
-        # cancellation here is cooperative and nothing interrupts a blocking
+        # ⚠ Do not use CANCEL_IN_PROGRESS: cancellation here is cooperative and
+        # nothing interrupts a blocking
         # psycopg call (spike B4), so CANCEL_IN_PROGRESS would start the new run
         # while the old one is still writing — exactly the two-writer case.
         #
-        # ⚠ The cost is real and is a product decision, not an implementation
-        # detail: a second edit arriving mid-run is *dropped*, not queued. The
-        # user must resubmit. Hatchet's enum offers no "queue behind" strategy.
+        # A newer edit must not be dropped. Group-round-robin keeps work for the
+        # same write scope serial while allowing independent scopes to progress.
         concurrency=ConcurrencyExpression(
             expression="input.concurrency_key",
             max_runs=1,
-            limit_strategy=ConcurrencyLimitStrategy.CANCEL_NEWEST,
+            limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
         ),
-        # A scenario edit anywhere — a DB trigger, another service, a backfill
-        # script — can start a run without importing us or calling our API.
-        # Track A has no equivalent: DBOS has no event bus, so every submitter
-        # must be a Python process that imports the workflow definitions.
         on_events=["scenario:edited"],
-        # Nightly baseline recompute. One argument against a scheduler.
-        on_crons=[os.environ["REIMAGINA_RECOMPUTE_CRON"]]
-        if os.environ.get("REIMAGINA_RECOMPUTE_CRON")
-        else None,
     )
 
     @workflow.task(execution_timeout=timedelta(minutes=5), retries=1)
@@ -282,7 +289,8 @@ def build_dag(
             # `invalid input syntax for type uuid: ""`. The DAG had never once
             # run end to end; the conformance suite is what caught it, because
             # nothing before it executed a real unit against a real database.
-            conn = connect(os.environ["DATABASE_URL_DIRECT"])
+            direct_dsn = os.environ["DATABASE_URL_DIRECT"]
+            conn = connect(direct_dsn)
             try:
                 with current_run(ctx.workflow_run_id):
                     runner(
@@ -308,10 +316,12 @@ def build_dag(
                     code_version=input.code_version,
                     error=f"{type(exc).__name__}: {exc}",
                 )
-                raise
+                if _is_retryable(exc):
+                    raise
+                raise NonRetryableException(f"{type(exc).__name__}: {exc}") from exc
             finally:
-                # `with connect(...)` scopes the transaction, not the socket,
-                # so the previous shape leaked a connection per unit per run.
+                # The runner owns this direct connection for the unit's entire
+                # transaction, so it must always close it before the task exits.
                 conn.close()
             return {"slug": _slug, "features": len(features)}
 
@@ -395,6 +405,108 @@ def build_dag(
     return workflow, node
 
 
+def get_run_workflow() -> Any:
+    """Return the lazily declared production DAG.
+
+    ``run_workflow`` remains replaceable for the workload suite, whose distinct
+    workflow names intentionally exercise alternate static DAG shapes.
+    """
+    global run_workflow, _nodes
+    if run_workflow is None:
+        run_workflow, _nodes = build_dag()
+    return run_workflow
+
+
+def nodes() -> dict[str, Any]:
+    get_run_workflow()
+    assert _nodes is not None
+    return _nodes
+
+
+def get_outbox_workflow() -> Any:
+    """A Hatchet-scheduled bridge from the transactional outbox to events."""
+    global outbox_workflow
+    if outbox_workflow is not None:
+        return outbox_workflow
+
+    from pydantic import BaseModel
+    from reimagina.db import connect
+    from reimagina.orchestration.outbox import claim_pending, mark_delivered, mark_failed
+    from reimagina.orchestration.plan import plan_run
+    from reimagina.orchestration.hatchet_orchestrator import _dedup_key
+
+    class OutboxInput(BaseModel):
+        pass
+
+    workflow = get_hatchet().workflow(
+        name="reimagina-outbox",
+        input_validator=OutboxInput,
+        on_crons=[os.environ.get("REIMAGINA_OUTBOX_CRON", "* * * * *")],
+        concurrency=1,
+        task_defaults=TaskDefaults(execution_timeout=timedelta(minutes=5), retries=2),
+    )
+
+    @workflow.task()
+    def publish_scenario_edits(_input: OutboxInput, ctx: Context) -> dict[str, int]:
+        direct_dsn = os.environ["DATABASE_URL_DIRECT"]
+        with closing(connect(direct_dsn)) as conn:
+            events = claim_pending(conn)
+            conn.commit()
+        delivered = 0
+        for event in events:
+            try:
+                with closing(connect(direct_dsn)) as conn:
+                    plan = plan_run(
+                        conn,
+                        changed_attributes=event.changed_attributes,
+                        edited_features=event.edited_features,
+                        scenario_id=event.scenario_id,
+                    )
+                    if plan.is_noop:
+                        mark_delivered(conn, event.id, event.claim_token)
+                        conn.commit()
+                        continue
+                    dirty = [unit.indicator for unit in plan.units]
+                    features = {unit.indicator: sorted(unit.features) for unit in plan.units}
+                    payload = RunInput(
+                        run_id="",
+                        dirty=dirty,
+                        features=features,
+                        scenario_id=event.scenario_id,
+                        code_version=os.environ.get("REIMAGINA_CODE_VERSION", "dev"),
+                        concurrency_key=event.scenario_id,
+                        dedup_key=_dedup_key(
+                            event.scenario_id,
+                            None,
+                            os.environ.get("REIMAGINA_CODE_VERSION", "dev"),
+                            dirty,
+                            features,
+                        ),
+                    )
+                get_hatchet().event.push("scenario:edited", payload.model_dump(mode="json"))
+                with closing(connect(direct_dsn)) as conn:
+                    mark_delivered(conn, event.id, event.claim_token)
+                    conn.commit()
+                delivered += 1
+            except Exception as exc:  # noqa: BLE001 - persisted retry record
+                with closing(connect(direct_dsn)) as conn:
+                    mark_failed(conn, event.id, event.claim_token, exc)
+                    conn.commit()
+                ctx.log(f"outbox event {event.id} failed: {type(exc).__name__}: {exc}")
+        return {"delivered": delivered, "claimed": len(events)}
+
+    outbox_workflow = workflow
+    return workflow
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Return whether retrying a rolled-back unit can plausibly make progress."""
+    if isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+        return True
+    code = getattr(exc, "pgcode", None)
+    return code in {"40001", "40P01"}  # serialization failure, deadlock
+
+
 def _produced_output(ctx: Context, task: Any) -> bool:
     """Did this task return a value?
 
@@ -409,6 +521,3 @@ def _produced_output(ctx: Context, task: Any) -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
-
-
-run_workflow, _nodes = build_dag()

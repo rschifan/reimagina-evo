@@ -142,7 +142,7 @@ def record_failed_job_run(
     # reads like the one that was lost, not like a different kind of job.
     model_family = (spec.model_family or "composite") if spec else "unknown"
     try:
-        # closing(), not `with connect(...)`: psycopg2's connection context
+        # closing(), not `with managed_connection(...)`: psycopg2's connection context
         # manager scopes the transaction and leaves the socket open, and this
         # runs once per failed unit per run.
         with closing(connect(dsn)) as conn:

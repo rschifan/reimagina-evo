@@ -34,7 +34,10 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
         def commit(self):
             pass
 
-    monkeypatch.setattr("reimagina.db.connect", lambda dsn: _FakeConn())
+        def close(self):
+            pass
+
+    monkeypatch.setattr("reimagina.db.managed_connection", lambda dsn: _FakeConn())
     monkeypatch.setattr(
         "reimagina.indicators.catalog.seed_catalog",
         lambda conn: seeded.setdefault("called", True),

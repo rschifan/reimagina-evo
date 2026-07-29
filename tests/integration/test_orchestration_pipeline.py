@@ -15,7 +15,6 @@ from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_COMPOSITE,
     seed_catalog,
 )
-from reimagina.orchestration import runstore
 from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.storage import backend_for_connection
@@ -94,13 +93,12 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     assert untouched is None
 
 
-def test_synchronous_orchestrator_persists_per_unit_state(conn):
+def test_synchronous_orchestrator_keeps_per_unit_state(conn):
     block_a, _block_b = _seed_two_blocks(conn)
 
-    # ``store`` must be passed explicitly: the orchestrator now defaults to an
-    # in-memory store, so the default would round-trip through a dict and this
-    # test would pass without jobs_runtime existing at all.
-    orch = SynchronousOrchestrator(store=runstore)
+    # The reference implementation deliberately keeps state in memory. Hatchet
+    # owns durable run state on this branch, so there is no shadow run table.
+    orch = SynchronousOrchestrator()
     handle = orch.submit_run(
         conn,
         changed_attributes={"geometry"},
@@ -110,7 +108,7 @@ def test_synchronous_orchestrator_persists_per_unit_state(conn):
     assert handle.status is not None
     assert handle.status.status == "succeeded"
 
-    # get_run reads the persisted jobs_runtime.orchestration_run + job_unit rows.
+    # The same explicit synchronous instance can still expose its unit verdict.
     persisted = orch.get_run(conn, handle.run_id)
     assert persisted is not None
     assert persisted.status == "succeeded"
@@ -120,29 +118,6 @@ def test_synchronous_orchestrator_persists_per_unit_state(conn):
         URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
     assert all(u.status == "succeeded" for u in persisted.units)
-
-
-def test_synchronous_orchestrator_defaults_to_an_in_memory_store(conn):
-    """The default store keeps jobs_runtime out of the port's reference impl.
-
-    Guards the 0.3 seam: an ops-plane that drops those tables must still be able
-    to run the synchronous path, so nothing may reach for them by default.
-    """
-    block_a, _block_b = _seed_two_blocks(conn)
-
-    orch = SynchronousOrchestrator()
-    handle = orch.submit_run(
-        conn,
-        changed_attributes={"geometry"},
-        edited_features={block_a},
-        code_version="test",
-    )
-
-    # Readable through the orchestrator, absent from the ops-plane tables.
-    assert orch.get_run(conn, handle.run_id) is not None
-    assert runstore.get_run(conn, handle.run_id) is None
-
-
 def test_a_run_stamps_its_id_on_every_job_run_it_opens(conn):
     """The ambient run must survive the whole executor → runner → compute chain.
 
