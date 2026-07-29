@@ -102,7 +102,7 @@ def insert_project(conn, name: str = "Test Project") -> str:
         return str(cur.fetchone()[0])
 
 
-def seed_catalog_committed(conn) -> None:
+def seed_catalog_committed(conn, specs=None) -> None:
     """``seed_catalog`` on an autocommit connection, in one transaction.
 
     Tests that need committed writes visible to a worker's own connection set
@@ -111,12 +111,16 @@ def seed_catalog_committed(conn) -> None:
     weights sum to 1.0, and under autocommit each row commits — and is checked —
     alone. Suspend autocommit for the seed so the trigger fires once, at the end,
     with every row present.
+
+    ``specs`` defaults to ``SHIPPED_INDICATORS``. Pass a registry to seed a
+    custom DAG — it must be topologically ordered, because ``seed_catalog``
+    resolves each dependency slug to an id by SELECT and does not sort for you.
     """
-    from reimagina.indicators.catalog import seed_catalog
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS, seed_catalog
 
     conn.autocommit = False
     try:
-        seed_catalog(conn)
+        seed_catalog(conn, SHIPPED_INDICATORS if specs is None else specs)
         conn.commit()
     finally:
         conn.autocommit = True
