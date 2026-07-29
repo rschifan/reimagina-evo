@@ -432,8 +432,8 @@ loss in production.
 
 ## B12 — a dead worker keeps its registration, and keeps being given work
 
-⚠ **Unresolved. The conformance suite is red because of this, not because of
-the code under test.**
+**Resolved.** The fixture now deregisters; the engine database was recreated once
+to clear the accumulated leak.
 
 Running the suite repeatedly leaked worker registrations. Each aborted pytest
 process had started an in-process worker; killing the process does not
@@ -471,12 +471,37 @@ operational footnote or a genuine hazard, and it should be settled before the
 side-by-side makes any claim about it. Do not repeat the mistake of the earlier
 `partial` finding by concluding from the first observation.
 
-### Immediate consequence for the suite
+### The fix, after a wrong one
 
-`tests/conformance/conftest.py` starts a worker in a daemon thread and lets the
-process exit. That is fine for one run and accumulates across runs. Until B12 is
-settled, a red conformance result must be checked against the worker list before
-being read as a code failure.
+⚠ **`Worker.exit_gracefully()` does not deregister.** It stops the local worker
+loop and nothing more; measured after a clean session teardown, the engine still
+listed the worker ACTIVE and still eligible for `reimagina-run` tasks. The first
+attempt at this fix called it on teardown and reported the problem solved — the
+very next run was back to 3 failed / 320 s, with two ACTIVE `conformance`
+workers registered and one live process.
+
+So cleanup on the way *out* cannot be relied on at all: an ordinary clean exit
+leaks exactly like a `SIGKILL` does. The fixture now cleans up on the way *in*,
+pausing every `conformance` worker the engine still believes in before starting
+its own — all of which are stale by construction, since only one live one exists
+at a time and it has not started yet.
+
+Recreating the engine database cleared the six that had already accumulated: a
+fresh registry took the suite from **5 failed / 322 s** to **2 failed / 77 s**
+on identical code, which is what established the registry as the cause.
+
+⚠ Still not established: whether the engine expires a worker on heartbeat
+timeout eventually. Within every window observed here it did not, and since a
+clean exit leaks as readily as a kill, a long-lived deployment accumulates
+phantom workers unless something reaps them. Settle this before the side-by-side
+claims anything about recovery — it is the sharpest operational difference found
+so far, and the library track has no equivalent because it has no registry.
+
+**The diagnostic worth keeping.** Suite wall clock was the tell — the failures
+themselves looked like ordinary assertion errors, and only the 62s → 322s drift
+across otherwise-identical runs pointed at the registry. A red conformance
+result on this branch should be checked against `hatchet.workers.list()` before
+being read as a code failure. The library track has no such check to make.
 
 ### Remaining on this branch
 
