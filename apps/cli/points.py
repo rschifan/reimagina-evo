@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.pipeline import points
 
 
@@ -21,7 +21,7 @@ def bootstrap_points(
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stage + load the requested amenity layers into curated_geo.feature."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = points.bootstrap(
             conn,
             layers=layers,

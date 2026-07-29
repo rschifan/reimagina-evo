@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from reimagina.data import aoi as aoi_mod
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.pipeline import cdmx as cdmx_pipeline
 from reimagina.pipeline.inegi import InegiFetchError
 from reimagina.storage import backend_for_connection
@@ -48,7 +48,7 @@ def bootstrap_cdmx(
 ) -> dict[str, Any]:
     """Fetch + stage + load the requested CDMX layers into curated_geo.feature."""
     resolved_paths = {k: Path(v) for k, v in (from_paths or {}).items()}
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = cdmx_pipeline.bootstrap_layers(
             conn,
             layers=layers,
@@ -60,7 +60,7 @@ def bootstrap_cdmx(
 
 def cdmx_status(*, dsn: str) -> dict[str, Any]:
     """Row counts per MEX feature type in curated_geo.feature."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         counts = cdmx_pipeline.layer_status(conn)
     return {
         "dsn": dsn,
@@ -86,7 +86,7 @@ def aoi_from_state(
     No-op if the state feature isn't loaded yet — emits a status the
     caller can act on.
     """
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         row = _fetch_state_wkt(backend, cve_ent=cve_ent)
         if row is None:
@@ -143,7 +143,7 @@ def aoi_from_alcaldia(
     to target Baja California (``02``), CDMX (``09`` — default), etc.
     The ``alcaldia`` shorthand persists because CDMX was the first pilot.
     """
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         row = _fetch_municipality_wkt(backend, cve_ent=cve_ent, cve_mun=cve_mun)
         if row is None:

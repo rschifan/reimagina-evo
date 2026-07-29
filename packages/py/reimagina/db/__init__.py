@@ -10,7 +10,7 @@ from .bootstrap import (
     run_migrations,
     verify_required_relations,
 )
-from .connection import connect, get_dsn
+from .connection import connect, get_dsn, managed_connection
 
 __all__ = [
     "DEFAULT_ADMIN_DSN",
@@ -21,6 +21,7 @@ __all__ = [
     "connect",
     "ensure_database",
     "get_dsn",
+    "managed_connection",
     "run_migrations",
     "verify_required_relations",
 ]

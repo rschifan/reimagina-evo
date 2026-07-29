@@ -197,3 +197,59 @@ def test_synchronous_orchestrator_also_derives_the_change_set(conn):
     )
     assert result is not None
     assert result["value_numeric"] == 10.0
+
+
+def test_override_and_outbox_record_are_one_transaction(conn):
+    """A committed scenario edit is never silently lost while Hatchet is down."""
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="outbox_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    ingest = _start_run(conn, source_id)
+    feature_id = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=ingest,
+        dataset_version="v1",
+        source_record_ref="outbox-blk-1",
+        geometry_wkt=_WKT,
+    )
+    scenario = str(uuid4())
+    apply_override(
+        conn,
+        scenario_id=scenario,
+        feature_id=feature_id,
+        attribute_key="floors",
+        value_numeric=4.0,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT scenario_id::text, changed_attributes, edited_features::text[]
+            FROM jobs_runtime.orchestration_outbox
+            WHERE scenario_id = %s::uuid
+            """,
+            (scenario,),
+        )
+        row = cur.fetchone()
+
+    assert row == (scenario, ["floors"], [feature_id])
+
+    from reimagina.orchestration.outbox import claim_pending, mark_delivered
+
+    claimed = claim_pending(conn)
+    event = next(item for item in claimed if item.scenario_id == scenario)
+    assert event.changed_attributes == ("floors",)
+    mark_delivered(conn, event.id, event.claim_token)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT delivered_at IS NOT NULL FROM jobs_runtime.orchestration_outbox WHERE id = %s::uuid",
+            (event.id,),
+        )
+        assert cur.fetchone() == (True,)

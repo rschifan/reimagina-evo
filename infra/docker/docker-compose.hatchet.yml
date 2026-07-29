@@ -10,7 +10,9 @@
 # charging this track for a database the other track also needs.
 services:
   hatchet:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    # Pin the engine image. SDK compatibility and migrations must move through
+    # an explicit tested upgrade, never an implicit pull of `latest`.
+    image: ${HATCHET_IMAGE:-ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.24}
     ports:
       - "8888:8888"   # dashboard + REST API
       - "7077:7077"   # gRPC, what the SDK connects to

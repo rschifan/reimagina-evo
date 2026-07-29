@@ -29,6 +29,26 @@ from .middleware import REQUEST_ID_HEADER
 log = logging.getLogger("reimagina.api")
 
 
+async def hatchet_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """An orchestration-engine outage is retryable, unlike an unknown run."""
+    request_id = _request_id(request)
+    log.warning(
+        "Hatchet unavailable on %s %s (request_id=%s): %s",
+        request.method,
+        request.url.path,
+        request_id,
+        exc,
+    )
+    response = _error_response(
+        status_code=503,
+        error_code="orchestration_unavailable",
+        message="The orchestration service was unreachable.",
+        request_id=request_id,
+    )
+    response.headers["Retry-After"] = "5"
+    return response
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 

@@ -209,7 +209,7 @@ def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path)
         yield conn
 
     monkeypatch.setattr("reimagina.tiles.service._run_export_command", fake_run_export)
-    monkeypatch.setattr("reimagina.tiles.service.connect", fake_connect)
+    monkeypatch.setattr("reimagina.tiles.service.managed_connection", fake_connect)
 
     payload = export_pmtiles_snapshot(
         dsn="postgresql://localhost/reimagina_test",

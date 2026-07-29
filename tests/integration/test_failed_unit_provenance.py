@@ -12,8 +12,9 @@ Driven through the DAG's own unit task — the real call site, with a real
 rollback — rather than through the helper, because the helper existing is not
 the property that was lost. Deliberately no engine: the task's function is
 called directly, which is the code under test. Importing ``hatchet_app`` at all
-still needs ``HATCHET_CLIENT_TOKEN``, since it constructs ``Hatchet()`` at
-module scope; the test skips without one, as the conformance suite does.
+still needs ``HATCHET_CLIENT_TOKEN`` when it declares the static workflow. The
+module itself imports without a token, but the SDK requires one to construct
+the workflow decorator used by this direct task invocation.
 """
 
 from __future__ import annotations
@@ -102,9 +103,7 @@ def unit(run_id, monkeypatch):
     through.
     """
     if not os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.skip(
-            "HATCHET_CLIENT_TOKEN unset — hatchet_app builds Hatchet() at import"
-        )
+        pytest.skip("HATCHET_CLIENT_TOKEN unset — workflow declaration needs a client")
 
     from reimagina.orchestration import hatchet_app
 
@@ -125,7 +124,7 @@ def unit(run_id, monkeypatch):
         )
         # `_fn`, not the `fn` property: same object, but the property is
         # deprecated for removal in SDK v2.0.0 and warns on every call.
-        return lambda: hatchet_app._nodes[SLUG]._fn(payload, ctx)
+        return lambda: hatchet_app.nodes()[SLUG]._fn(payload, ctx)
 
     return _install
 

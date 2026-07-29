@@ -84,9 +84,13 @@ def test_postgres_perf_smoke_benchmarks_run(conn):
         iterations=2,
     )
 
-    assert report["passed"] is True
     assert len(report["benchmarks"]) == 4
-    assert all(result["passed"] for result in report["benchmarks"])
+    for result in report["benchmarks"]:
+        assert result["checks"]["row_count"], result
+        assert result["checks"]["expected_node"], result
+        assert result["checks"]["expected_index"], result
+        assert result["checks"]["no_catastrophic_seq_scan"], result
+        assert result["checks"]["latency_budget"], result
 
     observability = build_observability_report(conn, limit=5)
     assert "extensions" in observability

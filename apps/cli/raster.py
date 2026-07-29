@@ -26,7 +26,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.jobs.raster_zonal_stats import (
     ConcurrentRasterRun,
     run_raster_zonal_stats,
@@ -76,7 +76,7 @@ def ingest_raster(
     if captured_at:
         # Accept ISO-8601 with or without timezone; let datetime raise on malformed.
         captured_at_dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = ingest_raster_source(
             conn,
             raw_path=Path(raw_path),
@@ -147,7 +147,7 @@ def fetch_worldpop_raster(
         # WKT, so query it directly here. ``ST_AsText(geometry)`` is
         # cheap (single row, indexed by uuid) and the CLI is the only
         # caller that needs the full polygon.
-        with connect(dsn) as conn:
+        with managed_connection(dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT name, ST_AsText(geometry) "
@@ -187,7 +187,7 @@ def list_raster_layers(*, dsn: str) -> dict[str, Any]:
     includes source name + version + storage URI alongside the layer
     slug and publish status.
     """
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -240,7 +240,7 @@ def run_zonal_stats(
     """
     stat_tuple = _parse_statistics(statistics)
 
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         # Read layer + asset metadata up front so we can build the
         # small-feature warning check before spending time in the worker.
@@ -375,7 +375,7 @@ def set_raster_published(
     *, dsn: str, layer_slug: str, published: bool
 ) -> dict[str, Any]:
     """Flip the published flag on a raster_layer row."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         backend.raster_layer_repo().set_published(
             layer_slug=layer_slug,
@@ -412,7 +412,7 @@ def add_derivation(
 
     params = json.loads(params_json) if params_json else None
 
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         input_raster_layer_id: str | None = None
         if input_kind == "raster":
@@ -455,7 +455,7 @@ def list_derivations(
     include_disabled: bool = False,
 ) -> dict[str, Any]:
     """List recipes. Optionally filter by raster layer slug."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         layer_id: str | None = None
         if raster_layer_slug:
@@ -473,7 +473,7 @@ def list_derivations(
 def set_derivation_enabled(
     *, dsn: str, recipe_id: str, enabled: bool
 ) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         backend.aggregation_recipe_repo().set_enabled(
             recipe_id=recipe_id,
@@ -484,7 +484,7 @@ def set_derivation_enabled(
 
 
 def remove_derivation(*, dsn: str, recipe_id: str) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         backend.aggregation_recipe_repo().delete_recipe(recipe_id)
         conn.commit()
@@ -508,7 +508,7 @@ def run_derivation(
     if not (recipe_id or raster_layer_slug):
         raise ValueError("Pass --recipe-id OR --raster-layer-slug")
 
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         backend = backend_for_connection(conn)
         if recipe_id:
             results: list[RecipeRunResult] = [

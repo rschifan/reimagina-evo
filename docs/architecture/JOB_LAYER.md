@@ -98,7 +98,10 @@ Mode resolution is `argument → REIMAGINA_ORCHESTRATOR → "hatchet"`, and an u
 
 **The environment may only select a durable mode.** `DURABLE_MODES = ("hatchet",)`; `REIMAGINA_ORCHESTRATOR=sync` is rejected with an explanation rather than honoured. `sync` keeps run state in memory *per orchestrator instance*, and the factory builds a fresh instance per call — so as a deployment default it would have `POST /jobs` writing to Postgres while `GET /jobs/{run_id}` and the SSE route read an empty dict. It stays available as an explicit argument, for a caller that holds on to the instance (`factory.py:37-45`, `:50-60`).
 
-The API picks a mode from the request contract, not from an engine preference: `embedded` when `wait: true` (200 with a finished status), `detach` otherwise (202 + poll) — `apps/api/routers/jobs.py:86`, `:100`. The CLI exposes the same three through `--detach` / `--sync` (`apps/cli/app.py:1360`, `apps/cli/indicators.py:127-137`).
+The API always submits to `hatchet` and returns `202`; it never executes a worker
+inside a request. The CLI keeps the user-facing `embedded` behaviour as a
+bounded wait over an already-running worker, with `--detach` and `--sync` as
+explicit alternatives (`apps/cli/indicators.py`).
 
 ---
 
@@ -312,14 +315,20 @@ Self-hosted, MIT, Postgres as the broker (`SERVER_MSGQUEUE_KIND=postgres`); no R
 
 | Concern | Mechanism |
 |---|---|
-| Two concurrent writers on one scenario's rows | `ConcurrencyExpression(input.concurrency_key, max_runs=1, CANCEL_NEWEST)` |
+| Two concurrent writers on one scenario's rows | `ConcurrencyExpression(input.concurrency_key, max_runs=1, GROUP_ROUND_ROBIN)` |
 | A double-clicked Save starting two identical runs | `TTLBasedIdempotencyConfig(key_expression="input.dedup_key")` |
 
-⚠ `CANCEL_NEWEST`, not `CANCEL_IN_PROGRESS`: cancellation is cooperative and nothing interrupts a blocking psycopg call, so cancelling the in-flight run would start the new one while the old one is still writing. The cost is that a second edit arriving mid-run is *dropped* rather than queued.
+`GROUP_ROUND_ROBIN` keeps one writer active for a scope while retaining later
+edits in the engine queue. Cancelling the in-flight run would be unsafe because
+cancellation is cooperative and a blocking psycopg call can still be writing.
 
 ⚠ `dedup_key` is a hash of the scenario, AOI, code version, dirty set **and feature scope** — not just the scenario. Keying on scenario alone deduplicates two *different* edits inside the TTL, so the second edit's changes are never computed. A collision returns the existing run's id rather than raising, because a dedup hit is the feature working.
 
-**Connection requirements.** `DATABASE_URL_DIRECT` is mandatory for the worker — unit runners open their own connection to the domain database, which is not the engine's — and `run_hatchet_worker` fails at startup rather than letting every unit die minutes later. `HATCHET_CLIENT_TOKEN` is needed to *import* `hatchet_app` at all, since it constructs `Hatchet()` at module scope.
+**Connection requirements.** `DATABASE_URL_DIRECT` is mandatory for submission
+and for the worker: the submitter verifies that its planning connection and the
+worker DSN name the same database, and unit runners open their own direct
+connection. `HATCHET_CLIENT_TOKEN` is required when a client or worker is
+actually constructed; importing the DAG module remains safe for pure tests.
 
 **A worker is mandatory.** Not an optimisation: nothing executes without one, and a submitted run is not even *observable* until a worker has registered the workflow — `runs.get()` returns 404 on an id the engine just minted (spike B0).
 

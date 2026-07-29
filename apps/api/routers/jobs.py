@@ -1,17 +1,13 @@
 """Intake API (Phase 3, component 2) — submit a scenario evaluation, read status.
 
-``POST /jobs`` enqueues a run and returns ``202`` immediately (no compute in the
-request path — a worker drains it). Passing ``wait: true`` instead drains the
-run in-request via the embedded orchestrator and returns ``200`` with the
-finished status (a convenience for simple/test clients; production stays
-fire-and-forget). The enqueue runs on a dedicated committed connection, NOT the
-API's rollback-scoped pool. ``GET /jobs/{run_id}`` reads the persisted run +
-per-unit status.
+``POST /jobs`` enqueues a run and returns ``202`` immediately. Hatchet workers
+execute the graph outside the request path; callers use the status and SSE
+endpoints rather than holding an API worker thread until PostGIS completes. The
+enqueue uses a dedicated committed connection, not the API's rollback-scoped
+pool. ``GET /jobs/{run_id}`` reads the engine-backed run and per-unit status.
 
 Every path goes through ``orchestration.factory.get_orchestrator`` — this module
-names no engine, so swapping the ops-plane does not touch it. The two modes it
-does name (``detach`` vs ``embedded``) are the 202-vs-200 contract itself, not
-an engine choice.
+names no engine, so swapping the ops-plane does not touch it.
 
 Requires ``DATABASE_URL_DIRECT`` + a running ``python -m apps.worker``.
 """
@@ -24,9 +20,9 @@ import time
 from collections.abc import AsyncIterator
 
 import psycopg2
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..deps import api_dsn, get_db_conn
 
@@ -37,17 +33,13 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 class SubmitRunBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # Optional: when a scenario_id is given and these are omitted, the change-set
     # is derived from the scenario's overrides (the override rows are the diff).
     changed_attributes: list[str] | None = None
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
-    # Opt-in: drain the run to completion in-request (embedded worker) and return
-    # the finished status with 200 instead of a 202 + poll. Convenience for
-    # simple/test clients; production should stay fire-and-forget (default) with
-    # a real worker fleet, since this ties up the request for the whole compute.
-    wait: bool = False
 
 
 class SubmitRunResponse(BaseModel):
@@ -76,18 +68,16 @@ def _submit_response(run_id: str, status: str) -> SubmitRunResponse:
 
 
 @router.post("", status_code=202, response_model=SubmitRunResponse)
-def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
+def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
     from reimagina.db import connect
     from reimagina.orchestration.factory import get_orchestrator
     from reimagina.provenance import code_version
 
-    # "embedded" drains the run before returning, so its handle carries a
-    # terminal status; the default returns as soon as the work is durable.
-    orchestrator = get_orchestrator("embedded" if body.wait else "detach")
+    orchestrator = get_orchestrator()
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
-    with connect(api_dsn()) as conn:
+    with contextlib.closing(connect(api_dsn())) as conn:
         handle = orchestrator.submit_run(
             conn,
             changed_attributes=body.changed_attributes or [],
@@ -97,8 +87,6 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
             code_version=code_version(),
         )
 
-    if body.wait:
-        response.status_code = 200  # completed synchronously, not merely accepted
     # "noop" when the run had nothing to recompute; else the queued run_id.
     status = handle.status.status if handle.status else "queued"
     return _submit_response(handle.run_id, status)

@@ -10,7 +10,6 @@ ops-plane swap moves — and these tests keep working across such a swap.
 
 from __future__ import annotations
 
-import contextlib
 import json
 
 from fastapi.testclient import TestClient
@@ -25,6 +24,11 @@ from reimagina.orchestration.port import (
 )
 
 
+class _FakeConnection:
+    def close(self) -> None:
+        pass
+
+
 def _install(monkeypatch, orchestrator):
     """Make every ``get_orchestrator(...)`` in the route return this fake."""
     monkeypatch.setattr(
@@ -34,9 +38,8 @@ def _install(monkeypatch, orchestrator):
 
 
 def test_post_jobs_enqueues_and_returns_202(monkeypatch):
-    @contextlib.contextmanager
     def _fake_connect(dsn=None):
-        yield object()
+        return _FakeConnection()
 
     monkeypatch.setattr("reimagina.db.connect", _fake_connect)
 
@@ -105,9 +108,8 @@ def test_post_jobs_noop_returns_null_run_id(monkeypatch):
     GET /jobs/{run_id} immediately after a *successful* submit.
     """
 
-    @contextlib.contextmanager
     def _fake_connect(dsn=None):
-        yield object()
+        return _FakeConnection()
 
     monkeypatch.setattr("reimagina.db.connect", _fake_connect)
 
@@ -129,6 +131,14 @@ def test_post_jobs_noop_returns_null_run_id(monkeypatch):
 
     assert resp.status_code == 202
     assert resp.json() == {"run_id": None, "status": "noop"}
+
+
+def test_post_jobs_rejects_removed_in_request_worker_mode():
+    """``wait`` used to start a worker in the API request; that is unsafe."""
+    with TestClient(create_app(initialise_pool=False)) as client:
+        response = client.post("/jobs", json={"wait": True})
+
+    assert response.status_code == 422
 
 
 def test_events_streams_the_orchestrators_progress(monkeypatch):

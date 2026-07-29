@@ -53,10 +53,10 @@ def bootstrap_local_platform(
     # manual `indicators seed-catalog` step. The impact engine reads the Python
     # specs and the write-triggers read this table; seeding here keeps the two
     # from drifting on a fresh deploy. Idempotent (ON CONFLICT).
-    from reimagina.db import connect
+    from reimagina.db import managed_connection
     from reimagina.indicators.catalog import seed_catalog
 
-    with connect(app_dsn) as conn:
+    with managed_connection(app_dsn) as conn:
         seed_catalog(conn)
         conn.commit()
     return result

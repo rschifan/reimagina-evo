@@ -307,11 +307,9 @@ measurement ever depends on version churn, spike it then.
 
 ## Also measured while here
 
-* **A valid `HATCHET_CLIENT_TOKEN` is needed to import the module at all.**
-  `hatchet_app` constructs `Hatchet()` at module scope, so unit tests that touch
-  only the verdict-reading logic still need a credential. Track A's modules
-  import with no engine credential of any kind. This is a CI constraint, not
-  just an inconvenience.
+* **A valid `HATCHET_CLIENT_TOKEN` is needed when constructing the client.**
+  `hatchet_app` defers that construction, so pure graph and verdict tests no
+  longer need a credential. Worker registration and engine calls still do.
 * **Unused capability, deliberately.** `rate_limits` (engine-enforced, global,
   cross-worker) is the right answer to N workers saturating one Postgres, and
   `slot_cost` weights a heavy unit against light ones. Neither is wired up
@@ -381,10 +379,10 @@ was declared. Two consequences:
 
 **4. The concurrency key put unrelated runs in one bucket.** It fell back to the
 constant `"baseline"` when there was no scenario and no AOI — so *every*
-scenario-less run shared one bucket under `max_runs=1, CANCEL_NEWEST` and
-cancelled its predecessor. The suite surfaced it as a poisoned unit reporting
-`cancelled` rather than `failed`; in production it would have meant one AOI's
-baseline recompute silently killing another's.
+scenario-less run shared one bucket. Under the old `CANCEL_NEWEST` strategy it
+cancelled its predecessor; under the current `GROUP_ROUND_ROBIN` strategy it
+would unnecessarily serialize unrelated work. The suite surfaced the original
+failure as a poisoned unit reporting `cancelled` rather than `failed`.
 
 The key must name **the set of rows two runs would fight over**, since that is
 the actual hazard — the write path is stale-then-insert, so overlapping writers

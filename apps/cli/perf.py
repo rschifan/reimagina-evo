@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.perf import (
     build_observability_report,
     compare_reports,
@@ -19,7 +19,7 @@ from reimagina.perf import (
 def seed_observations(
     *, dsn: str, dataset_tier: str, feature_limit: int | None = None
 ) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = prepare_benchmark_dataset(
             conn,
             dataset_tier=dataset_tier,
@@ -36,7 +36,7 @@ def run_perf_benchmarks(
     iterations: int | None = None,
     output_path: str | None = None,
 ) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = run_benchmarks(
             conn,
             dataset_tier=dataset_tier,
@@ -55,7 +55,7 @@ def run_perf_benchmarks(
 def explain_query(
     *, dsn: str, benchmark_name: str, dataset_tier: str
 ) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         return {
             "dsn": dsn,
             **explain_benchmark(
@@ -67,7 +67,7 @@ def explain_query(
 
 
 def performance_report(*, dsn: str, limit: int = 10) -> dict[str, Any]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         return {"dsn": dsn, "report": build_observability_report(conn, limit=limit)}
 
 

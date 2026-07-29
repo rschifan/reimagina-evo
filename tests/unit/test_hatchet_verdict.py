@@ -18,6 +18,7 @@ import pytest
 
 from reimagina.orchestration.hatchet_orchestrator import (
     HatchetOrchestrator,
+    HatchetUnavailable,
     _strip_suffix,
     _verdict_of,
 )
@@ -177,3 +178,27 @@ def test_verdict_of_rejects_output_that_is_not_a_verdict():
         "overall": "x",
         "units": {},
     }
+
+
+def test_get_run_only_treats_a_real_404_as_unknown(monkeypatch):
+    """An engine outage must not be converted into a misleading API 404."""
+    import reimagina.orchestration.hatchet_app as app
+
+    monkeypatch.setattr(
+        app,
+        "hatchet",
+        SimpleNamespace(
+            runs=SimpleNamespace(get=lambda _id: (_ for _ in ()).throw(OSError("down")))
+        ),
+    )
+    with pytest.raises(HatchetUnavailable):
+        HatchetOrchestrator().get_run(None, "r1")
+
+
+def test_retry_taxonomy_excludes_deterministic_runner_errors():
+    """Only database transport/contention failures should spend retry budget."""
+    import psycopg2
+    from reimagina.orchestration.hatchet_app import _is_retryable
+
+    assert _is_retryable(psycopg2.OperationalError("connection reset"))
+    assert not _is_retryable(ValueError("bad indicator definition"))

@@ -21,6 +21,7 @@ Two consequences worth stating, because they are the comparison:
 from __future__ import annotations
 
 import os
+from contextlib import closing
 
 
 def create_worker() -> dict[str, str]:
@@ -41,8 +42,6 @@ def run_hatchet_worker(
     test fixture can drive one in-process and shut it down afterwards. Nothing
     in production should use it.
     """
-    from reimagina.orchestration import hatchet_app
-
     if not os.environ.get("DATABASE_URL_DIRECT"):
         # Fail here rather than inside a unit. Otherwise the engine schedules
         # work, hands it to this process, and every task fails minutes later
@@ -51,13 +50,32 @@ def run_hatchet_worker(
             "DATABASE_URL_DIRECT is required — unit runners open their own "
             "connection to the domain database, which is not the engine's."
         )
+    if not os.environ.get("HATCHET_CLIENT_TOKEN"):
+        raise RuntimeError(
+            "HATCHET_CLIENT_TOKEN is required — the worker cannot register "
+            "workflows or receive Hatchet tasks without it."
+        )
 
-    worker = hatchet_app.hatchet.worker(
-        name or os.environ.get("REIMAGINA_WORKER_NAME", "reimagina-worker"),
-        slots=slots
+    resolved_slots = (
+        slots
         if slots is not None
-        else int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
-        workflows=[hatchet_app.run_workflow],
+        else int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2"))
+    )
+    if resolved_slots < 1:
+        raise ValueError("worker slots must be at least 1")
+
+    from reimagina.orchestration import hatchet_app
+    from reimagina.orchestration.database_identity import assert_same_domain_database
+    from reimagina.db import connect
+
+    # Validate the target is migrated before the worker advertises a workflow.
+    with closing(connect(os.environ["DATABASE_URL_DIRECT"])) as conn:
+        assert_same_domain_database(conn, os.environ["DATABASE_URL_DIRECT"])
+
+    worker = hatchet_app.get_hatchet().worker(
+        name or os.environ.get("REIMAGINA_WORKER_NAME", "reimagina-worker"),
+        slots=resolved_slots,
+        workflows=[hatchet_app.get_run_workflow(), hatchet_app.get_outbox_workflow()],
     )
     if not blocking:
         return worker

@@ -34,6 +34,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 
@@ -41,6 +42,7 @@ from hatchet_sdk.exceptions import IdempotencyCollisionError
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.plan import noop_handle, plan_run
+from reimagina.orchestration.database_identity import assert_same_domain_database
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
     RunEvent,
@@ -51,6 +53,10 @@ from reimagina.orchestration.port import (
 from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
+
+
+class HatchetUnavailable(RuntimeError):
+    """Hatchet could not answer a request for run state."""
 
 # Used only until the finalizer has written a verdict — i.e. while the run is
 # still going. Once it is terminal the verdict supersedes all of this.
@@ -96,6 +102,11 @@ class HatchetOrchestrator:
     ) -> RunHandle:
         from reimagina.orchestration import hatchet_app
 
+        direct_dsn = os.environ.get("DATABASE_URL_DIRECT")
+        if not direct_dsn:
+            raise RuntimeError("DATABASE_URL_DIRECT is required for Hatchet submission")
+        assert_same_domain_database(conn, direct_dsn)
+
         plan = plan_run(
             conn,
             changed_attributes=changed_attributes,
@@ -140,12 +151,16 @@ class HatchetOrchestrator:
             # unit reporting `cancelled` rather than `failed`; in production it
             # would have meant a second AOI's recompute silently killing the
             # first's.
-            concurrency_key=scenario_id or aoi_id or dedup_key,
+            # An unscoped baseline has no proven partition boundary. Serialize
+            # it conservatively rather than allowing overlapping feature sets to
+            # race merely because their fingerprints differ.
+            concurrency_key=scenario_id or aoi_id or "baseline",
             dedup_key=dedup_key,
         )
         try:
-            ref = hatchet_app.run_workflow.run_no_wait(
+            ref = hatchet_app.get_run_workflow().run(
                 payload,
+                wait_for_result=False,
                 # This is what buys back the run-level querying we lost by
                 # dropping `orchestration_run`. It round-trips, it is readable
                 # inside the workflow via `ctx.additional_metadata`, and it is a
@@ -189,10 +204,11 @@ class HatchetOrchestrator:
         from reimagina.orchestration import hatchet_app
 
         try:
-            details = hatchet_app.hatchet.runs.get(run_id)
-        except Exception as exc:  # noqa: BLE001 — an unknown run is not an error
-            logger.debug("run %s not found in the engine: %s", run_id, exc)
-            return None
+            details = hatchet_app.get_hatchet().runs.get(run_id)
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                return None
+            raise HatchetUnavailable(f"could not read Hatchet run {run_id}") from exc
         if details is None:
             return None
 
@@ -261,7 +277,7 @@ class HatchetOrchestrator:
         if current is None or current.status in RUN_TERMINAL_STATES:
             return False
 
-        hatchet_app.hatchet.runs.cancel(run_id)
+        hatchet_app.get_hatchet().runs.cancel(run_id)
         backend_for_connection(conn).job_run_repo().cancel_run_backends(run_id)
         return True
 
@@ -286,19 +302,19 @@ class HatchetOrchestrator:
 
         from reimagina.orchestration import hatchet_app
 
-        client = hatchet_app.hatchet.runs
+        client = hatchet_app.get_hatchet().runs
         since = datetime.now(timezone.utc) - lookback
         live = [V1TaskStatus.RUNNING, V1TaskStatus.QUEUED]
         meta = {"scenario_id": scenario_id}
 
-        listed = client.list(
-            since=since, statuses=live, additional_metadata=meta, limit=500
+        listed = client.list_with_pagination(
+            since=since, statuses=live, additional_metadata=meta
         )
         ids = [
             rid
             for rid in (
                 getattr(getattr(row, "metadata", None), "id", None)
-                for row in (getattr(listed, "rows", None) or [])
+                for row in listed
             )
             if rid
         ]
@@ -372,13 +388,28 @@ class HatchetOrchestrator:
             if event.indicator is None:
                 return
 
-        listener = hatchet_app.hatchet.listener.stream(run_id)
-        async for _wakeup in listener:
-            async for event in emit():
-                yield event
-                if event.indicator is None:
-                    listener.stop_signal = True
-                    return
+        listener = hatchet_app.get_hatchet().listener.stream(run_id)
+        terminal_emitted = False
+        reconcile_after_listener = True
+        try:
+            async for _wakeup in listener:
+                async for event in emit():
+                    yield event
+                    if event.indicator is None:
+                        terminal_emitted = True
+                        listener.stop_signal = True
+                        return
+        except (asyncio.CancelledError, GeneratorExit):
+            # An SSE client went away. Do not turn cleanup into an extra engine
+            # request; the next subscriber takes its own authoritative snapshot.
+            reconcile_after_listener = False
+            raise
+        finally:
+            # A listener can hang up before the REST projection catches up. One
+            # final reconciliation preserves the port's terminal-event contract.
+            if reconcile_after_listener and not terminal_emitted:
+                async for event in emit():
+                    yield event
 
 
 def _dedup_key(
@@ -448,3 +479,9 @@ def _name(value: object) -> str:
     if value is None:
         return ""
     return str(getattr(value, "value", value)).upper()
+
+
+def _is_not_found(exc: Exception) -> bool:
+    """Keep unknown-run semantics separate from engine reachability failures."""
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    return status == 404

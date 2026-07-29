@@ -100,7 +100,8 @@ def pytest_collection_modifyitems(config, items):
         return
     skip = pytest.mark.skip(reason="workload suite: set REIMAGINA_BENCH=1 to run")
     for item in items:
-        item.add_marker(skip)
+        if "tests/workloads/" in str(item.fspath):
+            item.add_marker(skip)
 
 
 # ── Database ────────────────────────────────────────────────────────────────
@@ -368,8 +369,7 @@ def run_once(orchestrator, conn, workload, impl: Implementation) -> dict:
     # ⚠ A fresh code_version per submit, or the engine's idempotency window
     # (TTL 60s, keyed on the work's fingerprint) folds repetitions 2 and 3 onto
     # repetition 1 and the suite measures one run three times. It also keeps the
-    # concurrency key unique, so reps do not cancel each other under
-    # CANCEL_NEWEST.
+    # concurrency key unique, so repetitions do not queue behind one another.
     code_version = f"bench-{uuid4().hex[:8]}"
 
     t_submit = db_now(conn)

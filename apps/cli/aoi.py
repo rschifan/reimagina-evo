@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from reimagina.data.aoi import compute_aoi_features
-from reimagina.db import connect
+from reimagina.db import managed_connection
 
 
 def compute_features(*, dsn: str, aoi_id: str | None = None) -> dict[str, Any]:
@@ -26,7 +26,7 @@ def compute_features(*, dsn: str, aoi_id: str | None = None) -> dict[str, Any]:
     promotes it to a CLI subcommand so the runbook stays uniformly
     ``apps.cli.app …`` and the operator can re-run a single AOI without
     rebuilding the whole matrix."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         cur = conn.cursor()
         if aoi_id is None:
             cur.execute(
@@ -52,7 +52,7 @@ def compute_features(*, dsn: str, aoi_id: str | None = None) -> dict[str, Any]:
 def list_aois(*, dsn: str) -> dict[str, Any]:
     """Return every AOI row with bbox + project name. Used as the
     operator's first stop when reasoning about what's in the DB."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -90,7 +90,7 @@ def delete_aoi(*, dsn: str, aoi_id: str) -> dict[str, Any]:
     because they're shared across AOIs (and may stay in the DB for a
     different AOI's coverage). Returns ``{status: 'deleted', ...}`` on
     success or ``{status: 'not_found'}`` if the uuid wasn't present."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT name FROM curated_geo.area_of_interest WHERE id = %s", (aoi_id,)

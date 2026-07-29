@@ -19,9 +19,8 @@ The modes:
     exists so the conformance suite has a target that needs no engine and no
     database.
 
-Imports are deferred into each branch on purpose: ``detach`` and ``embedded``
-pull the queue library in at module scope, and ``sync`` must stay importable
-without it.
+Imports are deferred so the synchronous test implementation remains usable
+without Hatchet client configuration.
 """
 
 from __future__ import annotations

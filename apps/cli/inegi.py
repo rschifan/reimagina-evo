@@ -17,7 +17,7 @@ import dataclasses
 from pathlib import Path
 from typing import Any
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.pipeline import inegi_censo, inegi_marco
 
 
@@ -30,7 +30,7 @@ def bootstrap_inegi_marco(
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stage + load the requested INEGI marco layers into curated_geo.feature."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = inegi_marco.bootstrap(
             conn,
             layers=layers,
@@ -51,7 +51,7 @@ def bootstrap_inegi_censo(
 ) -> dict[str, Any]:
     """Stream the INEGI 2020 census subset into curated_geo.observation,
     keyed by CVEGEO against the existing block features."""
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         result = inegi_censo.bootstrap(
             conn,
             cve_ent_filter=cve_ent_filter,

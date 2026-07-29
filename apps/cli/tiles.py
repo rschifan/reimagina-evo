@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reimagina.db import connect
+from reimagina.db import managed_connection
 from reimagina.storage import backend_for_connection
 from reimagina.tiles import (
     export_pmtiles_snapshot,
@@ -54,7 +54,7 @@ def list_tile_sources(
     snapshot_base_url: str | None = None,
     manifest_path: str | None = None,
 ) -> dict[str, object]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         return {
             "dsn": dsn,
             "layers": resolve_tile_sources(
@@ -67,7 +67,7 @@ def list_tile_sources(
 
 
 def list_tile_snapshots(*, dsn: str, layer_id: str | None = None) -> dict[str, object]:
-    with connect(dsn) as conn:
+    with managed_connection(dsn) as conn:
         snapshots = (
             backend_for_connection(conn).tile_repo().list_snapshots(layer_id=layer_id)
         )
