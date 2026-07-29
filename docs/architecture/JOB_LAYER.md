@@ -18,7 +18,7 @@ caller (apps/api/routers/jobs.py, apps/cli/indicators.py)
   │     │
   │     ├─ plan_run                  plan.py:54  resolve change-set → dirty-set, in dep order
   │     ├─ project units to JSON     dbos_orchestrator.py:134  (slug, features, deps)
-  │     └─ start_workflow, under SetWorkflowID(run_id)      dbos_orchestrator.py:143-144
+  │     └─ enqueue named run_workflow on DBOS `runs` queue   dbos_orchestrator.py
   │
   ◄─ RunHandle(run_id, status=None)  port.py:80 — durable already; jobs_runtime still empty
   │
@@ -55,7 +55,7 @@ The project forked into two branches, each a complete reference implementation o
 
 | Fate | Modules |
 |---|---|
-| **Port-level — permanent, identical on both branches** | `orchestration/port.py`, `factory.py`, `plan.py`, `impact.py`, `frames.py`, `coordinator.py`, `synchronous.py`, `memstore.py`; `indicators/*`; `jobs_runtime.job_run` + `jobs/_lifecycle.py` |
+| **Port-level — permanent, identical on both branches** | `orchestration/port.py`, `factory.py`, `plan.py`, `graph.py`, `impact.py`, `frames.py`, `coordinator.py`, `synchronous.py`, `memstore.py`; `indicators/*`; `jobs_runtime.job_run` + `jobs/_lifecycle.py` |
 | **Engine-level — this branch's own, replaced on the other** | `orchestration/dbos_app.py`, `dbos_orchestrator.py`; `apps/worker/` |
 | **Split fate — this *is* the comparison** | `orchestration/wave.py` — **survives here**. `orchestration/runstore.py` + `jobs_runtime.orchestration_run` + `jobs_runtime.job_unit` — **survive here**. All of it is what a branch whose engine owns scheduling and run state deletes instead |
 
@@ -103,13 +103,13 @@ Two signatures encode decisions worth keeping:
 
 **Two modes, not four** (`MODES`, `factory.py:41`). `detach` and `embedded` used to be *engines* — enqueue and return, versus enqueue and drain a bounded in-process worker. Under a durable-execution library that is not an engine choice at all, because one process can do both, so asking the factory for either now falls through to the unknown-mode raise (`factory.py:20-23`, `:79-81`).
 
-⚠ **The CLI still uses both words, one layer up, and that is not an oversight.** `python -m apps.cli.app … evaluate-scenario` defaults to `embedded` and takes `--detach` (`apps/cli/app.py:683-701`, `:1362`), where they name whether the *caller waits* — a real choice, and the caller's to make. Both go through `get_orchestrator("dbos")` (`apps/cli/indicators.py:172`); only the wait differs. Same words, different layer, stated once here so it does not read as a contradiction anywhere else (`factory.py:25-28`, `apps/cli/indicators.py:129-132`).
+⚠ **The CLI still uses both words one layer up, and that is not an oversight.** `embedded` explicitly creates a `DBOSOrchestrator(execution_mode="dev")`, which launches a local executor and waits. `detach` uses the normal `dbos` client mode and returns after enqueueing for a worker. They are caller-facing execution choices, not factory modes.
 
 Mode resolution is `argument → REIMAGINA_ORCHESTRATOR → "dbos"`, and an unknown mode raises rather than falling back (`factory.py:57-58`, `:79-81`).
 
 **The environment may only select a durable mode.** `DURABLE_MODES = ("dbos",)` (`factory.py:43`); `REIMAGINA_ORCHESTRATOR=sync` is rejected with an explanation rather than honoured. `sync` keeps run state in memory *per orchestrator instance*, and the factory builds a fresh instance per call — so as a deployment default it would have `POST /jobs` writing to Postgres while `GET /jobs/{run_id}` and the SSE route read an empty dict. It stays available as an explicit argument, for a caller that holds on to the instance (`factory.py:44-52`, `:59-67`).
 
-The API no longer picks a mode at all: every route calls `get_orchestrator()` with no argument, and `wait: true` selects whether to *block*, not which engine to use — 200 with a finished status instead of 202 + poll (`apps/api/routers/jobs.py:11-15`, `:85`, `:100-105`). The blocking is done by polling the port (`jobs.py:109-133`), because "an engine that needed a separate worker could not implement a blocking submit at all" (`jobs.py:113-116`).
+The API no longer picks a mode at all: every route calls `get_orchestrator()` with no argument. It is a DBOS **client** by default and queues named workflows for workers; `wait: true` only changes the response shape to 200 after polling the persisted run. `REIMAGINA_DBOS_EXECUTION_MODE=dev` is the explicit local one-process exception, used by the CLI's `embedded` mode.
 
 ---
 
@@ -125,7 +125,7 @@ The change-set is resolved by `scenarios.overrides.resolve_change_set` (`overrid
 
 ### Impact engine — what to recompute
 
-`orchestration/impact.py` is pure: a function of (changed attributes, edited features, registry), no DB and no side effects (`impact.py:11-13`).
+`orchestration/graph.py` is the library-free graph contract shared by both tracks. It provides deterministic topological ordering, reverse edges, and downstream closure over plain `slug -> prerequisite slugs` mappings. `orchestration/impact.py` remains pure: it maps indicator metadata and feature scope onto those primitives, with no DB or engine dependency.
 
 1. **Seed** — every indicator whose declared `reads` intersects the changed attributes (`impact.py:83`).
 2. **Propagate** — anything depending transitively on a dirty indicator is dirty, via reverse edges (`impact.py:85-99`).
@@ -331,11 +331,11 @@ The run-level snapshot is taken first, on its own connection, because the port h
 
 ## The engine — DBOS
 
-Everything in this section is **engine-level**: it is this branch's answer, and the part the other branch replaces. Durable execution as a **library** — zero standing services, ordinary Python control flow, checkpoints in the same Postgres as the domain data under the `dbos` schema (`dbos_app.py:1-9`). Both the API and the worker import `dbos_app`, because DBOS can only recover or start a workflow whose definition is present in the process doing so (`dbos_app.py:8-9`).
+Everything in this section is **engine-level**: it is this branch's answer, and the part the other branch replaces. Durable execution as a **library** — zero standing services, ordinary Python control flow, checkpoints in the same Postgres as the domain data under the `dbos` schema. Workers host workflow definitions and execute; API processes use `DBOSClient` to submit, inspect, cancel, and stream without becoming executors.
 
 ### The run id is the workflow id
 
-`submit_run` mints a uuid and starts the workflow under `SetWorkflowID(run_id)` (`dbos_orchestrator.py:111`, `:143-144`). That is not a convenience. It makes a run addressable from any process **without a mapping table**: the API can read the progress stream of, or cancel, a run a worker is executing, by knowing nothing but the id the client already holds (`dbos_orchestrator.py:7-11`). It also makes submit idempotent — re-submitting the same id attaches to the existing workflow rather than starting a second one. Every cross-process call in this module is just `run_id`: `list_workflows(workflow_ids=[run_id])` (`:186`), `cancel_workflow(run_id, …)` (`:224`), `read_stream(run_id, PROGRESS_STREAM)` (`:313`).
+`submit_run` mints a UUID and uses it as the DBOS workflow id. In production the API passes it to `DBOSClient.enqueue` with the named `run_workflow` and the `runs` queue; the worker executes it later. `dev` and executor submitters use `SetWorkflowID(run_id)` with the same identity. This makes a run addressable from any process **without a mapping table**, and DBOS treats the id as its idempotency key. Every cross-process operation is keyed only by `run_id`: workflow lookup, cancellation, and stream read.
 
 ### The dirty set is a workflow input, never derived inside the workflow
 
@@ -351,7 +351,7 @@ The rule generalises to one line: **the workflow body branches only on workflow 
 
 `get_run` reads detail from our tables and *existence* from the engine (`dbos_orchestrator.py:150-175`).
 
-A submitted run is durable the moment `start_workflow` returns, but its envelope is written by the workflow's own first step — so there is a window where the run exists and `jobs_runtime` has nothing to say about it. Reporting `None` there would break the port's contract that a submitted id is immediately retrievable. So `get_run` falls back to the workflow's status, mapped onto our vocabulary through a small table consulted only in that window (`dbos_orchestrator.py:72-83`, `:175`).
+A submitted run is durable when DBOS accepts the enqueue, but its envelope is written by the workflow's own first step. There is therefore a window where the workflow exists and `jobs_runtime` has nothing to say about it. Reporting `None` there would break the port's contract that a submitted id is immediately retrievable, so `get_run` falls back to DBOS workflow status in that window.
 
 Nothing has to be reconstructed to do it: the unit list **is** the workflow's input, which DBOS persisted as part of making the run durable, so `_from_workflow` reads it straight back out and reports every unit as `queued` (`dbos_orchestrator.py:177-199`).
 
@@ -392,9 +392,9 @@ Two, not seven. `run_workflow` drives the dirty-set wave by wave; `unit_workflow
 
 **But the body branches on `s_settle_unit`'s return, not on `get_result`** (`dbos_app.py:393-403`). `get_result` *looks* checkpointed and is not: DBOS records it and never reads it back, so a replay re-queries the child's **live** status. If a child were resumed to `SUCCESS` after the parent had already skipped its dependents, the replayed body would take the dispatch branch where the original took the skip branch, the step positions would diverge, and the run would die with `DBOSUnexpectedStepError` — unrecoverable. A step's output *is* genuinely checkpointed, so routing the outcome through one keeps the body reproducible. This is the replay rule from the top of the module applied to the one value that arrives from outside it.
 
-### Configuration, and the four things it must get right
+### Configuration and execution roles
 
-`config()` (`dbos_app.py:105-119`) and `launch()` (`:126-161`).
+`config()` configures DBOS; `launch()` is executor-only.
 
 **A direct DSN is mandatory and fails loudly.** `DATABASE_URL_DIRECT` or a `RuntimeError` — because DBOS falls back to a local SQLite file when no database URL is set, so a missing environment variable in production would produce a *working* process with private, unrecoverable checkpoints instead of an error. LISTEN/NOTIFY backs the progress streams and cannot cross PgBouncer in transaction mode, so it must be the direct one (`dbos_app.py:57-74`).
 
@@ -402,19 +402,19 @@ Two, not seven. `run_workflow` drives the dirty-set wave by wave; `unit_workflow
 
 **`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
 
-**`worker_concurrency`, not `concurrency`.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around (`dbos_app.py:154-160`). Set by `REIMAGINA_UNIT_CONCURRENCY`, defaulting to 2.
+**Use worker-local concurrency, not global concurrency.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around. `REIMAGINA_RUN_CONCURRENCY` limits parent runs per executor (default 2); `REIMAGINA_UNIT_CONCURRENCY` independently limits indicator units per executor (default 2).
 
-`launch()` is idempotent *and* locked, because both the API and the CLI call it from a request path and the check and the assignment are not atomic. `DBOS.launch()` marks itself launched **before** it finishes building the system database, so a second thread arriving mid-launch gets "already launched" and then fails in `register_queue` with "System database accessed before DBOS was launched" — one concurrent submit turning into a 500 (`dbos_app.py:126-161`).
+`launch()` is idempotent and locked because an executor or `dev` CLI process can submit concurrently. The API does not call it in its default `client` mode. It registers the `runs` and `units` queues after DBOS has launched.
 
 Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:109`, `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:173-179`).
 
 ### The worker
 
-`python -m apps.worker` launches DBOS and blocks (`apps/worker/app.py:26-43`). There is no poll loop to write: launching registers the workflow definitions, starts the queue dequeuer and the startup-recovery thread, and then there is nothing to do but stay alive. There are no queue or concurrency flags either — concurrency belongs to the registered queue, and there is one queue (`apps/worker/__main__.py:26-32`).
+`python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. The worker also writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`.
 
 Two consequences, and they are the comparison:
 
-- **A worker is optional.** The library means the process that submits a run can also drain it; the worker exists to scale out, not to make runs possible (`apps/worker/app.py:10-11`). This is what the conformance suite calls *settles* — non-blocking and still self-completing (`tests/conformance/conftest.py:58-65`).
+- **A worker is required in production.** The API is client-only by default, keeping long-running PostGIS work outside request processes. `dev` is the explicit one-process mode for the CLI and integration tests; it is not a deployment default.
 - **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans need a deliberate sweep against a liveness signal, which is not built yet (`apps/worker/app.py:12-14`). Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, a live peer adopted nothing, and a manual sweep from the peer drove the run to completion. The sweep is built last and gated conservatively because the pinned 2.28.0 predates the idempotent-recovery fix, so a sweep fired against a live executor can double-execute (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`, `:191-195`, `pyproject.toml:56-69`).
 
 ---
@@ -446,7 +446,7 @@ An earlier framing treated the choice as a monotone ladder — `SKIP LOCKED` →
 - the port + factory seam (`orchestration/port.py`, `factory.py`) — so no caller names an engine;
 - the shared submit prelude (`orchestration/plan.py`) — so both branches decide run contents identically;
 - the module splits that make the fates separable: `wave.py` out of `coordinator.py`, `frames.py` out of the notify module, `memstore.py` out of `synchronous.py`. The second of those was tested by the deletion and held: `frames.py` outlived the transport it was split from, untouched;
-- the conformance suite (`tests/conformance/`), whose assertions read identically on both branches and whose `IMPLEMENTATIONS` table is the branch-specific half each branch edits (`tests/conformance/conftest.py:1-6`, `test_port_contract.py:1-11`). This branch's edit is two rows, and the `settles` flag exists because of it — an ops-plane can return immediately *and* still drive the run to completion in the submitting process, and conflating that with `blocking` silently skipped every partial-success assertion (`conftest.py:58-65`, `:75-86`);
+- the conformance suite (`tests/conformance/`), whose assertions read identically on both branches and whose `IMPLEMENTATIONS` table is the branch-specific half each branch edits. DBOS conformance sets `REIMAGINA_DBOS_EXECUTION_MODE=dev` explicitly so it can prove one-process durable execution without weakening the production client/worker process split;
 - migration r031 — the cancellation seam (`job_run.run_id`, `job_run.backend_pid`), which works on any engine because it is addressed to Postgres, not to a scheduler;
 - `docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md` — the metric definitions, fixed before either branch existed so the numbers can be put side by side.
 
