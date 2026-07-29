@@ -15,11 +15,15 @@ same source ``seed_catalog`` writes to ``curated_geo.indicator_catalog``.
 
 from __future__ import annotations
 
-import graphlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from reimagina.indicators.catalog import IndicatorSpec
+from reimagina.orchestration.graph import (
+    dependents_of,
+    downstream_closure,
+    topological_order,
+)
 
 
 @dataclass(frozen=True)
@@ -83,20 +87,7 @@ def compute_dirty_set(
     seed = {spec.slug for spec in registry if changed & frozenset(spec.reads)}
 
     # 2. downstream closure over reverse edges (the dependents of each input)
-    dependents: dict[str, set[str]] = {spec.slug: set() for spec in registry}
-    for slug, inputs in deps.items():
-        for inp in inputs:
-            if inp in dependents:
-                dependents[inp].add(slug)
-
-    dirty: set[str] = set()
-    stack = list(seed)
-    while stack:
-        slug = stack.pop()
-        if slug in dirty:
-            continue
-        dirty.add(slug)
-        stack.extend(dependents.get(slug, ()))
+    dirty = downstream_closure(seed, dependents_of(deps))
 
     if not dirty:
         return []
@@ -121,9 +112,7 @@ def compute_dirty_set(
     # predecessors as sets, and the sorter's ready-batch order depends on those
     # too — measured at two distinct orders across processes rather than ten,
     # which is the kind of partial fix that reads as success.
-    ordered = graphlib.TopologicalSorter(
-        {slug: tuple(sorted(deps[slug] & dirty)) for slug in sorted(dirty)}
-    ).static_order()
+    ordered = topological_order(deps, nodes=dirty)
 
     # feature scoping, computed in dependency order so a dependent can read its
     # inputs' already-resolved feature sets

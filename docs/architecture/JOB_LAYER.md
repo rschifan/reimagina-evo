@@ -48,7 +48,7 @@ The project is forking into two branches, each a complete reference implementati
 
 | Fate | Modules |
 |---|---|
-| **Port-level — permanent, identical on both branches** | `orchestration/port.py`, `factory.py`, `plan.py`, `impact.py`, `frames.py`, `coordinator.py`, `synchronous.py`, `memstore.py`; `indicators/*`; `jobs_runtime.job_run` + `jobs/_lifecycle.py` |
+| **Port-level — permanent, identical on both branches** | `orchestration/port.py`, `factory.py`, `plan.py`, `graph.py`, `impact.py`, `frames.py`, `coordinator.py`, `synchronous.py`, `memstore.py`; `indicators/*`; `jobs_runtime.job_run` + `jobs/_lifecycle.py` |
 | **Engine-level — replaced on both branches** | `orchestration/tasks.py`, `queue_app.py`, `events.py`, `procrastinate_orchestrator.py`, `embedded.py`, `perf/procrastinate_bench.py` |
 | **Split fate — this *is* the comparison** | `orchestration/wave.py` — survives on Track A, deleted on Track B. `orchestration/runstore.py` + `jobs_runtime.orchestration_run` + `jobs_runtime.job_unit` — survive on Track A, dropped on Track B (migration r033) |
 
@@ -114,7 +114,7 @@ The change-set is resolved by `scenarios.overrides.resolve_change_set` (`overrid
 
 ### Impact engine — what to recompute
 
-`orchestration/impact.py` is pure: a function of (changed attributes, edited features, registry), no DB and no side effects (`impact.py:11-13`).
+`orchestration/graph.py` is the library-free graph contract shared by both tracks. It provides deterministic topological ordering, reverse edges, and downstream closure over plain `slug -> prerequisite slugs` mappings. `orchestration/impact.py` remains pure: it maps indicator metadata and feature scope onto those primitives, with no DB or engine dependency.
 
 1. **Seed** — every indicator whose declared `reads` intersects the changed attributes (`impact.py:83`).
 2. **Propagate** — anything depending transitively on a dirty indicator is dirty, via reverse edges (`impact.py:86-99`).
