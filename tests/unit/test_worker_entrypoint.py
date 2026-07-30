@@ -41,9 +41,7 @@ def test_worker_parses_name_and_slots(monkeypatch):
 
 
 def test_worker_rejects_non_integer_slots(monkeypatch):
-    monkeypatch.setattr(
-        "apps.worker.__main__.run_hatchet_worker", lambda **kw: None
-    )
+    monkeypatch.setattr("apps.worker.__main__.run_hatchet_worker", lambda **kw: None)
 
     with pytest.raises(SystemExit):
         main(["--slots", "lots"])

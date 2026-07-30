@@ -303,7 +303,9 @@ def build_dag(
             features = frozenset(input.features.get(_slug, []))
             # Free in the dashboard's log viewer, per task, searchable. The
             # library track has nowhere to put this but the process log.
-            ctx.log(f"{_slug}: {len(features)} feature(s), attempt {ctx.attempt_number}")
+            ctx.log(
+                f"{_slug}: {len(features)} feature(s), attempt {ctx.attempt_number}"
+            )
 
             # ⚠ `ctx.workflow_run_id`, NOT `input.run_id`. The submitter cannot
             # know the id — the engine mints it — so `RunInput.run_id` is an

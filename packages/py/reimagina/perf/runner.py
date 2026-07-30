@@ -144,17 +144,13 @@ def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[objec
         return [*bounds, *bounds]
     if benchmark_name == "polygon_features_small":
         polygon = _polygon_wkt_from_bbox(
-            bbox_from_extent(
-                feature_extent(conn), width_ratio=0.03, height_ratio=0.03
-            ),
+            bbox_from_extent(feature_extent(conn), width_ratio=0.03, height_ratio=0.03),
             complex_shape=False,
         )
         return [polygon, polygon]
     if benchmark_name == "polygon_features_dense":
         polygon = _polygon_wkt_from_bbox(
-            bbox_from_extent(
-                feature_extent(conn), width_ratio=0.1, height_ratio=0.08
-            ),
+            bbox_from_extent(feature_extent(conn), width_ratio=0.1, height_ratio=0.08),
             complex_shape=True,
         )
         return [polygon, polygon]

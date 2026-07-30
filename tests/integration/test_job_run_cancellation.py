@@ -156,6 +156,7 @@ def test_cancel_run_backends_stops_a_live_statement(migrated_db):
         worker.close()
         control.close()
 
+
 def test_cancel_skips_terminal_rows(migrated_db):
     """A finished job's pid may have been reused by an unrelated backend."""
     run = "55555555-5555-5555-5555-555555555555"
