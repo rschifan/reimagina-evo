@@ -125,6 +125,43 @@ def ordering_violations(
     return bad
 
 
+def duplicate_executions(records: Sequence[UnitRecord]) -> list[str]:
+    """Units whose compute ran to completion more than once.
+
+    Durable execution guarantees *at-least-once*, not exactly-once, and this
+    track has a documented way to spend it: `s_compute` sets
+    ``retries_allowed=False``, so a repeat is never a retry — it is recovery
+    re-claiming work. `_executor_id` spells out the consequence of getting that
+    identity wrong: *"on dbos 2.28.0 recovery is not idempotent, so that is a
+    double execution — worse than the failure it was trying to repair."* A
+    second body means a full PostGIS compute re-run over the same features,
+    writing the same rows again.
+
+    ⚠ Counted on ``succeeded`` alone, deliberately. A repeat *after a failure*
+    left nothing behind — the first attempt rolled its transaction back — so
+    `failed` rows say nothing about correctness and counting them would fail
+    `partial_failure` by construction. Two completions are what no engine may
+    do whatever its retry policy, which is what keeps this rule identical on
+    the track that retries and the track that does not.
+
+    The stored *result* survives this either way: `write_result` stales the
+    previous row before inserting, and `ir_one_current_base` /
+    `ir_one_current_scenario` (r016) refuse a second `current` row. So this
+    detects wasted duplicate work and a broken dispatch guarantee, not a
+    corrupted value — which is why it is worth asserting separately rather than
+    trusting the read path to hide it.
+    """
+    completions: dict[str, int] = {}
+    for record in records:
+        if record.status == "succeeded":
+            completions[record.slug] = completions.get(record.slug, 0) + 1
+    return [
+        f"{slug} succeeded {count} times"
+        for slug, count in sorted(completions.items())
+        if count > 1
+    ]
+
+
 def _critical_path_ms(
     records: Sequence[UnitRecord], edges: Mapping[str, Sequence[str]]
 ) -> float:
