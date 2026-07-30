@@ -61,6 +61,19 @@ services:
       # zero extra infrastructure beyond the engine itself.
       SERVER_MSGQUEUE_KIND: postgres
 
+      # ⚠ Development values. Three of the settings in this block are unsafe
+      # outside localhost and are grouped so they are changed together:
+      #
+      #   SERVER_AUTH_COOKIE_INSECURE  — session cookies without the Secure flag
+      #   SERVER_GRPC_INSECURE         — the SDK connection is plaintext
+      #   SERVER_AUTH_SET_EMAIL_VERIFIED — anyone who signs up is verified
+      #
+      # ⚠ And the seeded dashboard login (admin@example.com / Admin123!!) is a
+      # hardcoded default in the engine's own source, not something chosen here.
+      # Before this is reachable from anywhere but localhost: change that
+      # password, terminate TLS in front of both ports, set
+      # SERVER_GRPC_INSECURE=f with certificates, and set
+      # HATCHET_CLIENT_TLS_STRATEGY on every client to match.
       SERVER_AUTH_COOKIE_DOMAIN: localhost
       SERVER_AUTH_COOKIE_INSECURE: "t"
       SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
@@ -78,8 +91,24 @@ services:
 
       # ⚠ Not set, deliberately: SERVER_ENFORCE_LIMITS defaults false, and
       # setting it true inherits stingy built-ins (3 workers, 2000 task runs per
-      # 24h). ⚠ SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD defaults to 720h —
-      # runs older than 30 days are deleted.
+      # 24h).
+
+      # ⚠ Run retention, set explicitly rather than left at its 720h default —
+      # because it is now **pinned to a second value elsewhere**. `runs.replay()`
+      # re-executes from the original input, which on this track is a `plan_id`
+      # handle into `jobs_runtime.run_plan`, so a plan that expires before the
+      # run it belongs to turns a replayable run into one that fails every unit.
+      # scripts/reclaim_run_plans.sql must use a horizon *longer* than this.
+      # Change one, change the other; 720h here means 45 days there.
+      SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD: "${HATCHET_RUN_RETENTION:-720h}"
+
+      # ⚠ Both default **false**, confirmed against this engine's own
+      # /api/v1/meta ("observabilityEnabled": false, "prometheusServerEnabled":
+      # false). Metrics on a service track are the thing you are paying the
+      # service for; leaving them off spends the cost and declines the benefit.
+      # The library track has no equivalent to turn on.
+      SERVER_OBSERVABILITY_ENABLED: "t"
+      SERVER_PROMETHEUS_ENABLED: "t"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: 1gb   # the 64 MB container default is not enough for the engine
