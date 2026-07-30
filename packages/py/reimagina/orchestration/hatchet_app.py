@@ -339,8 +339,16 @@ def build_dag(
                 # its own, or a unit that burned minutes and failed leaves no
                 # provenance at all. Once per attempt, deliberately: each retry
                 # really is a separate failed execution.
+                #
+                # ⚠ `direct_dsn`, NOT `conn.dsn`. psycopg2 returns a live
+                # connection's DSN with the password replaced by the literal
+                # `xxx`, so reconnecting from it fails authentication against
+                # any database that has one — and the best-effort `except`
+                # inside swallows that into a log line, so failed units simply
+                # stop leaving provenance. The string this connection was
+                # opened with is the same database by construction, and works.
                 record_failed_job_run(
-                    conn.dsn,
+                    direct_dsn,
                     run_id=ctx.workflow_run_id,
                     indicator_slug=_slug,
                     scenario_id=input.scenario_id,
