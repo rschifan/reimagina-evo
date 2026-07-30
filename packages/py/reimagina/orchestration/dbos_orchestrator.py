@@ -223,7 +223,24 @@ class DBOSOrchestrator:
         been touched — which is what lets the envelope be written by the
         workflow rather than by the submitter.
         """
-        found = _client().list_workflows(workflow_ids=[run_id])
+        try:
+            found = _client().list_workflows(workflow_ids=[run_id])
+        except Exception as exc:  # noqa: BLE001 — re-raised unless it is 42P01
+            # DBOS owns its schema and creates it at `launch()`, so on a database
+            # it has never launched against `dbos.workflow_status` does not
+            # exist. That is not an error to propagate: no workflow can exist
+            # either, and the answer to "does this run exist" is no. The port
+            # promises `RunStatus | None`, and leaking `UndefinedTable` through
+            # it is the same contract break the other track avoids by mapping
+            # its engine's not-found onto None.
+            #
+            # Matched by SQLSTATE rather than exception class on purpose: the
+            # error arrives wrapped by SQLAlchemy around a psycopg3 error, and
+            # psycopg3 reaches us only transitively through DBOS — importing it
+            # here would be depending on something this package never declared.
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
+                raise
+            return None
         if not found:
             return None
         args = (found[0].input or {}).get("args", ())
