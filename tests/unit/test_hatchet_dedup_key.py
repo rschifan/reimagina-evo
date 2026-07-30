@@ -1,0 +1,146 @@
+"""The idempotency window must actually fire, and nothing else asserts that.
+
+`RunInput.dedup_key` feeds `TTLBasedIdempotencyConfig(key_expression=
+"input.dedup_key")`, so two submissions of the same work inside the TTL collapse
+to one run. That behaviour has never been tested. Both conftests work *around*
+the window by giving every submission a distinct `code_version`; the only tests
+named `idempotent` cover source registration and are unrelated.
+
+The gap matters because the fingerprint is about to be rewritten. When the
+feature ids move out of `RunInput` and into `jobs_runtime.run_plan`, the payload
+gains a freshly-minted `plan_id` — and folding that into the key would make
+every fingerprint unique, silently disabling deduplication with a green suite.
+These tests are written before that change so the change is guarded rather than
+merely careful.
+
+Deliberately at the submit boundary rather than on `_dedup_key` directly: the
+regression would be introduced at the call site, by passing the wrong thing into
+a function that is itself correct.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from reimagina.orchestration.impact import DirtyUnit
+from reimagina.orchestration.plan import RunPlan
+
+SCENARIO = "11111111-1111-4111-8111-111111111111"
+FEATURES = ("feature-a", "feature-b", "feature-c")
+
+
+class _Ref:
+    workflow_run_id = "22222222-2222-4222-8222-222222222222"
+
+
+def _submit(monkeypatch, *, units, code_version="test", scenario_id=SCENARIO):
+    """Run one submission with the engine faked out; return the RunInput sent."""
+    from reimagina.orchestration import hatchet_app, hatchet_orchestrator
+
+    captured: list = []
+
+    class _Workflow:
+        def run(self, payload, **_kwargs):
+            captured.append(payload)
+            return _Ref()
+
+    monkeypatch.setattr(
+        hatchet_orchestrator,
+        "plan_run",
+        lambda *a, **k: RunPlan(
+            units=[DirtyUnit(slug, frozenset(features)) for slug, features in units],
+            params={
+                "code_version": code_version,
+                "scenario_id": scenario_id,
+                "aoi_id": None,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        hatchet_orchestrator, "assert_same_domain_database", lambda *a, **k: None
+    )
+    monkeypatch.setattr(hatchet_app, "get_run_workflow", lambda: _Workflow())
+    monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql:///irrelevant")
+
+    hatchet_orchestrator.HatchetOrchestrator(registry=()).submit_run(
+        object(),
+        changed_attributes={"geometry"},
+        edited_features=set(FEATURES),
+        code_version=code_version,
+        scenario_id=scenario_id,
+    )
+    return captured[0]
+
+
+def test_identical_work_submitted_twice_shares_a_dedup_key(monkeypatch):
+    """The property the whole idempotency window rests on.
+
+    If this ever fails, two identical submissions land as two runs and the
+    stale-then-insert write path lets them fight over the same rows.
+    """
+    units = [("urban_form_block_compactness", FEATURES)]
+    first = _submit(monkeypatch, units=units)
+    second = _submit(monkeypatch, units=units)
+
+    assert first.dedup_key == second.dedup_key
+    assert first.dedup_key != ""
+
+
+def test_a_different_feature_scope_is_different_work(monkeypatch):
+    """Two edits to one scenario inside the TTL must both run.
+
+    The key covers the per-unit feature scope, not just the scenario — otherwise
+    a second, different edit would be swallowed as a duplicate of the first.
+    """
+    a = _submit(monkeypatch, units=[("urban_form_block_compactness", ("feature-a",))])
+    b = _submit(monkeypatch, units=[("urban_form_block_compactness", ("feature-b",))])
+
+    assert a.dedup_key != b.dedup_key
+
+
+def test_a_different_dirty_set_is_different_work(monkeypatch):
+    a = _submit(monkeypatch, units=[("urban_form_block_compactness", FEATURES)])
+    b = _submit(
+        monkeypatch,
+        units=[
+            ("urban_form_block_compactness", FEATURES),
+            ("urban_form_block_building_density", FEATURES),
+        ],
+    )
+
+    assert a.dedup_key != b.dedup_key
+
+
+def test_a_different_code_version_is_different_work(monkeypatch):
+    a = _submit(monkeypatch, units=[("slug", FEATURES)], code_version="v1")
+    b = _submit(monkeypatch, units=[("slug", FEATURES)], code_version="v2")
+
+    assert a.dedup_key != b.dedup_key
+
+
+def test_feature_order_does_not_change_the_fingerprint(monkeypatch):
+    """Two processes deriving the same dirty set must agree on the key.
+
+    `DirtyUnit.features` is a frozenset, whose iteration order is not stable
+    across processes; the caller sorts before hashing. Without that, the same
+    edit fingerprints differently depending on who submitted it and the window
+    never fires in production.
+    """
+    a = _submit(monkeypatch, units=[("slug", ("f-a", "f-b", "f-c"))])
+    b = _submit(monkeypatch, units=[("slug", ("f-c", "f-a", "f-b"))])
+
+    assert a.dedup_key == b.dedup_key
+
+
+@pytest.mark.parametrize("field", ["dirty", "features", "scenario_id", "code_version"])
+def test_the_payload_still_carries_what_the_key_hashes(monkeypatch, field):
+    """Guards the refactor rather than the current code.
+
+    When the feature ids move into `jobs_runtime.run_plan`, `features` leaves
+    this payload — and the fingerprint must keep covering the same content,
+    computed from the ids while they are still in memory. This test failing on
+    `features` is the expected, deliberate signal at that point; the other three
+    failing would mean the key lost coverage it still needs.
+    """
+    payload = _submit(monkeypatch, units=[("slug", FEATURES)])
+    assert getattr(payload, field) not in (None, "", [], {})
