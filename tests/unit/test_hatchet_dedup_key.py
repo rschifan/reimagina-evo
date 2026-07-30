@@ -71,7 +71,7 @@ def _submit(monkeypatch, *, units, code_version="test", scenario_id=SCENARIO):
     # Not about admission control: this suite drives the plan/payload path, so
     # the "is a worker serving this graph?" gate is stubbed. Its own behaviour is
     # covered in `test_graph_version.py`.
-    monkeypatch.setattr(hatchet_orchestrator, "_worker_serves", lambda _name: True)
+    monkeypatch.setattr(hatchet_orchestrator, "_graph_is_deployed", lambda _name: True)
     monkeypatch.setattr(hatchet_app, "get_run_workflow", lambda: _Workflow())
     monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql:///irrelevant")
 

@@ -70,7 +70,7 @@ class InMemoryRunStore:
         if run is not None:
             run["status"] = status
 
-    def get_run(self, conn: Any, run_id: str) -> dict[str, Any] | None:
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
         run = self._runs.get(run_id)
         if run is None:
             return None

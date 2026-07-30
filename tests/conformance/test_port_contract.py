@@ -71,7 +71,7 @@ def _await_terminal(orchestrator, conn, run_id, timeout=_CONVERGE_TIMEOUT):
     deadline = time.monotonic() + timeout
     status = None
     while time.monotonic() < deadline:
-        status = orchestrator.get_run(conn, run_id)
+        status = orchestrator.get_run(run_id)
         if status is not None and status.status in RUN_TERMINAL_STATES:
             return status
         time.sleep(0.25)
@@ -87,7 +87,7 @@ def _settle(orchestrator, conn, run_id, timeout=_SETTLE_TIMEOUT):
     deadline = time.monotonic() + timeout
     status = None
     while time.monotonic() < deadline:
-        status = orchestrator.get_run(conn, run_id)
+        status = orchestrator.get_run(run_id)
         if status is not None and status.status in RUN_TERMINAL_STATES:
             return status
         time.sleep(0.5)
@@ -116,7 +116,7 @@ def test_an_empty_dirty_set_is_a_noop_with_no_run_id(orchestrator, seeded):
     assert handle.status is not None
     assert handle.status.status == "noop"
     assert handle.status.units == ()
-    assert orchestrator.get_run(seeded.conn, handle.run_id) is None
+    assert orchestrator.get_run(handle.run_id) is None
 
 
 def test_a_submitted_run_is_retrievable_by_its_id(submit, orchestrator, seeded, impl):
@@ -133,7 +133,7 @@ def test_a_submitted_run_is_retrievable_by_its_id(submit, orchestrator, seeded, 
     being measured, so the test states it rather than sleeping past it.
     """
     handle = submit()
-    fetched = orchestrator.get_run(seeded.conn, handle.run_id)
+    fetched = orchestrator.get_run(handle.run_id)
 
     assert fetched is not None
     assert fetched.run_id == handle.run_id
@@ -146,7 +146,7 @@ def _await_units(orchestrator, conn, run_id, timeout=_CONVERGE_TIMEOUT):
     deadline = time.monotonic() + timeout
     status = None
     while time.monotonic() < deadline:
-        status = orchestrator.get_run(conn, run_id)
+        status = orchestrator.get_run(run_id)
         if status is not None and status.units:
             return status
         time.sleep(0.25)
@@ -157,10 +157,7 @@ def _await_units(orchestrator, conn, run_id, timeout=_CONVERGE_TIMEOUT):
 
 
 def test_an_unknown_run_is_none_not_an_error(orchestrator, seeded):
-    assert (
-        orchestrator.get_run(seeded.conn, "00000000-0000-0000-0000-000000000000")
-        is None
-    )
+    assert orchestrator.get_run("00000000-0000-0000-0000-000000000000") is None
 
 
 # ── Cancel ──────────────────────────────────────────────────────────────────

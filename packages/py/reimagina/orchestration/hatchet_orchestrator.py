@@ -164,7 +164,7 @@ class HatchetUnavailable(RuntimeError):
 
 
 class GraphVersionUnavailable(RuntimeError):
-    """No live worker serves the graph this deployment plans against.
+    """Nothing has ever deployed the graph this deployment plans against.
 
     ⚠ Deliberately not a `HatchetUnavailable`. The engine is reachable and
     healthy; what is missing is a worker for *this* workflow name, which is a
@@ -175,24 +175,58 @@ class GraphVersionUnavailable(RuntimeError):
     """
 
 
-def _worker_serves(workflow: str) -> bool:
-    """Is some live worker registered for `workflow`?
+def _graph_is_deployed(workflow: str) -> bool:
+    """Has this workflow name ever been registered with the engine?
+
+    ⚠ Registration, **not** current worker liveness, and the distinction cost a
+    conformance run to learn. Gating submissions on a live ACTIVE worker looked
+    stricter and was simply wrong: worker status moves moment to moment, so a
+    healthy deployment with a busy or briefly-restarting worker refused runs it
+    should have accepted — and a rejected submission discards real work, where a
+    momentary lack of a worker only delays it. The engine queues.
+
+    A workflow name exists only because a worker declared it, so its absence is
+    the condition actually worth refusing: this deployment plans against a graph
+    shape nobody has ever deployed, and no amount of queueing fixes that.
+
+    Liveness still matters, but it belongs in **readiness**, where failing takes
+    the instance out of rotation instead of destroying a request's work.
+
+    Fails **open** on an unreadable listing: an admission check must not become
+    a submission outage.
+    """
+    from reimagina.orchestration import hatchet_app
+
+    try:
+        listed = hatchet_app.get_hatchet().workflows.list()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "could not list workflows; admitting run unchecked", exc_info=True
+        )
+        return True
+
+    names = {getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])}
+    return workflow in names
+
+
+def _live_worker_for(workflow: str) -> bool:
+    """Is a worker *right now* able to execute `workflow`?
 
     Worker actions are `<workflow-name>:<task-name>`, so the prefix is the
-    question. Checks liveness too: an INACTIVE registration is history, and a
-    run admitted against one waits for a process that is gone.
+    question, and an INACTIVE registration is history rather than capacity.
 
-    Fails **open** on an unreadable worker list. This is an admission check, not
-    a safety property — the engine holding the run is the safety property — and
-    a transient listing failure must not become a submission outage.
+    Used by readiness, never by submission — see `_graph_is_deployed`. Fails
+    **closed** by returning False on an unreadable listing, because a probe that
+    cannot tell should take the instance out of rotation rather than claim it is
+    fine.
     """
     from reimagina.orchestration import hatchet_app
 
     try:
         rows = getattr(hatchet_app.get_hatchet().workers.list(), "rows", None) or []
     except Exception:  # noqa: BLE001
-        logger.warning("could not list workers; admitting run unchecked", exc_info=True)
-        return True
+        logger.warning("could not list workers for readiness", exc_info=True)
+        return False
 
     prefix = f"{workflow}:"
     return any(
@@ -285,10 +319,10 @@ class HatchetOrchestrator:
         # leave nothing behind, and this is a cheap engine read against a
         # database write plus a discard.
         workflow = hatchet_app.workflow_name(self._registry)
-        if not _worker_serves(workflow):
+        if not _graph_is_deployed(workflow):
             raise GraphVersionUnavailable(
-                f"no live worker serves {workflow!r} — this deployment plans "
-                f"against a graph shape nothing is registered to execute"
+                f"no worker has ever registered {workflow!r} — this deployment "
+                f"plans against a graph shape nothing has deployed"
             )
 
         # Committed before the workflow is triggered; see `_persist_plan`.
@@ -380,7 +414,7 @@ class HatchetOrchestrator:
 
     # ── Read ────────────────────────────────────────────────────────────────
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None:
+    def get_run(self, run_id: str) -> RunStatus | None:
         """Read the engine's own record; roll it up through the shared function.
 
         One construction of the unit list, whether the run is in flight or
@@ -435,7 +469,7 @@ class HatchetOrchestrator:
         """
         from reimagina.orchestration import hatchet_app
 
-        current = self.get_run(conn, run_id)
+        current = self.get_run(run_id)
         if current is None or current.status in RUN_TERMINAL_STATES:
             return False
 
@@ -533,7 +567,7 @@ class HatchetOrchestrator:
             asked how the run ended, and it would put a unit event where the
             port's contract puts the run-level one.
             """
-            status = await asyncio.to_thread(self.get_run, None, run_id)
+            status = await asyncio.to_thread(self.get_run, run_id)
             if status is None:
                 yield RunEvent(run_id=run_id, indicator=None, status="unknown")
                 return

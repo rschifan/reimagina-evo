@@ -463,7 +463,7 @@ def _await_terminal(orchestrator, conn, run_id):
         # would hold a snapshot from before the units committed — so the reads
         # afterwards would never see them.
         conn.rollback()
-        last = orchestrator.get_run(conn, run_id)
+        last = orchestrator.get_run(run_id)
         if last is not None and last.status in RUN_TERMINAL_STATES:
             return last, db_now(conn)
         time.sleep(_POLL_S)
