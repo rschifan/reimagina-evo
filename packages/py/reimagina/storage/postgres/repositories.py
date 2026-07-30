@@ -2543,3 +2543,40 @@ class PostgresRunPlanRepository:
                 "was submitted, or this connection is on a different database"
             )
         return [str(feature_id) for feature_id in row[0]]
+
+    def delete(self, *, plan_id: str) -> int:
+        """Reclaim a plan whose run has reached a terminal state.
+
+        Best-effort by design: the sweep below is what guarantees the table
+        stays bounded. A run that crashed, was cancelled before its finalizer,
+        or lost its idempotency race never reaches here.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.run_plan WHERE plan_id = %s::uuid",
+                (plan_id,),
+            )
+            return cur.rowcount
+
+    def sweep(self, *, older_than_hours: int) -> int:
+        """Reclaim orphans — plans no terminal run will ever come back for.
+
+        Three ways a plan is abandoned, none of which reach `delete`: a submit
+        that crashed between writing the plan and enqueuing the work; a run
+        cancelled before its finalizer ran; and an idempotency collision, where
+        the engine hands back an existing run and the plan just written is
+        never referenced by anything.
+
+        ⚠ ``older_than_hours`` must exceed the longest run this deployment can
+        produce. Sweeping a plan out from under a live run makes every
+        subsequent unit fail with a missing-plan LookupError — the loud failure
+        that is supposed to mean "a write was lost". The unit timeout alone is
+        120 minutes by default, so the margin here is deliberately generous.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.run_plan "
+                "WHERE created_at < now() - make_interval(hours => %s)",
+                (older_than_hours,),
+            )
+            return cur.rowcount

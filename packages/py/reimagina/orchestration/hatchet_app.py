@@ -41,6 +41,8 @@ more honest comparison row than "the engine is lossy".
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import threading
 import uuid
@@ -66,6 +68,8 @@ from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.runners import default_runners
 from reimagina.storage import backend_for_connection
+
+logger = logging.getLogger(__name__)
 
 # ⚠ Both Hatchet defaults are wrong for this workload, measured in spike B5.
 #
@@ -243,6 +247,29 @@ def _skip_unless_dirty(plan: Any, slug: str) -> list[ParentCondition]:
     )
     condition.base.or_group_id = str(uuid.uuid5(_CONDITION_NS, f"dirty:{slug}"))
     return [condition]
+
+
+def _release_plan(plan_id: str) -> None:
+    """Reclaim the run's plan rows once it is terminal.
+
+    ⚠ Best-effort, and deliberately silent on failure. This runs inside the
+    finalizer, whose return value *is* the run's verdict — raising here would
+    turn a successful run into a failed one over a housekeeping row. Anything
+    missed is reclaimed by the TTL sweep at the next submit.
+
+    ⚠ Its own connection: the finalizer holds none, and the unit connections are
+    long closed by the time a verdict is written.
+    """
+    if not plan_id:
+        return
+    from reimagina.db import connect
+
+    try:
+        with contextlib.closing(connect(os.environ["DATABASE_URL_DIRECT"])) as conn:
+            backend_for_connection(conn).run_plan_repo().delete(plan_id=plan_id)
+            conn.commit()
+    except Exception:  # noqa: BLE001 — housekeeping must not fail a run
+        logger.warning("could not release run plan %s", plan_id, exc_info=True)
 
 
 def build_dag(
@@ -467,6 +494,7 @@ def build_dag(
 
     @workflow.on_success_task()
     def summarise_success(input: RunInput, ctx: Context) -> dict:
+        _release_plan(input.plan_id)
         return _verdict(ctx)
 
     @workflow.on_failure_task()
@@ -477,6 +505,7 @@ def build_dag(
         COMPLETED itself, and its return value is what ``runs.get_result()``
         serves for a run whose *status* is FAILED.
         """
+        _release_plan(input.plan_id)
         return _verdict(ctx)
 
     return workflow, node
