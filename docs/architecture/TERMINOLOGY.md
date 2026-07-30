@@ -11,7 +11,7 @@ The platform operates in three modes. Understanding which mode you are in determ
 | Mode | What it does | Key tables involved |
 |---|---|---|
 | **Diagnosis** | Describes the city as it exists today. No scenario. | `feature`, `observation`, `indicator_result` (where `scenario_id IS NULL`) |
-| **Exploration** | Sketches proposed changes to the city without running full models. | `intervention`, `intervention_feature`, `configuration` |
+| **Exploration** | Sketches proposed changes to the city without running full models. | `scenario_override` |
 | **Evaluation** | Computes indicators for a specific scenario and compares results against the base state. | `job_run`, `indicator_result` (where `scenario_id IS NOT NULL`) |
 
 These modes are not mutually exclusive — a project will typically use all three in sequence.
@@ -36,7 +36,10 @@ A thin view layer over `curated_geo`. The API reads only from `serving_geo`. It 
 A record of one curated-load execution — one step of the Bronze → Silver → curated pipeline for a specific dataset. Every canonical row in `feature` and `observation` carries an `ingestion_run_id` that traces it back to the exact script version and run that produced it.
 
 ### Job run
-A record of one model computation — an async worker that reads city data and writes indicator results. Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id`. The queue architecture, worker contract, and lifecycle state machine are defined in `JOB_LAYER.md`.
+A record of one model computation that reads city data and writes indicator results. Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id`. The row is opened by the runner at compute time, not when work is submitted (`jobs/_lifecycle.py:46`).
+
+### Run
+One submitted computation — the unit the `Orchestrator` port deals in, persisted as `jobs_runtime.orchestration_run` with one `jobs_runtime.job_unit` per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
 
 ---
 
@@ -77,7 +80,7 @@ The role a dataset plays during scenario work. This is not a schema column in v1
 |---|---|---|
 | Baseline-defining | Describes what physically exists in the city today | blocks, lots, roads, bus stops |
 | Baseline evidence | Read-only measurements that help models describe current conditions | census counts, NDVI, sidewalk width from GSV, cellphone footfall |
-| Scenario-editable context | Values that scenarios may override through `intervention_feature.attribute_overrides` | sidewalk width, lane count, green area share, tree count |
+| Scenario-editable context | Values that scenarios may override through `curated_geo.scenario_override` | floors (the one wired today); sidewalk width, lane count, green area share |
 | Output-only | Results produced by models, not inputs | walkability score, liveability index |
 
 ---
@@ -134,19 +137,16 @@ The fraction of a feature's area, length, or presence that falls inside an AOI. 
 ## Scenarios
 
 ### Project
-The top-level workspace. Groups scenarios, areas of interest, and users. A project has a study area but is not itself a scenario.
+A workspace row in `app_core.project` — the only table in `app_core` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It does not group scenarios: no column connects a project to a scenario.
 
 ### Scenario
-A named proposed state of the city within a project. A scenario never modifies baseline data — it overlays changes through interventions and configuration, and expresses its effects through recomputed indicator results.
-
-### Intervention
-A named set of proposed physical changes to specific features in a scenario. An intervention targets one or more features and specifies `attribute_overrides` for each — a JSON patch that models apply on top of the baseline before computing indicators. Multiple interventions can exist within one scenario.
+A named proposed state of the city. A scenario is a **bare uuid, not a row** — there is no `app_core.scenario` table, and every `scenario_id` column is a plain uuid with no foreign key (r016:7-10, r030:5-6). A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
 
 ### Attribute override
-A JSON object in `intervention_feature.attribute_overrides` that replaces or extends a feature's baseline attributes for the purposes of a scenario computation. Example: `{"width_m": 3.5, "tree_count": 12}` on a sidewalk segment. The underlying `feature` row is never modified.
+One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. The override rows *are* the scenario: reading them back yields the change-set a run needs (`scenarios/overrides.py:96`).
 
-### Configuration
-Model input parameters specific to a scenario, stored per model family. These are the "knobs" that analytical models read — assumptions that are not tied to specific features but affect the entire computation. Example: `{"walking_speed_kmh": 5, "max_walk_minutes": 15}` for the accessibility model. One configuration row per `(scenario_id, model_family)`.
+### Effective value
+What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:50`). With no scenario it collapses to `observation ⊕ base` — the baseline.
 
 ### Base state
 The city as it exists today. Represented by `indicator_result` rows where `scenario_id IS NULL`. This is the Diagnosis mode output.
@@ -165,7 +165,7 @@ A computed value for a specific spatial feature in a specific state of the world
 An indicator produced directly by a model worker reading city data. Has a `model_family` set. Examples: walkability score (accessibility model), floor area ratio (housing model).
 
 ### Composite indicator
-An indicator derived from a weighted combination of other indicators. Has `model_family = NULL`. Defined via `indicator_dependency`. Examples: liveability index built from walkability + transit + green coverage. A separate composite worker computes these after their components are ready.
+An indicator derived from a weighted combination of other indicators. Has `model_family = NULL` (enforced by a CHECK, r016:86-87). Defined via `indicator_dependency`. The shipped example is `urban_form_block_composite` — compactness + building density, 0.5/0.5. Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`orchestration/runners.py:86-87`).
 
 ### Quality flag (ISO 19157)
 A classification of how reliable a computed indicator value is.
@@ -190,7 +190,7 @@ The lifecycle status of an `indicator_result` row.
 Execution state (`queued`, `running`) lives on `job_run`, not on `indicator_result`.
 
 ### Staleness propagation
-When a scenario intervention changes features, the affected indicator results are marked `stale`. Any composite indicator that depends on a stale base indicator is also marked `stale`, recursively, using the `indicator_dependency` graph.
+When a scenario override changes features, the affected indicator results are marked `stale`. Any composite indicator that depends on a stale base indicator is also marked `stale`, recursively, using the `indicator_dependency` graph.
 
 ---
 
@@ -266,9 +266,11 @@ How much of a feature lies inside a project AOI?   → aoi_feature overlap field
 
 **Where do scenario-related edits go?**
 ```
-Changing a feature's physical characteristics?     → intervention_feature.attribute_overrides
-Changing model assumptions (not feature-specific)? → configuration.parameters
-Neither — never modify feature or observation rows for a scenario.
+Changing a feature's attribute for one scenario?   → curated_geo.scenario_override
+Changing model assumptions (not feature-specific)? → nowhere — no configuration
+                                                     table exists; model constants
+                                                     live in code
+Never modify feature or observation rows for a scenario.
 ```
 
 **When should a detection become a feature vs an observation?**
@@ -280,7 +282,7 @@ Measurement or score about an existing feature?                  → observation
 **When is an indicator result stale?**
 ```
 A feature's baseline attributes changed?           → stale for all scenarios that used that feature
-An intervention_feature override changed?          → stale for that scenario only
+A scenario_override row changed?                   → stale for that scenario only
 A composite's component changed?                   → stale transitively via indicator_dependency
 ```
 

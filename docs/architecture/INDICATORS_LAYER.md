@@ -2,7 +2,7 @@
 
 How the platform defines, computes, stores, and serves spatial indicators — the analytical outputs shown to users for both the base city and for scenarios.
 
-**Related documents:** `DATA_LAYER.md` — the city data indicators read from. `SCENARIOS_LAYER.md` — scenarios and interventions that drive computation. `JOB_LAYER.md` — the async execution model that produces these results.
+**Related documents:** `DATA_LAYER.md` — the city data indicators read from. `SCENARIOS_LAYER.md` — scenarios and attribute overrides that drive computation. `JOB_LAYER.md` — the `Orchestrator` port and the runs that produce these results.
 
 ---
 
@@ -46,8 +46,10 @@ CREATE TABLE curated_geo.indicator_catalog (
   description        text,
 
   model_family       text,
-  -- Which async worker computes this indicator.
-  -- 'accessibility', 'housing', 'green_area', 'fiscal', 'urban_form'
+  -- Which analytical family this indicator belongs to. A grouping label carried
+  -- onto job_run, not a dispatch key — the runner registry binds compute
+  -- functions per slug, not per family (`orchestration/runners.py:76-90`).
+  -- Shipped indicators all use 'urban_form' (`indicators/catalog.py`).
   -- NULL for composite indicators (derived from other indicators, not from a model run).
 
   computation_kind   text             NOT NULL
@@ -171,7 +173,8 @@ CREATE TABLE curated_geo.indicator_result (
   -- Copied from feature.type_slug at insert time. Immutable after insert.
 
   -- Which state of the world
-  scenario_id     uuid             REFERENCES app_core.scenario(id) ON DELETE CASCADE,
+  scenario_id     uuid,
+  -- Plain uuid, NO foreign key: there is no app_core.scenario table (r016:7-10).
   -- NULL  = base city state (Diagnosis mode — the city as it exists today)
   -- UUID  = a specific scenario (Evaluation mode — a proposed future state)
 
@@ -349,7 +352,7 @@ VALUES
   (:uqi_id, :heat_id,         0.25);
 ```
 
-No new model is required. A composite worker reads the component results and applies weights.
+No new model is required. The generic `compute_composite` runner reads the component results and applies weights — a new composite needs only a catalog entry, not new compute code (`orchestration/runners.py:86-87`).
 
 ---
 
@@ -402,7 +405,7 @@ VALUES
 
 ### Computing a composite indicator result
 
-The composite worker follows the same stale-then-insert pattern, but reads component results instead of city data.
+The composite runner follows the same stale-then-insert pattern, but reads component results instead of city data. It is an ordinary unit in the same run as its components, ordered after them by the impact engine's topological sort — not a separate worker or a second run (see `JOB_LAYER.md` — *Impact engine*).
 
 1. Read all `current` component results for the same `(feature_id, scenario_id)`.
 2. Apply weights to compute the composite value.
@@ -509,9 +512,11 @@ ORDER BY f.id, ci.indicator_slug;
 
 ---
 
-### Marking indicators stale after a scenario intervention
+### Marking indicators stale after a scenario edit
 
-When an intervention changes features in a scenario, all affected indicator results — including composite indicators that depend on them — must be marked stale before recomputation.
+When a scenario override changes features, all affected indicator results — including composite indicators that depend on them — can be marked stale before recomputation.
+
+This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass.
 
 ```sql
 WITH RECURSIVE impacted AS (
@@ -538,17 +543,21 @@ WHERE  feature_id  = ANY(:affected_feature_ids)
   AND  indicator_id IN (SELECT indicator_id FROM impacted);
 ```
 
-After this, a new job is queued for each affected model family (see `JOB_LAYER.md`).
+Recomputation is triggered by submitting a run for the scenario, not by queueing one job per model family: the dirty-set is derived per indicator from the changed attributes and the dependency graph (see `JOB_LAYER.md` — *The submit prelude*).
 
 ### Rolling up a block-grain indicator to AGEB
 
-*Worked example: walkability.* The walkability model writes
-`indicator_result` rows at the `block` grain. Walkability has
-`indicator_catalog.aggregation_method = 'weighted_mean'`, and a row exists
-in `curated_geo.feature_overlap_type_pair` declaring `(MEX:block) → (MEX:ageb)`.
+*Worked example: block compactness.* `compute_block_compactness` writes
+`indicator_result` rows at the `block` grain. The indicator declares
+`aggregation_method = 'weighted_mean'` and `applies_to = ("block", "ageb")`, so
+rows may land at either grain (`indicators/catalog.py:72`, `:86`, `:93`), and a
+row exists in `curated_geo.feature_overlap_type_pair` (r009:26) declaring
+`(MEX:block) → (MEX:ageb)`.
 
-After the model worker marks its `job_run` as `succeeded`, the rollup
-worker (see `JOB_LAYER.md`) is queued. For each AGEB, it:
+The rollup is then a **direct call** — `run_rollup(conn, indicator_slug=…,
+source_feature_type="block", target_feature_type="ageb")`. Nothing queues it and
+no run dispatches it; the caller decides when to roll up (see `JOB_LAYER.md` —
+*Rollup — a direct call, not an orchestrated unit*). For each AGEB, it:
 
 1. reads the current block-grain walkability `indicator_result` rows,
 2. joins them to `curated_geo.feature_overlap` on the target AGEB,
@@ -557,14 +566,22 @@ worker (see `JOB_LAYER.md`) is queued. For each AGEB, it:
    ~1.0 for fully-contained children and would degrade the aggregate to a
    plain arithmetic mean for extensive metrics like building density,
 4. marks any existing AGEB-grain `current` rows stale,
-5. inserts a new AGEB-grain row with `quality_flag = 'estimated'` and
-   `lineage_ref.triggering_job_run_ids` pointing back to the block model run.
+5. inserts a new AGEB-grain row with `quality_flag = 'estimated'`
+   (`jobs/rollup.py:180-187`), or `'missing'` with a `missing_reason` when too
+   much child weight was missing (`rollup.py:169-178`).
+
+Provenance is the rollup's own `job_run` row, opened with
+`model_family = 'rollup'` (`rollup.py:75-79`) and cited by every row it writes.
+There is no per-row list of the block runs that fed it — `indicator_result` has
+no `lineage_ref` column (r016:167-190).
 
 Consumers read the AGEB-grain value through `serving_geo.current_indicator_v`
 exactly as they read the block-grain value — the rollup is invisible at
 the read boundary except for `quality_flag`. The pure aggregation math
-is implemented in `reimagina.jobs.aggregation.aggregate` so it can be
-reused and tested outside of the worker.
+is implemented in `reimagina.jobs.aggregation` — `aggregate` for the raw
+methods (`aggregation.py:27`) and `aggregate_children` for the shared
+missing-data policy the rollup actually calls (`aggregation.py:108`) — so it
+can be reused and tested outside the rollup.
 
 ---
 
@@ -577,7 +594,7 @@ Within this layer (after DATA_LAYER and JOB_LAYER tables exist):
 3. `curated_geo.indicator_result` — with all indexes and trigger
 4. `serving_geo.current_indicator_v`
 
-See `JOB_LAYER.md` for the full cross-document build order.
+See `JOB_LAYER.md` — *Migration order* — for how these interleave with the job-layer tables. `indicator_result.job_run_id` is `NOT NULL` with an FK, so `jobs_runtime.job_run` (r016) must exist first.
 
 ---
 
