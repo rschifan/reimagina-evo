@@ -2493,3 +2493,83 @@ class PostgresIndicatorResultRepository:
             "p95": float(p95) if p95 is not None else None,
             "max": float(vmax) if vmax is not None else None,
         }
+
+
+class PostgresRunPlanRepository:
+    """The resolved feature set for a run, stored once and read by handle.
+
+    Both ops planes used to carry this inside the workflow input — one uuid per
+    feature per dirty indicator, 258,675 of them for a full CDMX recompute, which
+    the Hatchet track cannot even submit. Here it costs three rows and the engine
+    carries a ``plan_id``.
+
+    ⚠ Write-once. Nothing updates a plan: replay, retry and crash recovery must
+    all see the set the submitter resolved, which is the whole reason this is a
+    table rather than a query the unit re-runs for itself.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def write(self, *, plan_id: str, units: dict[str, list[str]]) -> None:
+        """Persist one row per dirty indicator. Call once, before submitting.
+
+        ⚠ The caller must COMMIT before handing ``plan_id`` to an engine. A
+        worker can dequeue immediately and will read an uncommitted plan as a
+        missing one — which `features_for` reports as a lost write, on a run that
+        was perfectly valid.
+
+        ⚠ Explicit ``::uuid`` / ``::uuid[]`` casts. psycopg2 adapts a Python list
+        of strings to a *text* array, and Postgres will not implicitly cast
+        ``text[]`` to ``uuid[]``; without the cast this fails at insert.
+
+        Sorted by slug so two identical plans produce byte-identical statements —
+        the fingerprint that feeds run deduplication is computed from the same
+        content, and an unstable ordering there would silently defeat it.
+        """
+        if not units:
+            raise ValueError("refusing to write an empty run plan")
+        with self.connection.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO jobs_runtime.run_plan "
+                "(plan_id, indicator_slug, feature_ids) VALUES %s",
+                [
+                    (plan_id, slug, [str(f) for f in features])
+                    for slug, features in sorted(units.items())
+                ],
+                template="(%s::uuid, %s, %s::uuid[])",
+            )
+
+    def features_for(self, *, plan_id: str, indicator_slug: str) -> list[str]:
+        """The features this unit must compute.
+
+        ⚠ ``feature_ids::text[]``, not ``feature_ids``. psycopg2 has no typecaster
+        for ``uuid[]`` unless ``register_uuid`` has been called globally, so the
+        column comes back as the raw array *literal* — the string ``'{a,b,c}'``,
+        which iterates as characters and yields 180,001 one-character "features"
+        for a 5,000-feature unit. Casting in SQL keeps the fix local; registering
+        a global adapter would change how every other query in the process
+        decodes uuids.
+
+        ⚠ Raises rather than returning ``[]`` when the row is absent. An empty
+        feature set is indistinguishable from a successful no-op: the unit would
+        write nothing, report success, and leave the indicator stale with no
+        error anywhere. A missing plan row is always a defect — a lost write, an
+        uncommitted transaction, or a worker pointed at the wrong database — and
+        has to fail loudly enough to be seen.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT feature_ids::text[] FROM jobs_runtime.run_plan "
+                "WHERE plan_id = %s::uuid AND indicator_slug = %s",
+                (plan_id, indicator_slug),
+            )
+            row = cur.fetchone()
+        if row is None:
+            raise LookupError(
+                f"no run_plan row for plan {plan_id!r} / {indicator_slug!r} — "
+                "the plan was never written, was not committed before the run "
+                "was submitted, or this connection is on a different database"
+            )
+        return [str(feature_id) for feature_id in row[0]]
