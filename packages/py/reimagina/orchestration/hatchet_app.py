@@ -66,7 +66,7 @@ from pydantic import BaseModel, Field
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
-from reimagina.orchestration.graph import topological_order
+from reimagina.orchestration.graph import fingerprint, shape_version, topological_order
 from reimagina.orchestration.runners import default_runners
 from reimagina.storage import backend_for_connection
 
@@ -188,6 +188,15 @@ class RunInput(BaseModel):
     aoi_id: str | None = None
     code_version: str = "dev"
 
+    graph_version: str = ""
+    """Which graph this run was planned against — shape *and* task semantics.
+
+    Not an admission criterion: the workflow *name* carries the shape, so a run
+    that reaches a worker at all already agrees on that. This records the rest,
+    so that "the API and the worker disagree about a timeout" is a value someone
+    can read off a run rather than a theory about a deployment.
+    """
+
     concurrency_key: str
     """The set of rows two runs would fight over. Required — no default.
 
@@ -217,18 +226,66 @@ class RunInput(BaseModel):
     same units with the same features"."""
 
 
-def _topo_order(registry: Sequence[IndicatorSpec]) -> list[IndicatorSpec]:
-    """Parents before children for Hatchet's static task declaration."""
-    dependencies = {
+def _dependencies(registry: Sequence[IndicatorSpec]) -> dict[str, set[str]]:
+    """`slug -> prerequisite slugs`, the only thing the graph module needs."""
+    return {
         spec.slug: {dependency for dependency, _weight in spec.depends_on}
         for spec in registry
     }
+
+
+def _topo_order(registry: Sequence[IndicatorSpec]) -> list[IndicatorSpec]:
+    """Parents before children for Hatchet's static task declaration."""
     by_slug = {s.slug: s for s in registry}
-    return [by_slug[slug] for slug in topological_order(dependencies)]
+    return [by_slug[slug] for slug in topological_order(_dependencies(registry))]
+
+
+WORKFLOW_STEM = "reimagina-run"
+
+
+def workflow_name(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS) -> str:
+    """`reimagina-run-v<shape>` — the name this deployment's graph answers to.
+
+    ⚠ The version is in the *name*, so an incompatible graph change cannot be
+    applied to a workflow that in-flight runs were scheduled against. Old
+    workers keep serving the old name until their runs drain, which makes a
+    rolling deployment "both names registered for a while" rather than a moment
+    where the API plans one shape and the worker executes another.
+
+    Only the shape versions the name. Task semantics — timeouts, retries — ride
+    in `graph_version` on the run input, because the engine already versions a
+    compatible redefinition under one name and duplicating that here would
+    fragment run history on every tuning change.
+    """
+    return f"{WORKFLOW_STEM}-v{shape_version(_dependencies(registry))}"
+
+
+def graph_version(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS) -> str:
+    """Shape *plus* task semantics — for observability, not for admission.
+
+    Two deployments agreeing on shape but disagreeing on timeouts produce
+    genuinely different runs, and when one is behaving oddly this is the value
+    that says so. It is not a rejection criterion: a semantics difference is
+    compatible with an in-flight run, and refusing to submit over one would
+    make every tuning change an outage.
+    """
+    return fingerprint(
+        shape_version(_dependencies(registry)),
+        int(UNIT_EXECUTION_TIMEOUT.total_seconds()),
+        int(UNIT_SCHEDULE_TIMEOUT.total_seconds()),
+        UNIT_RETRIES,
+        _SKIP_EXPRESSION_TEMPLATE,
+    )
 
 
 # Any fixed UUID; it only namespaces the uuid5 derivation below.
 _CONDITION_NS = uuid.UUID("6f9b1f2e-2c4a-4d1e-9f3b-8a5c7d2e1b04")
+
+# ⚠ The negation is load-bearing — see `_skip_unless_dirty`. Named here rather
+# than inlined so `graph_version` hashes the actual expression: a change to
+# *what makes a unit skip* is a semantics change worth recording, and one
+# spelled in a format string is easy to alter without noticing.
+_SKIP_EXPRESSION_TEMPLATE = "!('{slug}' in output.dirty)"
 
 
 def _skip_unless_dirty(plan: Any, slug: str) -> list[ParentCondition]:
@@ -258,7 +315,7 @@ def _skip_unless_dirty(plan: Any, slug: str) -> list[ParentCondition]:
     """
     condition = ParentCondition(
         parent=plan,
-        expression=f"!('{slug}' in output.dirty)",
+        expression=_SKIP_EXPRESSION_TEMPLATE.format(slug=slug),
         readable_data_key=f"dirty:{slug}",
     )
     condition.base.or_group_id = str(uuid.uuid5(_CONDITION_NS, f"dirty:{slug}"))
@@ -268,7 +325,7 @@ def _skip_unless_dirty(plan: Any, slug: str) -> list[ParentCondition]:
 def build_dag(
     registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
     *,
-    name: str = "reimagina-run",
+    name: str | None = None,
     client: Hatchet | None = None,
 ):
     """Declare one task per indicator. This is the whole scheduler.
@@ -290,7 +347,7 @@ def build_dag(
         raise ValueError(f"no runner registered for indicator(s): {missing!r}")
 
     workflow = (client or get_hatchet()).workflow(
-        name=name,
+        name=name or workflow_name(registry),
         input_validator=RunInput,
         # Set once, not threaded through every task() call in the loop below.
         task_defaults=TaskDefaults(

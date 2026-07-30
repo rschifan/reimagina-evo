@@ -7,10 +7,46 @@ tracks share the exact graph semantics while retaining their own schedulers.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from graphlib import TopologicalSorter
 
 DependencyMap = Mapping[str, Iterable[str]]
+
+
+def fingerprint(*parts: object, length: int = 12) -> str:
+    """A short, deterministic hex digest of `parts`.
+
+    Deterministic across processes and releases, which is the only property
+    that matters: these identify whether two deployments built the same thing,
+    so a value that varies by interpreter or insertion order is worse than none.
+    `sort_keys` and JSON rather than `hash()`, whose salt changes per process.
+    """
+    payload = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:length]
+
+
+def shape_version(dependencies: DependencyMap) -> str:
+    """Identify the graph's *shape* — its nodes and edges, nothing else.
+
+    A change here is incompatible with runs already in flight: a node added,
+    removed or re-parented means the engine's notion of the workflow no longer
+    matches the one those runs were scheduled against. So this names the
+    workflow, and an incompatible change mints a new immutable name that old
+    workers keep serving until their runs drain.
+
+    ⚠ Deliberately *not* including timeouts, retries or the skip expression.
+    Those are task semantics: changing one is compatible with an in-flight run
+    and the engine versions it under the same name. Folding them in here would
+    mint a new workflow — and fragment the dashboard's history — every time
+    somebody tuned a timeout.
+    """
+    canonical = {
+        slug: sorted(set(prerequisites))
+        for slug, prerequisites in sorted(dependencies.items())
+    }
+    return fingerprint(canonical)
 
 
 def dependents_of(dependencies: DependencyMap) -> dict[str, frozenset[str]]:

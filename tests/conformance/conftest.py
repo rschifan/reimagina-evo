@@ -234,7 +234,12 @@ def _await_registration(worker, timeout: float = 30.0) -> None:
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }
-            if "reimagina-run" in names:
+            # ⚠ The exact versioned name, not the bare stem. The workflow is
+            # `reimagina-run-v<shape>`, and matching loosely would be satisfied
+            # by *any* shape — including a previous one left registered by an
+            # earlier build, which is exactly the half-applied rollout the
+            # versioning exists to catch.
+            if hatchet_app.workflow_name() in names:
                 return
             last = f"registered workflows: {sorted(n for n in names if n)}"
         except Exception as exc:  # noqa: BLE001
