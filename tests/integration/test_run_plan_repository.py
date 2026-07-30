@@ -129,3 +129,59 @@ def test_rewriting_a_plan_is_rejected_by_the_primary_key(conn):
 
     with pytest.raises(psycopg2.errors.UniqueViolation):
         repo.write(plan_id=plan_id, units={"slug": _features(2)})
+
+
+# ── Cleanup ─────────────────────────────────────────────────────────────────
+
+
+def test_delete_reclaims_only_the_named_plan(conn):
+    repo = backend_for_connection(conn).run_plan_repo()
+    keep, drop = _plan_id(), _plan_id()
+    repo.write(plan_id=keep, units={"slug": _features(2)})
+    repo.write(plan_id=drop, units={"slug": _features(2), "other": _features(1)})
+
+    assert repo.delete(plan_id=drop) == 2
+    assert repo.features_for(plan_id=keep, indicator_slug="slug")  # untouched
+    with pytest.raises(LookupError):
+        repo.features_for(plan_id=drop, indicator_slug="slug")
+
+
+def test_deleting_an_unknown_plan_is_not_an_error(conn):
+    """Terminal cleanup runs on paths where the plan may already be gone."""
+    repo = backend_for_connection(conn).run_plan_repo()
+    assert repo.delete(plan_id=_plan_id()) == 0
+
+
+def test_the_sweep_spares_plans_inside_the_ttl(conn):
+    """The failure this guards is worse than an orphan.
+
+    Sweeping a plan out from under a live run makes every subsequent unit fail
+    with a missing-plan LookupError — the loud error that is supposed to mean
+    "a write was lost".
+    """
+    repo = backend_for_connection(conn).run_plan_repo()
+    fresh = _plan_id()
+    repo.write(plan_id=fresh, units={"slug": _features(2)})
+
+    assert repo.sweep(older_than_hours=24) == 0
+    assert repo.features_for(plan_id=fresh, indicator_slug="slug")
+
+
+def test_the_sweep_reclaims_an_abandoned_plan(conn):
+    """A crashed submit, a cancel before the finalizer, or a dedup collision.
+
+    None of those reach `delete`, so without this the table grows forever.
+    """
+    repo = backend_for_connection(conn).run_plan_repo()
+    stale = _plan_id()
+    repo.write(plan_id=stale, units={"slug": _features(2)})
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs_runtime.run_plan SET created_at = now() - interval '48 hours' "
+            "WHERE plan_id = %s::uuid",
+            (stale,),
+        )
+
+    assert repo.sweep(older_than_hours=24) >= 1
+    with pytest.raises(LookupError):
+        repo.features_for(plan_id=stale, indicator_slug="slug")
