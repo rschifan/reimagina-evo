@@ -125,6 +125,39 @@ def ordering_violations(
     return bad
 
 
+def duplicate_executions(records: Sequence[UnitRecord]) -> list[str]:
+    """Units whose compute ran to completion more than once.
+
+    Durable execution engines guarantee *at-least-once*, not exactly-once, and
+    this track sets ``retries=REIMAGINA_UNIT_RETRIES`` (default 2) — so a unit's
+    body really can run three times. That is intended for a transient failure
+    and a defect for anything else: the second body ran a full PostGIS compute
+    over the same features and wrote the same rows again.
+
+    ⚠ Counted on ``succeeded`` alone, deliberately. A retry *after a failure* is
+    the feature working — the first attempt rolled back and left nothing — so
+    `failed` rows are expected here and say nothing about correctness. Two
+    completions are the thing no engine may do, whatever its retry policy, and
+    the rule stays true on a track that disables retries entirely.
+
+    The stored *result* survives this either way: `write_result` stales the
+    previous row before inserting, and `ir_one_current_base` /
+    `ir_one_current_scenario` (r016) refuse a second `current` row. So this
+    detects wasted duplicate work and a broken dispatch guarantee, not a
+    corrupted value — which is why it is worth asserting separately rather than
+    trusting the read path to hide it.
+    """
+    completions: dict[str, int] = {}
+    for record in records:
+        if record.status == "succeeded":
+            completions[record.slug] = completions.get(record.slug, 0) + 1
+    return [
+        f"{slug} succeeded {count} times"
+        for slug, count in sorted(completions.items())
+        if count > 1
+    ]
+
+
 def _critical_path_ms(
     records: Sequence[UnitRecord], edges: Mapping[str, Sequence[str]]
 ) -> float:

@@ -2,8 +2,9 @@
 
 The split is deliberate. What is **asserted** is what must hold however an engine
 chooses to schedule — every unit reaches a terminal state, no child starts before
-its parents finished, a failed unit does not take its independent siblings with
-it. What is **recorded** is everything the two tracks are allowed to differ on,
+its parents finished, no unit's body completes twice, a failed unit does not take
+its independent siblings with it. What is **recorded** is everything the two
+tracks are allowed to differ on,
 because the deliverable is a documented side-by-side and a difference there is
 the finding rather than a failure.
 
@@ -19,7 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from reimagina.perf.workload_report import aggregate, measure, ordering_violations
+from reimagina.perf.workload_report import (
+    aggregate,
+    duplicate_executions,
+    measure,
+    ordering_violations,
+)
 from reimagina.perf.workloads import WORKLOADS, predictions
 
 from .conftest import TRACK, SLOTS, Implementation, reps, run_once
@@ -89,6 +95,16 @@ def test_workload(workload, impl: Implementation, install, conn, report):
 
         violations = ordering_violations(result["records"], workload.edges)
         assert not violations, f"{workload.id}/{impl.mode}: {violations}"
+
+        # This engine retries (`retries=REIMAGINA_UNIT_RETRIES`), so a unit's
+        # body can run more than once — at-least-once is what durable execution
+        # promises. Retrying a *failure* is the feature; completing twice is not
+        # a scheduling strategy any engine may choose, so it is asserted rather
+        # than recorded. Nothing else in this suite would notice: `seen` above is
+        # a set and `ordering_violations` keys by slug, so a unit that ran twice
+        # collapses into one record and passes silently.
+        duplicates = duplicate_executions(result["records"])
+        assert not duplicates, f"{workload.id}/{impl.mode}: {duplicates}"
 
         if workload.id == "partial_failure":
             _assert_failure_isolation(result, impl)

@@ -20,6 +20,7 @@ from reimagina.perf.workload_report import (
     UnitRecord,
     aggregate,
     compare_workload_reports,
+    duplicate_executions,
     measure,
     ordering_violations,
 )
@@ -179,6 +180,62 @@ def test_ordering_violation_is_detected():
 def test_a_valid_schedule_has_no_violations():
     assert ordering_violations(PERTASK, EDGES) == []
     assert ordering_violations(WAVE, EDGES) == []
+
+
+def test_a_unit_that_completed_twice_is_detected():
+    """At-least-once is the engine's promise; twice-to-completion is a defect.
+
+    This track sets `retries=2`, so the body genuinely can run three times. The
+    hazard is the second *completion*: a full PostGIS compute re-run over the
+    same features, writing the same rows again.
+    """
+    twice = [
+        _rec("hop_a", 0.0, 0.2),
+        _rec("hop_b", 0.2, 0.2),
+        _rec("hop_a", 0.4, 0.2),  # same unit, ran to completion a second time
+    ]
+    duplicates = duplicate_executions(twice)
+    assert duplicates == ["hop_a succeeded 2 times"]
+
+
+def test_a_retry_after_a_failure_is_not_a_duplicate():
+    """The distinction the check exists to make.
+
+    A failed attempt rolled its transaction back and left nothing behind, so
+    re-running it is the retry policy working. Counting `failed` rows here would
+    make the whole suite fail on `partial_failure` by design.
+    """
+    retried = [
+        _rec("hop_a", 0.0, 0.2, status="failed"),
+        _rec("hop_a", 0.3, 0.2, status="succeeded"),
+    ]
+    assert duplicate_executions(retried) == []
+
+
+def test_repeated_failures_without_a_success_are_not_duplicates():
+    """Three exhausted attempts are one unit that never completed, not three."""
+    exhausted = [_rec("hop_a", i * 0.3, 0.2, status="failed") for i in range(3)]
+    assert duplicate_executions(exhausted) == []
+
+
+def test_a_clean_schedule_reports_nothing():
+    assert duplicate_executions(PERTASK) == []
+    assert duplicate_executions(WAVE) == []
+
+
+def test_every_duplicated_unit_is_named_not_just_the_first():
+    """A partial report would understate how much work was repeated."""
+    doubled = [
+        _rec("hop_a", 0.0, 0.2),
+        _rec("hop_a", 0.3, 0.2),
+        _rec("hop_b", 0.6, 0.2),
+        _rec("hop_b", 0.9, 0.2),
+        _rec("hop_c", 1.2, 0.2),
+    ]
+    assert duplicate_executions(doubled) == [
+        "hop_a succeeded 2 times",
+        "hop_b succeeded 2 times",
+    ]
 
 
 # ── Metrics that are omitted rather than guessed ────────────────────────────
