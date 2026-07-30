@@ -781,6 +781,19 @@ class TileSnapshotRepository(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class RunPlanRepository(Protocol):
+    """The resolved feature set for a run (jobs_runtime.run_plan).
+
+    Write-once. The submitter resolves the plan and stores it; each unit reads
+    back only its own slice. Keeping it here rather than in the workflow input is
+    what stops the payload scaling with the size of the city.
+    """
+
+    def write(self, *, plan_id: str, units: dict[str, list[str]]) -> None: ...
+
+    def features_for(self, *, plan_id: str, indicator_slug: str) -> list[str]: ...
+
+
 class StorageBackend(Protocol):
     name: str
     connection: Any
@@ -818,3 +831,5 @@ class StorageBackend(Protocol):
     def indicator_catalog_repo(self) -> IndicatorCatalogRepository: ...
 
     def indicator_result_repo(self) -> IndicatorResultRepository: ...
+
+    def run_plan_repo(self) -> RunPlanRepository: ...
