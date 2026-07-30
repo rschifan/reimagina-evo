@@ -199,14 +199,10 @@ def measure(
         "span_ms": round(span, 1),
         "busy_ms": round(busy, 1),
         "observed_parallelism": round(busy / span, 3) if span else None,
-        "dispatch_lead_ms": round(
-            (first_start - t_submit).total_seconds() * 1000.0, 1
-        )
+        "dispatch_lead_ms": round((first_start - t_submit).total_seconds() * 1000.0, 1)
         if first_start
         else None,
-        "settle_lag_ms": round(
-            (t_terminal - last_complete).total_seconds() * 1000.0, 1
-        )
+        "settle_lag_ms": round((t_terminal - last_complete).total_seconds() * 1000.0, 1)
         if last_complete
         else None,
         "head_of_line_ms": round(_head_of_line_ms(records, edges), 1),

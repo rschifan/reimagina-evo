@@ -122,9 +122,7 @@ def ensure_perf_aois(conn) -> dict[str, str]:
         # before) is the other failure: that box is centred on the extent's
         # midpoint and contains nothing when the data is clustered off-centre.
         "bbox_dense": _bbox_wkt(
-            bbox_from_extent(
-                extent, width_ratio=0.08, height_ratio=0.08, around=anchor
-            )
+            bbox_from_extent(extent, width_ratio=0.08, height_ratio=0.08, around=anchor)
         ),
         "polygon_small": _bbox_wkt(
             bbox_from_extent(extent, width_ratio=0.03, height_ratio=0.03)

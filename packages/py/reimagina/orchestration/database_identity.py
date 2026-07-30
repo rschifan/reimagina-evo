@@ -46,9 +46,7 @@ def _direct_identity(direct_dsn: str) -> tuple[str, str | None, str, bool]:
     was pointed somewhere new.
     """
     with closing(psycopg2.connect(direct_dsn)) as direct, direct.cursor() as cur:
-        cur.execute(
-            f"{_IDENTITY_SQL}, to_regclass('jobs_runtime.job_run') IS NOT NULL"
-        )
+        cur.execute(f"{_IDENTITY_SQL}, to_regclass('jobs_runtime.job_run') IS NOT NULL")
         database, address, port, migrated = cur.fetchone()
     return database, address and str(address), port, migrated
 
@@ -63,7 +61,9 @@ def assert_same_domain_database(conn: object, direct_dsn: str) -> None:
         caller_database, caller_address, caller_port = cur.fetchone()
     caller_address = caller_address and str(caller_address)
 
-    direct_database, direct_address, direct_port, migrated = _direct_identity(direct_dsn)
+    direct_database, direct_address, direct_port, migrated = _direct_identity(
+        direct_dsn
+    )
 
     if not migrated:
         raise RuntimeError(

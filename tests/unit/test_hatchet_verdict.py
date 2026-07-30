@@ -44,7 +44,9 @@ def patched(monkeypatch):
         import reimagina.orchestration.hatchet_app as app
 
         monkeypatch.setattr(
-            app, "hatchet", SimpleNamespace(runs=SimpleNamespace(get=lambda _id: details))
+            app,
+            "hatchet",
+            SimpleNamespace(runs=SimpleNamespace(get=lambda _id: details)),
         )
 
     return _install
@@ -173,7 +175,9 @@ def test_verdict_of_rejects_output_that_is_not_a_verdict():
     assert _verdict_of(SimpleNamespace(output={"dirty": ["a", "b"]})) is None
     assert _verdict_of(SimpleNamespace(output=None)) is None
     assert _verdict_of(SimpleNamespace(output="not a dict")) is None
-    assert _verdict_of(SimpleNamespace(output={"overall": "partial"})) is None  # no units
+    assert (
+        _verdict_of(SimpleNamespace(output={"overall": "partial"})) is None
+    )  # no units
     assert _verdict_of(SimpleNamespace(output={"overall": "x", "units": {}})) == {
         "overall": "x",
         "units": {},

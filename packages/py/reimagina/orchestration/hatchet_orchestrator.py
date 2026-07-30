@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 class HatchetUnavailable(RuntimeError):
     """Hatchet could not answer a request for run state."""
 
+
 # Used only until the finalizer has written a verdict — i.e. while the run is
 # still going. Once it is terminal the verdict supersedes all of this.
 _RUN_STATUS_FOR = {
@@ -223,7 +224,9 @@ class HatchetOrchestrator:
                 units=tuple(
                     sorted(
                         (
-                            UnitStatusView(slug, u.get("status", "queued"), u.get("detail"))
+                            UnitStatusView(
+                                slug, u.get("status", "queued"), u.get("detail")
+                            )
                             for slug, u in verdict.get("units", {}).items()
                         ),
                         key=lambda u: u.indicator,
@@ -245,7 +248,9 @@ class HatchetOrchestrator:
             units.append(
                 UnitStatusView(
                     slug,
-                    _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued"),
+                    _UNIT_STATUS_FOR.get(
+                        _name(getattr(task, "status", None)), "queued"
+                    ),
                     getattr(task, "error_message", None),
                 )
             )
@@ -313,17 +318,14 @@ class HatchetOrchestrator:
         ids = [
             rid
             for rid in (
-                getattr(getattr(row, "metadata", None), "id", None)
-                for row in listed
+                getattr(getattr(row, "metadata", None), "id", None) for row in listed
             )
             if rid
         ]
 
         client.bulk_cancel(
             BulkCancelReplayOpts(
-                filters=RunFilter(
-                    since=since, statuses=live, additional_metadata=meta
-                )
+                filters=RunFilter(since=since, statuses=live, additional_metadata=meta)
             )
         )
         repo = backend_for_connection(conn).job_run_repo()
@@ -376,9 +378,7 @@ class HatchetOrchestrator:
                 for unit in status.units:
                     if seen.get(unit.indicator) != unit.status:
                         seen[unit.indicator] = unit.status
-                        yield RunEvent(
-                            run_id, unit.indicator, unit.status, unit.detail
-                        )
+                        yield RunEvent(run_id, unit.indicator, unit.status, unit.detail)
             if terminal:
                 yield RunEvent(run_id, None, status.status)
 

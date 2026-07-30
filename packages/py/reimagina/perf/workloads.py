@@ -311,10 +311,30 @@ LATTICE = _build(
         # lattice rather than four independent chains. Two of the four do not
         # touch the slow root — those are the ones a per-task scheduler can
         # release immediately and a wave scheduler cannot.
-        Node("livability_green", "io", 0.1, ("green_space_proximity", "population_density")),
-        Node("built_compactness", "io", 0.1, ("building_footprint_ratio", "road_length_density")),
-        Node("green_accessibility", "io", 0.1, ("green_space_proximity", "road_length_density")),
-        Node("density_composite", "io", 0.1, ("population_density", "building_footprint_ratio")),
+        Node(
+            "livability_green",
+            "io",
+            0.1,
+            ("green_space_proximity", "population_density"),
+        ),
+        Node(
+            "built_compactness",
+            "io",
+            0.1,
+            ("building_footprint_ratio", "road_length_density"),
+        ),
+        Node(
+            "green_accessibility",
+            "io",
+            0.1,
+            ("green_space_proximity", "road_length_density"),
+        ),
+        Node(
+            "density_composite",
+            "io",
+            0.1,
+            ("population_density", "building_footprint_ratio"),
+        ),
         Node(
             "neighbourhood_quality_index",
             "io",
@@ -445,13 +465,46 @@ MANY_TINY = _build(
     tuple(
         Node(f"amenity_count_{cat}", "io", 0.01)
         for cat in (
-            "cafe", "school", "pharmacy", "clinic", "bakery", "bank", "bar",
-            "library", "museum", "cinema", "gym", "park", "playground", "market",
-            "supermarket", "restaurant", "hotel", "hospital", "dentist", "vet",
-            "post", "police", "fire_station", "kindergarten", "university",
-            "theatre", "nightclub", "bicycle_parking", "car_wash", "fuel",
-            "atm", "laundry", "hairdresser", "florist", "bookshop", "butcher",
-            "greengrocer", "hardware", "optician", "toy_shop",
+            "cafe",
+            "school",
+            "pharmacy",
+            "clinic",
+            "bakery",
+            "bank",
+            "bar",
+            "library",
+            "museum",
+            "cinema",
+            "gym",
+            "park",
+            "playground",
+            "market",
+            "supermarket",
+            "restaurant",
+            "hotel",
+            "hospital",
+            "dentist",
+            "vet",
+            "post",
+            "police",
+            "fire_station",
+            "kindergarten",
+            "university",
+            "theatre",
+            "nightclub",
+            "bicycle_parking",
+            "car_wash",
+            "fuel",
+            "atm",
+            "laundry",
+            "hairdresser",
+            "florist",
+            "bookshop",
+            "butcher",
+            "greengrocer",
+            "hardware",
+            "optician",
+            "toy_shop",
         )
     ),
     notes="At this grain the engine's own overhead exceeds the work. That is the point.",
@@ -477,11 +530,26 @@ PARTIAL_FAILURE = _build(
 # ── A seeded random DAG, to catch shape-choice bias ─────────────────────────
 
 _VOCAB = (
-    "noise_exposure", "permeability_index", "canopy_gap", "slope_ruggedness",
-    "frontage_activity", "parcel_fragmentation", "junction_load", "daylight_factor",
-    "facade_porosity", "block_perimeter", "service_reach", "kerb_length",
-    "plot_coverage", "setback_depth", "corner_density", "alley_share",
-    "stormwater_load", "albedo_mean", "transit_gap", "retail_frontage",
+    "noise_exposure",
+    "permeability_index",
+    "canopy_gap",
+    "slope_ruggedness",
+    "frontage_activity",
+    "parcel_fragmentation",
+    "junction_load",
+    "daylight_factor",
+    "facade_porosity",
+    "block_perimeter",
+    "service_reach",
+    "kerb_length",
+    "plot_coverage",
+    "setback_depth",
+    "corner_density",
+    "alley_share",
+    "stormwater_load",
+    "albedo_mean",
+    "transit_gap",
+    "retail_frontage",
 )
 
 
@@ -520,9 +588,7 @@ def layered_random(
     for depth, level in enumerate(levels):
         for idx in level:
             candidates = [
-                other
-                for prev in levels[max(0, depth - jump) : depth]
-                for other in prev
+                other for prev in levels[max(0, depth - jump) : depth] for other in prev
             ]
             deps = [c for c in candidates if rng.random() < density]
             # A node below the first level must attach to something, or it
@@ -535,7 +601,10 @@ def layered_random(
                     slug=f"{_VOCAB[idx % len(_VOCAB)]}_l{depth}",
                     kind="io",
                     cost=1.2 if idx % slow_every == 0 else 0.1,
-                    deps=tuple(f"{_VOCAB[d % len(_VOCAB)]}_l{_depth_of(levels, d)}" for d in deps),
+                    deps=tuple(
+                        f"{_VOCAB[d % len(_VOCAB)]}_l{_depth_of(levels, d)}"
+                        for d in deps
+                    ),
                 )
             )
     return tuple(nodes)
