@@ -95,8 +95,8 @@ SELECT plan_id, indicator_slug, array_length(feature_ids, 1) AS features
 FROM jobs_runtime.run_plan;
 ```
 
-A run whose `plan_id` is absent — never written, or already reclaimed by the TTL
-sweep — fails every unit with `no run_plan row for plan …`. That error means the
+A run whose `plan_id` is absent — never written, or past the retention horizon
+— fails every unit with `no run_plan row for plan …`. That error means the
 plan is missing, **not** that the feature set is empty. It is deliberately loud:
 a unit computing zero features would report success and leave the indicator
 stale with nothing to attribute it to.
@@ -122,12 +122,33 @@ replay and for the whole retention period, not once at submit. Raising
 `grpc_max_send_message_length` would move the wall while leaving ~10 MB per run
 in the engine database under a 720 h retention default.
 
-⚠ `REIMAGINA_RUN_PLAN_TTL_HOURS` (default 24) **must exceed the longest run this
-deployment can produce.** Plans are deleted when their run reaches a terminal
-state; the sweep only reclaims what never got there — a crashed submit, a cancel
-before the finalizer, an idempotency collision. Set it below your longest run and
-the sweep will delete a live run's plan, and every remaining unit will fail with
-the missing-plan error above. The unit timeout alone is 120 minutes.
+⚠ **The plan retention horizon must exceed the engine's run retention**, not
+merely the longest run. `runs.replay()` re-executes from the original input —
+which on this track is a `plan_id` handle — so a plan that expires before the
+run it belongs to turns a replayable run into one that fails every unit with the
+missing-plan error above. With `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD`
+at its 720 h default, the horizon is 45 days, not 30: the margin absorbs a unit
+that started just before the boundary.
+
+Retention is a **scheduled Postgres operation**, `scripts/reclaim_run_plans.sql`,
+run by the platform's scheduler:
+
+```bash
+psql "$DATABASE_URL_DIRECT" -v horizon="'45 days'" -f scripts/reclaim_run_plans.sql
+```
+
+⚠ It is deliberately **not** on the submit path and **not** a Hatchet cron. It
+was an age sweep inside `submit_run` with a 24 h horizon, which deleted live
+runs' plans — any horizon short enough to be worth sweeping opportunistically is
+shorter than the engine's retention. Putting it in the engine instead would make
+plan retention depend on the engine being healthy, which is backwards for the
+table that exists to outlive it.
+
+Plans are no longer deleted when a run reaches a terminal state. Two deletes
+remain in application code, both provable: an idempotency collision (the
+accepted run carries a different `plan_id`) and a trigger the engine refused
+outright. Anything ambiguous — a deadline, an unavailable engine — retains,
+because the run may have been accepted and a retry deduplicates onto it.
 
 ### If the dashboard will not load
 
@@ -147,6 +168,51 @@ Two failure modes seen more than once:
 - **Login succeeds then immediately bounces** — `SERVER_AUTH_COOKIE_DOMAIN` is
   unset or does not match the host you are browsing.
 - **Engine will not start** — the `hatchet` database's timezone is not UTC.
+
+## The worker is a process tree — supervise it as one
+
+⚠ **The single most important operational requirement on this track**, and the
+resolution of the "stale workers never expire" finding.
+
+The SDK runs its action listener in a **spawned child process**. Signal only the
+parent and that child survives, is reparented to init, keeps its gRPC stream
+open and **keeps heartbeating** — so the engine goes on reporting the worker
+ACTIVE, entirely correctly, because something really is alive claiming to be it.
+It keeps assigning work the orphan can no longer execute, and runs sit at
+`running` with no units until timeouts fire.
+
+Measured on a development machine: **27 orphaned `spawn_main` processes**, all
+`PPID 1`, the oldest over a day old, each holding a registration open. Killing
+them dropped the engine's ACTIVE count to **zero** immediately, with no change
+to the engine and no reaping API called.
+
+So the engine's liveness model is not the problem, and needs no help from us:
+kill the whole process group and the registration clears in **~5 seconds**
+(`tests/qualification/test_worker_lifecycle.py`).
+
+**What this requires of a deployment:**
+
+- Run the worker as **PID 1 in its own container**, so the container runtime's
+  signal reaches the whole tree. `docker stop` / Kubernetes termination then do
+  the right thing with no extra configuration.
+- If instead it runs under a supervisor, that supervisor must signal the
+  **process group** (systemd's `KillMode=control-group`, the default).
+- Never `kill <pid>` a worker by hand. Use `kill -- -<pgid>`.
+
+**When a suite or a deployment looks wedged, check `ps` before the engine:**
+
+```bash
+ps -eo pid,ppid,etime,command | awk '$2==1 && /spawn_main/'
+```
+
+Orphans there mean the engine is being told the truth by a process that can no
+longer do any work. There is no engine-side fix and no API to call; kill them.
+
+A *clean* exit needs none of this: `exit_gracefully` calls
+`_pause_task_assignment` — "tell the engine that the worker is paused" — before
+anything else. ⚠ It is `async def`, so calling it from sync code returns a
+coroutine nobody awaits and does **nothing at all**. That bug is the origin of
+the belief that a clean exit leaks exactly like a kill.
 
 ## Is a run stuck?
 

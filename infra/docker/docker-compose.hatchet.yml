@@ -10,9 +10,22 @@
 # charging this track for a database the other track also needs.
 services:
   hatchet:
-    # Pin the engine image. SDK compatibility and migrations must move through
-    # an explicit tested upgrade, never an implicit pull of `latest`.
-    image: ${HATCHET_IMAGE:-ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.24}
+    # Pin the engine by **digest**, not by tag. SDK compatibility and migrations
+    # must move through an explicit tested upgrade, and a tag cannot express
+    # that — it is a mutable pointer, so "pinned to v0.86.24" is a claim about a
+    # name rather than about bytes.
+    #
+    # ⚠ Not hypothetical. This file read `hatchet-lite:v0.86.24` while the
+    # container actually running locally had been started from
+    # `hatchet-lite:latest` — a *different manifest*, confirmed by comparing the
+    # two. Every spike and qualification result on this branch was therefore
+    # measured against an image the compose did not name, and nothing anywhere
+    # would have said so.
+    #
+    # This digest is the image the results in `tests/qualification/README.md`
+    # were measured against: `latest` as pulled 2026-07-27. Re-qualify before
+    # moving it.
+    image: ${HATCHET_IMAGE:-ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:b1ab44a0e155ae0fd1cba4d0bd6e92fabd1f476e0669cbeba8fe0e8a2c97f216}
     ports:
       - "8888:8888"   # dashboard + REST API
       - "7077:7077"   # gRPC, what the SDK connects to

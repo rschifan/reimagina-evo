@@ -138,9 +138,129 @@ jobs:
       - name: pytest (integration)
         run: pytest tests/integration
 
+  # ── The engine job ────────────────────────────────────────────────────────
+  #
+  # ⚠ Conformance used to run in the job above, with no engine anywhere. Its
+  # `hatchet` rows skipped every time — `hatchet_worker` skips without a token —
+  # so CI reported a green port contract while never once executing the
+  # implementation this branch exists to test. A suite that cannot fail is not
+  # evidence, and that is what this job fixes.
+  #
+  # The engine is started as a *step* rather than a `services:` container
+  # because it needs its database to exist and to be UTC before it will boot,
+  # and service containers start before any step can create one.
+  test-py-engine:
+    name: Engine tests (conformance + qualification)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: reimagina
+          POSTGRES_PASSWORD: reimagina
+          POSTGRES_DB: reimagina_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reimagina"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      PGPASSWORD: reimagina
+      # The compose pins by digest; CI must run the same bytes or its result
+      # says nothing about the deployment. Keep these in step.
+      HATCHET_IMAGE: "ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:b1ab44a0e155ae0fd1cba4d0bd6e92fabd1f476e0669cbeba8fe0e8a2c97f216"
+      # The compose sets SERVER_GRPC_INSECURE, so the client must be told too or
+      # every worker dies on a TLS handshake with WRONG_VERSION_NUMBER.
+      HATCHET_CLIENT_TLS_STRATEGY: none
+      HATCHET_CLIENT_HOST_PORT: localhost:7077
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgdal-dev postgresql-client
+
+      - name: Install package (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      # ⚠ UTC or the engine refuses to start: "primary database instance
+      # timezone is set to '…' but must be 'UTC'".
+      - name: Create the engine database
+        run: |
+          psql -h localhost -U reimagina -d postgres -c "CREATE DATABASE hatchet"
+          psql -h localhost -U reimagina -d postgres -c "ALTER DATABASE hatchet SET TIMEZONE='UTC'"
+
+      - name: Start the engine
+        run: |
+          docker run -d --name hatchet --network host \
+            -e DATABASE_URL="postgresql://reimagina:reimagina@localhost:5432/hatchet?sslmode=disable" \
+            -e DATABASE_POSTGRES_HOST=localhost \
+            -e DATABASE_POSTGRES_PORT=5432 \
+            -e DATABASE_POSTGRES_USERNAME=reimagina \
+            -e DATABASE_POSTGRES_PASSWORD=reimagina \
+            -e DATABASE_POSTGRES_DB_NAME=hatchet \
+            -e DATABASE_POSTGRES_SSL_MODE=disable \
+            -e SERVER_GRPC_INSECURE=t \
+            -e SERVER_GRPC_BIND_ADDRESS=0.0.0.0 \
+            -e SERVER_GRPC_BROADCAST_ADDRESS=localhost:7077 \
+            -e SERVER_GRPC_PORT=7077 \
+            -e SERVER_URL=http://localhost:8888 \
+            -e SERVER_AUTH_COOKIE_DOMAIN=localhost \
+            -e SERVER_AUTH_COOKIE_INSECURE=t \
+            -e SERVER_AUTH_SET_EMAIL_VERIFIED=t \
+            -e SERVER_SECURITY_CHECK_ENABLED=false \
+            -e DATABASE_MAX_CONNS=20 \
+            -e DATABASE_MIN_CONNS=2 \
+            "$HATCHET_IMAGE"
+
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8888/api/v1/meta >/dev/null; then
+              echo "engine up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "engine did not become ready"; docker logs hatchet; exit 1
+
+      # ⚠ The token must name the `default` tenant. A fresh engine database has
+      # two, and a token for `internal` authenticates perfectly, registers the
+      # worker and its actions — and then every run sits `queued` forever,
+      # because nothing services that tenant. It looks exactly like a broken
+      # worker.
+      - name: Mint an API token for the default tenant
+        run: |
+          TENANT=$(psql -h localhost -U reimagina -d hatchet -tAc \
+            "select id from \"Tenant\" where slug='default'")
+          test -n "$TENANT" || { echo "no default tenant"; exit 1; }
+          TOKEN=$(docker exec hatchet /hatchet-admin token create \
+            --name ci --tenant-id "$TENANT" | tail -n1 | tr -d '\r')
+          test -n "$TOKEN" || { echo "token creation failed"; exit 1; }
+          echo "::add-mask::$TOKEN"
+          echo "HATCHET_CLIENT_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
       # The Orchestrator port contract, asserted against every implementation
-      # this branch ships. Runs here rather than in the unit job because it
-      # needs Postgres, and separately from the integration step so an
-      # ops-plane branch's conformance output is its own diffable artifact.
+      # this branch ships — including, now, the one that needs an engine.
       - name: pytest (conformance)
-        run: pytest tests/conformance
+        run: pytest tests/conformance -rA
+
+      # Whether the engine can actually carry worker lifecycle. This is the
+      # gate: if it fails, the answer is a different engine release or no Track
+      # B — never an application-side registry or reaper.
+      - name: pytest (qualification)
+        run: pytest tests/qualification -rA
+
+      - name: Engine logs on failure
+        if: failure()
+        run: docker logs hatchet | tail -100
