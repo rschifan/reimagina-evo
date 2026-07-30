@@ -29,6 +29,7 @@ import pytest
 from hatchet_sdk import NonRetryableException
 
 from reimagina.jobs._lifecycle import job_run
+from reimagina.orchestration.runners import default_runners
 from reimagina.storage import backend_for_connection
 
 SLUG = "urban_form_block_building_density"
@@ -89,7 +90,28 @@ def run_id(migrated_db, monkeypatch):
 
 
 @pytest.fixture
-def unit(run_id, monkeypatch):
+def plan_id(migrated_db):
+    """A real `run_plan` row, because the handle is now the only path.
+
+    `RunInput.features` used to carry the ids inline and the unit fell back to
+    it when `plan_id` was empty. That fallback is gone — one path to the feature
+    set, not two — so a unit driven without a plan row fails on the read, which
+    is the intended behaviour and not something to work around in a payload.
+    """
+    pid = str(uuid4())
+    with closing(psycopg2.connect(migrated_db)) as conn:
+        conn.autocommit = True
+        backend_for_connection(conn).run_plan_repo().write(
+            plan_id=pid, units={SLUG: []}
+        )
+    yield pid
+    with closing(psycopg2.connect(migrated_db)) as conn:
+        conn.autocommit = True
+        backend_for_connection(conn).run_plan_repo().delete(plan_id=pid)
+
+
+@pytest.fixture
+def unit(run_id, plan_id, monkeypatch):
     """The shipped DAG's unit task, callable without an engine.
 
     ``nodes()`` returns the graph the module actually runs — built lazily and
@@ -110,19 +132,38 @@ def unit(run_id, monkeypatch):
     from reimagina.orchestration import hatchet_app
 
     def _install(runner):
+        # ⚠ Override one slug, keep the rest. `build_dag` now resolves every
+        # runner up front and refuses to declare a graph it cannot execute, so
+        # a fake that returns only this slug makes the whole DAG unbuildable —
+        # which is the guard working, not a test fixture being unlucky.
         monkeypatch.setattr(
-            hatchet_app, "default_runners", lambda registry=None: {SLUG: runner}
+            hatchet_app,
+            "default_runners",
+            lambda registry=None: {**default_runners(), SLUG: runner},
         )
+        # ⚠ Drop the cached DAG so it rebuilds against the runner just
+        # installed. The runner is now bound into the task closure at
+        # declaration time rather than looked up per attempt, so a cached graph
+        # keeps whichever runner the first test in the session installed — which
+        # showed up as the healthy-unit test receiving the poisoned runner's
+        # exception. Patching `default_runners` alone is no longer enough.
+        monkeypatch.setattr(hatchet_app, "_dag", None)
         # `run_id` is the empty-string placeholder the submitter really sends:
         # the engine mints the id, so the task must read it off the context.
         payload = hatchet_app.RunInput(
             run_id="",
             dirty=[SLUG],
-            features={SLUG: []},
+            plan_id=plan_id,
             code_version=CODE_VERSION,
+            concurrency_key="scope-under-test",
         )
+        # `is_cancelled=False`: the unit checks it before opening a connection
+        # and declines to start when the run has already been cancelled.
         ctx = SimpleNamespace(
-            workflow_run_id=run_id, attempt_number=1, log=lambda _msg: None
+            workflow_run_id=run_id,
+            attempt_number=1,
+            log=lambda _msg: None,
+            is_cancelled=False,
         )
         # `_fn`, not the `fn` property: same object, but the property is
         # deprecated for removal in SDK v2.0.0 and warns on every call.
@@ -160,3 +201,53 @@ def test_a_succeeded_unit_still_writes_exactly_one_row(unit, run_id):
 
     rows = _job_runs(os.environ["DATABASE_URL_DIRECT"], run_id)
     assert [r[0] for r in rows] == ["succeeded"]
+
+
+def test_a_unit_cancelled_before_it_starts_never_opens_a_transaction(
+    monkeypatch, run_id
+):
+    """The cheap half of cancellation: decline to start.
+
+    Cancellation is cooperative, and a unit still sitting in the queue is the
+    one case where that is enough — it has no backend to hunt down, so checking
+    `ctx.is_cancelled` before connecting saves the `pg_cancel_backend` round
+    trip and leaves no half-open transaction behind. It does nothing for a unit
+    already inside a blocking psycopg2 call; that is what `pg_cancel_backend`
+    and `statement_timeout` are for.
+
+    Non-retryable: a cancelled run is not a transient fault, and retrying it
+    would re-enter the same guard twice more with backoff in between.
+    """
+    if not os.environ.get("HATCHET_CLIENT_TOKEN"):
+        pytest.skip("HATCHET_CLIENT_TOKEN unset — workflow declaration needs a client")
+
+    from reimagina.orchestration import hatchet_app
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("a cancelled unit ran its compute")
+
+    monkeypatch.setattr(
+        hatchet_app,
+        "default_runners",
+        lambda registry=None: {**default_runners(), SLUG: _must_not_run},
+    )
+
+    payload = hatchet_app.RunInput(
+        run_id="",
+        dirty=[SLUG],
+        code_version=CODE_VERSION,
+        concurrency_key="scope-under-test",
+    )
+    ctx = SimpleNamespace(
+        workflow_run_id=run_id,
+        attempt_number=1,
+        log=lambda _msg: None,
+        is_cancelled=True,
+    )
+
+    with pytest.raises(NonRetryableException):
+        hatchet_app.nodes()[SLUG]._fn(payload, ctx)
+
+    # No connection opened means no provenance row, which is the observable
+    # difference between "declined to start" and "started and was killed".
+    assert _job_runs(os.environ["DATABASE_URL_DIRECT"], run_id) == []

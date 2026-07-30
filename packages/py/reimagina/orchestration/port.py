@@ -34,9 +34,6 @@ from typing import Protocol
 UNIT_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
 """Unit statuses from which no further transition happens."""
 
-UNIT_UNSATISFIED_STATES = frozenset({"failed", "skipped", "cancelled"})
-"""Unit statuses that make a dependent unrunnable."""
-
 RUN_TERMINAL_STATES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 """Run statuses that close a progress stream."""
 
