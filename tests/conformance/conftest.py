@@ -154,8 +154,6 @@ def hatchet_worker():
     os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
     from apps.worker.app import run_hatchet_worker
 
-    _reap_stale_workers()
-
     try:
         worker = run_hatchet_worker(name="conformance", slots=4, blocking=False)
     except Exception as exc:  # noqa: BLE001
@@ -170,28 +168,24 @@ def hatchet_worker():
 
 
 def _stop_worker(worker, timeout: float = 20.0) -> None:
-    """Actually stop the worker, so the session can exit.
+    """Stop the worker through the SDK's own API, so the session can exit.
 
-    ⚠ Two SDK facts make the obvious `worker.exit_gracefully()` wrong, both
-    measured rather than read:
+    ⚠ One SDK fact makes the obvious call wrong, and it is the reason this
+    suite once concluded that a clean exit leaks a registration exactly like a
+    `SIGKILL` does: **`exit_gracefully` is `async def`**. Called from sync code
+    it returns a coroutine that is never awaited — Python only warns — so it
+    does nothing whatsoever. Awaited properly it does deregister: its first act
+    is `_pause_task_assignment()`, "tell the engine that the worker is paused".
+    The leak was never engine behaviour; it was a coroutine on the floor.
 
-    1. **`exit_gracefully` is `async def`.** Calling it from sync code returns a
-       coroutine that is never awaited — Python only warns — so it does nothing
-       at all. This suite made exactly that call, which is the likeliest reason
-       its workers were observed surviving a "clean" shutdown.
-
-    2. **The action listener is a spawned child process, not a thread**
-       (`multiprocessing.get_context("spawn")`), and it is not a daemon. Python
-       joins non-daemon children at interpreter exit, so a listener that never
-       stops hangs the whole session *after the last test passed* — no output
-       and no failing test. Observed here the moment the worker started building
-       again: 17 passed, then an indefinite hang in teardown.
-
-    Drive the coroutine on the worker's own loop, then verify the child is gone
-    and terminate it if not. `_reap_stale_workers` on setup still carries the
-    deregistration weight; this only ensures the process can exit.
+    So it is driven on the worker's own loop. The listener is a spawned child
+    process and not a daemon, so Python joins it at interpreter exit and a
+    listener that never stops hangs the session *after the last test passed* —
+    no output, no failing test. `exit_gracefully` stops it; the check below is
+    a bounded safety net, and it reads the **public** `action_listener_process`
+    property rather than the private attribute behind it.
     """
-    loop = getattr(worker, "_loop", None)
+    loop = getattr(worker, "loop", None)
     if loop is not None and loop.is_running():
         try:
             asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
@@ -200,7 +194,7 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
         except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
             _LOG.warning("graceful worker stop failed: %s", exc)
 
-    for attr in ("_action_listener_process", "_durable_action_listener_process"):
+    for attr in ("action_listener_process", "durable_action_listener_process"):
         proc = getattr(worker, attr, None)
         if proc is not None and proc.is_alive():
             _LOG.warning("%s survived graceful stop; terminating", attr)
@@ -208,42 +202,17 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
             proc.join(timeout=5.0)
 
 
-def _reap_stale_workers() -> None:
-    """Pause every `conformance` worker the engine still believes in.
-
-    ⚠ The load-bearing half of B12, and it runs on **setup** for a reason: a
-    worker registration lives in the engine's database and survives both the
-    process that made it and a restart of the engine itself. A killed pytest
-    run — or, as measured, an ordinary clean one — leaves it ACTIVE and still
-    eligible for tasks, so the engine hands work to a process that no longer
-    exists and the run sits at `running` with no units until the suite's
-    timeouts fire.
-
-    The symptom is invisible in the failures themselves; what gives it away is
-    suite wall clock drifting run over run (62s → 322s) on unchanged code.
-
-    Every `conformance` worker found here is by definition stale: only one live
-    one exists at a time, and it has not been started yet.
-    """
-    from reimagina.orchestration import hatchet_app
-
-    try:
-        listed = hatchet_app.get_hatchet().workers.list()
-    except Exception as exc:  # noqa: BLE001 — engine reachability checked later
-        _LOG.warning("could not list workers to reap: %s", exc)
-        return
-
-    for row in getattr(listed, "rows", None) or []:
-        if getattr(row, "name", None) != "conformance":
-            continue
-        worker_id = getattr(getattr(row, "metadata", None), "id", None)
-        if not worker_id:
-            continue
-        try:
-            hatchet_app.get_hatchet().workers.pause(worker_id)
-            _LOG.info("paused stale conformance worker %s", worker_id)
-        except Exception as exc:  # noqa: BLE001
-            _LOG.warning("could not pause stale worker %s: %s", worker_id, exc)
+# ⚠ No `_reap_stale_workers`. It paused every `conformance` worker the engine
+# still listed, on setup, because stale registrations were believed to stay
+# ACTIVE and keep being handed work — the suite's wall clock drifting 62s → 322s
+# was the evidence. Measured again at v0.86.24: fourteen accumulated
+# registrations, every one of them INACTIVE, the oldest eight hours stale. The
+# engine expires a worker on heartbeat timeout. The row persisting is history,
+# not eligibility, and the two were being conflated.
+#
+# What actually leaked was a coroutine: `exit_gracefully` was called from sync
+# code and never awaited, so nothing ever told the engine the worker had gone.
+# See `_stop_worker`.
 
 
 def _await_registration(worker, timeout: float = 30.0) -> None:
