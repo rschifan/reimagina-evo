@@ -163,6 +163,47 @@ class HatchetUnavailable(RuntimeError):
     """Hatchet could not answer a request for run state."""
 
 
+class GraphVersionUnavailable(RuntimeError):
+    """No live worker serves the graph this deployment plans against.
+
+    ⚠ Deliberately not a `HatchetUnavailable`. The engine is reachable and
+    healthy; what is missing is a worker for *this* workflow name, which is a
+    deployment mismatch — a rollout half-applied, or an API ahead of its
+    workers. Reporting it as an outage would send someone to look at the engine,
+    and would make it retryable, which it is not: retrying cannot conjure a
+    worker for a graph nobody deployed.
+    """
+
+
+def _worker_serves(workflow: str) -> bool:
+    """Is some live worker registered for `workflow`?
+
+    Worker actions are `<workflow-name>:<task-name>`, so the prefix is the
+    question. Checks liveness too: an INACTIVE registration is history, and a
+    run admitted against one waits for a process that is gone.
+
+    Fails **open** on an unreadable worker list. This is an admission check, not
+    a safety property — the engine holding the run is the safety property — and
+    a transient listing failure must not become a submission outage.
+    """
+    from reimagina.orchestration import hatchet_app
+
+    try:
+        rows = getattr(hatchet_app.get_hatchet().workers.list(), "rows", None) or []
+    except Exception:  # noqa: BLE001
+        logger.warning("could not list workers; admitting run unchecked", exc_info=True)
+        return True
+
+    prefix = f"{workflow}:"
+    return any(
+        str(getattr(row, "status", "")).rsplit(".", 1)[-1] == "ACTIVE"
+        and any(
+            str(a).startswith(prefix) for a in (getattr(row, "actions", None) or [])
+        )
+        for row in rows
+    )
+
+
 # Used while the run is still open. Once it is terminal the unit outcomes are
 # rolled up through `port.overall_status` instead, which is the only way to
 # reach `partial` — the enum has no such value and never will.
@@ -239,6 +280,17 @@ class HatchetOrchestrator:
         # in would make every key unique and silently disable the idempotency
         # window. `tests/unit/test_hatchet_dedup_key.py` fails if that happens.
         dedup_key = _dedup_key(scenario_id, aoi_id, code_version, dirty, features)
+
+        # ⚠ Before the plan is written, not after. A run refused here should
+        # leave nothing behind, and this is a cheap engine read against a
+        # database write plus a discard.
+        workflow = hatchet_app.workflow_name(self._registry)
+        if not _worker_serves(workflow):
+            raise GraphVersionUnavailable(
+                f"no live worker serves {workflow!r} — this deployment plans "
+                f"against a graph shape nothing is registered to execute"
+            )
+
         # Committed before the workflow is triggered; see `_persist_plan`.
         plan_id = _persist_plan(direct_dsn, plan.units)
         payload = hatchet_app.RunInput(
@@ -248,6 +300,7 @@ class HatchetOrchestrator:
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
+            graph_version=hatchet_app.graph_version(self._registry),
             # What this key must name is **the set of rows two runs would fight
             # over**, because that is the whole hazard: the write path is
             # stale-then-insert, so overlapping writers leave features with the
@@ -290,6 +343,10 @@ class HatchetOrchestrator:
                         "scenario_id": scenario_id,
                         "aoi_id": aoi_id,
                         "code_version": code_version,
+                        # Filterable in `runs.list()` and the dashboard's search
+                        # box, so "which runs used the graph before the retune"
+                        # is a query rather than archaeology.
+                        "graph_version": hatchet_app.graph_version(self._registry),
                     }.items()
                     if v is not None
                 },

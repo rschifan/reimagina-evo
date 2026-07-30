@@ -122,6 +122,10 @@ def test_the_plan_is_persisted_before_the_workflow_is_triggered(monkeypatch):
         hatchet_orchestrator, "assert_same_domain_database", lambda *a, **k: None
     )
     monkeypatch.setattr(hatchet_orchestrator, "_persist_plan", _fake_persist)
+    # The graph-version gate runs *before* the plan is written — a refused run
+    # must leave nothing behind — so it has to be stubbed here or the ordering
+    # under test is never reached. Its own behaviour: `test_graph_version.py`.
+    monkeypatch.setattr(hatchet_orchestrator, "_worker_serves", lambda _name: True)
     monkeypatch.setattr(hatchet_app, "get_run_workflow", lambda: _Workflow())
     monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql:///irrelevant")
 
