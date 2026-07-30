@@ -243,7 +243,6 @@ def bench_worker(bench_workflows, bench_db):
     from reimagina.orchestration import hatchet_app
 
     os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
-    _reap_stale_workers()
 
     worker = hatchet_app.get_hatchet().worker(
         WORKER_NAME,
@@ -261,27 +260,22 @@ def bench_worker(bench_workflows, bench_db):
 def _stop_worker(worker, timeout: float = 20.0) -> None:
     """Actually stop the worker, and make sure the session can exit.
 
-    ⚠ Two SDK facts make the obvious `worker.exit_gracefully()` wrong, and both
-    were measured here rather than read:
+    ⚠ **`exit_gracefully` is `async def`.** Called from sync code it returns a
+    coroutine nobody awaits — Python only warns — so it does nothing at all.
+    Awaited properly it deregisters: its first act is `_pause_task_assignment()`,
+    "tell the engine that the worker is paused". That single mistake is the
+    whole of the "workers leak despite a clean shutdown" finding, and the reason
+    a setup-time reaper existed to compensate for it. Drive it on the worker's
+    own loop.
 
-    1. **`exit_gracefully` is `async def`.** Calling it from sync code returns a
-       coroutine that is never awaited — Python only warns — so it does nothing
-       at all. The conformance suite's teardown makes exactly this call, which
-       is very likely why that suite's workers were observed leaking despite a
-       "clean" shutdown. It has to be driven on the worker's own loop.
-
-    2. **The action listener is a spawned child process, not a thread**
-       (`multiprocessing.get_context("spawn")`), and it is not a daemon. Python
-       joins non-daemon children at interpreter exit, so a listener that never
-       stops hangs the *whole pytest session* after the last test has passed —
-       a hang with no output and no failing test, which is precisely what this
-       looked like before it was diagnosed.
-
-    So: drive the coroutine on the worker's loop, then verify the child is gone
-    and terminate it if not. Belt and braces on purpose — a benchmark harness
-    that wedges the session is worse than one that stops a listener rudely.
+    ⚠ **The action listener is a spawned child process, not a thread**, and not
+    a daemon. Python joins non-daemon children at interpreter exit, so a
+    listener that never stops hangs the *whole pytest session* after the last
+    test has passed — no output, no failing test. `exit_gracefully` stops it;
+    the loop below is a bounded safety net, reading the **public**
+    `action_listener_process` property rather than the private attribute.
     """
-    loop = getattr(worker, "_loop", None)
+    loop = getattr(worker, "loop", None)
     if loop is not None and loop.is_running():
         try:
             asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
@@ -290,7 +284,7 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
         except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
             _LOG.warning("graceful worker stop failed: %s", exc)
 
-    for attr in ("_action_listener_process", "_durable_action_listener_process"):
+    for attr in ("action_listener_process", "durable_action_listener_process"):
         proc = getattr(worker, attr, None)
         if proc is not None and proc.is_alive():
             _LOG.warning("%s survived graceful stop; terminating", attr)
@@ -298,36 +292,12 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
             proc.join(timeout=5.0)
 
 
-def _reap_stale_workers() -> None:
-    """Pause every bench worker the engine still believes in.
-
-    Worker registrations live in the engine's database, survive the process that
-    made them, survive an engine restart, and are never removed — `pause` is the
-    only verb there is. `exit_gracefully()` stops the local loop and deregisters
-    nothing. Left alone the engine keeps handing work to processes that no longer
-    exist, and the tell is not a failure but suite wall clock drifting run over
-    run (62s → 322s was measured on unchanged code). Only one live bench worker
-    exists at a time and it has not started yet, so everything found here is stale.
-    """
-    from reimagina.orchestration import hatchet_app
-
-    try:
-        listed = hatchet_app.get_hatchet().workers.list()
-    except Exception as exc:  # noqa: BLE001 — reachability is checked elsewhere
-        _LOG.warning("could not list workers to reap: %s", exc)
-        return
-
-    for row in getattr(listed, "rows", None) or []:
-        if getattr(row, "name", None) != WORKER_NAME:
-            continue
-        worker_id = getattr(getattr(row, "metadata", None), "id", None)
-        if not worker_id:
-            continue
-        try:
-            hatchet_app.get_hatchet().workers.pause(worker_id)
-            _LOG.info("paused stale bench worker %s", worker_id)
-        except Exception as exc:  # noqa: BLE001
-            _LOG.warning("could not pause stale worker %s: %s", worker_id, exc)
+# ⚠ No `_reap_stale_workers`. It paused every bench worker the engine still
+# listed, because stale registrations were believed to stay ACTIVE and keep
+# being handed work. Measured at v0.86.24: the engine expires a genuinely dead
+# worker in ~5 seconds. What kept registrations alive was an orphaned listener
+# process still heartbeating for them — see `tests/qualification/README.md` —
+# and what leaked in the first place was a coroutine nobody awaited.
 
 
 def _await_registration(expected: set[str], timeout: float = 60.0) -> None:
