@@ -5,7 +5,16 @@ establish that an executor is probably stale; it cannot prove that no live peer
 is still executing work. DBOS 2.28 recovery is not idempotent across executors,
 so using this table to reclaim work would permit double compute.
 
-Revision ID: r033
+⚠ Renumbered r033 → r034, and the collision it fixes was not theoretical. Both
+tracks fork from r031 and both had minted an ``r033``: this one, and the Hatchet
+track's ``r033_drop_our_run_state``. Alembic identifies a revision by its id
+alone, so two different migrations answered to one name — a database migrated by
+either branch reported a revision the other would resolve to its own file. That
+is how a Hatchet migration silently applied to a database on this lineage while
+``alembic current`` here still reported "r033 (head)", dropping
+``orchestration_run`` and ``job_unit`` with nothing raising an objection.
+
+Revision ID: r034
 Revises: r032
 Create Date: 2026-07-29
 """
@@ -14,7 +23,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "r033"
+revision = "r034"
 down_revision = "r032"
 branch_labels = None
 depends_on = None
