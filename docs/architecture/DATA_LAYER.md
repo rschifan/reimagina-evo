@@ -107,13 +107,13 @@ Create an `ingestion_run` for each curated load step. Every canonical row must p
 
 ### Step 4. Expose only what readers need
 
-The API and model workers read `serving_geo`, not the canonical tables directly. Start with plain views. Only materialize proven hot paths.
+The API and tiles read `serving_geo`, not the canonical tables directly. Start with plain views. Only materialize proven hot paths.
 
 ### Step 5. Decide scenario participation
 
 - Baseline-defining data lives only in the data layer.
 - Baseline evidence stays read-only but can influence scenario recomputation.
-- Scenario edits go to `intervention_feature.attribute_overrides`, never back into `feature` or `observation`.
+- Scenario edits go to `curated_geo.scenario_override` (r030), never back into `feature` or `observation`.
 
 This means a source can be essential to scenario evaluation without ever becoming scenario-owned data.
 
@@ -262,7 +262,7 @@ Read Diagram 1 as:
 - `file_asset` stores batch/manifest-level asset metadata, not per-feature values.
 - `area_of_interest` and `aoi_feature` are project-scoped support tables for AOI filtering and overlap-based prorating.
 - `feature_overlap` stores pre-computed spatial intersections between arbitrary feature type pairs (e.g. blocks vs. H3 grid cells, lots vs. road segments), generalising `aoi_feature` to feature-to-feature. Populated by `reimagina.jobs.overlap` (CLI: `overlap declare-pair` + `overlap compute-all --aoi-id …`) for declared type-pair combinations (`feature_overlap_type_pair`). Enables cross-grain indicator aggregation for both hierarchical and non-hierarchical spatial relationships.
-- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) land in Layer 1 so API code can target them; the worker that populates rows reads from `indicator_result`, which arrives with the Layer 2 indicators milestone.
+- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) landed in Layer 1 (r015) so API code could target them; the worker that populates rows from `indicator_result` shipped with Layer 2 as `reimagina.jobs.aoi_summary.summarise_aoi` (`jobs/aoi_summary.py:29`).
 - In the actual schema, `aoi_feature` uses the pair `(aoi_id, feature_id)` as its composite primary key.
 
 ### Canonical CDMX bootstrap
@@ -492,7 +492,7 @@ One row = one canonical spatial object. All types live in one table. The type is
 **Purpose:** store stable spatial objects that should exist in the city model with identity, geometry, and provenance.  
 **Use this when:** a dataset defines reusable entities such as blocks, roads, lots, bus stops, or validated detections.  
 **Do not use this for:** mutable enrichments like population, NDVI, footfall, or sidewalk measurements from a later dataset.  
-**Relationships:** child of `feature_type_catalog`, `data_source_catalog`, and `ingestion_run`; parent of `observation`, `aoi_feature`, `intervention_feature`, and `indicator_result`.  
+**Relationships:** child of `feature_type_catalog`, `data_source_catalog`, and `ingestion_run`; parent of `observation`, `aoi_feature`, `feature_overlap`, `scenario_override`, and `indicator_result`.  
 **Examples:** municipality polygons, block polygons, road centerlines, detected trees.
 
 ```sql
@@ -728,11 +728,11 @@ Compute area and length in metres using `ST_Area(geography)` or a projected CRS,
 
 The API reads only `serving_geo`. These are views over `curated_geo` — no data is duplicated.
 
-**Purpose:** provide a stable read contract for the API and model workers without exposing every canonical table directly.  
+**Purpose:** provide a stable read contract for the API and tile serving without exposing every canonical table directly.  
 **Use this when:** readers need baseline features with current observations already merged in.  
-**Do not use this for:** canonical writes, lineage, or scenario storage.  
-**Relationships:** reads from `feature`, `observation`, and `indicator_result`; feeds scenario workers and API endpoints.  
-**Examples:** `feature_v` for baseline reads, `analysis_units_v` for worker inputs, `current_indicator_v` for comparisons.
+**Do not use this for:** canonical writes, lineage, scenario storage, or indicator computation — the compute path reads `curated_geo` directly so it can apply scenario overrides (see the read/write boundary above).  
+**Relationships:** reads from `feature`, `observation`, and `indicator_result`; feeds the API, tiles, and result comparison queries.  
+**Examples:** `feature_v` for baseline reads, `analysis_units_v` for role-scoped reads, `current_indicator_v` for comparisons.
 
 ```sql
 -- Aggregates current observations into one JSON object per feature
@@ -764,7 +764,7 @@ JOIN serving_geo.feature_current_attributes_v fca ON fca.feature_id = f.id;
 
 ### Role-based views
 
-Role-based views are the primary shortcut for model workers and API queries that need all features of a given semantic category — regardless of how many specific types exist under that role.
+Role-based views are the primary shortcut for API and tile queries that need all features of a given semantic category — regardless of how many specific types exist under that role.
 
 ```sql
 -- All spatial units that receive indicator values: block, lot, ageb, grid_cell, ...
@@ -814,11 +814,12 @@ CREATE VIEW serving_geo.municipalities AS SELECT * FROM serving_geo.feature_v WH
 CREATE VIEW serving_geo.trees          AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'tree';
 CREATE VIEW serving_geo.roads          AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'road';
 CREATE VIEW serving_geo.sidewalks      AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'sidewalk';
-CREATE VIEW serving_geo.bike_lanes     AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'bike_lane';
 CREATE VIEW serving_geo.bus_stops      AS SELECT * FROM serving_geo.feature_v WHERE type_slug = 'bus_stop';
 ```
 
-Only create per-type views for types that are queried independently in the API or by model workers. Do not create one for every type in `feature_type_catalog`.
+These seven are what r005 creates. There is no `bike_lanes` view — add one only if bike lanes become independently queried.
+
+Only create per-type views for types that are queried independently in the API or by tiles. Do not create one for every type in `feature_type_catalog`.
 
 Start with plain views. Promote to materialized views only when measured query times on production data justify the added refresh complexity.
 
@@ -845,16 +846,17 @@ feature + current observation values
       ▼
 serving_geo.feature_v
       │
-      ├── read by scenario workers as baseline input
-      └── read by API as stable feature contract
+      └── read by API and tiles as stable feature contract
 ```
 
 The key boundary is simple:
 
 - Canonical writes go to `curated_geo`.
-- Scenario overlays live in `app_core.intervention_feature`.
-- Jobs read baseline from `serving_geo`, apply overrides in memory, and write `indicator_result`.
+- Scenario overlays live in `curated_geo.scenario_override` (r030).
+- Indicator runs resolve `override ⊕ current observation ⊕ base feature.attributes` in SQL and write `indicator_result`.
 - No scenario writes back into `feature` or `observation`.
+
+Note that indicator computation does **not** go through `serving_geo.feature_v`. That view merges base attributes with current observations for the API and tiles, but knows nothing about scenarios; the compute path reads `curated_geo` directly and applies the three-way overlay itself (`scenarios/overrides.py:74-90`).
 
 ---
 
@@ -1071,7 +1073,7 @@ VALUES
 
 Measurements about a detected feature (height estimate, canopy area) or about an existing object (sidewalk width, barrier presence) go to `observation`, not `feature.attributes`.
 
-**How scenarios use it:** the validated tree detections can participate in baseline canopy or streetscape indicators as persistent features. The sidewalk-width observations remain read-only evidence unless a scenario chooses to override width through `intervention_feature.attribute_overrides`.
+**How scenarios use it:** the validated tree detections can participate in baseline canopy or streetscape indicators as persistent features. The sidewalk-width observations remain read-only evidence unless a scenario overrides width with a `curated_geo.scenario_override` row, which outranks the observation when the effective value is resolved.
 
 ---
 
@@ -1168,19 +1170,26 @@ SELECT * FROM descendants WHERE type_slug = 'block';
 
 ## Build order
 
-1. Schemas (`app_core`, `jobs_runtime`, `curated_geo`, `serving_geo`)
-2. `app_core.project` — defined in `SCENARIOS_LAYER.md`
-3. `curated_geo.data_source_catalog`
-4. `curated_geo.ingestion_run`
-5. `curated_geo.feature_type_catalog` — seed with known types
-6. `curated_geo.feature` — add trigger for type_slug/role sync and hierarchy validation
-7. `curated_geo.observation`
-8. `curated_geo.file_asset`
-9. `curated_geo.area_of_interest`
-10. `curated_geo.aoi_feature`
-11. `serving_geo.feature_current_attributes_v`, `serving_geo.feature_v`
-12. Role-based views (`analysis_units_v`, `infrastructure_v`, `pois_v`, `detections_v`, `admin_v`)
-13. Per-type views (`blocks`, `lots`, `roads`, `trees`, `sidewalks`, `bike_lanes`, `bus_stops`, …)
+Applied as Alembic migrations — `make migrate` runs the whole chain.
+
+1. Schemas (`app_core`, `jobs_runtime`, `curated_geo`, `serving_geo`) — r001
+2. `app_core.project` — r001; documented in `SCENARIOS_LAYER.md`
+3. `curated_geo.data_source_catalog` — r002
+4. `curated_geo.ingestion_run` — r002
+5. `curated_geo.feature_type_catalog` — r003, seed with known types
+6. `curated_geo.feature` — r003, with the type_slug/role sync and hierarchy-validation triggers
+7. `curated_geo.observation` — r003
+8. `curated_geo.file_asset` — r003
+9. `curated_geo.area_of_interest` — r004, FK to `app_core.project`
+10. `curated_geo.aoi_feature` — r004
+11. `serving_geo.feature_current_attributes_v`, `serving_geo.feature_v` — r005
+12. Role-based views (`analysis_units_v`, `infrastructure_v`, `pois_v`, `detections_v`, `admin_v`) — r005
+13. Per-type views — r005 creates `blocks`, `lots`, `roads`, `trees`, `sidewalks`, `bus_stops`, `municipalities`, plus `feature_aoi_v`
+14. `serving_geo.feature_current_attributes_mv` — r008; `feature_v` reads the materialized form
+15. `curated_geo.feature_overlap`, `feature_overlap_type_pair` — r009
+16. `curated_geo.aoi_indicator_summary` + `serving_geo.aoi_summary_v` — r015
+
+The job- and indicator-layer tables interleave after these — see `JOB_LAYER.md` — *Migration order*.
 
 ---
 
