@@ -51,6 +51,10 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
 	$(PYTEST) tests/conformance -q --no-header -rA
 
+.PHONY: test-qualification
+test-qualification: ## Can the engine carry worker lifecycle? (tests/qualification/README.md).
+	$(PYTEST) tests/qualification -q --no-header -rA
+
 .PHONY: test-workloads
 test-workloads: ## Measure how this ops plane schedules (see tests/workloads/README.md).
 	REIMAGINA_BENCH=1 $(PYTEST) tests/workloads -q --no-header -rA
