@@ -431,6 +431,25 @@ def s_settle_unit(run_id: str, slug: str, outcome: str) -> str:
 
 
 @DBOS.step()
+def s_release_plan(plan_id: str) -> int:
+    """Reclaim the run's plan rows once it is terminal.
+
+    ⚠ A *new step, appended at the end*. DBOS matches replayed steps by position,
+    so inserting one earlier would shift every later position and hand one
+    indicator's checkpointed output to another (spike 2). Appending leaves
+    positions 0..N untouched: a resumed workflow replays them from checkpoints
+    and executes this one fresh.
+
+    Best-effort. Anything missed — a crash, a cancel before the finalizer, an
+    idempotency collision — is reclaimed by the TTL sweep at the next submit.
+    """
+    if not plan_id:
+        return 0
+    with _pg() as conn:
+        return backend_for_connection(conn).run_plan_repo().delete(plan_id=plan_id)
+
+
+@DBOS.step()
 def s_finalize(run_id: str, status: str) -> bool:
     with _pg() as conn:
         return runstore.finalize_run(conn, run_id=run_id, status=status)
@@ -610,6 +629,8 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
 
     final = overall_status(statuses.values())
     s_finalize(run_id, final)
+    # After the verdict, so a failure here cannot change it.
+    s_release_plan(params.get("plan_id", ""))
     _emit(run_id, None, final)
     DBOS.close_stream(PROGRESS_STREAM)
     return final
