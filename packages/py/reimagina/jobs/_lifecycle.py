@@ -114,9 +114,18 @@ def record_failed_job_run(
     coordinator, which keeps its connection and commits, must *not* call it: its
     row survives on its own, and a second one would double-count the failure.
 
-    ``dsn`` is the compute connection's own (``conn.dsn``), never an environment
-    lookup. Provenance written to a different database than the work it
-    describes is worse than none.
+    ``dsn`` is the string the caller opened the compute connection with, never
+    an environment lookup here. Provenance written to a different database than
+    the work it describes is worse than none.
+
+    ⚠ Not ``conn.dsn``, which this used to require. psycopg2 returns a live
+    connection's DSN with the password replaced by the literal ``xxx``, and
+    ``get_dsn_parameters()`` omits it entirely — so no usable DSN can be
+    recovered from a connection once the database has credentials. The old
+    contract looked satisfiable only because development databases have none;
+    against any deployment that has one it raised ``OperationalError`` straight
+    into the best-effort ``except`` below, and failed units silently stopped
+    leaving a row.
 
     ``run_id`` is a parameter rather than the ambient ``current_run`` because
     this runs from an ``except``, after that scope has closed. Leaving it to the
