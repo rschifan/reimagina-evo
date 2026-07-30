@@ -24,6 +24,7 @@ from uuid import uuid4
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration import runstore
 from reimagina.orchestration.plan import noop_handle, plan_run
+from contextlib import closing as _closing
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
     UNIT_TERMINAL_STATES,
@@ -88,6 +89,39 @@ _RUN_STATUS_FOR = {
 }
 
 
+def _persist_plan(units) -> str:
+    """Store the resolved feature set; return the handle the workflow carries.
+
+    ⚠ Commits and closes before returning. A worker can dequeue the moment the
+    workflow is enqueued and reads the plan on its own connection, so an
+    uncommitted write is indistinguishable from a lost one. Owning the
+    transaction here makes "commit before enqueue" structural rather than an
+    ordering someone has to remember.
+
+    ⚠ Its own connection, not ``submit_run``'s. That one is borrowed from the
+    caller and committing it would end a transaction this layer does not own —
+    the same reason ``record_failed_job_run`` opens its own.
+
+    ⚠ Not in ``orchestration/plan.py``, which states it "touches no queue,
+    worker or run table"; this writes to ``jobs_runtime``.
+    """
+    from uuid import uuid4
+
+    from reimagina.db import connect
+    from reimagina.storage import backend_for_connection as _backend
+
+    from reimagina.orchestration import dbos_app
+
+    plan_id = str(uuid4())
+    with _closing(connect(dbos_app.dbos_dsn())) as plan_conn:
+        _backend(plan_conn).run_plan_repo().write(
+            plan_id=plan_id,
+            units={u.indicator: sorted(u.features) for u in units},
+        )
+        plan_conn.commit()
+    return plan_id
+
+
 class DBOSOrchestrator:
     """Durable execution with no standing service."""
 
@@ -141,7 +175,11 @@ class DBOSOrchestrator:
         units: list[dbos_app.UnitInput] = [
             {
                 "slug": unit.indicator,
-                "features": sorted(unit.features),
+                # ⚠ Empty, deliberately. The ids live in `jobs_runtime.run_plan`
+                # under `params["plan_id"]`; carrying them here made the workflow
+                # input scale with the city. Retained as a key so a run submitted
+                # with the old shape and resumed after this change still resolves.
+                "features": [],
                 "deps": deps_of.get(unit.indicator, []),
             }
             for unit in plan.units
@@ -150,6 +188,8 @@ class DBOSOrchestrator:
             "code_version": code_version,
             "scenario_id": scenario_id,
             "aoi_id": aoi_id,
+            # Committed before the workflow is enqueued; see `_persist_plan`.
+            "plan_id": _persist_plan(plan.units),
         }
         dbos_app.validate_workflow_input(units, params)
 

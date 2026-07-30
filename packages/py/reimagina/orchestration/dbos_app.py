@@ -48,6 +48,7 @@ from reimagina.orchestration.port import (
 )
 from reimagina.orchestration.runners import default_runners
 from reimagina.orchestration.wave import plan_wave
+from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,14 @@ class UnitInput(TypedDict):
 
 class RunParams(TypedDict):
     """Stable workflow input. Add fields here before a workflow consumes them."""
+
+    plan_id: NotRequired[str]
+    """Handle for the resolved feature set in ``jobs_runtime.run_plan``.
+
+    ⚠ ``NotRequired`` because a run submitted before this field existed can be
+    resumed after it: those inputs still carry their ids in ``UnitInput.features``
+    and ``s_compute`` falls back to them.
+    """
 
     code_version: str
     scenario_id: NotRequired[str | None]
@@ -362,7 +371,19 @@ def s_open_run(run_id: str, units: list[UnitInput], params: dict) -> None:
     """Persist the run envelope and its units. Track A keeps its own run state,
     which is what preserves the `skipped` / `partial` vocabulary."""
     with _pg() as conn:
-        runstore.create_run(conn, run_id=run_id, status="running", **params)
+        # ⚠ Explicit kwargs, not `**params`. The splat coupled this call to the
+        # exact shape of `RunParams`, so adding a field there — which its own
+        # docstring invites — raised `TypeError: create_run() got an unexpected
+        # keyword argument`. Adding `plan_id` did exactly that, and the run
+        # failed inside the workflow's first step rather than at submit.
+        runstore.create_run(
+            conn,
+            run_id=run_id,
+            status="running",
+            code_version=params["code_version"],
+            scenario_id=params.get("scenario_id"),
+            aoi_id=params.get("aoi_id"),
+        )
         runstore.record_units(
             conn,
             run_id=run_id,
@@ -460,10 +481,24 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 row["status"],
             )
             return
+        # ⚠ Read from `jobs_runtime.run_plan`, not from the workflow input. The
+        # ids used to travel inside that input, one per feature per indicator,
+        # which made the payload scale with the size of the city; `plan_id` is a
+        # handle of fixed size. `features` is the pre-`plan_id` shape, kept for
+        # one release so a run submitted before this change and resumed after it
+        # still finds its work — a current submitter always sends it empty.
+        plan_id = params.get("plan_id")
+        resolved = (
+            backend_for_connection(conn)
+            .run_plan_repo()
+            .features_for(plan_id=plan_id, indicator_slug=slug)
+            if plan_id
+            else features
+        )
         with current_run(run_id):
             runner(
                 conn,
-                features=frozenset(features),
+                features=frozenset(resolved),
                 scenario_id=params.get("scenario_id"),
                 code_version=params.get("code_version", "dev"),
                 aoi_id=params.get("aoi_id"),
