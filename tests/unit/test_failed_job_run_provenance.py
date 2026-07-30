@@ -52,7 +52,12 @@ def _stub(monkeypatch) -> dict:
     calls: dict[str, object] = {}
 
     class _Conn:
-        dsn = "postgresql://recorded"
+        # What psycopg2 really reports for a connection to a database with a
+        # password: keyword form, secret replaced by the literal `xxx`. The
+        # passwordless URL that used to stand here made `conn.dsn` look like a
+        # reusable DSN, which is how the call site came to pass it and how every
+        # failed unit stopped leaving a row outside local development.
+        dsn = "user=u password=xxx dbname=reimagina host=db port=5432"
 
         def commit(self):
             calls["committed"] = True

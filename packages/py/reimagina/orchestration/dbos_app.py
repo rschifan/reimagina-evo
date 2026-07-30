@@ -447,7 +447,8 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     if runner is None:
         raise LookupError(f"no runner registered for {slug!r}")
 
-    conn = psycopg2.connect(dbos_dsn())  # NOT autocommit — see above
+    dsn = dbos_dsn()
+    conn = psycopg2.connect(dsn)  # NOT autocommit — see above
     started_at = datetime.now(timezone.utc)
     try:
         row = runstore.get_run(conn, run_id)
@@ -473,8 +474,15 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
         # That rollback just erased the `failed` job_run the runner opened — it
         # was written on this connection. Re-record it on its own, or a unit
         # that burned minutes and failed leaves no provenance at all.
+        #
+        # ⚠ `dsn`, NOT `conn.dsn`. psycopg2 returns a live connection's DSN with
+        # the password replaced by the literal `xxx`, so reconnecting from it
+        # fails authentication against any database that has one — and the
+        # best-effort `except` inside swallows that into a log line, so failed
+        # units simply stop leaving provenance. The string this connection was
+        # opened with is the same database by construction, and works.
         record_failed_job_run(
-            conn.dsn,
+            dsn,
             run_id=run_id,
             indicator_slug=slug,
             scenario_id=params.get("scenario_id"),
