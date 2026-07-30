@@ -80,16 +80,54 @@ Run**, then paste a `RunInput`:
 
 ```json
 {"run_id": "", "dirty": ["urban_form_block_compactness"],
- "features": {"urban_form_block_compactness": ["<feature_id>"]},
+ "plan_id": "<uuid present in jobs_runtime.run_plan>",
  "scenario_id": null, "aoi_id": "cuauhtemoc",
  "code_version": "dev", "concurrency_key": "baseline"}
 ```
+
+⚠ **The feature ids are not in this payload.** They live one row per dirty
+indicator in `jobs_runtime.run_plan`, keyed by `plan_id`, and a hand-triggered
+run gives you no way to create one — so borrow a `plan_id` from a live run or
+accept that this only works for a plan that already exists:
+
+```sql
+SELECT plan_id, indicator_slug, array_length(feature_ids, 1) AS features
+FROM jobs_runtime.run_plan;
+```
+
+A run whose `plan_id` is absent — never written, or already reclaimed by the TTL
+sweep — fails every unit with `no run_plan row for plan …`. That error means the
+plan is missing, **not** that the feature set is empty. It is deliberately loud:
+a unit computing zero features would report success and leave the indicator
+stale with nothing to attribute it to.
 
 ⚠ `dirty` is computed by the submitter, not by the workflow — trigger it by hand
 and you are asserting the dirty set yourself. Useful for testing one unit,
 wrong for anything real. Note also that `concurrency_key` collides with live
 runs: `max_runs=1` with `GROUP_ROUND_ROBIN` queues a hand-triggered run behind
 the in-flight writer for that scope.
+
+### Why the payload is a handle
+
+Carrying the ids inline made a full-city recompute **10,088,804 bytes against
+gRPC's 4,194,304 default** — 86,225 blocks × 3 dirty indicators = 258,675 uuids
+— and the engine refused the submission before seeing any work. The ceiling was
+~35,800 blocks, **42% of the city**. Measured, then removed: the same run now
+submits in 0.64 s and finishes in 26 s, with **three rows** in `run_plan`.
+
+That is the Claim Check pattern, and it is what Temporal and Step Functions
+prescribe for the same limit. The reason applies here too — a workflow input is
+persisted in the engine's history, so a large one is paid on every read, every
+replay and for the whole retention period, not once at submit. Raising
+`grpc_max_send_message_length` would move the wall while leaving ~10 MB per run
+in the engine database under a 720 h retention default.
+
+⚠ `REIMAGINA_RUN_PLAN_TTL_HOURS` (default 24) **must exceed the longest run this
+deployment can produce.** Plans are deleted when their run reaches a terminal
+state; the sweep only reclaims what never got there — a crashed submit, a cancel
+before the finalizer, an idempotency collision. Set it below your longest run and
+the sweep will delete a live run's plan, and every remaining unit will fail with
+the missing-plan error above. The unit timeout alone is 120 minutes.
 
 ### If the dashboard will not load
 

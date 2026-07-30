@@ -158,6 +158,7 @@ Runners are injected, never defined here. `orchestration/runners.py:76` binds sl
 | Table | Owner | Written by | Fate |
 |---|---|---|---|
 | `jobs_runtime.job_run` | domain | `jobs/_lifecycle.job_run` | survives on both branches |
+| `jobs_runtime.run_plan` | ops-plane | `RunPlanRepository.write` / `features_for` | the resolved feature set, one row per dirty indicator. Written at submit, read by each unit, deleted when the run is terminal. Exists on **both** branches: carrying the ids in the workflow input made a full-city run 258,675 uuids, which Hatchet's 4 MiB gRPC limit refused outright and DBOS merely persisted. Claim Check |
 
 ⚠ `jobs_runtime.orchestration_run` and `jobs_runtime.job_unit` **are dropped on this branch** (migration r033), together with `orchestration/runstore.py`. That deletion is what the track is for: the engine owns run state end to end, and keeping a parallel copy would be re-adopting the model being given away.
 
