@@ -44,24 +44,25 @@ Unresolved questions and gaps identified during architecture review. Each item r
 > `feature_overlap` and `feature_overlap_type_pair` tables have been added (r009).
 > The rollup worker should read `feature_overlap` instead of `feature.parent_id`,
 > covering both hierarchical and non-hierarchical cases uniformly.
-> This issue is resolved at the schema level; the rollup worker contract still
-> needs to be added to `JOB_LAYER.md` once the first indicator requires it.
+> Resolved. The contract is in `JOB_LAYER.md` — *Rollup — a direct call, not an
+> orchestrated unit* — and implemented as `reimagina.jobs.rollup.run_rollup`
+> (`jobs/rollup.py:38`).
 
 **Where:** `indicator_catalog.aggregation_method`, `indicator_result`, `JOB_LAYER.md`
 
-**The gap:**
-`aggregation_method` (`weighted_mean`, `sum`, etc.) declares the intent for rolling up indicator values from a finer spatial grain to a coarser one — for example, from block to AGEB, or from lot to block. But nothing in the framework defines who performs this rollup or when. The field is currently documentation intent, not a wired pipeline step.
+**The gap (as identified):**
+`aggregation_method` (`weighted_mean`, `sum`, etc.) declares the intent for rolling up indicator values from a finer spatial grain to a coarser one — for example, from block to AGEB, or from lot to block. But nothing in the framework defined who performed this rollup or when. The field was documentation intent, not a wired pipeline step.
 
 **What needs a decision:**
 
 | Option | How it works | Trade-off |
 |---|---|---|
 | **A — Model computes at each grain independently** | The worker receives features at each declared grain and computes the indicator directly at that scale | Simple worker contract; coarser results are not derived from finer ones — they are independently computed and may not be numerically consistent |
-| **B — Spatial rollup worker** | After fine-grain results are written, a dedicated rollup worker walks `feature.parent_id`, groups child results by parent, applies `aggregation_method`, and writes a new `indicator_result` for the parent feature | Coarser results are always consistent with finer ones; requires defining a new worker type and queue in JOB_LAYER |
+| **B — Spatial rollup worker** | After fine-grain results are written, a rollup step reads child results, groups them by parent, applies `aggregation_method`, and writes a new `indicator_result` for the parent feature | Coarser results are always consistent with finer ones; requires a separate rollup step with its own trigger condition |
 
-**Decision needed:** which option is adopted, and for which indicators?
+**Adopted: B**, with `feature_overlap` as the join source rather than `feature.parent_id`.
 
-If Option B: the rollup worker contract must be added to `JOB_LAYER.md` (queue name, trigger condition, input/output contract) and a use-case example must be added to `INDICATORS_LAYER.md`.
+**How it was built.** Not as a queued worker type: `run_rollup` is a direct function call, invoked from the CLI or an integration test (`jobs/rollup.py:10-12`, `:38`). It is not in `SHIPPED_INDICATORS`, so `default_runners` never binds it (`orchestration/runners.py:76-90`, `indicators/catalog.py:150-155`) and no run can dispatch it. It opens its own `job_run` with `model_family="rollup"` (`rollup.py:75-79`), so its outputs carry provenance like any other compute. There is no rollup queue and no automatic trigger after a fine-grain run — the caller decides when to roll up.
 
 ---
 

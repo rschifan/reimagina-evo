@@ -640,8 +640,8 @@ block→municipality rows for every block.
   the indicator catalog this work plugs into.
 - [`architecture/TILE_SERVING.md`](architecture/TILE_SERVING.md) —
   Martin + PMTiles baseline.
-- [`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md) — worker
-  contract.
+- [`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md) — the
+  `Orchestrator` port, run state, and the rollup contract.
 - Git log on `feature/raster-integration` — eleven feature commits,
   two hardening commits, the UX polish commits — the authoritative
   history of what was delivered.

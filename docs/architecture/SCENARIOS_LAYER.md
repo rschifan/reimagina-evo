@@ -156,7 +156,7 @@ With `scenario_id = NULL` the override join matches nothing and the expression c
 
 Only features whose effective value is non-null are returned (`overrides.py:60`, `:93`). Postgres only — the function rejects any other backend (`overrides.py:20-22`).
 
-`compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function and writes the result inside a `job_run` context (`indicators/planned_floors.py:30`, `:42-48`).
+`compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function (`indicators/planned_floors.py:30`, `:42-48`) and writes the result inside a `job_run` context (`:50`).
 
 ---
 
@@ -237,7 +237,7 @@ apply_override(
 
 `apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:42-44`).
 
-No CLI command or API route writes override rows today — `apply_override` is called from the what-if integration test (`tests/integration/test_scenario_whatif.py:69`) and from application code directly.
+No CLI command or API route writes override rows today. The only caller in the tree is the what-if integration test (`tests/integration/test_scenario_whatif.py:69`); everything downstream of the table — change-set derivation, the overlay, the run — is wired.
 
 ---
 
