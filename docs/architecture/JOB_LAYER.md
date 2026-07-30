@@ -172,6 +172,7 @@ Runners are injected, never defined here. `orchestration/runners.py:76` binds sl
 | `jobs_runtime.orchestration_run` | ops-plane | `runstore.create_run` / `finalize_run` | kept here; dropped by an engine-owned ops-plane |
 | `jobs_runtime.job_unit` | ops-plane | `runstore.record_units` / `set_unit_status` | kept here; dropped by an engine-owned ops-plane |
 | `jobs_runtime.job_run` | domain | `jobs/_lifecycle.job_run` | survives every branch |
+| `jobs_runtime.run_plan` | ops-plane | `RunPlanRepository.write` / `features_for` | the resolved feature set, one row per dirty indicator. Written at submit, read by each unit, deleted when the run is terminal. Exists on **both** branches: carrying the ids in the workflow input made a full-city run 258,675 uuids, which Hatchet's 4 MiB gRPC limit refused outright and DBOS merely persisted. Claim Check |
 
 ### orchestration_run + job_unit (r028, + `aoi_id` in r029)
 
