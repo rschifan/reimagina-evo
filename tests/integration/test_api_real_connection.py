@@ -50,7 +50,18 @@ def test_pool_backed_liveness(real_conn_client):
     assert response.status_code == 200
 
 
-def test_pool_backed_readiness(real_conn_client):
+def test_pool_backed_readiness(real_conn_client, monkeypatch):
+    """⚠ Readiness needs both a database and somewhere to execute.
+
+    The orchestrator half is stubbed: with no worker running it reports
+    `no_worker_for_graph`, entirely correctly, and this test is about the
+    database probe. Engine readiness is covered in
+    `tests/contract/test_jobs_api.py`.
+    """
+    from apps.api.routers import health
+
+    monkeypatch.setattr(health, "_probe_orchestrator", lambda: "ready")
+
     response = real_conn_client.get("/health/ready")
     assert response.status_code == 200
     assert response.json()["db"] == "reachable"
@@ -71,9 +82,15 @@ def test_pool_backed_catalog_list_returns_list(real_conn_client, migrated_db):
 
 
 def test_pool_survives_consecutive_requests(real_conn_client):
-    """Ten calls back-to-back must all succeed — no pool exhaustion."""
+    """Ten calls back-to-back must all succeed — no pool exhaustion.
+
+    ⚠ Against `/indicators`, not `/health/ready`. Readiness deliberately opens
+    its own connection *outside* the pool (`_probe_db`, so a probe still answers
+    when the pool is exhausted), so hammering it exercised everything except the
+    thing this test is named for. `/indicators` goes through `get_db_conn`.
+    """
     for _ in range(10):
-        response = real_conn_client.get("/health/ready")
+        response = real_conn_client.get("/indicators")
         assert response.status_code == 200
 
 

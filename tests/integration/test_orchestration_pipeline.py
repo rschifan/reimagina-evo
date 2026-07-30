@@ -109,7 +109,7 @@ def test_synchronous_orchestrator_keeps_per_unit_state(conn):
     assert handle.status.status == "succeeded"
 
     # The same explicit synchronous instance can still expose its unit verdict.
-    persisted = orch.get_run(conn, handle.run_id)
+    persisted = orch.get_run(handle.run_id)
     assert persisted is not None
     assert persisted.status == "succeeded"
     assert {u.indicator for u in persisted.units} == {

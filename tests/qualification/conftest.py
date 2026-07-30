@@ -117,6 +117,12 @@ def worker_process(engine, migrated_db):
             # `kill_process_group`.
             start_new_session=True,
         )
+        # ⚠ Record the group id now, while the parent is alive. After it is
+        # reaped `os.getpgid(proc.pid)` raises, and cleanup that falls back to
+        # `proc.kill()` cannot reach an orphaned listener — which is exactly the
+        # state the orphan test leaves behind on purpose. Without this the suite
+        # leaks the very processes it exists to characterise.
+        proc._pgid = os.getpgid(proc.pid)  # noqa: SLF001 — our own Popen
         started.append(proc)
         registered = wait_until(
             lambda: any(
@@ -165,11 +171,13 @@ def kill_process_group(proc: subprocess.Popen, *, timeout: float = 15.0) -> None
     what the deployment does, or it measures a scenario that cannot happen in
     production while missing the one that can.
     """
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    pgid = getattr(proc, "_pgid", None)
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if proc.poll() is None:
         proc.kill()
     try:
         proc.wait(timeout=timeout)

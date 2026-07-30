@@ -82,7 +82,7 @@ def test_synchronous_orchestrator_reports_partial_on_failure():
 
 def test_get_run_is_none_for_an_unknown_run():
     orch = SynchronousOrchestrator(registry=REG, runners={})
-    assert orch.get_run(None, "missing") is None
+    assert orch.get_run("missing") is None
 
 
 def test_submitted_run_round_trips_through_the_default_store():
@@ -101,7 +101,7 @@ def test_submitted_run_round_trips_through_the_default_store():
         None, changed_attributes={"land_use"}, edited_features={"b1"}
     )
 
-    fetched = orch.get_run(None, handle.run_id)
+    fetched = orch.get_run(handle.run_id)
     assert fetched is not None
     assert fetched.status == "succeeded"
     assert {u.indicator for u in fetched.units} == {
@@ -174,9 +174,13 @@ def test_subscribe_progress_works_with_a_connection_bound_store():
         def finalize_run(self, conn, **kw):
             assert conn is not None
 
-        def get_run(self, conn, run_id):
-            assert conn is not None, "subscribe_progress must not reach the store"
-            return None
+        def get_run(self, run_id):
+            # The original assertion here was `conn is not None`, which stopped
+            # meaning anything once `get_run` lost its connection parameter.
+            # The property it was reaching for survives and is stronger stated
+            # directly: a progress subscription is served from the run the
+            # submit already produced, and must not go back to the store.
+            raise AssertionError("subscribe_progress must not reach the store")
 
     runners = {
         s: _runner([], s)
@@ -208,7 +212,7 @@ def test_store_is_injectable():
         def finalize_run(self, conn, **kw):
             calls.append("finalize_run")
 
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return None
 
     SynchronousOrchestrator(

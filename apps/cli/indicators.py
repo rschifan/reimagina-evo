@@ -226,7 +226,7 @@ def evaluate_scenario_cli(
     deadline = time.monotonic() + _EMBEDDED_TIMEOUT_S
     status = None
     while time.monotonic() < deadline:
-        status = orchestrator.get_run(None, handle.run_id)
+        status = orchestrator.get_run(handle.run_id)
         if status and status.status in RUN_TERMINAL_STATES:
             break
         time.sleep(1.0)

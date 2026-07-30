@@ -84,7 +84,21 @@ def test_liveness_always_returns_ok(client):
     assert response.json() == {"status": "ok"}
 
 
-def test_readiness_reports_db_reachable(client):
+@pytest.fixture
+def orchestrator_ready(monkeypatch):
+    """Stub the orchestrator half of readiness.
+
+    ⚠ Readiness now requires *both* a database and somewhere to execute, so
+    these tests would otherwise 503 for the entirely correct reason that no
+    worker is running — which is not what they are about. Engine readiness has
+    its own coverage in `tests/contract/test_jobs_api.py`.
+    """
+    from apps.api.routers import health
+
+    monkeypatch.setattr(health, "_probe_orchestrator", lambda: "ready")
+
+
+def test_readiness_reports_db_reachable(client, orchestrator_ready):
     """Readiness probes the DB; reachable case."""
     response = client.get("/health/ready")
     assert response.status_code == 200
@@ -93,12 +107,27 @@ def test_readiness_reports_db_reachable(client):
     assert payload["db"] == "reachable"
 
 
-def test_health_alias_matches_readiness_shape(client):
-    """Legacy /health alias keeps the pre-split response shape."""
+def test_readiness_fails_when_nothing_can_execute(client):
+    """No worker for this graph means this instance cannot do the job.
+
+    Deliberately *not* stubbed: with no worker running, a run submitted here is
+    accepted into a queue nothing will drain, so reporting ready would route
+    traffic to an instance that takes work and does not do it.
+    """
+    response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["db"] == "reachable"
+    assert payload["orchestrator"] in {"no_worker_for_graph", "unreachable"}
+
+
+def test_health_alias_matches_readiness_shape(client, orchestrator_ready):
+    """Legacy /health alias keeps the readiness response shape."""
     response = client.get("/health")
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"status", "db"}
+    assert set(payload.keys()) == {"status", "db", "orchestrator"}
 
 
 def test_tile_server_health_surfaces_db_drift_signal(client, monkeypatch):

@@ -112,7 +112,23 @@ class Orchestrator(Protocol):
         code_version: str = "dev",
     ) -> RunHandle: ...
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None: ...
+    def get_run(self, run_id: str) -> RunStatus | None:
+        """Read a run's status, or None if the engine has never heard of it.
+
+        ⚠ Takes **no connection**, and that is a deletion rather than an
+        omission. It used to take one "so the port stays implementable by a
+        track that keeps run tables" — and no implementation ever read it: the
+        Hatchet one ignored it outright, and the synchronous one passed it down
+        to an in-memory store that ignored it too. The cost was not cosmetic:
+        `GET /jobs/{id}` and the SSE route each held a pooled database
+        connection for the whole of a request that never touched the database,
+        and the SSE one held it for the lifetime of the stream.
+
+        A parameter every implementation ignores is not a seam, it is a
+        liability with a docstring. `cancel_run` keeps its connection because
+        `pg_cancel_backend` genuinely needs one.
+        """
+        ...
 
     def cancel_run(self, conn: object, run_id: str) -> bool:
         """Stop a run; True if it was live, False if unknown or already terminal.

@@ -16,20 +16,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from collections.abc import AsyncIterator
 from typing import Literal
 from uuid import UUID
 
-import psycopg2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from ..deps import api_dsn, get_db_conn
+from ..deps import api_dsn
 
 _STREAM_MAX_SECONDS = 300.0
 _HEARTBEAT_SECONDS = 15.0
+
+_OUTAGE_DEADLINE_SECONDS = float(
+    os.environ.get("REIMAGINA_SSE_OUTAGE_DEADLINE_S", "60")
+)
+"""How long a *continuous* listener outage may last before the stream gives up.
+
+Bounded rather than unlimited: a client waiting forever on a stream that will
+never recover is worse than one told plainly that it ended. Reset by any
+successful resubscription, so unrelated blips over a long run do not accumulate
+into a spurious failure.
+"""
+
+_RECONNECT_BACKOFF_SECONDS = 1.0
+_RECONNECT_BACKOFF_MAX_SECONDS = 8.0
+"""Capped so a long outage still retries often enough to catch the recovery."""
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -106,11 +121,12 @@ def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
 
 
 @router.get("/{run_id}", response_model=RunView)
-def get_run(
-    run_id: UUID,
-    conn: psycopg2.extensions.connection = Depends(get_db_conn),
-) -> RunView:
-    """⚠ ``run_id: UUID``, not ``str``. A run id *is* a uuid, and typing it as
+def get_run(run_id: UUID) -> RunView:
+    """⚠ No `Depends(get_db_conn)`. Reading a run's status touches the engine
+    and nothing else, so holding a pooled connection for the request was a
+    connection spent on nothing — and under load the pool is the scarce thing.
+
+    ⚠ ``run_id: UUID``, not ``str``. A run id *is* a uuid, and typing it as
     one rejects a malformed id here, with 422, instead of letting it reach the
     engine client — whose own length validation raises a pydantic error carrying
     no HTTP status, which the orchestrator then cannot tell from an outage and
@@ -118,7 +134,7 @@ def get_run(
     special case."""
     from reimagina.orchestration.factory import get_orchestrator
 
-    status = get_orchestrator().get_run(conn, str(run_id))
+    status = get_orchestrator().get_run(str(run_id))
     if status is None:
         raise HTTPException(status_code=404, detail=f"run {str(run_id)!r} not found")
     return RunView(
@@ -135,15 +151,88 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     """Frame the orchestrator's progress events as SSE, with route-owned policy.
 
     The orchestrator decides *what* happened; this decides how it reaches the
-    wire — frame format, keep-alive cadence, and the lifetime cap. Where the
-    events come from (LISTEN/NOTIFY, a workflow stream, a websocket) is not this
-    module's business.
+    wire — frame format, keep-alive cadence, the lifetime cap, and how long to
+    keep trying. Where the events come from (LISTEN/NOTIFY, a workflow stream,
+    a websocket) is not this module's business.
+
+    ⚠ A listener interruption is not the end of the run. The engine's progress
+    stream is a gRPC connection and it drops for ordinary reasons — an engine
+    restart, a rolling deploy, a network blip — while the run continues
+    perfectly well. Ending the stream on the first of those told the client its
+    run had failed to be observable, about a run that was still executing.
+
+    So it reconnects, with bounded backoff, until the run reaches a terminal
+    state or `_OUTAGE_DEADLINE_SECONDS` of *continuous* failure. Reconnection
+    reconciles for free: `subscribe_progress` emits a snapshot of current status
+    first, so a client that missed events while disconnected is caught up rather
+    than left with a stale picture. The error frame is emitted only once that
+    budget is exhausted.
     """
     from reimagina.orchestration import frames
     from reimagina.orchestration.factory import get_orchestrator
 
-    events = get_orchestrator().subscribe_progress(run_id).__aiter__()
     deadline = time.monotonic() + _STREAM_MAX_SECONDS
+    outage_deadline: float | None = None
+    backoff = _RECONNECT_BACKOFF_SECONDS
+    # What has already reached the client. A reconnect replays the snapshot, and
+    # re-sending a unit's status is noise the client has to de-duplicate itself.
+    emitted: set[tuple[str | None, str, str | None]] = set()
+
+    while time.monotonic() < deadline:
+        try:
+            events = get_orchestrator().subscribe_progress(run_id).__aiter__()
+        except Exception:  # noqa: BLE001 — same policy as a mid-stream failure
+            if outage_deadline is None:
+                outage_deadline = time.monotonic() + _OUTAGE_DEADLINE_SECONDS
+            if time.monotonic() >= outage_deadline:
+                yield frames.error_frame("orchestrator_unavailable")
+                return
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(min(backoff, _RECONNECT_BACKOFF_MAX_SECONDS))
+            backoff *= 2
+            continue
+
+        terminal, interrupted = False, False
+        async for frame in _drain(events, deadline, emitted):
+            if frame is _INTERRUPTED:
+                interrupted = True
+                break
+            if frame is _TERMINAL:
+                terminal = True
+                break
+            yield frame
+
+        if terminal or not interrupted:
+            return
+
+        # A successful subscription resets the budget: the deadline bounds a
+        # *continuous* outage, not the lifetime sum of unrelated blips.
+        if outage_deadline is None:
+            outage_deadline = time.monotonic() + _OUTAGE_DEADLINE_SECONDS
+        if time.monotonic() >= outage_deadline:
+            yield frames.error_frame("orchestrator_unavailable")
+            return
+        yield ": keep-alive\n\n"
+        await asyncio.sleep(min(backoff, _RECONNECT_BACKOFF_MAX_SECONDS))
+        backoff *= 2
+
+
+_TERMINAL = object()
+"""The run reached a terminal state: stop, successfully."""
+
+_INTERRUPTED = object()
+"""The listener failed: the caller decides whether to reconnect or give up."""
+
+
+async def _drain(events, deadline: float, emitted: set) -> AsyncIterator[object]:
+    """One subscription's worth of frames, ending in a sentinel.
+
+    Split out so the reconnect loop above reads as policy rather than as two
+    nested error paths. Yields SSE strings, then exactly one of `_TERMINAL` or
+    `_INTERRUPTED` — or simply ends if the overall stream deadline passed.
+    """
+    from reimagina.orchestration import frames
+
     # Hold one pending __anext__ across heartbeats rather than re-awaiting it.
     # Wrapping the await in a timeout would cancel it mid-flight, which leaves
     # an async generator unresumable — the keep-alive would break the stream it
@@ -158,6 +247,9 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
             try:
                 event = pending.result()
             except StopAsyncIteration:
+                # The orchestrator closed the stream without a terminal event.
+                # Nothing failed, so this is not an outage — stop.
+                yield _TERMINAL
                 return
             except Exception:  # noqa: BLE001 — see below; silence is worse
                 # ⚠ The response is already 200 with its headers on the wire, so
@@ -167,20 +259,24 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
                 # client cannot distinguish from a completed run.
                 #
                 # Broad on purpose, and engine-agnostic on purpose: whatever
-                # went wrong reading progress, the caller needs to be told the
-                # stream ended badly, and this module names no engine. Normal
-                # termination is `StopAsyncIteration`, caught above; a client
-                # disconnect is `CancelledError`, a BaseException, and still
-                # propagates.
+                # went wrong reading progress, this module names no engine.
+                # Normal termination is `StopAsyncIteration`, caught above; a
+                # client disconnect is `CancelledError`, a BaseException, and
+                # still propagates.
                 #
-                # A fixed reason string, never the exception text — the
-                # orchestrator's message carries the run id and its `__cause__`
-                # carries engine internals. Neither belongs on a public stream.
-                yield frames.error_frame("orchestrator_unavailable")
+                # Hands back to the reconnect loop rather than ending the
+                # stream: the run is very likely still executing, and a dropped
+                # gRPC listener is not a failed run.
+                yield _INTERRUPTED
                 return
             pending = asyncio.ensure_future(anext(events))
-            yield frames.event_frame(event)
+
+            key = (event.indicator, event.status, event.detail)
+            if key not in emitted:
+                emitted.add(key)
+                yield frames.event_frame(event)
             if event.indicator is None and frames.is_run_terminal(event.status):
+                yield _TERMINAL
                 return
     finally:
         pending.cancel()
@@ -193,12 +289,13 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
 
 
 @router.get("/{run_id}/events")
-def stream_run_events(
-    run_id: UUID,
-    conn: psycopg2.extensions.connection = Depends(get_db_conn),
-) -> StreamingResponse:
+def stream_run_events(run_id: UUID) -> StreamingResponse:
+    """⚠ No `Depends(get_db_conn)`, and here it mattered most: the dependency
+    was held for the **lifetime of the stream** — up to `_STREAM_MAX_SECONDS` —
+    to serve one existence check that never touched the database.
+    """
     from reimagina.orchestration.factory import get_orchestrator
 
-    if get_orchestrator().get_run(conn, str(run_id)) is None:
+    if get_orchestrator().get_run(str(run_id)) is None:
         raise HTTPException(status_code=404, detail=f"run {str(run_id)!r} not found")
     return StreamingResponse(_event_stream(str(run_id)), media_type="text/event-stream")

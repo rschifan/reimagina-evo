@@ -137,57 +137,99 @@ class _Worker:
         self.actions = actions
 
 
-def _engine_listing(monkeypatch, workers):
+def _engine(monkeypatch, *, workflows=(), workers=()):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
         hatchet_app,
         "get_hatchet",
         lambda: SimpleNamespace(
-            workers=SimpleNamespace(
-                list=lambda: SimpleNamespace(rows=workers),
-            )
+            workflows=SimpleNamespace(
+                list=lambda: SimpleNamespace(
+                    rows=[SimpleNamespace(name=n) for n in workflows]
+                )
+            ),
+            workers=SimpleNamespace(list=lambda: SimpleNamespace(rows=list(workers))),
         ),
     )
 
 
-def test_a_live_worker_for_the_graph_admits_the_run(monkeypatch):
-    _engine_listing(
-        monkeypatch,
-        [_Worker("WorkerStatus.ACTIVE", ["reimagina-run-vabc:plan"])],
-    )
-    assert ho._worker_serves("reimagina-run-vabc") is True
+def test_submission_is_admitted_when_the_graph_has_been_deployed(monkeypatch):
+    _engine(monkeypatch, workflows=["reimagina-run-vabc"])
+    assert ho._graph_is_deployed("reimagina-run-vabc") is True
 
 
-def test_a_worker_for_a_different_graph_does_not_admit_the_run(monkeypatch):
+def test_submission_is_refused_when_nothing_ever_deployed_the_graph(monkeypatch):
     """The half-applied rollout: workers up, but on the previous shape."""
-    _engine_listing(
-        monkeypatch,
-        [_Worker("WorkerStatus.ACTIVE", ["reimagina-run-vOLD:plan"])],
-    )
-    assert ho._worker_serves("reimagina-run-vNEW") is False
+    _engine(monkeypatch, workflows=["reimagina-run-vOLD"])
+    assert ho._graph_is_deployed("reimagina-run-vNEW") is False
 
 
-def test_an_inactive_registration_does_not_admit_the_run(monkeypatch):
-    """A registration is history; only a live worker can execute anything.
+def test_submission_does_not_depend_on_a_worker_being_free_right_now(monkeypatch):
+    """⚠ Registration, not liveness — and the distinction is the whole fix.
 
-    Admitting against an expired row is how a run reaches `running` with no
-    units and stays there until timeouts fire.
+    Gating submissions on a live ACTIVE worker looked stricter and was wrong:
+    worker status moves moment to moment, and a healthy deployment with a busy
+    or briefly-restarting worker refused runs it should have accepted. It was
+    caught by a conformance run failing mid-suite *with a worker running*.
+
+    A rejected submission destroys that request's work; a momentarily missing
+    worker only delays it, because the engine queues.
     """
-    _engine_listing(
+    _engine(
         monkeypatch,
-        [_Worker("WorkerStatus.INACTIVE", ["reimagina-run-vabc:plan"])],
+        workflows=["reimagina-run-vabc"],
+        workers=[_Worker("WorkerStatus.INACTIVE", ["reimagina-run-vabc:plan"])],
     )
-    assert ho._worker_serves("reimagina-run-vabc") is False
+    assert ho._graph_is_deployed("reimagina-run-vabc") is True
 
 
-def test_an_unreadable_worker_list_fails_open(monkeypatch):
+def test_an_unreadable_workflow_list_admits_the_run(monkeypatch):
     """⚠ Open, not closed, and deliberately.
 
     This is an admission check, not a safety property — the engine holding the
-    run is the safety property. A transient failure to *list workers* must not
-    become a submission outage, because the run would very likely have executed
-    perfectly well.
+    run is the safety property. A transient listing failure must not become a
+    submission outage for work that would have executed perfectly well.
+    """
+    from types import SimpleNamespace
+
+    def _boom():
+        raise OSError("engine listing unavailable")
+
+    monkeypatch.setattr(
+        hatchet_app,
+        "get_hatchet",
+        lambda: SimpleNamespace(workflows=SimpleNamespace(list=_boom)),
+    )
+    assert ho._graph_is_deployed("reimagina-run-vabc") is True
+
+
+# ── readiness uses the stricter check ────────────────────────────────────────
+
+
+def test_readiness_requires_a_live_worker(monkeypatch):
+    _engine(
+        monkeypatch,
+        workers=[_Worker("WorkerStatus.ACTIVE", ["reimagina-run-vabc:plan"])],
+    )
+    assert ho._live_worker_for("reimagina-run-vabc") is True
+
+
+def test_readiness_rejects_an_expired_registration(monkeypatch):
+    """A registration is history; only a live worker is capacity."""
+    _engine(
+        monkeypatch,
+        workers=[_Worker("WorkerStatus.INACTIVE", ["reimagina-run-vabc:plan"])],
+    )
+    assert ho._live_worker_for("reimagina-run-vabc") is False
+
+
+def test_readiness_fails_closed_when_it_cannot_tell(monkeypatch):
+    """⚠ The opposite bias to admission, for the opposite consequence.
+
+    Failing readiness takes the instance out of rotation, which is recoverable
+    and reversible. A probe that cannot tell should do that rather than claim
+    everything is fine.
     """
     from types import SimpleNamespace
 
@@ -199,7 +241,7 @@ def test_an_unreadable_worker_list_fails_open(monkeypatch):
         "get_hatchet",
         lambda: SimpleNamespace(workers=SimpleNamespace(list=_boom)),
     )
-    assert ho._worker_serves("reimagina-run-vabc") is True
+    assert ho._live_worker_for("reimagina-run-vabc") is False
 
 
 def test_a_deployment_mismatch_is_not_reported_as_an_engine_outage():
