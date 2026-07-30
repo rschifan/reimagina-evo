@@ -51,7 +51,9 @@ def topological_order(
     selected = set(dependencies) if nodes is None else set(nodes)
     unknown_nodes = selected - dependencies.keys()
     if unknown_nodes:
-        raise ValueError(f"dependency graph names unknown node(s): {sorted(unknown_nodes)!r}")
+        raise ValueError(
+            f"dependency graph names unknown node(s): {sorted(unknown_nodes)!r}"
+        )
     if nodes is None:
         unknown = {
             prerequisite

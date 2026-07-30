@@ -20,7 +20,13 @@ class _Repo:
         self.calls = calls
 
     def start_job(
-        self, *, model_family, code_version, scenario_id, status, run_id=None,
+        self,
+        *,
+        model_family,
+        code_version,
+        scenario_id,
+        status,
+        run_id=None,
         started_at=None,
     ):
         self.calls["start"] = {

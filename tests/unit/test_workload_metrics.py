@@ -33,7 +33,9 @@ def _at(start_s: float, dur_s: float) -> tuple[datetime, datetime]:
 
 def _rec(slug: str, start_s: float, dur_s: float, status: str = "succeeded"):
     started, completed = _at(start_s, dur_s)
-    return UnitRecord(slug=slug, status=status, started_at=started, completed_at=completed)
+    return UnitRecord(
+        slug=slug, status=status, started_at=started, completed_at=completed
+    )
 
 
 # A slow root with no dependents, beside an independent three-hop chain.
@@ -118,8 +120,11 @@ def test_head_of_line_waits_for_the_LAST_parent_not_the_first():
         _rec("joiner", 1.5, 0.1),  # started the instant `late` finished
     ]
     metrics = measure(
-        records=records, edges=edges, t_submit=T0,
-        t_terminal=T0 + timedelta(seconds=1.6), slots=4,
+        records=records,
+        edges=edges,
+        t_submit=T0,
+        t_terminal=T0 + timedelta(seconds=1.6),
+        slots=4,
     )
     assert metrics["head_of_line_ms"] == 0.0
 
@@ -137,12 +142,18 @@ def test_a_converging_dag_hides_the_barrier_in_makespan():
     wave = [*WAVE, _rec("sink", 1.9, 0.1)]
 
     m_pertask = measure(
-        records=pertask, edges=edges, t_submit=T0,
-        t_terminal=T0 + timedelta(seconds=1.6), slots=4,
+        records=pertask,
+        edges=edges,
+        t_submit=T0,
+        t_terminal=T0 + timedelta(seconds=1.6),
+        slots=4,
     )
     m_wave = measure(
-        records=wave, edges=edges, t_submit=T0,
-        t_terminal=T0 + timedelta(seconds=2.0), slots=4,
+        records=wave,
+        edges=edges,
+        t_submit=T0,
+        t_terminal=T0 + timedelta(seconds=2.0),
+        slots=4,
     )
     # Both near the (now longer) critical path...
     assert m_pertask["slr"] == pytest.approx(1.0, abs=0.01)
@@ -187,7 +198,9 @@ def test_speedup_needs_a_sync_baseline_and_is_absent_without_one():
 
 def test_observed_parallelism_reports_slots_actually_used():
     """busy / span: 2.1s of work inside a 1.5s window is 1.4 units of overlap."""
-    assert _measure(PERTASK, 1.5)["observed_parallelism"] == pytest.approx(1.4, abs=0.01)
+    assert _measure(PERTASK, 1.5)["observed_parallelism"] == pytest.approx(
+        1.4, abs=0.01
+    )
     # The wave schedule spreads the same work over a longer window.
     assert _measure(WAVE, 1.9)["observed_parallelism"] == pytest.approx(1.105, abs=0.01)
 
@@ -195,8 +208,11 @@ def test_observed_parallelism_reports_slots_actually_used():
 def test_a_run_with_no_timed_units_does_not_divide_by_zero():
     """Everything skipped or cancelled is a legal outcome, not a crash."""
     empty = measure(
-        records=[], edges=EDGES, t_submit=T0,
-        t_terminal=T0 + timedelta(seconds=0.4), slots=4,
+        records=[],
+        edges=EDGES,
+        t_submit=T0,
+        t_terminal=T0 + timedelta(seconds=0.4),
+        slots=4,
     )
     assert empty["slr"] is None
     assert empty["observed_parallelism"] is None
@@ -219,7 +235,11 @@ def test_aggregate_takes_the_median_not_the_mean():
 def test_comparing_reports_from_different_machines_warns():
     """Silently diffing incomparable reports is the failure mode to prevent."""
     a = {"track": "dbos", "provenance": {"cpu_count": 10, "slots": 4}, "workloads": {}}
-    b = {"track": "hatchet", "provenance": {"cpu_count": 4, "slots": 4}, "workloads": {}}
+    b = {
+        "track": "hatchet",
+        "provenance": {"cpu_count": 4, "slots": 4},
+        "workloads": {},
+    }
     warnings = compare_workload_reports(a, b)["warnings"]
     assert any("cpu_count" in w for w in warnings)
 

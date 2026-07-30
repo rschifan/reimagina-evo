@@ -1998,9 +1998,19 @@ class PostgresJobRunRepository:
                 VALUES (%s, %s, %s, %s, {queued_at_sql}, {started_at_sql}, %s, pg_backend_pid())
                 RETURNING id::text
                 """,
-                ((scenario_id, model_family, code_version, status, started_at, started_at, run_id)
-                 if started_at is not None
-                 else (scenario_id, model_family, code_version, status, run_id)),
+                (
+                    (
+                        scenario_id,
+                        model_family,
+                        code_version,
+                        status,
+                        started_at,
+                        started_at,
+                        run_id,
+                    )
+                    if started_at is not None
+                    else (scenario_id, model_family, code_version, status, run_id)
+                ),
             )
             return str(cur.fetchone()[0])
 

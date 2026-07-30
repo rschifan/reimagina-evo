@@ -339,7 +339,9 @@ class DBOSOrchestrator:
                 return
 
         if not _PROGRESS_SLOTS.acquire(blocking=False):
-            raise RuntimeError("progress subscriber capacity reached; reconnect shortly")
+            raise RuntimeError(
+                "progress subscriber capacity reached; reconnect shortly"
+            )
 
         loop = asyncio.get_running_loop()
         events: asyncio.Queue = asyncio.Queue(maxsize=_PROGRESS_BUFFER)

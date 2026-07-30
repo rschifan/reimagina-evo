@@ -177,7 +177,10 @@ def assert_same_domain_database(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT current_database()")
         caller_database = cur.fetchone()[0]
-    with contextlib.closing(psycopg2.connect(dbos_dsn())) as direct, direct.cursor() as cur:
+    with (
+        contextlib.closing(psycopg2.connect(dbos_dsn())) as direct,
+        direct.cursor() as cur,
+    ):
         cur.execute("SELECT current_database(), to_regclass('jobs_runtime.job_run')")
         direct_database, domain_table = cur.fetchone()
     if domain_table is None:
@@ -316,7 +319,9 @@ def validate_workflow_input(units: Sequence[UnitInput], params: RunParams) -> No
             raise ValueError("workflow unit slug must be a non-empty string")
         if slug in seen:
             raise ValueError(f"workflow contains duplicate unit {slug!r}")
-        if not isinstance(features, list) or not all(isinstance(f, str) for f in features):
+        if not isinstance(features, list) or not all(
+            isinstance(f, str) for f in features
+        ):
             raise ValueError(f"workflow unit {slug!r} has invalid feature ids")
         if not isinstance(deps, list) or not all(isinstance(dep, str) for dep in deps):
             raise ValueError(f"workflow unit {slug!r} has invalid dependencies")

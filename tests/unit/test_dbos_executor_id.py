@@ -58,7 +58,9 @@ def test_the_worker_entrypoint_claims_its_own_role(monkeypatch):
     monkeypatch.setattr(
         "reimagina.orchestration.dbos_app.launch", lambda: launched.append(True)
     )
-    monkeypatch.setattr("reimagina.orchestration.executor_health.heartbeat", lambda: None)
+    monkeypatch.setattr(
+        "reimagina.orchestration.executor_health.heartbeat", lambda: None
+    )
 
     from apps.worker.app import run_dbos_worker
 

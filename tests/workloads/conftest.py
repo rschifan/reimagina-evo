@@ -284,7 +284,9 @@ def run_once(orchestrator, conn, workload, impl: Implementation) -> dict:
         "run_id": handle.run_id,
         "code_version": code_version,
         "status": status.status if status else None,
-        "unit_statuses": {u.indicator: u.status for u in (status.units if status else ())},
+        "unit_statuses": {
+            u.indicator: u.status for u in (status.units if status else ())
+        },
         "records": records,
         "t_submit": t_submit,
         "t_terminal": t_terminal,
@@ -358,7 +360,10 @@ def _git_sha() -> str | None:
     try:
         return subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
         ).stdout.strip()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         return None
