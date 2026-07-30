@@ -38,15 +38,26 @@ _DIRECT_COMPUTE: dict[str, IndicatorCompute] = {
 }
 
 
-def _scoped(compute_fn: IndicatorCompute) -> Runner:
+def _scoped(slug: str) -> Runner:
     """Adapt a direct compute fn to the Runner protocol.
 
     The dirty-set's ``features`` become ``feature_ids`` (recompute only the
     dirty features); an empty set falls back to ``aoi_id`` scoping.
+
+    ⚠ Resolves ``_DIRECT_COMPUTE`` when the unit *runs*, not when the registry
+    is built. Capturing the function eagerly made the binding depend on when
+    ``default_runners()`` happened to be called — and once the Hatchet DAG
+    started resolving runners at declaration time instead of per attempt, a
+    worker registered before a compute fn was swapped kept the original
+    forever. The conformance suite poisons an indicator by patching this dict
+    precisely so it "applies no matter which module resolved the runner"; eager
+    capture silently broke that, and the poisoned unit reported success.
+
+    The cost is one dict lookup against a multi-minute PostGIS statement.
     """
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        return compute_fn(
+        return _DIRECT_COMPUTE[slug](
             conn,
             aoi_id=aoi_id,
             feature_ids=list(features) or None,
@@ -86,5 +97,5 @@ def default_runners(
         if spec.computation_kind == "composite":
             runners[spec.slug] = _composite(spec)
         elif spec.slug in _DIRECT_COMPUTE:
-            runners[spec.slug] = _scoped(_DIRECT_COMPUTE[spec.slug])
+            runners[spec.slug] = _scoped(spec.slug)
     return runners

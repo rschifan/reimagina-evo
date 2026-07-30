@@ -793,9 +793,12 @@ class RunPlanRepository(Protocol):
 
     def features_for(self, *, plan_id: str, indicator_slug: str) -> list[str]: ...
 
+    # For the two provably-unreferenced cases only: an idempotency collision and
+    # a refused trigger. Age-based retention is deliberately not on this
+    # protocol — it is a scheduled Postgres operation outside the request path
+    # (`scripts/reclaim_run_plans.sql`), because a plan must outlive the engine's
+    # run retention for `runs.replay()` to work.
     def delete(self, *, plan_id: str) -> int: ...
-
-    def sweep(self, *, older_than_hours: int) -> int: ...
 
 
 class StorageBackend(Protocol):

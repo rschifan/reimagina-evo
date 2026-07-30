@@ -152,36 +152,64 @@ def test_deleting_an_unknown_plan_is_not_an_error(conn):
     assert repo.delete(plan_id=_plan_id()) == 0
 
 
-def test_the_sweep_spares_plans_inside_the_ttl(conn):
+def _reclaim(conn, horizon: str) -> int:
+    """The scheduled retention statement, as `scripts/reclaim_run_plans.sql`."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM jobs_runtime.run_plan "
+            "WHERE created_at < now() - %s::interval",
+            (horizon,),
+        )
+        return cur.rowcount
+
+
+def _backdate(conn, plan_id: str, interval: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs_runtime.run_plan "
+            "SET created_at = now() - %s::interval WHERE plan_id = %s::uuid",
+            (interval, plan_id),
+        )
+
+
+def test_retention_spares_a_plan_inside_the_horizon(conn):
     """The failure this guards is worse than an orphan.
 
-    Sweeping a plan out from under a live run makes every subsequent unit fail
-    with a missing-plan LookupError — the loud error that is supposed to mean
-    "a write was lost".
+    Reclaiming a plan out from under a run — live, retriable or replayable —
+    makes every subsequent unit fail with a missing-plan LookupError, the loud
+    error that is supposed to mean "a write was lost".
     """
     repo = backend_for_connection(conn).run_plan_repo()
     fresh = _plan_id()
     repo.write(plan_id=fresh, units={"slug": _features(2)})
 
-    assert repo.sweep(older_than_hours=24) == 0
+    assert _reclaim(conn, "45 days") == 0
     assert repo.features_for(plan_id=fresh, indicator_slug="slug")
 
 
-def test_the_sweep_reclaims_an_abandoned_plan(conn):
-    """A crashed submit, a cancel before the finalizer, or a dedup collision.
+def test_retention_spares_a_plan_still_inside_engine_run_retention(conn):
+    """The horizon must outlast the engine, not merely outlast a long run.
 
-    None of those reach `delete`, so without this the table grows forever.
+    Hatchet keeps runs for 720 h by default and `runs.replay()` re-executes from
+    the original input — this plan. A 31-day-old plan is still replayable, which
+    is exactly the case the old 24 h submit-path sweep destroyed.
     """
+    repo = backend_for_connection(conn).run_plan_repo()
+    replayable = _plan_id()
+    repo.write(plan_id=replayable, units={"slug": _features(2)})
+    _backdate(conn, replayable, "31 days")
+
+    assert _reclaim(conn, "45 days") == 0
+    assert repo.features_for(plan_id=replayable, indicator_slug="slug")
+
+
+def test_retention_reclaims_a_plan_past_the_horizon(conn):
+    """Past the horizon the run itself is gone from the engine, so nothing reads it."""
     repo = backend_for_connection(conn).run_plan_repo()
     stale = _plan_id()
     repo.write(plan_id=stale, units={"slug": _features(2)})
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE jobs_runtime.run_plan SET created_at = now() - interval '48 hours' "
-            "WHERE plan_id = %s::uuid",
-            (stale,),
-        )
+    _backdate(conn, stale, "46 days")
 
-    assert repo.sweep(older_than_hours=24) >= 1
+    assert _reclaim(conn, "45 days") >= 1
     with pytest.raises(LookupError):
         repo.features_for(plan_id=stale, indicator_slug="slug")

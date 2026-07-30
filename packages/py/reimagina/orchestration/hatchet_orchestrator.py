@@ -1,22 +1,30 @@
 """The Orchestrator port over Hatchet.
 
-The engine owns run state, so ``get_run`` reads no table of ours. What it reads
-is **the run's output, not its status** — and that distinction is the whole
-correction to the first cut of this module.
+The engine owns run state, so ``get_run`` reads no table of ours — and, since
+the second correction to this module, reconstructs almost nothing either.
 
-The first version mapped Hatchet's status enum onto our vocabulary and
-documented, at length, what the enum could not say: no ``partial``, no
-``skipped``. Both statements are true of the enum and both were the wrong thing
-to build on. ``on_failure_task`` runs precisely when some units succeeded and
-one did not, ``ctx.was_skipped`` separates "not dirty" from "computed", and the
-finalizer's return value is what ``runs.get_result()`` serves — even for a run
-whose status is FAILED. Measured in spike B8.
+``runs.get(run_id)`` returns three collections, and for a long time this code
+used one of them. ``shape`` names the tasks as declared; ``tasks`` carries each
+one's status — including ``CANCELLED`` — plus its error text; they join on
+``task_external_id``. Every per-unit outcome is therefore *stated* by the
+engine. The version before this one rebuilt them instead, from
+``ctx.task_run_errors`` plus ``ctx.was_skipped`` plus whether ``task_output``
+raised, inside a finalizer, and then parsed display names to undo the engine's
+own suffixing. It was a second, worse copy of a record the engine already keeps,
+and it was wrong twice — once reporting a cancelled dependent as ``succeeded``.
 
-So the vocabulary survives. What actually differs from the library track is
-**where it lives**:
+What genuinely cannot be read back is a **skip**: a unit skipped for being
+non-dirty reports ``COMPLETED``, and ``ctx.was_skipped`` exists only inside a
+finalizer. So one finalizer survives, emitting the skip list and nothing else.
 
-    Track A  our table   — joinable, indexable, aggregable with SQL
-    Track B  run output  — one run at a time, through the engine
+``partial`` needs no storage at all. It is a roll-up of unit outcomes, computed
+on read by ``port.overall_status`` — the same function ``sync`` and Track A use,
+so all three agree by construction rather than by review.
+
+What actually differs from the library track is **where run history lives**:
+
+    Track A  our table    — joinable, indexable, aggregable with SQL
+    Track B  the engine   — one run at a time, and gone at its retention horizon
 
 "How many scenarios partially failed this week" is a ``GROUP BY`` on one track
 and N+1 engine round-trips on the other. That is the comparison row, and it is a
@@ -51,6 +59,7 @@ from reimagina.orchestration.port import (
     RunHandle,
     RunStatus,
     UnitStatusView,
+    overall_status,
 )
 from reimagina.storage import backend_for_connection
 
@@ -77,6 +86,12 @@ def _persist_plan(direct_dsn: str, units: Sequence[object]) -> str:
     ⚠ Not placed in ``orchestration/plan.py`` despite being engine-neutral: that
     module states it "touches no queue, worker or run table", and this writes to
     ``jobs_runtime``. Glue for one caller lives beside that caller.
+
+    ⚠ No sweep here. Reclaiming by age on the submit path deleted live input:
+    the horizon was 24 h while the engine retains runs for 720 h, so anything
+    replayed after a day lost its plan. Retention is now a Postgres-owned
+    operation outside the request path, with a horizon that must exceed engine
+    retention. Only the two provably-unreferenced cases below delete a plan.
     """
     from reimagina.db import connect
 
@@ -86,24 +101,71 @@ def _persist_plan(direct_dsn: str, units: Sequence[object]) -> str:
             plan_id=plan_id,
             units={u.indicator: sorted(u.features) for u in units},
         )
-        # Opportunistic orphan reclaim, on the connection already open. The
-        # table holds three rows per in-flight run and nothing else, so this is
-        # a scan of tens of rows — cheap enough to do here and worth more than a
-        # cron nobody remembers to schedule. TTL is generous by default: see
-        # `RunPlanRepository.sweep`.
-        backend_for_connection(plan_conn).run_plan_repo().sweep(
-            older_than_hours=int(os.environ.get("REIMAGINA_RUN_PLAN_TTL_HOURS", "24"))
-        )
         plan_conn.commit()
     return plan_id
+
+
+def _discard_plan(direct_dsn: str, plan_id: str) -> None:
+    """Delete a plan that no run will ever read.
+
+    ⚠ Only for the two cases where that is *provable*: an idempotency collision
+    (the accepted run carries a different ``plan_id``) and a trigger that
+    definitively never reached the engine. An ambiguous failure — a deadline or
+    an unavailable engine — must **retain**, because the run may have been
+    accepted and a retry will deduplicate onto it. Retaining costs one dead row
+    for one retention horizon; deleting costs a live run every unit it has left.
+    """
+    from reimagina.db import connect
+
+    try:
+        with closing(connect(direct_dsn)) as conn:
+            backend_for_connection(conn).run_plan_repo().delete(plan_id=plan_id)
+            conn.commit()
+    except Exception:  # noqa: BLE001 — the submit outcome is already decided
+        logger.warning("could not discard unused run plan %s", plan_id, exc_info=True)
+
+
+# gRPC statuses that mean the engine refused the submission outright, before it
+# could have created a run. Everything else — DEADLINE_EXCEEDED, UNAVAILABLE,
+# INTERNAL, UNKNOWN, ABORTED — is ambiguous and must retain the plan.
+_NOT_ACCEPTED_CODES = frozenset(
+    {
+        "INVALID_ARGUMENT",
+        "RESOURCE_EXHAUSTED",
+        "FAILED_PRECONDITION",
+        "PERMISSION_DENIED",
+        "UNAUTHENTICATED",
+        "NOT_FOUND",
+    }
+)
+
+
+def _is_definitely_not_accepted(exc: BaseException) -> bool:
+    """True only when the engine provably never took the run.
+
+    Defaults to ``False``, and the asymmetry is the point: a wrong ``True``
+    deletes the input of a live run and every remaining unit fails with a
+    missing-plan error; a wrong ``False`` leaves one row until the retention job
+    runs. Duck-typed on ``.code()`` rather than importing grpc — the SDK wraps
+    its own transport, and an exception without a readable status is exactly the
+    ambiguous case this must not act on.
+    """
+    code = getattr(exc, "code", None)
+    if callable(code):
+        try:
+            code = code()
+        except Exception:  # noqa: BLE001 — unreadable status is ambiguous
+            return False
+    return getattr(code, "name", None) in _NOT_ACCEPTED_CODES
 
 
 class HatchetUnavailable(RuntimeError):
     """Hatchet could not answer a request for run state."""
 
 
-# Used only until the finalizer has written a verdict — i.e. while the run is
-# still going. Once it is terminal the verdict supersedes all of this.
+# Used while the run is still open. Once it is terminal the unit outcomes are
+# rolled up through `port.overall_status` instead, which is the only way to
+# reach `partial` — the enum has no such value and never will.
 _RUN_STATUS_FOR = {
     "QUEUED": "queued",
     "RUNNING": "running",
@@ -112,12 +174,14 @@ _RUN_STATUS_FOR = {
     "FAILED": "failed",
 }
 
+# The whole adapter between the engine's task enum and the port's unit
+# vocabulary. Five entries, one direction, no inference.
 _UNIT_STATUS_FOR = {
     "QUEUED": "queued",
     "RUNNING": "running",
-    # ⚠ In-flight only. COMPLETED covers both "computed" and "skipped because
-    # not dirty"; the finalizer's `ctx.was_skipped` is what tells them apart,
-    # and it has not run yet at this point.
+    # ⚠ COMPLETED covers both "computed" and "skipped because not dirty" — the
+    # engine draws no distinction. The finalizer's skip list is overlaid on top
+    # of this in `_units_of`; until it exists, a skipped unit reads as succeeded.
     "COMPLETED": "succeeded",
     "CANCELLED": "cancelled",
     "FAILED": "failed",
@@ -125,7 +189,7 @@ _UNIT_STATUS_FOR = {
 
 
 class HatchetOrchestrator:
-    """Scheduling, run state and the verdict all belong to the engine."""
+    """Scheduling and run state belong to the engine; this adapts them."""
 
     def __init__(
         self, *, registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS
@@ -194,17 +258,18 @@ class HatchetOrchestrator:
             # only if they touch the same features, which is exactly what
             # `dedup_key` hashes.
             #
-            # ⚠ The constant `"baseline"` used here first was wrong, and badly:
-            # it put every scenario-less run in ONE bucket under
-            # `max_runs=1, CANCEL_NEWEST`, so unrelated baseline runs cancelled
-            # each other. In the conformance suite that showed up as a poisoned
-            # unit reporting `cancelled` rather than `failed`; in production it
-            # would have meant a second AOI's recompute silently killing the
-            # first's.
-            # An unscoped baseline has no proven partition boundary. Serialize
-            # it conservatively rather than allowing overlapping feature sets to
-            # race merely because their fingerprints differ.
-            concurrency_key=scenario_id or aoi_id or "baseline",
+            # ⚠ The fallback is `dedup_key`, NOT a constant. `"baseline"` put
+            # every scenario-less, AOI-less run in ONE bucket under
+            # `max_runs=1` — so unrelated work serialized behind whichever
+            # unscoped run got there first, and under the earlier
+            # `CANCEL_NEWEST` strategy they cancelled each other outright.
+            #
+            # `dedup_key` is a hash over the dirty set and feature scope, so two
+            # unscoped runs share a bucket exactly when they touch the same
+            # features — which is the real conflict — and get their own
+            # otherwise. That is the same set the fingerprint already names, so
+            # no new concept is introduced to express it.
+            concurrency_key=scenario_id or aoi_id or dedup_key,
             dedup_key=dedup_key,
         )
         try:
@@ -235,17 +300,36 @@ class HatchetOrchestrator:
             # existing run id is what makes the window useful — raising would
             # force every caller to handle an exception for the case the
             # feature exists to serve.
+            #
+            # The plan just written is provably unreferenced: the accepted run
+            # carries the *earlier* submit's `plan_id`, and nothing will ever
+            # look this one up. Discard it rather than leave an orphan for the
+            # full retention horizon.
+            _discard_plan(direct_dsn, plan_id)
             logger.info(
                 "submit deduplicated onto run %s",
                 collision.existing_run_external_id,
             )
             return RunHandle(run_id=collision.existing_run_external_id, status=None)
+        except Exception as exc:  # noqa: BLE001 — re-raised below
+            # ⚠ Retain on anything ambiguous. A deadline or an unavailable
+            # engine may still have accepted the run, and a retry deduplicates
+            # onto it — but only if the plan is still there to read. Deleting
+            # here is unrecoverable; keeping a dead row for one horizon is not.
+            if _is_definitely_not_accepted(exc):
+                _discard_plan(direct_dsn, plan_id)
+            raise
         return RunHandle(run_id=ref.workflow_run_id, status=None)
 
     # ── Read ────────────────────────────────────────────────────────────────
 
     def get_run(self, conn: object, run_id: str) -> RunStatus | None:
-        """Prefer the finalizer's verdict; fall back to status while in flight.
+        """Read the engine's own record; roll it up through the shared function.
+
+        One construction of the unit list, whether the run is in flight or
+        terminal. It used to be built twice — once from the finalizer's verdict
+        and once from the engine's tasks — which is how the two came to disagree
+        about what a unit was.
 
         `conn` is unused, and that is the point: this branch has no run tables.
         The signature keeps it because the port must stay implementable by a
@@ -264,51 +348,18 @@ class HatchetOrchestrator:
 
         run = getattr(details, "run", details)
         engine_status = _name(getattr(run, "status", None))
+        units = _units_of(details, skipped=_skipped_of(run))
 
-        verdict = _verdict_of(run)
-        if verdict is not None:
-            return RunStatus(
-                run_id=run_id,
-                status=verdict["overall"],
-                units=tuple(
-                    sorted(
-                        (
-                            UnitStatusView(
-                                slug, u.get("status", "queued"), u.get("detail")
-                            )
-                            for slug, u in verdict.get("units", {}).items()
-                        ),
-                        key=lambda u: u.indicator,
-                    )
-                ),
-            )
-
-        # Still running: no verdict yet, so translate what the engine has.
-        units: list[UnitStatusView] = []
-        for task in getattr(details, "tasks", None) or []:
-            slug = getattr(task, "display_name", None) or getattr(task, "step_id", "")
-            slug = slug.rsplit(":", 1)[-1]  # "workflow:task" -> "task"
-            # ⚠ The engine suffixes a timestamp to display_name
-            # ("compactness-1785250189293"), and the finalizer tasks are not
-            # indicators. Both must go or callers see phantom units.
-            slug = _strip_suffix(slug)
-            if slug in _SCAFFOLDING:
-                continue
-            units.append(
-                UnitStatusView(
-                    slug,
-                    _UNIT_STATUS_FOR.get(
-                        _name(getattr(task, "status", None)), "queued"
-                    ),
-                    getattr(task, "error_message", None),
-                )
-            )
-
-        return RunStatus(
-            run_id=run_id,
-            status=_RUN_STATUS_FOR.get(engine_status, "running"),
-            units=tuple(sorted(units, key=lambda u: u.indicator)),
+        # ⚠ Two branches, deliberately. `overall_status` is a *terminal* roll-up:
+        # it has no case for `running`, so an in-flight run falls through every
+        # branch and comes back `failed`. While the engine still has the run
+        # open, its own status is the answer; once closed, the units are.
+        status = (
+            overall_status(u.status for u in units)
+            if engine_status in _ENGINE_TERMINAL
+            else _RUN_STATUS_FOR.get(engine_status, "running")
         )
+        return RunStatus(run_id=run_id, status=status, units=units)
 
     # ── Cancel ──────────────────────────────────────────────────────────────
 
@@ -347,24 +398,39 @@ class HatchetOrchestrator:
         concrete evidence for a comparison row: selecting work by *metadata*
         rather than by id is an engine capability, not something we wrote.
 
-        Still two halves, because B4 has not stopped being true — the engine
-        cancel is one call, the statement kill is per-run. `lookback` exists
-        because `RunFilter.since` is required; the engine's own default
-        retention is 720 h, so a week is generous for anything still running.
+        **Snapshot semantics**: the candidate set is fixed when the operation
+        starts — runs submitted after that are none of its business. It returns
+        the subset it actually cancelled, so a run that reached a terminal state
+        between the snapshot and its turn is absent rather than misreported as
+        stopped.
+
+        ⚠ This used to list ids, then call `bulk_cancel(filters=…)` with the
+        same filter, then kill backends for the listed ids. Those are two
+        different sets. `bulk_cancel` re-evaluates the filter *server-side* at
+        an unknown later instant, so a run submitted in between was cancelled by
+        the engine while its statement was never killed — a cancelled run whose
+        PostGIS query keeps burning a connection, which is precisely the failure
+        the second half exists to prevent. The set an operator was told about
+        and the set that was acted on have to be the same set.
+
+        Still two halves per run, because nothing interrupts a blocking psycopg2
+        call: the engine cancel stops scheduling, `pg_cancel_backend` stops the
+        SQL. That is `cancel_run`, so this reuses it rather than reimplementing
+        the pair — one cancellation path, exercised by every caller.
+
+        `lookback` bounds the listing; the engine's own retention default is
+        720 h, so a week is generous for anything still running.
         """
-        from hatchet_sdk import BulkCancelReplayOpts, RunFilter, V1TaskStatus
+        from hatchet_sdk import V1TaskStatus
 
         from reimagina.orchestration import hatchet_app
 
-        client = hatchet_app.get_hatchet().runs
-        since = datetime.now(timezone.utc) - lookback
-        live = [V1TaskStatus.RUNNING, V1TaskStatus.QUEUED]
-        meta = {"scenario_id": scenario_id}
-
-        listed = client.list_with_pagination(
-            since=since, statuses=live, additional_metadata=meta
+        listed = hatchet_app.get_hatchet().runs.list_with_pagination(
+            since=datetime.now(timezone.utc) - lookback,
+            statuses=[V1TaskStatus.RUNNING, V1TaskStatus.QUEUED],
+            additional_metadata={"scenario_id": scenario_id},
         )
-        ids = [
+        snapshot = [
             rid
             for rid in (
                 getattr(getattr(row, "metadata", None), "id", None) for row in listed
@@ -372,15 +438,7 @@ class HatchetOrchestrator:
             if rid
         ]
 
-        client.bulk_cancel(
-            BulkCancelReplayOpts(
-                filters=RunFilter(since=since, statuses=live, additional_metadata=meta)
-            )
-        )
-        repo = backend_for_connection(conn).job_run_repo()
-        for run_id in ids:
-            repo.cancel_run_backends(run_id)
-        return ids
+        return [run_id for run_id in snapshot if self.cancel_run(conn, run_id)]
 
     # ── Subscribe ───────────────────────────────────────────────────────────
 
@@ -489,38 +547,66 @@ def _dedup_key(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-_SCAFFOLDING = frozenset(
-    {
-        "plan",
-        "",
-        # ⚠ The engine renames a finalizer: `on_failure_task` named
-        # `summarise_failure` is reported as `summarise_failure-on-failure`.
-        # Listing the bare names let `summarise_failure-on-failure` through as
-        # an indicator, and a caller asking what happened to its run got a unit
-        # it had never heard of.
-        "summarise_success-on-success",
-        "summarise_failure-on-failure",
-    }
-)
+# ⚠ No `_SCAFFOLDING` set and no `_strip_suffix`. Both existed to undo engine
+# name mangling on `V1TaskSummary.display_name` — a millisecond suffix
+# (`compactness-1785250189293`) and a finalizer rename (`summarise_failure` is
+# reported as `summarise_failure-on-failure`). `V1WorkflowRunDetails.shape`
+# carries `task_name`, the name as declared, and joins to `tasks` on
+# `task_external_id`. Parsing a display string to recover a value the same
+# response states plainly is a guess that breaks whenever the engine changes how
+# it renders a name.
+_SCAFFOLDING = frozenset({"plan", ""})
 
 
-def _strip_suffix(name: str) -> str:
-    """`compactness-1785250189293` -> `compactness`.
+# Engine statuses from which no further task transition happens. Only then is
+# `overall_status` meaningful — it is a terminal roll-up with no `running` case.
+_ENGINE_TERMINAL = frozenset({"COMPLETED", "CANCELLED", "FAILED"})
 
-    The engine appends a millisecond timestamp to task display names. Only strip
-    a trailing all-digit segment, so an indicator slug that legitimately ends in
-    a hyphenated word survives.
+
+def _skipped_of(run: object) -> frozenset[str]:
+    """The finalizer's skip list, if it has run.
+
+    The one fact `runs.get` cannot supply: a unit skipped for being non-dirty
+    reports COMPLETED, identical to one that computed. Absent while the run is
+    in flight, which is correct — nothing is known to be skipped until the
+    engine has finished deciding what to schedule.
     """
-    head, _, tail = name.rpartition("-")
-    return head if head and tail.isdigit() else name
-
-
-def _verdict_of(run: object) -> dict | None:
-    """The finalizer's output, if it has run and looks like a verdict."""
     output = getattr(run, "output", None)
-    if isinstance(output, dict) and "overall" in output and "units" in output:
-        return output
-    return None
+    if isinstance(output, dict):
+        skipped = output.get("skipped")
+        if isinstance(skipped, list):
+            return frozenset(str(s) for s in skipped)
+    return frozenset()
+
+
+def _units_of(
+    details: object, *, skipped: frozenset[str]
+) -> tuple[UnitStatusView, ...]:
+    """Per-unit outcomes, read from the engine rather than reconstructed.
+
+    ``shape`` names the tasks as declared and ``tasks`` carries their outcomes;
+    they join on ``task_external_id``. Going through ``shape`` is what removed
+    the display-name parsing — and it also means a unit the engine has not
+    created a task row for yet still appears, as ``queued``, instead of blinking
+    into existence partway through the run.
+    """
+    outcomes = {
+        getattr(task, "task_external_id", None): task
+        for task in (getattr(details, "tasks", None) or [])
+    }
+
+    units: list[UnitStatusView] = []
+    for item in getattr(details, "shape", None) or []:
+        slug = getattr(item, "task_name", "") or ""
+        if slug in _SCAFFOLDING:
+            continue
+        task = outcomes.get(getattr(item, "task_external_id", None))
+        status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
+        # A skip is invisible in the status enum: the engine reports COMPLETED.
+        if slug in skipped:
+            status = "skipped"
+        units.append(UnitStatusView(slug, status, getattr(task, "error_message", None)))
+    return tuple(sorted(units, key=lambda u: u.indicator))
 
 
 def _name(value: object) -> str:
