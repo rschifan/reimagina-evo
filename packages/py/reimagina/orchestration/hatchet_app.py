@@ -65,6 +65,7 @@ from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.runners import default_runners
+from reimagina.storage import backend_for_connection
 
 # ⚠ Both Hatchet defaults are wrong for this workload, measured in spike B5.
 #
@@ -153,7 +154,28 @@ class RunInput(BaseModel):
 
     run_id: str
     dirty: list[str] = Field(default_factory=list)
+
+    plan_id: str = ""
+    """Handle for the resolved feature set, stored in ``jobs_runtime.run_plan``.
+
+    ⚠ This field is why a full-city run can be submitted at all. Carrying the
+    ids inline made a CDMX recompute 258,675 uuids — 10,088,804 bytes against
+    gRPC's 4,194,304 limit — and the engine refused it before seeing the work.
+    A handle is a couple of hundred bytes whatever the size of the city.
+
+    ⚠ Not the engine's run id: that is minted by ``run()`` and unknown here, so
+    keying the plan on it would mean writing rows *after* triggering, racing a
+    worker that has already dequeued. This id is ours and exists before submit.
+    """
+
     features: dict[str, list[str]] = Field(default_factory=dict)
+    """⚠ Deprecated, and never populated by a current submitter.
+
+    Retained for one release so a run submitted with the pre-``plan_id`` shape
+    and resumed after this change still finds its work. Remove once nothing can
+    be in flight across the upgrade.
+    """
+
     scenario_id: str | None = None
     aoi_id: str | None = None
     code_version: str = "dev"
@@ -300,13 +322,6 @@ def build_dag(
                 raise NonRetryableException(f"no runner registered for {_slug!r}")
             from reimagina.db import connect
 
-            features = frozenset(input.features.get(_slug, []))
-            # Free in the dashboard's log viewer, per task, searchable. The
-            # library track has nowhere to put this but the process log.
-            ctx.log(
-                f"{_slug}: {len(features)} feature(s), attempt {ctx.attempt_number}"
-            )
-
             # ⚠ `ctx.workflow_run_id`, NOT `input.run_id`. The submitter cannot
             # know the id — the engine mints it — so `RunInput.run_id` is an
             # empty-string placeholder. Reading it here passed `""` into
@@ -317,6 +332,29 @@ def build_dag(
             direct_dsn = os.environ["DATABASE_URL_DIRECT"]
             conn = connect(direct_dsn)
             try:
+                # ⚠ Read *after* the connection is open, not from the payload.
+                # The feature ids live in `jobs_runtime.run_plan` under
+                # `input.plan_id`; carrying them in the workflow input made a
+                # full-city run a 10 MB gRPC message the engine refused outright.
+                #
+                # `features` on the payload is the pre-plan_id shape, retained
+                # for one release so a run submitted before this change and
+                # resumed after it still finds its work. It is never populated
+                # by a current submitter.
+                features = (
+                    frozenset(
+                        backend_for_connection(conn)
+                        .run_plan_repo()
+                        .features_for(plan_id=input.plan_id, indicator_slug=_slug)
+                    )
+                    if input.plan_id
+                    else frozenset(input.features.get(_slug, []))
+                )
+                # Free in the dashboard's log viewer, per task, searchable. The
+                # library track has nowhere to put this but the process log.
+                ctx.log(
+                    f"{_slug}: {len(features)} feature(s), attempt {ctx.attempt_number}"
+                )
                 with current_run(ctx.workflow_run_id):
                     runner(
                         conn,
