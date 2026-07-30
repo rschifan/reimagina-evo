@@ -105,8 +105,8 @@ class SynchronousOrchestrator:
         )
         return RunHandle(run_id=run_id, status=status)
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None:
-        row = self._store.get_run(conn, run_id)
+    def get_run(self, run_id: str) -> RunStatus | None:
+        row = self._store.get_run(run_id)
         if row is None:
             return None
         return RunStatus(

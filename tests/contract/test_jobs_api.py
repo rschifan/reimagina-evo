@@ -70,7 +70,7 @@ def test_post_jobs_enqueues_and_returns_202(monkeypatch):
 
 def test_get_jobs_returns_run_status(monkeypatch):
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return RunStatus(
                 run_id=run_id,
                 status="succeeded",
@@ -95,7 +95,7 @@ def test_get_jobs_returns_run_status(monkeypatch):
 
 def test_get_jobs_404_when_missing(monkeypatch):
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return None
 
     _install(monkeypatch, _FakeOrchestrator())
@@ -161,7 +161,7 @@ def test_events_streams_the_orchestrators_progress(monkeypatch):
     """
 
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return RunStatus(run_id=run_id, status="running", units=())
 
         async def subscribe_progress(self, run_id):
@@ -193,7 +193,7 @@ def test_events_streams_the_orchestrators_progress(monkeypatch):
 
 def test_events_404s_for_an_unknown_run(monkeypatch):
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return None
 
     _install(monkeypatch, _FakeOrchestrator())
@@ -224,7 +224,7 @@ def test_a_malformed_run_id_is_rejected_at_the_boundary(monkeypatch):
     """
 
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):  # pragma: no cover - must not be reached
+        def get_run(self, run_id):  # pragma: no cover - must not be reached
             raise AssertionError("a malformed id must not reach the orchestrator")
 
     _install(monkeypatch, _FakeOrchestrator())
@@ -277,10 +277,17 @@ def test_an_outage_midstream_yields_one_error_frame_then_closes(monkeypatch):
     Starlette refuses to run a registered handler after the response has
     started, so an orchestrator failure mid-stream used to just stop the
     stream — indistinguishable, to a client, from a run that finished.
+
+    ⚠ The frame comes only after the reconnect budget is spent, so the budget
+    is squeezed to nothing here. Left at its default this test would sit for a
+    minute proving something it can prove instantly.
     """
+    from apps.api.routers import jobs as jobs_router
+
+    monkeypatch.setattr(jobs_router, "_OUTAGE_DEADLINE_SECONDS", 0.0)
 
     class _FakeOrchestrator:
-        def get_run(self, conn, run_id):
+        def get_run(self, run_id):
             return RunStatus(run_id=run_id, status="running", units=())
 
         async def subscribe_progress(self, run_id):
@@ -304,3 +311,163 @@ def test_an_outage_midstream_yields_one_error_frame_then_closes(monkeypatch):
     ) == {"reason": "orchestrator_unavailable"}
     # The reason is a fixed token; the underlying message never reaches the wire.
     assert "engine went away" not in body
+
+
+# ── Readiness ────────────────────────────────────────────────────────────────
+
+
+def _ready(monkeypatch, *, db: str, orchestrator: str):
+    """Drive `/health/ready` with both probes stubbed."""
+    from fastapi.testclient import TestClient
+
+    from apps.api.app import create_app
+    from apps.api.routers import health
+
+    monkeypatch.setattr(health, "_probe_db", lambda: db)
+    monkeypatch.setattr(health, "_probe_orchestrator", lambda: orchestrator)
+    with TestClient(create_app(initialise_pool=False)) as client:
+        return client.get("/health/ready")
+
+
+def test_ready_requires_both_a_database_and_somewhere_to_execute(monkeypatch):
+    """⚠ It probed only the database, which asked the wrong half.
+
+    This API executes nothing. A run submitted with no worker registered for
+    the current graph is accepted into a queue nothing will drain, so an
+    instance in that state must not be reported ready — it would take work and
+    then decline it, one request at a time.
+    """
+    response = _ready(monkeypatch, db="reachable", orchestrator="no_worker_for_graph")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["db"] == "reachable"
+    assert body["orchestrator"] == "no_worker_for_graph"
+
+
+def test_ready_distinguishes_an_engine_outage_from_an_incomplete_rollout(monkeypatch):
+    """Both are 503 and they are fixed by different people."""
+    outage = _ready(monkeypatch, db="reachable", orchestrator="unreachable")
+    rollout = _ready(monkeypatch, db="reachable", orchestrator="no_worker_for_graph")
+
+    assert outage.status_code == rollout.status_code == 503
+    assert outage.json()["orchestrator"] != rollout.json()["orchestrator"]
+
+
+def test_ready_still_fails_on_the_database_alone(monkeypatch):
+    response = _ready(monkeypatch, db="unreachable", orchestrator="ready")
+    assert response.status_code == 503
+    assert response.json()["db"] == "unreachable"
+
+
+def test_ready_is_ok_when_both_halves_are(monkeypatch):
+    response = _ready(monkeypatch, db="reachable", orchestrator="ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_a_non_deployable_mode_is_reported_as_such(monkeypatch):
+    """A misconfiguration, not an outage — and the label has to say which.
+
+    `get_orchestrator` refuses a non-durable mode as a deployment default, so
+    an API in this state fails every request. Calling it "unreachable" would
+    send someone to look at a healthy engine.
+    """
+    response = _ready(monkeypatch, db="reachable", orchestrator="mode_not_deployable")
+    assert response.status_code == 503
+    assert response.json()["orchestrator"] == "mode_not_deployable"
+
+
+# ── SSE reconnection ─────────────────────────────────────────────────────────
+
+
+def test_a_dropped_listener_reconnects_instead_of_failing_the_stream(monkeypatch):
+    """⚠ A dropped gRPC listener is not a failed run.
+
+    The engine's progress stream drops for ordinary reasons — a restart, a
+    rolling deploy, a blip — while the run carries on executing. Ending the
+    stream on the first one reported a problem the run did not have.
+    """
+    from apps.api.routers import jobs as jobs_router
+
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.0)
+
+    attempts: list[int] = []
+
+    class _FlakyOnce:
+        def get_run(self, run_id):
+            return RunStatus(run_id=run_id, status="running", units=())
+
+        async def subscribe_progress(self, run_id):
+            attempts.append(1)
+            if len(attempts) == 1:
+                yield RunEvent(run_id, "urban_form_block_compactness", "running")
+                raise RuntimeError("listener dropped")
+            # The reconnection replays a snapshot, then carries on to terminal.
+            yield RunEvent(run_id, "urban_form_block_compactness", "running")
+            yield RunEvent(run_id, None, "succeeded")
+
+    _install(monkeypatch, _FlakyOnce())
+    with TestClient(create_app(initialise_pool=False)) as client:
+        body = client.get(f"/jobs/{_RUN_ID}/events").text
+
+    assert len(attempts) == 2, "the stream did not reconnect"
+    assert "event: error" not in body, body
+    assert "succeeded" in body
+
+
+def test_a_replayed_snapshot_is_not_re_sent_to_the_client(monkeypatch):
+    """Reconnecting reconciles by replaying; the client should not see doubles.
+
+    `subscribe_progress` snapshots current status first so a client that missed
+    events is caught up. Without de-duplication the catch-up is indistinguishable
+    from real progress, and a flapping listener would spam identical frames.
+    """
+    from apps.api.routers import jobs as jobs_router
+
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.0)
+
+    attempts: list[int] = []
+
+    class _FlakyOnce:
+        def get_run(self, run_id):
+            return RunStatus(run_id=run_id, status="running", units=())
+
+        async def subscribe_progress(self, run_id):
+            attempts.append(1)
+            yield RunEvent(run_id, "urban_form_block_compactness", "running")
+            if len(attempts) == 1:
+                raise RuntimeError("listener dropped")
+            yield RunEvent(run_id, None, "succeeded")
+
+    _install(monkeypatch, _FlakyOnce())
+    with TestClient(create_app(initialise_pool=False)) as client:
+        body = client.get(f"/jobs/{_RUN_ID}/events").text
+
+    assert body.count("urban_form_block_compactness") == 1, body
+
+
+def test_a_terminal_run_does_not_reconnect(monkeypatch):
+    """Reaching terminal ends the stream; retrying it would never terminate."""
+    from apps.api.routers import jobs as jobs_router
+
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
+
+    attempts: list[int] = []
+
+    class _Terminal:
+        def get_run(self, run_id):
+            return RunStatus(run_id=run_id, status="succeeded", units=())
+
+        async def subscribe_progress(self, run_id):
+            attempts.append(1)
+            yield RunEvent(run_id, None, "succeeded")
+
+    _install(monkeypatch, _Terminal())
+    with TestClient(create_app(initialise_pool=False)) as client:
+        client.get(f"/jobs/{_RUN_ID}/events")
+
+    assert len(attempts) == 1

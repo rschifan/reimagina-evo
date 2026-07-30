@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -27,6 +28,8 @@ from pydantic import BaseModel
 
 router = APIRouter(tags=["meta"])
 
+log = logging.getLogger("reimagina.api")
+
 
 class LivenessResponse(BaseModel):
     status: str
@@ -35,6 +38,14 @@ class LivenessResponse(BaseModel):
 class ReadinessResponse(BaseModel):
     status: str
     db: str
+    orchestrator: str = "unknown"
+    """Whether this API can actually get work executed.
+
+    ⚠ Reported separately from `db`, because they fail for different reasons
+    and send an operator to different places: `db` degraded is a database
+    problem, `orchestrator` degraded is either the engine being unreachable or
+    a rollout that has not finished deploying workers.
+    """
 
 
 class TileServerResponse(BaseModel):
@@ -54,13 +65,68 @@ def liveness() -> LivenessResponse:
 
 @router.get("/health/ready", response_model=ReadinessResponse)
 def readiness(response: Response) -> ReadinessResponse:
-    """Readiness probe. 200 if the DB is reachable; 503 otherwise."""
+    """Readiness probe. 200 when this API can serve *and* get work executed.
+
+    ⚠ It probed only the database, which made "ready" a claim about the wrong
+    half of the system. On this track the API executes nothing: it hands runs to
+    an engine, and a run submitted with no worker registered for the current
+    graph is accepted into a queue nothing will drain. Reporting ready in that
+    state routes traffic to an instance that can take work and not do it.
+
+    This is what makes the graph-version check a guarantee rather than a race:
+    `submit_run` refuses a run with no worker for its shape, and readiness fails
+    for the same reason, so a half-rolled deployment is taken out of the load
+    balancer instead of accepting work it will reject one request at a time.
+    """
     db_status = _probe_db()
-    if db_status != "reachable":
+    orchestrator_status = _probe_orchestrator()
+    ready = db_status == "reachable" and orchestrator_status == "ready"
+    if not ready:
         response.status_code = 503
     return ReadinessResponse(
-        status="ok" if db_status == "reachable" else "degraded", db=db_status
+        status="ok" if ready else "degraded",
+        db=db_status,
+        orchestrator=orchestrator_status,
     )
+
+
+def _probe_orchestrator() -> str:
+    """`ready` | `no_worker_for_graph` | `unreachable` | `mode_not_deployable`.
+
+    Distinct strings rather than a bool: "the engine is down" and "nobody
+    deployed a worker for this graph" are both 503 and are fixed by completely
+    different people.
+
+    ⚠ Fails **closed**, unlike the admission check in `submit_run`. The
+    asymmetry is deliberate — refusing to serve traffic is recoverable and a
+    load balancer will route elsewhere, whereas refusing an already-planned
+    submission over a transient listing blip discards real work.
+    """
+    from reimagina.orchestration.factory import DEFAULT_MODE, DURABLE_MODES
+
+    try:
+        mode = os.environ.get("REIMAGINA_ORCHESTRATOR") or DEFAULT_MODE
+        if mode not in DURABLE_MODES:
+            # ⚠ Not "not applicable" — this is a misconfiguration, and the
+            # word should say so. `get_orchestrator` refuses a non-durable mode
+            # as a deployment default, so an API in this state 500s every
+            # request; reporting it as an engine outage would send someone to
+            # look at a healthy engine.
+            return "mode_not_deployable"
+
+        from reimagina.orchestration import hatchet_app
+        from reimagina.orchestration.hatchet_orchestrator import _live_worker_for
+
+        workflow = hatchet_app.workflow_name()
+        hatchet_app.get_hatchet().workflows.list()  # engine reachability
+    except Exception:  # noqa: BLE001
+        log.warning("orchestrator readiness probe failed", exc_info=True)
+        return "unreachable"
+
+    # ⚠ Live worker here, mere registration at submit. Readiness failing takes
+    # this instance out of rotation, which is recoverable; refusing a submission
+    # over a momentarily-busy worker destroys that request's work.
+    return "ready" if _live_worker_for(workflow) else "no_worker_for_graph"
 
 
 @router.get("/health", response_model=ReadinessResponse)

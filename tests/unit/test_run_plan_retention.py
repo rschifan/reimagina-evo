@@ -164,7 +164,7 @@ def _submit_with(monkeypatch, *, raises: BaseException):
     # Not about admission control: this suite drives the plan/payload path, so
     # the "is a worker serving this graph?" gate is stubbed. Its own behaviour is
     # covered in `test_graph_version.py`.
-    monkeypatch.setattr(ho, "_worker_serves", lambda _name: True)
+    monkeypatch.setattr(ho, "_graph_is_deployed", lambda _name: True)
     monkeypatch.setattr(hatchet_app, "get_run_workflow", lambda: _Workflow())
 
     return ho.HatchetOrchestrator().submit_run(

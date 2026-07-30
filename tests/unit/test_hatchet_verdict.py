@@ -84,7 +84,7 @@ def test_partial_is_rolled_up_from_native_task_outcomes(patched):
             units=[("a", "COMPLETED", None), ("b", "FAILED", "RuntimeError: boom")],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert run.status == "partial"
     assert {u.indicator: u.status for u in run.units} == {
@@ -112,7 +112,7 @@ def test_a_cancelled_dependent_is_read_not_inferred(patched):
             ],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "doomed": "failed",
@@ -131,7 +131,7 @@ def test_skipped_survives_a_completed_task_status(patched):
             units=[("computed", "COMPLETED", None), ("not_dirty", "COMPLETED", None)],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "computed": "succeeded",
@@ -155,7 +155,7 @@ def test_an_all_skipped_run_is_not_reported_as_success(patched):
             units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert [u.status for u in run.units] == ["skipped", "skipped"]
     assert run.status == "failed"
@@ -177,7 +177,7 @@ def test_an_in_flight_run_reports_the_engine_status_not_a_rollup(patched):
             units=[("compactness", "COMPLETED", None), ("density", "RUNNING", None)],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert run.status == "running"
     assert {u.indicator: u.status for u in run.units} == {
@@ -199,7 +199,7 @@ def test_a_unit_with_no_task_row_yet_is_queued_not_missing(patched):
     )
     patched(details)
 
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "early": "running",
@@ -219,7 +219,7 @@ def test_scaffolding_is_not_reported_as_an_indicator(patched):
             units=[("plan", "COMPLETED", None), ("compactness", "RUNNING", None)],
         )
     )
-    run = HatchetOrchestrator().get_run(None, "r1")
+    run = HatchetOrchestrator().get_run("r1")
 
     assert [u.indicator for u in run.units] == ["compactness"]
 
@@ -277,7 +277,7 @@ def test_get_run_only_treats_a_real_404_as_unknown(monkeypatch):
         ),
     )
     with pytest.raises(HatchetUnavailable):
-        HatchetOrchestrator().get_run(None, "r1")
+        HatchetOrchestrator().get_run("r1")
 
 
 def test_retry_taxonomy_excludes_deterministic_runner_errors():
