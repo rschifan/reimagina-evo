@@ -16,6 +16,7 @@ from .repositories import (
     PostgresOverlapRepository,
     PostgresOverlapTypePairRepository,
     PostgresRasterLayerRepository,
+    PostgresRunPlanRepository,
     PostgresServingReader,
     PostgresSourceCatalogRepository,
     PostgresTileSnapshotRepository,
@@ -83,3 +84,6 @@ class PostgresStorageBackend:
 
     def indicator_result_repo(self) -> PostgresIndicatorResultRepository:
         return PostgresIndicatorResultRepository(self.connection)
+
+    def run_plan_repo(self) -> PostgresRunPlanRepository:
+        return PostgresRunPlanRepository(self.connection)
