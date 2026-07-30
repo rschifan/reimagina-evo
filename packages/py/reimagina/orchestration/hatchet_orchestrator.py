@@ -86,6 +86,14 @@ def _persist_plan(direct_dsn: str, units: Sequence[object]) -> str:
             plan_id=plan_id,
             units={u.indicator: sorted(u.features) for u in units},
         )
+        # Opportunistic orphan reclaim, on the connection already open. The
+        # table holds three rows per in-flight run and nothing else, so this is
+        # a scan of tens of rows — cheap enough to do here and worth more than a
+        # cron nobody remembers to schedule. TTL is generous by default: see
+        # `RunPlanRepository.sweep`.
+        backend_for_connection(plan_conn).run_plan_repo().sweep(
+            older_than_hours=int(os.environ.get("REIMAGINA_RUN_PLAN_TTL_HOURS", "24"))
+        )
         plan_conn.commit()
     return plan_id
 

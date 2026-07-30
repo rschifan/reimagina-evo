@@ -793,6 +793,10 @@ class RunPlanRepository(Protocol):
 
     def features_for(self, *, plan_id: str, indicator_slug: str) -> list[str]: ...
 
+    def delete(self, *, plan_id: str) -> int: ...
+
+    def sweep(self, *, older_than_hours: int) -> int: ...
+
 
 class StorageBackend(Protocol):
     name: str
