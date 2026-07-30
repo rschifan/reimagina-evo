@@ -120,8 +120,6 @@ def test_an_anchor_larger_than_the_ratio_expands_the_viewport():
 def test_small_and_dense_are_not_the_same_viewport():
     """The finding: both keys were built from the identical anchor expression."""
     anchor = (-99.14, 19.43, -99.137, 19.433)
-    dense = bbox_from_extent(
-        EXTENT, width_ratio=0.08, height_ratio=0.08, around=anchor
-    )
+    dense = bbox_from_extent(EXTENT, width_ratio=0.08, height_ratio=0.08, around=anchor)
     assert dense != anchor
     assert (dense[2] - dense[0]) > (anchor[2] - anchor[0])

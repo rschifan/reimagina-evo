@@ -201,6 +201,4 @@ def stream_run_events(
 
     if get_orchestrator().get_run(conn, str(run_id)) is None:
         raise HTTPException(status_code=404, detail=f"run {str(run_id)!r} not found")
-    return StreamingResponse(
-        _event_stream(str(run_id)), media_type="text/event-stream"
-    )
+    return StreamingResponse(_event_stream(str(run_id)), media_type="text/event-stream")

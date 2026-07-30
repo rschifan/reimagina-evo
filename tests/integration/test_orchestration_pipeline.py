@@ -118,6 +118,8 @@ def test_synchronous_orchestrator_keeps_per_unit_state(conn):
         URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
     assert all(u.status == "succeeded" for u in persisted.units)
+
+
 def test_a_run_stamps_its_id_on_every_job_run_it_opens(conn):
     """The ambient run must survive the whole executor → runner → compute chain.
 
