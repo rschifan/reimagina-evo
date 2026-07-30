@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # The long-lived ops-plane tracks are gated too. They are never merged into
+    # main — the comparison is the deliverable — so a PR-only trigger would
+    # leave both of them permanently untested.
+    branches: [main, "feat/**"]
   pull_request:
     branches: [main]
   schedule:
