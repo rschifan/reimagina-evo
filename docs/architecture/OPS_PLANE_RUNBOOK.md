@@ -75,7 +75,26 @@ and the verdict is the one to believe.
 
 ### Driving a run from the browser
 
-The dashboard triggers runs directly: **Workflows → `reimagina-run` → Trigger
+⚠ The workflow is named **`reimagina-run-v<shape>`**, where the suffix is a
+digest of the indicator graph's nodes and edges. Print the one this deployment
+uses before going looking for it:
+
+```bash
+python -c "from reimagina.orchestration.hatchet_app import workflow_name, graph_version; print(workflow_name(), graph_version())"
+```
+
+An incompatible graph change mints a new name, so old workers keep serving old
+runs until they drain and a rolling deployment is simply "both names registered
+for a while". If the dashboard lists a name nothing is running, that is a
+half-applied rollout — and `POST /jobs` will refuse with
+`graph_version_unavailable` rather than accepting work nothing can execute.
+
+Timeouts and retries are *not* in the name: they are compatible with in-flight
+runs and the engine versions them under one name. They ride in `graph_version`
+on the run input and in its metadata, so "which runs used the graph before the
+retune" is a `runs.list()` filter.
+
+The dashboard triggers runs directly: **Workflows → `reimagina-run-v…` → Trigger
 Run**, then paste a `RunInput`:
 
 ```json

@@ -49,6 +49,36 @@ async def hatchet_unavailable_handler(request: Request, exc: Exception) -> JSONR
     return response
 
 
+async def graph_version_unavailable_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """No worker serves this deployment's graph — a mismatch, not an outage.
+
+    ⚠ Its own error code, and **no `Retry-After`**. The engine is healthy; what
+    is missing is a worker registered for this graph shape, which is a rollout
+    half-applied. Folding it into `orchestration_unavailable` would send an
+    operator to look at the engine and would tell a client to retry — and no
+    amount of retrying conjures a worker for a graph nobody deployed.
+    """
+    request_id = _request_id(request)
+    log.error(
+        "no worker serves the current graph on %s %s (request_id=%s): %s",
+        request.method,
+        request.url.path,
+        request_id,
+        exc,
+    )
+    return _error_response(
+        status_code=503,
+        error_code="graph_version_unavailable",
+        message=(
+            "No worker is registered for this deployment's indicator graph. "
+            "A rollout is likely incomplete."
+        ),
+        request_id=request_id,
+    )
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 
