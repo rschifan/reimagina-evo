@@ -20,6 +20,8 @@ a function that is itself correct.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from reimagina.orchestration.impact import DirtyUnit
@@ -58,6 +60,13 @@ def _submit(monkeypatch, *, units, code_version="test", scenario_id=SCENARIO):
     )
     monkeypatch.setattr(
         hatchet_orchestrator, "assert_same_domain_database", lambda *a, **k: None
+    )
+    # ⚠ A *different* plan_id per submission, deliberately. That is what the real
+    # thing does, and it is precisely the condition under which folding plan_id
+    # into the fingerprint would break deduplication. Returning a constant here
+    # would make these tests pass against the very regression they exist to catch.
+    monkeypatch.setattr(
+        hatchet_orchestrator, "_persist_plan", lambda *a, **k: str(uuid.uuid4())
     )
     monkeypatch.setattr(hatchet_app, "get_run_workflow", lambda: _Workflow())
     monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql:///irrelevant")
@@ -132,15 +141,28 @@ def test_feature_order_does_not_change_the_fingerprint(monkeypatch):
     assert a.dedup_key == b.dedup_key
 
 
-@pytest.mark.parametrize("field", ["dirty", "features", "scenario_id", "code_version"])
+@pytest.mark.parametrize("field", ["dirty", "scenario_id", "code_version", "plan_id"])
 def test_the_payload_still_carries_what_the_key_hashes(monkeypatch, field):
-    """Guards the refactor rather than the current code.
+    """The key's inputs must survive on the payload — plus the handle itself.
 
-    When the feature ids move into `jobs_runtime.run_plan`, `features` leaves
-    this payload — and the fingerprint must keep covering the same content,
-    computed from the ids while they are still in memory. This test failing on
-    `features` is the expected, deliberate signal at that point; the other three
-    failing would mean the key lost coverage it still needs.
+    ``features`` is deliberately absent from this list now: the ids moved into
+    ``jobs_runtime.run_plan`` and the payload carries only ``plan_id``. The
+    fingerprint still covers the feature scope, computed from the ids while they
+    are in memory at submit — which is what the equality tests above prove.
     """
     payload = _submit(monkeypatch, units=[("slug", FEATURES)])
     assert getattr(payload, field) not in (None, "", [], {})
+
+
+def test_the_payload_no_longer_carries_the_feature_ids(monkeypatch):
+    """The ceiling fix, asserted at the boundary that used to break.
+
+    A full-city run put 258,675 uuids here — 10 MB against a 4 MiB gRPC limit —
+    and could not be submitted at all. The handle replaces them.
+    """
+    payload = _submit(monkeypatch, units=[("slug", FEATURES)])
+
+    assert payload.features == {}
+    assert payload.plan_id
+    # A couple of hundred bytes, and flat in the size of the city.
+    assert len(payload.model_dump_json()) < 1024

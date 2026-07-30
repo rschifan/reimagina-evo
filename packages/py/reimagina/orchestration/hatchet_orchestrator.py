@@ -36,7 +36,9 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Iterable, Sequence
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from hatchet_sdk.exceptions import IdempotencyCollisionError
 
@@ -53,6 +55,39 @@ from reimagina.orchestration.port import (
 from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_plan(direct_dsn: str, units: Sequence[object]) -> str:
+    """Store the resolved feature set; return the handle the engine will carry.
+
+    ⚠ Commits and closes before returning, and that ordering is the whole point.
+    A worker can dequeue the instant ``run()`` is called, and it reads the plan
+    on its own connection — an uncommitted write is indistinguishable from a
+    lost one, so the run would fail loudly having been perfectly valid. Owning
+    the transaction here makes "commit before trigger" structural rather than a
+    comment someone has to honour.
+
+    ⚠ Its own connection, not the caller's. ``submit_run`` borrows a connection
+    from the API request, and committing that would end a transaction this layer
+    does not own. ``record_failed_job_run`` opens its own for the same reason.
+    ``assert_same_domain_database`` has already established that ``direct_dsn``
+    and the caller's connection are the same database, so the plan lands where
+    the planner looked.
+
+    ⚠ Not placed in ``orchestration/plan.py`` despite being engine-neutral: that
+    module states it "touches no queue, worker or run table", and this writes to
+    ``jobs_runtime``. Glue for one caller lives beside that caller.
+    """
+    from reimagina.db import connect
+
+    plan_id = str(uuid4())
+    with closing(connect(direct_dsn)) as plan_conn:
+        backend_for_connection(plan_conn).run_plan_repo().write(
+            plan_id=plan_id,
+            units={u.indicator: sorted(u.features) for u in units},
+        )
+        plan_conn.commit()
+    return plan_id
 
 
 class HatchetUnavailable(RuntimeError):
@@ -127,11 +162,17 @@ class HatchetOrchestrator:
 
         dirty = [u.indicator for u in plan.units]
         features = {u.indicator: sorted(u.features) for u in plan.units}
+        # ⚠ Still hashed from `features`, not from `plan_id`. The fingerprint must
+        # name the *work*, and `plan_id` is minted fresh per submit — folding it
+        # in would make every key unique and silently disable the idempotency
+        # window. `tests/unit/test_hatchet_dedup_key.py` fails if that happens.
         dedup_key = _dedup_key(scenario_id, aoi_id, code_version, dirty, features)
+        # Committed before the workflow is triggered; see `_persist_plan`.
+        plan_id = _persist_plan(direct_dsn, plan.units)
         payload = hatchet_app.RunInput(
             run_id="",  # filled from ctx.workflow_run_id; see the module docstring
             dirty=dirty,
-            features=features,
+            plan_id=plan_id,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
