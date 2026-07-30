@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from apps.api.app import create_app
 from apps.cli.app import create_cli
-from apps.worker.app import create_worker
 
 
 def test_api_scaffold_boots():
@@ -23,8 +22,9 @@ def test_api_scaffold_boots():
     assert "/tile-sources" in paths
 
 
-def test_worker_scaffold_boots():
-    assert create_worker()["app"] == "worker"
+# The worker has no scaffold descriptor to boot. `create_worker()` returned a
+# static dict that nothing consumed; `run_hatchet_worker` is the real entry
+# point and is covered by `test_worker_entrypoint.py`.
 
 
 def test_cli_scaffold_boots():

@@ -11,8 +11,6 @@ cannot be caught by observation. These assert the ordering structurally.
 
 from __future__ import annotations
 
-import pytest
-
 from reimagina.orchestration.impact import DirtyUnit
 from reimagina.orchestration.plan import RunPlan
 
@@ -61,6 +59,11 @@ def test_persist_plan_commits_before_it_returns(monkeypatch):
         def write(self, **_):
             log.append("write")
 
+        # Kept deliberately: if an age sweep is ever reintroduced on the submit
+        # path it will show up in the log and fail the assertion below. Sweeping
+        # here deleted live runs' plans — the horizon was 24 h against the
+        # engine's 720 h retention, so anything replayed after a day lost its
+        # input. Retention is a scheduled Postgres operation now.
         def sweep(self, **_):
             log.append("sweep")
 
@@ -78,10 +81,11 @@ def test_persist_plan_commits_before_it_returns(monkeypatch):
     )
 
     assert plan_id
-    # The whole ordering, in one assertion: the rows are written, orphans are
-    # reclaimed on the same connection, and only then is the work durable — and
-    # the connection is closed before the caller receives the handle.
-    assert log == ["write", "sweep", "commit", "close"], log
+    # The whole ordering, in one assertion: the rows are written and durable
+    # before the caller receives the handle — and nothing is reclaimed on the
+    # way through.
+    assert log == ["write", "commit", "close"], log
+    assert "sweep" not in log
 
 
 def test_the_plan_is_persisted_before_the_workflow_is_triggered(monkeypatch):
@@ -135,7 +139,8 @@ def test_a_noop_writes_no_plan(monkeypatch):
     """Nothing to compute, nothing to store — and nothing to orphan.
 
     Writing before the noop check would leave rows for a run that never exists,
-    reclaimable only by the TTL sweep.
+    reclaimable only when the scheduled retention job next runs — which is now
+    the full engine-retention horizon away, not 24 h.
     """
     from reimagina.orchestration import hatchet_orchestrator
 
@@ -166,18 +171,23 @@ def test_a_noop_writes_no_plan(monkeypatch):
     assert calls == [], "a noop wrote a plan"
 
 
-@pytest.mark.parametrize("plan_id,expected", [("", "features"), ("p-1", "plan")])
-def test_the_unit_falls_back_to_the_payload_when_there_is_no_handle(plan_id, expected):
-    """The compatibility window, stated as behaviour rather than intent.
+def test_the_payload_carries_a_handle_and_no_inline_feature_ids():
+    """The handle is the only way a unit finds its work.
 
-    A run submitted before `plan_id` existed and resumed after it still carries
-    its ids in `RunInput.features`, and must still find its work. Current
-    submitters never populate that field.
+    `RunInput.features` was the pre-`plan_id` shape, kept for one release so a
+    run submitted before the change and resumed after it still resolved. That
+    window is closed: carrying ids inline is what made a full-city run a 10 MB
+    message the engine refused, and leaving the field on the model left a second
+    path to the feature set that no submitter populated.
     """
     from reimagina.orchestration.hatchet_app import RunInput
 
     payload = RunInput(
-        run_id="", dirty=["slug"], plan_id=plan_id, features={"slug": ["f-1"]}
+        run_id="",
+        dirty=["slug"],
+        plan_id="p-1",
+        concurrency_key="scope-under-test",
     )
-    resolved = "plan" if payload.plan_id else "features"
-    assert resolved == expected
+
+    assert payload.plan_id == "p-1"
+    assert not hasattr(payload, "features")

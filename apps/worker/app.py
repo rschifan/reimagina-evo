@@ -24,11 +24,6 @@ import os
 from contextlib import closing
 
 
-def create_worker() -> dict[str, str]:
-    """Scaffold descriptor (kept for the boot smoke-test / health surface)."""
-    return {"app": "worker", "namespace": "reimagina", "status": "ready"}
-
-
 def run_hatchet_worker(
     *, name: str | None = None, slots: int | None = None, blocking: bool = True
 ):
@@ -74,8 +69,15 @@ def run_hatchet_worker(
     # identity half was tautologically true and bought a second connection to
     # prove it. Only the migrated-check ever did work; this is that check, on
     # the connection already open, through the helper that already exists.
+    # ⚠ `run_plan` as well as `job_run`. Every unit resolves its feature set by
+    # handle out of `jobs_runtime.run_plan` before it computes anything, so a
+    # worker started against a database missing that table registers happily and
+    # then fails every task it is ever given — the failure this check exists to
+    # move forward, arriving late anyway.
     with closing(connect(os.environ["DATABASE_URL_DIRECT"])) as conn:
-        present = verify_required_relations(conn, ["jobs_runtime.job_run"])
+        present = verify_required_relations(
+            conn, ["jobs_runtime.job_run", "jobs_runtime.run_plan"]
+        )
     missing = sorted(relation for relation, ok in present.items() if not ok)
     if missing:
         raise RuntimeError(

@@ -1,13 +1,17 @@
-"""The verdict path — the part of this track that is not a status translation.
+"""The read path — where a run's status comes from, and what it costs to get it.
 
-Hatchet's status enum cannot say `partial` or `skipped`. Its finalizer output
-can, and spike B8 confirmed `on_failure_task` runs on a half-failed run and can
-read per-unit outcomes. These tests pin the *reading* half of that: that
-`get_run` prefers the verdict over the enum, and that it still answers sensibly
-before the finalizer has produced one.
+Hatchet's status enum has five values and cannot say `partial` or `skipped`.
+Neither of those needs a second status store, and both used to have one:
 
-The engine behaviour itself is verified in the spike, not here — a unit test
-that mocked the engine into agreeing with us would prove nothing.
+* `partial` is a *roll-up* of unit outcomes, not a stored fact. `runs.get`
+  reports each task's own status, including CANCELLED, so `overall_status` —
+  the same function the `sync` implementation uses — derives it on read.
+* `skipped` is genuinely invisible: a unit skipped for being non-dirty reports
+  COMPLETED. `ctx.was_skipped` is available only inside a finalizer, so the
+  finalizer survives, emitting the skip list and nothing else.
+
+These pin the reading half. Engine behaviour itself belongs in the qualification
+suite — a unit test that mocked the engine into agreeing with us proves nothing.
 """
 
 from __future__ import annotations
@@ -19,21 +23,33 @@ import pytest
 from reimagina.orchestration.hatchet_orchestrator import (
     HatchetOrchestrator,
     HatchetUnavailable,
-    _strip_suffix,
-    _verdict_of,
+    _skipped_of,
+    _units_of,
 )
 
 
-def _details(status: str, output: object = None, tasks: list | None = None):
-    """Shaped like `V1WorkflowRunDetails`: a `.run` plus a `.tasks` list."""
+def _details(status: str, output: object = None, units: list | None = None):
+    """Shaped like `V1WorkflowRunDetails`: `.run`, `.shape` and `.tasks`.
+
+    ⚠ `shape` and `tasks` join on `task_external_id`, and `shape` carries
+    `task_name` — the name as *declared*. The engine's `display_name` mangling
+    (`compactness-1785250189293`, `summarise_failure-on-failure`) never appears
+    on this path, which is the point of using it.
+    """
+    units = units or []
     return SimpleNamespace(
         run=SimpleNamespace(status=status, output=output),
-        tasks=tasks or [],
+        shape=[
+            SimpleNamespace(task_name=name, task_external_id=f"ext-{i}")
+            for i, (name, _s, _e) in enumerate(units)
+        ],
+        tasks=[
+            SimpleNamespace(
+                task_external_id=f"ext-{i}", status=status_, error_message=err
+            )
+            for i, (_n, status_, err) in enumerate(units)
+        ],
     )
-
-
-def _task(name: str, status: str, error: str | None = None):
-    return SimpleNamespace(display_name=name, status=status, error_message=error)
 
 
 @pytest.fixture
@@ -55,26 +71,21 @@ def patched(monkeypatch):
 # ── The claim the redesign rests on ──────────────────────────────────────────
 
 
-def test_partial_survives_a_failed_run_status(patched):
-    """A FAILED run whose verdict says `partial` must report `partial`.
+def test_partial_is_rolled_up_from_native_task_outcomes(patched):
+    """A FAILED run with one surviving unit reports `partial`.
 
-    This is the whole correction. The first cut of this module mapped
-    FAILED -> "failed" unconditionally and documented `partial` as
-    inexpressible; it is expressible, just not in the enum.
+    No finalizer verdict involved: the engine says one task COMPLETED and one
+    FAILED, and `overall_status` — shared with `sync` and Track A — turns that
+    into `partial`. The enum never had to express it.
     """
     patched(
         _details(
             "FAILED",
-            output={
-                "overall": "partial",
-                "units": {
-                    "a": {"status": "succeeded", "detail": None},
-                    "b": {"status": "failed", "detail": "RuntimeError: boom"},
-                },
-            },
+            units=[("a", "COMPLETED", None), ("b", "FAILED", "RuntimeError: boom")],
         )
     )
     run = HatchetOrchestrator().get_run(None, "r1")
+
     assert run.status == "partial"
     assert {u.indicator: u.status for u in run.units} == {
         "a": "succeeded",
@@ -83,43 +94,91 @@ def test_partial_survives_a_failed_run_status(patched):
     assert run.units[1].detail == "RuntimeError: boom"
 
 
-def test_skipped_survives_a_completed_task_status(patched):
-    """`skipped` and `succeeded` both arrive as COMPLETED; the verdict splits them."""
+def test_a_cancelled_dependent_is_read_not_inferred(patched):
+    """The engine states CANCELLED; nothing has to deduce it.
+
+    This used to be inferred from "no error, not skipped, and `task_output`
+    raised" — and the inference was wrong once, reporting a composite that never
+    ran as `succeeded`, which is a value that was never computed presented as a
+    good one.
+    """
     patched(
         _details(
-            "COMPLETED",
-            output={
-                "overall": "succeeded",
-                "units": {
-                    "computed": {"status": "succeeded", "detail": None},
-                    "not_dirty": {"status": "skipped", "detail": None},
-                },
-            },
+            "FAILED",
+            units=[
+                ("doomed", "FAILED", "boom"),
+                ("dependent", "CANCELLED", None),
+                ("independent", "COMPLETED", None),
+            ],
         )
     )
     run = HatchetOrchestrator().get_run(None, "r1")
+
+    assert {u.indicator: u.status for u in run.units} == {
+        "doomed": "failed",
+        "dependent": "cancelled",
+        "independent": "succeeded",
+    }
+    assert run.status == "partial"  # `independent` survived
+
+
+def test_skipped_survives_a_completed_task_status(patched):
+    """The one fact the engine will not hand back: a skip reads as COMPLETED."""
+    patched(
+        _details(
+            "COMPLETED",
+            output={"skipped": ["not_dirty"]},
+            units=[("computed", "COMPLETED", None), ("not_dirty", "COMPLETED", None)],
+        )
+    )
+    run = HatchetOrchestrator().get_run(None, "r1")
+
     assert {u.indicator: u.status for u in run.units} == {
         "computed": "succeeded",
         "not_dirty": "skipped",
     }
 
 
-# ── Before the finalizer has run ─────────────────────────────────────────────
+def test_an_all_skipped_run_is_not_reported_as_success(patched):
+    """Nothing ran, so the run did not achieve its purpose.
 
-
-def test_falls_back_to_the_enum_while_in_flight(patched):
-    """No verdict yet is normal, not an error: translate the enum instead."""
+    ⚠ Behaviour change. The deleted in-finalizer roll-up folded "no failures
+    seen" straight to `succeeded`, so an all-skipped run was `succeeded` here
+    and `failed` under `sync` — the same product API answering two ways. There
+    is one roll-up now, and `port.overall_status` is explicit that all-skipped
+    is `failed`.
+    """
     patched(
         _details(
-            "RUNNING",
-            output=None,
-            tasks=[
-                _task("compactness-1785250189293", "COMPLETED"),
-                _task("density-1785250189293", "RUNNING"),
-            ],
+            "COMPLETED",
+            output={"skipped": ["a", "b"]},
+            units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
         )
     )
     run = HatchetOrchestrator().get_run(None, "r1")
+
+    assert [u.status for u in run.units] == ["skipped", "skipped"]
+    assert run.status == "failed"
+
+
+# ── While the run is still open ──────────────────────────────────────────────
+
+
+def test_an_in_flight_run_reports_the_engine_status_not_a_rollup(patched):
+    """⚠ The reason the status branch cannot be collapsed.
+
+    `overall_status` is a *terminal* roll-up with no `running` case: given
+    `{"running"}` it falls through every branch and returns **failed**. Rolling
+    up an open run would report every one of them as failed.
+    """
+    patched(
+        _details(
+            "RUNNING",
+            units=[("compactness", "COMPLETED", None), ("density", "RUNNING", None)],
+        )
+    )
+    run = HatchetOrchestrator().get_run(None, "r1")
+
     assert run.status == "running"
     assert {u.indicator: u.status for u in run.units} == {
         "compactness": "succeeded",
@@ -127,60 +186,82 @@ def test_falls_back_to_the_enum_while_in_flight(patched):
     }
 
 
-def test_scaffolding_is_not_reported_as_an_indicator(patched):
-    """`plan` and the two finalizers are ours, not units a caller asked for.
+def test_a_unit_with_no_task_row_yet_is_queued_not_missing(patched):
+    """`shape` is the declared graph, so the unit list is stable from the start.
 
-    ⚠ The finalizer names here are the ones the **engine reports**, not the ones
-    declared in `build_dag`: an `on_failure_task` named `summarise_failure` comes
-    back as `summarise_failure-on-failure`. An earlier version of this test used
-    the declared names, so it passed against code that let the real ones through
-    — a test encoding an assumption about a system rather than an observation of
-    it. Taken from a live run's task list.
+    Building it from `tasks` alone meant units blinked into existence as the
+    engine created rows, and a caller polling early saw a shorter run than the
+    one it submitted.
+    """
+    details = _details("RUNNING", units=[("early", "RUNNING", None)])
+    details.shape.append(
+        SimpleNamespace(task_name="not_started_yet", task_external_id="ext-99")
+    )
+    patched(details)
+
+    run = HatchetOrchestrator().get_run(None, "r1")
+
+    assert {u.indicator: u.status for u in run.units} == {
+        "early": "running",
+        "not_started_yet": "queued",
+    }
+
+
+def test_scaffolding_is_not_reported_as_an_indicator(patched):
+    """`plan` is ours, not a unit a caller asked for.
+
+    The finalizers no longer need filtering by name: `shape` reports declared
+    names, so the engine's `-on-failure` rename never reaches this code.
     """
     patched(
         _details(
             "RUNNING",
-            output=None,
-            tasks=[
-                _task("plan-1785250189225", "COMPLETED"),
-                _task("summarise_failure-on-failure-1785254706601", "COMPLETED"),
-                _task("summarise_success-on-success-1785254706615", "CANCELLED"),
-                _task("compactness-1785250189293", "RUNNING"),
-            ],
+            units=[("plan", "COMPLETED", None), ("compactness", "RUNNING", None)],
         )
     )
     run = HatchetOrchestrator().get_run(None, "r1")
+
     assert [u.indicator for u in run.units] == ["compactness"]
 
 
-# ── The two helpers, where the sharp edges are ───────────────────────────────
+# ── The helpers, where the sharp edges are ───────────────────────────────────
 
 
-def test_strip_suffix_only_removes_a_numeric_tail():
-    # The engine appends a millisecond timestamp.
-    assert _strip_suffix("urban_form_block_compactness-1785250189293") == (
-        "urban_form_block_compactness"
-    )
-    # A slug that merely contains hyphens must survive intact.
-    assert _strip_suffix("some-hyphenated-slug") == "some-hyphenated-slug"
-    assert _strip_suffix("plan") == "plan"
-
-
-def test_verdict_of_rejects_output_that_is_not_a_verdict():
+def test_skipped_of_ignores_output_that_is_not_a_skip_list():
     """`plan` returns `{"dirty": [...]}`, and a run in flight serves it as output.
 
-    Treating that as a verdict would report status=None with zero units on
-    every running workflow.
+    Reading that as a skip list would mark arbitrary units skipped.
     """
-    assert _verdict_of(SimpleNamespace(output={"dirty": ["a", "b"]})) is None
-    assert _verdict_of(SimpleNamespace(output=None)) is None
-    assert _verdict_of(SimpleNamespace(output="not a dict")) is None
-    assert (
-        _verdict_of(SimpleNamespace(output={"overall": "partial"})) is None
-    )  # no units
-    assert _verdict_of(SimpleNamespace(output={"overall": "x", "units": {}})) == {
-        "overall": "x",
-        "units": {},
+    assert _skipped_of(SimpleNamespace(output={"dirty": ["a", "b"]})) == frozenset()
+    assert _skipped_of(SimpleNamespace(output=None)) == frozenset()
+    assert _skipped_of(SimpleNamespace(output="not a dict")) == frozenset()
+    assert _skipped_of(SimpleNamespace(output={"skipped": "a"})) == frozenset()
+    assert _skipped_of(SimpleNamespace(output={"skipped": ["a"]})) == frozenset({"a"})
+
+
+def test_units_join_shape_to_tasks_by_external_id_not_by_order():
+    """The join key is explicit, because list order is not a contract."""
+    details = SimpleNamespace(
+        shape=[
+            SimpleNamespace(task_name="first", task_external_id="ext-a"),
+            SimpleNamespace(task_name="second", task_external_id="ext-b"),
+        ],
+        # Deliberately reversed relative to `shape`.
+        tasks=[
+            SimpleNamespace(
+                task_external_id="ext-b", status="FAILED", error_message="b"
+            ),
+            SimpleNamespace(
+                task_external_id="ext-a", status="COMPLETED", error_message=None
+            ),
+        ],
+    )
+
+    units = _units_of(details, skipped=frozenset())
+
+    assert {u.indicator: u.status for u in units} == {
+        "first": "succeeded",
+        "second": "failed",
     }
 
 
@@ -202,6 +283,7 @@ def test_get_run_only_treats_a_real_404_as_unknown(monkeypatch):
 def test_retry_taxonomy_excludes_deterministic_runner_errors():
     """Only database transport/contention failures should spend retry budget."""
     import psycopg2
+
     from reimagina.orchestration.hatchet_app import _is_retryable
 
     assert _is_retryable(psycopg2.OperationalError("connection reset"))

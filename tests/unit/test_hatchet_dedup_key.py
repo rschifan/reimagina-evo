@@ -162,7 +162,51 @@ def test_the_payload_no_longer_carries_the_feature_ids(monkeypatch):
     """
     payload = _submit(monkeypatch, units=[("slug", FEATURES)])
 
-    assert payload.features == {}
+    # The field is gone from the model, not merely left empty — an unused second
+    # path to the feature set is a path someone eventually populates.
+    assert not hasattr(payload, "features")
     assert payload.plan_id
     # A couple of hundred bytes, and flat in the size of the city.
     assert len(payload.model_dump_json()) < 1024
+
+
+def test_an_unscoped_run_serialises_on_its_own_work_not_a_shared_bucket(monkeypatch):
+    """The fallback is the fingerprint, not the constant `"baseline"`.
+
+    With no scenario and no AOI there is no named scope to protect, and the
+    constant put every such run into one `max_runs=1` bucket — so unrelated
+    recomputes queued behind each other for no reason, and under the earlier
+    `CANCEL_NEWEST` strategy cancelled each other outright.
+
+    Two unscoped runs genuinely conflict only when they touch the same features,
+    which is exactly the set `dedup_key` hashes. Reusing it introduces no new
+    concept and gives distinct work distinct buckets.
+    """
+    payload = _submit(monkeypatch, units=[("slug", FEATURES)], scenario_id=None)
+
+    assert payload.scenario_id is None
+    assert payload.aoi_id is None
+    assert payload.concurrency_key != "baseline"
+    assert payload.concurrency_key == payload.dedup_key
+
+
+def test_unrelated_unscoped_runs_land_in_different_buckets(monkeypatch):
+    """The regression the constant caused, asserted directly."""
+    one = _submit(monkeypatch, units=[("slug", FEATURES)], scenario_id=None)
+    other = _submit(monkeypatch, units=[("other_slug", FEATURES)], scenario_id=None)
+
+    assert one.concurrency_key != other.concurrency_key
+
+
+def test_a_scoped_run_still_serialises_on_its_scope(monkeypatch):
+    """The fallback must not displace the scope when there is one.
+
+    A scenario names the rows two runs would fight over; two *different* edits
+    to one scenario must still serialise, and they have different fingerprints.
+    """
+    one = _submit(monkeypatch, units=[("slug", FEATURES)], scenario_id=SCENARIO)
+    other = _submit(monkeypatch, units=[("other_slug", FEATURES)], scenario_id=SCENARIO)
+
+    assert one.concurrency_key == SCENARIO
+    assert other.concurrency_key == SCENARIO
+    assert one.dedup_key != other.dedup_key
