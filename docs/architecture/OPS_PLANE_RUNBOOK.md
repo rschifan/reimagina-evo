@@ -304,6 +304,18 @@ The direct-side probe is memoised per DSN; the caller side is read every request
 
 ## `GET /jobs/{run_id}/events` — the error frame
 
+⚠ **The stream reconnects before it gives up.** The engine's progress stream is
+a gRPC connection and it drops for ordinary reasons — a restart, a rolling
+deploy, a blip — while the run carries on executing. So a dropped listener is
+retried with bounded backoff until the run is terminal or
+`REIMAGINA_SSE_OUTAGE_DEADLINE_S` (default 60) of *continuous* failure; the
+budget resets on any successful resubscription. Reconnecting also reconciles,
+because `subscribe_progress` sends a snapshot first, and replayed frames are
+de-duplicated so catching up is not mistaken for new progress.
+
+Only once that budget is spent does the frame below appear. Seeing it means the
+engine was unreachable for a solid minute, not that one packet went missing.
+
 The stream can fail after its headers are on the wire, and at that point the
 status code is settled: a 503 is no longer reachable. The route emits one
 terminal frame instead, then closes.
@@ -329,11 +341,53 @@ underlying exception text never reaches the wire.
 | `REIMAGINA_QUEUE_TIMEOUT_HOURS` | 6 | ⚠ Hatchet's default is **5 minutes**, and timed-out queued work reports FAILED — indistinguishable from broken compute |
 | `REIMAGINA_UNIT_RETRIES` | 2 | with backoff; `NonRetryableException` opts out deterministic failures |
 | `REIMAGINA_DEDUP_TTL_S` | 60 | idempotency window — a debounce, not a result cache |
+| `REIMAGINA_SSE_OUTAGE_DEADLINE_S` | 60 | how long a *continuous* listener outage may last before the stream gives up |
+| `HATCHET_CLIENT_TLS_STRATEGY` | SDK default is TLS | ⚠ the compose sets `SERVER_GRPC_INSECURE`, so a client left at the default dies on a handshake with `WRONG_VERSION_NUMBER` |
+| `HATCHET_IMAGE` | the pinned **digest** | a tag is a mutable pointer; this branch already ran a year of spikes against an image its compose did not name |
 
-⚠ `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` defaults to **720h — runs
-older than 30 days are deleted.** On this track that is the run history, since
-there is no table of ours. Track A's history lives in `orchestration_run` and is
-bounded only by disk.
+⚠ `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` is **720h — runs older than 30
+days are deleted.** On this track that is the run history, since there is no
+table of ours. Track A's history lives in `orchestration_run` and is bounded only
+by disk.
+
+**It is pinned to a second value.** `runs.replay()` re-executes from the original
+input — a `plan_id` handle into `jobs_runtime.run_plan` — so the retention
+horizon in `scripts/reclaim_run_plans.sql` must be **longer** than this, or a
+replayable run finds no plan and fails every unit. 720h here means 45 days there.
+Change one, change the other.
+
+## Two things to watch, and what they mean
+
+Metrics are on (`SERVER_OBSERVABILITY_ENABLED`, `SERVER_PROMETHEUS_ENABLED`), so
+these are engine-native rather than something to instrument:
+
+| alert on | native signal | what it means |
+|---|---|---|
+| worker availability | ACTIVE workers serving the current `reimagina-run-v<shape>` | zero means submissions are being refused and readiness is 503 |
+| queue delay | `REQUEUED_NO_WORKER`, `SCHEDULING_TIMED_OUT` task events | work is waiting on capacity, not failing |
+| retries | `RETRYING` task events | transient database contention, or a unit that should be `NonRetryableException` |
+| timeouts | `TIMED_OUT` task events | ⚠ a unit hitting `REIMAGINA_UNIT_TIMEOUT_MIN` also hits `statement_timeout`, and is **not** retried |
+| task failures | `FAILED` task events | genuine compute failures; check `job_run` for provenance |
+| engine reachability | `/api/v1/meta` (answers unauthenticated) | ⚠ `/api/v1/readiness` and `/api/v1/liveness` return **403**, so do not wire a probe to them |
+| orphaned listeners | `ps -eo pid,ppid,command \| awk '$2==1 && /spawn_main/'` | the process-tree hazard above; check this before blaming the engine |
+
+## Backup, retention and upgrade
+
+The engine's Postgres database **is** this track's run history. There is no table
+of ours to fall back on, which is the comparison row and also an operational
+obligation:
+
+- **Back up the `hatchet` database** on the same footing as domain data. Losing
+  it loses every run's history, logs and replay capability at once.
+- **Retention is two values, pinned together** — see above. Neither is a default
+  worth inheriting.
+- **Upgrading the engine re-runs the qualification suite.** The pin is a digest
+  precisely so an upgrade is a decision; `tests/qualification/` is what makes it
+  a checked one. Bump `HATCHET_IMAGE`, run `make test-qualification` and
+  `make test-conformance`, and record the delta before rolling it out.
+- **A graph change is a rolling deployment.** Workers for the old
+  `reimagina-run-v<shape>` keep serving until their runs drain; do not delete the
+  old workflow while runs reference it.
 
 ## What is not ready
 
@@ -349,7 +403,7 @@ Stated plainly so nobody discovers it at 3am:
   progress callback that does not exist yet.
 - **Adding an indicator requires a redeploy**, not just a catalog row — the DAG
   is declared at import. Track A reads the registry at runtime.
-- **Metrics are available and off.** `SERVER_OBSERVABILITY_ENABLED` and
-  `SERVER_PROMETHEUS_ENABLED` both default false; `/api/v1/meta` confirms it.
-  Turning them on is a config change, not code — the library track has no
-  equivalent to turn on.
+- **TLS and credentials are development values.** The compose runs plaintext
+  gRPC, insecure cookies, and the engine's own hardcoded seeded login. All three
+  are grouped and commented in `docker-compose.hatchet.yml`; none is safe off
+  localhost.
