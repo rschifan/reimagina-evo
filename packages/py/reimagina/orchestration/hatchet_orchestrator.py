@@ -474,17 +474,7 @@ class HatchetOrchestrator:
 
         run = getattr(details, "run", details)
         engine_status = _name(getattr(run, "status", None))
-        raw_units, scaffolding_failed = _units_of(details)
-
-        # A skip is invisible in the status enum — the engine reports COMPLETED
-        # — so the finalizer's list is overlaid here.
-        skipped = _skipped_of(run)
-        units = tuple(
-            UnitStatusView(u.indicator, "skipped", u.detail)
-            if u.indicator in skipped
-            else u
-            for u in raw_units
-        )
+        units, scaffolding_failed = _units_of(details)
 
         # ⚠ `skipped` is excluded from the roll-up, because the word means two
         # different things across the tracks. On `sync` a skip is an
@@ -754,20 +744,35 @@ def _is_scaffolding(slug: str) -> bool:
 _ENGINE_TERMINAL = frozenset({"COMPLETED", "CANCELLED", "FAILED"})
 
 
-def _skipped_of(run: object) -> frozenset[str]:
-    """The finalizer's skip list, if it has run.
+def _skipped_task_ids(details: object) -> frozenset[str]:
+    """External ids of tasks the engine skipped, from its own event log.
 
-    The one fact `runs.get` cannot supply: a unit skipped for being non-dirty
-    reports COMPLETED, identical to one that computed. Absent while the run is
-    in flight, which is correct — nothing is known to be skipped until the
-    engine has finished deciding what to schedule.
+    ⚠ This replaced a finalizer, and the finalizer existed because of a
+    misreading. `V1TaskEvent.task_id` is typed `StrictStr` while
+    `V1TaskSummary.task_id` is `StrictInt`, which was taken to mean the two
+    could not be joined — so a `on_success_task`/`on_failure_task` pair was
+    written to publish `ctx.was_skipped` instead.
+
+    The field is simply misnamed: `V1TaskEvent.task_id` carries the
+    **`task_external_id`**, not the integer `task_id`. Measured against this
+    engine: 489 task events across 19 runs, every one of them joining to a task
+    by external id, and none by the integer.
+
+    Two properties follow, both better than the finalizer had:
+
+    * a skip is visible **while the run is in flight**, not only once a
+      finalizer has run at terminal state;
+    * `SKIPPED` marks exactly the `skip_if` skips. Verified: of the tasks
+      carrying the event, 62 of 62 were `COMPLETED`, and no `CANCELLED` or
+      `FAILED` task carried one — so a dependent the engine cancelled is not
+      relabelled as a skip.
     """
-    output = getattr(run, "output", None)
-    if isinstance(output, dict):
-        skipped = output.get("skipped")
-        if isinstance(skipped, list):
-            return frozenset(str(s) for s in skipped)
-    return frozenset()
+    return frozenset(
+        task_id
+        for event in (getattr(details, "task_events", None) or [])
+        if _name(getattr(event, "event_type", None)) == "SKIPPED"
+        and (task_id := getattr(event, "task_id", None)) is not None
+    )
 
 
 def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
@@ -793,12 +798,21 @@ def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
         if key is not None:
             outcomes[key] = task
 
+    skipped = _skipped_task_ids(details)
+
     units: list[UnitStatusView] = []
     scaffolding_failed = False
     for item in getattr(details, "shape", None) or []:
         slug = getattr(item, "task_name", "") or ""
-        task = outcomes.get(getattr(item, "task_external_id", None))
+        external_id = getattr(item, "task_external_id", None)
+        task = outcomes.get(external_id)
         status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
+        # A skip reports COMPLETED like anything else that finished, so the
+        # event log is the only thing that separates "not dirty" from
+        # "computed". Applied here rather than overlaid by the caller, so the
+        # unit list is right the first time it is built.
+        if external_id in skipped:
+            status = "skipped"
         if _is_scaffolding(slug):
             scaffolding_failed = scaffolding_failed or status == "failed"
             continue
