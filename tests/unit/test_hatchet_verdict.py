@@ -31,24 +31,60 @@ from reimagina.orchestration.hatchet_orchestrator import (
 def _details(status: str, output: object = None, units: list | None = None):
     """Shaped like `V1WorkflowRunDetails`: `.run`, `.shape` and `.tasks`.
 
-    ⚠ `shape` and `tasks` join on `task_external_id`, and `shape` carries
-    `task_name` — the name as *declared*. The engine's `display_name` mangling
-    (`compactness-1785250189293`, `summarise_failure-on-failure`) never appears
-    on this path, which is the point of using it.
+    ⚠ **`shape` carries the scaffolding too**, and the previous version of this
+    helper did not — which is exactly how a real defect shipped. The engine's
+    `GetWorkflowShape` joins every Job of the workflow version, including the
+    linked on-failure job, so `plan` and both finalizers appear alongside the
+    indicators, under the names the SDK registered them with. Verified against a
+    live run. A fixture that omitted them let a name-blocklist filter look
+    sufficient when it was not.
     """
     units = units or []
+    scaffolding = [
+        ("plan", "COMPLETED", None),
+        ("summarise_success-on-success", "COMPLETED", None),
+        ("summarise_failure-on-failure", "COMPLETED", None),
+    ]
+    rows = [*scaffolding, *units]
     return SimpleNamespace(
         run=SimpleNamespace(status=status, output=output),
         shape=[
             SimpleNamespace(task_name=name, task_external_id=f"ext-{i}")
-            for i, (name, _s, _e) in enumerate(units)
+            for i, (name, _s, _e) in enumerate(rows)
         ],
         tasks=[
             SimpleNamespace(
                 task_external_id=f"ext-{i}", status=status_, error_message=err
             )
-            for i, (_n, status_, err) in enumerate(units)
+            for i, (_n, status_, err) in enumerate(rows)
         ],
+    )
+
+
+CATALOG = frozenset(
+    {
+        "a",
+        "b",
+        "computed",
+        "not_dirty",
+        "doomed",
+        "dependent",
+        "independent",
+        "compactness",
+        "density",
+        "early",
+        "not_started_yet",
+        "first",
+        "second",
+    }
+)
+"""Stand-in for the domain catalog: only these slugs are indicators."""
+
+
+def _orchestrator():
+    """An orchestrator whose registry is the fake catalog above."""
+    return HatchetOrchestrator(
+        registry=tuple(SimpleNamespace(slug=s) for s in sorted(CATALOG))
     )
 
 
@@ -84,7 +120,7 @@ def test_partial_is_rolled_up_from_native_task_outcomes(patched):
             units=[("a", "COMPLETED", None), ("b", "FAILED", "RuntimeError: boom")],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert run.status == "partial"
     assert {u.indicator: u.status for u in run.units} == {
@@ -112,7 +148,7 @@ def test_a_cancelled_dependent_is_read_not_inferred(patched):
             ],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "doomed": "failed",
@@ -131,7 +167,7 @@ def test_skipped_survives_a_completed_task_status(patched):
             units=[("computed", "COMPLETED", None), ("not_dirty", "COMPLETED", None)],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "computed": "succeeded",
@@ -155,7 +191,7 @@ def test_an_all_skipped_run_is_not_reported_as_success(patched):
             units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert [u.status for u in run.units] == ["skipped", "skipped"]
     assert run.status == "failed"
@@ -177,7 +213,7 @@ def test_an_in_flight_run_reports_the_engine_status_not_a_rollup(patched):
             units=[("compactness", "COMPLETED", None), ("density", "RUNNING", None)],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert run.status == "running"
     assert {u.indicator: u.status for u in run.units} == {
@@ -199,7 +235,7 @@ def test_a_unit_with_no_task_row_yet_is_queued_not_missing(patched):
     )
     patched(details)
 
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert {u.indicator: u.status for u in run.units} == {
         "early": "running",
@@ -219,7 +255,7 @@ def test_scaffolding_is_not_reported_as_an_indicator(patched):
             units=[("plan", "COMPLETED", None), ("compactness", "RUNNING", None)],
         )
     )
-    run = HatchetOrchestrator().get_run("r1")
+    run = _orchestrator().get_run("r1")
 
     assert [u.indicator for u in run.units] == ["compactness"]
 
@@ -257,7 +293,7 @@ def test_units_join_shape_to_tasks_by_external_id_not_by_order():
         ],
     )
 
-    units = _units_of(details, skipped=frozenset())
+    units = _units_of(details, skipped=frozenset(), known=CATALOG)
 
     assert {u.indicator: u.status for u in units} == {
         "first": "succeeded",
@@ -277,7 +313,7 @@ def test_get_run_only_treats_a_real_404_as_unknown(monkeypatch):
         ),
     )
     with pytest.raises(HatchetUnavailable):
-        HatchetOrchestrator().get_run("r1")
+        _orchestrator().get_run("r1")
 
 
 def test_retry_taxonomy_excludes_deterministic_runner_errors():

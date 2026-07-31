@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import warnings
 import platform
 import subprocess
 import threading
@@ -272,10 +273,10 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
     a daemon. Python joins non-daemon children at interpreter exit, so a
     listener that never stops hangs the *whole pytest session* after the last
     test has passed — no output, no failing test. `exit_gracefully` stops it;
-    the loop below is a bounded safety net, reading the **public**
-    `action_listener_process` property rather than the private attribute.
+    the loop below is a bounded safety net; see `_worker_internal` for why
+    these attributes are not the public API this once claimed they were.
     """
-    loop = getattr(worker, "loop", None)
+    loop = _worker_internal(worker, "loop")
     if loop is not None and loop.is_running():
         try:
             asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
@@ -285,8 +286,8 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
             _LOG.warning("graceful worker stop failed: %s", exc)
 
     for attr in ("action_listener_process", "durable_action_listener_process"):
-        proc = getattr(worker, attr, None)
-        if proc is not None and proc.is_alive():
+        proc = _worker_internal(worker, attr)
+        if proc is not None and hasattr(proc, "is_alive") and proc.is_alive():
             _LOG.warning("%s survived graceful stop; terminating", attr)
             proc.terminate()
             proc.join(timeout=5.0)
@@ -496,3 +497,27 @@ def _git_sha() -> str | None:
         ).stdout.strip()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         return None
+
+
+def _worker_internal(worker, name: str):
+    """Read an SDK-internal worker attribute, public shim first.
+
+    ⚠ There is no public teardown API. `worker.loop` and
+    `worker.action_listener_process` are `@property` shims that emit a
+    `DeprecationWarning` and are documented "will be removed in v2.0.0" — the
+    same objection this branch raised to justify moving off `ctx.exit_flag`, so
+    calling them public was wrong.
+
+    Falling back to the private attribute matters: when v2.0.0 drops the
+    property, a bare `getattr(worker, "loop", None)` returns None, the guard
+    below falls through, `exit_gracefully` is never awaited, and the non-daemon
+    listener hangs the pytest session with no output and no failing test.
+
+    ⚠ `durable_action_listener_process` returns `_durable_event_queue` — a
+    Queue, not a process — so `.is_alive()` on it raises. Latent only because
+    durable tasks are unused here. The private attribute is the honest source.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        value = getattr(worker, name, None)
+    return value if value is not None else getattr(worker, f"_{name}", None)

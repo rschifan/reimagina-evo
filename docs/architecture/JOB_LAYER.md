@@ -30,7 +30,7 @@ caller (apps/api/routers/jobs.py, apps/cli/indicators.py)
   │     ├─ set_unit_status       runstore.py:62 → True only if the write landed
   │     └─ events.emit           events.py:22   → pg_notify('job_events', …), gated on that True
   │
-  ├─ get_run(conn, run_id)             → RunStatus + per-unit views
+  ├─ get_run(run_id)                   → RunStatus + per-unit views
   └─ subscribe_progress(run_id)        → RunEvent stream, framed as SSE by the route
 ```
 
@@ -66,7 +66,7 @@ The module docstrings already carry their own fate, deliberately, so the split s
 class Orchestrator(Protocol):                                    # port.py:102
     def submit_run(self, conn, *, changed_attributes, edited_features,
                    scenario_id=None, aoi_id=None, code_version="dev") -> RunHandle: ...
-    def get_run(self, conn, run_id: str) -> RunStatus | None: ...
+    def get_run(self, run_id: str) -> RunStatus | None: ...
     def cancel_run(self, conn, run_id: str) -> bool: ...
     def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]: ...
 ```
@@ -247,7 +247,7 @@ Python has one definition, in the port, because the port is the module no ops-pl
 | Frozenset | Members | Meaning |
 |---|---|---|
 | `UNIT_TERMINAL_STATES` | `succeeded, failed, skipped, cancelled` | no further transition (`port.py:30`) |
-| `UNIT_UNSATISFIED_STATES` | `failed, skipped, cancelled` | makes a dependent unrunnable (`port.py:33`) |
+| ~~`UNIT_UNSATISFIED_STATES`~~ | — | deleted; it had no reader on either track |
 | `RUN_TERMINAL_STATES` | `succeeded, partial, failed, cancelled` | closes a progress stream (`port.py:36`) |
 
 These are not advisory. `runstore` imports the first and third and interpolates them into the `UPDATE` guards (`runstore.py:14`, `:85`, `:166`), so the port's vocabulary is what the database enforces — and an engine that keeps `runstore` inherits the enforcement for free.

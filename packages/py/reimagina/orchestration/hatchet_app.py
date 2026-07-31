@@ -97,15 +97,24 @@ UNIT_SCHEDULE_TIMEOUT = timedelta(
     hours=int(os.environ.get("REIMAGINA_QUEUE_TIMEOUT_HOURS", "6"))
 )
 
-# The same bound, expressed where the database can enforce it. Hatchet's
-# execution timeout stops scheduling the task and nothing more — the statement
-# keeps running and the worker slot stays occupied, because neither engine can
-# interrupt a thread inside psycopg2's C extension. `SET LOCAL statement_timeout`
-# is the one mechanism that actually ends a runaway PostGIS query.
+# A per-statement ceiling, expressed where the database can enforce it.
+# Hatchet's execution timeout stops scheduling the task and nothing more — the
+# statement keeps running and the worker slot stays occupied, because neither
+# engine can interrupt a thread inside psycopg2's C extension. `SET LOCAL
+# statement_timeout` is the one mechanism that actually ends a runaway query.
 #
-# Derived rather than configured separately: two knobs for one bound drift, and
-# the pair that matters is "the engine gave up" against "the database gave up",
-# which should happen at the same moment.
+# ⚠ It bounds **each statement**, not the unit. An earlier version of this
+# comment claimed the engine and the database "gave up at the same moment";
+# they do not. A unit issuing five sequential 100-minute statements burns 500
+# minutes without any single one tripping a 120-minute timeout, long after the
+# engine's `execution_timeout` expired — and the slot stays occupied for all of
+# it. Bounding the unit as a whole needs `ctx.refresh_timeout` and a progress
+# callback the runner interface does not have (see above); until then this
+# catches the single runaway statement, which is the common case, and not a
+# pathological sequence of merely slow ones.
+#
+# Derived from the engine value rather than configured separately so the two
+# cannot drift apart by accident.
 UNIT_EXECUTION_TIMEOUT_MS = int(UNIT_EXECUTION_TIMEOUT.total_seconds() * 1000)
 
 # A deterministic runner exception re-burns the minutes on every attempt, so the
@@ -260,6 +269,21 @@ def workflow_name(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS) -> str
     return f"{WORKFLOW_STEM}-v{shape_version(_dependencies(registry))}"
 
 
+def missing_runners(
+    registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
+) -> list[str]:
+    """Catalog slugs this process has no compute function for.
+
+    Separated from `build_dag` on purpose: a graph can legitimately be declared
+    before its runners exist (the workload suite does exactly that), but a
+    *worker* that registers a workflow it cannot execute accepts real work and
+    then fails each unit `UNIT_RETRIES + 1` times with backoff in between.
+    Called from `run_hatchet_worker`, so the refusal lands at startup.
+    """
+    available = default_runners(registry)
+    return sorted(spec.slug for spec in registry if spec.slug not in available)
+
+
 def graph_version(registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS) -> str:
     """Shape *plus* task semantics — for observability, not for admission.
 
@@ -336,15 +360,17 @@ def build_dag(
     overwrites or rejects — so anything that needs its own topology takes its own
     name rather than finding out. The workload suite uses ``reimagina-bench-*``.
     """
-    # Resolved once, before anything is constructed, rather than per task
-    # attempt. A missing runner is a deployment error: failing here means the
-    # worker refuses to advertise a workflow it cannot execute, instead of
-    # accepting the work and failing each unit `UNIT_RETRIES + 1` times with
-    # backoff in between. Before the client, so the check does not need one.
+    # Resolved once, here, rather than rebuilt on every task attempt.
+    #
+    # ⚠ It does **not** raise on a missing runner, and that was a real break.
+    # Declaring a graph and being able to execute it are separate concerns with
+    # separate lifetimes: the workload suite builds one DAG per synthetic
+    # workload in a session-scoped fixture and installs the matching computes
+    # per test, so a build-time check killed the whole suite in setup before a
+    # single benchmark ran. `missing_runners` below is the same check, called
+    # from worker startup — which is where "this process cannot execute what it
+    # is advertising" actually means something.
     runners = default_runners(registry)
-    missing = sorted(spec.slug for spec in registry if spec.slug not in runners)
-    if missing:
-        raise ValueError(f"no runner registered for indicator(s): {missing!r}")
 
     workflow = (client or get_hatchet()).workflow(
         name=name or workflow_name(registry),
@@ -405,24 +431,26 @@ def build_dag(
             input: RunInput,
             ctx: Context,
             _slug: str = spec.slug,
-            runner=runners[spec.slug],
+            runner=runners.get(spec.slug),
         ) -> dict:
             from reimagina.db import connect
 
-            # Cancellation is cooperative, and this is the one place it is
-            # cheap: a unit cancelled while it sat in the queue has not opened a
-            # transaction yet, so declining to start costs nothing and saves a
-            # `pg_cancel_backend` round trip against a backend that would
-            # otherwise have to be hunted down. It does nothing for a unit
-            # already inside a blocking psycopg2 call — see the runbook.
-            #
-            # ⚠ `is_cancelled`, not `exit_flag`. The SDK marks `exit_flag`
-            # internal and warns on every read: "It will be removed in v2.0.0.
-            # Use `is_cancelled` instead." Reaching for a deprecated internal to
-            # read cancellation state is the same mistake as reaching into
-            # `_action_listener_process` to stop a worker.
-            if ctx.is_cancelled:
-                raise NonRetryableException(f"{_slug}: cancelled before it started")
+            # Bound at declaration (see `build_dag`), so this is a None check
+            # rather than a per-attempt lookup. A worker refuses to start when
+            # any runner is missing (`missing_runners`), so reaching here means
+            # the graph was declared by something that is not a worker — a test,
+            # or a bench harness that installs its computes later.
+            if runner is None:
+                raise NonRetryableException(f"no runner registered for {_slug!r}")
+
+            # ⚠ No `ctx.is_cancelled` preflight here. Declining to start by
+            # raising `NonRetryableException` made the engine record the task
+            # FAILED, so a unit cancelled while queued read back as `failed`
+            # with a detail string about cancellation — and `overall_status`
+            # then reported the whole run `failed` or `partial` rather than
+            # `cancelled`. Saving one `pg_cancel_backend` round trip is not
+            # worth mislabelling the outcome; `cancel_run` already stops both
+            # the scheduling and the statement.
 
             # ⚠ `ctx.workflow_run_id`, NOT `input.run_id`. The submitter cannot
             # know the id — the engine mints it — so `RunInput.run_id` is an

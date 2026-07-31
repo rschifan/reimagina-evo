@@ -11,6 +11,8 @@ must raise, not compute zero features and report success.
 
 from __future__ import annotations
 
+import pathlib
+
 import uuid
 
 import pytest
@@ -152,14 +154,29 @@ def test_deleting_an_unknown_plan_is_not_an_error(conn):
     assert repo.delete(plan_id=_plan_id()) == 0
 
 
+_RECLAIM_SQL = (
+    pathlib.Path(__file__).resolve().parents[2] / "scripts" / "reclaim_run_plans.sql"
+)
+
+
 def _reclaim(conn, horizon: str) -> int:
-    """The scheduled retention statement, as `scripts/reclaim_run_plans.sql`."""
+    """Run the **shipped** retention statement, not a copy of it.
+
+    ⚠ This used to re-type the DELETE with a bound parameter. That left the
+    actual file — its `:'horizon'` quoting, its `ON_ERROR_STOP`, any later edit
+    to its predicate — with no automated coverage at all, while three tests
+    reported the retention behaviour as verified.
+
+    psql metacommands are stripped: they are the caller's business, and psycopg2
+    cannot execute them.
+    """
+    statement = "\n".join(
+        line
+        for line in _RECLAIM_SQL.read_text().splitlines()
+        if not line.startswith("\\")
+    ).replace(":'horizon'", "%(horizon)s")
     with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM jobs_runtime.run_plan "
-            "WHERE created_at < now() - %s::interval",
-            (horizon,),
-        )
+        cur.execute(statement, {"horizon": horizon})
         return cur.rowcount
 
 

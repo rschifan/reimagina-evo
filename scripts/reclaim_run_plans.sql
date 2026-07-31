@@ -18,7 +18,14 @@
 --   120 minutes by default).
 --
 -- Usage:
---   psql "$DATABASE_URL_DIRECT" -v horizon="'45 days'" -f scripts/reclaim_run_plans.sql
+--   make reclaim-run-plans                      # horizon from REIMAGINA_PLAN_RETENTION
+--   psql "$DATABASE_URL_DIRECT" -v horizon="45 days" -f scripts/reclaim_run_plans.sql
+--
+-- ⚠ The value is quoted *here*, with :'horizon', not by the caller. psql's :var
+-- is raw text substitution, so the nested-quoting form this once documented
+-- (-v horizon="'45 days'") put the caller's string directly into the statement:
+-- a wrapper doing -v horizon="$RETENTION" would append whatever that variable
+-- held to a DELETE. :'horizon' makes psql emit a properly quoted literal.
 --
 -- Uses the r051 index on created_at. At three rows per run this is cheap; it is
 -- scheduled rather than opportunistic because *when* it runs must be a decision
@@ -27,4 +34,4 @@
 \set ON_ERROR_STOP on
 
 DELETE FROM jobs_runtime.run_plan
-WHERE created_at < now() - :horizon::interval;
+WHERE created_at < now() - :'horizon'::interval;

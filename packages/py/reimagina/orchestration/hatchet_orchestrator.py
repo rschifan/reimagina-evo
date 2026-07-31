@@ -43,7 +43,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Collection, Iterable, Sequence
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -131,13 +131,18 @@ def _discard_plan(direct_dsn: str, plan_id: str) -> None:
 _NOT_ACCEPTED_CODES = frozenset(
     {
         "INVALID_ARGUMENT",
-        "RESOURCE_EXHAUSTED",
         "FAILED_PRECONDITION",
         "PERMISSION_DENIED",
         "UNAUTHENTICATED",
         "NOT_FOUND",
     }
 )
+# ⚠ `RESOURCE_EXHAUSTED` was here and had to go. gRPC raises it client-side for
+# "Received message larger than max" — the RPC *succeeded*, the run exists, and
+# only the reply could not be read. Treating that as proof of refusal deleted a
+# live run's plan and killed every remaining unit with a missing-plan error,
+# which is exactly the unrecoverable wrong-True this function must never make.
+# It is genuinely ambiguous, so it retains.
 
 
 def _is_definitely_not_accepted(exc: BaseException) -> bool:
@@ -175,30 +180,45 @@ class GraphVersionUnavailable(RuntimeError):
     """
 
 
-def _graph_is_deployed(workflow: str) -> bool:
-    """Has this workflow name ever been registered with the engine?
+def _graph_is_deployed(workflow: object) -> bool:
+    """Has the workflow this submit will trigger ever been registered?
 
-    ⚠ Registration, **not** current worker liveness, and the distinction cost a
-    conformance run to learn. Gating submissions on a live ACTIVE worker looked
-    stricter and was simply wrong: worker status moves moment to moment, so a
-    healthy deployment with a busy or briefly-restarting worker refused runs it
-    should have accepted — and a rejected submission discards real work, where a
-    momentary lack of a worker only delays it. The engine queues.
+    Takes the **Workflow object**, not a name, so the thing checked and the
+    thing submitted to cannot drift apart.
 
-    A workflow name exists only because a worker declared it, so its absence is
-    the condition actually worth refusing: this deployment plans against a graph
-    shape nobody has ever deployed, and no amount of queueing fixes that.
+    ⚠ Registration, not current worker liveness. Gating submissions on a live
+    ACTIVE worker looked stricter and was wrong: worker status moves moment to
+    moment, so a healthy deployment with a busy or briefly-restarting worker
+    refused runs it should have accepted — caught by a conformance run failing
+    mid-suite with a worker running. A rejected submission destroys that
+    request's work; a momentarily absent worker only delays it, because the
+    engine queues. Liveness belongs in readiness, where failing merely takes the
+    instance out of rotation.
 
-    Liveness still matters, but it belongs in **readiness**, where failing takes
-    the instance out of rotation instead of destroying a request's work.
+    ⚠ Queried **by name**, not by scanning a page. `workflows.list()` sends no
+    limit, the engine defaults it to 50 and orders arbitrarily, and this branch
+    mints a new permanent workflow per graph shape plus one per bench workload —
+    so the current name could fall off the page and refuse every submission on a
+    correct deployment. Filtering also fixes namespacing for free: the SDK
+    applies the client namespace to both the registered name and this filter, so
+    a deployment sharing an engine between environments compares like with like
+    instead of never matching at all.
 
     Fails **open** on an unreadable listing: an admission check must not become
     a submission outage.
     """
     from reimagina.orchestration import hatchet_app
 
+    registered = getattr(workflow, "name", None)
+    if not registered:
+        return True
+
+    # The bare name the SDK will namespace into `registered`; passing the
+    # already-namespaced form would namespace it twice.
+    bare = registered.split("_", 1)[-1] if "_" in registered else registered
+
     try:
-        listed = hatchet_app.get_hatchet().workflows.list()
+        listed = hatchet_app.get_hatchet().workflows.list(workflow_name=bare)
     except Exception:  # noqa: BLE001
         logger.warning(
             "could not list workflows; admitting run unchecked", exc_info=True
@@ -206,7 +226,7 @@ def _graph_is_deployed(workflow: str) -> bool:
         return True
 
     names = {getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])}
-    return workflow in names
+    return registered in names
 
 
 def _live_worker_for(workflow: str) -> bool:
@@ -318,11 +338,18 @@ class HatchetOrchestrator:
         # ⚠ Before the plan is written, not after. A run refused here should
         # leave nothing behind, and this is a cheap engine read against a
         # database write plus a discard.
-        workflow = hatchet_app.workflow_name(self._registry)
-        if not _graph_is_deployed(workflow):
+        # ⚠ One object, used for both the check and the trigger. Deriving the
+        # name independently — `workflow_name(self._registry)` here, but
+        # `get_run_workflow()` at the trigger — meant validating a name nothing
+        # was going to submit to. The workload suite proves it: it patches
+        # `hatchet_app._dag` to a `reimagina-bench-*` workflow while passing its
+        # own registry, so the check asked the engine about a `reimagina-run-v*`
+        # name nobody had registered and refused every bench submit.
+        declared = hatchet_app.get_run_workflow()
+        if not _graph_is_deployed(declared):
             raise GraphVersionUnavailable(
-                f"no worker has ever registered {workflow!r} — this deployment "
-                f"plans against a graph shape nothing has deployed"
+                f"no worker has ever registered {getattr(declared, 'name', '?')!r} "
+                f"— this deployment plans against a graph nothing has deployed"
             )
 
         # Committed before the workflow is triggered; see `_persist_plan`.
@@ -345,22 +372,23 @@ class HatchetOrchestrator:
             # only if they touch the same features, which is exactly what
             # `dedup_key` hashes.
             #
-            # ⚠ The fallback is `dedup_key`, NOT a constant. `"baseline"` put
-            # every scenario-less, AOI-less run in ONE bucket under
-            # `max_runs=1` — so unrelated work serialized behind whichever
-            # unscoped run got there first, and under the earlier
-            # `CANCEL_NEWEST` strategy they cancelled each other outright.
+            # ⚠ A constant, and that is deliberate — the fingerprint was
+            # tried here and is wrong. `dedup_key` hashes the *whole* dirty set
+            # and feature map, so two unscoped runs share a bucket only when
+            # their work is identical; overlapping-but-different feature sets
+            # got different keys, ran concurrently, and raced on the features
+            # they shared through the stale-then-insert write path.
             #
-            # `dedup_key` is a hash over the dirty set and feature scope, so two
-            # unscoped runs share a bucket exactly when they touch the same
-            # features — which is the real conflict — and get their own
-            # otherwise. That is the same set the fingerprint already names, so
-            # no new concept is introduced to express it.
-            concurrency_key=scenario_id or aoi_id or dedup_key,
+            # The original objection to the constant was that it made unrelated
+            # baseline runs cancel each other — true under `CANCEL_NEWEST`, and
+            # no longer true: `GROUP_ROUND_ROBIN` queues them instead. Queueing
+            # unrelated work is a cost; corrupting a feature's current value is
+            # not a cost, it is a defect.
+            concurrency_key=scenario_id or aoi_id or "baseline",
             dedup_key=dedup_key,
         )
         try:
-            ref = hatchet_app.get_run_workflow().run(
+            ref = declared.run(
                 payload,
                 wait_for_result=False,
                 # This is what buys back the run-level querying we lost by
@@ -439,17 +467,42 @@ class HatchetOrchestrator:
 
         run = getattr(details, "run", details)
         engine_status = _name(getattr(run, "status", None))
-        units = _units_of(details, skipped=_skipped_of(run))
-
-        # ⚠ Two branches, deliberately. `overall_status` is a *terminal* roll-up:
-        # it has no case for `running`, so an in-flight run falls through every
-        # branch and comes back `failed`. While the engine still has the run
-        # open, its own status is the answer; once closed, the units are.
-        status = (
-            overall_status(u.status for u in units)
-            if engine_status in _ENGINE_TERMINAL
-            else _RUN_STATUS_FOR.get(engine_status, "running")
+        units = _units_of(
+            details,
+            skipped=_skipped_of(run),
+            known={spec.slug for spec in self._registry},
         )
+
+        # ⚠ `skipped` is excluded from the roll-up, and the reason is that the
+        # word means two different things on the two tracks. On `sync` a skip is
+        # an *unsatisfied input* — a real failure to compute. Here the engine
+        # reports an unsatisfied dependent as CANCELLED, so a skip can only mean
+        # "not dirty": an indicator the run was never asked to recompute.
+        #
+        # Feeding those to `overall_status` made every ordinary run `partial`,
+        # because `{succeeded, skipped}` is not `<= {succeeded}`. Measured on a
+        # healthy run: three indicators computed, `planned_floors` untouched
+        # because nothing it reads changed, and the API reported `partial`.
+        # Nothing had gone wrong.
+        judged = tuple(u.status for u in units if u.status != "skipped")
+
+        # ⚠ "Nothing to roll up" is two different situations, and
+        # `overall_status(())` returning `succeeded` conflated them:
+        #
+        #   no units at all — an absent or empty `shape`. Trust the engine.
+        #     Otherwise a run whose tasks all FAILED reports `succeeded`, and a
+        #     run CANCELLED before any task row existed rolls up from all-
+        #     `queued` to `failed`. The engine's own answer beats a derived one.
+        #
+        #   units, every one skipped — a run only exists when the dirty set was
+        #     non-empty, so this means the engine skipped work that was asked
+        #     for. It did not achieve its purpose: `failed`, as on `sync`.
+        if not units or engine_status not in _ENGINE_TERMINAL:
+            status = _RUN_STATUS_FOR.get(engine_status, "running")
+        elif not judged:
+            status = "failed"
+        else:
+            status = overall_status(judged)
         return RunStatus(run_id=run_id, status=status, units=units)
 
     # ── Cancel ──────────────────────────────────────────────────────────────
@@ -529,7 +582,28 @@ class HatchetOrchestrator:
             if rid
         ]
 
-        return [run_id for run_id in snapshot if self.cancel_run(conn, run_id)]
+        # ⚠ Per-run failures are collected, not propagated. The comprehension
+        # this replaces let one engine hiccup on run 7 of 20 abort the loop:
+        # runs 1-6 were already cancelled *and their backends killed*, runs 8-20
+        # were untouched, and the caller got an exception instead of the list —
+        # so the operator had no record of which half had been stopped.
+        cancelled: list[str] = []
+        failures: list[str] = []
+        for run_id in snapshot:
+            try:
+                if self.cancel_run(conn, run_id):
+                    cancelled.append(run_id)
+            except Exception:  # noqa: BLE001 — one run must not end the sweep
+                failures.append(run_id)
+                logger.warning("could not cancel run %s", run_id, exc_info=True)
+        if failures:
+            logger.warning(
+                "cancel_scenario stopped %d run(s); %d could not be reached: %s",
+                len(cancelled),
+                len(failures),
+                failures,
+            )
+        return cancelled
 
     # ── Subscribe ───────────────────────────────────────────────────────────
 
@@ -638,15 +712,25 @@ def _dedup_key(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-# ⚠ No `_SCAFFOLDING` set and no `_strip_suffix`. Both existed to undo engine
-# name mangling on `V1TaskSummary.display_name` — a millisecond suffix
-# (`compactness-1785250189293`) and a finalizer rename (`summarise_failure` is
-# reported as `summarise_failure-on-failure`). `V1WorkflowRunDetails.shape`
-# carries `task_name`, the name as declared, and joins to `tasks` on
-# `task_external_id`. Parsing a display string to recover a value the same
-# response states plainly is a guess that breaks whenever the engine changes how
-# it renders a name.
-_SCAFFOLDING = frozenset({"plan", ""})
+# ⚠ No `_strip_suffix`, and no name-based scaffolding blocklist either.
+#
+# `_strip_suffix` undid the millisecond suffix on `V1TaskSummary.display_name`
+# (`compactness-1785250189293`); `shape[].task_name` is the declared name and
+# needs no unpicking, so that much was right.
+#
+# What was wrong was concluding that `shape` therefore contains *only* our
+# indicators. It does not. The SDK registers an on-success/on-failure hook as an
+# ordinary task named `summarise_success-on-success`, and the engine's
+# `GetWorkflowShape` joins every Job of the workflow version — including the
+# linked on-failure job. Measured against a live run: `shape` carries both
+# finalizers under exactly those names, so a blocklist of `{"plan", ""}` let
+# them through as indicators nobody submitted, and their COMPLETED status then
+# dragged an all-failed run to `partial`.
+#
+# So the filter is an allowlist now: a unit is reported when the domain catalog
+# says it is an indicator. Anything the engine adds to the graph in future —
+# another hook, a new scaffolding step — is excluded by construction rather
+# than by someone remembering to extend a list of names.
 
 
 # Engine statuses from which no further task transition happens. Only then is
@@ -671,7 +755,7 @@ def _skipped_of(run: object) -> frozenset[str]:
 
 
 def _units_of(
-    details: object, *, skipped: frozenset[str]
+    details: object, *, skipped: frozenset[str], known: Collection[str]
 ) -> tuple[UnitStatusView, ...]:
     """Per-unit outcomes, read from the engine rather than reconstructed.
 
@@ -680,18 +764,27 @@ def _units_of(
     the display-name parsing — and it also means a unit the engine has not
     created a task row for yet still appears, as ``queued``, instead of blinking
     into existence partway through the run.
+
+    ``known`` is the domain catalog's slugs: only those are units a caller asked
+    for. See the allowlist note above.
     """
-    outcomes = {
-        getattr(task, "task_external_id", None): task
-        for task in (getattr(details, "tasks", None) or [])
-    }
+    # ⚠ Skip rows with no join key rather than letting them collide. Keying on
+    # `getattr(..., None)` put every id-less task under `None`, so an id-less
+    # shape item then joined to whichever of them happened to be last — handing
+    # a queued unit another unit's status and error text.
+    outcomes = {}
+    for task in getattr(details, "tasks", None) or []:
+        key = getattr(task, "task_external_id", None)
+        if key is not None:
+            outcomes[key] = task
 
     units: list[UnitStatusView] = []
     for item in getattr(details, "shape", None) or []:
         slug = getattr(item, "task_name", "") or ""
-        if slug in _SCAFFOLDING:
+        if slug not in known:
             continue
-        task = outcomes.get(getattr(item, "task_external_id", None))
+        key = getattr(item, "task_external_id", None)
+        task = outcomes.get(key) if key is not None else None
         status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
         # A skip is invisible in the status enum: the engine reports COMPLETED.
         if slug in skipped:

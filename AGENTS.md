@@ -8,7 +8,7 @@ Operational rules for agents working in this repo.
 - `packages/py/reimagina/`: shared backend namespace
 - `infra/db/`: migrations and seeds
 - `docs/architecture/`: architecture source of truth
-- `tests/`: `unit`, `integration`, `contract`, `conformance`, future `e2e`
+- `tests/`: `unit`, `integration`, `contract`, `conformance`, `qualification` (does the engine carry worker lifecycle — `make test-qualification`), `workloads` (opt-in benchmarks), future `e2e`
 - `tests/performance`: benchmark smoke checks and perf harness coverage
 
 ## Core architecture

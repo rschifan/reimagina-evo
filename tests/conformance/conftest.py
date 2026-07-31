@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from uuid import uuid4
@@ -149,7 +150,7 @@ def hatchet_worker():
     import threading
 
     if not os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.skip("HATCHET_CLIENT_TOKEN unset — no engine to register with")
+        _absent_engine("no engine to register with")
 
     os.environ.setdefault("DATABASE_URL_DIRECT", _DSN)
     from apps.worker.app import run_hatchet_worker
@@ -157,7 +158,7 @@ def hatchet_worker():
     try:
         worker = run_hatchet_worker(name="conformance", slots=4, blocking=False)
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"could not build a Hatchet worker: {exc}")
+        _absent_engine(f"could not build a Hatchet worker: {exc}")
 
     thread = threading.Thread(target=worker.start, daemon=True)
     thread.start()
@@ -182,10 +183,10 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
     process and not a daemon, so Python joins it at interpreter exit and a
     listener that never stops hangs the session *after the last test passed* —
     no output, no failing test. `exit_gracefully` stops it; the check below is
-    a bounded safety net, and it reads the **public** `action_listener_process`
-    property rather than the private attribute behind it.
+    a bounded safety net; see `_worker_internal` for why these attributes are
+    not the public API this once claimed they were.
     """
-    loop = getattr(worker, "loop", None)
+    loop = _worker_internal(worker, "loop")
     if loop is not None and loop.is_running():
         try:
             asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
@@ -195,8 +196,8 @@ def _stop_worker(worker, timeout: float = 20.0) -> None:
             _LOG.warning("graceful worker stop failed: %s", exc)
 
     for attr in ("action_listener_process", "durable_action_listener_process"):
-        proc = getattr(worker, attr, None)
-        if proc is not None and proc.is_alive():
+        proc = _worker_internal(worker, attr)
+        if proc is not None and hasattr(proc, "is_alive") and proc.is_alive():
             _LOG.warning("%s survived graceful stop; terminating", attr)
             proc.terminate()
             proc.join(timeout=5.0)
@@ -245,7 +246,7 @@ def _await_registration(worker, timeout: float = 30.0) -> None:
         except Exception as exc:  # noqa: BLE001
             last = exc
         time.sleep(0.5)
-    pytest.skip(f"worker did not register within {timeout}s: {last}")
+    _absent_engine(f"worker did not register within {timeout}s: {last}")
 
 
 @pytest.fixture(params=IMPLEMENTATIONS, ids=lambda impl: impl.mode)
@@ -391,3 +392,45 @@ def submit(orchestrator, seeded):
         return handle
 
     return _submit
+
+
+def _absent_engine(reason: str) -> None:
+    """Skip only when there is genuinely no engine to test against.
+
+    ⚠ With a token set, this **fails** instead. Every gate in this suite used to
+    be an unconditional `pytest.skip`, and pytest exits 0 when everything skips
+    — so CI could stand an engine up, mint a broken token, register nothing, and
+    report success having executed zero engine assertions. That is precisely the
+    silent-green the engine job was added to end, reproduced inside it.
+
+    No token means a developer running the fast suites locally, which should
+    skip. A token means someone asked for these tests, and not running them is
+    a failure.
+    """
+    if os.environ.get("HATCHET_CLIENT_TOKEN"):
+        pytest.fail(f"engine tests were requested but could not run: {reason}")
+    pytest.skip(f"HATCHET_CLIENT_TOKEN unset — {reason}")
+
+
+def _worker_internal(worker, name: str):
+    """Read an SDK-internal worker attribute, public shim first.
+
+    ⚠ There is no public teardown API. `worker.loop` and
+    `worker.action_listener_process` are `@property` shims that emit a
+    `DeprecationWarning` and are documented "will be removed in v2.0.0" — the
+    same objection this branch raised to justify moving off `ctx.exit_flag`, so
+    calling them public was wrong.
+
+    Falling back to the private attribute matters: when v2.0.0 drops the
+    property, a bare `getattr(worker, "loop", None)` returns None, the guard
+    below falls through, `exit_gracefully` is never awaited, and the non-daemon
+    listener hangs the pytest session with no output and no failing test.
+
+    ⚠ `durable_action_listener_process` returns `_durable_event_queue` — a
+    Queue, not a process — so `.is_alive()` on it raises. Latent only because
+    durable tasks are unused here. The private attribute is the honest source.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        value = getattr(worker, name, None)
+    return value if value is not None else getattr(worker, f"_{name}", None)

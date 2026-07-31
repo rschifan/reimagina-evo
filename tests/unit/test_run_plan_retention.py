@@ -40,7 +40,6 @@ class _RpcError(Exception):
     "status",
     [
         "INVALID_ARGUMENT",
-        "RESOURCE_EXHAUSTED",
         "FAILED_PRECONDITION",
         "PERMISSION_DENIED",
         "UNAUTHENTICATED",
@@ -57,6 +56,11 @@ def test_a_refused_submission_is_provably_not_accepted(status):
     [
         "DEADLINE_EXCEEDED",  # the run may have been created after we gave up
         "UNAVAILABLE",  # ...or the connection dropped after it was accepted
+        # ⚠ gRPC raises this client-side for "Received message larger than
+        # max": the RPC succeeded, the run exists, and only the reply could not
+        # be read. It was classified as a provable refusal, which deleted a live
+        # run's plan and killed every remaining unit with a missing-plan error.
+        "RESOURCE_EXHAUSTED",
         "INTERNAL",
         "UNKNOWN",
         "ABORTED",

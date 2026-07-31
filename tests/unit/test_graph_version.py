@@ -144,9 +144,17 @@ def _engine(monkeypatch, *, workflows=(), workers=()):
         hatchet_app,
         "get_hatchet",
         lambda: SimpleNamespace(
+            # ⚠ Accepts `workflow_name=`, because the real call filters
+            # server-side rather than scanning a page. The engine caps an
+            # unfiltered list at 50 in arbitrary order, and this branch mints a
+            # permanent workflow per graph shape plus one per bench workload.
             workflows=SimpleNamespace(
-                list=lambda: SimpleNamespace(
-                    rows=[SimpleNamespace(name=n) for n in workflows]
+                list=lambda workflow_name=None, **_kw: SimpleNamespace(
+                    rows=[
+                        SimpleNamespace(name=n)
+                        for n in workflows
+                        if workflow_name is None or n == workflow_name
+                    ]
                 )
             ),
             workers=SimpleNamespace(list=lambda: SimpleNamespace(rows=list(workers))),
@@ -154,15 +162,38 @@ def _engine(monkeypatch, *, workflows=(), workers=()):
     )
 
 
+def _declared(name: str):
+    """Stands in for the Workflow object `submit_run` will actually trigger."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(name=name)
+
+
 def test_submission_is_admitted_when_the_graph_has_been_deployed(monkeypatch):
     _engine(monkeypatch, workflows=["reimagina-run-vabc"])
-    assert ho._graph_is_deployed("reimagina-run-vabc") is True
+    assert ho._graph_is_deployed(_declared("reimagina-run-vabc")) is True
+
+
+def test_the_gate_checks_the_workflow_the_submit_will_trigger(monkeypatch):
+    """⚠ The object, not a separately derived name.
+
+    The gate used to check `workflow_name(self._registry)` while the trigger
+    went through `get_run_workflow()` — two independent objects with nothing
+    tying them together. The workload suite patches `_dag` to a
+    `reimagina-bench-*` workflow while passing its own registry, so the gate
+    asked about a `reimagina-run-v*` name nobody had registered and refused
+    every bench submit against a perfectly healthy engine.
+    """
+    _engine(monkeypatch, workflows=["reimagina-bench-lattice"])
+
+    assert ho._graph_is_deployed(_declared("reimagina-bench-lattice")) is True
+    assert ho._graph_is_deployed(_declared("reimagina-run-vabc")) is False
 
 
 def test_submission_is_refused_when_nothing_ever_deployed_the_graph(monkeypatch):
     """The half-applied rollout: workers up, but on the previous shape."""
     _engine(monkeypatch, workflows=["reimagina-run-vOLD"])
-    assert ho._graph_is_deployed("reimagina-run-vNEW") is False
+    assert ho._graph_is_deployed(_declared("reimagina-run-vNEW")) is False
 
 
 def test_submission_does_not_depend_on_a_worker_being_free_right_now(monkeypatch):
@@ -181,7 +212,7 @@ def test_submission_does_not_depend_on_a_worker_being_free_right_now(monkeypatch
         workflows=["reimagina-run-vabc"],
         workers=[_Worker("WorkerStatus.INACTIVE", ["reimagina-run-vabc:plan"])],
     )
-    assert ho._graph_is_deployed("reimagina-run-vabc") is True
+    assert ho._graph_is_deployed(_declared("reimagina-run-vabc")) is True
 
 
 def test_an_unreadable_workflow_list_admits_the_run(monkeypatch):
@@ -201,7 +232,7 @@ def test_an_unreadable_workflow_list_admits_the_run(monkeypatch):
         "get_hatchet",
         lambda: SimpleNamespace(workflows=SimpleNamespace(list=_boom)),
     )
-    assert ho._graph_is_deployed("reimagina-run-vabc") is True
+    assert ho._graph_is_deployed(_declared("reimagina-run-vabc")) is True
 
 
 # ── readiness uses the stricter check ────────────────────────────────────────

@@ -203,51 +203,15 @@ def test_a_succeeded_unit_still_writes_exactly_one_row(unit, run_id):
     assert [r[0] for r in rows] == ["succeeded"]
 
 
-def test_a_unit_cancelled_before_it_starts_never_opens_a_transaction(
-    monkeypatch, run_id
-):
-    """The cheap half of cancellation: decline to start.
-
-    Cancellation is cooperative, and a unit still sitting in the queue is the
-    one case where that is enough — it has no backend to hunt down, so checking
-    `ctx.is_cancelled` before connecting saves the `pg_cancel_backend` round
-    trip and leaves no half-open transaction behind. It does nothing for a unit
-    already inside a blocking psycopg2 call; that is what `pg_cancel_backend`
-    and `statement_timeout` are for.
-
-    Non-retryable: a cancelled run is not a transient fault, and retrying it
-    would re-enter the same guard twice more with backoff in between.
-    """
-    if not os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.skip("HATCHET_CLIENT_TOKEN unset — workflow declaration needs a client")
-
-    from reimagina.orchestration import hatchet_app
-
-    def _must_not_run(*_args, **_kwargs):
-        raise AssertionError("a cancelled unit ran its compute")
-
-    monkeypatch.setattr(
-        hatchet_app,
-        "default_runners",
-        lambda registry=None: {**default_runners(), SLUG: _must_not_run},
-    )
-
-    payload = hatchet_app.RunInput(
-        run_id="",
-        dirty=[SLUG],
-        code_version=CODE_VERSION,
-        concurrency_key="scope-under-test",
-    )
-    ctx = SimpleNamespace(
-        workflow_run_id=run_id,
-        attempt_number=1,
-        log=lambda _msg: None,
-        is_cancelled=True,
-    )
-
-    with pytest.raises(NonRetryableException):
-        hatchet_app.nodes()[SLUG]._fn(payload, ctx)
-
-    # No connection opened means no provenance row, which is the observable
-    # difference between "declined to start" and "started and was killed".
-    assert _job_runs(os.environ["DATABASE_URL_DIRECT"], run_id) == []
+# ⚠ No "cancelled before it starts" test, because there is no such preflight.
+#
+# `_runner` briefly checked `ctx.is_cancelled` and raised `NonRetryableException`
+# to avoid opening a transaction for a run already cancelled. The engine records
+# a raise as FAILED, so the unit read back as `failed` — with a detail string
+# about cancellation — and `overall_status` then reported the whole run `failed`
+# or `partial` rather than `cancelled`. Saving one `pg_cancel_backend` round trip
+# is not worth mislabelling the outcome.
+#
+# Cancellation is covered where it actually happens:
+# `tests/integration/test_job_run_cancellation.py` kills a live statement, and
+# `tests/unit/test_cancellation_semantics.py` pins the snapshot semantics.
