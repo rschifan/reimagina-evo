@@ -23,7 +23,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
-| T2-8 | SSE for job status | **Not built** — FastAPI API scaffold shipped (see `API.md`); LISTEN/NOTIFY + SSE endpoint still pending |
+| T2-8 | SSE for job status | **Done** — `GET /jobs/{run_id}/events` (see `API.md`). Not via LISTEN/NOTIFY as proposed: the engine's run-event listener is the wakeup, `get_run` the answer |
 | T2-9 | Row-Level Security | **Done** — r011 |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
 | T3-11 | STAC alignment for `file_asset` | **Not built** — low priority |
@@ -165,21 +165,11 @@ CREATE TABLE curated_geo.observation_2024 PARTITION OF curated_geo.observation
 
 ### T2-8: Server-Sent Events for job status
 
-**Not built.** There is no mechanism for the frontend to know when a job completes. Clients must poll.
+**Done.** `GET /jobs/{run_id}/events` streams `text/event-stream` until the run reaches a terminal status (`apps/api/routers/jobs.py`, contract in `API.md`).
 
-**Approach:** SSE endpoint + PostgreSQL `LISTEN/NOTIFY`.
+The transport is **not** the `LISTEN/NOTIFY` this item proposed. That was built on the queue rung and deleted with it; on this branch progress comes from the engine's own gRPC run-event listener, which wakes the stream, with `get_run` supplying the answer because the engine's event carries no task identity. The route owns framing, a 15 s keep-alive, a 300 s lifetime cap and bounded reconnection.
 
-```
-GET /jobs/{job_id}/events  →  text/event-stream
-data: {"status": "running", "progress": 0.45}
-data: {"status": "complete", "result_url": "..."}
-```
-
-Workers call `NOTIFY jobs_status, '{"job_id": "...", "status": "complete"}'` after writing to `jobs_runtime`.
-
-**Note:** PgBouncer transaction mode is incompatible with `LISTEN/NOTIFY` (session-level). The SSE connection must bypass PgBouncer or use a separate pool in session mode.
-
-**Files needed:** `apps/api/` new SSE route; worker `NOTIFY` call after result write; optional `notify_job_status()` trigger on `jobs_runtime.status`.
+⚠ The PgBouncer note below no longer applies to this endpoint, and is kept because it still applies to anything that reaches for `LISTEN/NOTIFY`: PgBouncer transaction mode is incompatible with it (session-level), so such a connection must bypass PgBouncer or use a separate pool in session mode.
 
 ---
 

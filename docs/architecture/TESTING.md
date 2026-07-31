@@ -4,7 +4,7 @@ SQL-level contract tests for the Reimagina database schema. These tests verify t
 
 **Framework:** [`pgTAP`](https://pgtap.org/) — a TAP-compliant PostgreSQL testing framework. Tests run against a disposable PostgreSQL + PostGIS database seeded with the schema and minimal reference data.
 
-⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`pyproject.toml:86`), split into `unit`, `contract`, `integration`, `conformance`, `qualification`, `workloads`, `parity`, `performance`, and `e2e`, driven by `make test`, `make test-integration`, `make test-conformance`, `make test-qualification` and `make test-workloads`.
+⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`pyproject.toml:86`), split into `unit`, `contract`, `integration`, `conformance`, `qualification`, `workloads`, `performance` and `e2e`, driven by `make test`, `make test-integration`, `make test-conformance`, `make test-qualification` and `make test-workloads`.
 
 ⚠ `conformance` and `qualification` need a reachable Hatchet engine. Without `HATCHET_CLIENT_TOKEN` they skip; **with** it set they fail rather than skip, because a suite that silently runs nothing is what let CI report an engine job green having executed zero engine assertions.
 

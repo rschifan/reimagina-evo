@@ -346,6 +346,15 @@ underlying exception text never reaches the wire.
 | `REIMAGINA_SSE_OUTAGE_DEADLINE_S` | 60 | how long a *continuous* listener outage may last before the stream gives up |
 | `HATCHET_CLIENT_TLS_STRATEGY` | SDK default is TLS | ⚠ the compose sets `SERVER_GRPC_INSECURE`, so a client left at the default dies on a handshake with `WRONG_VERSION_NUMBER` |
 | `HATCHET_IMAGE` | the pinned **digest** | a tag is a mutable pointer; this branch already ran a year of spikes against an image its compose did not name |
+| `HATCHET_DATABASE_URL` / `HATCHET_PG_USER` | a trust-auth Postgres on the host | where the *engine* keeps its own state. Overridable so CI can run this same compose file — see below |
+
+⚠ **CI brings up `docker-compose.hatchet.yml` itself.** It used to hand-write an
+equivalent `docker run`, and the two had drifted in four settings —
+`SERVER_MSGQUEUE_KIND`, `SERVER_DEFAULT_ENGINE_VERSION`, the retention period and
+`shm_size`. Pinning the image by digest and then configuring it twice pins the
+bytes and nothing else: the qualification gate was measuring an engine nobody
+deploys. Add a setting here and CI gets it for free; if you find yourself copying
+this block into a workflow, that is the regression coming back.
 
 ⚠ `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` is **720h — runs older than 30
 days are deleted.** On this track that is the run history, since there is no
