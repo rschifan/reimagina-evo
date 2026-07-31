@@ -33,6 +33,35 @@ carries 258,675 feature ids through `jobs_runtime.run_plan` rather than through
 a 10 MB gRPC message, and the values that come out the far side are identical to
 the baseline.
 
+### The verifier's own 18-minute hang, and what actually fixed it
+
+Worth recording because the first diagnosis was wrong and the wrong fix looked
+like it worked.
+
+At full scope one comparison ran for 18 minutes without finishing. It was
+rewritten with CTEs to "narrow each side before they meet", the run then took
+52 seconds, and that was reported as the fix. `EXPLAIN (ANALYZE)` says otherwise:
+the two forms get an **identical** parallel hash join — 104 ms for the original,
+150 ms for the CTE version — and the CTEs are inlined rather than acting as an
+optimisation fence, because they are non-recursive and referenced once, which
+Postgres 12+ inlines. The rewrite changed nothing at all.
+
+What had actually changed was the statistics. Each full-scope run inserts 258,675
+rows and the checks run three back to back; `pg_stat_user_tables` shows
+autoanalyze last running *after* the hung window, so the planner had been sizing
+its plan for a table a fraction of its actual size.
+
+So the real fixes are neither of the things a rewrite touches:
+
+- **`ANALYZE curated_geo.indicator_result` before each comparison** — 0.9 s on a
+  3M-row table, against a check that otherwise risks minutes.
+- **`SET LOCAL statement_timeout` on every comparison** — this one does not
+  depend on the diagnosis being right. Any future planner surprise becomes a
+  fast, loud failure instead of a hang, which matters because a verification
+  script that stops answering looks like slow work and gets waited on.
+
+The query is back to the plain self-join it started as.
+
 ### `planned_floors` computes nothing, and that is the data
 
 It writes zero rows on this dataset and still reports `succeeded`. Not a
@@ -165,7 +194,9 @@ catalog has.
   the engine-backed modes each paid a real commit per unit on their own
   connections while `sync` paid none. The compute time is real; the comparison
   flatters `sync` by whatever those commits cost. Fixed in the script after the
-  fact, and **the numbers above predate the fix**.
+  fact, and **the numbers above predate the fix**. The contract is now stated on
+  `Orchestrator.submit_run` and pinned by
+  `tests/integration/test_sync_transaction_ownership.py`.
 - One machine, one Postgres, everything co-located — engine, worker, database.
   Contention is therefore at its worst here; a deployment that separates them
   would land somewhere better, and that number is not measured.
