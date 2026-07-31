@@ -88,11 +88,11 @@ def run_hatchet_worker(
     # ⚠ Refuse to advertise a workflow this process cannot execute. Resolving
     # runners at DAG-declaration time instead was a break: the workload suite
     # legitimately declares graphs before installing their computes.
-    missing = hatchet_app.missing_runners()
-    if missing:
+    unrunnable = hatchet_app.missing_runners()
+    if unrunnable:
         raise RuntimeError(
-            f"no runner registered for indicator(s): {missing!r} — this worker "
-            f"would accept work it cannot execute"
+            f"no runner registered for indicator(s): {unrunnable!r} — this "
+            f"worker would accept work it cannot execute"
         )
 
     worker = hatchet_app.get_hatchet().worker(

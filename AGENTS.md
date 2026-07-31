@@ -108,6 +108,8 @@ Testing is non-optional.
 | `tests/integration` | real PostgreSQL/PostGIS behavior |
 | `tests/contract` | architectural boundaries and repo guardrails |
 | `tests/conformance` | the `Orchestrator` port contract, per implementation |
+| `tests/qualification` | whether the engine itself carries worker lifecycle (`make test-qualification`) |
+| `tests/workloads` | how the ops-plane schedules; opt-in via `REIMAGINA_BENCH=1` |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
 | `docs/architecture/TESTING.md` | DB contract target |
 

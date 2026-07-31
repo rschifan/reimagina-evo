@@ -18,10 +18,8 @@ byte-identical; only this harness diverges.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import warnings
 import platform
 import subprocess
 import threading
@@ -31,6 +29,8 @@ from uuid import uuid4
 
 import psycopg2
 import pytest
+
+from tests.engine_support import stop_worker
 
 from reimagina.orchestration import runners
 from reimagina.orchestration.port import RUN_TERMINAL_STATES
@@ -255,50 +255,7 @@ def bench_worker(bench_workflows, bench_db):
     _await_registration(set(f"reimagina-bench-{w}" for w in bench_workflows))
     yield worker
 
-    _stop_worker(worker)
-
-
-def _stop_worker(worker, timeout: float = 20.0) -> None:
-    """Actually stop the worker, and make sure the session can exit.
-
-    ⚠ **`exit_gracefully` is `async def`.** Called from sync code it returns a
-    coroutine nobody awaits — Python only warns — so it does nothing at all.
-    Awaited properly it deregisters: its first act is `_pause_task_assignment()`,
-    "tell the engine that the worker is paused". That single mistake is the
-    whole of the "workers leak despite a clean shutdown" finding, and the reason
-    a setup-time reaper existed to compensate for it. Drive it on the worker's
-    own loop.
-
-    ⚠ **The action listener is a spawned child process, not a thread**, and not
-    a daemon. Python joins non-daemon children at interpreter exit, so a
-    listener that never stops hangs the *whole pytest session* after the last
-    test has passed — no output, no failing test. `exit_gracefully` stops it;
-    the loop below is a bounded safety net; see `_worker_internal` for why
-    these attributes are not the public API this once claimed they were.
-    """
-    loop = _worker_internal(worker, "loop")
-    if loop is not None and loop.is_running():
-        try:
-            asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
-                timeout=timeout
-            )
-        except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
-            _LOG.warning("graceful worker stop failed: %s", exc)
-
-    for attr in ("action_listener_process", "durable_action_listener_process"):
-        proc = _worker_internal(worker, attr)
-        if proc is not None and hasattr(proc, "is_alive") and proc.is_alive():
-            _LOG.warning("%s survived graceful stop; terminating", attr)
-            proc.terminate()
-            proc.join(timeout=5.0)
-
-
-# ⚠ No `_reap_stale_workers`. It paused every bench worker the engine still
-# listed, because stale registrations were believed to stay ACTIVE and keep
-# being handed work. Measured at v0.86.24: the engine expires a genuinely dead
-# worker in ~5 seconds. What kept registrations alive was an orphaned listener
-# process still heartbeating for them — see `tests/qualification/README.md` —
-# and what leaked in the first place was a coroutine nobody awaited.
+    stop_worker(worker, log=_LOG)
 
 
 def _await_registration(expected: set[str], timeout: float = 60.0) -> None:
@@ -308,7 +265,12 @@ def _await_registration(expected: set[str], timeout: float = 60.0) -> None:
     last: object = "no response"
     while time.monotonic() < deadline:
         try:
-            listed = hatchet_app.get_hatchet().workflows.list()
+            # Filtered by name: an unfiltered list is capped at 50 rows in
+            # arbitrary order, and this branch mints a permanent workflow per
+            # graph shape plus one per bench workload.
+            listed = hatchet_app.get_hatchet().workflows.list(
+                workflow_name=hatchet_app.workflow_name()
+            )
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }
@@ -497,27 +459,3 @@ def _git_sha() -> str | None:
         ).stdout.strip()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         return None
-
-
-def _worker_internal(worker, name: str):
-    """Read an SDK-internal worker attribute, public shim first.
-
-    ⚠ There is no public teardown API. `worker.loop` and
-    `worker.action_listener_process` are `@property` shims that emit a
-    `DeprecationWarning` and are documented "will be removed in v2.0.0" — the
-    same objection this branch raised to justify moving off `ctx.exit_flag`, so
-    calling them public was wrong.
-
-    Falling back to the private attribute matters: when v2.0.0 drops the
-    property, a bare `getattr(worker, "loop", None)` returns None, the guard
-    below falls through, `exit_gracefully` is never awaited, and the non-daemon
-    listener hangs the pytest session with no output and no failing test.
-
-    ⚠ `durable_action_listener_process` returns `_durable_event_queue` — a
-    Queue, not a process — so `.is_alive()` on it raises. Latent only because
-    durable tasks are unused here. The private attribute is the honest source.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        value = getattr(worker, name, None)
-    return value if value is not None else getattr(worker, f"_{name}", None)

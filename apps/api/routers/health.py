@@ -117,8 +117,17 @@ def _probe_orchestrator() -> str:
         from reimagina.orchestration import hatchet_app
         from reimagina.orchestration.hatchet_orchestrator import _live_worker_for
 
-        workflow = hatchet_app.workflow_name()
-        hatchet_app.get_hatchet().workflows.list()  # engine reachability
+        # ⚠ The **registered** name off the declared workflow, not
+        # `workflow_name()`. The bare form is un-namespaced and built from the
+        # default registry, while worker actions are
+        # `apply_namespace(name.lower()) + ":" + step`. Under any
+        # HATCHET_CLIENT_NAMESPACE the prefix never matched, so readiness
+        # reported `no_worker_for_graph` on every replica at once against a
+        # healthy deployment — the outcome the submit-side fix removed and this
+        # probe kept. One object, as on the submit path.
+        workflow = getattr(hatchet_app.get_run_workflow(), "name", None)
+        if not workflow:
+            return "unreachable"
     except Exception:  # noqa: BLE001
         log.warning("orchestrator readiness probe failed", exc_info=True)
         return "unreachable"

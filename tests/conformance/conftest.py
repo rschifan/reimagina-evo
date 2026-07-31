@@ -8,10 +8,8 @@ is what an ops-plane branch edits.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
 from uuid import uuid4
@@ -26,6 +24,11 @@ from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_COMPACTNESS,
 )
 from reimagina.orchestration.factory import get_orchestrator
+
+from tests.engine_support import (
+    absent_engine as _absent_engine,
+    stop_worker,
+)
 
 from tests.integration._helpers import (
     insert_feature as _insert_feature,
@@ -165,55 +168,7 @@ def hatchet_worker():
     _await_registration(worker)
     yield worker
 
-    _stop_worker(worker)
-
-
-def _stop_worker(worker, timeout: float = 20.0) -> None:
-    """Stop the worker through the SDK's own API, so the session can exit.
-
-    ⚠ One SDK fact makes the obvious call wrong, and it is the reason this
-    suite once concluded that a clean exit leaks a registration exactly like a
-    `SIGKILL` does: **`exit_gracefully` is `async def`**. Called from sync code
-    it returns a coroutine that is never awaited — Python only warns — so it
-    does nothing whatsoever. Awaited properly it does deregister: its first act
-    is `_pause_task_assignment()`, "tell the engine that the worker is paused".
-    The leak was never engine behaviour; it was a coroutine on the floor.
-
-    So it is driven on the worker's own loop. The listener is a spawned child
-    process and not a daemon, so Python joins it at interpreter exit and a
-    listener that never stops hangs the session *after the last test passed* —
-    no output, no failing test. `exit_gracefully` stops it; the check below is
-    a bounded safety net; see `_worker_internal` for why these attributes are
-    not the public API this once claimed they were.
-    """
-    loop = _worker_internal(worker, "loop")
-    if loop is not None and loop.is_running():
-        try:
-            asyncio.run_coroutine_threadsafe(worker.exit_gracefully(), loop).result(
-                timeout=timeout
-            )
-        except Exception as exc:  # noqa: BLE001 — teardown must not mask a failure
-            _LOG.warning("graceful worker stop failed: %s", exc)
-
-    for attr in ("action_listener_process", "durable_action_listener_process"):
-        proc = _worker_internal(worker, attr)
-        if proc is not None and hasattr(proc, "is_alive") and proc.is_alive():
-            _LOG.warning("%s survived graceful stop; terminating", attr)
-            proc.terminate()
-            proc.join(timeout=5.0)
-
-
-# ⚠ No `_reap_stale_workers`. It paused every `conformance` worker the engine
-# still listed, on setup, because stale registrations were believed to stay
-# ACTIVE and keep being handed work — the suite's wall clock drifting 62s → 322s
-# was the evidence. Measured again at v0.86.24: fourteen accumulated
-# registrations, every one of them INACTIVE, the oldest eight hours stale. The
-# engine expires a worker on heartbeat timeout. The row persisting is history,
-# not eligibility, and the two were being conflated.
-#
-# What actually leaked was a coroutine: `exit_gracefully` was called from sync
-# code and never awaited, so nothing ever told the engine the worker had gone.
-# See `_stop_worker`.
+    stop_worker(worker, log=_LOG)
 
 
 def _await_registration(worker, timeout: float = 30.0) -> None:
@@ -231,7 +186,12 @@ def _await_registration(worker, timeout: float = 30.0) -> None:
     last: object = "no response"
     while time.monotonic() < deadline:
         try:
-            listed = hatchet_app.get_hatchet().workflows.list()
+            # Filtered by name: an unfiltered list is capped at 50 rows in
+            # arbitrary order, and this branch mints a permanent workflow per
+            # graph shape plus one per bench workload.
+            listed = hatchet_app.get_hatchet().workflows.list(
+                workflow_name=hatchet_app.workflow_name()
+            )
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }
@@ -392,45 +352,3 @@ def submit(orchestrator, seeded):
         return handle
 
     return _submit
-
-
-def _absent_engine(reason: str) -> None:
-    """Skip only when there is genuinely no engine to test against.
-
-    ⚠ With a token set, this **fails** instead. Every gate in this suite used to
-    be an unconditional `pytest.skip`, and pytest exits 0 when everything skips
-    — so CI could stand an engine up, mint a broken token, register nothing, and
-    report success having executed zero engine assertions. That is precisely the
-    silent-green the engine job was added to end, reproduced inside it.
-
-    No token means a developer running the fast suites locally, which should
-    skip. A token means someone asked for these tests, and not running them is
-    a failure.
-    """
-    if os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.fail(f"engine tests were requested but could not run: {reason}")
-    pytest.skip(f"HATCHET_CLIENT_TOKEN unset — {reason}")
-
-
-def _worker_internal(worker, name: str):
-    """Read an SDK-internal worker attribute, public shim first.
-
-    ⚠ There is no public teardown API. `worker.loop` and
-    `worker.action_listener_process` are `@property` shims that emit a
-    `DeprecationWarning` and are documented "will be removed in v2.0.0" — the
-    same objection this branch raised to justify moving off `ctx.exit_flag`, so
-    calling them public was wrong.
-
-    Falling back to the private attribute matters: when v2.0.0 drops the
-    property, a bare `getattr(worker, "loop", None)` returns None, the guard
-    below falls through, `exit_gracefully` is never awaited, and the non-daemon
-    listener hangs the pytest session with no output and no failing test.
-
-    ⚠ `durable_action_listener_process` returns `_durable_event_queue` — a
-    Queue, not a process — so `.is_alive()` on it raises. Latent only because
-    durable tasks are unused here. The private attribute is the honest source.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        value = getattr(worker, name, None)
-    return value if value is not None else getattr(worker, f"_{name}", None)
