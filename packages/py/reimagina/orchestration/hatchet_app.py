@@ -360,13 +360,11 @@ def build_dag(
     overwrites or rejects — so anything that needs its own topology takes its own
     name rather than finding out. The workload suite uses ``reimagina-bench-*``.
     """
-    # Resolved once, here, rather than rebuilt on every task attempt. Declaring
-    # a graph and being able to execute it are separate concerns with separate
-    # lifetimes — the workload suite declares DAGs before installing their
-    # computes — so a missing runner is not an error here. `missing_runners` is
-    # the same check, called from worker startup where it means something.
-    runners = default_runners(registry)
-
+    # ⚠ No runner resolution here. Declaring a graph and being able to execute
+    # it are separate concerns with separate lifetimes — the workload suite
+    # declares DAGs before installing their computes — so a missing runner is
+    # not an error at declaration. `missing_runners` is the same check, called
+    # from worker startup, where it is.
     workflow = (client or get_hatchet()).workflow(
         name=name or workflow_name(registry),
         input_validator=RunInput,
@@ -422,27 +420,22 @@ def build_dag(
     for spec in _topo_order(registry):
         parents = [plan] + [node[dep] for dep, _w in spec.depends_on if dep in node]
 
-        def _runner(
-            input: RunInput,
-            ctx: Context,
-            _slug: str = spec.slug,
-            runner=runners.get(spec.slug),
-        ) -> dict:
+        def _runner(input: RunInput, ctx: Context, _slug: str = spec.slug) -> dict:
             from reimagina.db import connect
 
-            # Bound at declaration for the ordinary case, so the mapping is not
-            # rebuilt per attempt.
+            # ⚠ Resolved when the unit runs, not when the graph is declared.
+            # Binding at declaration was tried and there is no version of it
+            # that works: `default_runners` emits a runner only for slugs
+            # already in `_DIRECT_COMPUTE`, and the synthetic bench slugs enter
+            # that dict in a *function*-scoped fixture, long after the
+            # session-scoped fixture called `build_dag`. Keeping an eager bind
+            # *and* this lookup was two paths for one question, which is how the
+            # bench harness ended up broken at a different stage each time.
             #
-            # ⚠ Falls back to a call-time lookup when that bind was None, and
-            # that is not defensiveness — it is the only thing that makes the
-            # bench harness work. `default_runners` emits a runner only for
-            # slugs already in `_DIRECT_COMPUTE`, and the synthetic bench slugs
-            # enter that dict in a *function*-scoped fixture, long after the
-            # session-scoped fixture called `build_dag`. Binding eagerly and
-            # raising left every bench unit failing at execution instead of at
-            # setup — the same broken suite, one stage later.
-            if runner is None:
-                runner = default_runners(registry).get(_slug)
+            # The cost is one dict build against a multi-minute PostGIS
+            # statement — the same trade `runners._scoped` already takes to stay
+            # patchable.
+            runner = default_runners(registry).get(_slug)
             if runner is None:
                 raise NonRetryableException(f"no runner registered for {_slug!r}")
 

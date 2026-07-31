@@ -102,19 +102,16 @@ def test_an_empty_scenario_cancels_nothing(monkeypatch):
     assert touched == []
 
 
-# The `ctx.is_cancelled` preflight is asserted in
-# `tests/integration/test_failed_unit_provenance.py`, which already drives the
-# unit body directly. Declaring the DAG needs a real client, so reaching the
-# closure from here would mean faking the whole workflow-declaration API to
-# cover two lines.
-
-
 def test_the_database_bound_matches_the_engine_bound():
     """Two knobs for one bound drift. The millisecond form is derived.
 
-    The engine giving up and the database giving up should be the same moment:
-    a `statement_timeout` longer than `execution_timeout` never fires, and a
-    shorter one kills healthy units the engine was still happy to wait for.
+    ⚠ Not "the engine and the database give up at the same moment", which an
+    earlier version of this docstring claimed. `statement_timeout` bounds each
+    *statement* and `execution_timeout` bounds the *task*, so a unit issuing
+    several long statements outlives both — see the note on
+    `UNIT_EXECUTION_TIMEOUT_MS`. Deriving one from the other is still worth
+    pinning: configured separately they drift, and a database bound longer than
+    the engine's never fires at all.
     """
     from reimagina.orchestration import hatchet_app
 

@@ -328,8 +328,6 @@ class HatchetOrchestrator:
             # A noop needs an id only for log correlation, and the engine will
             # never see this run — so this is the one id on this branch that is
             # ours rather than Hatchet's.
-            from uuid import uuid4
-
             return noop_handle(str(uuid4()))
 
         dirty = [u.indicator for u in plan.units]
@@ -359,6 +357,10 @@ class HatchetOrchestrator:
 
         # Committed before the workflow is triggered; see `_persist_plan`.
         plan_id = _persist_plan(direct_dsn, plan.units)
+        # One derivation, two destinations: the run input and the metadata. It
+        # is a json-dump plus a sha256, and computing it twice invited the two
+        # copies to disagree after an edit to one of them.
+        graph = hatchet_app.graph_version(self._registry)
         payload = hatchet_app.RunInput(
             run_id="",  # filled from ctx.workflow_run_id; see the module docstring
             dirty=dirty,
@@ -366,7 +368,7 @@ class HatchetOrchestrator:
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
-            graph_version=hatchet_app.graph_version(self._registry),
+            graph_version=graph,
             # What this key must name is **the set of rows two runs would fight
             # over**, because that is the whole hazard: the write path is
             # stale-then-insert, so overlapping writers leave features with the
@@ -413,7 +415,7 @@ class HatchetOrchestrator:
                         # Filterable in `runs.list()` and the dashboard's search
                         # box, so "which runs used the graph before the retune"
                         # is a query rather than archaeology.
-                        "graph_version": hatchet_app.graph_version(self._registry),
+                        "graph_version": graph,
                     }.items()
                     if v is not None
                 },
@@ -498,7 +500,8 @@ class HatchetOrchestrator:
         settled = tuple(u.status for u in units if u.status in UNIT_TERMINAL_STATES)
         judged = tuple(st for st in settled if st != "skipped")
 
-        # The engine's own answer wins unless the units can better it:
+        # The engine's own answer is the default, and the units only better it
+        # once every one of these holds:
         #
         #   still open              — the roll-up is terminal-only.
         #   scaffolding failed      — `plan` failing cancels every indicator, so
@@ -508,14 +511,12 @@ class HatchetOrchestrator:
         #     engine calls the run closed: a cancel before the tasks existed.
         #   everything settled, all skipped — work was asked for and not done,
         #     which is `failed`, as on `sync`.
-        if engine_status not in _ENGINE_TERMINAL or scaffolding_failed:
-            status = _RUN_STATUS_FOR.get(engine_status, "running")
-        elif judged:
-            status = overall_status(judged)
-        elif units and len(settled) == len(units):
-            status = "failed"
-        else:
-            status = _RUN_STATUS_FOR.get(engine_status, "running")
+        status = _RUN_STATUS_FOR.get(engine_status, "running")
+        if engine_status in _ENGINE_TERMINAL and not scaffolding_failed:
+            if judged:
+                status = overall_status(judged)
+            elif units and len(settled) == len(units):
+                status = "failed"
         return RunStatus(run_id=run_id, status=status, units=units)
 
     # ── Cancel ──────────────────────────────────────────────────────────────
@@ -784,7 +785,8 @@ def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
     """
     # ⚠ Skip rows with no join key rather than letting them collide. Keying on
     # `getattr(..., None)` put every id-less task under `None`, so an id-less
-    # shape item then joined to whichever of them happened to be last.
+    # shape item then joined to whichever of them happened to be last. A shape
+    # item with no id therefore misses too, which is what it should do.
     outcomes = {}
     for task in getattr(details, "tasks", None) or []:
         key = getattr(task, "task_external_id", None)
@@ -795,8 +797,7 @@ def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
     scaffolding_failed = False
     for item in getattr(details, "shape", None) or []:
         slug = getattr(item, "task_name", "") or ""
-        key = getattr(item, "task_external_id", None)
-        task = outcomes.get(key) if key is not None else None
+        task = outcomes.get(getattr(item, "task_external_id", None))
         status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
         if _is_scaffolding(slug):
             scaffolding_failed = scaffolding_failed or status == "failed"

@@ -171,13 +171,23 @@ jobs:
       REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
       DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
       PGPASSWORD: reimagina
-      # The compose pins by digest; CI must run the same bytes or its result
-      # says nothing about the deployment. Keep these in step.
-      HATCHET_IMAGE: "ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:b1ab44a0e155ae0fd1cba4d0bd6e92fabd1f476e0669cbeba8fe0e8a2c97f216"
+      # ⚠ The engine's image and configuration are NOT repeated here. This job
+      # brings up `infra/docker/docker-compose.hatchet.yml`, so the thing
+      # qualified is the thing deployed. A hand-written `docker run` stood here
+      # and had already drifted from it in four settings — including the message
+      # queue kind and the engine version — which made a digest pin a claim
+      # about bytes and nothing else.
+      #
+      # Credentials are all CI supplies; the compose defaults to a passwordless
+      # local Postgres and reaches this runner's through the
+      # `host.docker.internal` extra host it already declares.
+      HATCHET_PG_USER: reimagina
+      HATCHET_DATABASE_URL: "postgresql://reimagina:reimagina@host.docker.internal:5432/hatchet?sslmode=disable"
       # The compose sets SERVER_GRPC_INSECURE, so the client must be told too or
       # every worker dies on a TLS handshake with WRONG_VERSION_NUMBER.
       HATCHET_CLIENT_TLS_STRATEGY: none
       HATCHET_CLIENT_HOST_PORT: localhost:7077
+      COMPOSE_FILE: infra/docker/docker-compose.hatchet.yml
     steps:
       - uses: actions/checkout@v6
 
@@ -203,28 +213,14 @@ jobs:
           psql -h localhost -U reimagina -d postgres -c "CREATE DATABASE hatchet"
           psql -h localhost -U reimagina -d postgres -c "ALTER DATABASE hatchet SET TIMEZONE='UTC'"
 
+      # The deployment's own compose file, unmodified. The container reaches the
+      # runner's Postgres through the `host.docker.internal:host-gateway` extra
+      # host the file already declares, so nothing about the topology is
+      # CI-specific either.
       - name: Start the engine
         run: |
-          docker run -d --name hatchet --network host \
-            -e DATABASE_URL="postgresql://reimagina:reimagina@localhost:5432/hatchet?sslmode=disable" \
-            -e DATABASE_POSTGRES_HOST=localhost \
-            -e DATABASE_POSTGRES_PORT=5432 \
-            -e DATABASE_POSTGRES_USERNAME=reimagina \
-            -e DATABASE_POSTGRES_PASSWORD=reimagina \
-            -e DATABASE_POSTGRES_DB_NAME=hatchet \
-            -e DATABASE_POSTGRES_SSL_MODE=disable \
-            -e SERVER_GRPC_INSECURE=t \
-            -e SERVER_GRPC_BIND_ADDRESS=0.0.0.0 \
-            -e SERVER_GRPC_BROADCAST_ADDRESS=localhost:7077 \
-            -e SERVER_GRPC_PORT=7077 \
-            -e SERVER_URL=http://localhost:8888 \
-            -e SERVER_AUTH_COOKIE_DOMAIN=localhost \
-            -e SERVER_AUTH_COOKIE_INSECURE=t \
-            -e SERVER_AUTH_SET_EMAIL_VERIFIED=t \
-            -e SERVER_SECURITY_CHECK_ENABLED=false \
-            -e DATABASE_MAX_CONNS=20 \
-            -e DATABASE_MIN_CONNS=2 \
-            "$HATCHET_IMAGE"
+          docker compose up -d
+          docker compose config | grep -E 'image:|SERVER_MSGQUEUE_KIND|SERVER_DEFAULT_ENGINE_VERSION'
 
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8888/api/v1/meta >/dev/null; then
@@ -232,7 +228,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "engine did not become ready"; docker logs hatchet; exit 1
+          echo "engine did not become ready"; docker compose logs; exit 1
 
       # ⚠ The token must name the `default` tenant. A fresh engine database has
       # two, and a token for `internal` authenticates perfectly, registers the
@@ -244,7 +240,7 @@ jobs:
           TENANT=$(psql -h localhost -U reimagina -d hatchet -tAc \
             "select id from \"Tenant\" where slug='default'")
           test -n "$TENANT" || { echo "no default tenant"; exit 1; }
-          TOKEN=$(docker exec hatchet /hatchet-admin token create \
+          TOKEN=$(docker compose exec -T hatchet /hatchet-admin token create \
             --name ci --tenant-id "$TENANT" | tail -n1 | tr -d '\r')
           test -n "$TOKEN" || { echo "token creation failed"; exit 1; }
           echo "::add-mask::$TOKEN"
@@ -263,4 +259,4 @@ jobs:
 
       - name: Engine logs on failure
         if: failure()
-        run: docker logs hatchet | tail -100
+        run: docker compose logs --no-color | tail -100
