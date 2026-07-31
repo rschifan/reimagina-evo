@@ -6,9 +6,11 @@ Neither of those needs a second status store, and both used to have one:
 * `partial` is a *roll-up* of unit outcomes, not a stored fact. `runs.get`
   reports each task's own status, including CANCELLED, so `overall_status` —
   the same function the `sync` implementation uses — derives it on read.
-* `skipped` is genuinely invisible: a unit skipped for being non-dirty reports
-  COMPLETED. `ctx.was_skipped` is available only inside a finalizer, so the
-  finalizer survives, emitting the skip list and nothing else.
+* `skipped` is invisible *in the status enum* — a unit skipped for being
+  non-dirty reports COMPLETED — but not invisible in the engine. It emits a
+  `SKIPPED` task event, and `runs.get` returns those alongside the tasks. The
+  finalizer that used to publish `ctx.was_skipped` is deleted; it existed only
+  because `V1TaskEvent.task_id` looked unjoinable, and it is not.
 
 These pin the reading half. Engine behaviour itself belongs in the qualification
 suite — a unit test that mocked the engine into agreeing with us proves nothing.
@@ -23,40 +25,65 @@ import pytest
 from reimagina.orchestration.hatchet_orchestrator import (
     HatchetOrchestrator,
     HatchetUnavailable,
-    _skipped_of,
+    _skipped_task_ids,
     _units_of,
 )
 
 
-def _details(status: str, output: object = None, units: list | None = None):
-    """Shaped like `V1WorkflowRunDetails`: `.run`, `.shape` and `.tasks`.
+def _details(
+    status: str,
+    output: object = None,
+    units: list | None = None,
+    skipped: list[str] | None = None,
+):
+    """Shaped like `V1WorkflowRunDetails`: `.run`, `.shape`, `.tasks`, `.task_events`.
 
     ⚠ **`shape` carries the scaffolding too**, and the previous version of this
     helper did not — which is exactly how a real defect shipped. The engine's
-    `GetWorkflowShape` joins every Job of the workflow version, including the
-    linked on-failure job, so `plan` and both finalizers appear alongside the
-    indicators, under the names the SDK registered them with. Verified against a
-    live run. A fixture that omitted them let a name-blocklist filter look
-    sufficient when it was not.
+    `GetWorkflowShape` joins every Job of the workflow version, so `plan` and,
+    for runs created before the finalizers were deleted, both `-on-*` jobs
+    appear alongside the indicators under the names the SDK registered them
+    with. Verified against a live run.
+
+    The finalizers are gone from the current graph, but the engine retains runs
+    for 720 h — so a replica reading a run submitted before the change still
+    sees them, and the structural filter still has to hold. That is why they
+    stay in this fixture.
+
+    ⚠ `skipped` names units by slug and emits a real `SKIPPED` **task event**
+    against their external ids, which is how the engine reports a skip. It used
+    to be `output={"skipped": [...]}`, a finalizer's return value; that hook is
+    gone, because the event was always there to read.
     """
     units = units or []
+    skipped = skipped or []
     scaffolding = [
         ("plan", "COMPLETED", None),
         ("summarise_success-on-success", "COMPLETED", None),
         ("summarise_failure-on-failure", "COMPLETED", None),
     ]
     rows = [*scaffolding, *units]
+    external = {name: f"ext-{i}" for i, (name, _s, _e) in enumerate(rows)}
     return SimpleNamespace(
         run=SimpleNamespace(status=status, output=output),
         shape=[
-            SimpleNamespace(task_name=name, task_external_id=f"ext-{i}")
-            for i, (name, _s, _e) in enumerate(rows)
+            SimpleNamespace(task_name=name, task_external_id=external[name])
+            for name, _s, _e in rows
         ],
         tasks=[
             SimpleNamespace(
-                task_external_id=f"ext-{i}", status=status_, error_message=err
+                task_external_id=external[name], status=status_, error_message=err
             )
-            for i, (_n, status_, err) in enumerate(rows)
+            for name, status_, err in rows
+        ],
+        task_events=[
+            # ⚠ `task_id` carries the *external* id. The field is misnamed in
+            # the API — `StrictStr` next to `V1TaskSummary.task_id`'s
+            # `StrictInt` — and that is what hid this signal for two rewrites.
+            # Verified live: 489 events, every one joining by external id.
+            SimpleNamespace(event_type="SKIPPED", task_id=external[slug])
+            for slug in skipped
+            if slug in external
         ],
     )
 
@@ -149,7 +176,7 @@ def test_skipped_survives_a_completed_task_status(patched):
     patched(
         _details(
             "COMPLETED",
-            output={"skipped": ["not_dirty"]},
+            skipped=["not_dirty"],
             units=[("computed", "COMPLETED", None), ("not_dirty", "COMPLETED", None)],
         )
     )
@@ -173,7 +200,7 @@ def test_an_all_skipped_run_is_not_reported_as_success(patched):
     patched(
         _details(
             "COMPLETED",
-            output={"skipped": ["a", "b"]},
+            skipped=["a", "b"],
             units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
         )
     )
@@ -249,16 +276,45 @@ def test_scaffolding_is_not_reported_as_an_indicator(patched):
 # ── The helpers, where the sharp edges are ───────────────────────────────────
 
 
-def test_skipped_of_ignores_output_that_is_not_a_skip_list():
-    """`plan` returns `{"dirty": [...]}`, and a run in flight serves it as output.
+def test_only_skipped_events_are_read_as_skips():
+    """Every other event type shares the field and must not be mistaken for one.
 
-    Reading that as a skip list would mark arbitrary units skipped.
+    `task_events` carries the whole log — ASSIGNED, STARTED, FINISHED, RETRYING,
+    CANCELLED and a dozen more — all with the same `task_id` field. Reading any
+    of them as a skip would mark a unit that ran perfectly well as never having
+    run.
     """
-    assert _skipped_of(SimpleNamespace(output={"dirty": ["a", "b"]})) == frozenset()
-    assert _skipped_of(SimpleNamespace(output=None)) == frozenset()
-    assert _skipped_of(SimpleNamespace(output="not a dict")) == frozenset()
-    assert _skipped_of(SimpleNamespace(output={"skipped": "a"})) == frozenset()
-    assert _skipped_of(SimpleNamespace(output={"skipped": ["a"]})) == frozenset({"a"})
+    details = SimpleNamespace(
+        task_events=[
+            SimpleNamespace(event_type="STARTED", task_id="ext-1"),
+            SimpleNamespace(event_type="SKIPPED", task_id="ext-2"),
+            SimpleNamespace(event_type="FINISHED", task_id="ext-3"),
+            SimpleNamespace(event_type="CANCELLED", task_id="ext-4"),
+        ]
+    )
+    assert _skipped_task_ids(details) == frozenset({"ext-2"})
+
+
+def test_a_run_with_no_events_yet_has_no_skips():
+    """In flight and mid-dispatch, or an engine that returned none at all."""
+    assert _skipped_task_ids(SimpleNamespace(task_events=[])) == frozenset()
+    assert _skipped_task_ids(SimpleNamespace(task_events=None)) == frozenset()
+    assert _skipped_task_ids(SimpleNamespace()) == frozenset()
+
+
+def test_an_event_without_a_task_id_is_dropped_rather_than_grouped():
+    """⚠ A `None` key would otherwise mark every id-less shape item skipped.
+
+    The same collision the unit join had: keying on `getattr(..., None)` puts
+    everything anonymous under one bucket, and that bucket then matches.
+    """
+    details = SimpleNamespace(
+        task_events=[
+            SimpleNamespace(event_type="SKIPPED", task_id=None),
+            SimpleNamespace(event_type="SKIPPED", task_id="ext-9"),
+        ]
+    )
+    assert _skipped_task_ids(details) == frozenset({"ext-9"})
 
 
 def test_units_join_shape_to_tasks_by_external_id_not_by_order():
@@ -358,7 +414,7 @@ def test_an_all_skipped_terminal_run_is_failed(patched):
     patched(
         _details(
             "COMPLETED",
-            output={"skipped": ["a", "b"]},
+            skipped=["a", "b"],
             units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
         )
     )

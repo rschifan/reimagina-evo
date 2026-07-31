@@ -60,14 +60,20 @@ What is worth clicking, in the order it answers questions:
 
 ⚠ **The DAG view renders a skipped unit the same green as a computed one.** The
 engine's status enum has no `skipped` (spike B7), so a non-dirty indicator shows
-COMPLETED. To tell them apart, open the run's **output** — the finalizer writes a
-per-unit verdict there (spike B8):
+COMPLETED. To tell them apart, read the run's **task events** — the engine emits
+a `SKIPPED` event per skipped task, and `GET /jobs/{run_id}` already resolves
+them for you:
 
-```json
-{"overall": "partial",
- "units": {"urban_form_block_compactness": {"status": "succeeded"},
-           "urban_form_block_planned_floors": {"status": "skipped"}}}
+```python
+d = hatchet.runs.get(run_id)
+skipped = {e.task_id for e in d.task_events
+           if str(e.event_type).rsplit(".", 1)[-1] == "SKIPPED"}
+[t.display_name for t in d.tasks if t.task_external_id in skipped]
 ```
+
+⚠ `V1TaskEvent.task_id` carries the **`task_external_id`**, not the integer
+`V1TaskSummary.task_id` it appears to name. That misreading is why a finalizer
+was once written to publish this list instead; there is no finalizer now.
 
 That is also what `GET /jobs/{run_id}` returns, so the API and the dashboard do
 not disagree — but the dashboard's *status chip* and the run's *verdict* can,
@@ -219,6 +225,17 @@ kill the whole process group and the registration clears in **~5 seconds**
 - If instead it runs under a supervisor, that supervisor must signal the
   **process group** (systemd's `KillMode=control-group`, the default).
 - Never `kill <pid>` a worker by hand. Use `kill -- -<pgid>`.
+- **Turn on the worker healthcheck** — `HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED=true`
+  (port 8001). It serves `/health` and `/metrics` from inside the action
+  listener process and returns **503 once that process's event loop has been
+  blocked** past `…_EVENT_LOOP_BLOCK_THRESHOLD_SECONDS` (default 5 s). Wire it
+  to the container's liveness probe.
+
+  ⚠ It is not an orphan detector — an orphaned listener is precisely the thing
+  still running, so it would answer 200. What it catches is the *other* half:
+  a listener whose loop is wedged while its registration still looks ACTIVE.
+  `workers.list()` cannot distinguish either case, because it only knows that
+  something is heartbeating.
 
 **When a suite or a deployment looks wedged, check `ps` before the engine:**
 
