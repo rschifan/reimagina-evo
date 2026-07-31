@@ -85,6 +85,16 @@ def run_hatchet_worker(
             f"(missing: {', '.join(missing)})"
         )
 
+    # ⚠ Refuse to advertise a workflow this process cannot execute. Resolving
+    # runners at DAG-declaration time instead was a break: the workload suite
+    # legitimately declares graphs before installing their computes.
+    missing = hatchet_app.missing_runners()
+    if missing:
+        raise RuntimeError(
+            f"no runner registered for indicator(s): {missing!r} — this worker "
+            f"would accept work it cannot execute"
+        )
+
     worker = hatchet_app.get_hatchet().worker(
         name or os.environ.get("REIMAGINA_WORKER_NAME", "reimagina-worker"),
         slots=resolved_slots,

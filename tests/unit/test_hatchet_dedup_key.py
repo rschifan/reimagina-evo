@@ -174,32 +174,38 @@ def test_the_payload_no_longer_carries_the_feature_ids(monkeypatch):
     assert len(payload.model_dump_json()) < 1024
 
 
-def test_an_unscoped_run_serialises_on_its_own_work_not_a_shared_bucket(monkeypatch):
-    """The fallback is the fingerprint, not the constant `"baseline"`.
+def test_an_unscoped_run_serialises_conservatively(monkeypatch):
+    """⚠ A constant, and the fingerprint was tried here and is wrong.
 
-    With no scenario and no AOI there is no named scope to protect, and the
-    constant put every such run into one `max_runs=1` bucket — so unrelated
-    recomputes queued behind each other for no reason, and under the earlier
-    `CANCEL_NEWEST` strategy cancelled each other outright.
+    With no scenario and no AOI there is no named scope, and `dedup_key` looks
+    like a tempting stand-in — it already describes the work. But it hashes the
+    *whole* dirty set and feature map, so two unscoped runs share a bucket only
+    when their work is identical. Overlapping-but-different feature sets got
+    different keys, ran concurrently, and raced on the features they shared
+    through the stale-then-insert write path, leaving those features at the
+    wrong current value.
 
-    Two unscoped runs genuinely conflict only when they touch the same features,
-    which is exactly the set `dedup_key` hashes. Reusing it introduces no new
-    concept and gives distinct work distinct buckets.
+    The original objection to the constant was that unrelated baseline runs
+    cancelled each other. That was true under `CANCEL_NEWEST` and is not under
+    `GROUP_ROUND_ROBIN`, which queues them. Queuing unrelated work is a cost;
+    corrupting a feature is a defect.
     """
     payload = _submit(monkeypatch, units=[("slug", FEATURES)], scenario_id=None)
 
     assert payload.scenario_id is None
     assert payload.aoi_id is None
-    assert payload.concurrency_key != "baseline"
-    assert payload.concurrency_key == payload.dedup_key
+    assert payload.concurrency_key == "baseline"
 
 
-def test_unrelated_unscoped_runs_land_in_different_buckets(monkeypatch):
-    """The regression the constant caused, asserted directly."""
-    one = _submit(monkeypatch, units=[("slug", FEATURES)], scenario_id=None)
-    other = _submit(monkeypatch, units=[("other_slug", FEATURES)], scenario_id=None)
+def test_two_unscoped_runs_sharing_features_share_a_bucket(monkeypatch):
+    """The race the constant prevents, asserted directly."""
+    one = _submit(monkeypatch, units=[("slug", ("f1", "f2"))], scenario_id=None)
+    other = _submit(monkeypatch, units=[("slug", ("f2", "f3"))], scenario_id=None)
 
-    assert one.concurrency_key != other.concurrency_key
+    # Different work — so the idempotency window must NOT collapse them...
+    assert one.dedup_key != other.dedup_key
+    # ...but they touch f2 in common, so they must not run concurrently.
+    assert one.concurrency_key == other.concurrency_key
 
 
 def test_a_scoped_run_still_serialises_on_its_scope(monkeypatch):

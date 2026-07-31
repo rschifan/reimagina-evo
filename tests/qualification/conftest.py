@@ -34,7 +34,7 @@ def engine():
     qualification result that silently did not run is worse than none.
     """
     if not os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.skip("HATCHET_CLIENT_TOKEN unset — nothing to qualify against")
+        _absent_engine("nothing to qualify against")
 
     from hatchet_sdk import Hatchet
 
@@ -42,7 +42,7 @@ def engine():
         client = Hatchet()
         client.workers.list()
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"engine unreachable: {exc}")
+        _absent_engine(f"engine unreachable: {exc}")
     return client
 
 
@@ -139,7 +139,7 @@ def worker_process(engine, migrated_db):
             # worker refusing to start for a reason it printed.
             _, err = proc.communicate(timeout=10)
             detail = (err or b"").decode(errors="replace").strip().splitlines()
-            pytest.skip(
+            _absent_engine(
                 f"worker {name!r} never registered as ACTIVE; "
                 f"last stderr: {detail[-1] if detail else '(none)'}"
             )
@@ -183,3 +183,21 @@ def kill_process_group(proc: subprocess.Popen, *, timeout: float = 15.0) -> None
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         pass
+
+
+def _absent_engine(reason: str) -> None:
+    """Skip only when there is genuinely no engine to test against.
+
+    ⚠ With a token set, this **fails** instead. Every gate in this suite used to
+    be an unconditional `pytest.skip`, and pytest exits 0 when everything skips
+    — so CI could stand an engine up, mint a broken token, register nothing, and
+    report success having executed zero engine assertions. That is precisely the
+    silent-green the engine job was added to end, reproduced inside it.
+
+    No token means a developer running the fast suites locally, which should
+    skip. A token means someone asked for these tests, and not running them is
+    a failure.
+    """
+    if os.environ.get("HATCHET_CLIENT_TOKEN"):
+        pytest.fail(f"engine tests were requested but could not run: {reason}")
+    pytest.skip(f"HATCHET_CLIENT_TOKEN unset — {reason}")
