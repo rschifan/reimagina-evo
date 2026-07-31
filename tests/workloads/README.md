@@ -51,18 +51,25 @@ enough that dispatch overhead dominates most shapes (median speedup 0.86 at full
 scale, i.e. slower than in-process), while a sleeping unit never contends for the
 database the way a real one does.
 
-`scripts/bench_real_data.py` runs the **shipped** catalog over **real** features
-to measure that gap:
+Two scripts run the **shipped** catalog over **real** features. Both write
+`indicator_result` rows under a fresh `scenario_id`, so the city's committed
+baseline is never touched, and both need a worker already registered against the
+same database for `hatchet` mode.
 
 ```bash
-DATABASE_URL_DIRECT=postgresql://localhost/reimagina_real_b \
-  python scripts/bench_real_data.py --reps 3
+export DATABASE_URL_DIRECT=postgresql://localhost/reimagina_real_b
+
+python scripts/verify_real_data.py --mode hatchet   # correctness — does it compute the right answers?
+python scripts/bench_real_data.py --reps 3          # timing — what does scheduling buy?
 ```
 
-It writes `indicator_result` rows under a fresh `scenario_id` per repetition, so
-the city's committed baseline is never touched. Track B additionally needs a
-worker already registered against that same database. Results:
-[`REAL_DATA_RESULT.md`](REAL_DATA_RESULT.md).
+**`verify_real_data.py` is the one to reach for first.** This suite asserts that
+a scheduler dispatches a DAG correctly; it never checks that the *numbers* are
+right, because synthetic units return synthetic values. The verifier does, with
+oracles that exist independently of the code under test — chiefly the committed
+baseline, which a neutral scenario must reproduce exactly.
+
+Results for both: [`REAL_DATA_RESULT.md`](REAL_DATA_RESULT.md).
 
 ## Traps worth knowing before you debug something else
 
