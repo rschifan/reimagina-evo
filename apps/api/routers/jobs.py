@@ -195,22 +195,17 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     # re-sending a unit's status is noise the client has to de-duplicate itself.
     emitted: dict[str | None, str] = {}
 
-    while time.monotonic() < deadline:
-        try:
-            events = get_orchestrator().subscribe_progress(run_id).__aiter__()
-        except Exception:  # noqa: BLE001 — same policy as a mid-stream failure
-            async for frame in _give_up_or_wait(outage_deadline, backoff):
-                yield frame
-            if outage_deadline is not None and time.monotonic() >= outage_deadline:
-                return
-            outage_deadline = (
-                outage_deadline or time.monotonic() + _OUTAGE_DEADLINE_SECONDS
-            )
-            backoff *= 2
-            continue
+    def subscribe():
+        return get_orchestrator().subscribe_progress(run_id)
 
+    while time.monotonic() < deadline:
+        # ⚠ Failing to *open* a subscription and losing one mid-stream take the
+        # same path, because they are the same outage from the client's side.
+        # Splitting them left the retry policy written out twice — and the
+        # budget reset added to one copy applied only there, which is the drift
+        # `_give_up_or_wait` was extracted to stop and only half-stopped.
         interrupted, delivered = False, False
-        async for frame in _drain(events, deadline, emitted):
+        async for frame in _drain(subscribe, deadline, emitted):
             if frame is _INTERRUPTED:
                 interrupted = True
                 break
@@ -259,9 +254,10 @@ async def _give_up_or_wait(
 ) -> AsyncIterator[str]:
     """Emit the outage frame if the budget is spent, else keep alive and wait.
 
-    Extracted because the identical seven lines sat in both arms of the
-    reconnect loop, and the budget reset added to one of them applied only
-    there — two copies of one policy is how they drift.
+    Kept separate from the loop so "what a client sees during an outage" is one
+    readable thing rather than an else-branch. There is now only one caller —
+    the second arm it was extracted for is gone, because `_drain` reports a
+    failed subscription the same way it reports a dropped one.
     """
     from reimagina.orchestration import frames
 
@@ -279,15 +275,26 @@ _INTERRUPTED = object()
 """The listener failed: the caller decides whether to reconnect or give up."""
 
 
-async def _drain(events, deadline: float, emitted: dict) -> AsyncIterator[object]:
+async def _drain(subscribe, deadline: float, emitted: dict) -> AsyncIterator[object]:
     """One subscription's worth of frames, ending in a sentinel.
 
     Split out so the reconnect loop above reads as policy rather than as two
     nested error paths. Yields SSE strings, then either `_INTERRUPTED` or
     nothing — ending without it means the stream finished normally, whether the
     run reached a terminal event or the overall deadline passed.
+
+    ⚠ Opens the subscription too, rather than taking one already opened. A
+    failure to subscribe is an outage exactly like a mid-stream drop, so it
+    reports the same sentinel and the caller keeps one retry policy instead of
+    two copies of it.
     """
     from reimagina.orchestration import frames
+
+    try:
+        events = subscribe().__aiter__()
+    except Exception:  # noqa: BLE001 — the caller decides; see below
+        yield _INTERRUPTED
+        return
 
     # Hold one pending __anext__ across heartbeats rather than re-awaiting it.
     # Wrapping the await in a timeout would cancel it mid-flight, which leaves

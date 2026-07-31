@@ -91,12 +91,11 @@ class Implementation:
     Hatchet's status enum is QUEUED | RUNNING | COMPLETED | CANCELLED | FAILED
     (measured, spike B7) and has no word for a run that half-worked.
 
-    The enum still has no such word. But the run's *output* does: the workflow's
-    ``on_failure_task`` reconstructs a per-unit verdict from ``task_run_errors``,
-    ``was_skipped`` and ``task_output``, and ``get_run`` reads that in preference
-    to the enum (spike B8). So the vocabulary survives the engine owning run
-    state; what does not survive is *querying across runs*, which is a property
-    of the storage, not of the status model.
+    The enum still has no such word, and nothing reconstructs one. ``partial``
+    is a *roll-up*: ``get_run`` reads each task's own status out of
+    ``runs.get()`` and passes them through ``port.overall_status`` — the same
+    function ``sync`` uses — so both implementations agree by construction
+    rather than because a finalizer was taught to reproduce the vocabulary.
 
     The headline result of the comparison is therefore not this field. It is
     that one branch can ``GROUP BY`` its run history and the other must ask the

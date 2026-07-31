@@ -30,7 +30,18 @@ services:
       - "8888:8888"   # dashboard + REST API
       - "7077:7077"   # gRPC, what the SDK connects to
     environment:
-      DATABASE_URL: "postgresql://${HATCHET_PG_USER:-rschifan}@host.docker.internal:5432/hatchet?sslmode=disable"
+      # ⚠ The DSN is overridable so **CI runs this file** rather than a
+      # hand-written `docker run` beside it. That copy existed, and it had
+      # already drifted: it omitted SERVER_MSGQUEUE_KIND,
+      # SERVER_DEFAULT_ENGINE_VERSION, the retention period and shm_size — so
+      # the qualification gate ran against an engine configured differently
+      # from the one this file deploys. Pinning the image by digest and then
+      # configuring it twice pins the bytes and nothing else.
+      #
+      # Overriding the whole DSN rather than splicing a password into it: with
+      # neither variable set this renders exactly the string it always did, so
+      # a running local engine sees no change at all.
+      DATABASE_URL: "${HATCHET_DATABASE_URL:-postgresql://${HATCHET_PG_USER:-rschifan}@host.docker.internal:5432/hatchet?sslmode=disable}"
       DATABASE_POSTGRES_HOST: host.docker.internal
       DATABASE_POSTGRES_PORT: "5432"
       DATABASE_POSTGRES_USERNAME: "${HATCHET_PG_USER:-rschifan}"
