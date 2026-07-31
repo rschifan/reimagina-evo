@@ -51,6 +51,13 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
 	$(PYTEST) tests/conformance -q --no-header -rA
 
+.PHONY: reclaim-run-plans
+reclaim-run-plans: ## Reclaim run plans past the retention horizon (see the runbook).
+	@test -n "$$DATABASE_URL_DIRECT" || { echo "DATABASE_URL_DIRECT is required"; exit 1; }
+	psql "$$DATABASE_URL_DIRECT" \
+	  -v horizon="$${REIMAGINA_PLAN_RETENTION:-45 days}" \
+	  -f scripts/reclaim_run_plans.sql
+
 .PHONY: test-qualification
 test-qualification: ## Can the engine carry worker lifecycle? (tests/qualification/README.md).
 	$(PYTEST) tests/qualification -q --no-header -rA

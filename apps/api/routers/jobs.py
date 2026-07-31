@@ -46,6 +46,24 @@ _RECONNECT_BACKOFF_SECONDS = 1.0
 _RECONNECT_BACKOFF_MAX_SECONDS = 8.0
 """Capped so a long outage still retries often enough to catch the recovery."""
 
+_RECONNECT_BACKOFF_MIN_SECONDS = 0.05
+"""⚠ A floor, because a zero wait is a hot loop, not a fast retry.
+
+Tests set the backoff to 0 to keep themselves quick, and `0 * 2 == 0` — so a
+persistent outage would spin on the event loop emitting a keep-alive per tick
+for the whole outage deadline, starving everything else on the worker.
+"""
+
+
+async def _backoff(seconds: float) -> None:
+    """Sleep between reconnect attempts, bounded at both ends."""
+    await asyncio.sleep(
+        min(
+            max(seconds, _RECONNECT_BACKOFF_MIN_SECONDS), _RECONNECT_BACKOFF_MAX_SECONDS
+        )
+    )
+
+
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
@@ -176,7 +194,7 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     backoff = _RECONNECT_BACKOFF_SECONDS
     # What has already reached the client. A reconnect replays the snapshot, and
     # re-sending a unit's status is noise the client has to de-duplicate itself.
-    emitted: set[tuple[str | None, str, str | None]] = set()
+    emitted: dict[str | None, str] = {}
 
     while time.monotonic() < deadline:
         try:
@@ -188,32 +206,48 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
                 yield frames.error_frame("orchestrator_unavailable")
                 return
             yield ": keep-alive\n\n"
-            await asyncio.sleep(min(backoff, _RECONNECT_BACKOFF_MAX_SECONDS))
+            await _backoff(backoff)
             backoff *= 2
             continue
 
-        terminal, interrupted = False, False
+        interrupted, progressed = False, False
         async for frame in _drain(events, deadline, emitted):
             if frame is _INTERRUPTED:
                 interrupted = True
                 break
             if frame is _TERMINAL:
-                terminal = True
                 break
+            progressed = True
             yield frame
 
-        if terminal or not interrupted:
+        # ⚠ Reset on a subscription that *delivered something*, not merely one
+        # that opened. Two mistakes are possible here and both have been made:
+        #
+        #   never reset — the first blip pinned the deadline forever, so an
+        #     unrelated blip minutes later found it long expired and killed a
+        #     healthy stream with zero retries.
+        #   reset on every attempt — a listener that opens and immediately drops
+        #     clears its own budget each time round, so the loop never gives up
+        #     and the request hangs for the full `_STREAM_MAX_SECONDS`.
+        #
+        # Progress is the thing that proves the outage ended.
+        if progressed:
+            outage_deadline = None
+            backoff = _RECONNECT_BACKOFF_SECONDS
+
+        # Anything but an interruption is a finished stream. (`terminal` was a
+        # separate flag; with the reset above it carried no information the
+        # `interrupted` check did not already have.)
+        if not interrupted:
             return
 
-        # A successful subscription resets the budget: the deadline bounds a
-        # *continuous* outage, not the lifetime sum of unrelated blips.
         if outage_deadline is None:
             outage_deadline = time.monotonic() + _OUTAGE_DEADLINE_SECONDS
         if time.monotonic() >= outage_deadline:
             yield frames.error_frame("orchestrator_unavailable")
             return
         yield ": keep-alive\n\n"
-        await asyncio.sleep(min(backoff, _RECONNECT_BACKOFF_MAX_SECONDS))
+        await _backoff(backoff)
         backoff *= 2
 
 
@@ -224,7 +258,7 @@ _INTERRUPTED = object()
 """The listener failed: the caller decides whether to reconnect or give up."""
 
 
-async def _drain(events, deadline: float, emitted: set) -> AsyncIterator[object]:
+async def _drain(events, deadline: float, emitted: dict) -> AsyncIterator[object]:
     """One subscription's worth of frames, ending in a sentinel.
 
     Split out so the reconnect loop above reads as policy rather than as two
@@ -271,9 +305,17 @@ async def _drain(events, deadline: float, emitted: set) -> AsyncIterator[object]
                 return
             pending = asyncio.ensure_future(anext(events))
 
-            key = (event.indicator, event.status, event.detail)
-            if key not in emitted:
-                emitted.add(key)
+            # ⚠ Keyed on what the frame actually carries, and holding only the
+            # *last* status per unit. Including `detail` — which
+            # `frames.event_frame` does not write — both missed real duplicates
+            # (two events differing only in detail produce identical frames) and
+            # suppressed real progress: a retried unit walking
+            # running -> failed -> running -> succeeded had its second `running`
+            # dropped, so a client never learned the retry began. Comparing
+            # against the previous state per indicator collapses a reconnect's
+            # replayed snapshot without hiding a genuine transition back.
+            if emitted.get(event.indicator) != event.status:
+                emitted[event.indicator] = event.status
                 yield frames.event_frame(event)
             if event.indicator is None and frames.is_run_terminal(event.status):
                 yield _TERMINAL

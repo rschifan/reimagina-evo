@@ -131,8 +131,27 @@ def _probe_orchestrator() -> str:
 
 @router.get("/health", response_model=ReadinessResponse)
 def health(response: Response) -> ReadinessResponse:
-    """Alias for /health/ready. Kept to avoid breaking older callers."""
-    return readiness(response)
+    """Legacy alias — **database only**, deliberately not the full readiness.
+
+    ⚠ It delegated to `readiness()`, which changed this endpoint's meaning under
+    the very callers the docstring says it exists not to break. Once readiness
+    required the orchestrator, an engine outage made `/health` 503 on every
+    replica at once — pulling `/indicators`, `/tiles` and every other read path
+    out of the load balancer despite them being served entirely from Postgres,
+    and putting the pods in a restart loop anywhere this is wired to a liveness
+    probe, which is a common choice for a path named `/health`.
+
+    New deployments should use `/health/ready`, which answers the question this
+    API actually needs answered: can it serve *and* get work executed.
+    """
+    db_status = _probe_db()
+    if db_status != "reachable":
+        response.status_code = 503
+    return ReadinessResponse(
+        status="ok" if db_status == "reachable" else "degraded",
+        db=db_status,
+        orchestrator="not_probed",
+    )
 
 
 @router.get("/health/tile-server", response_model=TileServerResponse)
