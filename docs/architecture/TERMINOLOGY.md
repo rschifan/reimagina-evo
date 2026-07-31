@@ -39,7 +39,7 @@ A record of one curated-load execution — one step of the Bronze → Silver →
 A record of one model computation that reads city data and writes indicator results. Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id`. The row is opened by the runner at compute time, not when work is submitted (`jobs/_lifecycle.py:46`).
 
 ### Run
-One submitted computation — the unit the `Orchestrator` port deals in, persisted as `jobs_runtime.orchestration_run` with one `jobs_runtime.job_unit` per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
+One submitted computation — the unit the `Orchestrator` port deals in, spanning one task per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. ⚠ On this branch a run has **no table of ours**: the id *is* the engine's workflow run id, and its state is read back from the engine (`orchestration_run` and `job_unit` are dropped by r033). The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
 
 ---
 
