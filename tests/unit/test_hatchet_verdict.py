@@ -61,31 +61,17 @@ def _details(status: str, output: object = None, units: list | None = None):
     )
 
 
-CATALOG = frozenset(
-    {
-        "a",
-        "b",
-        "computed",
-        "not_dirty",
-        "doomed",
-        "dependent",
-        "independent",
-        "compactness",
-        "density",
-        "early",
-        "not_started_yet",
-        "first",
-        "second",
-    }
-)
-"""Stand-in for the domain catalog: only these slugs are indicators."""
-
-
 def _orchestrator():
-    """An orchestrator whose registry is the fake catalog above."""
-    return HatchetOrchestrator(
-        registry=tuple(SimpleNamespace(slug=s) for s in sorted(CATALOG))
-    )
+    """A plain orchestrator.
+
+    ⚠ No catalog allowlist. Units are selected structurally — scaffolding is
+    `plan` and anything the SDK suffixed `-on-success`/`-on-failure` — so a
+    fixture no longer has to enumerate the slugs it invents. The allowlist this
+    replaces silently *dropped* unrecognised units, which turned a failed run
+    into a successful one whenever an API replica ran a graph behind its
+    workers.
+    """
+    return HatchetOrchestrator()
 
 
 @pytest.fixture
@@ -293,7 +279,7 @@ def test_units_join_shape_to_tasks_by_external_id_not_by_order():
         ],
     )
 
-    units = _units_of(details, skipped=frozenset(), known=CATALOG)
+    units, _scaffolding_failed = _units_of(details)
 
     assert {u.indicator: u.status for u in units} == {
         "first": "succeeded",
@@ -324,3 +310,108 @@ def test_retry_taxonomy_excludes_deterministic_runner_errors():
 
     assert _is_retryable(psycopg2.OperationalError("connection reset"))
     assert not _is_retryable(ValueError("bad indicator definition"))
+
+
+# ── The status table, exhaustively ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("units", "engine_status", "expected"),
+    [
+        # in flight — the engine's own status, never a roll-up
+        ([("a", "RUNNING", None)], "RUNNING", "running"),
+        ([("a", "QUEUED", None)], "QUEUED", "queued"),
+        # ordinary terminal outcomes
+        ([("a", "COMPLETED", None)], "COMPLETED", "succeeded"),
+        ([("a", "COMPLETED", None), ("b", "FAILED", "x")], "FAILED", "partial"),
+        ([("a", "FAILED", "x")], "FAILED", "failed"),
+        ([("a", "CANCELLED", None)], "CANCELLED", "cancelled"),
+        ([("a", "COMPLETED", None), ("b", "CANCELLED", None)], "CANCELLED", "partial"),
+        # ⚠ cancelled before any task settled. `shape` is the declared graph and
+        # is always populated, so these units are `queued`, not absent — the case
+        # a `not units` guard could never reach, which reported `failed`.
+        ([("a", "QUEUED", None), ("b", "QUEUED", None)], "CANCELLED", "cancelled"),
+        # ⚠ a terminal run with one unit still unsettled: the settled units
+        # answer, and a stray `queued` must not drag it to `failed`.
+        ([("a", "COMPLETED", None), ("b", "QUEUED", None)], "FAILED", "succeeded"),
+    ],
+)
+def test_the_run_status_table(patched, units, engine_status, expected):
+    """Every (unit states x engine status) combination, in one place.
+
+    ⚠ This table exists because two separate wrong fixes passed the suite. The
+    roll-up is terminal-only and skip-blind, and both properties were broken by
+    changes that looked obviously correct and had no case to fail against.
+    """
+    patched(_details(engine_status, units=units))
+
+    assert _orchestrator().get_run("r1").status == expected
+
+
+def test_an_all_skipped_terminal_run_is_failed(patched):
+    """Distinct from "nothing settled" — everything settled, nothing ran.
+
+    A run only exists when the dirty set was non-empty, so the engine skipped
+    work that was asked for. Sharing a branch with the unsettled case above
+    would report this `succeeded`.
+    """
+    patched(
+        _details(
+            "COMPLETED",
+            output={"skipped": ["a", "b"]},
+            units=[("a", "COMPLETED", None), ("b", "COMPLETED", None)],
+        )
+    )
+
+    assert _orchestrator().get_run("r1").status == "failed"
+
+
+def test_a_failed_plan_task_is_not_reported_as_a_cancellation(patched):
+    """⚠ `plan` is filtered from the unit list, so its failure must not vanish.
+
+    When `plan` fails the engine cancels every indicator, so the units show only
+    cancellations and the roll-up returned `cancelled` — a run nobody cancelled,
+    reported to an operator as though someone had.
+    """
+    details = _details(
+        "FAILED", units=[("a", "CANCELLED", None), ("b", "CANCELLED", None)]
+    )
+    # `plan` is the first scaffolding row `_details` injects.
+    details.tasks[0].status = "FAILED"
+    patched(details)
+
+    assert _orchestrator().get_run("r1").status == "failed"
+
+
+def test_an_unrecognised_unit_is_reported_not_dropped(patched):
+    """A graph one release ahead of this replica must not lose units.
+
+    The allowlist this replaces filtered by catalog membership, so an indicator
+    the API had never heard of was silently deleted from `run.units` *and* from
+    the roll-up — turning a run whose only failure was that unit into a
+    `succeeded` one. Scaffolding is recognised structurally instead.
+    """
+    patched(
+        _details(
+            "FAILED",
+            units=[
+                ("a", "COMPLETED", None),
+                ("indicator_from_a_newer_graph", "FAILED", "boom"),
+            ],
+        )
+    )
+    run = _orchestrator().get_run("r1")
+
+    assert "indicator_from_a_newer_graph" in {u.indicator for u in run.units}
+    assert run.status == "partial"
+
+
+def test_scaffolding_is_recognised_by_shape_not_by_a_name_list(patched):
+    """Any future `-on-success`/`-on-failure` hook is excluded by construction."""
+    details = _details("COMPLETED", units=[("a", "COMPLETED", None)])
+    details.shape.append(
+        SimpleNamespace(task_name="audit-on-success", task_external_id="ext-99")
+    )
+    patched(details)
+
+    assert [u.indicator for u in _orchestrator().get_run("r1").units] == ["a"]

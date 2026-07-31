@@ -9,13 +9,17 @@ session-scoped worker — the point of several of these is to watch a worker
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 
 import pytest
+
+from tests.engine_support import (
+    absent_engine as _absent_engine,
+    kill_process_group,
+)
 
 WORKER_PREFIX = "qualification"
 """Every worker this suite starts is named with this prefix.
@@ -149,55 +153,3 @@ def worker_process(engine, migrated_db):
 
     for proc in started:
         kill_process_group(proc)
-
-
-def kill_process_group(proc: subprocess.Popen, *, timeout: float = 15.0) -> None:
-    """`SIGKILL` the worker's whole process group, not just its parent.
-
-    ⚠ This distinction is the single most important operational fact on this
-    track. `proc.kill()` signals one pid; the SDK's action listener is a
-    **spawned child process**, so it survives, is reparented to init, keeps its
-    gRPC stream open and **keeps heartbeating**. The engine then correctly
-    reports the worker ACTIVE — something really is alive claiming to be it —
-    and keeps assigning work that the orphan can no longer execute, which
-    presents as runs sitting at `running` with no units.
-
-    Measured: 27 such orphans had accumulated on this machine, the oldest over
-    a day old, each holding a registration open. Killing them dropped the
-    engine's ACTIVE count to zero immediately, with no change to the engine.
-
-    A container runtime or systemd kills the whole group, which is why this is
-    a deployment requirement rather than a code one — and why the test must do
-    what the deployment does, or it measures a scenario that cannot happen in
-    production while missing the one that can.
-    """
-    pgid = getattr(proc, "_pgid", None)
-    if pgid is not None:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    if proc.poll() is None:
-        proc.kill()
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        pass
-
-
-def _absent_engine(reason: str) -> None:
-    """Skip only when there is genuinely no engine to test against.
-
-    ⚠ With a token set, this **fails** instead. Every gate in this suite used to
-    be an unconditional `pytest.skip`, and pytest exits 0 when everything skips
-    — so CI could stand an engine up, mint a broken token, register nothing, and
-    report success having executed zero engine assertions. That is precisely the
-    silent-green the engine job was added to end, reproduced inside it.
-
-    No token means a developer running the fast suites locally, which should
-    skip. A token means someone asked for these tests, and not running them is
-    a failure.
-    """
-    if os.environ.get("HATCHET_CLIENT_TOKEN"):
-        pytest.fail(f"engine tests were requested but could not run: {reason}")
-    pytest.skip(f"HATCHET_CLIENT_TOKEN unset — {reason}")

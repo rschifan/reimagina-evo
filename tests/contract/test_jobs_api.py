@@ -391,8 +391,8 @@ def test_a_dropped_listener_reconnects_instead_of_failing_the_stream(monkeypatch
     """
     from apps.api.routers import jobs as jobs_router
 
-    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
-    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.0)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.001)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.001)
 
     attempts: list[int] = []
 
@@ -427,8 +427,8 @@ def test_a_replayed_snapshot_is_not_re_sent_to_the_client(monkeypatch):
     """
     from apps.api.routers import jobs as jobs_router
 
-    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
-    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.0)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.001)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_MAX_SECONDS", 0.001)
 
     attempts: list[int] = []
 
@@ -454,7 +454,7 @@ def test_a_terminal_run_does_not_reconnect(monkeypatch):
     """Reaching terminal ends the stream; retrying it would never terminate."""
     from apps.api.routers import jobs as jobs_router
 
-    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(jobs_router, "_RECONNECT_BACKOFF_SECONDS", 0.001)
 
     attempts: list[int] = []
 

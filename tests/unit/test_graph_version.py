@@ -190,6 +190,44 @@ def test_the_gate_checks_the_workflow_the_submit_will_trigger(monkeypatch):
     assert ho._graph_is_deployed(_declared("reimagina-run-vabc")) is False
 
 
+def _bench_workflow_names() -> list[str]:
+    """The names the workload suite actually registers."""
+    from reimagina.perf import workloads
+
+    return [f"reimagina-bench-{w.id}" for w in workloads.WORKLOADS]
+
+
+@pytest.mark.parametrize("name", _bench_workflow_names())
+def test_the_gate_handles_every_real_workflow_name(monkeypatch, name):
+    """⚠ Parametrised over the *real* ids, and that is the point.
+
+    A hand-picked example proved this once and was worthless: the name chosen
+    was `reimagina-bench-lattice`, one of only two bench ids containing no
+    underscore. The gate at the time reconstructed a "bare" name by splitting on
+    the first underscore, so `reimagina-bench-cpu_vs_io` queried for `vs_io` and
+    four of six bench workflows had every submit refused — while the test passed.
+
+    Anything derived from a name must be exercised against the names that exist,
+    not against one that happens to be convenient.
+    """
+    _engine(monkeypatch, workflows=[name])
+
+    assert ho._graph_is_deployed(_declared(name)) is True
+
+
+def test_a_namespaced_name_is_passed_through_unchanged(monkeypatch):
+    """The SDK namespaces the filter the same way it namespaced the name.
+
+    `ClientConfig.apply_namespace` returns its argument untouched when it
+    already starts with the namespace, so the registered name is the correct
+    thing to send — no prefix has to be stripped and guessed back.
+    """
+    _engine(monkeypatch, workflows=["staging_reimagina-run-vabc"])
+
+    assert ho._graph_is_deployed(_declared("staging_reimagina-run-vabc")) is True
+    assert ho._graph_is_deployed(_declared("staging_reimagina-run-vdef")) is False
+
+
 def test_submission_is_refused_when_nothing_ever_deployed_the_graph(monkeypatch):
     """The half-applied rollout: workers up, but on the previous shape."""
     _engine(monkeypatch, workflows=["reimagina-run-vOLD"])
@@ -224,7 +262,7 @@ def test_an_unreadable_workflow_list_admits_the_run(monkeypatch):
     """
     from types import SimpleNamespace
 
-    def _boom():
+    def _boom(**_kwargs):
         raise OSError("engine listing unavailable")
 
     monkeypatch.setattr(
@@ -264,7 +302,7 @@ def test_readiness_fails_closed_when_it_cannot_tell(monkeypatch):
     """
     from types import SimpleNamespace
 
-    def _boom():
+    def _boom(**_kwargs):
         raise OSError("engine listing unavailable")
 
     monkeypatch.setattr(

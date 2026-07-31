@@ -43,7 +43,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Collection, Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -55,6 +55,7 @@ from reimagina.orchestration.plan import noop_handle, plan_run
 from reimagina.orchestration.database_identity import assert_same_domain_database
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
+    UNIT_TERMINAL_STATES,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -199,10 +200,18 @@ def _graph_is_deployed(workflow: object) -> bool:
     limit, the engine defaults it to 50 and orders arbitrarily, and this branch
     mints a new permanent workflow per graph shape plus one per bench workload —
     so the current name could fall off the page and refuse every submission on a
-    correct deployment. Filtering also fixes namespacing for free: the SDK
-    applies the client namespace to both the registered name and this filter, so
-    a deployment sharing an engine between environments compares like with like
-    instead of never matching at all.
+    correct deployment.
+
+    ⚠ The **registered** name goes to the filter unchanged. An earlier version
+    tried to recover a "bare" name by splitting on the first underscore, on the
+    theory that the SDK would namespace the filter a second time. It does not:
+    `ClientConfig.apply_namespace` returns the name untouched when it already
+    starts with the namespace, so passing the registered form is exactly right.
+    What the split did instead was destroy every name containing an underscore —
+    `reimagina-bench-cpu_vs_io` became a query for `vs_io` — which refused every
+    submit for four of the six bench workflows. That is the same "parse a
+    rendered string to recover a value the response states plainly" mistake this
+    module deleted `_strip_suffix` for.
 
     Fails **open** on an unreadable listing: an admission check must not become
     a submission outage.
@@ -213,12 +222,8 @@ def _graph_is_deployed(workflow: object) -> bool:
     if not registered:
         return True
 
-    # The bare name the SDK will namespace into `registered`; passing the
-    # already-namespaced form would namespace it twice.
-    bare = registered.split("_", 1)[-1] if "_" in registered else registered
-
     try:
-        listed = hatchet_app.get_hatchet().workflows.list(workflow_name=bare)
+        listed = hatchet_app.get_hatchet().workflows.list(workflow_name=registered)
     except Exception:  # noqa: BLE001
         logger.warning(
             "could not list workflows; admitting run unchecked", exc_info=True
@@ -467,42 +472,50 @@ class HatchetOrchestrator:
 
         run = getattr(details, "run", details)
         engine_status = _name(getattr(run, "status", None))
-        units = _units_of(
-            details,
-            skipped=_skipped_of(run),
-            known={spec.slug for spec in self._registry},
+        raw_units, scaffolding_failed = _units_of(details)
+
+        # A skip is invisible in the status enum — the engine reports COMPLETED
+        # — so the finalizer's list is overlaid here.
+        skipped = _skipped_of(run)
+        units = tuple(
+            UnitStatusView(u.indicator, "skipped", u.detail)
+            if u.indicator in skipped
+            else u
+            for u in raw_units
         )
 
-        # ⚠ `skipped` is excluded from the roll-up, and the reason is that the
-        # word means two different things on the two tracks. On `sync` a skip is
-        # an *unsatisfied input* — a real failure to compute. Here the engine
+        # ⚠ `skipped` is excluded from the roll-up, because the word means two
+        # different things across the tracks. On `sync` a skip is an
+        # *unsatisfied input* — a real failure to compute. Here the engine
         # reports an unsatisfied dependent as CANCELLED, so a skip can only mean
         # "not dirty": an indicator the run was never asked to recompute.
+        # Feeding those in made every ordinary run report `partial`.
         #
-        # Feeding those to `overall_status` made every ordinary run `partial`,
-        # because `{succeeded, skipped}` is not `<= {succeeded}`. Measured on a
-        # healthy run: three indicators computed, `planned_floors` untouched
-        # because nothing it reads changed, and the API reported `partial`.
-        # Nothing had gone wrong.
-        judged = tuple(u.status for u in units if u.status != "skipped")
+        # ⚠ Non-terminal statuses are excluded too. `overall_status` is a
+        # terminal roll-up with no case for `queued` or `running`, so leaving
+        # them in reported a run the engine had closed with an undispatched unit
+        # as `failed`.
+        settled = tuple(u.status for u in units if u.status in UNIT_TERMINAL_STATES)
+        judged = tuple(st for st in settled if st != "skipped")
 
-        # ⚠ "Nothing to roll up" is two different situations, and
-        # `overall_status(())` returning `succeeded` conflated them:
+        # The engine's own answer wins unless the units can better it:
         #
-        #   no units at all — an absent or empty `shape`. Trust the engine.
-        #     Otherwise a run whose tasks all FAILED reports `succeeded`, and a
-        #     run CANCELLED before any task row existed rolls up from all-
-        #     `queued` to `failed`. The engine's own answer beats a derived one.
-        #
-        #   units, every one skipped — a run only exists when the dirty set was
-        #     non-empty, so this means the engine skipped work that was asked
-        #     for. It did not achieve its purpose: `failed`, as on `sync`.
-        if not units or engine_status not in _ENGINE_TERMINAL:
+        #   still open              — the roll-up is terminal-only.
+        #   scaffolding failed      — `plan` failing cancels every indicator, so
+        #     the units show only cancellations and the run would read
+        #     `cancelled` for something nobody cancelled.
+        #   nothing settled         — every unit queued or running while the
+        #     engine calls the run closed: a cancel before the tasks existed.
+        #   everything settled, all skipped — work was asked for and not done,
+        #     which is `failed`, as on `sync`.
+        if engine_status not in _ENGINE_TERMINAL or scaffolding_failed:
             status = _RUN_STATUS_FOR.get(engine_status, "running")
-        elif not judged:
+        elif judged:
+            status = overall_status(judged)
+        elif units and len(settled) == len(units):
             status = "failed"
         else:
-            status = overall_status(judged)
+            status = _RUN_STATUS_FOR.get(engine_status, "running")
         return RunStatus(run_id=run_id, status=status, units=units)
 
     # ── Cancel ──────────────────────────────────────────────────────────────
@@ -712,25 +725,27 @@ def _dedup_key(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-# ⚠ No `_strip_suffix`, and no name-based scaffolding blocklist either.
+# Scaffolding is identified **structurally**, by how the SDK names it, not by a
+# list of slugs and not by an allowlist of catalog indicators.
 #
-# `_strip_suffix` undid the millisecond suffix on `V1TaskSummary.display_name`
-# (`compactness-1785250189293`); `shape[].task_name` is the declared name and
-# needs no unpicking, so that much was right.
+# A name blocklist was tried and is insufficient: the engine's `GetWorkflowShape`
+# returns every Job of the workflow version, including the linked on-failure
+# job, so both finalizers appear in `shape` under the names the SDK registered
+# them with. An allowlist of catalog slugs was tried next and is worse — it
+# *drops* anything it does not recognise, so an API replica one release behind
+# its workers silently deleted the failing unit from a run and reported it
+# `succeeded`, and a failed `plan` task vanished so the run read `cancelled`.
 #
-# What was wrong was concluding that `shape` therefore contains *only* our
-# indicators. It does not. The SDK registers an on-success/on-failure hook as an
-# ordinary task named `summarise_success-on-success`, and the engine's
-# `GetWorkflowShape` joins every Job of the workflow version — including the
-# linked on-failure job. Measured against a live run: `shape` carries both
-# finalizers under exactly those names, so a blocklist of `{"plan", ""}` let
-# them through as indicators nobody submitted, and their COMPLETED status then
-# dragged an all-failed run to `partial`.
-#
-# So the filter is an allowlist now: a unit is reported when the domain catalog
-# says it is an indicator. Anything the engine adds to the graph in future —
-# another hook, a new scaffolding step — is excluded by construction rather
-# than by someone remembering to extend a list of names.
+# The suffix rule below comes from the SDK's own registration
+# (`on_success_task` registers `<name>-on-success`), so a graph that gains an
+# indicator is reported rather than hidden, and scaffolding is still excluded.
+_SCAFFOLDING_NAMES = frozenset({"plan", ""})
+_SCAFFOLDING_SUFFIXES = ("-on-success", "-on-failure")
+
+
+def _is_scaffolding(slug: str) -> bool:
+    """Ours or the engine's, but never an indicator the caller asked for."""
+    return slug in _SCAFFOLDING_NAMES or slug.endswith(_SCAFFOLDING_SUFFIXES)
 
 
 # Engine statuses from which no further task transition happens. Only then is
@@ -754,24 +769,22 @@ def _skipped_of(run: object) -> frozenset[str]:
     return frozenset()
 
 
-def _units_of(
-    details: object, *, skipped: frozenset[str], known: Collection[str]
-) -> tuple[UnitStatusView, ...]:
-    """Per-unit outcomes, read from the engine rather than reconstructed.
+def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
+    """Per-unit outcomes, plus whether any scaffolding task failed.
 
     ``shape`` names the tasks as declared and ``tasks`` carries their outcomes;
-    they join on ``task_external_id``. Going through ``shape`` is what removed
-    the display-name parsing — and it also means a unit the engine has not
-    created a task row for yet still appears, as ``queued``, instead of blinking
-    into existence partway through the run.
+    they join on ``task_external_id``. Going through ``shape`` means a unit the
+    engine has not created a task row for yet still appears, as ``queued``,
+    instead of blinking into existence partway through the run.
 
-    ``known`` is the domain catalog's slugs: only those are units a caller asked
-    for. See the allowlist note above.
+    ⚠ Returns the scaffolding-failed flag rather than swallowing it. `plan` is
+    filtered out of the unit list, so when *it* fails the engine cancels every
+    indicator and the roll-up sees only cancellations — reporting `cancelled`
+    for a run nobody cancelled. The caller defers to the engine instead.
     """
     # ⚠ Skip rows with no join key rather than letting them collide. Keying on
     # `getattr(..., None)` put every id-less task under `None`, so an id-less
-    # shape item then joined to whichever of them happened to be last — handing
-    # a queued unit another unit's status and error text.
+    # shape item then joined to whichever of them happened to be last.
     outcomes = {}
     for task in getattr(details, "tasks", None) or []:
         key = getattr(task, "task_external_id", None)
@@ -779,18 +792,17 @@ def _units_of(
             outcomes[key] = task
 
     units: list[UnitStatusView] = []
+    scaffolding_failed = False
     for item in getattr(details, "shape", None) or []:
         slug = getattr(item, "task_name", "") or ""
-        if slug not in known:
-            continue
         key = getattr(item, "task_external_id", None)
         task = outcomes.get(key) if key is not None else None
         status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
-        # A skip is invisible in the status enum: the engine reports COMPLETED.
-        if slug in skipped:
-            status = "skipped"
+        if _is_scaffolding(slug):
+            scaffolding_failed = scaffolding_failed or status == "failed"
+            continue
         units.append(UnitStatusView(slug, status, getattr(task, "error_message", None)))
-    return tuple(sorted(units, key=lambda u: u.indicator))
+    return tuple(sorted(units, key=lambda u: u.indicator)), scaffolding_failed
 
 
 def _name(value: object) -> str:

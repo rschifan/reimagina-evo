@@ -153,7 +153,9 @@ Retention is a **scheduled Postgres operation**, `scripts/reclaim_run_plans.sql`
 run by the platform's scheduler:
 
 ```bash
-psql "$DATABASE_URL_DIRECT" -v horizon="'45 days'" -f scripts/reclaim_run_plans.sql
+make reclaim-run-plans                     # horizon from REIMAGINA_PLAN_RETENTION
+# or directly — note the value is NOT pre-quoted; the script quotes it:
+psql "$DATABASE_URL_DIRECT" -v horizon="45 days" -f scripts/reclaim_run_plans.sql
 ```
 
 ⚠ It is deliberately **not** on the submit path and **not** a Hatchet cron. It
