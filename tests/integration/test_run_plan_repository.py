@@ -158,6 +158,14 @@ _RECLAIM_SQL = (
     pathlib.Path(__file__).resolve().parents[2] / "scripts" / "reclaim_run_plans.sql"
 )
 
+_RECLAIM_STATEMENT = "\n".join(
+    line
+    for line in _RECLAIM_SQL.read_text().splitlines()
+    # psql metacommands are the caller's business and psycopg2 cannot run them.
+    if not line.startswith("\\")
+).replace(":'horizon'", "%(horizon)s")
+"""Read and rewritten once at import, not per call — it cannot change mid-run."""
+
 
 def _reclaim(conn, horizon: str) -> int:
     """Run the **shipped** retention statement, not a copy of it.
@@ -170,13 +178,8 @@ def _reclaim(conn, horizon: str) -> int:
     psql metacommands are stripped: they are the caller's business, and psycopg2
     cannot execute them.
     """
-    statement = "\n".join(
-        line
-        for line in _RECLAIM_SQL.read_text().splitlines()
-        if not line.startswith("\\")
-    ).replace(":'horizon'", "%(horizon)s")
     with conn.cursor() as cur:
-        cur.execute(statement, {"horizon": horizon})
+        cur.execute(_RECLAIM_STATEMENT, {"horizon": horizon})
         return cur.rowcount
 
 

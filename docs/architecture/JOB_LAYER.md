@@ -261,6 +261,14 @@ These are not advisory. `runstore` imports the first and third and interpolates 
 
 Two judgements are encoded there. `cancelled` only wins when nothing actually failed — a run that both failed and was cancelled is a failure, and calling it cancelled would hide the error. An all-skipped run folds into `failed` rather than gaining a fourth value, because nothing ran and `orchestration_run.status` has no `skipped` (`port.py:44-50`).
 
+⚠ **What is fed to it differs by track, and the function does not know.** It is a *terminal* roll-up over units the run was asked to compute:
+
+- `skipped` is filtered out on the Hatchet track before the call. There a skip means "not dirty" — an indicator the run was never asked to recompute, present only because every catalog indicator is a task in the static DAG. On `sync` a skip means an *unsatisfied input*, which is a real failure to compute, and is passed through. Feeding Hatchet's non-dirty skips in made every ordinary run report `partial`.
+- Non-terminal units (`queued`, `running`) are filtered out too. The function has no case for them, so they fall through to `failed` — which reported a run cancelled before its tasks existed as a failure.
+- When nothing terminal remains to judge, the engine's own status is used instead, *except* when every unit settled and all of them skipped: that is a run whose work was asked for and not done, and stays `failed`.
+
+See `hatchet_orchestrator.get_run` for the branch table and `tests/unit/test_hatchet_verdict.py::test_the_run_status_table` for the enumerated cases.
+
 ### The three database CHECKs disagree
 
 Unifying Python did not unify the schema, and widening the CHECKs is a migration decision, not a refactor (`port.py:25-28`).

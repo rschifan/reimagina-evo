@@ -20,8 +20,8 @@ domain packages don't import app code") holds.
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/health/live` | `{status:"ok"}` — process alive. Never touches DB. |
-| GET | `/health/ready` | `{status, db}` — 200 iff DB is reachable, 503 otherwise. |
-| GET | `/health` | Alias for `/health/ready` (legacy). |
+| GET | `/health/ready` | `{status, db, orchestrator}` — 200 iff the DB is reachable **and** a live worker serves this deployment's graph; 503 otherwise. `orchestrator` is `ready`, `no_worker_for_graph`, `unreachable` or `mode_not_deployable`. |
+| GET | `/health` | Legacy alias — **database only**. Returns the same shape with `orchestrator:"not_probed"`. It deliberately does *not* fail on an engine outage: doing so pulled every read path out of the load balancer and restart-looped any pod using it as a liveness probe. |
 | GET | `/indicators` | Every indicator in `indicator_catalog`. |
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). |

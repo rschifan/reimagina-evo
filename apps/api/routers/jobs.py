@@ -186,7 +186,6 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     than left with a stale picture. The error frame is emitted only once that
     budget is exhausted.
     """
-    from reimagina.orchestration import frames
     from reimagina.orchestration.factory import get_orchestrator
 
     deadline = time.monotonic() + _STREAM_MAX_SECONDS
@@ -200,60 +199,82 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
         try:
             events = get_orchestrator().subscribe_progress(run_id).__aiter__()
         except Exception:  # noqa: BLE001 — same policy as a mid-stream failure
-            if outage_deadline is None:
-                outage_deadline = time.monotonic() + _OUTAGE_DEADLINE_SECONDS
-            if time.monotonic() >= outage_deadline:
-                yield frames.error_frame("orchestrator_unavailable")
+            async for frame in _give_up_or_wait(outage_deadline, backoff):
+                yield frame
+            if outage_deadline is not None and time.monotonic() >= outage_deadline:
                 return
-            yield ": keep-alive\n\n"
-            await _backoff(backoff)
+            outage_deadline = (
+                outage_deadline or time.monotonic() + _OUTAGE_DEADLINE_SECONDS
+            )
             backoff *= 2
             continue
 
-        interrupted, progressed = False, False
+        interrupted, delivered = False, False
         async for frame in _drain(events, deadline, emitted):
             if frame is _INTERRUPTED:
                 interrupted = True
                 break
-            if frame is _TERMINAL:
-                break
-            progressed = True
+            # ⚠ Keep-alives do not count. `_drain` emits one every
+            # `_HEARTBEAT_SECONDS`, and treating it as delivery meant a listener
+            # that opened, produced nothing for 16s and dropped reset its own
+            # budget every round — the "never gives up" mode this flag exists to
+            # avoid, hanging the request for the full stream lifetime.
+            if not frame.startswith(":"):
+                delivered = True
             yield frame
 
-        # ⚠ Reset on a subscription that *delivered something*, not merely one
-        # that opened. Two mistakes are possible here and both have been made:
+        if not interrupted:
+            return
+
+        # ⚠ Reset on a subscription that delivered a frame, not on one that
+        # merely opened. Both neighbouring mistakes have been made here:
         #
         #   never reset — the first blip pinned the deadline forever, so an
         #     unrelated blip minutes later found it long expired and killed a
         #     healthy stream with zero retries.
         #   reset on every attempt — a listener that opens and immediately drops
-        #     clears its own budget each time round, so the loop never gives up
-        #     and the request hangs for the full `_STREAM_MAX_SECONDS`.
+        #     clears its own budget each round, so the loop never gives up and
+        #     the request hangs for the full `_STREAM_MAX_SECONDS`.
         #
-        # Progress is the thing that proves the outage ended.
-        if progressed:
+        # ⚠ `delivered` is set *before* de-duplication, deliberately. Keying it
+        # on frames that survived the `emitted` filter would mean a reconnect
+        # replaying only already-seen statuses did not count as recovery — the
+        # comment would say "delivered something" while the code meant
+        # "delivered something new", and a stable run reconnecting mid-flight
+        # would burn its budget while perfectly healthy.
+        if delivered:
             outage_deadline = None
             backoff = _RECONNECT_BACKOFF_SECONDS
 
-        # Anything but an interruption is a finished stream. (`terminal` was a
-        # separate flag; with the reset above it carried no information the
-        # `interrupted` check did not already have.)
-        if not interrupted:
+        async for frame in _give_up_or_wait(outage_deadline, backoff):
+            yield frame
+        if outage_deadline is not None and time.monotonic() >= outage_deadline:
             return
-
-        if outage_deadline is None:
-            outage_deadline = time.monotonic() + _OUTAGE_DEADLINE_SECONDS
-        if time.monotonic() >= outage_deadline:
-            yield frames.error_frame("orchestrator_unavailable")
-            return
-        yield ": keep-alive\n\n"
-        await _backoff(backoff)
+        outage_deadline = outage_deadline or time.monotonic() + _OUTAGE_DEADLINE_SECONDS
         backoff *= 2
 
 
-_TERMINAL = object()
-"""The run reached a terminal state: stop, successfully."""
+async def _give_up_or_wait(
+    outage_deadline: float | None, backoff: float
+) -> AsyncIterator[str]:
+    """Emit the outage frame if the budget is spent, else keep alive and wait.
 
+    Extracted because the identical seven lines sat in both arms of the
+    reconnect loop, and the budget reset added to one of them applied only
+    there — two copies of one policy is how they drift.
+    """
+    from reimagina.orchestration import frames
+
+    if outage_deadline is not None and time.monotonic() >= outage_deadline:
+        yield frames.error_frame("orchestrator_unavailable")
+        return
+    yield ": keep-alive\n\n"
+    await _backoff(backoff)
+
+
+# ⚠ No `_TERMINAL` sentinel. It signalled "the run finished", but the caller
+# already treats *anything except an interruption* as a finished stream, so the
+# branch, the two yield sites and the sentinel itself carried no information.
 _INTERRUPTED = object()
 """The listener failed: the caller decides whether to reconnect or give up."""
 
@@ -262,8 +283,9 @@ async def _drain(events, deadline: float, emitted: dict) -> AsyncIterator[object
     """One subscription's worth of frames, ending in a sentinel.
 
     Split out so the reconnect loop above reads as policy rather than as two
-    nested error paths. Yields SSE strings, then exactly one of `_TERMINAL` or
-    `_INTERRUPTED` — or simply ends if the overall stream deadline passed.
+    nested error paths. Yields SSE strings, then either `_INTERRUPTED` or
+    nothing — ending without it means the stream finished normally, whether the
+    run reached a terminal event or the overall deadline passed.
     """
     from reimagina.orchestration import frames
 
@@ -283,7 +305,6 @@ async def _drain(events, deadline: float, emitted: dict) -> AsyncIterator[object
             except StopAsyncIteration:
                 # The orchestrator closed the stream without a terminal event.
                 # Nothing failed, so this is not an outage — stop.
-                yield _TERMINAL
                 return
             except Exception:  # noqa: BLE001 — see below; silence is worse
                 # ⚠ The response is already 200 with its headers on the wire, so
@@ -318,7 +339,6 @@ async def _drain(events, deadline: float, emitted: dict) -> AsyncIterator[object
                 emitted[event.indicator] = event.status
                 yield frames.event_frame(event)
             if event.indicator is None and frames.is_run_terminal(event.status):
-                yield _TERMINAL
                 return
     finally:
         pending.cancel()
