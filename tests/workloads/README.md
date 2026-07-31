@@ -42,6 +42,28 @@ by one worktree makes the other's alembic fail outright with
 `HATCHET_CLIENT_TOKEN` and a reachable engine, or the whole suite skips cleanly.
 Track A needs neither, which is itself one of the findings.
 
+## The synthetic units are this suite's limitation, and there is a script for it
+
+Every unit here sleeps or spins, and runs for 10 ms to 3 s. That is what makes
+the suite reproducible on any machine — and it also means its numbers do not
+forecast wall-clock on real work, in **either** direction: the units are small
+enough that dispatch overhead dominates most shapes (median speedup 0.86 at full
+scale, i.e. slower than in-process), while a sleeping unit never contends for the
+database the way a real one does.
+
+`scripts/bench_real_data.py` runs the **shipped** catalog over **real** features
+to measure that gap:
+
+```bash
+DATABASE_URL_DIRECT=postgresql://localhost/reimagina_real_b \
+  python scripts/bench_real_data.py --reps 3
+```
+
+It writes `indicator_result` rows under a fresh `scenario_id` per repetition, so
+the city's committed baseline is never touched. Track B additionally needs a
+worker already registered against that same database. Results:
+[`REAL_DATA_RESULT.md`](REAL_DATA_RESULT.md).
+
 ## Traps worth knowing before you debug something else
 
 Each of these cost real time and presents as a symptom that points somewhere
