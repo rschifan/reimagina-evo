@@ -252,7 +252,11 @@ def bench_worker(bench_workflows, bench_db):
     )
     thread = threading.Thread(target=worker.start, daemon=True)
     thread.start()
-    _await_registration(set(f"reimagina-bench-{w}" for w in bench_workflows))
+    # ⚠ The **registered** names, off the workflow objects. Rebuilding them as
+    # `f"reimagina-bench-{id}"` drops the namespace `Workflow.name` applies
+    # (`namespace + config.name`), so under any HATCHET_CLIENT_NAMESPACE this
+    # waited for names nothing would ever be registered under.
+    _await_registration({wf.name for wf, _nodes in bench_workflows.values()})
     yield worker
 
     stop_worker(worker, log=_LOG)
@@ -265,12 +269,14 @@ def _await_registration(expected: set[str], timeout: float = 60.0) -> None:
     last: object = "no response"
     while time.monotonic() < deadline:
         try:
-            # Filtered by name: an unfiltered list is capped at 50 rows in
-            # arbitrary order, and this branch mints a permanent workflow per
-            # graph shape plus one per bench workload.
-            listed = hatchet_app.get_hatchet().workflows.list(
-                workflow_name=hatchet_app.workflow_name()
-            )
+            # ⚠ An explicit limit, **not** a name filter. `workflows.list` takes
+            # one name, and this waits on several; a filter copied from the
+            # conformance suite asked the engine for `reimagina-run-v<shape>`
+            # and then checked the reply for `reimagina-bench-*`, which can
+            # never match — so this suite skipped after 60s on every run, with a
+            # message blaming registration. The limit is what the default 50
+            # rows in arbitrary order needed, and it is all it needed.
+            listed = hatchet_app.get_hatchet().workflows.list(limit=500)
             names = {
                 getattr(w, "name", None) for w in (getattr(listed, "rows", None) or [])
             }

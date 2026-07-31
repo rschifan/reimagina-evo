@@ -132,22 +132,19 @@ def unit(run_id, plan_id, monkeypatch):
     from reimagina.orchestration import hatchet_app
 
     def _install(runner):
-        # ⚠ Override one slug, keep the rest. `build_dag` now resolves every
-        # runner up front and refuses to declare a graph it cannot execute, so
-        # a fake that returns only this slug makes the whole DAG unbuildable —
-        # which is the guard working, not a test fixture being unlucky.
+        # ⚠ Override one slug, keep the rest. The task body looks its runner up
+        # by slug in whatever this returns, so a fake carrying only `SLUG`
+        # would leave every other unit in the graph unrunnable — harmless for
+        # this test and confusing for the next one to reuse the fixture.
+        #
+        # Patching `hatchet_app.default_runners` is enough on its own: the task
+        # body resolves it through module globals when the unit *runs*, so a
+        # cached DAG picks the patch up and no rebuild is needed.
         monkeypatch.setattr(
             hatchet_app,
             "default_runners",
             lambda registry=None: {**default_runners(), SLUG: runner},
         )
-        # ⚠ Drop the cached DAG so it rebuilds against the runner just
-        # installed. The runner is now bound into the task closure at
-        # declaration time rather than looked up per attempt, so a cached graph
-        # keeps whichever runner the first test in the session installed — which
-        # showed up as the healthy-unit test receiving the poisoned runner's
-        # exception. Patching `default_runners` alone is no longer enough.
-        monkeypatch.setattr(hatchet_app, "_dag", None)
         # `run_id` is the empty-string placeholder the submitter really sends:
         # the engine mints the id, so the task must read it off the context.
         payload = hatchet_app.RunInput(
@@ -157,13 +154,13 @@ def unit(run_id, plan_id, monkeypatch):
             code_version=CODE_VERSION,
             concurrency_key="scope-under-test",
         )
-        # `is_cancelled=False`: the unit checks it before opening a connection
-        # and declines to start when the run has already been cancelled.
+        # Exactly the three attributes the unit body reads. No `is_cancelled`:
+        # there is no preflight to feed it — see the note at the end of this
+        # module.
         ctx = SimpleNamespace(
             workflow_run_id=run_id,
             attempt_number=1,
             log=lambda _msg: None,
-            is_cancelled=False,
         )
         # `_fn`, not the `fn` property: same object, but the property is
         # deprecated for removal in SDK v2.0.0 and warns on every call.
