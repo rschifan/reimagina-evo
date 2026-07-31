@@ -55,11 +55,12 @@ Assertions in `test_port_contract.py` should stay identical across branches. If
 a branch needs to change one, that change is itself a result worth recording in
 the comparison document.
 
-The other thing a branch must edit is `conftest._teardown`. It deletes from
-`procrastinate.procrastinate_jobs`, `jobs_runtime.job_unit` and
-`jobs_runtime.orchestration_run` — all of which an engine-owned ops-plane drops.
-Only `test_port_contract.py` is genuinely engine-agnostic; cleaning up after a
-run means knowing where that engine put it.
+The other thing a branch must edit is `conftest._teardown`, because cleaning up
+after a run means knowing where that engine put it. On this branch it deletes
+domain rows and `job_run` and **nothing else**: `job_unit` and
+`orchestration_run` are dropped here (r033), and the engine's own run history
+expires on its retention schedule rather than being tidied by a test. Only
+`test_port_contract.py` is genuinely engine-agnostic.
 
 ## Preconditions
 

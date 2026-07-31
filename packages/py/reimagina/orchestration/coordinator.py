@@ -4,14 +4,15 @@
   indicator's runner in dependency order, skipping any whose dirty inputs
   didn't succeed, and returns a per-unit + overall status (F6 partial-success).
   This is the ``--sync`` path and survives every ops-plane choice.
-- ``_dep_map`` — slug → its input slugs, derived from the registry. Shared with
-  the wave scheduler.
+- ``_dep_map`` — slug → its input slugs, derived from the registry.
 
-The distributed readiness functions (``plan_wave`` / ``next_ready_units``) moved
-to ``reimagina.orchestration.wave``: an engine that owns scheduling natively
-deletes that module, and keeping it here would make the split a diff inside a
-file rather than a file. The status vocabulary lives in
-``reimagina.orchestration.port``. Imports flow wave → coordinator → port.
+⚠ The distributed readiness functions (``plan_wave`` / ``next_ready_units``)
+lived in ``reimagina.orchestration.wave``, which **does not exist on this
+branch**. Splitting them out is what made deleting them a file deletion rather
+than a diff inside this one, and Track B is the branch that takes the deletion:
+the engine owns readiness, ordering and fan-out. What is left here needs no
+ops-plane at all. The status vocabulary lives in
+``reimagina.orchestration.port``.
 
 Runners (slug → compute fn) are injected, not defined here — that binding is
 ``reimagina.orchestration.runners`` (component 7). A runner owns its own
