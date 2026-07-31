@@ -550,50 +550,29 @@ def build_dag(
             skip_if=_skip_unless_dirty(plan, spec.slug),
         )(_runner)
 
-    # ── The one fact the engine will not report: which units were skipped ───
+    # ── No finalizers. There is nothing left for one to say ─────────────────
     #
-    # `units` is captured by both finalizers. Note it deliberately excludes
-    # `plan`: scaffolding is not an indicator, and a caller asking "what
-    # happened to my run" does not want a fourth row for our bookkeeping.
-    units = {slug: task for slug, task in node.items() if slug != "plan"}
-
-    def _skipped(ctx: Context) -> dict:
-        """Record which units were skipped. That is the whole job.
-
-        Everything else a caller wants about a unit is already in
-        `runs.get(run_id)`: `tasks[].status` distinguishes COMPLETED, FAILED and
-        CANCELLED, `tasks[].error_message` carries the failure text, and
-        `shape[].task_name` gives the declared slug. Reconstructing any of that
-        here meant maintaining a second, worse copy of the engine's own record —
-        and it was wrong twice, because inferring "cancelled" from a missing
-        output is a three-signal guess where the engine has a plain answer.
-
-        ⚠ What is *not* recoverable afterwards is a skip. A unit skipped for
-        being non-dirty reports **COMPLETED**, indistinguishable from one that
-        computed, and `ctx.was_skipped` is the documented way to tell them apart
-        — available only inside a finalizer, which is why this one still exists.
-        """
-        return {
-            "skipped": sorted(
-                slug for slug, task in units.items() if ctx.was_skipped(task)
-            )
-        }
-
-    # ⚠ Neither finalizer deletes the plan. A terminal run is exactly the run a
-    # native replay reuses, and replay re-reads `run_plan` by the same handle —
-    # reclaiming it here destroyed the input of every replayable run. Retention
-    # is a Postgres-owned operation outside the request path; see the ops job.
+    # An `on_success_task`/`on_failure_task` pair lived here to publish the list
+    # of skipped units, because a unit skipped for being non-dirty reports
+    # COMPLETED — indistinguishable from one that computed — and `ctx.was_skipped`
+    # is available only inside a finalizer.
     #
-    # Both hooks, one body: Hatchet fires `on_failure_task` only when a run did
-    # not fully succeed, so neither alone covers every run.
-    @workflow.on_success_task()
-    def summarise_success(input: RunInput, ctx: Context) -> dict:
-        return _skipped(ctx)
-
-    @workflow.on_failure_task()
-    def summarise_failure(input: RunInput, ctx: Context) -> dict:
-        """Runs when the run did not fully succeed — including partial success."""
-        return _skipped(ctx)
+    # ⚠ That was built on a misreading. The engine emits a `SKIPPED` **task
+    # event**, and `V1TaskEvent.task_id` carries the `task_external_id` despite
+    # its name and its `StrictStr` type sitting next to `V1TaskSummary.task_id`'s
+    # `StrictInt`. The two join deterministically; `runs.get()` was already
+    # returning the answer and this code was throwing it away to reconstruct it
+    # from a hook. See `hatchet_orchestrator._skipped_task_ids`.
+    #
+    # Deleting them costs nothing and buys three things: two fewer tasks per run
+    # in the dashboard and in `shape`, no scaffolding for the read path to
+    # recognise and filter, and skips that are visible **while the run is in
+    # flight** rather than only once a finalizer has run at terminal state.
+    #
+    # ⚠ Nothing here deletes the plan either, and nothing should. A terminal run
+    # is exactly the run a native replay reuses, and replay re-reads `run_plan`
+    # by the same handle — reclaiming it destroyed the input of every replayable
+    # run. Retention is a Postgres-owned operation outside the request path.
 
     return workflow, node
 

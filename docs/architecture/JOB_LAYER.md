@@ -174,7 +174,11 @@ Not in a table, and — after two corrections — not reconstructed either.
 
 ⚠ The version before this one rebuilt each unit's outcome inside a finalizer, from `ctx.task_run_errors` plus `ctx.was_skipped` plus whether `task_output` raised, then parsed the engine's display names to label them. It was a second, worse copy of a record the engine already keeps, and it was wrong twice — once reporting a cancelled dependent as `succeeded`, because "no error and not skipped" reads as success unless absence of output is also checked (spike B10).
 
-**One fact genuinely cannot be read back**: a unit skipped for being non-dirty reports `COMPLETED`, identical to one that computed, and `ctx.was_skipped` exists only inside a finalizer. So one finalizer survives, emitting the skip list and nothing else.
+**And there are no finalizers left either.** One survived for a while, publishing the list of skipped units — because a unit skipped for being non-dirty reports `COMPLETED`, identical to one that computed, and `ctx.was_skipped` is available only inside a finalizer.
+
+⚠ That was built on a misreading of the API. The engine emits a `SKIPPED` **task event**, and `V1TaskEvent.task_id` carries the `task_external_id` despite its name and despite sitting next to `V1TaskSummary.task_id`, which is an integer. The two join deterministically — measured against this engine at 489 events across 19 runs, every one joining by external id — so `runs.get()` was already returning the answer that a hook was being maintained to reconstruct.
+
+Deleting the pair costs nothing and buys three things: two fewer tasks per run in the dashboard and in `shape`, no scaffolding for the read path to recognise and filter, and skips that are visible **while the run is in flight** rather than only once a finalizer has run at terminal state. `SKIPPED` marks exactly the `skip_if` skips — of the tasks carrying one, 62 of 62 were `COMPLETED`, and no `CANCELLED` or `FAILED` task carried one, so a cancelled dependent is not relabelled as a skip.
 
 | | Track A | Track B |
 |---|---|---|
