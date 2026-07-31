@@ -116,6 +116,14 @@ def run_once(mode: str, conn, features: list[str], slots: int) -> dict:
         status, t_terminal = await_terminal(orchestrator, conn, handle.run_id)
 
     records = unit_records(conn, handle.run_id)
+    # ⚠ Commit, and it is not bookkeeping. `sync` runs every unit inside *this*
+    # transaction and never commits on its own, so without this the whole run —
+    # results and `job_run` rows alike — is discarded when the connection
+    # closes. Two things were wrong as a result: nothing persisted for anyone to
+    # check afterwards, and the comparison was not like-for-like, because the
+    # engine-backed modes each paid a real commit per unit on their own
+    # connections while `sync` paid none.
+    conn.commit()
     return {
         "run_id": handle.run_id,
         "status": status.status if status else None,

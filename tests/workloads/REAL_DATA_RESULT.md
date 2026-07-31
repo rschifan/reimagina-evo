@@ -1,4 +1,53 @@
-# Real-data run — what the synthetic suite cannot show
+# Real-data runs — correctness first, then what the synthetic suite cannot show
+
+> **Correctness is in [the first section](#correctness-does-the-pipeline-compute-the-right-answers).**
+> The timing section below it is a separate question and a weaker result; read
+> the caveat on `sync` before quoting any of its numbers.
+
+## Correctness — does the pipeline compute the right answers?
+
+`scripts/verify_real_data.py`, run at **full city scope (86,225 blocks)** against
+both implementations. Every check has an oracle that exists independently of the
+code producing the answer.
+
+| check | what it proves | `sync` | `hatchet` |
+|---|---|:--:|:--:|
+| **A** neutral scenario reproduces the baseline | a scenario with no overrides sees baseline inputs, so all 86,225 × 3 values must equal the committed baseline bit for bit | ✅ | ✅ |
+| **B** an override changes exactly what it should | a `floors` override dirties `planned_floors` **only**, writes rows for **only** the edited features, and the overridden value reaches the result | ✅ | ✅ |
+| **C** structural invariants | one `current` row per (feature, indicator, scenario); every result cites a real `job_run` | ✅ | ✅ |
+| **D** determinism | two independent runs of the same input agree value for value | ✅ | ✅ |
+
+Both implementations match the *same* baseline exactly, so they match each other
+— 86,225 features × 3 indicators, zero differences, on both.
+
+Check A alone would be worthless. **A pipeline that ignored scenario overrides
+entirely would pass it**, because a what-if engine that silently returns the
+baseline returns exactly the baseline a neutral scenario expects. That is what
+check B is for, and it is the check that actually exercises
+`scenario_override → resolve_change_set → dirty set → run_plan → effective_numeric
+→ result`. Before this run there were **zero** override rows in the database:
+the what-if path had never been exercised on real data at all.
+
+Check A is also the only end-to-end exercise of the claim check: a full-city run
+carries 258,675 feature ids through `jobs_runtime.run_plan` rather than through
+a 10 MB gRPC message, and the values that come out the far side are identical to
+the baseline.
+
+### `planned_floors` computes nothing, and that is the data
+
+It writes zero rows on this dataset and still reports `succeeded`. Not a
+pipeline bug: **no block has a `floors` attribute** — not in
+`feature.attributes`, not in `observation` — so there is nothing to compute.
+Check B proves the unit works the moment an override supplies the input.
+
+Worth knowing anyway, because a unit that legitimately produces nothing is
+indistinguishable at the run level from one that was supposed to produce
+something and did not. `run_plan` raises `LookupError` for a *missing plan* for
+this reason; an *empty result set* has no equivalent guard.
+
+---
+
+# Performance — what the synthetic suite cannot show
 
 Measured 2026-07-31 on `reimagina_real_b`, the real CDMX dataset: **86,225
 blocks**, 2,053,044 buildings, the four shipped indicators, 4 worker slots.
@@ -110,6 +159,13 @@ catalog has.
 
 ## Caveats, so the number is not overread
 
+- ⚠ **The `sync` column was measured without committing.** `sync` runs every
+  unit inside the caller's transaction and never commits on its own, and the
+  bench script did not either — so its results were rolled back at close, and
+  the engine-backed modes each paid a real commit per unit on their own
+  connections while `sync` paid none. The compute time is real; the comparison
+  flatters `sync` by whatever those commits cost. Fixed in the script after the
+  fact, and **the numbers above predate the fix**.
 - One machine, one Postgres, everything co-located — engine, worker, database.
   Contention is therefore at its worst here; a deployment that separates them
   would land somewhere better, and that number is not measured.
