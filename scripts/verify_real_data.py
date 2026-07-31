@@ -58,10 +58,55 @@ class Failed(Exception):
     """A check that did not hold. The message is the finding."""
 
 
-def _q(conn, sql: str, args: tuple = ()) -> list[tuple]:
+COMPARISON_TIMEOUT_MS = 120_000
+"""⚠ A bound on every comparison, because one of them once ran for 18 minutes.
+
+The comparisons are equality tests over a few hundred thousand rows and take
+~150 ms with a sane plan. What they must never do is hang: a verification script
+that stops answering is worse than one that fails, because a hang looks like slow
+work and gets waited on.
+
+This is deliberately **not** a claim about which plan is correct. It converts any
+future planner surprise into a fast, loud failure regardless of cause — the same
+reason the unit body sets `statement_timeout` rather than trusting the engine's.
+"""
+
+
+def _q(conn, sql: str, args: tuple = (), *, bounded: bool = False) -> list[tuple]:
     with conn.cursor() as cur:
+        if bounded:
+            # SET LOCAL: scoped to this transaction, so it cannot leak into the
+            # runs themselves — those are multi-minute by design.
+            cur.execute("SET LOCAL statement_timeout = %s", (COMPARISON_TIMEOUT_MS,))
         cur.execute(sql, args)
         return cur.fetchall()
+
+
+def refresh_statistics(conn) -> None:
+    """`ANALYZE` before comparing. ⚠ This is the fix, and the query was not.
+
+    A full-scope run inserts 258,675 rows, and the checks below run three of them
+    back to back. Autoanalyze is asynchronous and threshold-driven, so the
+    planner can be working from statistics gathered when the table was a third of
+    its current size — and it then picks a plan sized for a table that no longer
+    exists.
+
+    ⚠ An earlier version of this script blamed the *shape* of the comparison
+    query and rewrote it with CTEs. That was wrong: `EXPLAIN (ANALYZE)` gives the
+    two forms an identical parallel hash join, 104 ms and 150 ms, and the CTEs are
+    inlined rather than acting as an optimisation fence (they are non-recursive
+    and referenced once, which Postgres 12+ inlines). The rewrite changed
+    nothing; fresh statistics are what the planner was actually missing.
+
+    Costs ~0.9 s on a 3M-row table. Cheap against the alternative.
+    """
+    prior = conn.autocommit
+    conn.autocommit = True  # ANALYZE cannot run inside a transaction block
+    try:
+        with conn.cursor() as cur:
+            cur.execute("ANALYZE curated_geo.indicator_result")
+    finally:
+        conn.autocommit = prior
 
 
 def blocks(conn, limit: int | None) -> list[str]:
@@ -104,25 +149,23 @@ def check_a_neutral_matches_baseline(conn, mode, features) -> str:
     if status.status != "succeeded":
         raise Failed(f"A: neutral run reported {status.status!r}, units={status.units}")
 
+    refresh_statistics(conn)
     rows = _q(
         conn,
         """
-        WITH s AS (
-          SELECT feature_id, indicator_slug, value_numeric
-          FROM curated_geo.indicator_result
-          WHERE scenario_id = %s::uuid AND status = 'current'
-        ), b AS (
-          SELECT feature_id, indicator_slug, value_numeric
-          FROM curated_geo.indicator_result
-          WHERE scenario_id IS NULL AND status = 'current'
-        )
         SELECT s.indicator_slug, count(*),
                count(*) FILTER (WHERE b.feature_id IS NULL),
                count(*) FILTER (WHERE s.value_numeric IS DISTINCT FROM b.value_numeric)
-        FROM s LEFT JOIN b USING (feature_id, indicator_slug)
+        FROM curated_geo.indicator_result s
+        LEFT JOIN curated_geo.indicator_result b
+               ON b.feature_id = s.feature_id
+              AND b.indicator_slug = s.indicator_slug
+              AND b.scenario_id IS NULL AND b.status = 'current'
+        WHERE s.scenario_id = %s::uuid AND s.status = 'current'
         GROUP BY 1 ORDER BY 1
         """,
         (scenario,),
+        bounded=True,
     )
     if not rows:
         raise Failed("A: the run wrote no scenario results at all")
@@ -216,29 +259,24 @@ def check_d_determinism(conn, mode, features, first_scenario: str) -> None:
     if status.status != "succeeded":
         raise Failed(f"D: repeat run reported {status.status!r}")
 
-    # ⚠ Each side is narrowed in its own CTE before they meet. Written as a
-    # single self-join with both scenario filters in the ON/WHERE clauses, the
-    # planner nested-looped over the whole table and the query ran for 18
-    # minutes at full scope without finishing — on a check whose answer is a
-    # 258k-row equality test. The scenario index makes each leg ~200 ms.
+    # This is the comparison that once ran for 18 minutes. The protection is
+    # `refresh_statistics` plus the timeout in `_q`, not the shape of the SQL —
+    # see `refresh_statistics` for why the shape was a red herring.
+    refresh_statistics(conn)
     rows = _q(
         conn,
         """
-        WITH a AS (
-          SELECT feature_id, indicator_slug, value_numeric
-          FROM curated_geo.indicator_result
-          WHERE scenario_id = %s::uuid AND status = 'current'
-        ), b AS (
-          SELECT feature_id, indicator_slug, value_numeric
-          FROM curated_geo.indicator_result
-          WHERE scenario_id = %s::uuid AND status = 'current'
-        )
         SELECT a.indicator_slug, count(*),
                count(*) FILTER (WHERE a.value_numeric IS DISTINCT FROM b.value_numeric)
-        FROM a JOIN b USING (feature_id, indicator_slug)
+        FROM curated_geo.indicator_result a
+        JOIN curated_geo.indicator_result b
+          ON b.feature_id = a.feature_id AND b.indicator_slug = a.indicator_slug
+         AND b.scenario_id = %s::uuid AND b.status = 'current'
+        WHERE a.scenario_id = %s::uuid AND a.status = 'current'
         GROUP BY 1 ORDER BY 1
         """,
         (second, first_scenario),
+        bounded=True,
     )
     for slug, compared, differs in rows:
         if differs:

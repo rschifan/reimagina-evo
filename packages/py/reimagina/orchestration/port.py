@@ -110,7 +110,31 @@ class Orchestrator(Protocol):
         scenario_id: str | None = None,
         aoi_id: str | None = None,
         code_version: str = "dev",
-    ) -> RunHandle: ...
+    ) -> RunHandle:
+        """Start a run over the dirty set implied by the edit; return its handle.
+
+        ⚠ **Who commits differs by implementation, and the caller must know
+        which it has.** This is stated here because it is the one part of the
+        contract the type signature cannot carry, and every caller so far has
+        rediscovered it the hard way.
+
+        ``sync`` executes every unit *inside ``conn``'s transaction* and commits
+        nothing. The caller owns that transaction and decides: the CLI wraps the
+        call in ``with conn:`` so a clean return commits, and a harness that
+        simply closes the connection silently discards the entire run — results,
+        ``job_run`` provenance and all.
+
+        An engine-backed implementation commits ``conn`` at most for its own
+        submit-side bookkeeping, and the *units* run later on connections the
+        caller never sees, each committing itself. Nothing the caller does to
+        ``conn`` afterwards can roll a unit back.
+
+        So a caller that measures or compares the two must commit explicitly, or
+        it is comparing durability semantics rather than the thing it thinks it
+        is measuring — one side paying per-unit commits and the other paying
+        none. ``scripts/bench_real_data.py`` did exactly that.
+        """
+        ...
 
     def get_run(self, run_id: str) -> RunStatus | None:
         """Read a run's status, or None if the engine has never heard of it.
