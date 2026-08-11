@@ -469,9 +469,9 @@ class HatchetOrchestrator:
         and once from the engine's tasks — which is how the two came to disagree
         about what a unit was.
 
-        `conn` is unused, and that is the point: this branch has no run tables.
-        The signature keeps it because the port must stay implementable by a
-        track that does.
+        Takes no connection: this branch has no run tables, and the parameter
+        was deleted from the port rather than carried here unused. See
+        `port.Orchestrator.get_run` for why.
         """
         from reimagina.orchestration import hatchet_app
 
