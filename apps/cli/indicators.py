@@ -111,6 +111,62 @@ def summarise_aoi_indicator(
     }
 
 
+def submit_after_ingest(
+    *,
+    dsn: str,
+    changed_attributes: list[str],
+    aoi_id: str | None = None,
+    code_version: str = "dev",
+    mode: str = "detach",
+) -> dict[str, object]:
+    """Recompute the indicators a completed ingestion invalidated.
+
+    The same selective-recompute path a scenario edit takes — ``reads`` seeds
+    the dirty set, ``depends_on`` propagates it — driven by a load instead of an
+    edit. An ingest that changed no attribute any indicator reads is a ``noop``,
+    exactly as an irrelevant scenario edit is.
+
+    ⚠ **Deliberately not feature-scoped**, and this is the load-bearing decision
+    in the function. A loader knows the ids of the rows *it wrote*, and passing
+    those would look like a tighter recompute while being wrong: an Overture
+    load writes **buildings**, whereas every shipped indicator declares
+    ``applies_to=("block",)``. Scoping to building ids would hand the compute
+    functions a feature set none of their rows match — a recompute that touches
+    nothing and reports success, leaving the indicator stale with no error to
+    show for it.
+
+    ``impact.DirtyUnit`` already defines the empty set as "every feature this
+    indicator applies to", which is the correct reading of "new source data
+    landed": broader than necessary, never wrong.
+
+    # ponytail: full-extent recompute per affected indicator; narrow it when
+    # `impact.FeatureExpander` grows a real implementation. That hook exists for
+    # exactly this — mapping the features a change touched onto the features
+    # whose value changes (building → containing block, child → parent grain).
+    # It needs the spatial feature graph, which is not derivable from the
+    # registry, so it is injected rather than inferred. Until it lands, narrowing
+    # here would be guessing at a join the engine cannot check.
+    """
+    from reimagina.orchestration.factory import get_orchestrator
+
+    with connect(dsn) as conn:
+        handle = get_orchestrator(mode).submit_run(
+            conn,
+            changed_attributes=changed_attributes,
+            edited_features=(),
+            scenario_id=None,  # an ingest changes the baseline, not a scenario
+            aoi_id=aoi_id,
+            code_version=code_version,
+        )
+    status = handle.status.status if handle.status else "queued"
+    return {
+        "run_id": None if status == "noop" else handle.run_id,
+        "status": status,
+        "mode": mode,
+        "changed_attributes": list(changed_attributes),
+    }
+
+
 def evaluate_scenario_cli(
     *,
     dsn: str,
