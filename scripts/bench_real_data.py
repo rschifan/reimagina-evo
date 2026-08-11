@@ -31,6 +31,7 @@ needs — a registered worker against the same database, and for Hatchet a
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -81,6 +82,29 @@ def block_ids(conn, limit: int | None) -> list[str]:
         return [row[0] for row in cur.fetchall()]
 
 
+def _get_run(orchestrator, conn, run_id: str):
+    """Read a run, on either track's `get_run`.
+
+    ⚠ The two tracks' ports have **forked on this method**, which is why this
+    shim exists rather than a direct call:
+
+        Track A   get_run(conn, run_id)   — matches `main`
+        Track B   get_run(run_id)         — its own port.py drops `conn`
+
+    Track B has no run tables, so its `conn` was genuinely unused; it removed
+    the parameter from its port rather than keeping it ignored. That is a
+    defensible local decision and it breaks every piece of code meant to run
+    against both, this benchmark included.
+
+    Bound by signature, once, rather than by catching TypeError per poll: a
+    `TypeError` raised *inside* a correct call would otherwise be swallowed and
+    retried as if it were an arity mismatch.
+    """
+    if "conn" in inspect.signature(orchestrator.get_run).parameters:
+        return orchestrator.get_run(conn, run_id)
+    return orchestrator.get_run(run_id)
+
+
 def await_terminal(orchestrator, conn, run_id: str):
     deadline = time.monotonic() + SETTLE_TIMEOUT_S
     last = None
@@ -88,7 +112,7 @@ def await_terminal(orchestrator, conn, run_id: str):
         # Roll back between polls or this connection holds a snapshot from
         # before the units committed, and the job_run read below sees nothing.
         conn.rollback()
-        last = orchestrator.get_run(run_id)
+        last = _get_run(orchestrator, conn, run_id)
         if last is not None and last.status in RUN_TERMINAL_STATES:
             return last, db_now(conn)
         time.sleep(POLL_S)
@@ -146,6 +170,59 @@ def run_once(mode: str, conn, features: list[str], slots: int) -> dict:
     }
 
 
+# ⚠ Every repetition writes one full scope of `indicator_result` — 258,675 rows
+# per indicator on CDMX — under a fresh `scenario_id`, and nothing ever removed
+# them. The table is what every unit then queries, so each run made the next one
+# slower and the effect compounded silently across months.
+#
+# Measured when this was found: `reimagina_real_b` had 34 accumulated scenarios
+# and a 3,048 MB `indicator_result`; `reimagina_real_a` had 10 and 1,256 MB. The
+# same `sync` control read 64.8s on one database and 27.1s on the other — a 2.4x
+# spread with identical code over identical features. Every cross-track number
+# taken before this swept was comparing benchmark history, not engines.
+#
+# ⚠ `scenario_id IS NOT NULL` is load-bearing, not defensive. The baseline rows
+# carry a `real-<track>-<hex>` model_version too — `real-dbos-b4ac6de8`,
+# `real-hatchet-3caddac4` — so matching on the prefix alone deletes the 258,675
+# committed baseline rows that every correctness check compares against, and
+# they cost a full recompute to rebuild. The scenario predicate is what makes
+# the prefix safe.
+BENCH_ROW_PREDICATE = """
+    scenario_id IS NOT NULL
+    AND (model_version LIKE 'real-%%' OR model_version LIKE 'verify-%%')
+"""
+
+
+def sweep_bench_rows(dsn: str) -> int:
+    """Remove this benchmark's own leftovers, then hand the planner the truth.
+
+    On the way **in**, matching `tests/workloads/conftest.py`: a killed run
+    leaves rows behind and a teardown hook never gets to argue about it.
+
+    ⚠ `VACUUM` is not optional here and it cannot run inside a transaction. A
+    bare DELETE leaves dead tuples, so the table keeps its physical size and the
+    next run reads exactly the pages this was meant to remove — the sweep would
+    look like it worked and change nothing. ANALYZE then matters for its own
+    reason: the row estimate drives the join plan, and this suite has already
+    lost 18 minutes once to a planner sizing a query for a table a fraction of
+    its real size.
+    """
+    import psycopg2
+
+    conn = psycopg2.connect(dsn)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM curated_geo.indicator_result WHERE {BENCH_ROW_PREDICATE}"
+            )
+            removed = cur.rowcount
+            cur.execute("VACUUM ANALYZE curated_geo.indicator_result")
+        return removed
+    finally:
+        conn.close()
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scope", type=int, default=0, help="blocks; 0 = every block")
@@ -169,6 +246,9 @@ def main(argv: list[str]) -> int:
     dsn = os.environ.get("DATABASE_URL_DIRECT")
     if not dsn:
         parser.error("DATABASE_URL_DIRECT is required — it is the database measured")
+
+    removed = sweep_bench_rows(dsn)
+    print(f"swept {removed} leftover benchmark rows; table vacuumed and analyzed")
 
     from reimagina.db import connect
 
