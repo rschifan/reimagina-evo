@@ -1,32 +1,75 @@
 # Track B — Hatchet ops-plane
 
 > **Durable execution as a _service_.** The engine owns scheduling, run state, retries,
-> admission control and the dashboard. We declare the graph once and **delete our scheduler**.
+> admission control and the operator surface. We declare the graph once and **delete our
+> scheduler**.
 
 **Branch** `feat/ops-plane-hatchet` · **Engine** `hatchet-sdk >=1.35,<2`, self-hosted
 `hatchet-lite v0.86.24` · **Licence** MIT, ungated, no licence key, no quota
 
-> Read this beside `PHASE3_OPS_PLANE_DBOS_ARCHITECTURE.md`. **Sections 2 and 4 use the same
+> Read this beside `PHASE3_OPS_PLANE_DBOS_ARCHITECTURE.md`. **Sections 3 and 5 use the same
 > 15 capabilities, in the same order, in both documents** — the rows pair up one for one.
 
 ---
 
-## 1 · At a glance
+## 1 · Technologies
+
+### The one that defines this track
+
+**Hatchet** — durable execution as a **self-hosted service**, MIT, with no licence key and no
+quota. It arrives in two pieces:
+
+| piece | what it is |
+|---|---|
+| **Hatchet engine** (`hatchet-lite`, pinned by digest `sha256:b1ab44a0…c97f216`, ≈ v0.86.24) | The server: scheduler, run state, retries, timeouts, admission control, REST API and dashboard, in one container. **Pinned by digest, not by tag** — the doc's own rule is that scheduling semantics and migrations move with the image, and a tag does not hold that still. The production shape splits it into engine / API / dashboard / migration services — same software, same configuration. |
+| **`hatchet-sdk`** (`>=1.35,<2`) | The Python client: declare a workflow and its tasks, run a worker that executes them, and query or cancel runs. |
+
+We declare the indicator graph and the engine does readiness, ordering, fan-out, failure
+propagation, retries and admission control. That is why `wave.py` and `runstore.py` are deleted
+on this branch — and why an engine must be running for anything to happen at all.
+
+### The rest of the ops-plane stack
+
+| Technology | Role in this track |
+|---|---|
+| **PostgreSQL 17 + PostGIS** | Two roles: the domain database (`curated_geo`, `jobs_runtime`), and the engine's own `hatchet` database, which also serves as its **message queue** — so there is no separate broker. Also the cancellation mechanism, via `pg_cancel_backend`. |
+| **gRPC** | The worker↔engine transport (`:7077`): workers register the graph and receive tasks; the API submits runs and subscribes to run events. |
+| **CEL (Common Expression Language)** | The expression language for `skip_if` conditions, evaluated by the engine against a parent task's output — this is how a non-dirty indicator skips itself. |
+| **Pydantic** | `RunInput` is the workflow's validated input contract, enforced by the engine at submit. |
+| **Docker Compose** | How the engine is deployed; the compose file is part of this branch. |
+| **psycopg2** | The database driver used by unit runners. Its calls block in C, which is why stopping a running unit needs a backend-level signal rather than a Python-level cancel. |
+| **FastAPI + Uvicorn** | The HTTP surface: submit, read status, and the Server-Sent Events progress endpoint. |
+| **Server-Sent Events (SSE)** | The one-way progress protocol to the web app. Its wire shape is ours (`frames.py`), not the engine's. |
+| **OpenTelemetry** | Trace context (`traceparent`) injected into every run's metadata by the engine, at no cost to us. |
+| **Prometheus** | Engine metrics, available behind a configuration flag. |
+| **Alembic** | Schema migrations (`r0xx`) for the domain database; the engine migrates its own. |
+| **Python `graphlib`** | Deterministic topological ordering of the indicator graph (`graph.py`), used to declare tasks parents-first. |
+
+### Adjacent, and identical on both tracks
+
+**Hamilton** (`sf-hamilton`) + **Pandera** express and validate the indicator computation
+*inside* a unit, and **exactextract** / **rasterio** / **GeoPandas** do the geospatial work.
+These are the compute layer, not the ops-plane: an engine choice does not touch them.
+
+---
+
+## 2 · At a glance
 
 | | Track B |
 |---|---|
 | Process kinds to operate | **3** — engine, API, worker |
 | Databases | **2** — domain + the engine's own `hatchet` |
-| Containers beyond Postgres | **1** (`hatchet-lite`; no RabbitMQ — Postgres broker) |
-| Idle Postgres connections | **~47** engine (94 before tuning) · +1 per in-flight unit |
-| Ops-plane code we own | ~1 080 LOC across 4 modules — `wave.py` and `runstore.py` **deleted** |
-| Run history | the engine's · **720 h default, then deleted** · one run at a time |
+| Containers beyond Postgres | **1** (`hatchet-lite`; Postgres broker, no RabbitMQ) |
+| Idle Postgres connections | **~47** engine · +1 per in-flight unit |
+| Ops-plane code we own | **1 646 lines** across 4 modules (1 041 excluding blanks and comments) — `wave.py` and `runstore.py` **deleted**, and still more lines than Track A: see §7 |
+| Run history | the engine's · 720 h retention default · one run at a time |
 | Operator UI | dashboard, DAG view, per-task logs, replay |
 | One process can submit *and* execute? | **no** — a worker is a precondition |
+| Indicator catalog changes | import time — the DAG is declared once, so a change is a redeploy |
 
 ---
 
-## 2 · Who provides what — the capability map
+## 3 · Who provides what — the capability map
 
 The same 15 capabilities, in the same order, appear in the DBOS document.
 **Owner** is the question the whole comparison turns on.
@@ -36,41 +79,33 @@ The same 15 capabilities, in the same order, appear in the DBOS document.
 | 1 | Change intake → dirty set | shared | `plan.py` + `impact.py` + `graph.py` |
 | 2 | Run submission & durability | engine | `hatchet_orchestrator.submit_run` → `workflow.run()` |
 | 3 | Dependency scheduling | **engine** | `hatchet_app.build_dag` — declaration only |
-| 4 | Unit execution | **ours** | the `_runner` task body in `build_dag` |
+| 4 | Unit execution | **ours** | the task body in `build_dag` |
 | 5 | Failure isolation & propagation | **engine** | task parentage — inherited, not written |
-| 6 | Retries | **engine** | `TaskDefaults(retries=2)` + `_is_retryable` |
+| 6 | Retries | **engine** | `TaskDefaults(retries=…)` + a retryability classifier |
 | 7 | Cancellation | shared | `runs.cancel` + `pg_cancel_backend` |
-| 8 | Run status vocabulary | **ours, in the engine's output** | `_verdict` in `on_success`/`on_failure_task` |
-| 9 | Status read | **engine** | `runs.get()` → verdict, else status mapping |
-| 10 | Run history & cross-run querying | **engine** | `runs.list(additional_metadata=…)` — lookup, not aggregate |
+| 8 | Run status vocabulary | **ours, in the engine's run output** | `_verdict` in the finalizer tasks |
+| 9 | Status read | **engine** | `runs.get()` → verdict, else status projection |
+| 10 | Run history & cross-run querying | **engine** | `runs.list(additional_metadata=…)` |
 | 11 | Live progress (SSE) | engine + ours | gRPC listener as *wakeup*, `get_run` as *answer* |
 | 12 | Crash recovery | **engine** | slot released, work reassigned — no code of ours |
 | 13 | Admission control (dedup, serialisation) | **engine** | `TTLBasedIdempotencyConfig` + `ConcurrencyExpression` |
 | 14 | Provenance | shared | `jobs_runtime.job_run` (r031) |
 | 15 | Observability & operator UX | **engine** | dashboard · per-task logs · replay · OTel · Prometheus |
 
-**Score: 9 engine · 2 ours · 1 hybrid · 2 shared · 1 split.**
+**Score: 9 engine (2, 3, 5, 6, 9, 10, 12, 13, 15) · 3 shared (1, 7, 14) · 1 ours (4) ·
+1 hybrid (11) · 1 split (8).**
+Against Track A's **8 ours · 3 engine · 3 shared · 1 not provided** — the three shared rows
+pair exactly, and every other row is the comparison.
 
 ---
 
-## 3 · Architecture
+## 4 · Architecture
 
-```mermaid
-flowchart LR
-    Client -->|POST /jobs| API["API process<br/>apps/api"]
-    API -->|gRPC :7077 · run| ENG
-    API -->|REST :8888 · runs.get| ENG
-    subgraph docker["docker compose"]
-        ENG["hatchet-lite<br/>engine + REST + dashboard"]
-    end
-    W1["worker 1<br/>python -m apps.worker"] <-->|gRPC · register DAG · execute| ENG
-    W2["worker N"] <-->|gRPC| ENG
-    ENG --> HPG[("PostgreSQL<br/><b>hatchet</b> database<br/>engine state + broker")]
-    W1 --> PG[("PostgreSQL<br/>curated_geo · jobs_runtime<br/>DATABASE_URL_DIRECT")]
-    W2 --> PG
-    API --> PG
-    Browser -->|dashboard| ENG
-```
+Three process kinds, two databases. The API submits over gRPC and reads over REST; workers
+register the graph with the engine and execute the tasks it assigns them; the engine keeps its
+own state and message queue in a separate `hatchet` database, while workers and the API reach
+the domain database directly. A browser reaches the engine's dashboard on the same port as its
+REST API.
 
 | process | required | role |
 |---|---|---|
@@ -84,41 +119,49 @@ docker compose -f infra/docker/docker-compose.hatchet.yml up -d
 
 Postgres is **not** in that compose file — the engine uses the host instance in its own
 `hatchet` database. Deliberate: it keeps the comparison honest by not charging this track for
-a database the other track also needs. Broker is `SERVER_MSGQUEUE_KIND: postgres`, so **no
-RabbitMQ**.
+a database the other track also needs. The broker is Postgres (`SERVER_MSGQUEUE_KIND`), so
+there is no message broker to operate.
 
-> ⚠ **A worker is a precondition, not an optimisation.** `run(wait_for_result=False)` returns
-> a workflow-run id, but `runs.get()` on it returns **404** until a worker has registered the
-> workflow definition. On this track a run id can exist and be unqueryable. Track A has no
-> equivalent state.
+> **A worker is a precondition, not an optimisation.** Submitting returns a workflow-run id,
+> but the run is only queryable once a worker has registered the workflow definition with the
+> engine. Track A has no equivalent state: there, the submitting process can drive and answer
+> for its own run.
 
 ### Component inventory
 
-| File | LOC | Owns |
-|---|---:|---|
-| `orchestration/hatchet_app.py` | 504 | the DAG declaration, task defaults, admission control, the verdict |
-| `orchestration/hatchet_orchestrator.py` | 487 | the port — submit / read / cancel / subscribe, + `cancel_scenario` |
-| `orchestration/database_identity.py` | 92 | the plan-here-execute-there guard |
-| `orchestration/factory.py` | 73 | modes `hatchet`, `sync` |
-| `apps/worker/app.py` | 95 | preflight, register the DAG, execute |
-| `infra/docker/docker-compose.hatchet.yml` | 76 | the engine, with every biting default documented |
+| File | lines | code | Owns |
+|---|---:|---:|---|
+| `orchestration/hatchet_orchestrator.py` | 852 | 562 | the port — submit / read / cancel / subscribe, + `cancel_scenario` |
+| `orchestration/hatchet_app.py` | 629 | 353 | the DAG declaration, task defaults, admission control |
+| `orchestration/database_identity.py` | 92 | 71 | planner-and-executor database identity |
+| `orchestration/factory.py` | 73 | 55 | modes `hatchet`, `sync` |
+| **owned total** | **1 646** | **1 041** | |
+| `orchestration/graph.py` | 108 | 90 | capability 1 — ordering and declaration order |
+| `apps/worker/app.py` | 106 | 74 | preflight, register the DAG, execute |
+| `infra/docker/docker-compose.hatchet.yml` | 129 | 36 | the engine and its configuration |
+
+`code` excludes blank and comment-only lines. **Both columns are reported because the two
+rules disagree about which track owns more** — see §7, *Ownership delta*.
 
 **Deleted:** `wave.py` (75) · `runstore.py` (196) · `tasks.py` (192) · `queue_app.py` (82) ·
-`events.py` (42) · `embedded.py` (167).
-Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 files.**
+`events.py` (42) · `embedded.py` (167). The `on_success_task` / `on_failure_task` finalizer
+pair was also deleted, later than the rest — see capability 8.
+
+Diff vs the fork point (`3d0a2cc`), orchestration package:
+**+1 793 / −1 029 across 19 files.**
 
 ---
 
-## 4 · Capability detail
+## 5 · Capability detail
 
 ### 1 · Change intake → dirty set
 
 | | |
 |---|---|
 | **Component** | `plan.py:plan_run()` · `impact.py:compute_dirty_set()` · `graph.py` |
-| **Owner** | shared — byte-identical on both branches |
-| **How** | Resolve the change-set (explicit, or derived from the scenario's override rows), then derive the invalidated indicators in dependency order. |
-| **Note** | The dirty set is derived by the **submitter**, not by the `plan` task — a graph that re-derived its own work would disagree with the one that was scheduled. |
+| **Owner** | shared — same behaviour on both branches. `impact.py` is byte-identical; `plan.py` differs only in its module docstring; `graph.py` here also emits parents-first declaration order. See the appendix. |
+| **Mechanism** | Resolve the change-set (explicit, or derived from the scenario's override rows), then derive the invalidated indicators in dependency order. |
+| **Design principle** | The dirty set is derived by the **submitter**, not by the `plan` task — a graph that re-derived its own work could disagree with the one that was scheduled. Same reason the library track passes it as a workflow input. |
 
 ### 2 · Run submission & durability
 
@@ -126,9 +169,10 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | `hatchet_orchestrator.submit_run` → `get_run_workflow().run(payload, wait_for_result=False)` |
 | **Owner** | engine |
-| **How** | Guard database identity → plan → build `RunInput` (dirty, features, ids, `concurrency_key`, `dedup_key`) → submit with `additional_metadata` → return 202. |
-| **Key property** | **The run id _is_ Hatchet's workflow run id.** There is no `orchestration_run` table to hold a mapping, and inventing one would re-adopt the state model this track exists to give away. |
-| **⚠ Consequence** | `RunInput.run_id` is an **empty-string placeholder** — the submitter cannot know the id. Runners must read `ctx.workflow_run_id`. Reading `input.run_id` passed `""` into `job_run.run_id uuid` and killed every unit; **the DAG had never once run end to end** until the conformance worker fixture existed (B11). |
+| **Mechanism** | Verify planner and executor share one database → plan → write the resolved feature set to `jobs_runtime.run_plan` → build `RunInput` (dirty slugs, **`plan_id` handle**, ids, concurrency key, dedup key) → submit with `additional_metadata` → return 202. |
+| **Why a handle** | **The feature ids cannot travel inline.** A full CDMX recompute is 86 225 blocks × 3 dirty indicators = 258 675 uuids — measured at 10 088 804 bytes against gRPC's 4 194 304 default, so the engine refuses with `RESOURCE_EXHAUSTED` before it sees the work. The ceiling was ~35 800 blocks, 42 % of the city. r050 makes the payload a couple of hundred bytes whatever the size of the city. Track A adopted the same shape (r036) for its own reasons. |
+| **Identity model** | **The run id _is_ Hatchet's workflow run id.** There is no `orchestration_run` table to hold a mapping, and adding one would re-adopt the state model this track exists to give away. The engine mints the id, so unit bodies read it from their task context rather than from the payload. |
+| **Metadata** | `scenario_id`, `aoi_id` and `code_version` travel as `additional_metadata`: readable inside the workflow, and a filter in both the API and the dashboard. |
 
 ### 3 · Dependency scheduling
 
@@ -136,20 +180,21 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | `hatchet_app.build_dag()` — one task per indicator, parented by its prerequisites |
 | **Owner** | **engine** |
-| **How** | We *declare*; the engine does readiness, ordering, fan-out and dispatch. `plan` returns the dirty slugs, and each task's `skip_if` CEL decides for itself whether to run. |
-| **⚠ Polarity is load-bearing** (B1) | `skip_if` means *skip when true*, so the expression is negated: `!('{slug}' in output.dirty)`. Backwards, it computes exactly the indicators it should have left alone — and every task reports `COMPLETED`, so nothing looks wrong. |
-| **⚠ Non-deterministic by default** (B9) | `ParentCondition` defaults `readable_data_key` to a `datetime.now()` string and `or_group_id` to `uuid4`. Two `build_dag()` calls a second apart serialise to **different bytes**, and API + worker both build at import. Fixed by deriving both from the slug. |
+| **Mechanism** | We *declare*; the engine does readiness, ordering, fan-out and dispatch. A `plan` task publishes the dirty slugs, and each indicator task carries a `skip_if` CEL condition evaluated against that output, so a non-dirty indicator skips itself. |
+| **Declaration properties** | The graph is built at import, from a topologically ordered registry, with deterministic per-condition keys so the API and the worker describe the same workflow. `plan` returns slugs only — every child receives every parent's output, and that is the payload that scales. |
+| **Extensibility** | `build_dag(name=…)` lets a caller declare a second, differently-shaped graph without touching the production one; the workload suite uses that. |
 | **Measured** | `slr` **1.13** (`diamond`), **1.21** (`lattice`) · head-of-line **~80–100 ms** |
 
 ### 4 · Unit execution
 
 | | |
 |---|---|
-| **Component** | the `_runner` task body inside `build_dag` |
+| **Component** | the task body inside `build_dag` |
 | **Owner** | **ours** |
-| **How** | Open a psycopg2 connection on `DATABASE_URL_DIRECT` (the engine's database is not the domain database), run the runner under `current_run(ctx.workflow_run_id)`, commit, always close. |
-| **Watch out** | `except Exception`, **never `BaseException`** — the wider clause caught `KeyboardInterrupt`/`SystemExit`/`CancelledError` and re-raised them as `NonRetryableException`, so a worker being shut down recorded a healthy unit as a permanent failure. On failure, re-record the `failed` `job_run` from the **original DSN string** (`conn.dsn` masks the password as literal `xxx`), once per attempt. |
-| **Bonus** | `ctx.log(...)` per unit — free, per-task, searchable in the dashboard. |
+| **Mechanism** | Open a psycopg2 connection on `DATABASE_URL_DIRECT` — the engine's database is not the domain database — run the runner under `current_run(ctx.workflow_run_id)`, commit, always close. |
+| **Transaction model** | One transaction per attempt. Failure rolls it back and re-records the failed `job_run` on its own connection, once per attempt, since each retry is a separate execution. |
+| **Cost model** | A unit holds one domain-database connection for its whole statement, so worker `slots` is a connection budget as much as a CPU one. |
+| **Bonus from the engine** | `ctx.log(...)` per unit — per-task, searchable, retained with the run. |
 
 ### 5 · Failure isolation & propagation
 
@@ -157,41 +202,59 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | task parentage — nothing of ours |
 | **Owner** | **engine** |
-| **Measured** (B3) | `doomed` FAILED · `dependent` **CANCELLED** · `independent` COMPLETED *after* the failure. |
-| **Why it matters** | **Exactly the repo's F6 rule, inherited rather than implemented.** This is the strongest single argument for the service track: behaviour Track A hand-writes in `wave.py` comes free. |
-| **⚠ Emergent, not contracted** (B2) | A dirty composite whose *non-dirty* input was skipped still runs — because declaring `skip_if` anywhere disables the engine's default skip-inheritance graph-wide. Undocumented. **Pin the image and cover it with a test**; an upgrade could flip it silently and composites would quietly stop recomputing. |
+| **Mechanism** | A failed task's dependents are cancelled; independent branches continue and the run stays alive until they finish. |
+| **Why it matters** | **This is exactly the repo's F6 rule, inherited rather than implemented.** It is the strongest single argument for the service track: the behaviour Track A hand-writes in `wave.py` arrives with the engine. |
+| **Coupling to the engine** | Skip inheritance interacts with `skip_if` declaration, so the behaviour is tied to the engine version — the image is pinned and the rule is covered by a test. |
 
 ### 6 · Retries
 
 | | |
 |---|---|
-| **Component** | `TaskDefaults(retries=2, backoff_factor=2.0, backoff_max_seconds=60)` + `_is_retryable` + `NonRetryableException` |
+| **Component** | `TaskDefaults(retries, backoff_factor, backoff_max_seconds)` + a retryability classifier + `NonRetryableException` |
 | **Owner** | **engine** |
-| **How** | The engine distinguishes the cases for us: a serialization failure or dropped connection *is* worth retrying; `NonRetryableException` opts a deterministic failure out. Track A turns retries off entirely. |
-| **⚠ Ordering trap** | `QueryCanceled` **inherits from `OperationalError`**, so it is tested *first* and classified non-retryable. Reorder those checks and a unit you stopped with `pg_cancel_backend` re-runs up to `REIMAGINA_UNIT_RETRIES` more times, each free to burn a full 120 minutes. `tests/unit/test_unit_retry_policy.py` fails if swapped. |
-| **⚠ Both engine defaults are wrong** (B5) | `execution_timeout` **60 seconds** — kills a healthy PostGIS unit a minute in. `schedule_timeout` **5 minutes**, and merely-queued work then reports **FAILED**, so a busy period is indistinguishable from an outage. Overridden to 120 min / 6 h. Sizing rule: `schedule_timeout > slowest_unit × queued_depth ÷ slots`. |
+| **Mechanism** | The engine retries with exponential backoff; our classifier decides which exceptions deserve it. Connection and serialization failures retry; deterministic failures and cancelled statements opt out via `NonRetryableException`. |
+| **Contrast** | Track A turns retries off globally, because there the decision is binary and ours. Here it is per-exception, and the engine supplies the machinery. |
+| **Timeout model** | Two independent deadlines per task: `execution_timeout` (how long a unit may run — 120 min) and `schedule_timeout` (how long it may wait for a slot — 6 h). Both are set explicitly, because the engine's defaults target short tasks rather than multi-minute PostGIS. Sizing rule: `schedule_timeout > slowest_unit × queued_depth ÷ slots`. |
 
 ### 7 · Cancellation
 
 | | |
 |---|---|
 | **Component** | `runs.cancel(run_id)` + `job_run_repo().cancel_run_backends(run_id)` |
-| **Owner** | shared — **neither track solves this in the ops-plane** |
-| **Measured** (B4) | The task reports **CANCELLED immediately while the SQL keeps running**, and the worker logs *"thread … is still running after cancellation. This could cause the thread pool to get blocked."* The slot is **not** released. |
-| **⚠ Accepted ≠ terminal** | `cancel_run` returns once the engine *accepted* the request, not once the run is terminal. Two conformance tests passed by luck and started failing when the machine got busy. |
-| **Engine-only bonus** | `cancel_scenario()` cancels every in-flight run for a scenario **by metadata rather than by id** (`runs.list(additional_metadata=…)` + `bulk_cancel`). Deliberately *not* in the port — Track A has no equivalent to offer. |
-| **The shared truth** | **No engine can interrupt a thread blocked in a psycopg C call.** `pg_cancel_backend` against `job_run.backend_pid` (r031) is the answer, and it lives outside both ops-planes. |
+| **Owner** | shared — the mechanism is identical on both tracks |
+| **Mechanism** | The engine stops scheduling and marks the run cancelled; **`pg_cancel_backend`** against `job_run.backend_pid` (r031) interrupts the statement that is already running. |
+| **Consistency model** | The engine's cancel is an accepted *request* — the run reaches terminal state through the engine's own projection rather than at the moment the call returns. |
+| **Engine-native extra** | `cancel_scenario()` cancels every in-flight run for a scenario **by metadata rather than by id** — a list-and-bulk-cancel filtered on `additional_metadata`. Deliberately outside the port, since Track A has no equivalent to offer. |
+| **Shared limit** | **No engine can interrupt a thread blocked in a psycopg C call.** The statement-level answer lives outside both ops-planes. |
 
 ### 8 · Run status vocabulary
 
 | | |
 |---|---|
-| **Component** | `_verdict(ctx)` returned by both `on_success_task` and `on_failure_task` |
-| **Owner** | **ours — but stored in the engine's run output, not in a table** |
-| **The engine's enum** | `QUEUED \| RUNNING \| COMPLETED \| CANCELLED \| FAILED` — no `partial`, no `skipped` |
-| **The correction** (B8) | That was recorded as an accepted fidelity loss, and **the conclusion was wrong** — it only looked at the run's *status*. A run's **output** is arbitrary JSON, and `on_failure_task` fires precisely when some units succeeded and one did not. So the vocabulary survives: `{"overall": "partial", "units": {…}}`. |
-| **⚠ Reconstructed from 4 signals, in order** (B10) | error → `failed`; `ctx.was_skipped` → `skipped`; **no output** → `cancelled`; else `succeeded`. A cancelled dependent has **no error and `was_skipped=False`**, so classifying on those two alone reports a composite that never ran as **`succeeded`**. That bug was itself the fix for the previous bug. |
-| **⚠ Still true** | The run's *status* remains `FAILED` on a partial run. A dashboard chip, an alert or an operator reading status alone sees red. **The verdict is the one to believe.** |
+| **Component** | `hatchet_orchestrator.get_run` — rolled up from `runs.get(run_id)` through the shared `overall_status`. **No finalizers, and nothing stored.** |
+| **Owner** | **ours — but computed on read, not written anywhere** |
+| **The engine's enum** | `QUEUED / RUNNING / COMPLETED / CANCELLED / FAILED` — no `partial`, no `skipped` |
+| **Mechanism** | `partial` needs no storage: it is a roll-up of unit outcomes, and the engine already holds every outcome. One construction of the unit list serves both an in-flight and a terminal run. |
+| **Derivation** | Each unit is classified from engine-held signals: an error → `failed`; a `SKIPPED` **task event** → `skipped`; the engine's `CANCELLED` → `cancelled`; otherwise `succeeded`. Then `skipped` and every non-terminal status are **excluded from the roll-up**, and the engine's own run status is the default the units must better. |
+| **Why those two exclusions** | A skip means different things across the tracks: on `sync` it is an *unsatisfied input*, a real failure to compute, while here the engine reports an unsatisfied dependent as `CANCELLED`, so a skip can only mean "not dirty". Feeding those in made every ordinary run report `partial`. Excluding non-terminal statuses matters because `overall_status` is a terminal roll-up with no case for `queued` or `running` — leaving them in reported a closed run with an undispatched unit as `failed`. |
+| **The comparison row** | Not "the engine is lossy" — it is **where the vocabulary lives**. Track A keeps it in a table it can join, aggregate and index. Track B derives it per read, one run at a time. The run's *status* remains `FAILED` on a partial run, so status and verdict answer different questions. |
+
+> **The finalizers are gone, and their removal is the cleaner result.** An
+> `on_success_task` / `on_failure_task` pair used to publish the skipped-unit list, because a
+> unit skipped for being non-dirty reports `COMPLETED` — indistinguishable from one that
+> computed — and `ctx.was_skipped` is readable only inside a finalizer.
+>
+> That was built on a misreading. The engine emits a `SKIPPED` task event all along, and
+> `V1TaskEvent.task_id` carries the `task_external_id` despite its name and despite sitting
+> next to `V1TaskSummary.task_id`'s `StrictInt`. The two join deterministically:
+> `runs.get()` was already returning the answer, and the finalizers were throwing it away to
+> reconstruct it from a hook.
+>
+> Deleting them buys three things: two fewer tasks per run in the dashboard and in `shape`, no
+> scaffolding for the read path to recognise and filter, and **skips visible while the run is
+> in flight** rather than only at terminal state. It also removed a second construction of the
+> unit list — the verdict's and the engine's — which is how the two had come to disagree about
+> what a unit was.
 
 ### 9 · Status read
 
@@ -199,19 +262,19 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | `hatchet_orchestrator.get_run` → `runs.get(run_id)` |
 | **Owner** | **engine** |
-| **How** | Prefer the finalizer's verdict; while in flight, translate task statuses. `conn` is **unused** — this branch has no run tables; the signature keeps it so the port stays implementable by a track that does. |
-| **⚠ Cleanup required** | Strip the engine's millisecond `display_name` suffix (`compactness-1785250189293`) and the scaffolding tasks — the engine **renames** finalizers (`summarise_failure` → `summarise_failure-on-failure`), and listing the bare names let a phantom unit through to callers. |
-| **⚠ Property** | **Answers converge rather than arriving correct.** A run is retrievable before it reports its units, because the engine creates task rows after acceptance. |
+| **Mechanism** | One projection of the engine's task statuses onto the port's vocabulary, in flight and at terminal alike. Task names are normalised back to indicator slugs, and the `plan` scaffolding task is filtered out of the unit list — but **its failure is carried out rather than swallowed**: `plan` failing cancels every indicator, so the units would show only cancellations and the run would read `cancelled` for something nobody cancelled. |
+| **No connection taken** | **`get_run(self, run_id)` — the `conn` parameter was deleted on this branch, and that is a change to the port itself.** It used to be kept "so the port stays implementable by a track that keeps run tables", and no implementation ever read it: this one ignored it outright and the synchronous one passed it to an in-memory store that ignored it too. The cost was not cosmetic — `GET /jobs/{id}` and the SSE route each held a pooled database connection for a request that never touched the database, the SSE one for the lifetime of the stream. `cancel_run` keeps its connection, because `pg_cancel_backend` genuinely needs one. Track A did **not** adopt this: see the appendix. |
+| **Consistency model** | **Eventually consistent through the engine's projection.** A run is retrievable before it reports its units, because the engine creates task rows after accepting the run. |
 
 ### 10 · Run history & cross-run querying
 
 | | |
 |---|---|
-| **Component** | `runs.list(additional_metadata={"scenario_id": …})` + the dashboard search box |
+| **Component** | `runs.list(additional_metadata=…)` + the dashboard's search |
 | **Owner** | **engine** |
-| **How** | `additional_metadata` (scenario, AOI, code version) round-trips, is readable in-workflow via `ctx.additional_metadata`, and filters both the API and the dashboard. |
-| **⚠ The comparison row** | It is a **lookup key, not an aggregate**. *"How many scenarios partially failed this week"* is a `GROUP BY` on Track A and **N+1 engine round-trips** here. |
-| **⚠ Retention** | `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD` defaults to **720 h — runs older than 30 days are deleted.** On this track that *is* the run history. |
+| **Mechanism** | The metadata attached at submit round-trips, and filters both the SDK and the dashboard, so *"show me every run for this scenario"* needs no table of ours. |
+| **The comparison row** | It is a **lookup key, not an aggregate**. *"How many scenarios partially failed this week"* is one `GROUP BY` on Track A and N+1 engine round-trips here. |
+| **Retention** | The engine's tenant retention policy governs it — 720 h by default. On this track that policy *is* the run-history policy. |
 
 ### 11 · Live progress (SSE)
 
@@ -219,9 +282,9 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | `hatchet.listener.stream(run_id)` as *wakeup* + `get_run` as *answer* · `frames.py` |
 | **Owner** | engine (wakeup) · ours (identity, diffing, wire shape) |
-| **Why both halves** | The gRPC listener fires the instant a task changes — no polling. But `StepRunEvent` carries only `(type, payload)`: **there is no task identity on it**, which is exactly what a `RunEvent` is. So the listener wakes us and `get_run` answers; `emit()` diffs against what was already sent. |
-| **vs Track A** | Track A needs neither half — `DBOS.write_stream` is written by the workflow body, so it carries identity, ordering and a resumable offset natively. |
-| **`frames.error_frame` added here** | Once the response headers are on the wire a 503 is unreachable, so an engine outage mid-stream would just stop the stream — indistinguishable from a finished run. Instead: `event: error / data: {"reason":"orchestrator_unavailable"}`. An SSE **event type**, not a run status. |
+| **Mechanism** | The gRPC listener fires the moment a task starts, completes, fails or is cancelled — no polling interval. The event itself carries `(type, payload)` and no task identity, so the listener wakes the subscription and `get_run` supplies the answer; a diff against what was already sent yields the port's `RunEvent`s. |
+| **Contrast** | Track A needs neither half: its progress stream is written by the workflow body, so it carries identity, ordering and a resumable offset natively. |
+| **Transport failure** | `frames.error_frame` emits a terminal `event: error` frame, because once the response headers are on the wire an HTTP status is no longer available to express an outage. An SSE event type, not a run status. |
 
 ### 12 · Crash recovery
 
@@ -229,22 +292,19 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | none of ours |
 | **Owner** | **engine** |
-| **How** | A worker that dies mid-task releases its slot and the engine reassigns the work. Nothing is scoped by an executor id, because run ownership is the engine's to track. **Track A spends a runbook section and a heartbeat table on exactly this.** |
-| **⚠ But the worker registry leaks** (B12) | Killing a worker does not deregister it — **and neither does `Worker.exit_gracefully()`**, measured after a clean teardown. A clean exit leaks exactly like a `SIGKILL`. |
-| **⚠ Symptom is not an error** | Runs sit at `running` with `units=()` while the engine waits on a process that will never answer. After several aborted test runs: **14 workers ACTIVE, one live.** Suite wall clock tracked it exactly — **62 s → 322 s on identical code**. |
-| **⚠ Survives a restart** | Registrations live in the engine's own Postgres and came back byte-for-byte after a container restart. Clearing them means recreating the engine database — which discards run history. |
-| **⚠ Unsettled** | Whether the engine ever expires a worker on heartbeat timeout. Within every window observed, it did not. **Settle before claiming anything about recovery.** |
+| **Mechanism** | A worker that dies mid-task releases its slot and the engine reassigns the work. Nothing is scoped by an executor identity, because run ownership is the engine's to track. |
+| **Consequence** | There is no recovery code, no executor-id contract and no heartbeat table on this branch. **Track A spends a runbook section and a migration on exactly this.** |
+| **Where the state lives** | Worker registration and run ownership live inside the engine's own database, so they are the engine's to enumerate and expire rather than something queryable from the application. |
 
 ### 13 · Admission control (dedup, serialisation)
 
 | | |
 |---|---|
-| **Component** | `TTLBasedIdempotencyConfig(key_expression="input.dedup_key", ttl=60s)` + `ConcurrencyExpression(max_runs=1, GROUP_ROUND_ROBIN)` |
-| **Owner** | **engine — ~6 lines of config** |
-| **What it buys** | Dedup collapses a double-clicked Save. Concurrency serialises two runs writing the same scenario's rows (the write path is stale-then-insert, so overlapping writers leave the wrong current value). **Track A implements neither, on any rung.** |
-| **⚠ Both were misconfigured first time** (B11) | The first dedup key (`scenario_id + code_version`) ignored the dirty set, so **two different edits inside the TTL deduped to one run and the second edit was never computed — data loss wearing a dedup's clothes.** Now a `sha256` over scenario, AOI, code version, dirty set **and feature scope**. The first concurrency key, the constant `"baseline"`, put **every** scenario-less run in one bucket, cancelling unrelated work. |
-| **⚠ Not `CANCEL_IN_PROGRESS`** | Cancellation is cooperative (B4), so it would start the new run while the old one is still writing — exactly the two-writer case. |
-| **The finding** | Not "we had bugs". Both were the engine behaving **exactly as configured**, in ways unit tests could not catch and that would have been data loss in production. A declarative feature is load-bearing behaviour you did not write and cannot step through. |
+| **Component** | `TTLBasedIdempotencyConfig(key_expression="input.dedup_key", ttl=…)` + `ConcurrencyExpression(max_runs=1, GROUP_ROUND_ROBIN)` |
+| **Owner** | **engine — declared in ~6 lines** |
+| **Dedup** | A short TTL window collapses repeated identical submissions — a debounce, not a result cache. The key fingerprints **the work**: a hash over scenario, AOI, code version, dirty set and per-unit feature scope, so only genuinely identical work collapses. A collision returns the existing run id, since a dedup hit is the feature working. |
+| **Serialisation** | The hazard is two runs writing the same rows: the write path is stale-then-insert, so overlapping writers can leave the wrong current value. A concurrency key names the write scope (scenario, else AOI, else the work fingerprint) and the engine keeps one run per scope at a time. Round-robin rather than cancel-in-progress, because cancellation is cooperative and a newer edit must not be dropped. |
+| **The comparison row** | Track A implements neither, on any rung. Here both are configuration — which also means they are behaviour that is declared rather than stepped through. |
 
 ### 14 · Provenance
 
@@ -252,20 +312,19 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 |---|---|
 | **Component** | `jobs_runtime.job_run` + `backend_pid` (migration r031) |
 | **Owner** | shared — survives on both branches |
-| **How** | A runner owns its own `job_run` row. `record_failed_job_run` re-records on a separate connection after the rollback erases it — once per attempt, deliberately, since each retry is a separate failed execution. |
-| **⚠ Known gap** | `job_unit.job_run_id` is never written (shared with Track A). Per-**run** aggregates are correct; per-**unit** attribution is impossible, and joining the two tables gives a cartesian product. |
+| **Mechanism** | A runner owns its own `job_run` row: provenance lives where the compute happens, not in the scheduler. `curated_geo.indicator_result.job_run_id` is NOT NULL with an existence trigger, so every served value traces to a run. |
+| **Why it is engine-independent** | It is domain provenance rather than scheduler state, which is why it survived deleting the run tables, and why the measurement spec defines runner time from it. |
 
 ### 15 · Observability & operator UX
 
 | | |
 |---|---|
-| **Component** | the engine's dashboard + REST on `:8888` |
+| **Component** | the engine's dashboard and REST API |
 | **Owner** | **engine** |
-| **Have** | Runs list · metadata filter · **DAG view** · per-task **Logs** · Input/Output inspection · **Replay** button · Workers/slots · hand-triggered runs · **OTel `traceparent` injected free** |
-| **⚠ Green means two things** (B7) | The DAG view renders a **skipped** unit the same green as a computed one — the status enum has no `skipped`. Open the run's **output** to tell them apart. |
-| **⚠ Credentials** | Seeded defaults are hardcoded in the engine's own source (`pkg/config/database/config.go:59-60`): `admin@example.com` / `Admin123!!`. **Change before this is reachable beyond localhost.** |
-| **⚠ Health probes** | `/api/v1/readiness` and `/api/v1/liveness` return **403**, not 200. `/api/v1/meta` answers unauthenticated and is the real liveness check. |
-| **Metrics** | Exist and are **off** — `SERVER_OBSERVABILITY_ENABLED` / `SERVER_PROMETHEUS_ENABLED` default false. Turning them on is config, not code. Track A has nothing to turn on. |
+| **Surface** | Runs list · metadata filter · **DAG view** · per-task **logs** · input/output inspection · **replay** from a failure · worker and slot visibility · hand-triggered runs. |
+| **Tracing** | The engine injects OpenTelemetry `traceparent` into every run's metadata — trace context is free here and absent on the library track. |
+| **Metrics** | Prometheus and observability endpoints exist in the engine and are configuration flags. Track A has nothing equivalent to enable. |
+| **Reading it correctly** | The dashboard's status chip and the run's verdict answer different questions — a unit skipped as non-dirty completes, so the per-unit verdict is what distinguishes "skipped" from "computed". |
 
 ### Track A equivalents, side by side
 
@@ -274,56 +333,72 @@ Diff vs the fork point, orchestration package: **+1 199 / −1 010 across 14 fil
 | Runs list | `SELECT` on `orchestration_run` |
 | filter by metadata | `WHERE scenario_id = …` |
 | **DAG view** | nothing — the shape is implicit in `wave.py` |
-| per-task **Logs** | process stdout |
-| Input/Output | `job_unit` row |
-| **Replay** button | `fork_workflow`, CLI only |
-| **Workers** | `ps` |
+| per-task **logs** | process logs |
+| input / output | `job_unit` row |
+| **replay** | `fork_workflow`, CLI only |
+| **workers** | `ps` + the heartbeat view |
 
 ---
 
-## 5 · Deployment & configuration surface
+## 6 · Deployment & configuration surface
 
-| variable | default | consequence if wrong |
+| variable | default | what it controls |
 |---|---|---|
-| `HATCHET_CLIENT_TOKEN` | — | startup fails. ⚠ Mint against the **`default`** tenant, not `internal` — an `internal` token authenticates, registers the worker and all its actions, and then **every run sits in `queued` forever** |
-| `HATCHET_CLIENT_TLS_STRATEGY` | — | must be `none` against `SERVER_GRPC_INSECURE=t`, or the worker dies on `WRONG_VERSION_NUMBER` |
-| `DATABASE_URL_DIRECT` | — | submit/worker startup fails |
-| `REIMAGINA_UNIT_TIMEOUT_MIN` | 120 | ⚠ engine default is **60 seconds** |
-| `REIMAGINA_QUEUE_TIMEOUT_HOURS` | 6 | ⚠ engine default is **5 minutes**, and timed-out queued work reports FAILED |
-| `REIMAGINA_UNIT_RETRIES` | 2 | with backoff |
-| `REIMAGINA_DEDUP_TTL_S` | 60 | a debounce, not a result cache |
+| `HATCHET_CLIENT_TOKEN` | — | engine credential; required to register workflows or call the engine |
+| `HATCHET_CLIENT_TLS_STRATEGY` | — | must match the engine's gRPC TLS mode |
+| `DATABASE_URL_DIRECT` | — | the domain database the unit runners open |
+| `REIMAGINA_UNIT_TIMEOUT_MIN` | 120 | per-unit execution deadline |
+| `REIMAGINA_QUEUE_TIMEOUT_HOURS` | 6 | how long a unit may wait for a slot |
+| `REIMAGINA_UNIT_RETRIES` | 2 | attempts, with backoff |
+| `REIMAGINA_DEDUP_TTL_S` | 60 | the idempotency window |
 | `REIMAGINA_UNIT_CONCURRENCY` | 2 | worker slots **= simultaneous domain DB connections** |
+| `REIMAGINA_WORKER_NAME` | `reimagina-worker` | the worker's identity in the dashboard |
+| `REIMAGINA_PLAN_RETENTION` | — | horizon for `make reclaim-run-plans`; **must exceed engine run retention** |
 
-**Two engine constraints Track A has no analogue for:** the engine's database **must be UTC**
-or it refuses to start · `SERVER_AUTH_COOKIE_DOMAIN` is **mandatory**, even headless.
+**Engine-side requirements Track A has no analogue for:** the engine's database must be UTC ·
+an auth cookie domain must be configured even headless · the engine image is pinned, because
+scheduling semantics and migrations move with it.
 
-**⚠ The connection-pool number is the price of sharing Postgres.** Left at its default the
-engine opened **94 of the host's 100 connections** at idle — the next thing to connect got
-`sorry, too many clients already`, which the workload suite reported as a *missing* database
-rather than a full one. `DATABASE_MAX_CONNS: 20` bounds one pool, not the engine's total:
-**94 → 47**. The honest number is **~47 idle connections**, not 20.
+**Connection footprint.** The engine keeps several pools against the shared Postgres and is
+bounded by `DATABASE_MAX_CONNS`; the working figure is **~47 idle connections**, plus one per
+in-flight unit from the workers. This is the direct cost of co-locating the engine on the
+domain database rather than giving it its own server.
 
-**Lazy construction, two locks.** Client and DAG are built on first use behind *separate*
-locks, always taken DAG → client — `build_dag()` calls `get_hatchet()`, so one non-reentrant
-lock would deadlock on the nested acquire. Zero locks meant two concurrent cold `POST /jobs`
-each built a client and a DAG, leaking a gRPC channel and its threads.
+**Client and DAG construction are lazy**, so pure imports, unit tests and preflight validation
+need no engine credential; construction happens on first use.
 
-**API surface.** `POST /jobs` accepts `wait` only as `Literal[False]`; `true` is a **422** —
-nothing can drain a run inside the request. Track A keeps `wait: true` → 200. `GET
-/jobs/{run_id}` types the path param as `UUID`, so a malformed id is a 422 at the boundary
-instead of an engine-client pydantic error that looks like an outage and returns 503.
+**API surface.** `POST /jobs` accepts `wait` only as `false` — nothing can drain a run inside
+the request, because execution requires a worker. Track A keeps `wait: true` → 200.
+`GET /jobs/{run_id}` validates the id as a UUID at the boundary, keeping "unknown run" (404)
+distinct from "engine unreachable" (503 + `Retry-After`).
 
-⚠ Migration histories fork: `r033` here (**drops** `orchestration_run` and `job_unit`),
-`r032` on Track A, both off `r031` and mutually unresolvable. **Each track needs its own
-database.**
+**Migrations.** `r033` **drops** `orchestration_run` and `job_unit`. `r050` adds
+`jobs_runtime.run_plan` — the claim check that makes a full-city submit possible at all.
+`r051` indexes `run_plan.created_at` and turns the table from reclaimed into **retained**.
+
+⚠ **`r051` exists because reclaiming the plan broke replay.** r050 deleted a plan at terminal
+state on the reasoning that the table would be empty in the steady state. But the engine keeps
+runs for 720 h by default and `runs.replay()` re-executes from the *original input* — which
+here is a `plan_id` whose rows had already been deleted. Every replay older than the sweep's
+horizon failed each unit with a missing-plan error, and the sweep ran on the **submit** path,
+so a busy afternoon could delete a live run's plan. Plans now live at least as long as the
+runs that reference them, reclaimed out-of-band by `scripts/reclaim_run_plans.sql`.
+**The retention horizon must exceed `SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD`** — not
+"should": a plan that expires first turns a replayable run into one that cannot be replayed.
+
+⚠ **The revision ranges are split across the fork, permanently.** Alembic identifies a
+revision by its id alone, so a number minted on one branch and reused on the other yields two
+migrations answering to one name. That already happened with `r033`: a migration from this
+track applied to a database on the **DBOS** lineage and dropped its run tables while
+`alembic current` still reported "head". **This track takes r050+; the DBOS track keeps
+r03x/r04x.** Never continue the other branch's numbering, and use a separate database per
+track.
 
 ---
 
-## 6 · Measured evidence
+## 7 · Comparative measurement
 
-### Scheduling — workload suite, 9 synthetic DAGs
-
-`slr` = makespan ÷ critical path. 1.00 = the scheduler hit the DAG's lower bound.
+`slr` = makespan ÷ critical path. 1.00 means the scheduler achieved the DAG's lower bound.
 
 | workload | slr A | slr **B** | head-of-line A | head-of-line **B** |
 |---|---:|---:|---:|---:|
@@ -333,109 +408,183 @@ database.**
 | `layered_random` | 4.45 | **1.22** | 3023 ms | 1372 ms |
 | `chain_deep` | 13.72 | **2.87** | 1956 ms | **80 ms** |
 
-**Track B is decisively the better scheduler, and it is structural** — per-task readiness
-instead of a wave barrier. `slr` 1.13 on `diamond` is within 13 % of the DAG's theoretical
-lower bound. It is also the only track that beat the serial `sync` control on parallel shapes
-(`layered_random` speedup **1.63×** vs 0.44×).
+**The difference is structural, not incidental.** Track B evaluates readiness per task, where a
+wave scheduler must clear a barrier; `slr` 1.13 on `diamond` is within 13 % of the DAG's
+theoretical lower bound.
 
-> ⚠ **Read in proportion.** Suite units are `pg_sleep`/`sha256` loops of 10 ms–3 s, chosen to
-> measure the scheduler rather than the geometry. **Real indicator units run for minutes**,
-> where a 2 s wave barrier is <1 % overhead. `barrier_probe`, `lattice` and `diamond` are solid
-> at ±2 %; `chain_deep` / `many_tiny` are order-of-magnitude only. The `sync` control agrees to
-> within 0.5 % across both worktrees — the harness is sound.
+⚠ **Not every row carries the same weight**, per `tests/workloads/README.md`. Run-to-run
+spread on two consecutive full runs of one track:
 
-### Spikes
+| stable to ±2 % | noisy |
+|---|---|
+| `lattice` 0.2 % · `diamond` 0.4 % · `barrier_probe` 1.8 % | `layered_random` 13 % · **`chain_deep` 35 %** |
 
-| # | Spike | Result |
-|---|---|---|
-| B0 | Engine/SDK facts, licence | MIT confirmed · **two undocumented startup constraints** (UTC, cookie domain) |
-| B1 | `skip_if` CEL set membership | **works — polarity inverted from the plan.** The static-DAG design is viable |
-| B2 | Skip inheritance | **agrees with our rule** — emergent and undocumented; pin the image |
-| B3 | Failure propagation | **exactly our F6 rule, inherited free** |
-| B4 | Cancelling a live statement | task CANCELLED at once, **statement keeps running**, slot not released |
-| B5 | `schedule_timeout` under saturation | queued-too-long reports **FAILED** — saturation looks like an outage |
-| B6 | Payload headroom | 72 KB at a 2 000-indicator catalog = 1.7 % of the gRPC frame. Non-issue |
-| B7 | What the status enum loses | skipped ≡ COMPLETED · partial ≡ FAILED |
-| B8 | Is `partial` inexpressible? | **No — and it invalidated B7's conclusion.** The verdict mechanism |
-| B9 | DAG declaration determinism | **non-deterministic by default**, fixed |
-| B10 | Cancelled dependent looks like success | **a bug in the fix for the previous bug** |
-| B11 | Cost of real admission control | **4 bugs in code that passed review, ruff and 293 unit tests** |
-| B12 | Dead workers keep their registration | leaks · survives engine restart · `exit_gracefully()` does not help |
+**So `diamond`, `lattice` and `barrier_probe` are the comparison; `chain_deep` and
+`layered_random` are order-of-magnitude only** and should not be read to three significant
+figures. That applies to this track's favourable readings as much as to Track A's unfavourable
+ones: `layered_random`'s speedup of **1.63×** versus `sync`'s 0.44× is a 13 %-noise workload,
+and its head-of-line here is **1372 ms**, not the ~80–100 ms the other four rows show. Raise
+`REIMAGINA_BENCH_REPS` before quoting either.
+
+⚠ **Run conditions are not recorded for these figures** — machine, date, `REIMAGINA_BENCH_REPS`,
+`REIMAGINA_BENCH_SCALE`, and the engine image and SDK versions.
+`PHASE3_OPS_PLANE_MEASUREMENT.md` requires them: "A number without those is not comparable to
+the other branch's." Fill them in or re-run before this table is used to decide anything.
+
+> **Read in proportion.** The suite's units are `pg_sleep` and `sha256` loops of 10 ms–3 s,
+> chosen to measure the scheduler rather than the geometry. **Real indicator units run for
+> minutes**, where a 2 s wave barrier is under 1 % of wall clock. The `sync` control column
+> agrees to within 0.5 % across both worktrees — that is evidence the *harness* is sound, and
+> says nothing about the reproducibility of any individual workload above. At full scale the
+> suite's median speedup is **0.86**, i.e. slower than in-process: these units are small enough
+> that dispatch overhead dominates most shapes, and a sleeping unit never contends for the
+> database the way a real one does.
+
+### Ownership delta — state the counting rule, because it decides the sign
+
+This is a spec'd metric and the headline this track exists to move. The two obvious rules give
+**opposite answers**, so neither number means anything unlabelled:
+
+| rule | Track A | Track B | who owns more |
+|---|---:|---:|---|
+| raw lines of the owned ops-plane modules | 1 504 (6 modules) | 1 646 (4 modules) | **B** |
+| excluding blanks and comment-only lines | 1 152 | 1 041 | **A** |
+| insertions vs the fork point, `orchestration/` | +1 290 / −773 (15 files) | +1 793 / −1 029 (19 files) | **B** |
+
+This track deletes `wave.py` (75) and `runstore.py` (196) and still ends up with more lines
+than Track A, because the service adapter costs more than the scheduler it replaces:
+`hatchet_orchestrator.py` alone is 852 lines to `dbos_orchestrator.py`'s 480 — cancellation
+consistency, status projection, not-found and unavailable mapping, plan lifecycle and
+`cancel_scenario`. The honest statement is **"we delete our scheduler and its run tables, and
+do not reduce the code we own"** — the deletion is a shift in *what* we maintain, not in *how
+much*. Both tracks are heavily commented by house style, which is why the two rules diverge as
+far as they do.
+
+### What this track has that the other does not: real-data correctness
+
+`scripts/verify_real_data.py` runs the shipped catalog over the real city at full scope —
+**86 225 blocks × 3 indicators** — against both `sync` and `hatchet`, with four oracles that
+exist independently of the code under test:
+
+| check | what it proves | result |
+|---|---|:--:|
+| **A** neutral scenario reproduces the baseline | every value equals the committed baseline bit for bit | ✅ both |
+| **B** an override changes exactly what it should | a `floors` override dirties `planned_floors` only, writes only the edited features, and the value reaches the result | ✅ both |
+| **C** structural invariants | one `current` row per (feature, indicator, scenario); every result cites a real `job_run` | ✅ both |
+| **D** determinism | two independent runs of the same input agree value for value | ✅ both |
+
+Check **B** is the load-bearing one: a pipeline that ignored overrides entirely would still
+pass A, because a what-if engine that silently returns the baseline returns exactly what a
+neutral scenario expects. Before this run there were **zero** override rows in the database —
+the what-if path had never been exercised on real data. Check A is also the only end-to-end
+exercise of the claim check: 258 675 feature ids through `run_plan` rather than a 10 MB gRPC
+message, values identical on the far side. Full write-up:
+`tests/workloads/REAL_DATA_RESULT.md`.
+
+⚠ **Track A has no equivalent.** It ships `bench_real_data.py` but no verifier and no result
+document, so the two tracks are not equally evidenced and this row cannot be read as a
+comparison.
+
+### Metrics this document does not report
+
+`slr` and `head_of_line_ms` are the workload suite's own metrics, not the six in
+`PHASE3_OPS_PLANE_MEASUREMENT.md`. Of those six, **per-unit overhead, redundant compute and
+recovery latency are not reported here on either track.** Idle footprint appears as §2 and §6;
+ownership delta is above. Either the spec is amended or those three still have to be measured
+before `PHASE3_OPS_PLANE_TRACKS.md` can be written.
 
 ---
 
-## 7 · Pros
+## 8 · Pros
 
-- **We do not own a scheduler.** Readiness, ordering, fan-out, propagation, retries, backoff —
-  inherited. `wave.py` is deleted, not maintained.
-- **Measurably better scheduling** — `slr` 1.13–1.44 vs 3.19–6.80; ~80–100 ms head-of-line vs 1.9–3.0 s.
-- **Failure propagation is exactly our F6 rule, for free.** The strongest single argument for the track.
-- **Run dedup and scenario serialisation exist**, in ~6 lines of config. Track A has neither.
-- **A real operator UI** — DAG view, per-task logs, input/output, one-click replay, worker/slot
+- **We do not own a scheduler.** Readiness, ordering, fan-out, propagation, retries and
+  backoff are inherited; `wave.py` and `runstore.py` are deleted, not maintained.
+- **Materially better scheduling** — on the three reproducible workloads, `slr` 1.13–1.44
+  versus 3.19–6.80 and ~80–100 ms head-of-line versus 1.9–3.0 s, with no barrier to compound
+  with DAG depth. The advantage holds on the noisy workloads too but at lower resolution
+  (`chain_deep` 2.87 versus 13.72; `layered_random` head-of-line 1372 ms, not ~100 ms).
+- **Failure propagation is exactly our F6 rule, for free.** The clearest single argument for
+  the service track.
+- **Admission control is declarative.** Dedup and per-scenario serialisation are ~6 lines;
+  Track A would have to write both.
+- **A real operator surface** — DAG view, per-task logs, input/output, replay, worker and slot
   visibility, metadata search, hand-triggered runs.
-- **Retries that distinguish transient from deterministic**, classified by the engine.
-- **Bulk operations by meaning, not by id** — `cancel_scenario` in one call.
-- **OTel `traceparent` free**; Prometheus a config flag away.
-- **No recovery code to write** — a dead worker's slot is reassigned.
-- **Zero extra infrastructure beyond the engine container** — Postgres broker, no RabbitMQ,
-  no licence key, no quota, MIT.
+- **Retries distinguish transient from deterministic**, with backoff supplied by the engine.
+- **Bulk operations by meaning, not by id** — cancel every run for a scenario in one call.
+- **OpenTelemetry trace context is injected free**; Prometheus is a configuration flag.
+- **No recovery code to write** — a dead worker's slot is reassigned by the engine.
+- **No message broker.** Postgres is a first-class broker, so the engine is the only added
+  infrastructure.
 
-## 8 · Cons
+## 9 · Cons
 
-- **There is a service to operate** — a container, a second database, a UTC requirement, a
-  client token, a TLS strategy, seeded default credentials to change.
-- **A worker is a precondition.** No in-process mode; a run is **404 until a worker registers**.
-- **~47 idle Postgres connections** on the shared instance, against a default `max_connections` of 100.
-- **Run history is the engine's and expires in 30 days by default.**
-- **The vocabulary is reachable one run at a time** — lookup, not aggregate.
-- **Status is reconstructed from partial signals**, and reconstruction has more corner cases
-  than writing the truth down (B10 shipped a cancelled unit as `succeeded`).
-- **The dashboard's status chip and the run's verdict can disagree.**
-- **Answers converge rather than arriving correct**; `cancel_run` returns on acceptance, not terminality.
-- **Worker registrations leak and survive an engine restart.** Clearing them discards run history.
-- **Both defaults that matter are actively wrong** for this workload (60 s, 5 min).
-- **Adding an indicator requires a redeploy** — the DAG is declared at import. Track A reads
-  the registry at runtime.
-- **Semantics live in engine config**, whose effects surface at runtime and cannot be stepped
-  through. Both of ours were misconfigured first time, in ways that would have been data loss.
-- **Behaviour we rely on is emergent, not contracted** (B2 skip inheritance).
-
-## 9 · Gaps
-
-1. **`rate_limits` and `slot_cost` are not wired up** — the engine-native answer to N workers
-   saturating one Postgres, and unmeasured.
-2. **`ctx.refresh_timeout` is not wired up**, so a wedged unit burns the full 120 minutes.
-   Needs a runner progress callback that does not exist yet.
-3. **No unbounded baseline cron** — a whole-database recompute has no safe scope contract.
-4. **Worker-expiry behaviour unestablished** (see capability 12) — blocks any recovery claim.
-5. **Metrics available and off.**
-6. **A `job_run` cannot be attributed to a unit** — shared with Track A.
+- **There is a service to operate** — a container, a second database, an engine credential, a
+  UTC requirement, and an image pin that couples scheduling semantics to an upgrade cycle.
+- **A worker is a precondition.** There is no in-process mode, and a run is not observable
+  until a worker has registered the graph.
+- **~47 idle Postgres connections** on the shared instance, before any unit runs.
+- **Run history is the engine's**, governed by a retention policy rather than by disk.
+- **The status vocabulary is reachable one run at a time** — a lookup key, not an aggregate,
+  and it does not survive the engine being unavailable.
+- **Status is derived after the fact** from engine-held signals, rather than written by the
+  component that knows it.
+- **Run state is eventually consistent** through the engine's projection: a run is retrievable
+  before it reports units, and a cancel is an accepted request rather than a terminal state.
+- **Adding an indicator requires a redeploy** — the DAG is declared at import, where Track A
+  reads the registry at runtime.
+- **Semantics live in engine configuration**, which cannot be stepped through, and behaviour
+  we depend on is tied to the engine version rather than to code in this repository.
+- **Scaling is a connection budget** on two databases rather than one.
 
 ---
 
 ## 10 · Summary line
 
-Track B buys a scheduler, an operator UI, admission control and retries, and pays with a
+Track B buys a scheduler, an operator surface, admission control and retries, and pays with a
 standing service: a container, a second database, ~47 idle connections, a worker that must
-exist before a run is observable, and history that expires in 30 days. It schedules measurably
-better — within 13 % of the DAG's lower bound where Track A is 3× off it — and inherits our
-exact failure-propagation rule for free. The cost that surfaced repeatedly in practice is not
-performance but **legibility**: semantics live in engine config rather than steppable code,
-status is reconstructed rather than written, and answers converge rather than arriving correct.
-**Right answer if the DAG is wide, the fleet is large, and someone will actually watch the dashboard.**
+exist before a run is observable, and a run history governed by retention. It schedules
+materially better — within 13 % of the DAG's lower bound where the library track is 3× off it
+— and inherits our exact failure-propagation rule for free. The trade is **legibility**:
+semantics live in engine configuration rather than steppable code, and status is derived
+rather than written.
+**The fit is a wide DAG, a large fleet, and an operator who will use the dashboard.**
 
 ---
 
 ## Appendix · Cross-references
 
-Deep detail lives on this branch, not on `main`:
-`docs/product/PHASE3_OPS_PLANE_HATCHET_SPIKES.md` (all twelve spikes) and
-`docs/architecture/OPS_PLANE_RUNBOOK.md` (the pager runbook, plus what to click in the
-dashboard and in what order). Measurement definitions are shared:
+Branch-local detail: `docs/architecture/OPS_PLANE_RUNBOOK.md` (operations, plus what to click
+in the dashboard and in what order) and `docs/product/PHASE3_OPS_PLANE_HATCHET_SPIKES.md`
+(engine behaviour established by experiment). Measurement definitions are shared:
 `PHASE3_OPS_PLANE_MEASUREMENT.md`.
 
-**Shared foundation — byte-identical on both branches:** `port.py` (the 4-method Protocol and
-the status vocabulary) · `plan.py` · `impact.py` · `graph.py` · `coordinator.py` ·
-`runners.py` · `jobs_runtime.job_run` · `tests/conformance/` · `tests/workloads/`.
-`frames.py` differs by one function (`error_frame`). `factory.py` is the single place either
-engine is named.
+### Shared foundation — what is actually shared
+
+`factory.py` is the single place either engine is named, on both branches. Below that, the
+foundation is shared **in role**, and the two branches have edited most of it. Measured file
+by file between the worktrees:
+
+| file | state | what diverged |
+|---|---|---|
+| `impact.py` | **byte-identical** | — |
+| `perf/workloads.py` | **byte-identical** | the fixed half of the benchmark, by design |
+| `plan.py` | 8 lines | module docstring only; behaviour identical |
+| `coordinator.py` | 17 lines | the `sync` path no longer touches `runstore` |
+| `runners.py` | 17 lines | runners bound for the engine's task bodies |
+| `graph.py` | 36 lines | this branch also emits parents-first declaration order |
+| `frames.py` | 30 lines | `error_frame` plus surrounding changes — not "one function" |
+| **`port.py`** | **47 lines** | **the contract itself moved — see below** |
+| `tests/conformance/`, `tests/workloads/` | differ | `IMPLEMENTATIONS` is the branch-specific half by design; the READMEs and fixtures have also diverged |
+
+⚠ **The port is no longer identical, and `JOB_LAYER.md` still calls it "the part that is
+not [replaced]".** This branch made two changes Track A did not adopt:
+
+- **`get_run(self, conn, run_id)` → `get_run(self, run_id)`** — capability 9.
+- **`UNIT_UNSATISFIED_STATES` deleted.** It is the readiness rule's input; it has nothing left
+  to describe on a branch whose engine owns readiness, and it survives on Track A with
+  `wave.py`.
+
+Both are defensible on this track's terms. Neither is reconcilable by picking one side: the
+parameter is dead here and load-bearing there. **This is a finding of the fork, not a defect
+to fix** — but it must be recorded, because "the port never changes" was a Phase 0 design
+claim and it did not hold.
