@@ -22,8 +22,10 @@ Usage::
     DATABASE_URL_DIRECT=postgresql://localhost/reimagina_real_b \\
       python scripts/bench_real_data.py --reps 3
 
-`hatchet` mode additionally needs `HATCHET_CLIENT_TOKEN` and a worker already
-registered against the same database — this branch has no in-process mode.
+The engine mode is taken from ``factory.DEFAULT_MODE``, so this script is
+byte-identical on both worktrees. The engine mode needs whatever that engine
+needs — a registered worker against the same database, and for Hatchet a
+``HATCHET_CLIENT_TOKEN``; neither branch has an in-process durable mode.
 """
 
 from __future__ import annotations
@@ -39,7 +41,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "py"))
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS  # noqa: E402
-from reimagina.orchestration.factory import get_orchestrator  # noqa: E402
+from reimagina.orchestration.factory import (  # noqa: E402
+    DEFAULT_MODE,
+    get_orchestrator,
+)
 from reimagina.orchestration.port import RUN_TERMINAL_STATES  # noqa: E402
 from reimagina.perf.workload_report import (  # noqa: E402
     aggregate,
@@ -145,13 +150,20 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scope", type=int, default=0, help="blocks; 0 = every block")
     parser.add_argument("--reps", type=int, default=3, help="first is warm-up")
-    parser.add_argument("--modes", default="sync,hatchet")
+    # ⚠ Derived from the factory, never hardcoded. `DEFAULT_MODE` is the one
+    # place each branch names its engine, so this file stays byte-identical on
+    # both worktrees — the same property `perf/workloads.py` depends on, and for
+    # the same reason: a benchmark that differs between the tracks it compares
+    # is measuring itself.
+    parser.add_argument("--modes", default=f"sync,{DEFAULT_MODE}")
     parser.add_argument(
         "--slots",
         type=int,
         default=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "4")),
     )
-    parser.add_argument("--out", default="artifacts/workloads-real-hatchet.json")
+    parser.add_argument(
+        "--out", default=f"artifacts/workloads-real-{DEFAULT_MODE}.json"
+    )
     args = parser.parse_args(argv)
 
     dsn = os.environ.get("DATABASE_URL_DIRECT")

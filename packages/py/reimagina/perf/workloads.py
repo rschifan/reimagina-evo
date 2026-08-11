@@ -39,7 +39,6 @@ truncated on read.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import random
 from collections.abc import Callable
@@ -92,15 +91,6 @@ def _seconds(nominal: float) -> float:
 # the only way to attribute a row to a node. Real indicators put their family
 # there instead — the report handles both (see `workload_report._unit_rows`).
 
-_CPU_ROUNDS_PER_SECOND = 220_000
-"""Rough sha256-loop throughput, used only to size a CPU unit into the same
-ballpark as its IO twin so `cpu_vs_io` compares like with like.
-
-ponytail: a calibration constant, not a promise. The report records *measured*
-durations, so being off by 30% costs nothing but a slightly lopsided pair. Bump
-it if CPU units come out conspicuously shorter than the IO ones on your machine.
-"""
-
 
 class BenchUnitFailed(RuntimeError):
     """Deliberate failure from a workload unit. Picklable, carries no cursor."""
@@ -137,40 +127,6 @@ def _io_bound(slug: str, nominal: float) -> Callable[..., object]:
     return _compute
 
 
-def _cpu_bound(slug: str, nominal: float) -> Callable[..., object]:
-    """A unit that burns CPU in Python — and therefore holds the GIL.
-
-    The expected finding is that this pins observed parallelism near 1.0 on
-    *both* tracks. That is a shared limit of running sync Python in a thread
-    pool, not a difference between the engines, and it is worth stating plainly
-    rather than discovering later.
-    """
-
-    def _compute(
-        conn,
-        *,
-        aoi_id: str | None = None,
-        feature_ids: list[str] | None = None,
-        scenario_id: str | None = None,
-        code_version: str = "dev",
-    ) -> dict:
-        backend = backend_for_connection(conn)
-        rounds = int(_seconds(nominal) * _CPU_ROUNDS_PER_SECOND)
-        with job_run(
-            backend,
-            model_family=slug,
-            code_version=code_version,
-            scenario_id=scenario_id,
-        ):
-            block = slug.encode() * 64
-            digest = hashlib.sha256(block).digest()
-            for _ in range(rounds):
-                digest = hashlib.sha256(digest + block).digest()
-        return {"slug": slug, "kind": "cpu", "rounds": rounds}
-
-    return _compute
-
-
 def _failing(slug: str) -> Callable[..., object]:
     """A unit that always raises, to probe failure isolation at DAG scale."""
 
@@ -187,7 +143,7 @@ def _failing(slug: str) -> Callable[..., object]:
     return _compute
 
 
-_FACTORIES = {"io": _io_bound, "cpu": _cpu_bound, "fail": _failing}
+_FACTORIES = {"io": _io_bound, "fail": _failing}
 
 
 # ── Declaring a workload ────────────────────────────────────────────────────
@@ -404,27 +360,6 @@ DIAMOND = _build(
     ),
 )
 
-FANOUT_WIDE = _build(
-    "fanout_wide",
-    "Twelve independent IO units against four slots — parallelism and queueing.",
-    tuple(
-        Node(f"landuse_share_{cls}", "io", 0.2)
-        for cls in (
-            "residential",
-            "commercial",
-            "industrial",
-            "institutional",
-            "recreational",
-            "agricultural",
-            "vacant",
-            "mixed_use",
-            "transport",
-            "utilities",
-            "water",
-            "protected",
-        )
-    ),
-)
 
 CHAIN_DEEP = _build(
     "chain_deep",
@@ -440,24 +375,6 @@ CHAIN_DEEP = _build(
     notes="Serial by construction, so efficiency is ~1/slots even on a perfect scheduler.",
 )
 
-CPU_VS_IO = _build(
-    "cpu_vs_io",
-    "Four GIL-bound units beside four IO-bound ones at equal nominal cost.",
-    (
-        Node("shape_complexity_fractal", "cpu", 0.3),
-        Node("landuse_mix_entropy", "cpu", 0.3),
-        Node("skyline_variance", "cpu", 0.3),
-        Node("morphology_signature", "cpu", 0.3),
-        Node("parcel_join_cadastral", "io", 0.3),
-        Node("census_block_join", "io", 0.3),
-        Node("transit_stop_lookup", "io", 0.3),
-        Node("amenity_catchment_fetch", "io", 0.3),
-    ),
-    notes=(
-        "Expect observed parallelism near 1.0 for the CPU half on both tracks. "
-        "That is the GIL, shared by both engines, not a difference between them."
-    ),
-)
 
 MANY_TINY = _build(
     "many_tiny",
@@ -701,9 +618,7 @@ WORKLOADS: tuple[Workload, ...] = (
     LATTICE,
     BARRIER_PROBE,
     DIAMOND,
-    FANOUT_WIDE,
     CHAIN_DEEP,
-    CPU_VS_IO,
     MANY_TINY,
     PARTIAL_FAILURE,
     LAYERED_RANDOM,
