@@ -48,6 +48,9 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from hatchet_sdk.clients.rest.models.v1_task_event_type import V1TaskEventType
+from hatchet_sdk.clients.rest.models.v1_task_status import V1TaskStatus
+from hatchet_sdk.clients.rest.models.v1_workflow_run_details import V1WorkflowRunDetails
 from hatchet_sdk.exceptions import IdempotencyCollisionError
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
@@ -263,29 +266,38 @@ def _live_worker_for(workflow: str) -> bool:
     )
 
 
+# ⚠ Keyed on `V1TaskStatus` members, not on uppercased strings. The SDK types
+# every status field as this enum, so a string key could only ever be reached by
+# something that was not an engine response — which is precisely the case these
+# maps must not silently absorb. A member missing from either map is a
+# `KeyError` naming it, rather than a default that quietly reads as `queued`.
+#
 # Used while the run is still open. Once it is terminal the unit outcomes are
 # rolled up through `port.overall_status` instead, which is the only way to
 # reach `partial` — the enum has no such value and never will.
 _RUN_STATUS_FOR = {
-    "QUEUED": "queued",
-    "RUNNING": "running",
-    "COMPLETED": "succeeded",
-    "CANCELLED": "cancelled",
-    "FAILED": "failed",
+    V1TaskStatus.QUEUED: "queued",
+    V1TaskStatus.RUNNING: "running",
+    V1TaskStatus.COMPLETED: "succeeded",
+    V1TaskStatus.CANCELLED: "cancelled",
+    V1TaskStatus.FAILED: "failed",
 }
 
 # The whole adapter between the engine's task enum and the port's unit
 # vocabulary. Five entries, one direction, no inference.
 _UNIT_STATUS_FOR = {
-    "QUEUED": "queued",
-    "RUNNING": "running",
+    V1TaskStatus.QUEUED: "queued",
+    V1TaskStatus.RUNNING: "running",
     # ⚠ COMPLETED covers both "computed" and "skipped because not dirty" — the
-    # engine draws no distinction. The finalizer's skip list is overlaid on top
-    # of this in `_units_of`; until it exists, a skipped unit reads as succeeded.
-    "COMPLETED": "succeeded",
-    "CANCELLED": "cancelled",
-    "FAILED": "failed",
+    # engine draws no distinction. The skip overlay from the event log is
+    # applied on top of this in `_units_of`.
+    V1TaskStatus.COMPLETED: "succeeded",
+    V1TaskStatus.CANCELLED: "cancelled",
+    V1TaskStatus.FAILED: "failed",
 }
+
+# Every member is mapped, so the maps cannot silently drift if the SDK adds one.
+assert set(_RUN_STATUS_FOR) == set(V1TaskStatus) == set(_UNIT_STATUS_FOR)
 
 
 class HatchetOrchestrator:
@@ -472,8 +484,7 @@ class HatchetOrchestrator:
         if details is None:
             return None
 
-        run = getattr(details, "run", details)
-        engine_status = _name(getattr(run, "status", None))
+        engine_status = details.run.status
         units, scaffolding_failed = _units_of(details)
 
         # ⚠ `skipped` is excluded from the roll-up, because the word means two
@@ -501,7 +512,7 @@ class HatchetOrchestrator:
         #     engine calls the run closed: a cancel before the tasks existed.
         #   everything settled, all skipped — work was asked for and not done,
         #     which is `failed`, as on `sync`.
-        status = _RUN_STATUS_FOR.get(engine_status, "running")
+        status = _RUN_STATUS_FOR[engine_status]
         if engine_status in _ENGINE_TERMINAL and not scaffolding_failed:
             if judged:
                 status = overall_status(judged)
@@ -630,6 +641,19 @@ class HatchetOrchestrator:
         by the workflow body, so it carries identity, ordering and a resumable
         offset. Reconstructing that here would mean every task publishing its
         own identity, i.e. rebuilding the vocabulary this track delegates.
+
+        # ponytail: re-reads the whole run on every wakeup; incremental only if
+        # the catalog grows ~100x. `runs.get` has no flag to exclude payloads,
+        # so each wakeup re-downloads every task event accumulated so far —
+        # quadratic in task count over a run. Measured against this engine at
+        # the shipped catalog (4 indicators, 5 tasks): 6-21 events, 15-29 KB
+        # per call, events 11-32% of it, ~15 wakeups per run. That is under
+        # 400 KB per subscriber per run, so the fix is not worth its
+        # complexity yet. The upgrade path, when a catalog makes it worth it:
+        # `v1_workflow_run_task_events_list` takes offset/limit, so the skip
+        # set can be accumulated incrementally instead of re-derived — skips
+        # are immutable once emitted. Revisit at ~100 indicators, or if a
+        # subscriber's engine traffic shows up in a profile.
         """
         from reimagina.orchestration import hatchet_app
 
@@ -741,10 +765,12 @@ def _is_scaffolding(slug: str) -> bool:
 
 # Engine statuses from which no further task transition happens. Only then is
 # `overall_status` meaningful — it is a terminal roll-up with no `running` case.
-_ENGINE_TERMINAL = frozenset({"COMPLETED", "CANCELLED", "FAILED"})
+_ENGINE_TERMINAL = frozenset(
+    {V1TaskStatus.COMPLETED, V1TaskStatus.CANCELLED, V1TaskStatus.FAILED}
+)
 
 
-def _skipped_task_ids(details: object) -> frozenset[str]:
+def _skipped_task_ids(details: V1WorkflowRunDetails) -> frozenset[str]:
     """External ids of tasks the engine skipped, from its own event log.
 
     ⚠ This replaced a finalizer, and the finalizer existed because of a
@@ -768,14 +794,13 @@ def _skipped_task_ids(details: object) -> frozenset[str]:
       relabelled as a skip.
     """
     return frozenset(
-        task_id
-        for event in (getattr(details, "task_events", None) or [])
-        if _name(getattr(event, "event_type", None)) == "SKIPPED"
-        and (task_id := getattr(event, "task_id", None)) is not None
+        event.task_id
+        for event in details.task_events
+        if event.event_type is V1TaskEventType.SKIPPED
     )
 
 
-def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
+def _units_of(details: V1WorkflowRunDetails) -> tuple[tuple[UnitStatusView, ...], bool]:
     """Per-unit outcomes, plus whether any scaffolding task failed.
 
     ``shape`` names the tasks as declared and ``tasks`` carries their outcomes;
@@ -788,25 +813,26 @@ def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
     indicator and the roll-up sees only cancellations — reporting `cancelled`
     for a run nobody cancelled. The caller defers to the engine instead.
     """
-    # ⚠ Skip rows with no join key rather than letting them collide. Keying on
-    # `getattr(..., None)` put every id-less task under `None`, so an id-less
-    # shape item then joined to whichever of them happened to be last. A shape
-    # item with no id therefore misses too, which is what it should do.
-    outcomes = {}
-    for task in getattr(details, "tasks", None) or []:
-        key = getattr(task, "task_external_id", None)
-        if key is not None:
-            outcomes[key] = task
+    # ⚠ Keyed directly. `task_external_id` is a required `str` on both
+    # `V1TaskSummary` and the shape item, so there is no id-less row to defend
+    # against — and the defence was the defect: an earlier version keyed on
+    # `getattr(..., None)`, which filed every row it failed to read under `None`
+    # and then joined an id-less shape item to whichever of them came last. The
+    # guard existed to repair damage only the guard could cause.
+    outcomes = {task.task_external_id: task for task in details.tasks}
 
     skipped = _skipped_task_ids(details)
 
     units: list[UnitStatusView] = []
     scaffolding_failed = False
-    for item in getattr(details, "shape", None) or []:
-        slug = getattr(item, "task_name", "") or ""
-        external_id = getattr(item, "task_external_id", None)
+    for item in details.shape:
+        slug = item.task_name
+        external_id = item.task_external_id
         task = outcomes.get(external_id)
-        status = _UNIT_STATUS_FOR.get(_name(getattr(task, "status", None)), "queued")
+        # No task row yet: the engine has not created one for a unit it has not
+        # reached. `queued` is the honest reading, and it is the only case that
+        # needs a default — a task that exists always carries a mapped status.
+        status = _UNIT_STATUS_FOR[task.status] if task is not None else "queued"
         # A skip reports COMPLETED like anything else that finished, so the
         # event log is the only thing that separates "not dirty" from
         # "computed". Applied here rather than overlaid by the caller, so the
@@ -816,15 +842,8 @@ def _units_of(details: object) -> tuple[tuple[UnitStatusView, ...], bool]:
         if _is_scaffolding(slug):
             scaffolding_failed = scaffolding_failed or status == "failed"
             continue
-        units.append(UnitStatusView(slug, status, getattr(task, "error_message", None)))
+        units.append(UnitStatusView(slug, status, task.error_message if task else None))
     return tuple(sorted(units, key=lambda u: u.indicator)), scaffolding_failed
-
-
-def _name(value: object) -> str:
-    """Enum member, bare string, or None -> a plain uppercase name."""
-    if value is None:
-        return ""
-    return str(getattr(value, "value", value)).upper()
 
 
 def _is_not_found(exc: Exception) -> bool:
