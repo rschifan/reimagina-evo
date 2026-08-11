@@ -21,6 +21,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from hatchet_sdk.clients.rest.models.v1_task_event_type import V1TaskEventType
+from hatchet_sdk.clients.rest.models.v1_task_status import V1TaskStatus
 
 from reimagina.orchestration.hatchet_orchestrator import (
     HatchetOrchestrator,
@@ -65,14 +67,21 @@ def _details(
     rows = [*scaffolding, *units]
     external = {name: f"ext-{i}" for i, (name, _s, _e) in enumerate(rows)}
     return SimpleNamespace(
-        run=SimpleNamespace(status=status, output=output),
+        # ⚠ Statuses are the real `V1TaskStatus` members, not the uppercase
+        # strings they used to be. Callers still pass strings for readability
+        # and this is the one place they are coerced — which also makes a typo
+        # (`"COMPLETE"`) raise here, at fixture build, instead of quietly
+        # missing every lookup and reading as `queued`.
+        run=SimpleNamespace(status=V1TaskStatus(status), output=output),
         shape=[
             SimpleNamespace(task_name=name, task_external_id=external[name])
             for name, _s, _e in rows
         ],
         tasks=[
             SimpleNamespace(
-                task_external_id=external[name], status=status_, error_message=err
+                task_external_id=external[name],
+                status=V1TaskStatus(status_),
+                error_message=err,
             )
             for name, status_, err in rows
         ],
@@ -81,7 +90,7 @@ def _details(
             # the API — `StrictStr` next to `V1TaskSummary.task_id`'s
             # `StrictInt` — and that is what hid this signal for two rewrites.
             # Verified live: 489 events, every one joining by external id.
-            SimpleNamespace(event_type="SKIPPED", task_id=external[slug])
+            SimpleNamespace(event_type=V1TaskEventType.SKIPPED, task_id=external[slug])
             for slug in skipped
             if slug in external
         ],
@@ -286,35 +295,28 @@ def test_only_skipped_events_are_read_as_skips():
     """
     details = SimpleNamespace(
         task_events=[
-            SimpleNamespace(event_type="STARTED", task_id="ext-1"),
-            SimpleNamespace(event_type="SKIPPED", task_id="ext-2"),
-            SimpleNamespace(event_type="FINISHED", task_id="ext-3"),
-            SimpleNamespace(event_type="CANCELLED", task_id="ext-4"),
+            SimpleNamespace(event_type=V1TaskEventType.STARTED, task_id="ext-1"),
+            SimpleNamespace(event_type=V1TaskEventType.SKIPPED, task_id="ext-2"),
+            SimpleNamespace(event_type=V1TaskEventType.FINISHED, task_id="ext-3"),
+            SimpleNamespace(event_type=V1TaskEventType.CANCELLED, task_id="ext-4"),
         ]
     )
     assert _skipped_task_ids(details) == frozenset({"ext-2"})
 
 
 def test_a_run_with_no_events_yet_has_no_skips():
-    """In flight and mid-dispatch, or an engine that returned none at all."""
-    assert _skipped_task_ids(SimpleNamespace(task_events=[])) == frozenset()
-    assert _skipped_task_ids(SimpleNamespace(task_events=None)) == frozenset()
-    assert _skipped_task_ids(SimpleNamespace()) == frozenset()
+    """In flight and mid-dispatch: a real, reachable empty list.
 
-
-def test_an_event_without_a_task_id_is_dropped_rather_than_grouped():
-    """⚠ A `None` key would otherwise mark every id-less shape item skipped.
-
-    The same collision the unit join had: keying on `getattr(..., None)` puts
-    everything anonymous under one bucket, and that bucket then matches.
+    ⚠ Two sibling cases were deleted rather than ported — `task_events=None`
+    and the attribute missing entirely. `V1WorkflowRunDetails.task_events` is a
+    **required** `List[V1TaskEvent]`, so neither state can arrive from the
+    engine, and asserting them only pinned defensive code into place. The
+    companion test for a `SKIPPED` event with `task_id=None` went the same way:
+    `V1TaskEvent.task_id` is a required `str`. Its collision-into-one-bucket
+    failure was reachable solely through the `getattr(..., None)` defaults that
+    have now been removed.
     """
-    details = SimpleNamespace(
-        task_events=[
-            SimpleNamespace(event_type="SKIPPED", task_id=None),
-            SimpleNamespace(event_type="SKIPPED", task_id="ext-9"),
-        ]
-    )
-    assert _skipped_task_ids(details) == frozenset({"ext-9"})
+    assert _skipped_task_ids(SimpleNamespace(task_events=[])) == frozenset()
 
 
 def test_units_join_shape_to_tasks_by_external_id_not_by_order():
@@ -327,12 +329,22 @@ def test_units_join_shape_to_tasks_by_external_id_not_by_order():
         # Deliberately reversed relative to `shape`.
         tasks=[
             SimpleNamespace(
-                task_external_id="ext-b", status="FAILED", error_message="b"
+                task_external_id="ext-b",
+                status=V1TaskStatus.FAILED,
+                error_message="b",
             ),
             SimpleNamespace(
-                task_external_id="ext-a", status="COMPLETED", error_message=None
+                task_external_id="ext-a",
+                status=V1TaskStatus.COMPLETED,
+                error_message=None,
             ),
         ],
+        # ⚠ Required, and it was absent until the read path stopped defaulting
+        # it away. `V1WorkflowRunDetails.task_events` is not optional, so a
+        # fixture without it was describing a response the engine cannot send —
+        # and the old `getattr(..., None) or []` absorbed the discrepancy in
+        # silence. Now it is an AttributeError naming the missing field.
+        task_events=[],
     )
 
     units, _scaffolding_failed = _units_of(details)
