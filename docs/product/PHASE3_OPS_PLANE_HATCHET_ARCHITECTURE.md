@@ -61,7 +61,7 @@ These are the compute layer, not the ops-plane: an engine choice does not touch 
 | Databases | **2** — domain + the engine's own `hatchet` |
 | Containers beyond Postgres | **1** (`hatchet-lite`; Postgres broker, no RabbitMQ) |
 | Idle Postgres connections | **~47** engine · +1 per in-flight unit |
-| Ops-plane code we own | **1 646 lines** across 4 modules (1 041 excluding blanks and comments) — `wave.py` and `runstore.py` **deleted**, and still more lines than Track A: see §7 |
+| Ops-plane code we own | **602 executable lines** across 4 modules (1 646 raw) — `wave.py` and `runstore.py` **deleted**; **36 % less code than Track A**, see §7 |
 | Run history | the engine's · 720 h retention default · one run at a time |
 | Operator UI | dashboard, DAG view, per-task logs, replay |
 | One process can submit *and* execute? | **no** — a worker is a precondition |
@@ -131,17 +131,19 @@ there is no message broker to operate.
 
 | File | lines | code | Owns |
 |---|---:|---:|---|
-| `orchestration/hatchet_orchestrator.py` | 852 | 562 | the port — submit / read / cancel / subscribe, + `cancel_scenario` |
-| `orchestration/hatchet_app.py` | 629 | 353 | the DAG declaration, task defaults, admission control |
-| `orchestration/database_identity.py` | 92 | 71 | planner-and-executor database identity |
-| `orchestration/factory.py` | 73 | 55 | modes `hatchet`, `sync` |
-| **owned total** | **1 646** | **1 041** | |
-| `orchestration/graph.py` | 108 | 90 | capability 1 — ordering and declaration order |
-| `apps/worker/app.py` | 106 | 74 | preflight, register the DAG, execute |
+| `orchestration/hatchet_orchestrator.py` | 852 | 341 | the port — submit / read / cancel / subscribe, + `cancel_scenario` |
+| `orchestration/hatchet_app.py` | 629 | 194 | the DAG declaration, task defaults, admission control |
+| `orchestration/database_identity.py` | 92 | 40 | planner-and-executor database identity |
+| `orchestration/factory.py` | 73 | 27 | modes `hatchet`, `sync` |
+| **owned total** | **1 646** | **602** | |
+| `orchestration/graph.py` | 108 | 59 | capability 1 — ordering and declaration order |
+| `apps/worker/app.py` | 106 | 50 | preflight, register the DAG, execute |
 | `infra/docker/docker-compose.hatchet.yml` | 129 | 36 | the engine and its configuration |
 
-`code` excludes blank and comment-only lines. **Both columns are reported because the two
-rules disagree about which track owns more** — see §7, *Ownership delta*.
+`code` excludes blank lines, comments **and docstrings**, counted from the AST — house style
+puts a great deal of reasoning in docstrings, and this branch more than the other, so a
+`wc -l` here is closer to a prose count than a code one. **The `code` column is the one to
+compare; the raw column reverses the sign.** See §7, *Ownership delta*.
 
 **Deleted:** `wave.py` (75) · `runstore.py` (196) · `tasks.py` (192) · `queue_app.py` (82) ·
 `events.py` (42) · `embedded.py` (167). The `on_success_task` / `on_failure_task` finalizer
@@ -447,18 +449,28 @@ This is a spec'd metric and the headline this track exists to move. The two obvi
 
 | rule | Track A | Track B | who owns more |
 |---|---:|---:|---|
-| raw lines of the owned ops-plane modules | 1 504 (6 modules) | 1 646 (4 modules) | **B** |
-| excluding blanks and comment-only lines | 1 152 | 1 041 | **A** |
-| insertions vs the fork point, `orchestration/` | +1 290 / −773 (15 files) | +1 793 / −1 029 (19 files) | **B** |
+| **executable code** — no blanks, comments or docstrings | 816 (6 modules) | **602** (4 modules) | A, by 36 % |
+| statements, counted from the AST | 466 | **359** | A, by 30 % |
+| raw lines of the owned ops-plane modules | 1 504 | 1 646 | B |
+| insertions vs the fork point, `orchestration/` | +1 290 / −773 (15 files) | +1 793 / −1 029 (19 files) | B |
 
-This track deletes `wave.py` (75) and `runstore.py` (196) and still ends up with more lines
-than Track A, because the service adapter costs more than the scheduler it replaces:
-`hatchet_orchestrator.py` alone is 852 lines to `dbos_orchestrator.py`'s 480 — cancellation
-consistency, status projection, not-found and unavailable mapping, plan lifecycle and
-`cancel_scenario`. The honest statement is **"we delete our scheduler and its run tables, and
-do not reduce the code we own"** — the deletion is a shift in *what* we maintain, not in *how
-much*. Both tracks are heavily commented by house style, which is why the two rules diverge as
-far as they do.
+**This track owns roughly a quarter less executable code — and the raw-line column, which says
+the opposite, is an artefact of prose.** `hatchet_app.py` is 629 lines of which **345 are
+comment or docstring and 194 are code**: 55 % prose, because declaring a graph against an
+engine's semantics needed more explaining than it needed machinery. `wc -l` measures that
+explaining.
+
+Report the code row. The raw and diffstat rows are kept only because they are what a casual
+`wc -l` or `git diff --stat` returns, and they point the other way — anyone re-deriving this
+number by the obvious method will get the wrong sign.
+
+Where it comes from, and where it does not: `wave.py` (43 code lines) and `runstore.py` (139)
+are gone outright. Against that, `hatchet_orchestrator.py` is the one module heavier than its
+counterpart — 341 code lines to `dbos_orchestrator.py`'s 267 — for cancellation consistency,
+status projection, the engine's not-found and unavailable mapping, plan lifecycle and
+`cancel_scenario`. A library track gets most of that free by being in-process. The net is
+still strongly in this track's favour, but it is bought in `hatchet_app.py` (194 code lines
+for the whole DAG declaration, defaults and admission control), not in the adapter.
 
 ### What this track has that the other does not: real-data correctness
 
@@ -498,7 +510,9 @@ before `PHASE3_OPS_PLANE_TRACKS.md` can be written.
 ## 8 · Pros
 
 - **We do not own a scheduler.** Readiness, ordering, fan-out, propagation, retries and
-  backoff are inherited; `wave.py` and `runstore.py` are deleted, not maintained.
+  backoff are inherited; `wave.py` and `runstore.py` are deleted, not maintained. Measured,
+  that is **36 % less executable code than Track A owns** — the saving is real, not just a
+  shift in what we maintain.
 - **Materially better scheduling** — on the three reproducible workloads, `slr` 1.13–1.44
   versus 3.19–6.80 and ~80–100 ms head-of-line versus 1.9–3.0 s, with no barrier to compound
   with DAG depth. The advantage holds on the noisy workloads too but at lower resolution

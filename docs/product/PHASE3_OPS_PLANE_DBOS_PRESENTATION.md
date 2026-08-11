@@ -39,7 +39,7 @@ Independent work continues after a failure. A unit whose required dirty input fa
 
 ## 4. Costs And Limits
 
-- **We own the scheduler.** Dependency waves, failure propagation, status roll-up, and their tests are application code.
+- **We own the scheduler.** Dependency waves, failure propagation, status roll-up, and their tests are application code — about a quarter more executable code than the Hatchet option carries, not less.
 - **Wave barriers reduce parallelism.** The next layer waits until every unit in the current layer settles. This is structurally slower than per-task readiness for wide DAGs.
 - **No operator console by default.** There is no ready-made DAG view, task log viewer, replay button, metrics or tracing surface.
 - **No built-in admission control.** Repeated submits and overlapping writes need an explicit product policy.

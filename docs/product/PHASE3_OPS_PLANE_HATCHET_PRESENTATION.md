@@ -30,7 +30,7 @@ The engine's raw status and the product verdict intentionally answer different q
 ## 3. Strengths
 
 - **Native DAG scheduling.** Each task starts when ready; there is no application-managed wave barrier.
-- **Fewer orchestration responsibilities.** Dependency scheduling, propagation, queueing, retry backoff and admission controls become engine capabilities rather than code to design and test. Note this is a shift in *what* is maintained, not a reduction in *how much*: the service adapter is larger than the scheduler it replaces, so total application code does not go down.
+- **Less custom orchestration code, measurably.** Dependency scheduling, propagation, queueing, retry backoff and admission controls become engine capabilities rather than code to design and test — about a quarter less executable application code than the DBOS option, once comments and docstrings are excluded from the count.
 - **Built-in admission control.** A short deduplication window absorbs repeated clicks, and a concurrency key prevents two runs from writing the same scope together.
 - **Operator experience.** Dashboard, DAG view, task logs, input/output inspection, replay, worker visibility and metadata search are available without building them.
 - **Better behavior for wide DAGs.** The measured scheduler starts ready work in roughly 80-100 ms rather than waiting for a whole dependency wave.

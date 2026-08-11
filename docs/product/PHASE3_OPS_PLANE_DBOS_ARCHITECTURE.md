@@ -52,7 +52,7 @@ These are the compute layer, not the ops-plane: an engine choice does not touch 
 | Databases | **1** — checkpoints are a schema (`dbos`) beside the domain data |
 | Containers beyond Postgres | **0** |
 | Idle Postgres connections | worker 4 · DBOS pool 5 · **+1 per in-flight unit** |
-| Ops-plane code we own | **1 504 lines** across 6 modules — 1 152 excluding blanks and comment-only lines |
+| Ops-plane code we own | **816 executable lines** across 6 modules (1 504 raw) — **more than Track B**; see §7 |
 | Run history | our tables · unbounded · `GROUP BY`-able |
 | Operator UI | none — SQL |
 | One process can submit *and* execute? | **yes** (`dev` mode) |
@@ -104,18 +104,20 @@ both talk only to Postgres, which holds the domain data, our run state and DBOS'
 
 | File | lines | code | Owns |
 |---|---:|---:|---|
-| `orchestration/dbos_app.py` | 636 | 475 | queues, steps, workflows, executor identity, DB guards, progress |
-| `orchestration/dbos_orchestrator.py` | 480 | 352 | the port — submit / read / cancel / subscribe |
-| `orchestration/runstore.py` | 200 | 175 | run + unit state |
-| `orchestration/factory.py` | 81 | 62 | modes `dbos`, `sync` |
-| `orchestration/wave.py` | 75 | 62 | the wave scheduler |
-| `orchestration/executor_health.py` | 32 | 26 | worker heartbeat |
-| **owned total** | **1 504** | **1 152** | |
-| `orchestration/graph.py` | 72 | 61 | capability 1 — ordering, not scheduling |
-| `apps/worker/app.py` | 64 | 46 | launch, heartbeat, block |
+| `orchestration/dbos_app.py` | 636 | 327 | queues, steps, workflows, executor identity, DB guards, progress |
+| `orchestration/dbos_orchestrator.py` | 480 | 267 | the port — submit / read / cancel / subscribe |
+| `orchestration/runstore.py` | 200 | 128 | run + unit state |
+| `orchestration/wave.py` | 75 | 43 | the wave scheduler |
+| `orchestration/factory.py` | 81 | 27 | modes `dbos`, `sync` |
+| `orchestration/executor_health.py` | 32 | 24 | worker heartbeat |
+| **owned total** | **1 504** | **816** | |
+| `orchestration/graph.py` | 72 | 48 | capability 1 — ordering, not scheduling |
+| `apps/worker/app.py` | 64 | 30 | launch, heartbeat, block |
 
-`code` excludes blank and comment-only lines. **Both columns are reported because
-the two rules disagree about which track owns more** — see §7, *Ownership delta*.
+`code` excludes blank lines, comments **and docstrings**, counted from the AST — house style
+puts a great deal of reasoning in docstrings, so a `wc -l` here is closer to a prose count
+than a code one. **The `code` column is the one to compare; the raw column reverses the
+sign.** See §7, *Ownership delta*.
 
 Diff vs the fork point (`3d0a2cc`), orchestration package:
 **+1 290 / −773 across 15 files.**
@@ -390,16 +392,26 @@ This is a spec'd metric and the headline Track B exists to move. The two obvious
 
 | rule | Track A | Track B | who owns more |
 |---|---:|---:|---|
-| raw lines of the owned ops-plane modules | 1 504 (6 modules) | 1 646 (4 modules) | **B** |
-| excluding blanks and comment-only lines | 1 152 | 1 041 | **A** |
-| insertions vs the fork point, `orchestration/` | +1 290 / −773 (15 files) | +1 793 / −1 029 (19 files) | **B** |
+| **executable code** — no blanks, comments or docstrings | **816** (6 modules) | **602** (4 modules) | **A, by 36 %** |
+| statements, counted from the AST | 466 | 359 | **A, by 30 %** |
+| raw lines of the owned ops-plane modules | 1 504 | 1 646 | B |
+| insertions vs the fork point, `orchestration/` | +1 290 / −773 (15 files) | +1 793 / −1 029 (19 files) | B |
 
-Track B deletes `wave.py` (75) and `runstore.py` (196) and still ends up with more lines than
-Track A, because a service adapter costs more than the scheduler it replaces:
-`hatchet_orchestrator.py` alone is 852 lines to `dbos_orchestrator.py`'s 480. The honest
-statement is **"B deletes our scheduler and its run tables, and does not reduce the code we
-own"** — the deletion is a shift in *what* we maintain, not in *how much*. Both tracks are
-heavily commented by house style, which is why the two rules diverge as far as they do.
+**Track B owns roughly a quarter less executable code, and the raw-line column is an
+artefact of prose.** Both tracks are documented to house style, but not equally:
+`hatchet_app.py` is 629 lines of which **345 are comment or docstring and 194 are code** —
+55 % prose. Its raw total therefore says more about how much explaining the engine needed
+than about how much machinery we maintain.
+
+Report the code row. The raw and diffstat rows are kept only because they are what a casual
+`wc -l` or `git diff --stat` returns, and they point the other way — anyone re-deriving this
+number by the obvious method will get the wrong sign.
+
+The deletion is real: `wave.py` (43 code lines) and `runstore.py` (139) go, and the service
+adapter that replaces them does not cost as much as they did. `hatchet_orchestrator.py` is the
+one place Track B is heavier — 341 code lines to `dbos_orchestrator.py`'s 267 — and that is
+cancellation consistency, status projection, and the engine's not-found and unavailable
+mapping, all of which a library track gets for free by being in-process.
 
 ### Metrics this document does not report
 
@@ -442,7 +454,9 @@ side.
 ## 9 · Cons
 
 - **We own the scheduler.** Waves, skip propagation and status rollup are ours to maintain,
-  and every future scheduling feature is ours to write.
+  and every future scheduling feature is ours to write. It is also **36 % more executable
+  code than Track B owns** — the deletion of `wave.py` and `runstore.py` is not offset by the
+  service adapter that replaces them.
 - **Dispatch latency is materially higher** — 1.9–3.0 s head-of-line versus ~80–100 ms —
   and the barrier means it compounds with DAG depth.
 - **Recovery stops at one executor.** A process's in-flight runs wait for a process with that

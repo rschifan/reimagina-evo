@@ -80,6 +80,6 @@ Neither option removes the need for careful domain code around planning, transac
 
 ## Two Things The Table Does Not Show
 
-**Less responsibility is not less code.** Hatchet gives away the scheduler and the run tables, and still ends up with slightly *more* application code than DBOS — the service adapter costs more than the scheduler it replaces. Judge this row by what has to be understood and maintained, not by line count in either direction.
+**Less responsibility is also less code, but only if you measure it correctly.** Hatchet owns about a quarter less executable code than DBOS — 602 lines against 816, or 359 statements against 466. A raw line count says the opposite, because Hatchet's modules are up to 55% comment and docstring; `wc -l` on this codebase measures explanation, not machinery. If anyone re-derives this number, they will get the wrong sign unless docstrings are excluded.
 
 **The two options are not equally evidenced yet.** Hatchet has been verified for correctness on the real city at full scope against independent oracles. DBOS has not. Until that gap closes, the scheduling numbers compare the two options but the correctness evidence does not.
