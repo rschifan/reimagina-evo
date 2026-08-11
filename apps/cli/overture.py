@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from apps.cli.indicators import submit_after_ingest
 from reimagina.db import connect
 from reimagina.pipeline.overture import (
     MEXICO_CITY_BBOX,
@@ -76,15 +77,30 @@ def load_mexico_city_buildings(
     source_name: str = OVERTURE_BUILDINGS_SOURCE_NAME,
     notes: str = OVERTURE_BUILDINGS_NOTES,
     aoi_id: str | None = None,
+    recompute: bool = False,
+    recompute_attributes: tuple[str, ...] = ("geometry",),
 ) -> dict[str, Any]:
     """Bootstrap an Overture buildings extract into Postgres.
 
     ``aoi_id`` (optional) clips the just-loaded rows to that AOI's
     polygon — required when the bbox is wider than the actual AOI
     (true for every real city extract from a rectangular S3 query).
+
+    ``recompute`` submits an indicator run for the attributes this load
+    invalidated. ⚠ **Opt-in, and it stays opt-in.** A city-scale load can
+    invalidate every block-grain indicator, and those units are budgeted in
+    minutes — ``UNIT_EXECUTION_TIMEOUT`` defaults to two hours. A loader that
+    silently started that would make ``overture load`` an unbounded operation
+    whose cost is invisible at the call site. The operator asks for it.
+
+    ``recompute_attributes`` names what the load changed, defaulting to
+    ``geometry`` because that is what writing building footprints changes.
+    It is stated rather than derived: the loader knows which *columns* it
+    wrote, but the dirty set is keyed on the attribute names indicators
+    declare in ``reads``, and only the caller knows how one maps to the other.
     """
     with connect(dsn) as conn:
-        return bootstrap_overture_buildings_subset(
+        result = bootstrap_overture_buildings_subset(
             conn,
             raw_path=raw_path,
             orchestrator_run_id=orchestrator_run_id or str(uuid4()),
@@ -94,6 +110,22 @@ def load_mexico_city_buildings(
             notes=notes,
             aoi_id=aoi_id,
         )
+
+    if recompute:
+        # ⚠ Nothing written, nothing invalidated. A load whose rows all hit the
+        # ON CONFLICT DO NOTHING path changed no geometry, and recomputing a
+        # city because a re-run was a no-op is the expensive way to learn that.
+        if result.get("records_written"):
+            result["recompute"] = submit_after_ingest(
+                dsn=dsn,
+                changed_attributes=list(recompute_attributes),
+                aoi_id=aoi_id,
+                code_version=code_version,
+            )
+        else:
+            result["recompute"] = {"status": "skipped", "reason": "no records written"}
+
+    return result
 
 
 def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
