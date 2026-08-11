@@ -235,13 +235,23 @@ jobs:
       # worker and its actions — and then every run sits `queued` forever,
       # because nothing services that tenant. It looks exactly like a broken
       # worker.
+      #
+      # ⚠ `--config /config` is load-bearing. The token is signed with the
+      # server's cookie secrets, which the entrypoint generates into the
+      # `hatchet_config` volume at first boot; without the flag the admin binary
+      # loads no config, finds no secrets, and dies before signing anything:
+      # "could not create session store: at least one cookie secret must be
+      # provided". That is a `Fatal` on stderr and an empty stdout, so it
+      # arrives here as the generic "token creation failed" below rather than as
+      # its own cause. The path is the compose file's mount point — change one,
+      # change the other.
       - name: Mint an API token for the default tenant
         run: |
           TENANT=$(psql -h localhost -U reimagina -d hatchet -tAc \
             "select id from \"Tenant\" where slug='default'")
           test -n "$TENANT" || { echo "no default tenant"; exit 1; }
           TOKEN=$(docker compose exec -T hatchet /hatchet-admin token create \
-            --name ci --tenant-id "$TENANT" | tail -n1 | tr -d '\r')
+            --config /config --name ci --tenant-id "$TENANT" | tail -n1 | tr -d '\r')
           test -n "$TOKEN" || { echo "token creation failed"; exit 1; }
           echo "::add-mask::$TOKEN"
           echo "HATCHET_CLIENT_TOKEN=$TOKEN" >> "$GITHUB_ENV"
