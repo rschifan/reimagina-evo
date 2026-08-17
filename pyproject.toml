@@ -18,6 +18,13 @@ dependencies = [
     "fiona>=1.9",
     "pandas>=2.0",
     "pyarrow>=15.0",
+    # OSM road-network ingest for the accessibility indicators. Fetches an
+    # already-noded graph (u/v node ids + length in metres) for an arbitrary
+    # polygon, which loads straight into r037's pgRouting tables without a
+    # pgr_createTopology pass. Routing itself stays in Postgres — osmnx is the
+    # acquisition step only, and is imported lazily so nothing else pays for
+    # it. Adds exactly two packages: osmnx and networkx.
+    "osmnx>=2.0",
     # Read-side API stack. FastAPI is sync-compatible with the psycopg2
     # storage layer through the default thread-pool dispatch.
     "fastapi>=0.110",

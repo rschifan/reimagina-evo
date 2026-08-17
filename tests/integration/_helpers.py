@@ -124,3 +124,87 @@ def seed_catalog_committed(conn, specs=None) -> None:
         conn.commit()
     finally:
         conn.autocommit = True
+
+
+# ── Synthetic OSM network ───────────────────────────────────────────────────
+
+#: ~0.0009° of longitude at 19.3°N is ~95 m — one lattice step reads as a city
+#: block. Kept as constants so tests can position amenities relative to nodes.
+LATTICE_STEP = 0.0009
+LATTICE_LON0 = -99.1800
+LATTICE_LAT0 = 19.2900
+LATTICE_EDGE_M = 95.0
+
+
+def lattice_node_id(col: int, row: int) -> int:
+    """Stable OSM-style node id for the lattice at ``(col, row)``."""
+    return 1_000_000 + row * 10 + col
+
+
+def lattice_xy(col: int, row: int) -> tuple[float, float]:
+    """Lon/lat of the lattice node at ``(col, row)``."""
+    return LATTICE_LON0 + col * LATTICE_STEP, LATTICE_LAT0 + row * LATTICE_STEP
+
+
+def osm_lattice(side: int = 3):
+    """An ``(nodes, edges)`` pair in the shape ``osmnx.graph_to_gdfs`` returns.
+
+    A ``side``×``side`` grid with no diagonals, so the network distance between
+    opposite corners is knowably longer than the straight line — the property
+    that distinguishes a real routing result from a KNN in disguise.
+
+    Lives here rather than in a test module because two suites need it, and
+    this file exists precisely so a test file never becomes another's fixture
+    library.
+    """
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import LineString, Point
+
+    nodes = []
+    for row in range(side):
+        for col in range(side):
+            lon, lat = lattice_xy(col, row)
+            nodes.append({"osmid": lattice_node_id(col, row), "x": lon, "y": lat})
+    nodes_df = pd.DataFrame(nodes).set_index("osmid")
+    nodes_gdf = gpd.GeoDataFrame(
+        nodes_df,
+        geometry=[Point(r.x, r.y) for r in nodes_df.itertuples()],
+        crs="EPSG:4326",
+    )
+
+    edges = []
+    for row in range(side):
+        for col in range(side):
+            here = lattice_xy(col, row)
+            if col + 1 < side:
+                edges.append(
+                    (
+                        lattice_node_id(col, row),
+                        lattice_node_id(col + 1, row),
+                        here,
+                        lattice_xy(col + 1, row),
+                    )
+                )
+            if row + 1 < side:
+                edges.append(
+                    (
+                        lattice_node_id(col, row),
+                        lattice_node_id(col, row + 1),
+                        here,
+                        lattice_xy(col, row + 1),
+                    )
+                )
+
+    edges_gdf = gpd.GeoDataFrame(
+        {
+            "u": [e[0] for e in edges],
+            "v": [e[1] for e in edges],
+            "key": [0] * len(edges),
+            "osmid": [9_000_000 + i for i in range(len(edges))],
+            "length": [LATTICE_EDGE_M] * len(edges),
+        },
+        geometry=[LineString([e[2], e[3]]) for e in edges],
+        crs="EPSG:4326",
+    )
+    return nodes_gdf, edges_gdf

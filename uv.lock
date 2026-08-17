@@ -801,6 +801,15 @@ wheels = [
 ]
 
 [[package]]
+name = "networkx"
+version = "3.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762", size = 2068504, upload-time = "2025-12-08T17:02:38.159Z" },
+]
+
+[[package]]
 name = "numexpr"
 version = "2.14.1"
 source = { registry = "https://pypi.org/simple" }
@@ -952,6 +961,23 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/33/ec58ea03fbcb32bc62c4d012e9d2a0710817e423fff41b2880241f9c95f3/openlineage_python-1.51.0-py3-none-any.whl", hash = "sha256:bbf03eeb2271ccb23dc6b7a5f39e9968585d10160fa1d7ac345d07f59b45f568", size = 114334, upload-time = "2026-07-06T11:46:41.801Z" },
+]
+
+[[package]]
+name = "osmnx"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geopandas" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "requests" },
+    { name = "shapely" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/6d/42279fb31b09f0532ec4de90604ee8078adad66b89865887cdf014f651f1/osmnx-2.1.1.tar.gz", hash = "sha256:0785166487d4d8da5a551dac3d1562fe114fb39f3bf66f261c8b4d60baee9295", size = 90368, upload-time = "2026-07-21T19:24:06.779Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/08/450c5c707493cf3a1da91050cf6b9b92e5279676f28e85d85b81d9e46f85/osmnx-2.1.1-py3-none-any.whl", hash = "sha256:6680c98312a8c327dea01da8ec59328bf1d7b0e0cab42db6ce500d0cb83b87e5", size = 104711, upload-time = "2026-07-21T19:24:05.274Z" },
 ]
 
 [[package]]
@@ -1764,6 +1790,7 @@ dependencies = [
     { name = "fiona" },
     { name = "geopandas" },
     { name = "openlineage-python" },
+    { name = "osmnx" },
     { name = "pandas" },
     { name = "pandera" },
     { name = "psycopg2-binary" },
@@ -1799,6 +1826,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mapbox-vector-tile", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "openlineage-python", specifier = ">=1.9" },
+    { name = "osmnx", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pandera", specifier = ">=0.20" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
