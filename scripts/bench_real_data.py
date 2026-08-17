@@ -7,7 +7,6 @@ list has grown since it was written:
 
     every unit contends for the same Postgres
     units cost wildly different amounts
-    several indicators share one dispatched unit
 
 A synthetic unit that sleeps scales perfectly across slots. Real PostGIS
 statements against one server do not, and how far short they fall is the number
@@ -15,10 +14,9 @@ that decides whether more worker slots buy anything. This script measures that,
 by running the **real** ``SHIPPED_INDICATORS`` runners over **real** features.
 
 The other two are newer, and are why this script is now the more interesting of
-the pair. The synthetic workloads declare no ``run_group`` and no
-``resource_class``, so grouping and allocation are invisible there *by
-construction* — every synthetic node is one unit costing its declared sleep. The
-real catalog is 13 indicators in 7 dispatched units, three of them heavy, with a
+the pair. The synthetic workloads declare no ``resource_class``, so allocation is
+invisible there *by construction* — every synthetic node is one unit costing its
+declared sleep. The real catalog is 13 indicators, three of them heavy, with a
 straight-line KNN and a multi-source Dijkstra differing by more than a factor of
 two. That spread is the whole argument for scheduling them apart, and only this
 script can see it — it is also what corrected the ``resource_class`` labels,
@@ -80,8 +78,8 @@ from reimagina.perf.workload_report import (  # noqa: E402
 #
 # ⚠ This was `{"geometry", "floors"}` — correct when the catalog was four
 # indicators, silently wrong afterwards. Against today's 13 it dirties 4
-# indicators in 4 units with nothing heavy, skipping all nine edificability and
-# accessibility indicators, all four run groups, and both resource classes. The
+# indicators with nothing heavy, skipping all nine edificability and
+# accessibility indicators and both resource classes. The
 # benchmark kept reporting, so nothing looked broken.
 CHANGED_ATTRIBUTES = frozenset(key for spec in SHIPPED_INDICATORS for key in spec.reads)
 
@@ -90,11 +88,9 @@ EDGES = {
     for spec in SHIPPED_INDICATORS
 }
 
-#: slug -> the unit it is dispatched in, and how expensive that unit is meant
-#: to be. Both are what the synthetic suite cannot model: its workloads declare
-#: no `run_group` and no `resource_class`, so grouping and allocation are
-#: invisible there by construction.
-GROUP_OF = {spec.slug: (spec.run_group or spec.slug) for spec in SHIPPED_INDICATORS}
+#: slug -> how expensive it is meant to be. What the synthetic suite cannot
+#: model: its workloads declare no `resource_class`, so allocation is invisible
+#: there by construction.
 CLASS_OF = {spec.slug: spec.resource_class for spec in SHIPPED_INDICATORS}
 
 SETTLE_TIMEOUT_S = 900.0
@@ -154,7 +150,7 @@ def await_terminal(orchestrator, conn, run_id: str):
 
 
 def per_indicator(records) -> dict[str, dict]:
-    """Wall-clock per indicator, plus the unit and class it was dispatched in.
+    """Wall-clock per indicator, plus the resource class it declares.
 
     The headline makespan hides which indicator actually costs the run, and on
     this catalog that is the whole question — the spread across indicators is
@@ -170,7 +166,6 @@ def per_indicator(records) -> dict[str, dict]:
             "ms": round(
                 (record.completed_at - record.started_at).total_seconds() * 1000, 1
             ),
-            "group": GROUP_OF.get(record.slug, record.slug),
             "class": CLASS_OF.get(record.slug, "default"),
         }
     return out
@@ -323,11 +318,10 @@ def main(argv: list[str]) -> int:
     features = block_ids(conn, args.scope or None)
     if not features:
         parser.error("no block features found — is this a populated database?")
-    groups = sorted(set(GROUP_OF.values()))
     heavy = sorted(s for s, c in CLASS_OF.items() if c == "heavy")
     print(
         f"scope: {len(features)} blocks, {len(EDGES)} indicators "
-        f"in {len(groups)} dispatch groups ({len(heavy)} heavy), slots={args.slots}"
+        f"({len(heavy)} heavy), slots={args.slots}"
     )
     print(f"  triggered by: {', '.join(sorted(CHANGED_ATTRIBUTES))}")
 
@@ -338,7 +332,6 @@ def main(argv: list[str]) -> int:
         "warm": args.reps > 1,
         "changed_attributes": sorted(CHANGED_ATTRIBUTES),
         "indicators": len(EDGES),
-        "groups": groups,
         "heavy_indicators": heavy,
         "modes": {},
     }

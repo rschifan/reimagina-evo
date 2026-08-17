@@ -45,13 +45,11 @@ _DIRECT_COMPUTE: dict[str, IndicatorCompute] = {
     URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: compute_block_building_density,
     URBAN_FORM_BLOCK_PLANNED_FLOORS.slug: compute_planned_floors,
     # Edificability: one calculation, three slugs. Each entry writes only its
-    # own slug — they share a `run_group`, but grouping is an ops-plane concern
-    # and nothing here may assume it, since the in-process coordinator dispatches
-    # every indicator individually.
+    # own slug; every indicator is dispatched individually on both ops planes.
     EDIFICABILITY_BLOCK_HOUSING_UNITS.slug: compute_block_housing_units,
     EDIFICABILITY_BLOCK_POPULATION.slug: compute_block_population,
     EDIFICABILITY_BLOCK_DENSITY.slug: compute_block_housing_density,
-    # Accessibility: six slugs across two groups, all built from one spec-bound
+    # Accessibility: six slugs across two families, all built from one spec-bound
     # closure, so the registry stays in step with the catalog automatically.
     **ACCESSIBILITY_COMPUTE,
 }

@@ -1,4 +1,4 @@
-"""Grouping must not move a single step position for an ungrouped run.
+"""The exact step-position sequence ``run_workflow`` emits, pinned.
 
 DBOS matches replayed steps by ``(position, function name)``, and the counter is
 consumed by more than ``@DBOS.step`` — ``DBOS.write_stream`` and
@@ -6,13 +6,15 @@ consumed by more than ``@DBOS.step`` — ``DBOS.write_stream`` and
 ``dbos/_sys_db.py``). So ``_emit`` is *not* position-free, and any change to how
 many calls the body makes per unit shifts every position after it.
 
-Every run in flight at the deploy that introduced grouping was submitted before
-``UnitInput`` had a ``group`` key, so each of its units is a singleton group. If
-the grouped body emits a different sequence for that input, those runs cannot
-resume: they fail on replay with ``DBOSUnexpectedStepError``, or worse, hand one
-indicator's checkpointed output to another.
+A run in flight when that happens cannot resume: it fails on replay with
+``DBOSUnexpectedStepError``, or worse, hands one indicator's checkpointed output
+to another. Neither is visible from reading a diff, which is why the sequence is
+asserted here rather than described in a comment.
 
-This asserts the sequence rather than trusting the comment in ``run_workflow``.
+This file was written to guard the introduction of run-group dispatch and
+survived its removal, because the hazard belongs to DBOS rather than to that
+feature: any future edit to the dispatch loop faces it again.
+
 The bodies are replayed against a recording double, so nothing here needs a
 database, a queue, or DBOS itself.
 """
@@ -60,7 +62,7 @@ class _Recorder:
         self.calls.append(f"emit:{indicator}")
 
     def enqueue(self, *args):
-        # args: (unit_workflow, run_id, slug, features, params[, produces])
+        # args: (unit_workflow, run_id, slug, features, params)
         slug = args[2]
         self.calls.append(f"enqueue:{slug}")
         return _Handle(self)
@@ -97,11 +99,8 @@ def recorder(monkeypatch):
     return rec
 
 
-def _unit(slug, *, deps=None, group=None):
-    unit = {"slug": slug, "features": [], "deps": deps or []}
-    if group is not None:
-        unit["group"] = group
-    return unit
+def _unit(slug, *, deps=None):
+    return {"slug": slug, "features": [], "deps": deps or []}
 
 
 def _body(run_workflow):
@@ -112,9 +111,10 @@ def _body(run_workflow):
 # ── The property ────────────────────────────────────────────────────────────
 
 
-#: The exact position-consuming sequence for a two-unit, ungrouped run — the
-#: shape every in-flight run was checkpointed against before grouping existed.
-_PRE_GROUPING_SEQUENCE = [
+#: The exact position-consuming sequence for a two-unit run. One enqueue per
+#: unit, then per unit a `get_result`, a settle and an emit — in that order,
+#: awaited in enqueue order because child workflow ids are positional.
+_DISPATCH_SEQUENCE = [
     "s_open_run",
     "enqueue:a",
     "enqueue:b",
@@ -131,60 +131,39 @@ _PRE_GROUPING_SEQUENCE = [
 ]
 
 
-def test_ungrouped_input_emits_the_pre_grouping_sequence(recorder):
-    """A run submitted before `group` existed must replay unchanged."""
+def test_run_workflow_emits_the_pinned_sequence(recorder):
+    """Change this sequence and every run in flight at the deploy breaks."""
     _body(dbos_app.run_workflow)(
         "run-1", [_unit("a"), _unit("b")], {"code_version": "test"}
     )
-    assert recorder.calls == _PRE_GROUPING_SEQUENCE
+    assert recorder.calls == _DISPATCH_SEQUENCE
 
 
-def test_singleton_groups_match_ungrouped_exactly(recorder):
-    """An explicit group per slug is the same shape as no groups at all.
-
-    Asserted against the golden sequence rather than against a second live run:
-    comparing two runs would still pass if both drifted together, which is the
-    one failure this file exists to catch.
-    """
+def test_units_are_awaited_in_enqueue_order(recorder):
+    """An as-completed loop would shift child ids and mint duplicate children."""
     _body(dbos_app.run_workflow)(
         "run-2",
-        [_unit("a", group="a"), _unit("b", group="b")],
+        [_unit("a"), _unit("b"), _unit("c")],
         {"code_version": "test"},
     )
-    assert recorder.calls == _PRE_GROUPING_SEQUENCE
-
-
-def test_a_group_dispatches_once_and_settles_per_member(recorder):
-    """Three indicators, one enqueue, one get_result — three settles and emits."""
-    units = [
-        _unit("x1", group="g"),
-        _unit("x2", group="g"),
-        _unit("x3", group="g"),
+    assert [c for c in recorder.calls if c.startswith("enqueue:")] == [
+        "enqueue:a",
+        "enqueue:b",
+        "enqueue:c",
     ]
-    _body(dbos_app.run_workflow)("run-4", units, {"code_version": "test"})
-
-    assert recorder.calls.count("enqueue:x1") == 1
-    assert [c for c in recorder.calls if c.startswith("enqueue")] == ["enqueue:x1"]
-    assert recorder.calls.count("get_result") == 1
-    assert [c for c in recorder.calls if c.startswith("s_settle_unit")] == [
-        "s_settle_unit:x1",
-        "s_settle_unit:x2",
-        "s_settle_unit:x3",
-    ]
-    # Ask 4 is preserved: one event per indicator, not one per dispatched unit.
-    assert [c for c in recorder.calls if c.startswith("emit:x")] == [
-        "emit:x1",
-        "emit:x2",
-        "emit:x3",
+    assert [c for c in recorder.calls if c.startswith("s_settle_unit:")] == [
+        "s_settle_unit:a",
+        "s_settle_unit:b",
+        "s_settle_unit:c",
     ]
 
 
 # ── unit_workflow ───────────────────────────────────────────────────────────
 
 
-def test_unit_workflow_without_produces_is_unchanged(recorder):
-    """The replay path for a child persisted before `produces` existed."""
-    _body(dbos_app.unit_workflow)("run-5", "solo", [], {})
+def test_unit_workflow_sequence(recorder):
+    """Running, compute, succeeded — three positions, in that order."""
+    _body(dbos_app.unit_workflow)("run-3", "solo", [], {})
     assert recorder.calls == [
         "s_set_status:solo:running",
         "s_compute:solo",
@@ -192,63 +171,14 @@ def test_unit_workflow_without_produces_is_unchanged(recorder):
     ]
 
 
-def test_unit_workflow_computes_each_member(recorder):
-    """Group members are different indicators, so each needs its own compute."""
-    _body(dbos_app.unit_workflow)("run-6", "m1", [], {}, ["m1", "m2"])
-    assert recorder.calls == [
-        "s_set_status:m1:running",
-        "s_set_status:m2:running",
-        "s_compute:m1",
-        "s_compute:m2",
-        "s_set_status:m1:succeeded",
-        "s_set_status:m2:succeeded",
-    ]
-
-
-def test_a_failure_fails_every_member(monkeypatch):
-    """Partial success inside one dispatched unit has nowhere to live."""
-    rec = _Recorder(fail_on="m2")
+def test_a_failing_compute_marks_failed_and_reraises(monkeypatch):
+    """The parent branches on the raise, so it must not be swallowed."""
+    rec = _Recorder(fail_on="m1")
     monkeypatch.setattr(dbos_app, "s_set_status", rec.s_set_status)
     monkeypatch.setattr(dbos_app, "s_compute", rec.s_compute)
 
     with pytest.raises(RuntimeError):
-        _body(dbos_app.unit_workflow)("run-7", "m1", [], {}, ["m1", "m2"])
+        _body(dbos_app.unit_workflow)("run-4", "m1", [], {})
 
     assert "s_set_status:m1:failed" in rec.calls
-    assert "s_set_status:m2:failed" in rec.calls
     assert not [c for c in rec.calls if c.endswith(":succeeded")]
-
-
-# ── validation ──────────────────────────────────────────────────────────────
-
-
-def test_heterogeneous_group_is_rejected_at_submit():
-    """The invariant that makes a split-wave double-compute impossible."""
-    units = [
-        _unit("x1", group="g"),
-        _unit("x2", group="g", deps=["other"]),
-        _unit("other"),
-    ]
-    with pytest.raises(ValueError, match="differing dependencies"):
-        dbos_app.validate_workflow_input(units, {"code_version": "test"})
-
-
-def test_homogeneous_group_passes():
-    units = [
-        _unit("x1", group="g", deps=["other"]),
-        _unit("x2", group="g", deps=["other"]),
-        _unit("other"),
-    ]
-    dbos_app.validate_workflow_input(units, {"code_version": "test"})
-
-
-def test_input_without_group_still_validates():
-    dbos_app.validate_workflow_input([_unit("a"), _unit("b")], {"code_version": "t"})
-
-
-def test_empty_group_string_is_rejected():
-    with pytest.raises(ValueError, match="invalid group"):
-        dbos_app.validate_workflow_input(
-            [{"slug": "a", "features": [], "deps": [], "group": ""}],
-            {"code_version": "t"},
-        )

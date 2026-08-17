@@ -280,6 +280,7 @@ def _compute(
     conn,
     *,
     spec: IndicatorSpec,
+    reader,
     aoi_id: str | None = None,
     feature_ids: list[str] | None = None,
     scenario_id: str | None = None,
@@ -294,7 +295,6 @@ def _compute(
         )
     block_type_id = get_type_id(conn, "MEX", "block")
     categories = ACCESSIBILITY_SPEC_CATEGORY[spec.slug]
-    reader = _network_rows if spec.run_group == "network_access" else _euclid_rows
 
     with job_run(
         backend,
@@ -328,16 +328,22 @@ def _compute(
     )
 
 
-def compute_for(spec: IndicatorSpec):
+def compute_for(spec: IndicatorSpec, reader):
     """The compute fn for one accessibility spec, bound for the runner registry.
 
     Six near-identical closures rather than six hand-written functions: they
-    differ only by spec, and writing them out would be six places to update
-    when the signature moves.
+    differ only by spec and reader, and writing them out would be six places to
+    update when the signature moves.
+
+    ``reader`` is bound here rather than derived inside ``_compute``, because
+    which family a spec belongs to is known exactly where the specs are built
+    and nowhere else. It used to be recovered by comparing the spec's dispatch
+    group against the string ``"network_access"`` — which quietly made an
+    ops-plane scheduling hint decide whether this ran a Dijkstra or a KNN.
     """
 
     def run(conn, **kwargs) -> ComputeResult:
-        return _compute(conn, spec=spec, **kwargs)
+        return _compute(conn, spec=spec, reader=reader, **kwargs)
 
     run.__name__ = f"compute_{spec.slug}"
     run.__doc__ = spec.description
@@ -346,6 +352,6 @@ def compute_for(spec: IndicatorSpec):
 
 #: slug -> compute fn, for every accessibility indicator.
 ACCESSIBILITY_COMPUTE = {
-    spec.slug: compute_for(spec)
-    for spec in (*ACCESSIBILITY_EUCLID, *ACCESSIBILITY_NETWORK)
+    **{spec.slug: compute_for(spec, _euclid_rows) for spec in ACCESSIBILITY_EUCLID},
+    **{spec.slug: compute_for(spec, _network_rows) for spec in ACCESSIBILITY_NETWORK},
 }

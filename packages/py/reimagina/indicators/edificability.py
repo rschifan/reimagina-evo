@@ -12,13 +12,12 @@ no cadastral lot layer exists yet (`MEX:lot` is a declared feature type with
 zero rows). The arithmetic is untouched — only the denominator's grain — so a
 real cadastre swaps in by changing the feature type these read.
 
-**Why three public functions over one.** The three slugs share a `run_group`,
-so the ops plane will eventually dispatch them as a single unit. Until that
-lands they are three ordinary indicators, and each must write only its own slug
-or `bulk_write_numeric_results` would attribute one indicator's values to
-another. `_edificability_rows` is the shared read; the Hamilton driver computes
-whichever frames are asked for. Computing all three costs the same read as
-computing one, which is the entire argument for grouping them.
+**Why three public functions over one.** Each is dispatched as its own unit and
+must write only its own slug, or `bulk_write_numeric_results` would attribute
+one indicator's values to another. `_edificability_rows` is the shared read; the
+Hamilton driver computes whichever frames are asked for — so all three repeat
+that read rather than sharing it. Measured at 52 ms each on 1,500 blocks, which
+is why collapsing them was not worth the dispatch granularity it cost.
 
 ⚠ **Features missing any required attribute are skipped, not zeroed.** Absent
 data is not a capacity of zero, and `bulk_write_numeric_results` stales only the

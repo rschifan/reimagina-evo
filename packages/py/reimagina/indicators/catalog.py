@@ -41,18 +41,6 @@ class IndicatorSpec:
     # attributes, so they leave this empty and declare `depends_on` instead.
     reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
-    # Indicators sharing a run_group are computed by ONE dispatched unit rather
-    # than one each. Purely an ops-plane concern: `indicator_catalog` has no such
-    # column and `seed_catalog` never reads this.
-    #
-    # ⚠ Every member of a group MUST declare identical `reads` and identical
-    # `depends_on`. The wave scheduler works on (slug, status) pairs and knows
-    # nothing about groups, so members with differing dependencies could be
-    # dispatched in *different* waves — enqueueing the group's child twice and
-    # running one expensive body twice, which `s_compute`'s retries_allowed=False
-    # exists to make impossible. Identical inputs make dirtiness all-or-nothing
-    # by construction. Asserted in tests/unit/test_indicator_registry.py.
-    run_group: str | None = None
     # Which executor queue this indicator's unit belongs on, so a slow family
     # can be scheduled apart from cheap arithmetic instead of contending for the
     # same slots.
@@ -172,16 +160,16 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 #
 # Buildable capacity from construction and land-use attributes: the worked
 # example the Reimagina collaborators supplied. Three outputs of one three-line
-# calculation, which is exactly why they share a `run_group` — dispatching three
-# units to perform one multiplication each is all overhead and no work.
+# calculation.
 #
 # ⚠ All three declare the SAME `reads`, including `people_per_household`, which
-# only `population` actually consumes. That is the group invariant, not an
-# oversight: identical inputs are what guarantee the three are always dirty
-# together and can never split across waves. The cost is that editing
-# `people_per_household` also recomputes housing_units and density —
-# over-approximate, never wrong, and the same trade `resolve_change_set`
-# already makes.
+# only `population` actually consumes. This was required when the three shared a
+# dispatch group — identical inputs were what stopped members splitting across
+# waves. That constraint is gone, so the shared tuple is now an
+# over-approximation kept by choice rather than by necessity: editing
+# `people_per_household` also recomputes housing_units and density. Never wrong,
+# the same trade `resolve_change_set` already makes, and narrowing it is a
+# behaviour change to make deliberately rather than as a side effect.
 #
 # ⚠ None of them reads `geometry`, though all three divide by block area. A
 # scenario cannot edit block geometry today, and declaring it would drag these
@@ -190,7 +178,6 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 # identically on both ops-plane branches.
 
 _EDIFICABILITY_READS = ("num_levels", "unit_size", "people_per_household")
-_EDIFICABILITY_GROUP = "edificability"
 
 
 EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
@@ -221,7 +208,6 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     aggregation_method="weighted_mean",
     reads=_EDIFICABILITY_READS,
     applies_to=("block",),
-    run_group=_EDIFICABILITY_GROUP,
 )
 
 
@@ -244,7 +230,6 @@ EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
     aggregation_method="weighted_mean",
     reads=_EDIFICABILITY_READS,
     applies_to=("block",),
-    run_group=_EDIFICABILITY_GROUP,
 )
 
 
@@ -273,7 +258,6 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
     aggregation_method="weighted_mean",
     reads=_EDIFICABILITY_READS,
     applies_to=("block",),
-    run_group=_EDIFICABILITY_GROUP,
 )
 
 
@@ -321,9 +305,6 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 #: deliberate: both mean "no useful access", and a NULL would need a separate
 #: rendering path in every consumer.
 ACCESSIBILITY_CUTOFF_M = 1500.0
-
-_POI_GROUP = "poi_access"
-_NETWORK_GROUP = "network_access"
 
 #: Amenity categories the demo reports, and the source `category` values each
 #: matches. The bare English keys serve synthetic test fixtures; the rest are
@@ -395,7 +376,6 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         aggregation_method="weighted_mean",
         reads=("poi_version", "network_version") if network else ("poi_version",),
         applies_to=("block",),
-        run_group=_NETWORK_GROUP if network else _POI_GROUP,
         # ⚠ The straight-line family is the heavy one. Counter-intuitive, and
         # the reverse of what this said until it was measured — see the section
         # comment above for the numbers and the reason.

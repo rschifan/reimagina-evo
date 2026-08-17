@@ -190,14 +190,15 @@ def _inventory(conn, aoi_id: str) -> None:
 def _catalog(conn) -> None:
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
 
-    head("The catalog — 13 indicators in 4 dispatch groups")
-    groups: dict[tuple[str, str], list[str]] = {}
+    head("The catalog — 13 indicators, one dispatched unit each")
+    by_family: dict[tuple[str, str], list[str]] = {}
     for spec in SHIPPED_INDICATORS:
-        key = (spec.run_group or spec.slug, spec.resource_class)
-        groups.setdefault(key, []).append(spec.slug)
-    for (group, cls), slugs in sorted(groups.items()):
+        by_family.setdefault(
+            (spec.model_family or "composite", spec.resource_class), []
+        ).append(spec.slug)
+    for (family, cls), slugs in sorted(by_family.items()):
         marker = "HEAVY" if cls == "heavy" else "     "
-        print(f"  {marker}  {group:<28} {len(slugs)} indicator(s)")
+        print(f"  {marker}  {family:<28} {len(slugs)} indicator(s)")
         for slug in slugs:
             print(f"         └─ {slug}")
 
@@ -211,17 +212,11 @@ def _mapping(conn) -> None:
     by_slug = {s.slug: s for s in SHIPPED_INDICATORS}
     for attribute in ("num_levels", "poi_version", "network_version", "geometry"):
         units = compute_dirty_set([attribute], [], SHIPPED_INDICATORS)
-        groups: dict[str, list[str]] = {}
-        for unit in units:
-            spec = by_slug[unit.indicator]
-            groups.setdefault(spec.run_group or unit.indicator, []).append(
-                unit.indicator
-            )
         classes = {by_slug[u.indicator].resource_class for u in units}
         cls = "heavy" if "heavy" in classes else "default"
         print(
-            f"  {attribute:<17} → {len(units)} indicators in "
-            f"{len(groups)} dispatched unit(s)   [{cls}]"
+            f"  {attribute:<17} → {len(units)} indicators, "
+            f"{len(units)} dispatched unit(s)   [{cls}]"
         )
 
 

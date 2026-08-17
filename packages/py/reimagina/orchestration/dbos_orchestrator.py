@@ -180,10 +180,6 @@ class DBOSOrchestrator:
             spec.slug: [dep for dep, _weight in spec.depends_on]
             for spec in self._registry
         }
-        # Resolved here for the same reason as the dirty set above: the workflow
-        # body may branch only on its own input, so a group read from the catalog
-        # mid-run could change how a replay dispatches.
-        group_of = {spec.slug: (spec.run_group or spec.slug) for spec in self._registry}
         units: list[dbos_app.UnitInput] = [
             {
                 "slug": unit.indicator,
@@ -193,7 +189,6 @@ class DBOSOrchestrator:
                 # with the old shape and resumed after this change still resolves.
                 "features": [],
                 "deps": deps_of.get(unit.indicator, []),
-                "group": group_of.get(unit.indicator, unit.indicator),
             }
             for unit in plan.units
         ]
