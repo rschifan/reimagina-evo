@@ -19,9 +19,11 @@ the pair. The synthetic workloads declare no ``run_group`` and no
 ``resource_class``, so grouping and allocation are invisible there *by
 construction* — every synthetic node is one unit costing its declared sleep. The
 real catalog is 13 indicators in 7 dispatched units, three of them heavy, with a
-straight-line KNN and a multi-source Dijkstra differing by orders of magnitude.
-That spread is the whole argument for scheduling them apart, and only this
-script can see it.
+straight-line KNN and a multi-source Dijkstra differing by more than a factor of
+two. That spread is the whole argument for scheduling them apart, and only this
+script can see it — it is also what corrected the ``resource_class`` labels,
+which were assigned the wrong way round from intuition about what each
+computation sounds like.
 
 The suite's own note that the shipped catalog "cannot expose where they differ"
 was written when it was four indicators: three independent roots and one sink,
@@ -154,11 +156,11 @@ def await_terminal(orchestrator, conn, run_id: str):
 def per_indicator(records) -> dict[str, dict]:
     """Wall-clock per indicator, plus the unit and class it was dispatched in.
 
-    The headline makespan hides which indicator actually costs the run. On this
-    catalog the answer is not uniform by design: a straight-line KNN and a
-    multi-source Dijkstra differ by orders of magnitude, and that spread is the
-    entire argument for `resource_class`. A synthetic workload whose every unit
-    sleeps for its declared duration cannot show it.
+    The headline makespan hides which indicator actually costs the run, and on
+    this catalog that is the whole question — the spread across indicators is
+    what `resource_class` exists to schedule around. A synthetic workload whose
+    every unit sleeps for its declared duration cannot show it, which is how the
+    labels came to be assigned backwards in the first place.
     """
     out: dict[str, dict] = {}
     for record in records:

@@ -53,9 +53,16 @@ class IndicatorSpec:
     # exists to make impossible. Identical inputs make dirtiness all-or-nothing
     # by construction. Asserted in tests/unit/test_indicator_registry.py.
     run_group: str | None = None
-    # Which executor queue this indicator's unit belongs on, so a minutes-long
-    # network computation can be scheduled apart from millisecond arithmetic
-    # instead of contending for the same slots.
+    # Which executor queue this indicator's unit belongs on, so a slow family
+    # can be scheduled apart from cheap arithmetic instead of contending for the
+    # same slots.
+    #
+    # ⚠ Set this from measurement, not from what the computation sounds like.
+    # The accessibility families were labelled the wrong way round on exactly
+    # that reasoning — a graph traversal *sounds* heavier than a nearest-point
+    # lookup, and is in fact cheaper here, because it amortizes over every block
+    # while the lookup repeats per block. `scripts/bench_real_data.py` reports
+    # wall-clock per indicator for this purpose.
     resource_class: str = "default"
 
 
@@ -275,20 +282,39 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 # The collaborators' brief splits accessibility in two: distance to POIs, then
 # "similar to the previous point, but with an added step: updating the road
 # network first affects accessibility downstream". Two indicator families, not
-# one — and their cost profiles differ by orders of magnitude, which is what
-# makes `resource_class` a real distinction rather than a hypothetical one.
+# one, with genuinely different costs — which is what makes `resource_class` a
+# real distinction rather than a hypothetical one.
 #
-#   *_euclid_m   straight-line metres, PostGIS KNN over an index. Milliseconds.
+#   *_euclid_m   straight-line metres, PostGIS KNN per block.
 #                Invalidated by `poi_version` alone.
 #   *_network_m  pedestrian-network metres, one multi-source Dijkstra per
-#                category over the pgRouting tables. Seconds to minutes.
+#                category over the pgRouting tables.
 #                Invalidated by `poi_version` OR `network_version`.
 #
+# ⚠ **The straight-line family is the expensive one.** This is the reverse of
+# what the code asserted until it was measured, and the reverse of what the
+# names suggest. Measured with `scripts/bench_real_data.py` on real Tlalpan
+# data, median of 3, per indicator:
+#
+#             1,500 blocks          5,273 blocks (group wall-clock)
+#   euclid    1455 / 868 / 662 ms   ~11.2 s
+#   network    943 / 656 / 523 ms    ~4.7 s
+#
+# The cause is the algorithm, not the geometry. The multi-source Dijkstra runs
+# **once per category** and amortizes across every block; the KNN runs **once
+# per block** and does not. So euclid is linear in block count while network is
+# flat, and the gap widens with scale — 1.5x at 1,500 blocks, 2.4x at 5,273.
+# Euclid cost also tracks amenity count (health 1,164 > school 408 > park 203),
+# the same effect seen from the other side.
+#
+# Reversing this label is cheap today because nothing consumes `resource_class`
+# yet. It would not have been cheap after a queue was built on the wrong one.
+#
 # ⚠ `poi_version` appears in BOTH groups, `network_version` in only one. So a
-# POI edit fires both families (six slugs, two dispatched units of very
-# different cost) while a road edit fires only the expensive one. That
-# asymmetry is the attribute→run mapping made observable, and it falls out of
-# the declarations rather than being staged for a demo.
+# POI edit fires both families (six slugs, two dispatched units of different
+# cost) while a road edit fires only the cheaper one. That asymmetry is the
+# attribute→run mapping made observable, and it falls out of the declarations
+# rather than being staged for a demo.
 
 #: Distance reported when nothing of a category is reachable. Also the search
 #: cutoff, so "not found" and "exactly at the limit" are the same number —
@@ -354,7 +380,7 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
                 "along the OSM pedestrian network via pgRouting. Reflects "
                 "actual walkable routes, so it responds to road-network edits."
                 if network
-                else "in a straight line. Cheap lower bound on the network "
+                else "in a straight line. A lower bound on the network "
                 "distance; ignores barriers, so it is optimistic by design."
             )
             + f" Capped at {ACCESSIBILITY_CUTOFF_M:.0f} m, which is also what "
@@ -370,7 +396,10 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         reads=("poi_version", "network_version") if network else ("poi_version",),
         applies_to=("block",),
         run_group=_NETWORK_GROUP if network else _POI_GROUP,
-        resource_class="heavy" if network else "default",
+        # ⚠ The straight-line family is the heavy one. Counter-intuitive, and
+        # the reverse of what this said until it was measured — see the section
+        # comment above for the numbers and the reason.
+        resource_class="default" if network else "heavy",
     )
 
 

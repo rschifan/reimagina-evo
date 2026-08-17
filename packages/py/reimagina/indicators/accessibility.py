@@ -3,17 +3,25 @@
 The collaborators' brief asks for both: accessibility from POIs, and then the
 same thing with the road network in the loop, "where updating the road network
 first affects accessibility downstream". They are separate indicator families
-here because their costs differ by orders of magnitude, and that difference is
-the whole argument for scheduling them apart.
+here because their costs differ materially, and that difference is the whole
+argument for scheduling them apart.
 
 ``*_euclid_m``
     Straight-line metres via a geography KNN against the establishment layer.
-    Index-backed, milliseconds. Optimistic by construction — it ignores rivers,
-    motorways and walls — which makes it a useful lower bound on, and a cheap
-    sanity check against, the network figure.
+    Optimistic by construction — it ignores rivers, motorways and walls — which
+    makes it a useful lower bound on, and a sanity check against, the network
+    figure.
 
 ``*_network_m``
     Metres along the OSM pedestrian network, through pgRouting.
+
+⚠ **The straight-line family is the expensive one**, which is the reverse of
+what these names suggest and of what this module claimed before it was
+measured. The KNN runs once per block; the Dijkstra runs once per *category*
+and amortizes over every block. So euclid is linear in block count and network
+is flat, and the gap widens with scale — 1.5x at 1,500 Tlalpan blocks, 2.4x at
+5,273. See ``ACCESSIBILITY_CATEGORIES``' neighbouring comment in ``catalog`` for
+the numbers, and ``scripts/bench_real_data.py`` to re-measure.
 
 **The algorithm that makes the network family affordable.** The obvious shape —
 one ``pgr_drivingDistance`` per block — is one Dijkstra per block, which on a
