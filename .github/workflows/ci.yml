@@ -94,7 +94,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        # postgis/postgis plus pgRouting — same Postgres major and PostGIS minor,
+        # so an addition rather than an upgrade. Migration r037 needs
+        # pgr_drivingDistance. Keep in step with infra/docker/docker-compose.yml.
+        image: pgrouting/pgrouting:16-3.4-3.6.1
         env:
           POSTGRES_USER: reimagina
           POSTGRES_PASSWORD: reimagina
