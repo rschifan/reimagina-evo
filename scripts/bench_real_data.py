@@ -13,15 +13,13 @@ statements against one server do not, and how far short they fall is the number
 that decides whether more worker slots buy anything. This script measures that,
 by running the **real** ``SHIPPED_INDICATORS`` runners over **real** features.
 
-The other two are newer, and are why this script is now the more interesting of
-the pair. The synthetic workloads declare no ``resource_class``, so allocation is
-invisible there *by construction* — every synthetic node is one unit costing its
-declared sleep. The real catalog is 13 indicators, three of them heavy, with a
-straight-line KNN and a multi-source Dijkstra differing by more than a factor of
-two. That spread is the whole argument for scheduling them apart, and only this
-script can see it — it is also what corrected the ``resource_class`` labels,
-which were assigned the wrong way round from intuition about what each
-computation sounds like.
+Every synthetic node is one unit costing its declared sleep, so cost spread is
+invisible there *by construction*. The real catalog is 13 indicators whose
+straight-line KNN and multi-source Dijkstra differ by more than a factor of two,
+and only this script can see that. It is also what disproved the catalog's
+hand-written cost labels, which had been assigned the wrong way round from
+intuition about what each computation sounds like; they were deleted rather than
+corrected, because nothing consumed them.
 
 The suite's own note that the shipped catalog "cannot expose where they differ"
 was written when it was four indicators: three independent roots and one sink,
@@ -78,8 +76,7 @@ from reimagina.perf.workload_report import (  # noqa: E402
 #
 # ⚠ This was `{"geometry", "floors"}` — correct when the catalog was four
 # indicators, silently wrong afterwards. Against today's 13 it dirties 4
-# indicators with nothing heavy, skipping all nine edificability and
-# accessibility indicators and both resource classes. The
+# indicators, skipping all nine edificability and accessibility indicators. The
 # benchmark kept reporting, so nothing looked broken.
 CHANGED_ATTRIBUTES = frozenset(key for spec in SHIPPED_INDICATORS for key in spec.reads)
 
@@ -87,11 +84,6 @@ EDGES = {
     spec.slug: tuple(dep for dep, _weight in spec.depends_on)
     for spec in SHIPPED_INDICATORS
 }
-
-#: slug -> how expensive it is meant to be. What the synthetic suite cannot
-#: model: its workloads declare no `resource_class`, so allocation is invisible
-#: there by construction.
-CLASS_OF = {spec.slug: spec.resource_class for spec in SHIPPED_INDICATORS}
 
 SETTLE_TIMEOUT_S = 900.0
 POLL_S = 0.05
@@ -150,13 +142,13 @@ def await_terminal(orchestrator, conn, run_id: str):
 
 
 def per_indicator(records) -> dict[str, dict]:
-    """Wall-clock per indicator, plus the resource class it declares.
+    """Wall-clock per indicator.
 
     The headline makespan hides which indicator actually costs the run, and on
-    this catalog that is the whole question — the spread across indicators is
-    what `resource_class` exists to schedule around. A synthetic workload whose
-    every unit sleeps for its declared duration cannot show it, which is how the
-    labels came to be assigned backwards in the first place.
+    this catalog that is the whole question. A synthetic workload whose every
+    unit sleeps for its declared duration cannot show it — which is how the
+    catalog once carried a hand-written cost label assigned backwards from
+    intuition. Measure here instead of declaring there.
     """
     out: dict[str, dict] = {}
     for record in records:
@@ -166,7 +158,6 @@ def per_indicator(records) -> dict[str, dict]:
             "ms": round(
                 (record.completed_at - record.started_at).total_seconds() * 1000, 1
             ),
-            "class": CLASS_OF.get(record.slug, "default"),
         }
     return out
 
@@ -318,10 +309,9 @@ def main(argv: list[str]) -> int:
     features = block_ids(conn, args.scope or None)
     if not features:
         parser.error("no block features found — is this a populated database?")
-    heavy = sorted(s for s, c in CLASS_OF.items() if c == "heavy")
     print(
-        f"scope: {len(features)} blocks, {len(EDGES)} indicators "
-        f"({len(heavy)} heavy), slots={args.slots}"
+        f"scope: {len(features)} blocks, {len(EDGES)} indicators, "
+        f"slots={args.slots}"
     )
     print(f"  triggered by: {', '.join(sorted(CHANGED_ATTRIBUTES))}")
 
@@ -332,7 +322,6 @@ def main(argv: list[str]) -> int:
         "warm": args.reps > 1,
         "changed_attributes": sorted(CHANGED_ATTRIBUTES),
         "indicators": len(EDGES),
-        "heavy_indicators": heavy,
         "modes": {},
     }
 
@@ -370,8 +359,7 @@ def main(argv: list[str]) -> int:
             for slug, info in sorted(
                 last_per_indicator.items(), key=lambda kv: -kv[1]["ms"]
             )[:5]:
-                mark = "HEAVY" if info["class"] == "heavy" else "     "
-                print(f"    {mark}  {info['ms']:9.0f}ms  {slug}")
+                print(f"    {info['ms']:9.0f}ms  {slug}")
 
     baseline = doc["modes"].get("sync", {}).get("makespan_ms")
     for mode, metrics in doc["modes"].items():

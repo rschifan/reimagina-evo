@@ -191,14 +191,11 @@ def _catalog(conn) -> None:
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
 
     head("The catalog — 13 indicators, one dispatched unit each")
-    by_family: dict[tuple[str, str], list[str]] = {}
+    by_family: dict[str, list[str]] = {}
     for spec in SHIPPED_INDICATORS:
-        by_family.setdefault(
-            (spec.model_family or "composite", spec.resource_class), []
-        ).append(spec.slug)
-    for (family, cls), slugs in sorted(by_family.items()):
-        marker = "HEAVY" if cls == "heavy" else "     "
-        print(f"  {marker}  {family:<28} {len(slugs)} indicator(s)")
+        by_family.setdefault(spec.model_family or "composite", []).append(spec.slug)
+    for family, slugs in sorted(by_family.items()):
+        print(f"  {family:<28} {len(slugs)} indicator(s)")
         for slug in slugs:
             print(f"         └─ {slug}")
 
@@ -209,14 +206,11 @@ def _mapping(conn) -> None:
     from reimagina.orchestration.impact import compute_dirty_set
 
     head("Ask 3 · mapping — attribute edited → indicators invalidated")
-    by_slug = {s.slug: s for s in SHIPPED_INDICATORS}
     for attribute in ("num_levels", "poi_version", "network_version", "geometry"):
         units = compute_dirty_set([attribute], [], SHIPPED_INDICATORS)
-        classes = {by_slug[u.indicator].resource_class for u in units}
-        cls = "heavy" if "heavy" in classes else "default"
         print(
             f"  {attribute:<17} → {len(units)} indicators, "
-            f"{len(units)} dispatched unit(s)   [{cls}]"
+            f"{len(units)} dispatched unit(s)"
         )
 
 

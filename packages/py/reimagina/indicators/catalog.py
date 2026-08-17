@@ -41,17 +41,6 @@ class IndicatorSpec:
     # attributes, so they leave this empty and declare `depends_on` instead.
     reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
-    # Which executor queue this indicator's unit belongs on, so a slow family
-    # can be scheduled apart from cheap arithmetic instead of contending for the
-    # same slots.
-    #
-    # ⚠ Set this from measurement, not from what the computation sounds like.
-    # The accessibility families were labelled the wrong way round on exactly
-    # that reasoning — a graph traversal *sounds* heavier than a nearest-point
-    # lookup, and is in fact cheaper here, because it amortizes over every block
-    # while the lookup repeats per block. `scripts/bench_real_data.py` reports
-    # wall-clock per indicator for this purpose.
-    resource_class: str = "default"
 
 
 URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
@@ -266,8 +255,7 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 # The collaborators' brief splits accessibility in two: distance to POIs, then
 # "similar to the previous point, but with an added step: updating the road
 # network first affects accessibility downstream". Two indicator families, not
-# one, with genuinely different costs — which is what makes `resource_class` a
-# real distinction rather than a hypothetical one.
+# one, with genuinely different costs.
 #
 #   *_euclid_m   straight-line metres, PostGIS KNN per block.
 #                Invalidated by `poi_version` alone.
@@ -291,8 +279,13 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 # Euclid cost also tracks amenity count (health 1,164 > school 408 > park 203),
 # the same effect seen from the other side.
 #
-# Reversing this label is cheap today because nothing consumes `resource_class`
-# yet. It would not have been cheap after a queue was built on the wrong one.
+# These numbers are kept because the *algorithmic* fact is durable and
+# counter-intuitive. A `resource_class` label encoding it used to live on
+# `IndicatorSpec`; it was removed because nothing ever consumed it, and because
+# a hand-written cost label is exactly the kind of constant that goes stale —
+# this one was assigned backwards from intuition until measured. If cost-aware
+# scheduling is ever built, derive it from recorded `job_unit` durations rather
+# than reintroducing a label. Re-measure with `scripts/bench_real_data.py`.
 #
 # ⚠ `poi_version` appears in BOTH groups, `network_version` in only one. So a
 # POI edit fires both families (six slugs, two dispatched units of different
@@ -376,10 +369,6 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         aggregation_method="weighted_mean",
         reads=("poi_version", "network_version") if network else ("poi_version",),
         applies_to=("block",),
-        # ⚠ The straight-line family is the heavy one. Counter-intuitive, and
-        # the reverse of what this said until it was measured — see the section
-        # comment above for the numbers and the reason.
-        resource_class="default" if network else "heavy",
     )
 
 
