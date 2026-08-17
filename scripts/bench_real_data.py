@@ -1,16 +1,31 @@
 """Run the shipped indicator DAG over real city data, on each ops-plane.
 
 The workload suite measures how an engine *schedules*, using synthetic units
-whose cost is a sleep or a spin. That is deliberate — it makes DAG shapes the
-four-indicator catalog cannot produce, and it is reproducible on any machine.
-What it cannot show is the thing a real deployment actually hits:
+whose cost is a sleep or a spin. That is deliberate — it is reproducible on any
+machine. What it cannot show is what a real deployment actually hits, and the
+list has grown since it was written:
 
-    every unit contends for the same Postgres.
+    every unit contends for the same Postgres
+    units cost wildly different amounts
+    several indicators share one dispatched unit
 
-A synthetic unit that sleeps scales perfectly across slots. Three real PostGIS
+A synthetic unit that sleeps scales perfectly across slots. Real PostGIS
 statements against one server do not, and how far short they fall is the number
 that decides whether more worker slots buy anything. This script measures that,
 by running the **real** ``SHIPPED_INDICATORS`` runners over **real** features.
+
+The other two are newer, and are why this script is now the more interesting of
+the pair. The synthetic workloads declare no ``run_group`` and no
+``resource_class``, so grouping and allocation are invisible there *by
+construction* — every synthetic node is one unit costing its declared sleep. The
+real catalog is 13 indicators in 7 dispatched units, three of them heavy, with a
+straight-line KNN and a multi-source Dijkstra differing by orders of magnitude.
+That spread is the whole argument for scheduling them apart, and only this
+script can see it.
+
+The suite's own note that the shipped catalog "cannot expose where they differ"
+was written when it was four indicators: three independent roots and one sink,
+where every strategy plans identically. That is no longer true.
 
 ⚠ It writes ``indicator_result`` rows under a fresh ``scenario_id`` per
 repetition, never as baseline. The partial unique indexes keep base and scenario
@@ -56,15 +71,29 @@ from reimagina.perf.workload_report import (  # noqa: E402
     unit_records,
 )
 
-# A geometry edit dirties compactness + building_density (and the composite that
-# depends on them); a floors edit dirties planned_floors. Both together are what
-# makes the run four units wide instead of three.
-CHANGED_ATTRIBUTES = frozenset({"geometry", "floors"})
+# Every attribute the shipped catalog reads, so one submit dirties the WHOLE
+# catalog. Derived rather than listed: a new indicator declaring a new `reads`
+# key joins the benchmark automatically, which is the only way this set stays
+# honest.
+#
+# ⚠ This was `{"geometry", "floors"}` — correct when the catalog was four
+# indicators, silently wrong afterwards. Against today's 13 it dirties 4
+# indicators in 4 units with nothing heavy, skipping all nine edificability and
+# accessibility indicators, all four run groups, and both resource classes. The
+# benchmark kept reporting, so nothing looked broken.
+CHANGED_ATTRIBUTES = frozenset(key for spec in SHIPPED_INDICATORS for key in spec.reads)
 
 EDGES = {
     spec.slug: tuple(dep for dep, _weight in spec.depends_on)
     for spec in SHIPPED_INDICATORS
 }
+
+#: slug -> the unit it is dispatched in, and how expensive that unit is meant
+#: to be. Both are what the synthetic suite cannot model: its workloads declare
+#: no `run_group` and no `resource_class`, so grouping and allocation are
+#: invisible there by construction.
+GROUP_OF = {spec.slug: (spec.run_group or spec.slug) for spec in SHIPPED_INDICATORS}
+CLASS_OF = {spec.slug: spec.resource_class for spec in SHIPPED_INDICATORS}
 
 SETTLE_TIMEOUT_S = 900.0
 POLL_S = 0.05
@@ -122,6 +151,29 @@ def await_terminal(orchestrator, conn, run_id: str):
     )
 
 
+def per_indicator(records) -> dict[str, dict]:
+    """Wall-clock per indicator, plus the unit and class it was dispatched in.
+
+    The headline makespan hides which indicator actually costs the run. On this
+    catalog the answer is not uniform by design: a straight-line KNN and a
+    multi-source Dijkstra differ by orders of magnitude, and that spread is the
+    entire argument for `resource_class`. A synthetic workload whose every unit
+    sleeps for its declared duration cannot show it.
+    """
+    out: dict[str, dict] = {}
+    for record in records:
+        if record.started_at is None or record.completed_at is None:
+            continue
+        out[record.slug] = {
+            "ms": round(
+                (record.completed_at - record.started_at).total_seconds() * 1000, 1
+            ),
+            "group": GROUP_OF.get(record.slug, record.slug),
+            "class": CLASS_OF.get(record.slug, "default"),
+        }
+    return out
+
+
 def run_once(mode: str, conn, features: list[str], slots: int) -> dict:
     orchestrator = get_orchestrator(mode)
     # Fresh per repetition: `code_version` keeps the idempotency window from
@@ -160,6 +212,7 @@ def run_once(mode: str, conn, features: list[str], slots: int) -> dict:
             u.indicator: u.status for u in (status.units if status else ())
         },
         "records": records,
+        "per_indicator": per_indicator(records),
         "measured": measure(
             records=records,
             edges=EDGES,
@@ -256,7 +309,13 @@ def main(argv: list[str]) -> int:
     features = block_ids(conn, args.scope or None)
     if not features:
         parser.error("no block features found — is this a populated database?")
-    print(f"scope: {len(features)} blocks, {len(EDGES)} indicators, slots={args.slots}")
+    groups = sorted(set(GROUP_OF.values()))
+    heavy = sorted(s for s, c in CLASS_OF.items() if c == "heavy")
+    print(
+        f"scope: {len(features)} blocks, {len(EDGES)} indicators "
+        f"in {len(groups)} dispatch groups ({len(heavy)} heavy), slots={args.slots}"
+    )
+    print(f"  triggered by: {', '.join(sorted(CHANGED_ATTRIBUTES))}")
 
     doc: dict = {
         "scope_features": len(features),
@@ -264,6 +323,9 @@ def main(argv: list[str]) -> int:
         "reps": args.reps,
         "warm": args.reps > 1,
         "changed_attributes": sorted(CHANGED_ATTRIBUTES),
+        "indicators": len(EDGES),
+        "groups": groups,
+        "heavy_indicators": heavy,
         "modes": {},
     }
 
@@ -288,10 +350,21 @@ def main(argv: list[str]) -> int:
                 f"units={m['units_timed']}"
             )
             reps.append(m)
+            last_per_indicator = result["per_indicator"]
         # The first repetition pays one-time costs — a cold worker, a freshly
         # declared workflow, a cold page cache — so it is recorded and excluded.
         doc["modes"][mode] = aggregate(reps[1:] if len(reps) > 1 else reps)
         doc["modes"][mode]["warmup"] = reps[0] if len(reps) > 1 else None
+        doc["modes"][mode]["per_indicator"] = last_per_indicator
+
+        # Which indicator actually cost the run, from the final repetition.
+        if last_per_indicator:
+            print(f"  {mode:8} slowest indicators:")
+            for slug, info in sorted(
+                last_per_indicator.items(), key=lambda kv: -kv[1]["ms"]
+            )[:5]:
+                mark = "HEAVY" if info["class"] == "heavy" else "     "
+                print(f"    {mark}  {info['ms']:9.0f}ms  {slug}")
 
     baseline = doc["modes"].get("sync", {}).get("makespan_ms")
     for mode, metrics in doc["modes"].items():
