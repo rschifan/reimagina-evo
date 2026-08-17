@@ -214,6 +214,45 @@ def test_offnetwork_block_pays_for_its_walk_to_the_street(conn):
     assert abs(value - 1.5 * LATTICE_EDGE_M) < 25
 
 
+def test_offnetwork_amenity_pays_for_its_walk_to_the_street_too(conn):
+    """The amenity's snap counts, not just the block's.
+
+    Regression guard, and one this suite could not have found on its own: every
+    other test here places amenities exactly on lattice nodes, so their snap
+    distance is always zero. Real Tlalpan data has amenities up to 699 m off
+    the network, and without this the route teleported them onto their nearest
+    vertex for free — making the *network* distance come out shorter than the
+    straight line for 652 of 15,819 block-category pairs.
+
+    Here the block sits on node (0,0) and the school is offset ~143 m south of
+    it, off the graph entirely. The honest answer is that walk, not zero.
+    """
+    seed_catalog(conn)
+    load_graph(conn, *osm_lattice(_SIDE))
+    block = _tiny_block_at(conn, 0, 0)
+
+    lon, lat = lattice_xy(0, 0)
+    source_id, ingest = _source(conn)
+    _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "global", "establishment"),
+        source_id=source_id,
+        ingestion_run_id=ingest,
+        dataset_version="v1",
+        source_record_ref=f"acc-off-poi-{uuid4().hex[:8]}",
+        geometry_wkt=f"POINT({lon} {lat - 1.5 * 0.0009})",
+        attributes={"category": "school"},
+    )
+
+    ACCESSIBILITY_COMPUTE[_NETWORK](conn, feature_ids=[block], code_version="test")
+    value = _value(conn, block, _NETWORK)
+
+    # Block and amenity snap to the same vertex, so the route is 0 and the whole
+    # distance is the amenity's walk in. Zero here would mean it teleported.
+    assert value > 100, f"amenity snap distance was dropped: got {value}"
+    assert abs(value - 1.5 * LATTICE_EDGE_M) < 25
+
+
 def test_empty_road_network_raises_rather_than_reporting_cutoff(conn):
     """A database with no roads is a misconfiguration, not a finding.
 

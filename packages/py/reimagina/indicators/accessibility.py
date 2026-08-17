@@ -156,11 +156,19 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
     amenity's true position along an edge, which is what ``pgr_withPoints`` is
     for and is more machinery than a prototype needs.
 
-    ⚠ The **block's** snap distance is added to the route; the **amenity's** is
-    not. ``pgr_drivingDistance`` takes no per-source initial cost, so an
-    amenity's own walk-to-street cannot be expressed in the multi-source call.
-    In practice POIs sit on streets and blocks may not, so this covers the case
-    that actually distorts results — but it is an asymmetry, not an oversight.
+    ⚠ **Both** snap distances are added — the block's and the amenity's.
+    ``pgr_drivingDistance`` takes no per-source *initial cost*, but it returns
+    ``start_vid``, so the amenity's own walk to the street is recovered by
+    joining that back to the vertex it came from. Without it the amenity
+    teleports onto the network for free and the network distance can come out
+    shorter than the straight line — measured at 652 of 15,819 block-category
+    pairs on real Tlalpan data.
+
+    ⚠ Remaining approximation: ``equicost`` picks the nearest *vertex*, not the
+    nearest amenity once its snap is counted. An amenity 700 m off a close
+    vertex can therefore win over one 10 m off a slightly farther vertex. Real
+    snaps are small — median 28.5 m, p95 74.2 m over 1,785 Tlalpan amenities —
+    so this is second-order, and closing it needs ``pgr_withPoints``.
 
     **No amenities of this category needs no special case.** ``array_agg`` over
     an empty set is NULL, and ``pgr_drivingDistance`` given a NULL start array
@@ -185,13 +193,19 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
         WITH {_BLOCKS_CTE.format(aoi_join=aoi_join, feature_filter=feature_filter)},
         {_AMENITIES_CTE},
         amenity_nodes AS (
-            SELECT DISTINCT n.id
+            -- min(): several amenities can snap to one vertex, and the nearest
+            -- of them is the one a walker actually reaches from it.
+            SELECT n.id, min(n.snap_m) AS snap_m
             FROM amenities a
             CROSS JOIN LATERAL (
-                SELECT rn.id FROM curated_geo.road_node rn
+                SELECT rn.id,
+                       ST_Distance(a.geometry::geography, rn.geometry::geography)
+                           AS snap_m
+                FROM curated_geo.road_node rn
                 ORDER BY rn.geometry <-> a.geometry
                 LIMIT 1
             ) n
+            GROUP BY n.id
         ),
         block_nodes AS (
             SELECT b.feature_id, n.id AS node_id, n.snap_m
@@ -208,7 +222,9 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
         reach AS (
             -- One multi-source Dijkstra. equicost := true keeps each node once,
             -- labelled with the distance to its NEAREST amenity vertex.
-            SELECT dd.node, dd.agg_cost
+            -- start_vid names that vertex, which is how the amenity's own walk
+            -- to the street is recovered below.
+            SELECT dd.node, dd.start_vid, dd.agg_cost
             FROM pgr_drivingDistance(
                 %(edges_sql)s,
                 (SELECT array_agg(id) FROM amenity_nodes),
@@ -217,15 +233,25 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
                 equicost := true
             ) dd
         )
-        -- The walk to the network counts. Without `snap_m` a block kilometres
-        -- from any road snaps to the nearest node anyway and reports that
-        -- node's distance, hiding the entire journey to the street — a
-        -- confident, wrong, and perfectly plausible-looking number. Adding it
-        -- makes an off-network block exhaust the budget on its own and fall
-        -- through to the cutoff, with no extra threshold constant to justify.
-        SELECT bn.feature_id, bn.snap_m + r.agg_cost
+        -- Both walks to the network count: the block's, and the amenity's.
+        --
+        -- Without the block's, a block kilometres from any road snaps to the
+        -- nearest node anyway and reports that node's distance, hiding the
+        -- entire journey to the street.
+        --
+        -- Without the amenity's, the route teleports it onto its nearest vertex
+        -- for free — which made the network distance come out *shorter* than
+        -- the straight line for 652 of 15,819 block-category pairs on real
+        -- Tlalpan data, where amenities sit up to 699 m off-network. Both are
+        -- the same confident, plausible-looking error.
+        --
+        -- Either walk alone can exhaust the budget, so a genuinely remote block
+        -- or amenity falls through to the cutoff with no threshold constant to
+        -- justify.
+        SELECT bn.feature_id, bn.snap_m + r.agg_cost + an.snap_m
         FROM block_nodes bn
         LEFT JOIN reach r ON r.node = bn.node_id
+        LEFT JOIN amenity_nodes an ON an.id = r.start_vid
     """
     with conn.cursor() as cur:
         cur.execute(

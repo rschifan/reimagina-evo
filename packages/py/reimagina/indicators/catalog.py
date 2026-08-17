@@ -198,11 +198,19 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     model_family="urban_form",
     value_type="numeric",
     unit="units",
-    # A CDMX manzana tops out near 4 ha; at 6 levels and 60 m²/unit that is
-    # ~4,000 units. 10,000 is a safety cap that catches bad inputs (a unit_size
-    # in cm², say) without constraining plausible upzoning scenarios.
+    # ⚠ Sized from real data, after an assumption failed. This was 10,000, from
+    # "a CDMX manzana tops out near 4 ha" — true of the dense central alcaldías,
+    # false of Tlalpan, where manzanas reach 3.09 km² (median 5,944 m², p99
+    # 194,664 m²). The real maximum over 5,273 Tlalpan blocks is 138,695, and
+    # the bound rejected 71 of them.
+    #
+    # The cap's job is catching pathological input — a unit_size given in cm²
+    # would land 10^4 too high — not encoding what is architecturally plausible.
+    # A 3 km² manzana built out at 6 levels is a silly *result*, but it is a
+    # faithful application of the formula to a rural block, and the formula is
+    # a declared placeholder.
     valid_min=0.0,
-    valid_max=10_000.0,
+    valid_max=200_000.0,
     aggregation_method="weighted_mean",
     reads=_EDIFICABILITY_READS,
     applies_to=("block",),
@@ -221,9 +229,11 @@ EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
     model_family="urban_form",
     value_type="numeric",
     unit="people",
-    # housing_units cap × a generous household size.
+    # housing_units cap × a generous household size. Measured maximum over the
+    # 5,273 Tlalpan blocks is 499,302 — see the note on housing_units for why
+    # the earlier figure was too small.
     valid_min=0.0,
-    valid_max=50_000.0,
+    valid_max=750_000.0,
     aggregation_method="weighted_mean",
     reads=_EDIFICABILITY_READS,
     applies_to=("block",),
@@ -245,6 +255,12 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
     unit="units_per_ha",
     # Hong Kong's densest residential blocks approach 1,200 units/ha; 2,000 is
     # the same style of pathological-input cap used by building_density.
+    #
+    # Unaffected by the block-size correction that moved the other two bounds:
+    # density reduces to num_levels × 10_000 / unit_size, with area cancelling
+    # out entirely, so it cannot exceed 1,000 at the seeded 6 levels and 60 m²
+    # no matter how large the block. Measured maximum on real Tlalpan data is
+    # exactly 1,000.
     valid_min=0.0,
     valid_max=2_000.0,
     aggregation_method="weighted_mean",
@@ -284,30 +300,44 @@ _POI_GROUP = "poi_access"
 _NETWORK_GROUP = "network_access"
 
 #: Amenity categories the demo reports, and the source `category` values each
-#: matches. Both English (synthetic fixtures) and the Spanish forms seen in the
-#: EXE/SIGCDMX amenity layers, since one canonical vocabulary does not yet
-#: exist. Revisit once a real amenity layer is ingested — this mapping is the
-#: seam where that vocabulary will land.
+#: matches. The bare English keys serve synthetic test fixtures; the rest are
+#: the values actually present in the SIGCDMX Tlalpan layer, read off the
+#: ingested data rather than guessed.
+#
+# ⚠ The source vocabulary is inconsistent and this mapping absorbs that rather
+# than hiding it. `Consultorio medico` (singular, space) and
+# `Consultorios_medicos` (plural, underscore) are the same thing spelled twice;
+# so are `Hospital` and `Hospital_general`. Accents are stripped and spaces are
+# underscores — except in `Consultorio medico`, which has a space. An earlier
+# version of this table guessed the accented, space-separated forms
+# ("Educación primaria", "Parques recreativos") and matched **nothing**: of
+# 1,785 real amenities only `Farmacia` was found, so school and park
+# accessibility would have reported the cutoff everywhere while looking
+# perfectly healthy. Verify against `SELECT DISTINCT attributes->>'category'`
+# before trusting this on a new layer.
 ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "school": (
         "school",
-        "Educación preescolar",
-        "Educación primaria",
-        "Educación secundaria",
-        "EDUCACION BASICA",
-        "BASICO",
+        "Guarderia",
+        "Educacion_preescolar",
+        "Educacion_primaria",
+        "Educacion_secundaria",
+        "Educacion_media_superior",
+        "Educacion_superior",
     ),
     "health": (
         "health",
-        "Hospital general",
-        "Consultorios médicos",
         "Farmacia",
-        "PRIMER NIVEL",
+        "Consultorio medico",
+        "Consultorios_medicos",
+        "Hospital",
+        "Hospital_general",
     ),
     "park": (
         "park",
-        "Parques recreativos",
-        "PARQUE",
+        "Parques_recreativos",
+        "Clubs_deportivos_y_acondicionamiento_fisico",
+        "Otros_servicios_recreativos",
     ),
 }
 
