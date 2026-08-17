@@ -41,6 +41,9 @@ class _Recorder:
         # enqueue order; a test sets it to prove the body follows the *winner*
         # rather than the order it dispatched in.
         self.finish_order: list[str] | None = None
+        #: child workflow ids whose `get_result` should raise, i.e. units that
+        #: failed. Keyed by id because that is what the body holds.
+        self.failing_children: set[str] = set()
         self._enqueued: list[str] = []
 
     # ── the pieces run_workflow / unit_workflow reach for ──────────────────
@@ -112,6 +115,8 @@ class _Handle:
 
     def get_result(self, *, polling_interval_sec: float = 1.0):
         self._recorder.calls.append("get_result")
+        if self.workflow_id in self._recorder.failing_children:
+            raise RuntimeError("child failed")
         return "succeeded"
 
 
@@ -263,6 +268,39 @@ def test_a_shifted_child_binding_raises_rather_than_cross_wiring(recorder, monke
 
     with pytest.raises(RuntimeError, match="replay divergence"):
         _body(dbos_app.run_workflow)("run", [_unit("a")], {"code_version": "test"})
+
+
+def test_a_failure_skips_the_whole_chain_below_it(recorder):
+    """Transitive skip propagation, two levels deep.
+
+    ⚠ Regression guard. `plan_wave` computes `finished` once per call, so it
+    marks exactly **one layer** of skips per pass: with `a -> b -> c` and `a`
+    failed, the first pass skips `b`, and only the *next* pass can see `b` as
+    terminal and skip `c`. A loop that stops as soon as nothing is running exits
+    after the first pass and strands `c` at `queued` — on a run the API reports
+    as finished, since `overall_status` returns `failed` either way. The run
+    looks right and one indicator silently never resolves, which is exactly the
+    per-indicator status guarantee this platform sells.
+
+    No shipped DAG catches this: the real catalog's composite depends directly
+    on roots, and the `partial_failure` workload has a single edge. It needs a
+    chain of two below the failure, which is what this builds.
+    """
+    recorder.failing_children.add("run-a")
+    _body(dbos_app.run_workflow)(
+        "run",
+        [_unit("a"), _unit("b", deps=["a"]), _unit("c", deps=["b"])],
+        {"code_version": "test"},
+    )
+    settled = [c for c in recorder.calls if c.startswith("s_settle_unit:")]
+    assert settled == ["s_settle_unit:a", "s_settle_unit:b", "s_settle_unit:c"]
+    # Every unit announced, so the progress stream matches the stored statuses.
+    assert [c for c in recorder.calls if c.startswith("emit:")] == [
+        "emit:a",
+        "emit:b",
+        "emit:c",
+        "emit:None",
+    ]
 
 
 # ── unit_workflow ───────────────────────────────────────────────────────────

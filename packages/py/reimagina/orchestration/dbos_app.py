@@ -735,7 +735,21 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
             statuses[slug] = "running"
 
         if not outstanding:
-            break
+            # Nothing is running — but that is not the same as nothing left to
+            # do. `plan_wave` recomputes readiness from the statuses it is
+            # handed, so it marks exactly **one layer** of skips per call: with
+            # `a -> b -> c` and `a` failed, this pass skips `b`, and only the
+            # next pass can see `b` as terminal and skip `c`. Breaking here
+            # would strand `c` at `queued` forever, on a run the API reports as
+            # finished — `overall_status` returns `failed` either way, so the
+            # run looks correct while one indicator silently never resolves.
+            #
+            # Looping while skips are still landing terminates: each pass moves
+            # at least one unit from `queued` to `skipped`, and the set is
+            # finite. Guarded by tests/unit/test_workflow_position_identity.py.
+            if not wave.skip:
+                break
+            continue
 
         # `retrieve_workflow(existing_workflow=False)` costs no function id and
         # touches no database — it just wraps an id. Rebuilding the handles this
