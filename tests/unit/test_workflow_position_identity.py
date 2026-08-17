@@ -1,19 +1,23 @@
 """The exact step-position sequence ``run_workflow`` emits, pinned.
 
-DBOS matches replayed steps by ``(position, function name)``, and the counter is
-consumed by more than ``@DBOS.step`` — ``DBOS.write_stream`` and
-``handle.get_result`` each take one too (``dbos/_context.py``,
-``dbos/_sys_db.py``). So ``_emit`` is *not* position-free, and any change to how
-many calls the body makes per unit shifts every position after it.
+DBOS matches replayed operations by ``(parent_workflow_id, function_id)``, and
+the counter is consumed by far more than ``@DBOS.step`` — ``DBOS.write_stream``,
+``handle.get_result``, ``DBOS.wait_first`` and every ``enqueue`` each take one
+too (``dbos/_context.py``, ``dbos/_sys_db.py``). So ``_emit`` is *not*
+position-free, and any change to how many calls the body makes per unit shifts
+every position after it.
 
-A run in flight when that happens cannot resume: it fails on replay with
-``DBOSUnexpectedStepError``, or worse, hands one indicator's checkpointed output
-to another. Neither is visible from reading a diff, which is why the sequence is
-asserted here rather than described in a comment.
+⚠ **The failure this guards is silent.** ``DBOSUnexpectedStepError`` fires only
+when the function *name* recorded at a slot differs from the one replayed there.
+Every child dispatched by ``run_workflow`` is ``unit_workflow``, so the names
+always match: a reordered replay does not raise, it hands back a handle to the
+*wrong* child and cross-attributes one indicator's result to another. Nothing in
+DBOS detects that, which is why the sequence is asserted here rather than
+described in a comment.
 
-This file was written to guard the introduction of run-group dispatch and
-survived its removal, because the hazard belongs to DBOS rather than to that
-feature: any future edit to the dispatch loop faces it again.
+This file has now outlived two dispatch designs — it was written to guard
+run-group dispatch, survived its removal, and is re-pinned here for as-completed
+dispatch. The hazard belongs to the engine, not to any one feature.
 
 The bodies are replayed against a recording double, so nothing here needs a
 database, a queue, or DBOS itself.
@@ -32,6 +36,12 @@ class _Recorder:
     def __init__(self, *, fail_on: str | None = None) -> None:
         self.calls: list[str] = []
         self.fail_on = fail_on
+        self.pending_id: str | None = None
+        # Completion order, as `wait_first` would report it. Defaults to
+        # enqueue order; a test sets it to prove the body follows the *winner*
+        # rather than the order it dispatched in.
+        self.finish_order: list[str] | None = None
+        self._enqueued: list[str] = []
 
     # ── the pieces run_workflow / unit_workflow reach for ──────────────────
     def s_open_run(self, run_id, units, params):
@@ -65,15 +75,40 @@ class _Recorder:
         # args: (unit_workflow, run_id, slug, features, params)
         slug = args[2]
         self.calls.append(f"enqueue:{slug}")
-        return _Handle(self)
+        self._enqueued.append(slug)
+        # Honour the id the body asked for, as SetWorkflowID + DBOS do on a
+        # first execution. `pending_id` is set by the fake context manager.
+        return _Handle(self, self.pending_id or slug)
 
     def close_stream(self, name):
         self.calls.append("close_stream")
 
+    # ── DBOS classmethods the loop uses ────────────────────────────────────
+    def retrieve_workflow(self, workflow_id, *, existing_workflow=True):
+        """Zero function ids by contract — so it records nothing."""
+        assert existing_workflow is False, (
+            "retrieve_workflow must be called with existing_workflow=False; "
+            "the default consumes a function id"
+        )
+        return _Handle(self, workflow_id)
+
+    def wait_first(self, handles, *, polling_interval_sec: float = 1.0):
+        self.calls.append("wait_first")
+        ids = [h.workflow_id for h in handles]
+        assert ids, "wait_first raises ValueError on an empty list"
+        assert len(set(ids)) == len(ids), "wait_first rejects duplicate ids"
+        by_id = {h.workflow_id: h for h in handles}
+        for slug in self.finish_order or []:
+            if (handle := by_id.get(f"run-{slug}")) is not None:
+                self.finish_order.remove(slug)
+                return handle
+        return handles[0]
+
 
 class _Handle:
-    def __init__(self, recorder: _Recorder) -> None:
+    def __init__(self, recorder: _Recorder, workflow_id: str) -> None:
         self._recorder = recorder
+        self.workflow_id = workflow_id
 
     def get_result(self, *, polling_interval_sec: float = 1.0):
         self._recorder.calls.append("get_result")
@@ -92,8 +127,23 @@ def recorder(monkeypatch):
     monkeypatch.setattr(dbos_app, "_emit", rec.emit)
     monkeypatch.setattr(dbos_app, "units_queue", lambda: rec)
 
+    class _FakeSetWorkflowID:
+        def __init__(self, workflow_id):
+            rec.pending_id = workflow_id
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            rec.pending_id = None
+            return False
+
+    monkeypatch.setattr(dbos_app, "SetWorkflowID", _FakeSetWorkflowID)
+
     class _DBOS:
         close_stream = staticmethod(rec.close_stream)
+        retrieve_workflow = staticmethod(rec.retrieve_workflow)
+        wait_first = staticmethod(rec.wait_first)
 
     monkeypatch.setattr(dbos_app, "DBOS", _DBOS)
     return rec
@@ -111,16 +161,19 @@ def _body(run_workflow):
 # ── The property ────────────────────────────────────────────────────────────
 
 
-#: The exact position-consuming sequence for a two-unit run. One enqueue per
-#: unit, then per unit a `get_result`, a settle and an emit — in that order,
-#: awaited in enqueue order because child workflow ids are positional.
+#: The exact position-consuming sequence for a two-unit run. Both units are
+#: enqueued up front — they have no dependencies — then settled one at a time as
+#: `wait_first` reports each winner. Four positions per completion:
+#: wait_first, get_result, s_settle_unit, emit.
 _DISPATCH_SEQUENCE = [
     "s_open_run",
     "enqueue:a",
     "enqueue:b",
+    "wait_first",
     "get_result",
     "s_settle_unit:a",
     "emit:a",
+    "wait_first",
     "get_result",
     "s_settle_unit:b",
     "emit:b",
@@ -134,28 +187,82 @@ _DISPATCH_SEQUENCE = [
 def test_run_workflow_emits_the_pinned_sequence(recorder):
     """Change this sequence and every run in flight at the deploy breaks."""
     _body(dbos_app.run_workflow)(
-        "run-1", [_unit("a"), _unit("b")], {"code_version": "test"}
+        "run", [_unit("a"), _unit("b")], {"code_version": "test"}
     )
     assert recorder.calls == _DISPATCH_SEQUENCE
 
 
-def test_units_are_awaited_in_enqueue_order(recorder):
-    """An as-completed loop would shift child ids and mint duplicate children."""
+def test_settles_in_completion_order_not_dispatch_order(recorder):
+    """The whole point of as-completed: `b` finishing first settles first.
+
+    Under the wave design this was impossible — units were awaited in enqueue
+    order — so this test is what distinguishes the two implementations.
+    """
+    recorder.finish_order = ["b", "a"]
     _body(dbos_app.run_workflow)(
-        "run-2",
-        [_unit("a"), _unit("b"), _unit("c")],
-        {"code_version": "test"},
+        "run", [_unit("a"), _unit("b")], {"code_version": "test"}
     )
-    assert [c for c in recorder.calls if c.startswith("enqueue:")] == [
-        "enqueue:a",
-        "enqueue:b",
-        "enqueue:c",
-    ]
     assert [c for c in recorder.calls if c.startswith("s_settle_unit:")] == [
-        "s_settle_unit:a",
         "s_settle_unit:b",
-        "s_settle_unit:c",
+        "s_settle_unit:a",
     ]
+    # Positions are unchanged in count and kind, only in which slug they carry —
+    # which is exactly what `wait_first` makes durable.
+    assert recorder.calls.count("wait_first") == 2
+    assert len(recorder.calls) == len(_DISPATCH_SEQUENCE)
+
+
+def test_a_dependent_is_not_dispatched_before_its_input_settles(recorder):
+    """`b` depends on `a`, so only `a` is enqueued in the first pass."""
+    _body(dbos_app.run_workflow)(
+        "run", [_unit("a"), _unit("b", deps=["a"])], {"code_version": "test"}
+    )
+    assert recorder.calls == [
+        "s_open_run",
+        "enqueue:a",
+        "wait_first",
+        "get_result",
+        "s_settle_unit:a",
+        "emit:a",
+        "enqueue:b",
+        "wait_first",
+        "get_result",
+        "s_settle_unit:b",
+        "emit:b",
+        "s_finalize",
+        "s_release_plan",
+        "emit:None",
+        "close_stream",
+    ]
+
+
+def test_children_are_enqueued_under_deterministic_ids(recorder):
+    """`{run_id}-{slug}`, which is what makes a re-enqueue dedup instead of
+    minting a second child, and what lets the body detect a bound-slot shift."""
+    _body(dbos_app.run_workflow)(
+        "run", [_unit("a"), _unit("b")], {"code_version": "test"}
+    )
+    assert recorder._enqueued == ["a", "b"]
+
+
+def test_a_shifted_child_binding_raises_rather_than_cross_wiring(recorder, monkeypatch):
+    """The tripwire for the one failure DBOS cannot detect.
+
+    On replay DBOS resolves a child by position and returns the *recorded* id,
+    silently discarding the one the body asked for. The function names match —
+    every child is `unit_workflow` — so `DBOSUnexpectedStepError` never fires.
+    Comparing the handle back against the requested id is the only detection.
+    """
+
+    class _WrongIdQueue:
+        def enqueue(self, *args):
+            recorder.enqueue(*args)
+            return _Handle(recorder, "run-a-different-child")
+
+    monkeypatch.setattr(dbos_app, "units_queue", _WrongIdQueue)
+
+    with pytest.raises(RuntimeError, match="replay divergence"):
+        _body(dbos_app.run_workflow)("run", [_unit("a")], {"code_version": "test"})
 
 
 # ── unit_workflow ───────────────────────────────────────────────────────────

@@ -36,7 +36,7 @@ from graphlib import CycleError
 from typing import Literal, NotRequired, TypedDict
 
 import psycopg2
-from dbos import DBOS, DBOSConfig, Queue
+from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID
 
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration import runstore
@@ -625,11 +625,43 @@ def _safe_detail(exc: BaseException) -> str:
 
 @DBOS.workflow()
 def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
-    """Drive the dirty-set to completion, one wave at a time.
+    """Drive the dirty-set to completion, dispatching each unit as it unblocks.
 
     ``units`` is a workflow *input*, so the loop below is reproducible on
     replay no matter what the catalog does meanwhile. Everything the body
     branches on is either that input or a checkpointed step result.
+
+    **As-completed, not level-synchronous.** A unit starts the moment its last
+    dependency clears, rather than waiting for the slowest member of its level.
+    ``perf/workloads.py``'s ``barrier_probe`` exists to measure the difference,
+    and ``head_of_line_ms`` is the metric that reports it.
+
+    ⚠ **Why this is replay-safe, and why the obvious version is not.** DBOS
+    resolves a replayed child by ``(parent_workflow_id, function_id)`` *only*
+    (``_sys_db.py``), and ``DBOSUnexpectedStepError`` fires only when the
+    function *name* at that slot differs. Every child here is ``unit_workflow``,
+    so the names always match: a body whose step order depends on which child
+    finished first does **not** fail loudly on replay, it silently receives a
+    handle to the wrong child and cross-attributes one indicator's result to
+    another. That is the spike 2 failure mode.
+
+    ``DBOS.wait_first`` is what makes this sound. It runs its poll through
+    ``call_function_as_step(..., "DBOS.waitFirst", ...)``, so **the completion
+    order itself becomes durable history** — a replay returns the recorded
+    winner instead of re-racing. Every value this loop branches on is therefore
+    checkpointed: ``plan_wave`` is pure over ``statuses``, ``statuses`` comes
+    from ``s_settle_unit``'s recorded *return*, and ``outstanding`` moves only on
+    a dispatch or a recorded winner. The function ids consumed per iteration are
+    ``2*len(skip) + len(dispatch) + 4``, every term fixed by that history.
+
+    ``outcome`` may be recomputed differently on replay — ``get_result`` is
+    recorded but never verified, so it re-queries the child's *live* status —
+    and that is harmless only because it is an **argument, never a branch**.
+    ``statuses`` takes what the step returns, not what was passed to it.
+
+    Polling ``get_status`` or ``DBOS.sleep`` in a loop would work here and must
+    not be used: each consumes a function id, so the slot count would become a
+    function of wall-clock timing.
     """
     s_open_run(run_id, units, params)
 
@@ -637,6 +669,7 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
     order = [u["slug"] for u in units]
     features = {u["slug"]: u["features"] for u in units}
     statuses = {slug: "queued" for slug in order}
+    outstanding: dict[str, str] = {}  # child workflow id -> slug
 
     while True:
         wave = plan_wave([(slug, statuses[slug]) for slug in order], registry)
@@ -648,45 +681,56 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
             statuses[slug] = s_settle_unit(run_id, slug, "skipped")
             _emit(run_id, slug, statuses[slug], "unsatisfied input")
 
-        if not wave.dispatch:
+        # `wave.dispatch` preserves the order of `units`, which
+        # `compute_dirty_set` sorts explicitly because an unsorted set made it
+        # vary with PYTHONHASHSEED.
+        for slug in wave.dispatch:
+            child_id = f"{run_id}-{slug}"
+            with SetWorkflowID(child_id):
+                handle = units_queue().enqueue(
+                    unit_workflow, run_id, slug, features[slug], params
+                )
+            # ⚠ The tripwire. An explicit id does NOT free a child from
+            # positional replay — the function_id counter increments regardless,
+            # and DBOS discards this id if the slot already records another. It
+            # buys two things instead. A re-enqueue past recorded history dedups
+            # on the id rather than minting a second child, which is the
+            # duplicate-compute `s_compute(retries_allowed=False)` exists to
+            # prevent. And comparing the handle back against the id we asked for
+            # turns the silent cross-wiring described above into an immediate,
+            # local failure — the only detection available, since DBOS itself
+            # cannot see it.
+            if handle.workflow_id != child_id:
+                raise RuntimeError(
+                    f"replay divergence: step position bound to "
+                    f"{handle.workflow_id!r}, expected {child_id!r}"
+                )
+            outstanding[child_id] = slug
+            # Local only, so the next `plan_wave` does not re-dispatch it. The
+            # database's own `running` is written by the child.
+            statuses[slug] = "running"
+
+        if not outstanding:
             break
 
-        # One child per unit. `wave.dispatch` is already deterministic — it
-        # preserves the order of `units`, which `compute_dirty_set` sorts
-        # explicitly because an unsorted set made it vary with PYTHONHASHSEED,
-        # and an unstable dispatch order is what a positional replay cannot
-        # survive.
-        #
-        # Enqueue in a fixed order and await in the same one. Child workflow ids
-        # are positional (parent_id + function_id), so an as-completed loop would
-        # shift the ids of everything after it and mint duplicate children.
+        # `retrieve_workflow(existing_workflow=False)` costs no function id and
+        # touches no database — it just wraps an id. Rebuilding the handles this
+        # way each iteration keeps the set a pure function of `outstanding`,
+        # which matters because `wait_first` looks its recorded winner up in this
+        # exact list and raises a bare KeyError if it is missing.
         handles = [
-            (
-                slug,
-                units_queue().enqueue(
-                    unit_workflow, run_id, slug, features[slug], params
-                ),
-            )
-            for slug in wave.dispatch
+            DBOS.retrieve_workflow(child_id, existing_workflow=False)
+            for child_id in sorted(outstanding)
         ]
-        for slug, handle in handles:
-            try:
-                handle.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
-                outcome = "succeeded"
-            except Exception:  # noqa: BLE001 — fault isolation is the point
-                outcome = "failed"
-            # Settle through a step, and branch on what the step returns.
-            #
-            # `get_result` looks checkpointed but is not: DBOS records it and
-            # never reads it back, so a replay re-queries the child's *live*
-            # status. If a child were resumed to SUCCESS after the parent had
-            # already skipped its dependents, the replayed body would take the
-            # dispatch branch instead of the skip branch and the step positions
-            # would diverge — DBOSUnexpectedStepError, run unrecoverable.
-            # A step's output is genuinely checkpointed, so branching on that
-            # keeps the body reproducible.
-            statuses[slug] = s_settle_unit(run_id, slug, outcome)
-            _emit(run_id, slug, statuses[slug])
+        winner = DBOS.wait_first(handles, polling_interval_sec=POLL_INTERVAL_SEC)
+        slug = outstanding.pop(winner.workflow_id)
+        try:
+            winner.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
+            outcome = "succeeded"
+        except Exception:  # noqa: BLE001 — fault isolation is the point
+            outcome = "failed"
+        statuses[slug] = s_settle_unit(run_id, slug, outcome)
+        _emit(run_id, slug, statuses[slug])
 
     final = overall_status(statuses.values())
     s_finalize(run_id, final)
