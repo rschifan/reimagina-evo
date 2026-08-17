@@ -66,6 +66,22 @@ class UnitInput(TypedDict):
     features: list[str]
     deps: list[str]
 
+    group: NotRequired[str]
+    """Indicators sharing a group are dispatched as ONE child workflow.
+
+    ⚠ ``NotRequired`` and defaulted to the slug itself, so a run submitted before
+    this field existed resumes as a set of singleton groups — which is exactly
+    the pre-grouping behaviour.
+
+    Carried in the workflow *input* rather than looked up from the catalog,
+    because the body may only branch on inputs and step results. A catalog
+    lookup here would let a mid-run catalog edit change how a replay dispatches,
+    which is the failure spike 2 measured.
+
+    ⚠ No ``produces`` field alongside it. The membership of a group is derivable
+    by grouping ``units``, and a second field carrying the same fact is a second
+    thing that can disagree with the first."""
+
 
 class RunParams(TypedDict):
     """Stable workflow input. Add fields here before a workflow consumes them."""
@@ -317,6 +333,32 @@ def _as_registry(units: Sequence[UnitInput]) -> tuple[_Spec, ...]:
     return tuple(_Spec(u["slug"], u["deps"]) for u in units)
 
 
+def group_of(unit: UnitInput) -> str:
+    """The dispatch group a unit belongs to; its own slug when ungrouped.
+
+    Defaulting to the slug is what makes every pre-grouping run input a set of
+    singleton groups, so a run in flight across the deploy keeps its exact
+    dispatch shape.
+    """
+    return unit.get("group") or unit["slug"]
+
+
+def group_members(units: Sequence[UnitInput]) -> dict[str, list[str]]:
+    """``group -> member slugs``, each list in ``units`` order.
+
+    ⚠ Order is load-bearing twice over. Members are settled and announced in
+    this order, and ``units`` is already the deterministic topological order
+    ``compute_dirty_set`` produces — which it sorts explicitly because an
+    unsorted set made the order vary with PYTHONHASHSEED. Re-deriving membership
+    from a ``set`` here would put that non-determinism straight back into the
+    step sequence a replay has to reproduce.
+    """
+    members: dict[str, list[str]] = {}
+    for unit in units:
+        members.setdefault(group_of(unit), []).append(unit["slug"])
+    return members
+
+
 def validate_workflow_input(units: Sequence[UnitInput], params: RunParams) -> None:
     """Reject malformed persisted inputs before replay can make them opaque."""
     seen: set[str] = set()
@@ -334,7 +376,37 @@ def validate_workflow_input(units: Sequence[UnitInput], params: RunParams) -> No
             raise ValueError(f"workflow unit {slug!r} has invalid feature ids")
         if not isinstance(deps, list) or not all(isinstance(dep, str) for dep in deps):
             raise ValueError(f"workflow unit {slug!r} has invalid dependencies")
+        group = unit.get("group")
+        if group is not None and (not isinstance(group, str) or not group):
+            raise ValueError(f"workflow unit {slug!r} has an invalid group")
         seen.add(slug)
+
+    # A group must be dirty all-or-nothing, which `plan_wave` cannot enforce
+    # because it works on (slug, status) pairs and knows nothing about groups.
+    # Members with differing dependencies can become ready in *different* waves,
+    # and the parent would then enqueue the group's child once per wave —
+    # running one expensive body twice. `s_compute` is retries_allowed=False
+    # precisely because a second execution is never acceptable, and
+    # tests/workloads asserts duplicate_executions is empty on every engine.
+    #
+    # Identical dependency sets make the split structurally impossible. Checked
+    # here, at submit, rather than trusted from the catalog: the catalog is
+    # asserted separately (tests/unit/test_indicator_registry.py), but this
+    # input is what the workflow will actually replay from.
+    for group, members in group_members(units).items():
+        if len(members) < 2:
+            continue
+        deps_by_member = {
+            unit["slug"]: tuple(sorted(unit["deps"]))
+            for unit in units
+            if group_of(unit) == group
+        }
+        if len(set(deps_by_member.values())) > 1:
+            raise ValueError(
+                f"run_group {group!r} has members with differing dependencies "
+                f"({deps_by_member}); they could be dispatched in different "
+                "waves, running the group's compute more than once"
+            )
     # ``plan_wave`` intentionally ignores dependencies outside this dirty set:
     # their current values are inputs, not work in this run. Within the set a
     # cycle can never make progress, so reject it before persisting a workflow
@@ -553,14 +625,45 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
 
 
 @DBOS.workflow()
-def unit_workflow(run_id: str, slug: str, features: list[str], params: dict) -> str:
-    s_set_status(run_id, slug, "running")
+def unit_workflow(
+    run_id: str,
+    slug: str,
+    features: list[str],
+    params: dict,
+    produces: list[str] | None = None,
+) -> str:
+    """Compute one dispatched unit — which may carry several indicators.
+
+    ⚠ ``produces`` is **trailing and defaulted**, and must stay that way. DBOS
+    stores workflow arguments positionally, so a child persisted with four
+    arguments before this parameter existed replays into this five-parameter
+    function and takes the default — becoming a singleton, which is what it was.
+    Reordering or inserting a parameter would make every in-flight child fail on
+    replay with a TypeError surfacing as an unrecoverable run.
+
+    Each member gets its own ``s_compute``: group members are different
+    indicators (three POI categories, say), so there is no shared computation to
+    hoist. What grouping saves is the per-unit engine overhead — measured at
+    ~300 ms when units run in parallel and ~1.0–1.4 s when they serialize, which
+    dwarfs the arithmetic these indicators actually perform.
+
+    ⚠ A failure fails **every** member, including any that already computed.
+    Partial success within one dispatched unit has nowhere to live: the parent
+    branches on a single handle, and reporting some members succeeded while the
+    child raised would contradict the run's own outcome.
+    """
+    targets = produces or [slug]
+    for target in targets:
+        s_set_status(run_id, target, "running")
     try:
-        s_compute(run_id, slug, features, params)
+        for target in targets:
+            s_compute(run_id, target, features, params)
     except Exception as exc:
-        s_set_status(run_id, slug, "failed", _safe_detail(exc))
+        for target in targets:
+            s_set_status(run_id, target, "failed", _safe_detail(exc))
         raise
-    s_set_status(run_id, slug, "succeeded")
+    for target in targets:
+        s_set_status(run_id, target, "succeeded")
     return "succeeded"
 
 
@@ -582,6 +685,8 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
     order = [u["slug"] for u in units]
     features = {u["slug"]: u["features"] for u in units}
     statuses = {slug: "queued" for slug in order}
+    # slug -> its dispatch group, derived from the workflow input alone.
+    groups_for = {u["slug"]: group_of(u) for u in units}
 
     while True:
         wave = plan_wave([(slug, statuses[slug]) for slug in order], registry)
@@ -596,19 +701,45 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         if not wave.dispatch:
             break
 
+        # One child per *group*, not per slug. Dedupe by first occurrence in
+        # `wave.dispatch` — a `set` here would reintroduce the PYTHONHASHSEED
+        # non-determinism `impact.py` sorts `compute_dirty_set` explicitly to
+        # avoid, and an unstable dispatch order is exactly what a positional
+        # replay cannot survive.
+        #
+        # For an input where every group is a singleton — which is every run in
+        # flight at the deploy that introduced grouping, since no unit carried a
+        # `group` before it — this emits a byte-identical position sequence to
+        # the ungrouped body: G enqueues in the same order, then per group one
+        # `get_result`, then per member (exactly one) a settle and an emit.
+        # tests/unit/test_workflow_position_identity.py asserts that property
+        # rather than leaving it to this comment.
+        dispatched: list[str] = []
+        for slug in wave.dispatch:
+            group = groups_for[slug]
+            if group not in dispatched:
+                dispatched.append(group)
+
         # Enqueue in a fixed order and await in the same one. Child workflow ids
         # are positional (parent_id + function_id), so an as-completed loop would
         # shift the ids of everything after it and mint duplicate children.
-        handles = [
-            (
-                slug,
-                units_queue().enqueue(
-                    unit_workflow, run_id, slug, features[slug], params
-                ),
+        handles = []
+        for group in dispatched:
+            members = [slug for slug in wave.dispatch if groups_for[slug] == group]
+            handles.append(
+                (
+                    members,
+                    units_queue().enqueue(
+                        unit_workflow,
+                        run_id,
+                        members[0],
+                        features[members[0]],
+                        params,
+                        members,
+                    ),
+                )
             )
-            for slug in wave.dispatch
-        ]
-        for slug, handle in handles:
+        for members, handle in handles:
             try:
                 handle.get_result()
                 outcome = "succeeded"
@@ -624,8 +755,13 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
             # would diverge — DBOSUnexpectedStepError, run unrecoverable.
             # A step's output is genuinely checkpointed, so branching on that
             # keeps the body reproducible.
-            statuses[slug] = s_settle_unit(run_id, slug, outcome)
-            _emit(run_id, slug, statuses[slug])
+            #
+            # Per member, so `GET /jobs/{id}` and the progress stream still carry
+            # one row and one event per indicator. Grouping changes how work is
+            # dispatched, never what the frontend can observe.
+            for member in members:
+                statuses[member] = s_settle_unit(run_id, member, outcome)
+                _emit(run_id, member, statuses[member])
 
     final = overall_status(statuses.values())
     s_finalize(run_id, final)
