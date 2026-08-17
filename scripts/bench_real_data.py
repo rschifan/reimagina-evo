@@ -302,6 +302,18 @@ def main(argv: list[str]) -> int:
     if not dsn:
         parser.error("DATABASE_URL_DIRECT is required — it is the database measured")
 
+    # ⚠ `--slots` has to *set* the slot count, not just report it. The engine
+    # reads `REIMAGINA_UNIT_CONCURRENCY` when `dbos_app.launch()` registers the
+    # queue (default 2); until this line existed, `--slots 4` printed "slots=4",
+    # divided `efficiency` by 4, and ran on 2 — so every artifact carrying
+    # `"slots": 4` without the variable also set was mislabelled, and its
+    # efficiency was understated by exactly the ratio of the two.
+    # `tests/workloads/conftest.py:196` already does this; this file did not.
+    #
+    # Before `launch()`, which is called lazily at the first submit — so setting
+    # it here, ahead of any orchestrator call, is what makes it take effect.
+    os.environ["REIMAGINA_UNIT_CONCURRENCY"] = str(args.slots)
+
     removed = sweep_bench_rows(dsn)
     print(f"swept {removed} leftover benchmark rows; table vacuumed and analyzed")
 
