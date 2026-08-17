@@ -8,12 +8,25 @@ trigger, and `bootstrap_local_platform` seeds the catalog, so a bad entry breaks
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
 from reimagina.orchestration.runners import default_runners
 
 _COMPOSITES = [s for s in SHIPPED_INDICATORS if s.computation_kind == "composite"]
+
+_RUN_GROUPS = {
+    group: list(members)
+    for group, members in itertools.groupby(
+        sorted(
+            (s for s in SHIPPED_INDICATORS if s.run_group),
+            key=lambda s: s.run_group or "",
+        ),
+        key=lambda s: s.run_group or "",
+    )
+}
 
 
 def test_registry_ships_at_least_one_composite():
@@ -52,3 +65,29 @@ def test_every_shipped_indicator_has_a_runner():
     runners = default_runners()
     missing = [s.slug for s in SHIPPED_INDICATORS if s.slug not in runners]
     assert not missing, f"no runner registered for: {missing}"
+
+
+@pytest.mark.parametrize("group", sorted(_RUN_GROUPS), ids=lambda g: g)
+def test_run_group_members_share_inputs(group):
+    """A run_group must be dirty all-or-nothing, or its child runs twice.
+
+    The wave scheduler works on (slug, status) pairs and knows nothing about
+    groups. Members with differing `reads` or `depends_on` can therefore become
+    ready in *different* waves, and the parent would enqueue the group's child
+    once per wave — running one expensive body twice. `s_compute` sets
+    retries_allowed=False precisely because a second execution is never
+    acceptable, and tests/workloads asserts duplicate_executions is empty on
+    every engine.
+
+    Identical inputs make that structurally impossible, which is cheaper than
+    teaching the scheduler about groups.
+    """
+    members = _RUN_GROUPS[group]
+    reads = {s.slug: tuple(sorted(s.reads)) for s in members}
+    deps = {s.slug: tuple(sorted(s.depends_on)) for s in members}
+    assert (
+        len(set(reads.values())) == 1
+    ), f"run_group {group!r} has mixed reads: {reads}"
+    assert (
+        len(set(deps.values())) == 1
+    ), f"run_group {group!r} has mixed depends_on: {deps}"

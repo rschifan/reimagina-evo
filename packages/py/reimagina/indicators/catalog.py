@@ -41,6 +41,22 @@ class IndicatorSpec:
     # attributes, so they leave this empty and declare `depends_on` instead.
     reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
+    # Indicators sharing a run_group are computed by ONE dispatched unit rather
+    # than one each. Purely an ops-plane concern: `indicator_catalog` has no such
+    # column and `seed_catalog` never reads this.
+    #
+    # ⚠ Every member of a group MUST declare identical `reads` and identical
+    # `depends_on`. The wave scheduler works on (slug, status) pairs and knows
+    # nothing about groups, so members with differing dependencies could be
+    # dispatched in *different* waves — enqueueing the group's child twice and
+    # running one expensive body twice, which `s_compute`'s retries_allowed=False
+    # exists to make impossible. Identical inputs make dirtiness all-or-nothing
+    # by construction. Asserted in tests/unit/test_indicator_registry.py.
+    run_group: str | None = None
+    # Which executor queue this indicator's unit belongs on, so a minutes-long
+    # network computation can be scheduled apart from millisecond arithmetic
+    # instead of contending for the same slots.
+    resource_class: str = "default"
 
 
 URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
@@ -145,13 +161,229 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 )
 
 
+# ── Edificability ───────────────────────────────────────────────────────────
+#
+# Buildable capacity from construction and land-use attributes: the worked
+# example the Reimagina collaborators supplied. Three outputs of one three-line
+# calculation, which is exactly why they share a `run_group` — dispatching three
+# units to perform one multiplication each is all overhead and no work.
+#
+# ⚠ All three declare the SAME `reads`, including `people_per_household`, which
+# only `population` actually consumes. That is the group invariant, not an
+# oversight: identical inputs are what guarantee the three are always dirty
+# together and can never split across waves. The cost is that editing
+# `people_per_household` also recomputes housing_units and density —
+# over-approximate, never wrong, and the same trade `resolve_change_set`
+# already makes.
+#
+# ⚠ None of them reads `geometry`, though all three divide by block area. A
+# scenario cannot edit block geometry today, and declaring it would drag these
+# into every geometry-seeded dirty set — including the conformance fixture's,
+# whose assertion that all non-poison units end `skipped` is meant to read
+# identically on both ops-plane branches.
+
+_EDIFICABILITY_READS = ("num_levels", "unit_size", "people_per_household")
+_EDIFICABILITY_GROUP = "edificability"
+
+
+EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
+    slug="edificability_block_housing_units",
+    name="Housing Units (buildable)",
+    description=(
+        "Dwellings the block's envelope supports: (block area × num_levels) / "
+        "unit_size. Block area stands in for lot area until a cadastral lot "
+        "layer exists — the formula is unchanged, only the denominator's grain."
+    ),
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="units",
+    # A CDMX manzana tops out near 4 ha; at 6 levels and 60 m²/unit that is
+    # ~4,000 units. 10,000 is a safety cap that catches bad inputs (a unit_size
+    # in cm², say) without constraining plausible upzoning scenarios.
+    valid_min=0.0,
+    valid_max=10_000.0,
+    aggregation_method="weighted_mean",
+    reads=_EDIFICABILITY_READS,
+    applies_to=("block",),
+    run_group=_EDIFICABILITY_GROUP,
+)
+
+
+EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
+    slug="edificability_block_population",
+    name="Resident Population (buildable)",
+    description=(
+        "Residents implied by the buildable dwelling count: housing_units × "
+        "people_per_household."
+    ),
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="people",
+    # housing_units cap × a generous household size.
+    valid_min=0.0,
+    valid_max=50_000.0,
+    aggregation_method="weighted_mean",
+    reads=_EDIFICABILITY_READS,
+    applies_to=("block",),
+    run_group=_EDIFICABILITY_GROUP,
+)
+
+
+EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
+    slug="edificability_block_density",
+    name="Housing Density (buildable)",
+    description=(
+        "Buildable dwellings per hectare: housing_units / block area in "
+        "hectares. Distinct from urban_form_block_building_density, which "
+        "counts buildings that exist rather than dwellings the envelope allows."
+    ),
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="units_per_ha",
+    # Hong Kong's densest residential blocks approach 1,200 units/ha; 2,000 is
+    # the same style of pathological-input cap used by building_density.
+    valid_min=0.0,
+    valid_max=2_000.0,
+    aggregation_method="weighted_mean",
+    reads=_EDIFICABILITY_READS,
+    applies_to=("block",),
+    run_group=_EDIFICABILITY_GROUP,
+)
+
+
+# ── Accessibility ───────────────────────────────────────────────────────────
+#
+# The collaborators' brief splits accessibility in two: distance to POIs, then
+# "similar to the previous point, but with an added step: updating the road
+# network first affects accessibility downstream". Two indicator families, not
+# one — and their cost profiles differ by orders of magnitude, which is what
+# makes `resource_class` a real distinction rather than a hypothetical one.
+#
+#   *_euclid_m   straight-line metres, PostGIS KNN over an index. Milliseconds.
+#                Invalidated by `poi_version` alone.
+#   *_network_m  pedestrian-network metres, one multi-source Dijkstra per
+#                category over the pgRouting tables. Seconds to minutes.
+#                Invalidated by `poi_version` OR `network_version`.
+#
+# ⚠ `poi_version` appears in BOTH groups, `network_version` in only one. So a
+# POI edit fires both families (six slugs, two dispatched units of very
+# different cost) while a road edit fires only the expensive one. That
+# asymmetry is the attribute→run mapping made observable, and it falls out of
+# the declarations rather than being staged for a demo.
+
+#: Distance reported when nothing of a category is reachable. Also the search
+#: cutoff, so "not found" and "exactly at the limit" are the same number —
+#: deliberate: both mean "no useful access", and a NULL would need a separate
+#: rendering path in every consumer.
+ACCESSIBILITY_CUTOFF_M = 1500.0
+
+_POI_GROUP = "poi_access"
+_NETWORK_GROUP = "network_access"
+
+#: Amenity categories the demo reports, and the source `category` values each
+#: matches. Both English (synthetic fixtures) and the Spanish forms seen in the
+#: EXE/SIGCDMX amenity layers, since one canonical vocabulary does not yet
+#: exist. Revisit once a real amenity layer is ingested — this mapping is the
+#: seam where that vocabulary will land.
+ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "school": (
+        "school",
+        "Educación preescolar",
+        "Educación primaria",
+        "Educación secundaria",
+        "EDUCACION BASICA",
+        "BASICO",
+    ),
+    "health": (
+        "health",
+        "Hospital general",
+        "Consultorios médicos",
+        "Farmacia",
+        "PRIMER NIVEL",
+    ),
+    "park": (
+        "park",
+        "Parques recreativos",
+        "PARQUE",
+    ),
+}
+
+
+def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
+    """One accessibility spec. Six of these differ only by category and mode."""
+    mode = "network" if network else "euclid"
+    return IndicatorSpec(
+        slug=f"accessibility_block_{category}_{mode}_m",
+        name=f"Distance to {category} ({'network' if network else 'straight-line'})",
+        description=(
+            f"Metres from the block's centroid to the nearest {category}, "
+            + (
+                "along the OSM pedestrian network via pgRouting. Reflects "
+                "actual walkable routes, so it responds to road-network edits."
+                if network
+                else "in a straight line. Cheap lower bound on the network "
+                "distance; ignores barriers, so it is optimistic by design."
+            )
+            + f" Capped at {ACCESSIBILITY_CUTOFF_M:.0f} m, which is also what "
+            "an unreachable block reports."
+        ),
+        computation_kind="direct",
+        model_family="accessibility",
+        value_type="numeric",
+        unit="m",
+        valid_min=0.0,
+        valid_max=ACCESSIBILITY_CUTOFF_M,
+        aggregation_method="weighted_mean",
+        reads=("poi_version", "network_version") if network else ("poi_version",),
+        applies_to=("block",),
+        run_group=_NETWORK_GROUP if network else _POI_GROUP,
+        resource_class="heavy" if network else "default",
+    )
+
+
+ACCESSIBILITY_EUCLID: tuple[IndicatorSpec, ...] = tuple(
+    _accessibility_spec(category, network=False)
+    for category in ACCESSIBILITY_CATEGORIES
+)
+ACCESSIBILITY_NETWORK: tuple[IndicatorSpec, ...] = tuple(
+    _accessibility_spec(category, network=True) for category in ACCESSIBILITY_CATEGORIES
+)
+
+#: slug -> the source `category` values it matches.
+#
+# Read off the two spec tuples rather than rebuilding them: both are
+# comprehensions over ACCESSIBILITY_CATEGORIES, so they share its order by
+# construction and zip lines each category up with its own pair.
+ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
+    spec.slug: ACCESSIBILITY_CATEGORIES[category]
+    for category, pair in zip(
+        ACCESSIBILITY_CATEGORIES,
+        zip(ACCESSIBILITY_EUCLID, ACCESSIBILITY_NETWORK, strict=True),
+        strict=True,
+    )
+    for spec in pair
+}
+
+
 # Indicators Layer 1 / Layer 2 ships with. Order matters: dependencies must
 # be upserted before the composite indicators that reference them.
+#
+# ⚠ New composites go at the END. tests/unit/test_failed_job_run_provenance.py
+# selects the *first* spec with `model_family is None`, so inserting one earlier
+# silently changes which indicator that test exercises.
 SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     URBAN_FORM_BLOCK_COMPACTNESS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_PLANNED_FLOORS,
     URBAN_FORM_BLOCK_COMPOSITE,
+    EDIFICABILITY_BLOCK_HOUSING_UNITS,
+    EDIFICABILITY_BLOCK_POPULATION,
+    EDIFICABILITY_BLOCK_DENSITY,
+    *ACCESSIBILITY_EUCLID,
+    *ACCESSIBILITY_NETWORK,
 )
 
 
