@@ -73,7 +73,7 @@ class _Handle:
     def __init__(self, recorder: _Recorder) -> None:
         self._recorder = recorder
 
-    def get_result(self):
+    def get_result(self, *, polling_interval_sec: float = 1.0):
         self._recorder.calls.append("get_result")
         return "succeeded"
 

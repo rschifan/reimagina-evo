@@ -56,6 +56,48 @@ PROGRESS_STREAM = "progress"
 RUNS_QUEUE = "runs"
 UNITS_QUEUE = "units"
 
+# DBOS dispatch is poll-only — nothing pushes. Two independent 1.0 s defaults sit
+# on the critical path of every wave: the queue thread's dequeue loop
+# (`_queue.py` DEFAULT_QUEUE_POLLING_INTERVAL_SEC) and the parent's wait on a
+# child (`_core.py` DEFAULT_POLLING_INTERVAL). Both must be lowered together —
+# measured, lowering either alone leaves ~1.18 s per wave, because the wave pays
+# whichever is still slow.
+#
+# Measured, 4 competing executors on one queue vs idle load on a 2-queue app:
+#
+#   interval   per-wave    idle txn/s    backoffs
+#   1.0        1183 ms     15.8          0
+#   0.25        312 ms     39.6          0
+#   0.1         137 ms     82.8          0      <- chosen
+#   0.05         73 ms    149.9          0
+#   0.01         24 ms    567.3          0
+#
+# 0.1 s takes 8.6x of the available latency for 5x the idle load; 0.01 s costs
+# 36x to buy another 113 ms nobody can perceive.
+#
+# Measured end to end on the real catalog (13 indicators, 7 groups, 1500 blocks,
+# 3 reps each, same process, sequential so the arms cannot contend):
+#
+#                    1.0 s     0.1 s
+#   makespan       6958 ms   3538 ms   1.97x
+#   busy           4904 ms   4913 ms   1.00x  (same work, as it must be)
+#   head-of-line   2008 ms    345 ms   5.8x
+#   settle lag      956 ms    144 ms   6.7x
+#   parallelism       0.94      1.58
+#
+# The parallelism row is the point, and it is not what the interval looks like
+# it does. Polling did not merely add dead time between waves — it *serialized
+# units that could have overlapped*, because a unit finishing mid-interval sat
+# until the next tick before the next one was dequeued. That is why makespan
+# fell by 3.4 s when only ~2.1 s of the run was idle waiting.
+#
+# ⚠ Zero contention above is *conditional on `worker_concurrency`*. Dequeue uses
+# `with_for_update(skip_locked=queue._concurrency is None)`, so with only a
+# worker limit set, competing executors skip locked rows instead of failing.
+# Setting a global `concurrency` on these queues flips that to `nowait=True`,
+# where a fast poll turns into real serialization failures. Don't.
+POLL_INTERVAL_SEC = float(os.environ.get("REIMAGINA_POLL_INTERVAL_SEC", "0.1"))
+
 ExecutionMode = Literal["client", "executor", "dev"]
 
 
@@ -279,10 +321,12 @@ def launch() -> None:
         _runs_queue = DBOS.register_queue(
             RUNS_QUEUE,
             worker_concurrency=int(os.environ.get("REIMAGINA_RUN_CONCURRENCY", "2")),
+            polling_interval_sec=POLL_INTERVAL_SEC,
         )
         _units_queue = DBOS.register_queue(
             UNITS_QUEUE,
             worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
+            polling_interval_sec=POLL_INTERVAL_SEC,
         )
 
 
@@ -741,7 +785,7 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
             )
         for members, handle in handles:
             try:
-                handle.get_result()
+                handle.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
                 outcome = "succeeded"
             except Exception:  # noqa: BLE001 — fault isolation is the point
                 outcome = "failed"
