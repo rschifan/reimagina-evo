@@ -32,7 +32,7 @@ jobs_runtime` is still coherent on its own.
 | `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | API-safe default. Use `executor` for workers and explicit `dev` only for local one-process execution. |
 | `REIMAGINA_EXECUTOR_ID` | derives `<hostname>:<role>`, logs a warning | Recovery reclaims **only** work recorded against this exact id. Must be stable across restarts *and* unique between live processes — see below. |
 | `REIMAGINA_RUN_CONCURRENCY` | 2 | Parent workflows per executor on the `runs` queue. |
-| `REIMAGINA_UNIT_CONCURRENCY` | 2 | Units per process. Non-numeric fails at startup. |
+| `REIMAGINA_UNIT_CONCURRENCY` | 8 | Units per process. Non-numeric fails at startup. Measured on the real catalog: 2 → 3614 ms, 4 → 2181 ms, 8 → 1691 ms, 16 → 1629 ms. 8 is the *latency* choice at 0.49 efficiency; **lower it toward 4** (0.76) where many runs execute concurrently and throughput matters more. Above 8 the graph runs out of parallelism — a DAG's average parallelism is `work/span`, here 4.03, and 16 slots measure exactly that. |
 | `REIMAGINA_EXECUTOR_HEARTBEAT_S` | 30 | Worker heartbeat interval; must be positive. |
 | `REIMAGINA_PROGRESS_SUBSCRIBERS` | 32 | Maximum in-process DBOS progress stream pumps; excess SSE clients reconnect. |
 | `REIMAGINA_APP_VERSION` | derived from workflow source | ⚠ **Sticky.** DBOS records versions in `dbos.application_versions`; once you set one, every process on a different version logs "not the latest version" until something newer is recorded. Set it deliberately or never. |
@@ -158,6 +158,11 @@ Measured, one process each, idle after launch:
 
 Budget as `processes × (4 + REIMAGINA_UNIT_CONCURRENCY)` against
 `max_connections`. The runners' connections dominate, not DBOS's.
+
+⚠ That default is now **8**, so a worker peaks at ~12 connections rather than
+~6. Against Postgres's stock `max_connections = 100` this caps you near 8 worker
+processes; check it before scaling out, and lower the concurrency rather than
+the process count if throughput matters more than one run's latency.
 
 ## What is not ready
 

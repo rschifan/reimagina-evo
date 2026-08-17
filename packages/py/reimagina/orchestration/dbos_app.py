@@ -307,9 +307,33 @@ def launch() -> None:
             worker_concurrency=int(os.environ.get("REIMAGINA_RUN_CONCURRENCY", "2")),
             polling_interval_sec=POLL_INTERVAL_SEC,
         )
+        # 8 units per worker, measured rather than guessed. On the real catalog
+        # (13 indicators, 1500 blocks, 3 reps), as-completed dispatch:
+        #
+        #   slots   makespan   busy   parallelism   speedup   efficiency
+        #   1         6605ms   5138          0.81      1.00         1.00
+        #   2         3614ms   5122          1.55      1.83         0.91
+        #   4         2181ms   5190          2.73      3.03         0.76
+        #   8         1691ms   5274          3.92      3.91         0.49   <- chosen
+        #   16        1629ms   5416          4.03      4.06         0.25
+        #
+        # This was 2, which cost 2.1x. The ceiling is the graph, not the engine:
+        # a DAG's average parallelism is work/span, here 5416/1344 = 4.03, and at
+        # 16 slots we measure exactly 4.03. Makespan 1629ms against a 1344ms
+        # critical path is an SLR of 1.21 — near the lower bound for this shape.
+        # So 16 buys 3.7% over 8 and there is nothing beyond it to buy.
+        #
+        # ⚠ 8 is the *latency* choice, at 0.49 efficiency: eight workers for a
+        # 3.9x speedup. Lower it toward 4 (0.76) where many runs execute
+        # concurrently and throughput matters more than one run's wall clock.
+        #
+        # ⚠ `busy` climbing 5138 -> 5416ms across the sweep is real contention on
+        # the one shared Postgres — the same work taking longer. Mild here, and
+        # the thing to watch first if this is raised again: it, not the
+        # scheduler, is what bounds slot count at city scale.
         _units_queue = DBOS.register_queue(
             UNITS_QUEUE,
-            worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "2")),
+            worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "8")),
             polling_interval_sec=POLL_INTERVAL_SEC,
         )
 
