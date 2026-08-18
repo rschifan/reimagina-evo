@@ -269,7 +269,7 @@ _EDIFICABILITY_INPUTS = (AssetEdge("mex.block", attributes=_EDIFICABILITY_READS)
 
 EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     slug="edificability_block_housing_units",
-    name="Housing Units (buildable)",
+    name="Housing Units (potential)",
     description=(
         "Dwellings the block's envelope supports: (block area × num_levels) / "
         "unit_size. Block area stands in for lot area until a cadastral lot "
@@ -300,7 +300,7 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
 
 EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
     slug="edificability_block_population",
-    name="Resident Population (buildable)",
+    name="Resident Population (potential)",
     description=(
         "Residents implied by the buildable dwelling count: housing_units × "
         "people_per_household."
@@ -322,7 +322,7 @@ EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
 
 EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
     slug="edificability_block_density",
-    name="Housing Density (buildable)",
+    name="Housing Density (potential)",
     description=(
         "Buildable dwellings per hectare: housing_units / block area in "
         "hectares. Distinct from urban_form_block_building_density, which "
