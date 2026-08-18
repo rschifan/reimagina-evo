@@ -95,7 +95,7 @@ REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
 cd apps/web && npm install && npm run dev
 
 # Then
-open http://localhost:8000/docs      # OpenAPI / Swagger
+open http://localhost:8001/docs      # OpenAPI / Swagger
 open http://localhost:5173           # Map with input-layer toggles,
                                      # indicator picker, download buttons
 ```

@@ -69,7 +69,7 @@ def list_tile_sources(
         default=None,
         description=(
             "Base URL of the titiler COG endpoint (e.g. "
-            "http://localhost:8000/cog for the in-process mount). "
+            "http://localhost:8001/cog for the in-process mount). "
             "Defaults to REIMAGINA_TILE_RASTER_BASE_URL when omitted."
         ),
     ),

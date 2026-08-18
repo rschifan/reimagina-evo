@@ -56,7 +56,7 @@ make install                         # uv + npm
 make migrate                         # alembic upgrade head
 
 # 4. Run dev servers (two terminals)
-make dev-api                         # FastAPI on :8000
+make dev-api                         # FastAPI on :8001
 make dev-web                         # Vite on :5173
 ```
 

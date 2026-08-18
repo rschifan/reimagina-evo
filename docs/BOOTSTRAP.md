@@ -230,7 +230,7 @@ SELECT type_slug, count(*) FROM curated_geo.feature GROUP BY type_slug;
 ## 10. Smoke services
 
 ```sh
-make dev-api &      # API on :8000
+make dev-api &      # API on :8001
 martin --config infra/docker/martin.yaml &   # Martin on :3000
 make dev-web        # web on :5173
 ```
