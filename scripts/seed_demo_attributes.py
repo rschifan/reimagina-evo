@@ -13,13 +13,29 @@ Overture's `num_floors` lands on `global:building` rather than on blocks, and
 nothing else, so that indicator returns zero rows against a freshly
 bootstrapped database. These indicators would inherit the same emptiness.
 
-Writes five keys onto `curated_geo.feature.attributes` for `MEX:block` features:
+Writes six keys onto `curated_geo.feature.attributes` for `MEX:block` features:
 
     num_levels            1–6, varying per block
+    floors                same value as num_levels (see below)
     unit_size             60      m² per dwelling
     people_per_household  3.6     ~INEGI prom_ocup
     poi_version           1       bumped to invalidate POI accessibility
     network_version       1       bumped to invalidate network accessibility
+
+⚠ **`floors` and `num_levels` are the same physical quantity under two names**,
+and both are written with the same value rather than one being derived from the
+other, because nothing in the schema ties them together. `num_levels` is the
+edificability input; `floors` is what `urban_form_block_planned_floors` reads
+and what a scenario overrides for an upzoning what-if. Seeding only `num_levels`
+left planned_floors returning zero rows — exactly the emptiness this docstring
+warns about, reproduced by the script written to prevent it.
+
+Unifying them is the right end state and is deliberately *not* done here: the
+two keys have different invalidation semantics in `impact.py` (editing
+`num_levels` must recompute three edificability indicators; editing `floors`
+must recompute one), and collapsing them is a catalog change with test
+consequences, not a fixture change. Writing both keeps the fixture honest about
+the duplication instead of hiding it.
 
 ⚠ **Deterministic, never `random`.** `num_levels` is derived from a blake2b of
 the feature id, so re-running produces identical values and two developers see
@@ -125,7 +141,14 @@ def seed(dsn: str, *, aoi_id: str | None, dry_run: bool) -> dict[str, object]:
 
             payloads = [
                 (
-                    json.dumps({**CONSTANT_ATTRIBUTES, "num_levels": levels_for(fid)}),
+                    json.dumps(
+                        {
+                            **CONSTANT_ATTRIBUTES,
+                            # Same value, two keys -- see the module docstring.
+                            "num_levels": levels_for(fid),
+                            "floors": levels_for(fid),
+                        }
+                    ),
                     fid,
                 )
                 for fid in feature_ids

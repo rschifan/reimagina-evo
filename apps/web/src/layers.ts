@@ -57,7 +57,11 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    visible: false,
+    // On by default now that r038 bounds the cost. Previously this layer
+    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
+    // was the only thing keeping the map usable; with footprints served
+    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
+    visible: true,
     // z14 because get_tile (migration r038) stops serving building
     // footprints below it — a request at 11-13 returns an empty tile, so a
     // lower floor here only buys wasted round-trips.
