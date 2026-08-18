@@ -90,10 +90,16 @@ def _record_version(conn, asset_id, version, sequence=1):
 
 
 def _freshness(conn) -> dict[str, str]:
+    """Freshness for this module's synthetic assets only.
+
+    Scoped to the `t.` prefix rather than reading the whole view: the registry is
+    seeded into any real database, so an assertion over every asset would pass or
+    fail depending on what else happens to be registered.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT asset_key, state FROM serving_geo.asset_freshness_v "
-            "WHERE partition_key = ''"
+            "WHERE partition_key = '' AND asset_key LIKE 't.%'"
         )
         return dict(cur.fetchall())
 
@@ -116,6 +122,7 @@ def _materialize_all_derived(conn):
             FROM serving_geo.asset_expected_version_v e
             JOIN curated_geo.asset a ON a.id = e.asset_id
             WHERE e.partition_key = '' AND a.kind = 'derived'
+              AND a.asset_key LIKE 't.%'
             """
         )
 

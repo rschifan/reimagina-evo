@@ -641,6 +641,14 @@ def upgrade() -> None:
         FROM serving_geo.asset_freshness_v f
     """)
 
+    # Lineage gets an explore twin too, because AGENTS.md keeps CLI inspection
+    # commands reading from explore rather than reaching into serving_geo.
+    op.execute("""
+        CREATE OR REPLACE VIEW explore.asset_lineage_v AS
+        SELECT direction, root_key, related_key, related_kind, depth
+        FROM serving_geo.asset_lineage_v
+    """)
+
     for row in _NEW_CATALOG_ROWS:
         op.execute(
             "INSERT INTO explore.layer_catalog "
@@ -668,6 +676,7 @@ def downgrade() -> None:
             f"DELETE FROM explore.layer_catalog "
             f"WHERE schema_name = '{row[0]}' AND object_name = '{row[1]}'"
         )
+    op.execute("DROP VIEW IF EXISTS explore.asset_lineage_v")
     op.execute("DROP VIEW IF EXISTS explore.asset_freshness_v")
     op.execute("DROP VIEW IF EXISTS explore.asset_v")
     op.execute("DROP VIEW IF EXISTS serving_geo.asset_lineage_v")

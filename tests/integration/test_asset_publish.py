@@ -241,10 +241,15 @@ def test_observing_an_external_asset_publishes_its_content_signal(seeded, conn):
 def test_observing_twice_without_a_change_publishes_nothing(seeded, conn):
     _add_road_edge(conn, 2000)
     observe_assets(conn)
+    _, after_first, _ = _current(conn, "global.road_network")
+
     again = {o.asset_key: o for o in observe_assets(conn)}
+
     assert again["global.road_network"].changed is False
-    _, sequence, _ = _current(conn, "global.road_network")
-    assert sequence == 1
+    # Relative, not absolute: the asset may already carry a version history from
+    # an earlier observation, and what matters is that this one added nothing.
+    _, after_second, _ = _current(conn, "global.road_network")
+    assert after_second == after_first
 
 
 def test_a_road_change_stales_only_the_network_indicators(seeded, conn):

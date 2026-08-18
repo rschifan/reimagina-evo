@@ -42,6 +42,13 @@ from reimagina.tiles.defaults import (  # noqa: E402
     tile_live_base_url,
     tile_snapshot_base_url,
 )
+from .assets import (  # noqa: E402
+    consumers as assets_consumers_cmd,
+    inputs as assets_inputs_cmd,
+    observe as assets_observe_cmd,
+    seed as assets_seed_cmd,
+    stale as assets_stale_cmd,
+)
 from .explore import (  # noqa: E402
     list_executor_health,
     list_feature_stats,
@@ -595,6 +602,53 @@ def tiles_snapshots(
 
 
 # ── feat ─────────────────────────────────────────────────────────────────
+# ── assets ───────────────────────────────────────────────────────────────
+assets_app = typer.Typer(
+    name="assets",
+    help="Asset graph: lineage, freshness, and observation of external sources",
+)
+app.add_typer(assets_app, name="assets")
+
+
+@assets_app.command("seed", help="Register shipped assets and their edges (idempotent)")
+def assets_seed(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+    return _print(assets_seed_cmd(dsn=dsn))
+
+
+@assets_app.command("observe", help="Probe observable assets and publish any change")
+def assets_observe(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    asset_key: Optional[str] = typer.Option(None, "--asset-key"),
+) -> int:
+    return _print(assets_observe_cmd(dsn=dsn, asset_key=asset_key))
+
+
+@assets_app.command("stale", help="What is out of date right now")
+def assets_stale(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    include_absent: bool = typer.Option(False, "--include-absent"),
+) -> int:
+    return _print(assets_stale_cmd(dsn=dsn, include_absent=include_absent))
+
+
+@assets_app.command("inputs", help="Every asset this one consumes, transitively")
+def assets_inputs(
+    asset_key: str = typer.Argument(
+        ..., help="e.g. indicator.urban_form_block_composite"
+    ),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+) -> int:
+    return _print(assets_inputs_cmd(dsn=dsn, asset_key=asset_key))
+
+
+@assets_app.command("consumers", help="Everything that must recompute if this changes")
+def assets_consumers(
+    asset_key: str = typer.Argument(..., help="e.g. global.road_network"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+) -> int:
+    return _print(assets_consumers_cmd(dsn=dsn, asset_key=asset_key))
+
+
 feat_app = typer.Typer(name="feat", help="Canonical feature_type_catalog operations")
 app.add_typer(feat_app, name="feat")
 
