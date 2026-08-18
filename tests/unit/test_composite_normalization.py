@@ -128,3 +128,21 @@ def test_higher_is_better_indicators_are_unchanged_by_orientation():
         assert spec.higher_is_better
         mid = (spec.valid_min + spec.valid_max) / 2
         assert _orient(slug, mid) == pytest.approx(_normalise(slug, mid))
+
+
+def test_the_shipped_score_mixes_both_directions():
+    """`livability_block_score` is the first shipped spec to combine a
+    higher-is-better input with lower-is-better ones, so the orientation path
+    is exercised by the catalog itself rather than only by a test-local spec.
+
+    Also pins the choice of the *network* accessibility family: only it responds
+    to a road-network edit, which is what makes the attribute -> run -> indicator
+    chain end to end.
+    """
+    score = _BY_SLUG["livability_block_score"]
+    directions = {_BY_SLUG[slug].higher_is_better for slug, _ in score.depends_on}
+    assert directions == {True, False}, "the score must exercise both directions"
+
+    distances = [slug for slug, _ in score.depends_on if slug.endswith("_m")]
+    assert distances and all(s.endswith("_network_m") for s in distances), distances
+    assert sum(w or 0.0 for _, w in score.depends_on) == pytest.approx(1.0)

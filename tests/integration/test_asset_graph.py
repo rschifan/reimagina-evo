@@ -462,13 +462,22 @@ def test_changing_the_road_network_names_exactly_the_network_indicators(seeded_g
     `reads=("geometry",)` could not distinguish "the roads changed" from "the
     blocks changed". Here the three straight-line accessibility indicators are
     untouched by a road edit because they consume POIs, not the network.
+
+    `livability_block_score` is in the set because it is a weighted consumer of
+    all three network indicators — a road edit reaches it transitively, which is
+    the propagation this graph exists to compute. Its straight-line siblings
+    still stay out.
     """
     downstream = _lineage(seeded_graph, "downstream", "global.road_network")
     assert downstream == {
         "indicator.accessibility_block_school_network_m",
         "indicator.accessibility_block_health_network_m",
         "indicator.accessibility_block_park_network_m",
+        "indicator.livability_block_score",
     }
+    # The discrimination that matters is unchanged: no euclid indicator is
+    # reached, so "the roads changed" still does not mean "the POIs changed".
+    assert not any("_euclid_m" in node for node in downstream)
 
 
 def test_changing_buildings_spares_compactness(seeded_graph):
