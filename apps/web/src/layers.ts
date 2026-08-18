@@ -151,13 +151,56 @@ export function extractTileSources(sources: TileSource[]): TileSourceCatalog {
 }
 
 
+/** Baseline tile URL for one input layer, scoped to ``aoiId`` when one
+ *  is active.
+ *
+ *  Unscoped, ``get_tile`` serves every feature of that type in the
+ *  database — for the CDMX pilot that is all 16 alcaldías, so the
+ *  operator saw 62k blocks of context around the 5.3k the AOI covers,
+ *  and the AOI-scoped choropleth painted on top read as broken
+ *  coverage rather than as the pilot boundary.
+ *
+ *  Omitting the parameter still means "whole database", which is a
+ *  legitimate view — the urban-form indicators are computed city-wide.
+ *  A malformed id renders an EMPTY tile rather than everything (r039
+ *  fails closed on purpose), so only ever pass an id resolved from the
+ *  AOI catalog, which is what ``getActiveAoiId`` guarantees. */
+function _baselineTileUrl(
+  catalog: TileSourceCatalog,
+  layer: InputLayerSpec,
+  aoiId: string | null,
+): string {
+  const base = `${catalog.baselineTilesUrl}?type_slug=${encodeURIComponent(layer.typeSlug)}`;
+  return aoiId ? _appendAoiId(base, aoiId) : base;
+}
+
+
+/** Re-scope every baseline source to ``aoiId``. Mirrors
+ *  {@link refreshAggregationOverlayAoi} — MapLibre refetches the
+ *  visible tiles on ``setTiles``, so switching AOI re-frames the
+ *  spatial layers without rebuilding them. */
+export function refreshBaselineAoi(
+  map: MapLibreMap,
+  catalog: TileSourceCatalog,
+  aoiId: string | null,
+): void {
+  for (const layer of INPUT_LAYERS) {
+    const source = map.getSource(layer.sourceName) as unknown as
+      { setTiles?: (urls: string[]) => void } | undefined;
+    if (!source || typeof source.setTiles !== "function") continue;
+    source.setTiles([_baselineTileUrl(catalog, layer, aoiId)]);
+  }
+}
+
+
 export function installInputLayers(
   map: MapLibreMap,
   catalog: TileSourceCatalog,
   tooltips?: TooltipController,
+  aoiId: string | null = null,
 ): void {
   for (const layer of INPUT_LAYERS) {
-    const tileUrl = `${catalog.baselineTilesUrl}?type_slug=${encodeURIComponent(layer.typeSlug)}`;
+    const tileUrl = _baselineTileUrl(catalog, layer, aoiId);
     // promoteId surfaces the MVT 'feature_id' property as feature.id so
     // setFeatureState({...id}) can find the right feature for hover
     // highlighting. Every reimagina tile function emits feature_id.

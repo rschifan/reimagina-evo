@@ -57,6 +57,7 @@ import {
   installRasterLayers,
   wireAggregationOverlayClipping,
   refreshAggregationOverlayAoi,
+  refreshBaselineAoi,
   wireLayerToggles,
   wireRasterToggles,
 } from "./layers";
@@ -226,7 +227,7 @@ async function main(): Promise<void> {
     // in one place — main.ts stays agnostic of per-layer details.
     const tooltipController = new TooltipController(map, map.getContainer());
 
-    installInputLayers(map, tileCatalog, tooltipController);
+    installInputLayers(map, tileCatalog, tooltipController, getActiveAoiId());
     installRasterLayers(map, sources, tooltipController);
     installAggregationOverlays(map, sources, tooltipController, getActiveAoiId());
 
@@ -294,6 +295,10 @@ async function main(): Promise<void> {
       // benign at low-AOI counts, but a real per-tile cost over a
       // long session.
       clearAggregationOverlayClipping();
+      // Baseline layers are AOI-scoped too (r039), so switching pilot
+      // re-frames the spatial context instead of leaving every other
+      // alcaldía drawn around the new AOI.
+      refreshBaselineAoi(map, tileCatalog, aoi?.aoi_id ?? null);
       refreshAggregationOverlayAoi(map, sources, aoi?.aoi_id ?? null);
       // Switching AOI invalidates any active circle/rectangle/polygon
       // selection — a CDMX-drawn circle has no meaningful intersection
