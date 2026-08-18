@@ -45,7 +45,7 @@ jobs:
         run: pip install mypy==2.3.1
 
       - name: mypy
-        run: mypy packages/py/reimagina
+        run: mypy packages/py/reimagina apps scripts
 
   test-py-unit:
     name: Unit + Contract tests (Python)

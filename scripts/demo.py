@@ -318,7 +318,8 @@ def run(dsn: str) -> None:
         print(f"\n  edit `{attribute}` across the AOI:")
         run_id = _run_and_watch(conn, orchestrator, attribute=attribute, aoi_id=aoi_id)
         children = _children(conn, run_id)
-        indicators = len(orchestrator.get_run(conn, run_id).units)
+        run = orchestrator.get_run(conn, run_id)
+        indicators = len(run.units) if run else 0
         print(
             f"      → {indicators} indicators from {children} dispatched "
             f"unit(s)  ({indicators // max(children, 1)}x fan-out)"

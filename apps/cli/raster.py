@@ -515,6 +515,7 @@ def run_derivation(
                 run_recipe(conn, recipe_id=recipe_id, direct_dsn=direct_dsn)
             ]
         else:
+            assert raster_layer_slug is not None  # guarded above
             layer = _find_raster_layer_by_slug(backend, raster_layer_slug)
             if layer is None:
                 raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")

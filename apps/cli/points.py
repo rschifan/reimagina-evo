@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from reimagina.db import connect
-from reimagina.pipeline import points
+import reimagina.pipeline.points as points
 
 
 def bootstrap_points(

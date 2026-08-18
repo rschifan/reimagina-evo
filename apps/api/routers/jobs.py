@@ -161,7 +161,7 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
     events come from (LISTEN/NOTIFY, a workflow stream, a websocket) is not this
     module's business.
     """
-    from reimagina.orchestration import frames
+    import reimagina.orchestration.frames as frames
     from reimagina.orchestration.factory import get_orchestrator
 
     events = get_orchestrator().subscribe_progress(run_id).__aiter__()
@@ -191,8 +191,13 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
         # before aclose() — closing one still suspended raises instead.
         with contextlib.suppress(BaseException):
             await pending
-        with contextlib.suppress(Exception):
-            await events.aclose()
+        # `subscribe_progress` is typed AsyncIterator, which has no `aclose`;
+        # the concrete generator does, and closing it is what releases the
+        # progress-stream slot.
+        aclose = getattr(events, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
 
 
 @router.get("/{run_id}/events")

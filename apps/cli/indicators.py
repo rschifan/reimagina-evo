@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, is_dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reimagina.orchestration.port import Orchestrator
 
 from reimagina.db import connect
 from reimagina.indicators.catalog import seed_catalog
@@ -51,7 +55,12 @@ def compute_indicator(
             code_version=code_version,
             aoi_id=aoi_id,
         )
-    payload = asdict(result) if is_dataclass(result) else {"result": repr(result)}
+    # `is_dataclass` is true for the class object too, which `asdict` rejects.
+    payload = (
+        asdict(result)
+        if is_dataclass(result) and not isinstance(result, type)
+        else {"result": repr(result)}
+    )
     return {"dsn": dsn, **payload}
 
 
@@ -174,7 +183,7 @@ def evaluate_scenario_cli(
         # processes stay client-only; this is an explicit caller choice.
         from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
 
-        orchestrator = DBOSOrchestrator(execution_mode="dev")
+        orchestrator: Orchestrator = DBOSOrchestrator(execution_mode="dev")
     else:
         orchestrator = get_orchestrator("dbos")
     with connect(dsn) as conn:
