@@ -12,7 +12,11 @@ from __future__ import annotations
 import pytest
 
 from reimagina.assets.keys import indicator_asset_key
-from reimagina.assets.registry import SHIPPED_ASSETS, seed_assets
+from reimagina.assets.registry import (
+    SHIPPED_ASSETS,
+    scenario_override_assets,
+    seed_assets,
+)
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
 from reimagina.assets.version import components, expected_versions
 
@@ -377,9 +381,14 @@ def test_seed_assets_is_idempotent_and_stable(conn):
     # Datasets first, then one derived asset per shipped indicator — projected
     # from SHIPPED_INDICATORS rather than listed again, so the two cannot
     # disagree about which indicators exist.
-    assert seeded[: len(SHIPPED_ASSETS)] == [s.asset_key for s in SHIPPED_ASSETS]
-    assert seeded[len(SHIPPED_ASSETS) :] == [
-        indicator_asset_key(s.slug) for s in SHIPPED_INDICATORS
+    # Datasets, then one override asset per overridable attribute, then one
+    # derived asset per shipped indicator — the last two projected from
+    # SHIPPED_INDICATORS rather than listed again, so none of the three can
+    # disagree about which indicators exist or what they read.
+    assert seeded == [
+        *(s.asset_key for s in SHIPPED_ASSETS),
+        *(s.asset_key for s in scenario_override_assets()),
+        *(indicator_asset_key(s.slug) for s in SHIPPED_INDICATORS),
     ]
     assert first == second
 
@@ -530,16 +539,41 @@ def _dirty(conn, scenario_id=SCENARIO):
     return set(scenario_dirty_slugs(conn, scenario_id))
 
 
-def _publish_override(conn, version="digest-1", scenario_id=SCENARIO):
-    from reimagina.assets.keys import partition_key
+def _publish_override(
+    conn, attribute="floors", version="digest-1", scenario_id=SCENARIO
+):
+    from reimagina.assets.keys import partition_key, scenario_override_asset_key
     from reimagina.assets.publish import publish_version
 
     publish_version(
         conn,
-        asset_key="scenario.override",
+        asset_key=scenario_override_asset_key(attribute),
         version=version,
         partition_key=partition_key({"scenario": scenario_id}),
     )
+
+
+#: What each attribute reaches, written out rather than derived from the specs.
+#: A helper that re-walked the catalog could agree with a broken graph; these
+#: cannot — and did not: `livability_block_score` landed on main while this was
+#: in review, and these sets are what noticed that `num_levels` now reaches it
+#: through `edificability_block_density`.
+#:
+#: `floors` is the narrow case — one reader, nothing above it. The other two
+#: each propagate past their readers into a composite.
+FLOORS_READERS = {"urban_form_block_planned_floors"}
+GEOMETRY_READERS = {
+    "urban_form_block_compactness",
+    "urban_form_block_building_density",
+    "urban_form_block_composite",
+}
+NUM_LEVELS_READERS = {
+    "edificability_block_housing_units",
+    "edificability_block_population",
+    "edificability_block_density",
+    # Combines edificability_block_density with the network accessibilities.
+    "livability_block_score",
+}
 
 
 def test_a_scenario_nobody_has_edited_is_not_dirty(seeded_graph):
@@ -547,33 +581,70 @@ def test_a_scenario_nobody_has_edited_is_not_dirty(seeded_graph):
     assert _dirty(seeded_graph) == set()
 
 
-def test_an_override_reaches_every_indicator_and_that_is_the_current_bound(
+def test_an_override_reaches_exactly_the_indicators_that_read_that_attribute(
     seeded_graph,
 ):
-    """The honest state of the art here, asserted rather than implied.
+    """The exactness the per-attribute split buys.
 
-    `scenario.override` is one asset covering every attribute, so every
-    attribute-reading indicator has an identity edge to it and the composite
-    inherits the partition through its components. An edit to any attribute
-    therefore reaches all of them. Correct, not minimal — an asset per attribute
-    is what narrows it, and this assertion is what will show that it did.
+    One override asset per attribute means editing `floors` publishes a version
+    for `scenario.override.floors` and nothing else, so the scenario partition
+    propagates to the one indicator declaring an edge to `floors` and stops.
+    With a single override asset this returned all thirteen.
     """
-    _publish_override(seeded_graph)
+    _publish_override(seeded_graph, "floors")
 
-    assert _dirty(seeded_graph) == {spec.slug for spec in SHIPPED_INDICATORS}
+    assert _dirty(seeded_graph) == FLOORS_READERS
+
+
+def test_the_partition_propagates_past_a_reader_to_what_depends_on_it(seeded_graph):
+    """Exact does not mean shallow: downstream still follows.
+
+    A composite reads no attribute at all, so it can only be reached through its
+    components — which is what `geometry` does and `floors` does not.
+    """
+    _publish_override(seeded_graph, "geometry")
+
+    assert _dirty(seeded_graph) == GEOMETRY_READERS
+
+
+def test_two_attributes_reach_two_different_sets(seeded_graph):
+    """Different assets, so the sets are genuinely independent — not one bit."""
+    _publish_override(seeded_graph, "num_levels")
+
+    assert _dirty(seeded_graph) == NUM_LEVELS_READERS
+
+    _publish_override(seeded_graph, "floors")
+
+    assert _dirty(seeded_graph) == NUM_LEVELS_READERS | FLOORS_READERS
+
+
+def test_an_override_of_an_attribute_nobody_reads_computes_nothing(seeded_graph):
+    """No edge, no propagation. The asset is not even registered."""
+    from reimagina.assets.keys import partition_key
+    from reimagina.assets.publish import publish_version
+
+    published = publish_version(
+        seeded_graph,
+        asset_key="scenario.override.not_an_input",
+        version="d",
+        partition_key=partition_key({"scenario": SCENARIO}),
+    )
+
+    assert published is None, "an unregistered asset is not an error, just inert"
+    assert _dirty(seeded_graph) == set()
 
 
 def test_comparing_expected_versions_cannot_narrow_a_scenario(seeded_graph):
     """Why `scenario_dirty_slugs` carries no version-comparison predicate.
 
     An earlier revision filtered on `expected(scenario) <> expected(baseline)`,
-    which reads like the exactness the design promises and is in fact a
-    tautology: every component embeds the partition it was reached at, starting
-    with the root's own, so two partitions of one asset never hash alike. The
-    predicate excluded nothing. This pins that, so re-adding it is a failing
-    test rather than a silent no-op.
+    which reads like exactness and is in fact a tautology: every component
+    embeds the partition it was reached at, starting with the root's own, so two
+    partitions of one asset never hash alike. The predicate excluded nothing.
+    Per-attribute assets are what made the filter real, by removing the *node*;
+    this pins that the hash comparison still cannot do it.
     """
-    _publish_override(seeded_graph)
+    _publish_override(seeded_graph, "floors")
     with seeded_graph.cursor() as cur:
         cur.execute(
             """
@@ -588,13 +659,13 @@ def test_comparing_expected_versions_cannot_narrow_a_scenario(seeded_graph):
         )
         equal, total = cur.fetchone()
 
-    assert total == len(SHIPPED_INDICATORS)
-    assert equal == 0, "the predicate this replaced never excluded anything"
+    assert total == len(FLOORS_READERS), "only the reached ones have a node"
+    assert equal == 0, "and among those, the predicate excludes nothing"
 
 
 def test_an_indicator_already_computed_for_the_scenario_drops_out(seeded_graph):
-    _publish_override(seeded_graph)
-    slug = "urban_form_block_compactness"
+    _publish_override(seeded_graph, "floors")
+    slug = "urban_form_block_planned_floors"
     with seeded_graph.cursor() as cur:
         cur.execute(
             """
@@ -613,7 +684,7 @@ def test_an_indicator_already_computed_for_the_scenario_drops_out(seeded_graph):
 def test_one_scenario_does_not_dirty_another_or_the_baseline(seeded_graph):
     from reimagina.assets.freshness import stale_indicator_slugs
 
-    _publish_override(seeded_graph)
+    _publish_override(seeded_graph, "floors")
 
     assert _dirty(seeded_graph, "88888888-8888-8888-8888-888888888888") == set()
     assert stale_indicator_slugs(seeded_graph) == []

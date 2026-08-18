@@ -27,6 +27,12 @@ BASELINE = ""
 #: place the two naming schemes meet.
 INDICATOR_PREFIX = "indicator."
 
+#: Prefix for the per-attribute scenario override assets. One asset per
+#: overridable attribute, each partitioned by scenario — see
+#: ``assets.registry.scenario_override_assets`` for why it is per attribute and
+#: not one asset for all of them.
+SCENARIO_OVERRIDE_PREFIX = "scenario.override."
+
 
 @dataclass(frozen=True)
 class AssetEdge:
@@ -67,6 +73,11 @@ class AssetEdge:
 
 def indicator_asset_key(slug: str) -> str:
     return f"{INDICATOR_PREFIX}{slug}"
+
+
+def scenario_override_asset_key(attribute: str) -> str:
+    """The asset carrying every scenario's edits to one attribute."""
+    return f"{SCENARIO_OVERRIDE_PREFIX}{attribute}"
 
 
 def partition_key(dimensions: Mapping[str, str | None] | None = None) -> str:

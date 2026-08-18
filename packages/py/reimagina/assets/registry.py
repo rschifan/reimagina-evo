@@ -14,10 +14,11 @@ what an indicator is.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from reimagina.assets.keys import indicator_asset_key
+from reimagina.assets.keys import indicator_asset_key, scenario_override_asset_key
 from reimagina.storage import backend_for_connection
 
 
@@ -94,19 +95,6 @@ SHIPPED_ASSETS: tuple[AssetSpec, ...] = (
             "COALESCE(max(osm_id)::text, '') FROM curated_geo.road_edge"
         ),
         description="OSM pedestrian network powering network accessibility",
-    ),
-    AssetSpec(
-        asset_key="scenario.override",
-        kind="source",
-        backing_kind="scenario_override",
-        backing_ref="curated_geo.scenario_override",
-        version_strategy="commit",
-        # Partitioned by scenario, which is what makes a what-if and a dataset
-        # reload the same mechanism rather than two. Editing scenario S moves the
-        # version of S's partition only; the baseline partition never has a
-        # version at all, so no edit can reach it.
-        partition_dimensions=("scenario",),
-        description="Per-scenario attribute overrides — the what-if input",
     ),
     AssetSpec(
         asset_key="censo.2020",
@@ -195,48 +183,106 @@ def indicator_assets() -> tuple[AssetSpec, ...]:
     )
 
 
-#: The asset carrying every scenario's attribute edits, partitioned by scenario.
-SCENARIO_OVERRIDE_ASSET = "scenario.override"
+def overridable_attributes() -> tuple[str, ...]:
+    """Every attribute a what-if can edit, sorted.
+
+    Derived from what the indicators declare they read rather than listed here.
+    A hand-maintained list is how ``poi_version`` rotted: it named an input
+    nothing produced and nothing validated, for six migrations.
+    """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    return tuple(sorted({key for spec in SHIPPED_INDICATORS for key in spec.reads}))
 
 
-def _partition_mapping(producer_kind: str) -> str:
+def scenario_override_assets() -> tuple[AssetSpec, ...]:
+    """One override asset per attribute, each partitioned by scenario.
+
+    Per attribute, not one asset for all of them, and that is the whole point.
+    A single ``scenario.override`` made every attribute-reading indicator a
+    consumer of every edit: an override on ``floors`` bumped the one version
+    they all read, so all thirteen went dirty — the flat-union
+    over-approximation ``resolve_change_set`` documents, restated as a graph.
+
+    Splitting the asset moves the granularity into the node, where the partition
+    algebra already lives. ``scenario.override.floors@scenario=S`` is a partition
+    of a different *asset* from ``scenario.override.num_levels@scenario=S``, so
+    an edit publishes a version for the first and not the second, and the
+    downstream propagation in ``asset_component_v`` carries the scenario
+    partition only to the indicators that declared an edge to that attribute.
+
+    ⚠ The alternative — keeping one asset and teaching the edge to select an
+    attribute slice of it — was rejected. It needs a partition mapping resolved
+    per *edge* rather than per node, which means new semantics in the recursive
+    view, in its Python twin, and in every partition-aware query. This needs
+    none: the existing ``identity`` mapping, unchanged, already does it. Two
+    implementations of one algebra can afford exactly one set of rules.
+
+    Attributes with no override rows are still registered. An asset with no
+    version contributes ``missing`` identically in every partition, so the
+    unedited ones cost a row in the registry and nothing in any hash.
+    """
+    return tuple(
+        AssetSpec(
+            asset_key=scenario_override_asset_key(attribute),
+            kind="source",
+            backing_kind="scenario_override",
+            backing_ref=attribute,
+            version_strategy="commit",
+            # Editing scenario S moves the version of S's partition only; the
+            # baseline partition never has a version at all, so no edit to any
+            # scenario can reach a baseline result.
+            partition_dimensions=("scenario",),
+            description=f"Per-scenario overrides of {attribute!r} — the what-if input",
+        )
+        for attribute in overridable_attributes()
+    )
+
+
+def _partition_mapping(partition_dimensions: Sequence[str]) -> str:
     """How a consumer's partition resolves on this producer.
 
-    A source or external asset has no scenario partitions — there is one shared
-    copy of the blocks, not one per what-if — so a scenario's results read its
-    baseline. A derived producer is partitioned the same way its consumer is, so
-    a composite under scenario S reads its components under S.
+    Read off the producer's own declared dimensions, not its kind. A producer
+    that is partitioned by scenario is read at the consumer's scenario —
+    ``identity`` — and one that is not has a single shared copy, so a scenario's
+    results read its baseline. There is one shared set of blocks, not one per
+    what-if.
 
-    ``scenario.override`` is the exception that makes the model work: it *is*
-    partitioned by scenario, so it maps by identity and an edit to S reaches
-    only S.
+    Deriving it rather than special-casing is what makes the per-attribute
+    override assets work with no new rules: they are sources, like the layers,
+    but they are partitioned by scenario, like the indicators. Keying on `kind`
+    could not express that and needed the exception hardcoded on the one edge
+    that had it.
     """
-    return "identity" if producer_kind == "derived" else "baseline"
+    return "identity" if "scenario" in partition_dimensions else "baseline"
 
 
 def _edges_for(spec: Any) -> list[Any]:
-    """The declared edges, plus the scenario-override edge they imply.
+    """The declared edges, plus one override edge per attribute they read.
 
-    An indicator that reads attributes can be changed by a what-if, so it
-    depends on that scenario's override set. Generated from the attribute
-    projection the indicator already declares rather than written out per
-    indicator: a hand-maintained second list is exactly how `poi_version` rotted.
+    Generated from the attribute projection the indicator already declares
+    rather than written out per indicator: a hand-maintained second list is
+    exactly how ``poi_version`` rotted.
+
+    One edge per attribute, so the graph knows *which* attribute reaches this
+    indicator. An indicator reading ``num_levels`` and ``unit_size`` is a
+    consumer of two override assets, and an edit to a third attribute reaches
+    neither.
 
     Indicators that read no attributes — the composite — get no such edge, and
     correctly so: a what-if reaches them through their components, not directly.
     """
     from reimagina.assets.keys import AssetEdge
 
-    attributes = tuple(key for edge in spec.inputs for key in edge.attributes)
-    if not attributes:
-        return list(spec.inputs)
     return [
         *spec.inputs,
-        AssetEdge(
-            SCENARIO_OVERRIDE_ASSET,
-            relation="self",
-            attributes=attributes,
-            partition_mapping="identity",
+        *(
+            AssetEdge(
+                scenario_override_asset_key(attribute),
+                relation="self",
+                attributes=(attribute,),
+            )
+            for attribute in spec.reads
         ),
     ]
 
@@ -255,10 +301,10 @@ def seed_asset_edges(conn: Any) -> int:
 
     written = 0
     with conn.cursor() as cur:
-        cur.execute("SELECT asset_key, id, kind FROM curated_geo.asset")
+        cur.execute("SELECT asset_key, id, partition_dimensions FROM curated_geo.asset")
         rows = cur.fetchall()
         ids = {r[0]: r[1] for r in rows}
-        kinds = {r[0]: r[2] for r in rows}
+        dimensions = {r[0]: r[2] for r in rows}
         for spec in SHIPPED_INDICATORS:
             consumer_key = indicator_asset_key(spec.slug)
             if consumer_key not in ids:
@@ -299,7 +345,7 @@ def seed_asset_edges(conn: Any) -> int:
                         edge.radius_m,
                         edge.weight,
                         edge.partition_mapping
-                        or _partition_mapping(kinds[edge.asset_key]),
+                        or _partition_mapping(dimensions[edge.asset_key]),
                     ),
                 )
                 written += 1
@@ -316,7 +362,7 @@ def seed_assets(
     across a re-seed.
     """
     if specs is None:
-        specs = SHIPPED_ASSETS + indicator_assets()
+        specs = SHIPPED_ASSETS + scenario_override_assets() + indicator_assets()
     if backend_for_connection(conn).name != "postgres":
         raise RuntimeError("the asset graph requires the Postgres backend")
 
