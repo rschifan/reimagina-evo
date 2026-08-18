@@ -58,6 +58,31 @@ class IndicatorValue(BaseModel):
     indicator_name: str | None = None
 
 
+class DependencyEdge(BaseModel):
+    """One composite → input edge. `weight` is the input's share of the
+    composite and is null for a dependency that carries no weighting."""
+
+    indicator_slug: str
+    indicator_name: str
+    depends_on_slug: str
+    depends_on_name: str
+    depends_on_unit: str | None = None
+    weight: float | None = None
+
+
+class IndicatorDependencies(BaseModel):
+    """Both directions around one indicator.
+
+    `upstream` is what it is computed from, `downstream` what would have to
+    be recomputed if it changed. Answering both from one edge set means the
+    two can never disagree.
+    """
+
+    slug: str
+    upstream: list[DependencyEdge]
+    downstream: list[DependencyEdge]
+
+
 @router.get("", response_model=list[IndicatorSummary])
 def list_indicators(
     aoi_id: str | None = Query(
@@ -90,6 +115,33 @@ def get_indicator(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
     return IndicatorSummary(**_catalog_row_to_dict(row))
+
+
+@router.get("/{slug}/dependencies", response_model=IndicatorDependencies)
+def get_indicator_dependencies(
+    slug: str,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> IndicatorDependencies:
+    """What `slug` is computed from, and what is computed from it.
+
+    A direct indicator has an empty `upstream`; a leaf has an empty
+    `downstream`. Both empty is the common case and is not an error — most
+    indicators are computed straight from features rather than from other
+    indicators.
+    """
+    repo = get_backend(conn).indicator_catalog_repo()
+    if repo.get_indicator(slug) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
+    edges = repo.list_dependencies()
+    return IndicatorDependencies(
+        slug=slug,
+        upstream=[
+            DependencyEdge(**edge) for edge in edges if edge["indicator_slug"] == slug
+        ],
+        downstream=[
+            DependencyEdge(**edge) for edge in edges if edge["depends_on_slug"] == slug
+        ],
+    )
 
 
 @router.get("/{slug}/values", response_model=list[IndicatorValue])

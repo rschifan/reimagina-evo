@@ -68,3 +68,31 @@ export function getStats(
 export function downloadUrl(slug: string, format: "csv" | "geojson" | "parquet"): string {
   return `/api/indicators/${encodeURIComponent(slug)}/values.${format}`;
 }
+
+
+export interface DependencyEdge {
+  indicator_slug: string;
+  indicator_name: string;
+  depends_on_slug: string;
+  depends_on_name: string;
+  depends_on_unit: string | null;
+  weight: number | null;
+}
+
+export interface IndicatorDependencies {
+  slug: string;
+  /** What this indicator is computed from. Empty for a direct indicator. */
+  upstream: DependencyEdge[];
+  /** What would have to be recomputed if this changed. */
+  downstream: DependencyEdge[];
+}
+
+export function getDependencies(
+  slug: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<IndicatorDependencies> {
+  return jsonRequest<IndicatorDependencies>(
+    `/indicators/${encodeURIComponent(slug)}/dependencies`,
+    init,
+  );
+}

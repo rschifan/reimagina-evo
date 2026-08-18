@@ -42,6 +42,8 @@ class IndicatorCatalogRepository(Protocol):
         depends_on: list[tuple[str, float | None]],
     ) -> None: ...
 
+    def list_dependencies(self) -> list[dict[str, Any]]: ...
+
 
 class IndicatorResultRepository(Protocol):
     """Write + read path for indicator_result.

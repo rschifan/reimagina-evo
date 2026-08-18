@@ -3,8 +3,10 @@
 
   import Badge from "./lib/components/ui/Badge.svelte";
   import Card from "./lib/components/ui/Card.svelte";
-  import { downloadUrl, type IndicatorStats } from "./api";
+  import LineageGraph from "./LineageGraph.svelte";
+  import { downloadUrl, getDependencies, type IndicatorDependencies, type IndicatorStats } from "./api";
   import { boundsFraction, familyOf } from "./derive";
+  import { isAbortError } from "../http";
   import { fmtNumber } from "../format";
   import { catalog, statsFor } from "./store.svelte";
 
@@ -17,6 +19,8 @@
 
   let stats = $state<IndicatorStats | null>(null);
   let statsError = $state<string | null>(null);
+  let deps = $state<IndicatorDependencies | null>(null);
+  let depsError = $state<string | null>(null);
 
   $effect(() => {
     if (!indicator || !grain) return;
@@ -27,6 +31,19 @@
     return () => {
       live = false;
     };
+  });
+
+  $effect(() => {
+    if (!indicator) return;
+    const ctrl = new AbortController();
+    deps = null;
+    depsError = null;
+    getDependencies(indicator.slug, { signal: ctrl.signal })
+      .then((d) => (deps = d))
+      .catch((e) => {
+        if (!isAbortError(e)) depsError = e instanceof Error ? e.message : String(e);
+      });
+    return () => ctrl.abort();
   });
 
   const p50Pos = $derived(
@@ -144,11 +161,18 @@
       </Card>
 
       <Card title="Lineage">
-        <p class="text-xs text-muted-foreground">
-          Dependency graph, upstream datasets and freshness attach here once the
-          asset graph merges. Until then this indicator's inputs are declared in
-          the code registry and not yet queryable.
-        </p>
+        {#if depsError}
+          <p class="text-xs text-state-stale">Dependencies unavailable: {depsError}</p>
+        {:else if !deps}
+          <div class="h-16 animate-pulse rounded bg-surface-raised" aria-busy="true"></div>
+        {:else}
+          <LineageGraph
+            slug={indicator.slug}
+            name={indicator.name}
+            upstream={deps.upstream}
+            downstream={deps.downstream}
+          />
+        {/if}
       </Card>
 
       <Card title="Download">

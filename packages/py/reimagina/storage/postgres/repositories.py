@@ -2296,6 +2296,34 @@ class PostgresIndicatorCatalogRepository:
                     (parent_id, child[0], weight),
                 )
 
+    def list_dependencies(self) -> list[dict]:
+        """Every composite → input edge, as slugs and weights.
+
+        The write side of `indicator_dependency` has existed since r016 and
+        nothing has ever read it back, so a composite's inputs were only
+        visible by inspecting the Python registry. Returning the whole edge
+        set in one query — there are single digits of them — lets a caller
+        build both directions of the graph without a query per indicator.
+        """
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT parent.slug        AS indicator_slug,
+                       parent.name        AS indicator_name,
+                       child.slug         AS depends_on_slug,
+                       child.name         AS depends_on_name,
+                       child.unit         AS depends_on_unit,
+                       d.weight
+                FROM curated_geo.indicator_dependency d
+                JOIN curated_geo.indicator_catalog parent ON parent.id = d.indicator_id
+                JOIN curated_geo.indicator_catalog child  ON child.id = d.depends_on_id
+                ORDER BY parent.slug, child.slug
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
 
 # ─── Indicator result ───────────────────────────────────────────────────────
 
