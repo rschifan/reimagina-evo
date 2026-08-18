@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 import psycopg2
+
+from reimagina import settings
 import pytest
 
 from reimagina.orchestration import runners
@@ -50,7 +52,7 @@ makes the other's alembic fail outright with "Can't locate revision". Sharing on
 is not slow, it is impossible.
 """
 
-SLOTS = int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "4"))
+SLOTS = settings.unit_concurrency()
 _SETTLE_TIMEOUT = 180.0
 _POLL_S = 0.025
 """Poll interval on `get_run`. It lands inside `settle_lag_ms`, so it is

@@ -54,6 +54,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages" / "py"))
 
+from reimagina import settings  # noqa: E402
 from reimagina.indicators.catalog import SHIPPED_INDICATORS  # noqa: E402
 from reimagina.orchestration.factory import (  # noqa: E402
     DEFAULT_MODE,
@@ -277,7 +278,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--slots",
         type=int,
-        default=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "4")),
+        default=settings.unit_concurrency(),
     )
     parser.add_argument(
         "--out", default=f"artifacts/workloads-real-{DEFAULT_MODE}.json"

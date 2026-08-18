@@ -38,6 +38,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 import psycopg2
 from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID
 
+from reimagina import settings
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration import runstore
 from reimagina.orchestration.graph import topological_order
@@ -333,7 +334,7 @@ def launch() -> None:
         # scheduler, is what bounds slot count at city scale.
         _units_queue = DBOS.register_queue(
             UNITS_QUEUE,
-            worker_concurrency=int(os.environ.get("REIMAGINA_UNIT_CONCURRENCY", "8")),
+            worker_concurrency=settings.unit_concurrency(),
             polling_interval_sec=POLL_INTERVAL_SEC,
         )
 
