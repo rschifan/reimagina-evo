@@ -34,9 +34,7 @@ def test_empty_layer_refuses_rather_than_writing_zeros():
 
 
 def test_present_layer_passes():
-    require_nonempty(
-        True, indicator_slug="x", needs="y", loader="z"
-    )  # must not raise
+    require_nonempty(True, indicator_slug="x", needs="y", loader="z")  # must not raise
 
 
 def test_layer_present_but_nothing_matched_in_scope_refuses():
