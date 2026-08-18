@@ -375,8 +375,13 @@ def upgrade() -> None:
             row_count      integer     CHECK (row_count IS NULL OR row_count >= 0),
             status         text        NOT NULL DEFAULT 'succeeded'
                                        CHECK (status IN ('succeeded','failed')),
-            started_at     timestamptz NOT NULL DEFAULT now(),
-            completed_at   timestamptz NOT NULL DEFAULT now(),
+            -- clock_timestamp(), not now(). now() is the *transaction* start, so
+            -- several materializations written in one transaction would share a
+            -- timestamp and "the latest one" would be undefined — which is not
+            -- hypothetical: the sync coordinator runs every unit of a run in one
+            -- transaction, so a recompute could pick the row it just superseded.
+            started_at     timestamptz NOT NULL DEFAULT clock_timestamp(),
+            completed_at   timestamptz NOT NULL DEFAULT clock_timestamp(),
             CHECK (completed_at >= started_at),
             CHECK (jsonb_typeof(coverage_scope -> 'complete') = 'boolean')
         )

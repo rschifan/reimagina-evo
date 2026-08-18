@@ -44,8 +44,38 @@ def _slugs(plan):
     return [u.indicator for u in plan.units]
 
 
+def _state(conn, slug, partition=""):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT state FROM serving_geo.asset_freshness_v "
+            "WHERE asset_key = %s AND partition_key = %s",
+            (f"indicator.{slug}", partition),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def _an_aoi(conn):
+    from tests.integration._helpers import insert_project
+
+    project_id = insert_project(conn, "assets-project")
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO curated_geo.area_of_interest (project_id, name, geometry) "
+            "VALUES (%s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326)) RETURNING id",
+            (project_id, "assets-aoi", "POLYGON((0 0, 0 2, 2 2, 2 0, 0 0))"),
+        )
+        return cur.fetchone()[0]
+
+
 @pytest.fixture
 def graph(conn):
+    # Both catalogs: the compute functions refuse to run against an unseeded
+    # indicator_catalog (require_seeded), and the asset graph is what freshness
+    # reads. Uncommitted is fine — indicator_dependency's trigger is deferred.
+    from reimagina.indicators.catalog import seed_catalog
+
+    seed_catalog(conn)
     seed_assets(conn)
     return conn
 
@@ -361,3 +391,95 @@ def test_a_params_edit_propagates_to_dependents(graph, conn):
         "urban_form_block_compactness",
         "urban_form_block_composite",
     }
+
+
+# ── the loop closes ─────────────────────────────────────────────────────────
+
+
+def _run(conn, slug, **kwargs):
+    """Dispatch through the registry, exactly as the CLI and coordinator do."""
+    from reimagina.orchestration.runners import default_runners
+
+    return default_runners()[slug](
+        conn,
+        features=kwargs.pop("features", frozenset()),
+        scenario_id=kwargs.pop("scenario_id", None),
+        code_version="test",
+        aoi_id=kwargs.pop("aoi_id", None),
+    )
+
+
+@pytest.fixture
+def one_block(graph, conn):
+    """A single block, so compactness has something real to compute."""
+    _block_id(conn)
+    return conn
+
+
+def test_computing_an_indicator_makes_it_fresh(one_block, conn):
+    """Without this, freshness could only ever answer 'absent' in production.
+
+    The graph knows what each indicator should be; nothing told it what it is.
+    """
+    assert _state(conn, "urban_form_block_compactness") == "absent"
+
+    _run(conn, "urban_form_block_compactness")
+
+    assert _state(conn, "urban_form_block_compactness") == "fresh"
+
+
+def test_the_full_loop(one_block, conn):
+    """compute → fresh → a layer changes → stale → recompute → fresh.
+
+    The whole design, exercised through the same registry the CLI dispatches
+    through, with nothing naming an attribute at any point.
+    """
+    _run(conn, "urban_form_block_compactness")
+    assert _plan(conn).is_noop
+
+    publish_version(conn, asset_key="mex.block", version="blocks-2")
+    assert "urban_form_block_compactness" in _slugs(_plan(conn))
+
+    _run(conn, "urban_form_block_compactness")
+    assert _state(conn, "urban_form_block_compactness") == "fresh"
+
+
+def test_a_scoped_run_reports_partial(one_block, conn):
+    """An AOI- or feature-scoped run did not finish the partition.
+
+    edificability skips features missing an attribute, so a partition holding
+    rows from several runs is a normal state — and claiming it is done is the
+    lie coverage_scope exists to prevent.
+    """
+    _run(conn, "urban_form_block_compactness", aoi_id=_an_aoi(conn))
+
+    assert _state(conn, "urban_form_block_compactness") == "partial"
+
+
+def test_a_materialization_records_the_input_versions_it_used(one_block, conn):
+    """F8: a number can be explained a month later."""
+    publish_version(conn, asset_key="mex.block", version="blocks-7")
+
+    _run(conn, "urban_form_block_compactness")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT input_versions FROM curated_geo.asset_materialization m "
+            "JOIN curated_geo.asset a ON a.id = m.asset_id "
+            "WHERE a.asset_key = 'indicator.urban_form_block_compactness'"
+        )
+        assert cur.fetchone()[0] == {"mex.block@": "blocks-7"}
+
+
+def test_a_failed_compute_records_nothing(one_block, conn, monkeypatch):
+    """A failure must leave the previous state standing, not claim freshness."""
+    from reimagina.orchestration import runners
+
+    def _boom(*a, **k):
+        raise RuntimeError("compute exploded")
+
+    monkeypatch.setitem(runners._DIRECT_COMPUTE, "urban_form_block_compactness", _boom)
+    with pytest.raises(RuntimeError, match="exploded"):
+        _run(conn, "urban_form_block_compactness")
+
+    assert _state(conn, "urban_form_block_compactness") == "absent"
