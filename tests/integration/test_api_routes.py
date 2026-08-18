@@ -754,7 +754,6 @@ def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):
             ),
         ),
     )
-    conn.commit()
 
     unfiltered = {r["slug"] for r in client.get("/indicators").json()}
     assert computed in unfiltered
@@ -772,5 +771,4 @@ def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):
         aoi_name="AOI empty",
         polygon_wkt=_polygon_at(-100.0, 20.0, side=0.05),
     )
-    conn.commit()
     assert client.get(f"/indicators?aoi_id={empty_aoi}").json() == []
