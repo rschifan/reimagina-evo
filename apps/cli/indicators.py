@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 from reimagina.db import connect
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.jobs.aoi_summary import summarise_aoi
-from reimagina.jobs.rollup import run_rollup
 from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.runners import default_runners
 
@@ -62,37 +61,6 @@ def compute_indicator(
         else {"result": repr(result)}
     )
     return {"dsn": dsn, **payload}
-
-
-def rollup_indicator(
-    *,
-    dsn: str,
-    slug: str,
-    source_feature_type: str,
-    target_feature_type: str,
-    scenario_id: str | None = None,
-    code_version: str = "dev",
-) -> dict[str, object]:
-    """Roll an indicator up from a source grain to a coarser target grain."""
-    with connect(dsn) as conn:
-        result = run_rollup(
-            conn,
-            indicator_slug=slug,
-            source_feature_type=source_feature_type,
-            target_feature_type=target_feature_type,
-            scenario_id=scenario_id,
-            code_version=code_version,
-        )
-    return {
-        "dsn": dsn,
-        "indicator_slug": result.indicator_slug,
-        "job_run_id": result.job_run_id,
-        "source_feature_type": result.source_feature_type,
-        "target_feature_type": result.target_feature_type,
-        "aggregation_method": result.aggregation_method,
-        "targets_considered": result.targets_considered,
-        "rows_written": result.rows_written,
-    }
 
 
 def summarise_aoi_indicator(

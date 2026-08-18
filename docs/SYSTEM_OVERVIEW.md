@@ -664,7 +664,7 @@ is `work / span`; on today's catalog that is 4.03, and 16 worker slots
 measure exactly 4.03. The shipped default of 8 reaches 3.92.
 
 ⚠ **The catalog exercises more of this than it used to, and still not
-much.** 12 of 14 indicators are roots. Adding `livability_block_score`
+much.** 9 of 11 indicators are roots. Adding `livability_block_score`
 took the number of attribute edits that produce two waves from one to
 four — `geometry`, `poi_version`, `network_version` and `num_levels` now
 each seed a family whose results a composite consumes, where before only

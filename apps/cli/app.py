@@ -96,7 +96,6 @@ from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
     evaluate_scenario_cli,
-    rollup_indicator,
     seed_indicator_catalog,
     summarise_aoi_indicator,
 )
@@ -1040,30 +1039,6 @@ def indicators_compute(
             dsn=dsn,
             slug=slug,
             aoi_id=aoi_id,
-            scenario_id=scenario_id,
-            code_version=code_version,
-        )
-    )
-
-
-@indicators_app.command(
-    "rollup",
-    help="Roll an indicator up from a source grain to a coarser target grain",
-)
-def indicators_rollup(
-    slug: str = typer.Option(..., "--slug"),
-    source_type: str = typer.Option(..., "--source-type"),
-    target_type: str = typer.Option(..., "--target-type"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
-    scenario_id: Optional[str] = typer.Option(None, "--scenario-id"),
-    code_version: str = typer.Option("dev", "--code-version"),
-) -> int:
-    return _print(
-        rollup_indicator(
-            dsn=dsn,
-            slug=slug,
-            source_feature_type=source_type,
-            target_feature_type=target_type,
             scenario_id=scenario_id,
             code_version=code_version,
         )

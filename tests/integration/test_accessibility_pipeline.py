@@ -35,7 +35,6 @@ from tests.integration._helpers import (
 )
 
 _SIDE = 3
-_EUCLID = "accessibility_block_school_euclid_m"
 _NETWORK = "accessibility_block_school_network_m"
 
 
@@ -94,31 +93,6 @@ def _value(conn, feature_id: str, slug: str):
     return None if row is None else row["value_numeric"]
 
 
-def test_network_distance_exceeds_straight_line(conn):
-    """The headline property, and the reason the network family exists.
-
-    Block at (0,0), school at (1,1): two 95 m hops on the lattice, but only
-    ~134 m as the crow flies. Anything reporting the straight line for the
-    network indicator is not routing.
-    """
-    seed_catalog(conn)
-    load_graph(conn, *osm_lattice(_SIDE))
-    block = _tiny_block_at(conn, 0, 0)
-    _amenity_at(conn, 1, 1, "school")
-
-    ACCESSIBILITY_COMPUTE[_EUCLID](conn, feature_ids=[block], code_version="test")
-    ACCESSIBILITY_COMPUTE[_NETWORK](conn, feature_ids=[block], code_version="test")
-
-    euclid = _value(conn, block, _EUCLID)
-    network = _value(conn, block, _NETWORK)
-
-    assert network > euclid, "network distance must exceed the straight line"
-    # Two lattice hops, within the tolerance of snapping a ~4 m block to a node.
-    assert abs(network - 2 * LATTICE_EDGE_M) < 10
-    # Straight line across one lattice square: 95 * sqrt(2).
-    assert abs(euclid - LATTICE_EDGE_M * 2**0.5) < 10
-
-
 def test_nearest_of_several_amenities_wins(conn):
     """Multi-source Dijkstra must report the closest, not the first or the last."""
     seed_catalog(conn)
@@ -155,12 +129,11 @@ def test_no_amenity_of_that_category_reports_the_cutoff(conn):
     block = _tiny_block_at(conn, 0, 0)
     _amenity_at(conn, 1, 1, "park")  # no school anywhere
 
-    for slug in (_EUCLID, _NETWORK):
-        result = ACCESSIBILITY_COMPUTE[slug](
-            conn, feature_ids=[block], code_version="test"
-        )
-        assert result.rows_written == 1
-        assert _value(conn, block, slug) == ACCESSIBILITY_CUTOFF_M
+    result = ACCESSIBILITY_COMPUTE[_NETWORK](
+        conn, feature_ids=[block], code_version="test"
+    )
+    assert result.rows_written == 1
+    assert _value(conn, block, _NETWORK) == ACCESSIBILITY_CUTOFF_M
 
 
 def test_unreachable_block_reports_the_cutoff(conn):
@@ -269,16 +242,3 @@ def test_empty_road_network_raises_rather_than_reporting_cutoff(conn):
 
     with pytest.raises(MissingInputData, match="road_edge"):
         ACCESSIBILITY_COMPUTE[_NETWORK](conn, feature_ids=[block], code_version="test")
-
-
-def test_euclid_needs_no_road_network(conn):
-    """The cheap family must not depend on the expensive family's input."""
-    seed_catalog(conn)
-    block = _tiny_block_at(conn, 0, 0)
-    _amenity_at(conn, 1, 1, "school")
-
-    result = ACCESSIBILITY_COMPUTE[_EUCLID](
-        conn, feature_ids=[block], code_version="test"
-    )
-    assert result.rows_written == 1
-    assert 0 < _value(conn, block, _EUCLID) < ACCESSIBILITY_CUTOFF_M
