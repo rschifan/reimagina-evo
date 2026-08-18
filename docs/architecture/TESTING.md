@@ -17,7 +17,7 @@ SQL-level contract tests for the Reimagina database schema. These tests verify t
 CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Build the schema by running the Alembic migrations (r001 → r031):
+-- Build the schema by running the Alembic migrations (r001 → r040):
 --   make migrate        # python -m apps.cli.app bootstrap-db  (Makefile:71-73)
 -- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:
@@ -54,6 +54,69 @@ VALUES
 ```
 
 ---
+
+## Running the Python suites
+
+```bash
+make lint                                    # ruff check + ruff format --check + mypy
+pytest tests/unit tests/contract             # no database
+TEST_DATABASE_URL=postgresql:///reimagina_test pytest tests/integration
+```
+
+⚠ **Never a bare `pytest`.** `tests/integration`'s session fixture ends with
+`alembic downgrade base`, which drops every managed schema in
+`TEST_DATABASE_URL`. It refuses to run against a database whose name does not
+contain `test`; that guard is the only thing between the suite and real data.
+
+⚠ **Run `make lint`, not a hand-rolled `ruff check <paths>`.** The target
+mirrors CI exactly — check, format-check, and mypy over the package tree. A
+narrowed invocation skips the format gate and produced three "lint clean"
+reports against red CI in one day.
+
+⚠ **Do not point work-in-progress migrations at the shared `reimagina_test`.**
+A revision that exists only on your branch leaves the shared database stamped
+at a version alembic has no file for, and every subsequent `upgrade head` fails
+for everyone — surfacing as ~224 setup errors that look like a defect in
+whatever is being tested. Use a scratch database instead:
+
+```bash
+createdb reimagina_test_<yourthing>
+psql -d reimagina_test_<yourthing> -c 'CREATE EXTENSION postgis; CREATE EXTENSION pgrouting;'
+TEST_DATABASE_URL=postgresql:///reimagina_test_<yourthing> pytest tests/integration
+```
+
+The name must contain `test` for the fixture guard. Anything left in the shared
+database survives between runs only by luck, since each run ends by dropping
+every managed schema.
+
+### `tests/recovery` — opt-in, kills processes
+
+The only suite that exercises DBOS crash recovery: two processes sharing an
+executor id, a real `SIGKILL` mid-compute, and a reclaim. It is the suite that
+most directly covers the as-completed dispatch loop in `run_workflow`, whose
+correctness argument rests on every branch input being checkpointed.
+
+```bash
+REIMAGINA_RECOVERY_TEST=1 TEST_DATABASE_URL=postgresql:///reimagina_test_recovery \
+    pytest tests/recovery -q
+```
+
+It needs **≥20,000 blocks** and *skips* below that rather than passing
+vacuously — an earlier version slept six seconds, killed nothing because the
+run had already finished, and would have passed while proving the opposite of
+what it claims. The kill now waits until a unit is observably `running` with
+none succeeded.
+
+It also truncates `run_plan` and deletes `job_unit` / `orchestration_run`, and
+submits a full-city recompute. Clone a populated database rather than using one
+you care about:
+
+```bash
+createdb -T reimagina_demo reimagina_test_recovery
+```
+
+Last measured: 67,167 blocks, killed with a unit running, second process
+reclaimed the workflow and finished it, plan reclaimed (`RUN_PLAN_ROWS = 0`).
 
 ## 0. Data Layer — Source Registry
 

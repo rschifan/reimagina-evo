@@ -23,7 +23,7 @@ make install                   # Python + web deps
 export DATABASE_URL=postgresql://localhost/reimagina_app
 createdb reimagina_app
 make migrate                   # apps.cli.app bootstrap-db
-make verify-sources            # data verify-sources --release 2026-04-15.0
+make verify-sources            # data verify-sources (uses OVERTURE_DEFAULT_RELEASE)
 ```
 
 `make verify-sources` must print `"all_ok": true` before continuing —
@@ -91,26 +91,30 @@ plus a polygon clip on load. Bbox values come from `aoi list` (fields
 
 ```sh
 # CDMX (all) — bbox roughly -99.36,19.05,-98.94,19.59
-# Note: --bbox=… (= form) is required when xmin is negative; argparse
-# otherwise reads the leading minus as a new flag.
+# The `=` form is no longer required for a negative xmin: the CLI is
+# typer/click since #30, and click parses `--bbox -99.36,…` correctly.
+# The `=` form still works, so existing scripts need no change.
+#
+# --release is omitted deliberately. Overture keeps only its most recent
+# release and deletes the rest, so any pin written here has a shelf life of
+# weeks — two already rotted (2026-02-18.0 was never published, 2026-04-15.0
+# was published then removed). The default lives in one place,
+# OVERTURE_DEFAULT_RELEASE, and a stale one now fails with a message naming
+# what S3 actually has rather than a bare FileNotFoundError.
 uv run python -m apps.cli.app overture extract \
-  --release 2026-04-15.0 \
   --bbox=-99.36,19.05,-98.94,19.59 \
   --output-path data/overture_buildings_cdmx.parquet
 uv run python -m apps.cli.app overture load \
   --raw-path data/overture_buildings_cdmx.parquet \
-  --release 2026-04-15.0 \
   --source-name "Overture Buildings - CDMX (all)" \
   --aoi-id <CDMX_AOI_UUID>
 
 # Mexicali — bbox roughly -115.88,31.36,-114.65,32.72
 uv run python -m apps.cli.app overture extract \
-  --release 2026-04-15.0 \
   --bbox=-115.88,31.36,-114.65,32.72 \
   --output-path data/overture_buildings_mexicali.parquet
 uv run python -m apps.cli.app overture load \
   --raw-path data/overture_buildings_mexicali.parquet \
-  --release 2026-04-15.0 \
   --source-name "Overture Buildings - Mexicali" \
   --aoi-id <MEXICALI_AOI_UUID>
 ```
