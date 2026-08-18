@@ -33,21 +33,21 @@ import type { Map as MapLibreMap } from "maplibre-gl";
  *  kepler.gl all use for "selected feature". High contrast on both
  *  light and dark backgrounds, distinct from any layer's default
  *  outline so it reads as a state change rather than a normal stroke. */
-export const HOVER_OUTLINE_COLOR = "#22d3ee";
+const HOVER_OUTLINE_COLOR = "#22d3ee";
 /** Hover line width — thick enough to read over dense choropleth
  *  fills without drowning out the data colour. */
-export const HOVER_LINE_WIDTH = 3.5;
+const HOVER_LINE_WIDTH = 3.5;
 /** Hover fill bump — additive over each layer's default. Matches the
  *  industry pattern of "lift opacity 15-20% on hover" rather than
  *  flooding to a fixed value (which felt too aggressive for layers
  *  whose default is already at 0.30). */
-export const HOVER_FILL_OPACITY_BUMP = 0.20;
+const HOVER_FILL_OPACITY_BUMP = 0.20;
 /** Lower bound for hover fill opacity. Keeps the hover legible on
  *  layers whose default fill is fully transparent (block layer). */
-export const HOVER_FILL_OPACITY_MIN = 0.18;
+const HOVER_FILL_OPACITY_MIN = 0.18;
 /** Upper bound — past this the highlight starts hiding the underlying
  *  choropleth colour, which is the opposite of helpful. */
-export const HOVER_FILL_OPACITY_MAX = 0.50;
+const HOVER_FILL_OPACITY_MAX = 0.50;
 
 
 export interface HoverHighlightConfig {
@@ -71,8 +71,6 @@ export interface HoverHighlightConfig {
   hoverFillOpacity?: number;
   /** Current default line-width. */
   defaultLineWidth?: number;
-  /** Hover line-width override. Defaults to HOVER_LINE_WIDTH. */
-  hoverLineWidth?: number;
 }
 
 
@@ -150,7 +148,7 @@ export function enableHoverHighlight(
       HOVER_FILL_OPACITY_MAX,
       Math.max(HOVER_FILL_OPACITY_MIN, baseDefault + HOVER_FILL_OPACITY_BUMP),
     );
-  const hoverLineWidth = cfg.hoverLineWidth ?? HOVER_LINE_WIDTH;
+  const hoverLineWidth = HOVER_LINE_WIDTH;
   const defaultOutlineColor = cfg.defaultOutlineColor ?? "rgba(0,0,0,0.2)";
   const defaultFillOpacity = cfg.defaultFillOpacity ?? 0;
   const defaultLineWidth = cfg.defaultLineWidth ?? 1;

@@ -37,11 +37,6 @@ export interface MetricSpec {
    * ``serving_geo.feature.type_slug`` column.
    */
   typeSlug: string;
-  /**
-   * Optional formatter for display. Defaults to a locale-aware
-   * integer formatter — counts always come back as integers.
-   */
-  formatter?: (n: number) => string;
 }
 
 
@@ -110,20 +105,12 @@ export async function streamMetrics(
       const n = row?.count ?? 0;
       // Genuine zero counts render as "0" so the panel can
       // distinguish "selection valid, no features matched" from a
-      // fetch failure (which renders as "—"). The panel filter
-      // currently hides zero-count rows; both reads remain
-      // available for future UI tweaks.
-      const formatter = spec.formatter ?? _defaultFormatter;
+      // fetch failure (which renders as "—").
       onResult({
         spec,
         featuresCounted: n,
-        display: n === 0 ? "0" : formatter(n),
+        display: n.toLocaleString(),
       });
     }),
   );
-}
-
-
-function _defaultFormatter(n: number): string {
-  return n.toLocaleString();
 }

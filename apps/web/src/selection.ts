@@ -4,8 +4,8 @@
  * Public surface:
  *   - ``enableSelection(map)`` — idempotent factory; returns the
  *     :class:`SelectionController` for this map.
- *   - The controller exposes ``startDrawing(shape)`` /
- *     ``cancelDrawing()`` / ``clear()`` for the toolbar buttons,
+ *   - The controller exposes ``startDrawing(shape)`` / ``clear()``
+ *     for the toolbar buttons,
  *     ``getSelection()`` for one-shot reads, and ``subscribe()``
  *     for reactive consumers.
  *
@@ -68,7 +68,6 @@ export interface SubscribeOptions {
 
 export interface SelectionController {
   startDrawing(shape: SelectionShape): void;
-  cancelDrawing(): void;
   clear(): void;
   getSelection(): SelectionGeometry | null;
   /** Subscribe to selection changes. Fires immediately with the
@@ -278,7 +277,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
   // gestures whenever we're in a non-static mode makes terra-draw
   // the only consumer of those events.
   //
-  // Restored on ``static`` mode (after ``cancelDrawing`` / ``clear``)
+  // Restored on ``static`` mode (after ``clear``)
   // so the user can pan freely between selections.
   const _syncMapGestures = (mode: string): void => {
     const drawing = mode !== "static";
@@ -423,19 +422,6 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       _activeShape = shape;
       draw.setMode(TD_MODE[shape]);
       _syncMapGestures(TD_MODE[shape]);
-    },
-    cancelDrawing(): void {
-      // Drop any partial geometry before flipping to static. Without
-      // ``draw.clear()`` here, a half-drawn polygon (vertices placed
-      // but never finished) survives the mode switch and terra-draw's
-      // internal mode-transition ``change`` events read those stale
-      // vertices from ``getSnapshot()`` — emitting a geometry the user
-      // never committed.
-      _activeShape = null;
-      _activeSelectedShape = null;
-      draw.clear();
-      draw.setMode("static");
-      _syncMapGestures("static");
     },
     clear(): void {
       _activeShape = null;
