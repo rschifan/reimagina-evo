@@ -31,7 +31,7 @@ from reimagina.jobs.raster_zonal_stats import (
     ConcurrentRasterRun,
     run_raster_zonal_stats,
 )
-from reimagina.pipeline import worldpop as worldpop_pipeline
+import reimagina.pipeline.worldpop as worldpop_pipeline
 from reimagina.pipeline.raster import ingest_raster_source
 from reimagina.storage import backend_for_connection
 

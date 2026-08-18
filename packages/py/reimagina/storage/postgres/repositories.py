@@ -2061,21 +2061,6 @@ class PostgresJobRunRepository:
                 (status, error_message, job_run_id),
             )
 
-    def get_job(self, job_run_id: str) -> dict | None:
-        with self.connection.cursor(
-            cursor_factory=psycopg2.extras.RealDictCursor
-        ) as cur:
-            cur.execute(
-                """
-                SELECT id::text, scenario_id::text, model_family, status, code_version,
-                       queued_at, started_at, completed_at, error_message
-                FROM jobs_runtime.job_run WHERE id = %s
-                """,
-                (job_run_id,),
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
-
 
 # ─── Indicator catalog ──────────────────────────────────────────────────────
 
