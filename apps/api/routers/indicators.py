@@ -58,6 +58,27 @@ class IndicatorValue(BaseModel):
     indicator_name: str | None = None
 
 
+class LineageNode(BaseModel):
+    """One asset in the closure around an indicator.
+
+    `depth` is hops from the root, so 1 is a direct input. `state` is the
+    freshness of that asset — `absent` means no materialization has been
+    recorded, which is every derived asset until the compute path writes one.
+    """
+
+    asset_key: str
+    kind: str
+    depth: int
+    state: str | None = None
+
+
+class IndicatorLineage(BaseModel):
+    slug: str
+    asset_key: str
+    upstream: list[LineageNode]
+    downstream: list[LineageNode]
+
+
 class DependencyEdge(BaseModel):
     """One composite → input edge. `weight` is the input's share of the
     composite and is null for a dependency that carries no weighting."""
@@ -141,6 +162,46 @@ def get_indicator_dependencies(
         downstream=[
             DependencyEdge(**edge) for edge in edges if edge["depends_on_slug"] == slug
         ],
+    )
+
+
+@router.get("/{slug}/lineage", response_model=IndicatorLineage)
+def get_indicator_lineage(
+    slug: str,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> IndicatorLineage:
+    """The asset closure around `slug`, in both directions.
+
+    Where `/dependencies` answers indicator-to-indicator, this answers
+    indicator-to-everything: the datasets an indicator ultimately reads are
+    the source and external assets at the far end of its upstream closure.
+
+    Returns empty lists when the asset graph has not been seeded, rather than
+    404ing — an unseeded graph is a deployment state, not a missing indicator.
+    """
+    backend = get_backend(conn)
+    if backend.indicator_catalog_repo().get_indicator(slug) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
+    asset_key = f"indicator.{slug}"
+    repo = backend.asset_graph_repo()
+    up = repo.lineage(asset_key=asset_key, direction="upstream")
+    down = repo.lineage(asset_key=asset_key, direction="downstream")
+    keys = [n["related_key"] for n in (*up, *down)]
+    states = {row["asset_key"]: row["state"] for row in repo.freshness(asset_keys=keys)}
+
+    def node(row: dict) -> LineageNode:
+        return LineageNode(
+            asset_key=row["related_key"],
+            kind=row["related_kind"],
+            depth=row["depth"],
+            state=states.get(row["related_key"]),
+        )
+
+    return IndicatorLineage(
+        slug=slug,
+        asset_key=asset_key,
+        upstream=[node(r) for r in up],
+        downstream=[node(r) for r in down],
     )
 
 

@@ -3,8 +3,16 @@
 
   import Badge from "./lib/components/ui/Badge.svelte";
   import Card from "./lib/components/ui/Card.svelte";
+  import DatasetPanel from "./DatasetPanel.svelte";
   import LineageGraph from "./LineageGraph.svelte";
-  import { downloadUrl, getDependencies, type IndicatorDependencies, type IndicatorStats } from "./api";
+  import {
+    downloadUrl,
+    getDependencies,
+    getLineage,
+    type IndicatorDependencies,
+    type IndicatorLineage,
+    type IndicatorStats,
+  } from "./api";
   import { boundsFraction, familyOf } from "./derive";
   import { isAbortError } from "../http";
   import { fmtNumber } from "../format";
@@ -21,6 +29,8 @@
   let statsError = $state<string | null>(null);
   let deps = $state<IndicatorDependencies | null>(null);
   let depsError = $state<string | null>(null);
+  let lineage = $state<IndicatorLineage | null>(null);
+  let lineageError = $state<string | null>(null);
 
   $effect(() => {
     if (!indicator || !grain) return;
@@ -42,6 +52,19 @@
       .then((d) => (deps = d))
       .catch((e) => {
         if (!isAbortError(e)) depsError = e instanceof Error ? e.message : String(e);
+      });
+    return () => ctrl.abort();
+  });
+
+  $effect(() => {
+    if (!indicator) return;
+    const ctrl = new AbortController();
+    lineage = null;
+    lineageError = null;
+    getLineage(indicator.slug, { signal: ctrl.signal })
+      .then((l) => (lineage = l))
+      .catch((e) => {
+        if (!isAbortError(e)) lineageError = e instanceof Error ? e.message : String(e);
       });
     return () => ctrl.abort();
   });
@@ -172,6 +195,16 @@
             upstream={deps.upstream}
             downstream={deps.downstream}
           />
+        {/if}
+      </Card>
+
+      <Card title="Datasets upstream">
+        {#if lineageError}
+          <p class="text-xs text-state-stale">Lineage unavailable: {lineageError}</p>
+        {:else if !lineage}
+          <div class="h-16 animate-pulse rounded bg-surface-raised" aria-busy="true"></div>
+        {:else}
+          <DatasetPanel upstream={lineage.upstream} />
         {/if}
       </Card>
 

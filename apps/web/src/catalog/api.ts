@@ -96,3 +96,32 @@ export function getDependencies(
     init,
   );
 }
+
+
+export interface LineageNode {
+  asset_key: string;
+  kind: "source" | "external" | "derived";
+  /** Hops from the indicator. 1 is a direct input. */
+  depth: number;
+  /** Freshness of that asset. `absent` means no materialization has been
+   *  recorded — the state of every derived asset until the compute path
+   *  writes one. */
+  state: string | null;
+}
+
+export interface IndicatorLineage {
+  slug: string;
+  asset_key: string;
+  upstream: LineageNode[];
+  downstream: LineageNode[];
+}
+
+export function getLineage(
+  slug: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<IndicatorLineage> {
+  return jsonRequest<IndicatorLineage>(
+    `/indicators/${encodeURIComponent(slug)}/lineage`,
+    init,
+  );
+}
