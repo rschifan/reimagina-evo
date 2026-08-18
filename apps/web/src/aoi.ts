@@ -42,17 +42,12 @@ export function setKnownAois(aois: AOIRow[]): void {
 }
 
 
-export function getKnownAois(): AOIRow[] {
-  return _knownAois;
-}
-
-
 export function getActiveAoiId(): string | null {
   return _activeAoiId;
 }
 
 
-export function getActiveAoi(): AOIRow | null {
+function getActiveAoi(): AOIRow | null {
   if (_activeAoiId === null) return null;
   return _knownAois.find((a) => a.aoi_id === _activeAoiId) ?? null;
 }
