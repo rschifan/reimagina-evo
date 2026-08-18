@@ -112,3 +112,51 @@ def publish_version(
             ),
         )
     return version
+
+
+def retire_version(
+    conn: Any,
+    *,
+    asset_key: str,
+    partition_key: str = BASELINE,
+) -> str | None:
+    """Withdraw an asset partition's current version without replacing it.
+
+    Returns the version that was retired, or None when the asset is not
+    registered or nothing was current — both are states, not errors.
+
+    ``publish_version`` can only say "this layer is now X". Some things that
+    happen to a layer are not a new X: it is truncated, dropped, restored to a
+    machine where it does not exist, or its probe finds nothing left to signal
+    on. Without this the only way to express that is to publish a sentinel
+    string, which makes the asset read ``fresh`` at a version naming its own
+    absence — the exact shape of lie the whole design exists to remove.
+
+    Retiring instead is a real state everywhere downstream, with no new
+    vocabulary: the partition drops out of ``asset_version``'s current set, so
+    ``asset_freshness_v`` reports it ``absent`` rather than fresh, and its
+    component in ``asset_component_v`` falls to ``'missing'`` — which is stable,
+    so every consumer goes deterministically stale and stays there until
+    something is published again.
+
+    Zero current rows is already a legal state: ``asset_version_one_current`` is
+    a *partial* unique index, and ``publish_version`` derives its next sequence
+    from ``max(sequence)`` over the whole history precisely so a later publish
+    lands after retired history rather than colliding with it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE curated_geo.asset_version av
+               SET is_current = false, valid_to = now()
+              FROM curated_geo.asset a
+             WHERE a.id = av.asset_id
+               AND a.asset_key = %s
+               AND av.partition_key = %s
+               AND av.is_current
+            RETURNING av.version
+            """,
+            (asset_key, partition_key),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None

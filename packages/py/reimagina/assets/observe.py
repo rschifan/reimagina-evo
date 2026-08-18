@@ -25,12 +25,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from reimagina.assets.publish import publish_version
+from reimagina.assets.publish import publish_version, retire_version
 
 
 @dataclass(frozen=True)
 class Observation:
-    """The outcome of probing one asset."""
+    """The outcome of probing one asset.
+
+    ``version is None`` has two readings and ``error`` separates them: with an
+    error the probe failed and nothing was recorded, without one the probe ran
+    and found nothing left to signal on, so the asset's version was retired.
+    """
 
     asset_key: str
     version: str | None
@@ -47,6 +52,12 @@ def observe_assets(
     must not stop the rest from being observed, and the caller needs to see which
     one failed. A failed probe publishes nothing, so its consumers keep whatever
     state they already had rather than being told a fresh lie.
+
+    A probe that *succeeds* and returns nothing is the opposite case and is
+    recorded, not ignored: the backing relation is empty or gone, and the asset's
+    version is retired. Publishing a sentinel string for it — which is what this
+    did before ``retire_version`` existed — left the asset reading ``fresh`` at a
+    version naming its own absence.
     """
     with conn.cursor() as cur:
         if asset_keys:
@@ -81,11 +92,20 @@ def observe_assets(
                     cur.execute("ROLLBACK TO SAVEPOINT probe")
                     raise
                 cur.execute("RELEASE SAVEPOINT probe")
-            version = "empty" if row is None or row[0] is None else str(row[0])
+            probed = None if row is None or row[0] is None else str(row[0])
         except Exception as exc:  # noqa: BLE001 - reported per asset, see docstring
             results.append(
                 Observation(
                     asset_key=asset_key, version=None, changed=False, error=str(exc)
+                )
+            )
+            continue
+
+        if probed is None:
+            retired = retire_version(conn, asset_key=asset_key)
+            results.append(
+                Observation(
+                    asset_key=asset_key, version=None, changed=retired is not None
                 )
             )
             continue
@@ -98,10 +118,10 @@ def observe_assets(
                 (asset_key,),
             )
             current = cur.fetchone()
-        changed = current is None or current[0] != version
+        changed = current is None or current[0] != probed
         if changed:
-            publish_version(conn, asset_key=asset_key, version=version)
+            publish_version(conn, asset_key=asset_key, version=probed)
         results.append(
-            Observation(asset_key=asset_key, version=version, changed=changed)
+            Observation(asset_key=asset_key, version=probed, changed=changed)
         )
     return results
