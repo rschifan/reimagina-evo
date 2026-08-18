@@ -88,18 +88,45 @@ def scenario_overlay(
     predicate drops into a WHERE clause, a JOIN condition or an aggregate
     unchanged, with no DISTINCT ON and no restructuring of the caller's query.
 
+    ⚠ A scenario row shadows the baseline only when it *carries a value*. Keying
+    on row existence alone would contradict the ``COALESCE`` rule this is modelled
+    on: ``effective_numeric`` resolves ``COALESCE(so.value_numeric,
+    obs.value_numeric, base)``, and COALESCE skips a NULL override rather than
+    letting it win. ``write_result(value_numeric=None, quality_flag="missing")``
+    is a supported call and ``'missing'`` / ``'not_applicable'`` are valid flags,
+    so valueless current rows are by design.
+
+    Without the value test, such a row suppresses the baseline *and* is itself
+    dropped by the ``value_numeric IS NOT NULL`` filter that ``value_stats`` and
+    ``compute_composite`` apply — so the feature disappears from the statistics
+    and from every composite that consumes it, rather than falling back. That is
+    the same class of hole this function exists to close, one layer down.
+
+    The trade-off is deliberate: a scenario cannot express "I have recomputed
+    this and the answer is now unknown" and have that beat the baseline. Doing
+    that needs a distinct signal — a ``quality_flag`` the read layer honours —
+    not the absence of a value, which is indistinguishable from "not computed".
+
     Baseline reads (``scenario_id is None``) are untouched: the predicate stays
     ``IS NULL``, so nothing about existing behaviour moves.
     """
-    if not alias:
+    if not alias or not alias.isidentifier():
         # Not optional, and not style. Unqualified column names inside the
         # NOT EXISTS below bind to the *inner* table first, so `_ov.feature_id =
         # feature_id` would silently become `_ov.feature_id = _ov.feature_id` —
         # always true — and every baseline row would be excluded the moment any
         # scenario row existed. The failure is invisible until a scenario has
         # recomputed something, which is exactly when it matters.
+        #
+        # `isidentifier()` and not just a truth test, because the sibling
+        # `scenario_filter` above takes a *column expression* in this same
+        # position. Converting a call site by analogy — `scenario_overlay(
+        # "ir.scenario_id", ...)` — otherwise passes the guard and emits
+        # `ir.scenario_id.scenario_id`, which Postgres only rejects when that
+        # query actually runs.
         raise ValueError(
-            "scenario_overlay needs an explicit table alias to correlate against"
+            "scenario_overlay needs a bare table alias to correlate against "
+            f"(got {alias!r}); pass 'ir', not 'ir.scenario_id'"
         )
     prefix = f"{alias}."
     if scenario_id is None:
@@ -111,7 +138,10 @@ def scenario_overlay(
                     WHERE _ov.feature_id = {prefix}feature_id
                       AND _ov.indicator_id = {prefix}indicator_id
                       AND _ov.status = 'current'
-                      AND _ov.scenario_id = {placeholder})))""",
+                      AND _ov.scenario_id = {placeholder}
+                      AND (_ov.value_numeric IS NOT NULL
+                        OR _ov.value_text IS NOT NULL
+                        OR _ov.value_json IS NOT NULL))))""",
         [scenario_id, scenario_id],
     )
 

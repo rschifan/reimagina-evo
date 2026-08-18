@@ -24,6 +24,14 @@ baseline row qualifies only when no scenario row exists for the same
 The probe is index-backed: `ir_one_current_scenario` (r016) is exactly
 `(feature_id, scenario_id, indicator_id) WHERE status='current'`.
 
+⚠ A scenario row shadows the baseline only when it *carries a value*, matching
+`effective_numeric`'s `COALESCE(so.value_numeric, obs.value_numeric, base)` —
+COALESCE skips a NULL override rather than letting it win.
+`write_result(value_numeric=None, quality_flag='missing')` is supported, so
+valueless current rows exist by design; without the value test one of them would
+suppress the baseline and emit a NULL-valued feature to the map, which the
+frontend's `fill-color` expression reads straight off `value_numeric`.
+
 Baseline tiles are untouched — with no `scenario_id` the predicate is unchanged,
 which is also why the aggregation overlay is left alone: it reads `observation`,
 which has no scenario dimension at all.
@@ -138,6 +146,9 @@ _OVERLAY = f"""
                           AND _ov.indicator_id = ir.indicator_id
                           AND _ov.status = 'current'
                           AND _ov.scenario_id = p.scenario_id_txt::uuid
+                          AND (_ov.value_numeric IS NOT NULL
+                            OR _ov.value_text IS NOT NULL
+                            OR _ov.value_json IS NOT NULL)
                       ))
                 ))
 """
