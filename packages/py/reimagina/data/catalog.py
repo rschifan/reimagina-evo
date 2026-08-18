@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import Any
 
+from reimagina.assets.publish import publish_version
 from reimagina.storage import backend_for_connection
 
 
@@ -90,8 +91,51 @@ def complete_ingestion_run(
     *,
     status: str,
     details: dict[str, Any] | None = None,
+    asset_key: str | None = None,
+    rows_written: int | None = None,
+    dataset_version: str | None = None,
 ) -> None:
-    """Mark a run as succeeded, failed, or cancelled."""
+    """Mark a run as succeeded, failed, or cancelled.
+
+    When ``asset_key`` names a registered asset and the run succeeded having
+    written rows, this also publishes a new version for it — which is what turns
+    "the buildings layer was reloaded" into "every indicator that reads buildings
+    is now stale", without anything having to remember to say so.
+
+    Published *before* delegating to the repository, because that call refreshes
+    ``serving_geo.feature_current_attributes_mv`` non-CONCURRENTLY and holds an
+    AccessExclusiveLock for the rest of the transaction. Nothing else should ride
+    inside that window.
+
+    ⚠ Publishing is skipped when zero rows were written. Vector loads are
+    ON CONFLICT DO NOTHING, so re-running an ingest at the same dataset_version
+    changes nothing — and bumping the version for it would stale every
+    downstream indicator to recompute identical numbers.
+
+    ``rows_written`` is an explicit parameter rather than something read back out
+    of ``details``, because ``details`` has no agreed shape: the vector loader
+    writes ``records_written`` while ``inegi_censo`` writes
+    ``observations_written``. Fishing for one key would have silently never
+    published the census layer.
+    """
+    if asset_key and status == "succeeded" and rows_written:
+        publish_version(
+            conn,
+            asset_key=asset_key,
+            version=str(run_id),
+            ingestion_run_id=run_id,
+            dataset_version=dataset_version,
+            row_count=rows_written,
+        )
+        # Column has existed since r002 and was never written by anything.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE curated_geo.data_source_catalog SET ingested_at = now() "
+                "WHERE id = (SELECT source_id FROM curated_geo.ingestion_run "
+                "WHERE id = %s)",
+                (run_id,),
+            )
+
     backend_for_connection(conn).catalog_repo().complete_ingestion_run(
         run_id,
         status=status,

@@ -36,9 +36,20 @@ second AOI discards the first. Scoping the tables by AOI is the upgrade path;
 until something needs two cities live at once, a column nobody filters on would
 be dead weight.
 
-After loading, bump the ``network_version`` attribute to invalidate the
-accessibility indicators — that attribute is what their ``reads`` declares, and
-it is what turns "the roads changed" into a recompute.
+⚠ **Nothing here invalidates anything downstream yet.** This function opens no
+``ingestion_run`` and publishes no version, so reloading the graph leaves every
+accessibility indicator reporting a value computed against the *previous*
+network. The instruction that used to stand here — "after loading, bump the
+``network_version`` attribute" — described a step no code performs: the only
+writer of that attribute anywhere is ``scripts/seed_demo_attributes.py``, which
+sets it to a constant.
+
+The replacement is registered but not yet wired: ``global.road_network`` is an
+``external`` asset with an ``observed`` version strategy
+(``reimagina.assets.registry``), so once observation runs, reloading the graph
+moves its version and the three ``*_network_m`` indicators go stale on their
+own. Until then this remains a manual step, and the honest statement is that it
+is not performed.
 """
 
 from __future__ import annotations

@@ -51,6 +51,36 @@ class RunPlan:
         return not self.units
 
 
+def _units_from_freshness(
+    conn: object,
+    registry: Sequence[IndicatorSpec],
+    *,
+    scenario_id: str | None = None,
+) -> list[DirtyUnit]:
+    """Dirty units derived from what is actually out of date.
+
+    Whole-grain by design: ``DirtyUnit.features`` empty already means "every
+    feature this indicator applies to", which ``runners`` collapses to
+    ``feature_ids=None``. A layer change invalidates the indicator, not a
+    knowable subset of its rows — narrowing that would mean joining the changed
+    source rows onto the indicator's own grain, which is the
+    ``FeatureExpander`` hook's job and still unimplemented.
+
+    Contributes nothing when the asset graph is not present: a deployment that
+    has not seeded the registry, or is still on r040, must keep planning runs the
+    way it always did. That check is a ``to_regclass`` probe inside
+    ``stale_units`` rather than a caught exception here — a failed query would
+    leave psycopg2's transaction aborted and poison the connection the caller is
+    about to submit on.
+    """
+    from reimagina.assets.freshness import stale_units
+
+    return [
+        DirtyUnit(indicator=slug, features=frozenset())
+        for slug in stale_units(conn, registry, scenario_id=scenario_id)
+    ]
+
+
 def plan_run(
     conn: object,
     *,
@@ -66,16 +96,62 @@ def plan_run(
     Reads the scenario's overrides when the change-set is not given explicitly,
     so a caller can submit ``scenario_id`` alone and have the diff derived from
     the override rows.
+
+    **With nothing specified at all, the dirty set comes from freshness.** A
+    submit naming no attribute, no feature and no scenario used to be a
+    guaranteed noop with a warning; it now means "recompute what is actually out
+    of date", answered by comparing each indicator's materialized version against
+    the version its inputs imply. That is what lets an ingest stop guessing which
+    attribute name stands in for the layer it just reloaded.
+
+    ⚠ Only ``stale`` and ``partial`` count on the baseline, never ``absent`` —
+    see ``assets.freshness``. On a database where nothing has been computed yet
+    every indicator is absent, and an empty submit must not mean "compute the
+    entire platform".
+
+    **A scenario submit is the same mechanism, at that scenario's partition.**
+    Editing a what-if publishes a new version for its slice of
+    ``scenario.override``, so the indicators the override actually reaches go out
+    of date and the rest — and the whole baseline — do not. Where a scenario's
+    expected version equals the baseline's, its answer *is* the baseline's
+    answer, and computing it would write a duplicate row and call it a what-if.
+
+    That replaces a deliberate over-approximation: ``resolve_change_set``
+    returns the flat union of every attribute and feature the scenario touches,
+    so editing one block's ``floors`` recomputed every indicator reading
+    ``floors`` across every block.
     """
     from reimagina.scenarios.overrides import resolve_change_set
 
+    # Materialised before anything reads them twice. These are typed `Iterable`,
+    # and resolve_change_set consumes them — so testing the raw arguments below
+    # would see an exhausted generator as truthy and route to the attribute path
+    # with an empty change set, silently skipping freshness.
+    requested_attributes = tuple(changed_attributes)
+    requested_features = tuple(edited_features)
     changed, edited = resolve_change_set(
         conn,
-        changed_attributes=changed_attributes,
-        edited_features=edited_features,
+        changed_attributes=requested_attributes,
+        edited_features=requested_features,
         scenario_id=scenario_id,
     )
-    units = compute_dirty_set(changed, edited, registry)
+    from reimagina.assets.freshness import graph_available
+
+    if requested_attributes or requested_features:
+        # An explicit change-set wins: the caller knows something the graph does
+        # not, and says so.
+        units = compute_dirty_set(changed, edited, registry)
+    elif graph_available(conn):
+        units = _units_from_freshness(conn, registry, scenario_id=scenario_id)
+    else:
+        # No asset graph in this database — an r040 deployment. Fall back to the
+        # change-set implied by the scenario's override rows, exactly as before.
+        #
+        # Gated on the graph being *absent*, not on the freshness result being
+        # empty: a graph that answers "nothing is dirty" is a real answer, and
+        # retrying the attribute path behind it would resurrect the
+        # over-approximation this replaces.
+        units = compute_dirty_set(changed, edited, registry)
     if not units:
         logger.warning(
             "scenario %s produced an empty dirty-set — nothing to recompute "

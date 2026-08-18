@@ -5,6 +5,8 @@ Three properties, each of which has a way of silently not holding:
 * the trigger is **opt-in** — a load without ``--recompute`` submits nothing;
 * a load that wrote **no rows** submits nothing, because ON CONFLICT DO NOTHING
   means a re-run invalidates nothing;
+* the submission names **no attributes** by default, so the dirty set is
+  derived from the layers the load changed rather than from a proxy attribute;
 * the submission is **not feature-scoped** — see ``submit_after_ingest``. An
   Overture load writes buildings while every shipped indicator applies to
   blocks, so passing the written ids would scope the recompute to features the
@@ -122,7 +124,14 @@ def test_load_without_the_flag_submits_nothing(monkeypatch):
     assert "recompute" not in result
 
 
-def test_load_with_the_flag_submits_the_declared_attributes(monkeypatch):
+def test_load_with_the_flag_names_no_attributes(monkeypatch):
+    """The default is now empty, and that is the improvement.
+
+    It used to be ("geometry",) — true of writing footprints, but a proxy:
+    three indicators read `geometry`, so reloading buildings also recomputed
+    compactness, which never looks at a building. With nothing named, the dirty
+    set comes from which layers the load actually changed.
+    """
     _stub_load(monkeypatch, records_written=5_000)
     submitted: list = []
     monkeypatch.setattr(
@@ -136,7 +145,7 @@ def test_load_with_the_flag_submits_the_declared_attributes(monkeypatch):
     )
 
     assert len(submitted) == 1
-    assert submitted[0]["changed_attributes"] == ["geometry"]
+    assert submitted[0]["changed_attributes"] == []
     assert submitted[0]["aoi_id"] == "aoi-1"
     assert result["recompute"]["status"] == "queued"
 
@@ -160,12 +169,15 @@ def test_a_load_that_wrote_nothing_does_not_recompute(monkeypatch):
     assert result["recompute"]["status"] == "skipped"
 
 
-def test_the_dirty_set_this_trigger_produces_is_the_real_one():
+def test_an_explicit_attribute_still_drives_the_real_dirty_set():
     """Not a mock: the actual catalog, through the actual impact engine.
 
-    `geometry` must reach three indicators and skip `planned_floors`, which
-    reads `floors`. If this ever changes, the trigger's default attribute is
-    wrong and every ingest-driven recompute silently does less than it should.
+    This is no longer the trigger's default — freshness is — but the explicit
+    path has to keep working for a caller that knows something the graph does
+    not, and a scenario what-if is exactly that caller.
+
+    It also shows why the old default was too broad: `geometry` reaches three
+    indicators, including compactness, which a building reload does not affect.
     """
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
     from reimagina.orchestration.impact import compute_dirty_set
@@ -179,3 +191,34 @@ def test_the_dirty_set_this_trigger_produces_is_the_real_one():
     assert "urban_form_block_planned_floors" not in slugs
     # Not feature-scoped in, not feature-scoped out.
     assert all(u.features == frozenset() for u in units)
+
+
+def test_coverage_threshold_defaults_agree_across_entry_points():
+    """The same computation must not produce different data by entry point.
+
+    run_raster_zonal_stats documents 0.0 and why: under exactextract's area
+    weighting, writing a row for every polygon touching a non-nodata cell is the
+    conservative answer, and the older 0.5 silently dropped manzanas smaller
+    than one raster pixel. Four other entry points kept the 0.5, so a run
+    invoked directly and the same run invoked through a recipe disagreed about
+    which small blocks exist.
+    """
+    import inspect
+
+    from apps.cli import raster as raster_cli
+    from reimagina.jobs.raster_zonal_stats import run_raster_zonal_stats
+    from reimagina.storage.postgres.repositories import (
+        PostgresAggregationRecipeRepository,
+    )
+
+    def _default(fn, name):
+        return inspect.signature(fn).parameters[name].default
+
+    assert _default(run_raster_zonal_stats, "coverage_threshold") == 0.0
+    assert _default(raster_cli.run_zonal_stats, "coverage_threshold") == 0.0
+    assert (
+        _default(
+            PostgresAggregationRecipeRepository.register_recipe, "coverage_threshold"
+        )
+        == 0.0
+    )

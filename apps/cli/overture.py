@@ -78,7 +78,7 @@ def load_mexico_city_buildings(
     notes: str = OVERTURE_BUILDINGS_NOTES,
     aoi_id: str | None = None,
     recompute: bool = False,
-    recompute_attributes: tuple[str, ...] = ("geometry",),
+    recompute_attributes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Bootstrap an Overture buildings extract into Postgres.
 
@@ -93,11 +93,19 @@ def load_mexico_city_buildings(
     silently started that would make ``overture load`` an unbounded operation
     whose cost is invisible at the call site. The operator asks for it.
 
-    ``recompute_attributes`` names what the load changed, defaulting to
-    ``geometry`` because that is what writing building footprints changes.
-    It is stated rather than derived: the loader knows which *columns* it
-    wrote, but the dirty set is keyed on the attribute names indicators
-    declare in ``reads``, and only the caller knows how one maps to the other.
+    ``recompute_attributes`` is now **empty by default**, and the dirty set is
+    derived from freshness instead. The load publishes a new version for the
+    layer it wrote, so every indicator consuming that layer reports itself out
+    of date without anyone naming an attribute.
+
+    It used to default to ``geometry`` — true of writing building footprints,
+    but a proxy rather than the fact: ``geometry`` is read by three indicators,
+    so reloading buildings also recomputed compactness, which never looks at a
+    building. The layer edge says exactly which indicators are affected, which
+    is what the attribute name was standing in for.
+
+    Passing attributes explicitly still works and still wins, for a caller that
+    knows something the graph does not.
     """
     with connect(dsn) as conn:
         result = bootstrap_overture_buildings_subset(

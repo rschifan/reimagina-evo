@@ -749,3 +749,46 @@ def test_cli_overture_load_passes_aoi_id(monkeypatch, capsys):
     assert captured["aoi_id"] == "uuid-1"
     assert captured["release"] == "2026-04-15.0"
     assert captured["source_name"] == "Overture Buildings - Mexicali"
+
+
+def test_cli_assets_consumers_delegates(monkeypatch, capsys):
+    """`assets consumers <key>` is the reverse question as a command.
+
+    "I changed the street network — what must I recompute" now has an answer that
+    does not require running anything.
+    """
+    monkeypatch.setattr(
+        "apps.cli.app.assets_consumers_cmd",
+        lambda **kwargs: {"related": [], **kwargs},
+    )
+
+    exit_code = main(["assets", "consumers", "global.road_network"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["asset_key"] == "global.road_network"
+
+
+def test_cli_assets_observe_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.assets_observe_cmd",
+        lambda **kwargs: {"changed": ["global.road_network"], **kwargs},
+    )
+
+    exit_code = main(["assets", "observe"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["changed"] == ["global.road_network"]
+
+
+def test_cli_assets_stale_delegates(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "apps.cli.app.assets_stale_cmd",
+        lambda **kwargs: {"count": 0, "assets": [], **kwargs},
+    )
+
+    exit_code = main(["assets", "stale"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["count"] == 0
