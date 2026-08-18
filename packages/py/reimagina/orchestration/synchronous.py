@@ -22,12 +22,18 @@ from reimagina.orchestration.coordinator import Runner, run_dirty_set
 from reimagina.orchestration.memstore import InMemoryRunStore
 from reimagina.orchestration.plan import noop_handle, plan_run
 from reimagina.orchestration.port import (
+    DBConnection,
     RunEvent,
     RunHandle,
     RunStatus,
     UnitStatusView,
 )
 from reimagina.orchestration.runners import default_runners
+
+
+def _detail(value: object) -> str | None:
+    """Store rows are loosely typed; detail is optional free text."""
+    return None if value is None else str(value)
 
 
 class SynchronousOrchestrator:
@@ -50,7 +56,7 @@ class SynchronousOrchestrator:
 
     def submit_run(
         self,
-        conn: object,
+        conn: DBConnection,
         *,
         changed_attributes: Iterable[str],
         edited_features: Iterable[str],
@@ -100,12 +106,15 @@ class SynchronousOrchestrator:
             run_id=run_id,
             status=report.status,
             units=tuple(
-                UnitStatusView(u["indicator"], u["status"], u["detail"]) for u in units
+                UnitStatusView(
+                    str(u["indicator"]), str(u["status"]), _detail(u["detail"])
+                )
+                for u in units
             ),
         )
         return RunHandle(run_id=run_id, status=status)
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None:
+    def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None:
         row = self._store.get_run(conn, run_id)
         if row is None:
             return None
@@ -118,7 +127,7 @@ class SynchronousOrchestrator:
             ),
         )
 
-    def cancel_run(self, conn: object, run_id: str) -> bool:
+    def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
         """Always False — a run here is already over by the time anyone has its id.
 
         ``submit_run`` does not return until the last runner has, so there is no

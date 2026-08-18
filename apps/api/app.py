@@ -34,7 +34,7 @@ def _cors_origins_from_env() -> list[str]:
     """Parse REIMAGINA_API_CORS_ORIGINS (comma-separated) or fall back to dev."""
     raw = os.environ.get("REIMAGINA_API_CORS_ORIGINS")
     if raw is None:
-        return ["http://localhost:5173", "http://localhost:8000"]
+        return ["http://localhost:5173", "http://localhost:8001"]
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 

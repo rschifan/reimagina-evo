@@ -545,6 +545,39 @@ WHERE  feature_id  = ANY(:affected_feature_ids)
 
 Recomputation is triggered by submitting a run for the scenario, not by queueing one job per model family: the dirty-set is derived per indicator from the changed attributes and the dependency graph (see `JOB_LAYER.md` — *The submit prelude*).
 
+### How a direct indicator is wired
+
+Every direct indicator shares one envelope: resolve the backend, check the
+catalog is seeded, open a `job_run`, read rows, run them through Hamilton,
+bulk-write, return a `ComputeResult`. Only three things vary — the read, the
+Hamilton node, and that node's input key — so the envelope lives once, in
+`indicators/_compute.py`:
+
+```python
+compute_block_compactness = compute_indicator(
+    URBAN_FORM_BLOCK_COMPACTNESS,
+    reader=_compactness_rows,
+    node="compactness_result_frame",
+    input_key="geodesic_metrics",
+)
+```
+
+`reader` is typed by a `Reader` Protocol rather than a bare `Callable`, because
+the readers take keyword-only arguments that `Callable` cannot express; mypy
+rejects a mis-shaped one with the expected signature named.
+
+⚠ **The read happens inside the `job_run` context, not before it.**
+`indicator_result.job_run_id` is a NOT NULL FK (r016), so a read that raises
+outside the context leaves a failure with no provenance row anywhere.
+
+⚠ **Two indicators deliberately keep their own body.** `planned_floors` has no
+Hamilton stage, and `building_density` reports an extra statistic
+(`buildings_attributed`) on a `ComputeResult` subclass. Adding hooks so the
+factory could swallow them would grow shared code to serve one caller each.
+They still use the shared `require_seeded` guard — which `planned_floors`
+lacked while five hand-written copies of it existed, so an unseeded database
+failed there with a foreign-key error instead of the actionable message.
+
 ### Rolling up a block-grain indicator to AGEB
 
 *Worked example: block compactness.* `compute_block_compactness` writes

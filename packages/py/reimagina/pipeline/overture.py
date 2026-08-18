@@ -27,12 +27,21 @@ OVERTURE_BUILDINGS_TYPE = "building"
 OVERTURE_BUILDINGS_THEME = "buildings"
 OVERTURE_RELEASE_S3_ROOT = "s3://overturemaps-us-west-2/release"
 OVERTURE_S3_REGION = "us-west-2"
-# Default Overture release for ingest. Overture publishes monthly; bump
-# this when migrating to a new lake snapshot. Verify the release exists
-# on S3 first via ``data verify-sources --release <new>``. The previous
-# value 2026-02-18.0 was never published — keep this in sync with what
-# you actually staged.
-OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-04-15.0")
+# Default Overture release for ingest.
+#
+# ⚠ **Overture keeps only the most recent release on S3.** Older ones are
+# deleted, so any pin here has a shelf life measured in weeks and *will* stop
+# resolving — this is the second time it has: 2026-02-18.0 was never published,
+# and 2026-04-15.0 was published and then rotated away, after which every
+# extract failed with a bare `FileNotFoundError` naming a path.
+#
+# Kept as a pin anyway, because the value is recorded as `dataset_version` on
+# the source and on every row's provenance, and a moving default would make two
+# ingests of "the same" data incomparable. The cost is paid at fetch time
+# instead: `available_overture_releases()` turns the failure into a message that
+# names what S3 actually has, so bumping this is a ten-second fix rather than an
+# investigation. Override per-run with REIMAGINA_OVERTURE_RELEASE.
+OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-07-22.0")
 OVERTURE_BUILDINGS_FILENAME = "overture_buildings_mexico_city.parquet"
 OVERTURE_BUILDINGS_SILVER_FILENAME = "overture_buildings_mexico_city_silver.parquet"
 OVERTURE_BUILDINGS_NOTES = (
@@ -102,6 +111,18 @@ def _s3_prefix_from_glob(source_glob: str) -> str:
     return prefix
 
 
+def available_overture_releases() -> list[str]:
+    """Release folders currently on Overture's S3, oldest first.
+
+    Overture deletes superseded releases, so this is the authoritative answer to
+    "what can I actually pin to today" — and usually returns a single entry.
+    """
+    s3 = pafs.S3FileSystem(anonymous=True, region=OVERTURE_S3_REGION)
+    root = OVERTURE_RELEASE_S3_ROOT.removeprefix("s3://")
+    selector = pafs.FileSelector(root, recursive=False)
+    return sorted(info.base_name for info in s3.get_file_info(selector))
+
+
 def _extract_remote_overture_subset(
     source_glob: str,
     output_path: Path,
@@ -113,9 +134,21 @@ def _extract_remote_overture_subset(
     without fetching them."""
     min_lon, min_lat, max_lon, max_lat = bbox
     s3 = pafs.S3FileSystem(anonymous=True, region=OVERTURE_S3_REGION)
-    dataset = pads.dataset(
-        _s3_prefix_from_glob(source_glob), filesystem=s3, format="parquet"
-    )
+    try:
+        dataset = pads.dataset(
+            _s3_prefix_from_glob(source_glob), filesystem=s3, format="parquet"
+        )
+    except FileNotFoundError as exc:
+        # The pinned release has almost certainly been rotated off S3. Say so,
+        # and say what is there — the bare error names a path and leaves the
+        # reader to guess whether it is a typo, a permissions problem, or this.
+        raise FileNotFoundError(
+            f"Overture release not found: {exc}. Overture keeps only its most "
+            f"recent release, so a pin older than a few weeks stops resolving. "
+            f"Available now: {', '.join(available_overture_releases()) or '(none)'}. "
+            f"Set REIMAGINA_OVERTURE_RELEASE, or bump OVERTURE_DEFAULT_RELEASE "
+            f"in pipeline/overture.py."
+        ) from exc
     flt = (
         (pc.field("bbox", "xmax") >= min_lon)
         & (pc.field("bbox", "xmin") <= max_lon)
@@ -284,7 +317,7 @@ def bootstrap_overture_buildings_subset(
     if aoi_id is not None:
         clip_result = _clip_buildings_to_aoi(
             conn,
-            ingestion_run_id=load_result["ingestion_run_id"],
+            ingestion_run_id=str(load_result["ingestion_run_id"]),
             aoi_id=aoi_id,
         )
         conn.commit()

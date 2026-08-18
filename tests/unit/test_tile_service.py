@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from reimagina.tiles.manifest import get_tile_layer, load_tile_layers
-from reimagina.tiles.service import (
+from reimagina.tiles.export import (
     _postgres_ogr_connection_string,
-    _strip_aoi_token,
     default_pmtiles_output_dir,
 )
+from reimagina.tiles.sources import _strip_aoi_token
 
 
 def test_tile_manifest_contains_expected_modes():

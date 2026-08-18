@@ -1,10 +1,13 @@
 import { defineConfig } from "vite";
 
-// Dev server proxies /api to the FastAPI uvicorn (default port 8000)
-// so the browser sees a same-origin URL and the API's CORS config
-// doesn't need to special-case the Vite port. Override the API target
-// with REIMAGINA_API_URL when a stale process is squatting on 8000 or
-// when the API is run on a non-default port.
+// Dev server proxies /api to the FastAPI uvicorn so the browser sees a
+// same-origin URL and the API's CORS config doesn't need to special-case
+// the Vite port. Override the target with REIMAGINA_API_URL.
+//
+// Port 8000 is deliberately NOT the default: another project on this
+// machine owns it, and a proxy silently pointed at a foreign API returns
+// plausible-looking 404s rather than a connection error. Run the API with
+//   uvicorn apps.api.app:app --host 127.0.0.1 --port 8001
 //
 // Production deployments should serve the built artefacts behind a
 // reverse proxy that performs the same mapping.
@@ -13,7 +16,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: process.env.REIMAGINA_API_URL ?? "http://127.0.0.1:8000",
+        target: process.env.REIMAGINA_API_URL ?? "http://127.0.0.1:8001",
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },

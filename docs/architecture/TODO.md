@@ -33,7 +33,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 
 | # | Item | Where | Notes |
 |---|---|---|---|
-| TD-1 | Backend-kind guard in `reimagina.tiles.service.export_pmtiles_snapshot` | `tiles/service.py:151` | `backend_name_for_dsn(dsn) != "postgres"` is a policy check, not a branch to be abstracted; tracks only so a future multi-backend export plan finds it |
+| TD-1 | Backend-kind guard in `reimagina.tiles.export.export_pmtiles_snapshot` | `tiles/export.py` | `backend_name_for_dsn(dsn) != "postgres"` is a policy check, not a branch to be abstracted; tracks only so a future multi-backend export plan finds it |
 | TD-2 | `perf/*` reads `backend.name` directly | `perf/runner.py`, `perf/seed.py`, `perf/observability.py` | Test/harness code inspects backend kind to choose plan-output parsers and seed SQL; move behind a `reimagina.storage` helper when perf grows past two backends |
 
 ---

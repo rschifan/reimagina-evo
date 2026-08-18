@@ -55,6 +55,15 @@ class Implementation:
     False means a run can be observed in flight — the only way to test a cancel
     that actually cancels something."""
 
+    settles: bool
+    """The run reaches a terminal state without a second process.
+
+    Distinct from ``blocking``, and the distinction matters: an ops-plane can
+    return immediately *and* still drive the run to completion in the submitting
+    process, which is what a durable-execution library buys. Conflating the two
+    silently skipped every partial-success assertion for such an engine — the
+    one property the comparison is most about."""
+
     failed_run_status: str
     """What a run with one failed and one succeeded unit reports.
 
@@ -64,9 +73,16 @@ class Implementation:
 
 
 IMPLEMENTATIONS = [
-    Implementation(mode="sync", blocking=True, failed_run_status="partial"),
-    Implementation(mode="embedded", blocking=True, failed_run_status="partial"),
-    Implementation(mode="detach", blocking=False, failed_run_status="partial"),
+    Implementation(
+        mode="sync", blocking=True, settles=True, failed_run_status="partial"
+    ),
+    # The branch's own ops-plane. Non-blocking but self-settling: a library
+    # needs no standing worker to finish a run. `partial` survives because this
+    # track keeps run state in jobs_runtime rather than adopting an engine's
+    # status enum — the property the comparison is about.
+    Implementation(
+        mode="dbos", blocking=False, settles=True, failed_run_status="partial"
+    ),
 ]
 
 
@@ -74,6 +90,9 @@ IMPLEMENTATIONS = [
 def impl(request, migrated_db, monkeypatch) -> Implementation:
     """The implementation under test, with its environment satisfied."""
     monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
+    # The production default is client-only. Conformance proves the explicit
+    # one-process developer/executor mode separately from deployment policy.
+    monkeypatch.setenv("REIMAGINA_DBOS_EXECUTION_MODE", "dev")
     return request.param
 
 
@@ -103,9 +122,8 @@ def poison(monkeypatch):
 def seeded(migrated_db):
     """A committed connection with the catalog and one block seeded.
 
-    Committed, not the rollback ``conn`` fixture: a queue worker opens its own
-    connection and would not see uncommitted rows. Cleanup is surgical, and
-    includes any queued jobs a non-blocking submit left behind.
+    Committed, not the rollback ``conn`` fixture: the ops-plane opens its own
+    connections and would not see uncommitted rows. Cleanup is surgical.
 
     Takes ``migrated_db`` explicitly. Bypassing the rollback fixture also
     bypasses the migration it runs, and without this the schema is present
@@ -146,13 +164,27 @@ def seeded(migrated_db):
 
 def _teardown(conn, run_ids, source_id) -> None:
     with conn.cursor() as cur:
-        # A non-blocking submit leaves an undrained job; deleting one fires an
-        # internal trigger that references unqualified procrastinate tables.
-        cur.execute("SET search_path TO procrastinate, public")
-        cur.execute(
-            "DELETE FROM procrastinate.procrastinate_jobs WHERE status = 'todo'"
-        )
-        cur.execute("SET search_path TO public")
+        # The engine's own state must go too. Runs accumulate in
+        # `dbos.workflow_status`, and a suite that cleaned only `jobs_runtime`
+        # left hundreds of finished and cancelled workflows behind — enough to
+        # make later tests in the same session behave differently from the same
+        # tests run alone. Children are `<parent-id>-<n>`, so the prefix match
+        # catches the unit workflows with their run.
+        #
+        # ⚠ Guarded, because the schema is DBOS's to create and it does so at
+        # `launch()`. On a database DBOS has never launched against, the `sync`
+        # implementation's teardown runs *before* any `dbos` test has launched
+        # anything, and an unguarded DELETE fails with `UndefinedTable` — a
+        # whole-suite failure on a fresh database that disappears on the second
+        # run, which is the worst way to meet a test suite.
+        cur.execute("SELECT to_regclass('dbos.workflow_status')")
+        if cur.fetchone()[0] is not None:
+            for run_id in run_ids:
+                cur.execute(
+                    "DELETE FROM dbos.workflow_status "
+                    "WHERE workflow_uuid = %s OR workflow_uuid LIKE %s",
+                    (run_id, f"{run_id}-%"),
+                )
         for run_id in run_ids:
             cur.execute(
                 "DELETE FROM jobs_runtime.job_unit WHERE run_id = %s", (run_id,)

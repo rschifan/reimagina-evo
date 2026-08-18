@@ -8,6 +8,7 @@ trigger, and `bootstrap_local_platform` seeds the catalog, so a bad entry breaks
 
 from __future__ import annotations
 
+
 import pytest
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
@@ -52,3 +53,42 @@ def test_every_shipped_indicator_has_a_runner():
     runners = default_runners()
     missing = [s.slug for s in SHIPPED_INDICATORS if s.slug not in runners]
     assert not missing, f"no runner registered for: {missing}"
+
+
+def test_every_accessibility_category_declares_a_label_and_scope():
+    """The description must state what the category actually matches.
+
+    ⚠ These keys are narrower than the values they match: `park` also accepts
+    private sports and fitness clubs, `health` accepts pharmacies, `school`
+    spans daycare through university. A description reading "the nearest park"
+    while the SQL accepts a gym is the indicator claiming to measure something
+    it does not, so the scope clause is generated from this table rather than
+    written beside it — and a new category without one must fail here rather
+    than ship an unqualified description.
+    """
+    from reimagina.indicators.catalog import (
+        ACCESSIBILITY_CATEGORIES,
+        ACCESSIBILITY_LABELS,
+    )
+
+    assert set(ACCESSIBILITY_LABELS) == set(
+        ACCESSIBILITY_CATEGORIES
+    ), "every accessibility category needs a (label, scope) entry"
+    for category, (label, scope) in ACCESSIBILITY_LABELS.items():
+        assert label and scope, f"{category} has an empty label or scope"
+
+
+def test_accessibility_descriptions_state_their_scope():
+    """Generated, not hand-written, so the two cannot drift apart."""
+    from reimagina.indicators.catalog import ACCESSIBILITY_LABELS, SHIPPED_INDICATORS
+
+    accessibility = [
+        s for s in SHIPPED_INDICATORS if s.slug.startswith("accessibility")
+    ]
+    assert accessibility, "no accessibility indicators found"
+    for spec in accessibility:
+        category = spec.slug.split("_")[2]
+        label, scope = ACCESSIBILITY_LABELS[category]
+        assert spec.description is not None
+        assert scope in spec.description, f"{spec.slug} omits what it counts"
+        assert label in spec.name, f"{spec.name} does not use the display label"

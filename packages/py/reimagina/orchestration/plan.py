@@ -1,9 +1,9 @@
 """The submit prelude — everything between "a scenario changed" and "run it".
 
-Resolving the effective change-set and deriving the dirty-set was duplicated
-between ``intake.evaluate_scenario`` and ``ProcrastinateOrchestrator.submit_run``,
-and every ops-plane implementation needs it again: an engine replaces the
-*execution* of a run, never the decision of what the run contains.
+Resolving the effective change-set and deriving the dirty-set is needed by
+every entry point and by every ops-plane: an engine replaces the *execution* of
+a run, never the decision of what the run contains. Extracting it here is why
+swapping the ops-plane did not touch the dirty-set logic at all.
 
 It is a module of its own rather than a function in ``intake`` because both are
 true at once — the sync path and every async engine call it — so it must not

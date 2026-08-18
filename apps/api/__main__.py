@@ -26,7 +26,7 @@ def main() -> None:
     uvicorn.run(
         _app,
         host=os.environ.get("REIMAGINA_API_HOST", "127.0.0.1"),
-        port=int(os.environ.get("REIMAGINA_API_PORT", "8000")),
+        port=int(os.environ.get("REIMAGINA_API_PORT", "8001")),
         log_level=os.environ.get("REIMAGINA_API_LOG_LEVEL", "info"),
     )
 

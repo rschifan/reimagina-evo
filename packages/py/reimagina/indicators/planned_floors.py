@@ -9,22 +9,15 @@ baseline keeps the base data. The first indicator that reads an attribute
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from reimagina.data.feature import get_type_id
+from reimagina.indicators._compute import (
+    ComputeResult as ComputeResult,
+    require_seeded,
+)
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_PLANNED_FLOORS
 from reimagina.jobs._lifecycle import job_run
 from reimagina.scenarios.overrides import effective_numeric
 from reimagina.storage import backend_for_connection
-
-
-@dataclass(frozen=True)
-class ComputeResult:
-    job_run_id: str
-    indicator_slug: str
-    features_considered: int
-    rows_written: int
-    aoi_id: str | None
 
 
 def compute_planned_floors(
@@ -38,6 +31,10 @@ def compute_planned_floors(
     """Write the effective ``floors`` value per block as planned_floors."""
     backend = backend_for_connection(conn)
     spec = URBAN_FORM_BLOCK_PLANNED_FLOORS
+    # ⚠ This check was missing here while the other four indicators had it, so
+    # an unseeded database failed later with a foreign-key error instead of the
+    # actionable message. Exactly the drift five copies of one envelope produce.
+    require_seeded(backend, spec)
     block_type_id = get_type_id(conn, "MEX", "block")
     effective = effective_numeric(
         conn,

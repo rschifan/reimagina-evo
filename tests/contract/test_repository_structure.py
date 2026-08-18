@@ -30,10 +30,6 @@ def test_expected_top_level_structure_exists():
         ROOT / "tests" / "conformance",
         ROOT / "tests" / "performance",
         ROOT / "tests" / "e2e",
-        # Engine-coupled tests are quarantined so an ops-plane branch can
-        # drop one subtree without editing the rest of a suite.
-        ROOT / "tests" / "integration" / "engine",
-        ROOT / "tests" / "performance" / "engine",
     ]
     for path in expected:
         assert path.exists(), f"Missing expected path: {path}"
@@ -107,7 +103,7 @@ def test_backends_implement_every_protocol_method(
         return_cls is not None
     ), f"{backend_cls}.{repo_getter} is missing a return annotation"
     if isinstance(return_cls, str):
-        return_cls = eval(return_cls, backend_mod.__dict__)  # noqa: S307
+        return_cls = eval(return_cls, backend_mod.__dict__)
 
     missing = _protocol_methods(protocol_cls) - _protocol_methods(return_cls)
     assert not missing, f"{return_cls.__name__} missing Protocol methods from {protocol_name}: {sorted(missing)}"

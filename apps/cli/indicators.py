@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, is_dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reimagina.orchestration.port import Orchestrator
 
 from reimagina.db import connect
 from reimagina.indicators.catalog import seed_catalog
@@ -50,7 +55,12 @@ def compute_indicator(
             code_version=code_version,
             aoi_id=aoi_id,
         )
-    payload = asdict(result) if is_dataclass(result) else {"result": repr(result)}
+    # `is_dataclass` is true for the class object too, which `asdict` rejects.
+    payload = (
+        asdict(result)
+        if is_dataclass(result) and not isinstance(result, type)
+        else {"result": repr(result)}
+    )
     return {"dsn": dsn, **payload}
 
 
@@ -176,43 +186,26 @@ def evaluate_scenario_cli(
     aoi_id: str | None = None,
     code_version: str = "dev",
     mode: str = "embedded",
-    concurrency: int = 1,
+    timeout_s: float = 600.0,
 ) -> dict[str, object]:
     """Selectively recompute indicators for a scenario edit.
 
-    ``mode`` selects the orchestrator:
+    ``mode`` selects whether this command waits, not which engine runs the work —
+    there is one ops-plane, and because it is a library rather than a service the
+    same process can both submit and drain. (``orchestration.factory`` uses the
+    words ``detach``/``embedded`` for engines and rejects them; here they name
+    caller behaviour. Same words, different layer.)
 
-    * ``embedded`` (default) — enqueue on the Procrastinate queue and drain a
-      bounded in-process worker to completion, returning the finished report.
-      The durable queue path (retries, locks, waves) with no separate worker.
-    * ``detach`` — enqueue and return the run_id immediately for a standalone
-      ``python -m apps.worker`` fleet to drain (fire-and-forget).
-    * ``sync`` — the in-process orchestrator (no queue), returns the per-unit
-      report inline.
+    * ``embedded`` (default) — submit and wait for the run to finish, returning
+      the per-unit report. No standing worker needed; this process drives it.
+    * ``detach`` — submit and return the run_id for a ``python -m apps.worker``
+      fleet to drain (fire-and-forget).
+    * ``sync`` — no ops-plane at all: run the coordinator in-process and return
+      its richer per-unit report. The one mode that still works when the
+      ops-plane is broken.
 
     ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
     """
-    if mode == "detach":
-        from reimagina.orchestration.factory import get_orchestrator
-
-        with connect(dsn) as conn:
-            handle = get_orchestrator("detach").submit_run(
-                conn,
-                changed_attributes=changed_attributes,
-                edited_features=edited_features,
-                scenario_id=scenario_id,
-                aoi_id=aoi_id,
-                code_version=code_version,
-            )
-        status = handle.status.status if handle.status else "queued"
-        return {
-            "dsn": dsn,
-            # No run row exists for a noop, so the id would 404 on lookup.
-            "run_id": None if status == "noop" else handle.run_id,
-            "status": status,
-            "mode": "detach",
-        }
-
     if mode == "sync":
         # Not via the factory: this path returns the coordinator's per-unit
         # RunReport, which is a richer shape than the port's RunStatus and is
@@ -236,28 +229,70 @@ def evaluate_scenario_cli(
             ],
         }
 
-    if mode != "embedded":
+    if mode not in ("embedded", "detach"):
         raise ValueError(f"unknown evaluate-scenario mode: {mode!r}")
 
-    from reimagina.orchestration.embedded import run_embedded
+    from reimagina.orchestration.factory import get_orchestrator
 
+    if mode == "embedded":
+        # Local convenience mode deliberately owns an executor. Production API
+        # processes stay client-only; this is an explicit caller choice.
+        from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
+
+        orchestrator: Orchestrator = DBOSOrchestrator(execution_mode="dev")
+    else:
+        orchestrator = get_orchestrator("dbos")
     with connect(dsn) as conn:
-        status = run_embedded(
+        handle = orchestrator.submit_run(
             conn,
             changed_attributes=changed_attributes,
             edited_features=edited_features,
             scenario_id=scenario_id,
             aoi_id=aoi_id,
             code_version=code_version,
-            concurrency=concurrency,
         )
+        # A noop finishes at submit and persists no run, so there is nothing to
+        # wait for and the id would 404 on lookup.
+        if handle.status is not None or mode == "detach":
+            status = handle.status.status if handle.status else "queued"
+            return {
+                "dsn": dsn,
+                "run_id": None if status == "noop" else handle.run_id,
+                "status": status,
+                "mode": mode,
+            }
+        final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
+
     return {
         "dsn": dsn,
-        "run_id": status.run_id,
+        "run_id": final.run_id,
         "mode": "embedded",
-        "status": status.status,
+        "status": final.status,
         "units": [
             {"indicator": u.indicator, "status": u.status, "detail": u.detail}
-            for u in status.units
+            for u in final.units
         ],
     }
+
+
+def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):
+    """Poll until the run is terminal.
+
+    The port has no ``wait``: an ops-plane that required a separate worker could
+    not honour one, so blocking belongs to the caller that wants it. This
+    process launched the engine, so the run makes progress while we poll.
+    """
+    from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        conn.rollback()  # end the read txn so the next poll sees fresh rows
+        status = orchestrator.get_run(conn, run_id)
+        if status is not None and status.status in RUN_TERMINAL_STATES:
+            return status
+        if time.monotonic() > deadline:
+            last = status.status if status else "unknown"
+            raise TimeoutError(
+                f"run {run_id} did not finish within {timeout_s}s (last: {last})"
+            )
+        time.sleep(0.2)

@@ -71,6 +71,23 @@ def test_composite_runs_after_inputs_and_combines_them(conn):
         geometry_wkt=_BLOCK_WKT,
     )
 
+    # A real building, so the composite combines two measured halves. With the
+    # building layer empty, density was 0.0 and the composite collapsed to
+    # exactly 0.5 x compactness -- which is what shipped to production and went
+    # unnoticed, so a test asserting "combines them" must not reproduce it.
+    _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "global", "building"),
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="comp-bld-1",
+        geometry_wkt=(
+            "POLYGON((-99.1395 19.4305,-99.1390 19.4305,-99.1390 19.4310,"
+            "-99.1395 19.4310,-99.1395 19.4305))"
+        ),
+    )
+
     report = SynchronousOrchestrator(registry=_REGISTRY).submit_run(
         conn,
         changed_attributes={"geometry"},

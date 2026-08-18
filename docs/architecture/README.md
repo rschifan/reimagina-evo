@@ -25,7 +25,7 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 4. **Scenario authoring**
    Create a `project`, mint a `scenario_id`, and record the scenario's attribute edits as `curated_geo.scenario_override` rows — one per `(scenario_id, feature_id, attribute_key)`.
 5. **Async computation**
-   Submit a run through the `Orchestrator` port: the change-set resolves to a dirty-set, which persists as `orchestration_run` + `job_unit`; each unit's runner reads baseline from `serving_geo`, overlays the scenario's overrides on read, opens its own `job_run` at compute time, and writes outputs.
+   Submit a run through the `Orchestrator` port: the change-set resolves to a dirty-set, which persists as `orchestration_run` + `job_unit`; each unit's runner reads baseline from `serving_geo`, overlays the scenario's overrides on read, opens its own `job_run` at compute time, and writes outputs. Units are dispatched **as each one unblocks** — a unit starts the moment its last dependency succeeds, bounded only by the queue's worker concurrency and the dependency graph's own critical path.
 6. **Indicator output and comparison**
    Write long-format `indicator_result` rows, then read base vs scenario results through `serving_geo.current_indicator_v`.
 
@@ -36,7 +36,7 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 | `TERMINOLOGY.md` | Shared language, decision rules, onboarding vocabulary |
 | `DATA_LAYER.md` | Canonical city data, ingestion lineage, serving views |
 | `SCENARIOS_LAYER.md` | User-authored planning state and scenario overlays |
-| `JOB_LAYER.md` | Orchestrator port, run and unit state, execution provenance |
+| `JOB_LAYER.md` | Orchestrator port, run and unit state, **scheduling and dispatch**, execution provenance |
 | `INDICATORS_LAYER.md` | Indicator metadata, dependency graph, computed results |
 | `TILE_SERVING.md` | Live MVT serving, PMTiles snapshots, tile-layer classification |
 | `API.md` | Read-side HTTP surface (FastAPI routes, download formats, ops knobs) |
@@ -50,4 +50,5 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 - **Where do outputs go?** `INDICATORS_LAYER.md`.
 - **How are map layers served?** `TILE_SERVING.md`.
 - **How do we monitor production-read performance?** `PERFORMANCE.md`.
+- **In what order do a run's indicators execute?** `JOB_LAYER.md` — the dependency graph decides what is *legal*, the queue decides what is *actual*.
 - **How do we know the rules are enforced?** `TESTING.md`.
