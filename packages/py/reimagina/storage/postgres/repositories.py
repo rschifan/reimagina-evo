@@ -959,16 +959,30 @@ class PostgresAOIRepository:
         name: str,
         geometry_wkt: str,
         description: str | None = None,
+        membership_key: dict[str, str] | None = None,
     ) -> str:
+        """``membership_key`` declares identifier-based membership (r040).
+
+        Pass it whenever the AOI is derived from an administrative unit, so
+        features carrying the same identifiers are placed exactly rather than
+        by spatial overlap. Leave it None for a drawn or arbitrary AOI, which
+        has no identifier to match on and must be decided geometrically.
+        """
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.area_of_interest
-                  (project_id, name, description, geometry)
-                VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326))
+                  (project_id, name, description, geometry, membership_key)
+                VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326), %s)
                 RETURNING id
                 """,
-                (project_id, name, description, geometry_wkt),
+                (
+                    project_id,
+                    name,
+                    description,
+                    geometry_wkt,
+                    psycopg2.extras.Json(membership_key) if membership_key else None,
+                ),
             )
             return str(cur.fetchone()[0])
 
@@ -980,7 +994,7 @@ class PostgresAOIRepository:
             cur.execute(
                 """
                 WITH aoi_raw AS (
-                  SELECT geometry
+                  SELECT geometry, membership_key
                   FROM curated_geo.area_of_interest
                   WHERE id = %s
                 ),
@@ -1000,6 +1014,17 @@ class PostgresAOIRepository:
                   CROSS JOIN aoi_raw aoi
                   WHERE ST_GeometryType(f.geometry) IN ('ST_Polygon','ST_MultiPolygon')
                     AND f.geometry && aoi.geometry
+                    -- Identifiers beat geometry where both exist. A feature
+                    -- carrying every key the AOI declares is a member iff the
+                    -- values match exactly; one that carries none of them
+                    -- (Overture buildings, OSM establishments) is decided
+                    -- spatially as before. See migration r040.
+                    AND (
+                      aoi.membership_key IS NULL
+                      OR NOT (f.attributes ?& ARRAY(
+                           SELECT jsonb_object_keys(aoi.membership_key)))
+                      OR f.attributes @> aoi.membership_key
+                    )
                 ),
                 feature_fixed AS (
                   SELECT
@@ -1048,7 +1073,7 @@ class PostgresAOIRepository:
             cur.execute(
                 """
                 WITH aoi_raw AS (
-                  SELECT geometry
+                  SELECT geometry, membership_key
                   FROM curated_geo.area_of_interest
                   WHERE id = %s
                 ),
@@ -1068,6 +1093,17 @@ class PostgresAOIRepository:
                   CROSS JOIN aoi_raw aoi
                   WHERE ST_GeometryType(f.geometry) IN ('ST_LineString','ST_MultiLineString')
                     AND f.geometry && aoi.geometry
+                    -- Identifiers beat geometry where both exist. A feature
+                    -- carrying every key the AOI declares is a member iff the
+                    -- values match exactly; one that carries none of them
+                    -- (Overture buildings, OSM establishments) is decided
+                    -- spatially as before. See migration r040.
+                    AND (
+                      aoi.membership_key IS NULL
+                      OR NOT (f.attributes ?& ARRAY(
+                           SELECT jsonb_object_keys(aoi.membership_key)))
+                      OR f.attributes @> aoi.membership_key
+                    )
                 ),
                 feature_fixed AS (
                   SELECT
@@ -1126,6 +1162,16 @@ class PostgresAOIRepository:
                 JOIN curated_geo.area_of_interest aoi ON aoi.id = %s
                 WHERE ST_GeometryType(f.geometry) IN ('ST_Point','ST_MultiPoint')
                   AND ST_Within(f.geometry, aoi.geometry)
+                  -- Same identifier rule as the polygon and line families, so
+                  -- the three cannot disagree about who is a member. No point
+                  -- layer carries admin codes today; keeping the rule uniform
+                  -- is cheaper than discovering the inconsistency when one does.
+                  AND (
+                    aoi.membership_key IS NULL
+                    OR NOT (f.attributes ?& ARRAY(
+                         SELECT jsonb_object_keys(aoi.membership_key)))
+                    OR f.attributes @> aoi.membership_key
+                  )
                 """,
                 (aoi_id, aoi_id),
             )

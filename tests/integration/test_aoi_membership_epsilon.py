@@ -9,6 +9,8 @@ their whole polygons rendered on an AOI-scoped map.
 
 from __future__ import annotations
 
+import json
+
 from reimagina.data import feature as feat
 from reimagina.storage import backend_for_connection
 from reimagina.storage.postgres.repositories import MEMBERSHIP_MIN_OVERLAP_RATIO
@@ -76,3 +78,129 @@ def test_a_shared_border_is_not_membership(conn):
     # Guards against the threshold being raised into real data: everything that
     # survives must clear the epsilon by a wide margin, not sit just above it.
     assert min(members.values()) > MEMBERSHIP_MIN_OVERLAP_RATIO * 1000
+
+
+def test_identifiers_decide_membership_where_the_feature_has_them(conn):
+    """r040. Geometry is a superset of the truth; codes are the truth.
+
+    A block whose polygon crosses into the AOI but whose CVE_MUN says it
+    belongs to the next alcaldia is not a member. A building, which carries no
+    codes at all, is still placed spatially.
+    """
+    source_id = _register_source(
+        conn,
+        name="key_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+
+    def _feat(type_id, ref: str, wkt: str, attrs: dict | None = None) -> str:
+        fid = _insert_feature(
+            conn,
+            type_id=type_id,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
+            geometry_wkt=wkt,
+        )
+        if attrs:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE curated_geo.feature SET attributes = attributes || %s::jsonb "
+                    "WHERE id = %s",
+                    (json.dumps(attrs), fid),
+                )
+        return fid
+
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    building_type = feat.get_type_id(conn, "global", "building")
+
+    # All three overlap the AOI substantially, so geometry alone would admit
+    # every one of them.
+    ours = _feat(
+        block_type,
+        "key-ours",
+        _square(-99.139, 19.431, 0.002),
+        {"CVE_ENT": "09", "CVE_MUN": "012"},
+    )
+    neighbour = _feat(
+        block_type,
+        "key-neighbour",
+        _square(-99.137, 19.431, 0.002),
+        {"CVE_ENT": "09", "CVE_MUN": "003"},
+    )
+    uncoded_building = _feat(building_type, "key-bldg", _square(-99.135, 19.431, 0.001))
+
+    aoi_id = aoi_mod.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="key_proj"),
+        name="key_aoi",
+        geometry_wkt=_square(-99.140, 19.430),
+        membership_key={"CVE_ENT": "09", "CVE_MUN": "012"},
+    )
+    backend_for_connection(conn).aoi_repo().compute_overlaps(aoi_id)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT feature_id::text FROM curated_geo.aoi_feature WHERE aoi_id = %s",
+            (aoi_id,),
+        )
+        members = {r[0] for r in cur.fetchall()}
+
+    assert ours in members, "matching codes must be a member"
+    assert neighbour not in members, (
+        "a block overlapping the AOI but belonging to CVE_MUN=003 must not be a "
+        "member — geometry must not override the identifier"
+    )
+    assert uncoded_building in members, (
+        "a feature carrying no codes must still be placed spatially, or every "
+        "Overture building would drop out"
+    )
+
+
+def test_no_membership_key_keeps_the_geometric_behaviour(conn):
+    """AOIs with nothing to declare — a drawn study area — are unaffected."""
+    source_id = _register_source(
+        conn,
+        name="nokey_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    fid = _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="nokey-blk",
+        geometry_wkt=_square(-99.139, 19.431, 0.002),
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes || "
+            '\'{"CVE_ENT":"09","CVE_MUN":"003"}\'::jsonb WHERE id = %s',
+            (fid,),
+        )
+
+    aoi_id = aoi_mod.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="nokey_proj"),
+        name="nokey_aoi",
+        geometry_wkt=_square(-99.140, 19.430),
+    )
+    backend_for_connection(conn).aoi_repo().compute_overlaps(aoi_id)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.aoi_feature "
+            "WHERE aoi_id = %s AND feature_id = %s",
+            (aoi_id, fid),
+        )
+        assert cur.fetchone()[0] == 1, (
+            "with no membership_key the codes are irrelevant and geometry alone "
+            "decides — otherwise every pre-r040 AOI silently re-scopes"
+        )
