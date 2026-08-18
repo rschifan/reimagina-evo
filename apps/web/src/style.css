@@ -1,13 +1,4 @@
-:root {
-  --sidebar-bg: #111827;
-  --sidebar-fg: #f9fafb;
-  --accent: #60a5fa;
-  --muted: #9ca3af;
-  --border: #1f2937;
-  --panel: #1f2937;
-  --button-bg: #374151;
-  --button-bg-hover: #4b5563;
-}
+@import "./theme.css";
 
 * {
   box-sizing: border-box;
