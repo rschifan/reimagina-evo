@@ -2059,6 +2059,7 @@ dependencies = [
     { name = "shapely" },
     { name = "sqlalchemy" },
     { name = "titiler-core" },
+    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2098,6 +2099,7 @@ requires-dist = [
     { name = "shapely", specifier = ">=2.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "titiler-core", specifier = ">=0.22" },
+    { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
 ]
 provides-extras = ["dev"]
