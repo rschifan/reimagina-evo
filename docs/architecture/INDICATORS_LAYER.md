@@ -352,7 +352,56 @@ VALUES
   (:uqi_id, :heat_id,         0.25);
 ```
 
-No new model is required. The generic `compute_composite` runner reads the component results and applies weights — a new composite needs only a catalog entry, not new compute code (`orchestration/runners.py:86-87`).
+No new model is required. The generic `compute_composite` runner reads the
+component results and applies weights — a new composite needs only a catalog
+entry, not new compute code (`orchestration/runners.py:86-87`).
+`livability_block_score` is the worked example: 0.4 housing density plus 0.2
+each for walking distance to schools, health facilities and parks, added as a
+spec and nothing else.
+
+#### Each input is rescaled before weighting
+
+⚠ **Raw summing makes the weights decorative.** `urban_form_block_composite`
+declared 0.5/0.5 and behaved 1.25 / 98.75 — mean contributions of 0.265 from
+compactness (`ratio_0_1`, range 0–1) against 20.946 from building density
+(`buildings_per_ha`, range 0–500). Not a weighting bug; a units bug. Metres and
+dwellings-per-hectare do not add.
+
+`compute_composite` rescales each input to 0–1 against its **declared**
+`valid_min`/`valid_max` before weighting, so no input can exceed its weight and
+the result cannot leave 0–1.
+
+Against the *declared* bounds, not the observed population, on purpose:
+percentile or AOI min–max would make every value depend on every other value, so
+editing one block would invalidate all of them and the dirty set could no longer
+be a subset of features. That is a different scheduling shape.
+
+⚠ **This makes the maths sound; it does not make a score balanced.**
+`valid_max` is now doing two jobs — the validation ceiling r016's trigger
+enforces on writes, and the reference a score divides by. `building_density`
+declares 500 as a safety cap against an observed maximum of 212.1, so its values
+occupy the bottom 42% of their range and the same 0.5/0.5 composite reads 86%
+compactness. Separating the two roles is the fix when a real score needs a
+defensible balance.
+
+#### Direction: `higher_is_better`
+
+⚠ `indicator_dependency` enforces `weight >= 0` (r016:93), so a lower-is-better
+input **cannot** be folded in with a negative weight. Six shipped indicators are
+distances in metres; a score adding one raw ranks "far from a school" as good —
+silently, because the arithmetic stays sound and only the meaning inverts.
+Measured on two blocks differing only in distance: near (100 m) scored 0.283,
+far (1400 m) scored 0.717.
+
+Each spec declares `higher_is_better`; `compute_composite` flips a `False` input
+to `1 - normalised`, **after clamping and before weighting**. Clamp order is
+load-bearing — the accessibility family reports exactly its `valid_max` for an
+unreachable block, and orienting first would make that a negative contribution.
+
+The field is Python-side rather than a catalog column: its only consumer is the
+composite, which already reads these specs for bounds. Unlike `reads`, it cannot
+drift from the compute — it states what the number *means*, not what the code
+touches. A distance is lower-is-better whatever the implementation does.
 
 ---
 

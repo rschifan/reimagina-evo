@@ -663,10 +663,21 @@ reordered replay hands back the wrong child's result instead of failing.
 is `work / span`; on today's catalog that is 4.03, and 16 worker slots
 measure exactly 4.03. The shipped default of 8 reaches 3.92.
 
-⚠ **Today's catalog barely exercises any of this.** 12 of 13 indicators
-are roots and only a `geometry` edit produces two waves, so the ordering
-machinery is real but mostly idle. It is built for the deeper catalogs
-that a cadastre or a wider indicator set would bring.
+⚠ **The catalog exercises more of this than it used to, and still not
+much.** 12 of 14 indicators are roots. Adding `livability_block_score`
+took the number of attribute edits that produce two waves from one to
+four — `geometry`, `poi_version`, `network_version` and `num_levels` now
+each seed a family whose results a composite consumes, where before only
+`geometry` did. `floors` remains single-wave.
+
+Two levels is still shallow, so the ordering machinery is real but
+lightly loaded. What deepens it is not more indicators of the shapes
+already here — another POI category is another root — but the shapes that
+are missing: a **population-normalised** indicator (a percentile makes
+every value depend on every other, so the dirty set stops being a subset
+of features), a **spatial-lag** one (a value depends on its neighbours',
+so a unit cannot be partitioned by feature id), and **rollup as a DAG
+edge** rather than the CLI-only step it is today.
 
 ---
 
