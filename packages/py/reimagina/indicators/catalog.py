@@ -98,10 +98,10 @@ URBAN_FORM_BLOCK_PLANNED_FLOORS = IndicatorSpec(
     slug="urban_form_block_planned_floors",
     name="Planned Floors",
     description=(
-        "The effective number of floors planned on a block — the base value "
-        "unless a scenario overrides the `floors` attribute. The first "
-        "attribute-reading indicator, so an upzoning what-if (override floors) "
-        "recomputes it while the baseline keeps the base data."
+        "The number of floors planned on a block: the base value, unless a "
+        "scenario overrides the `floors` attribute. An upzoning what-if "
+        "recomputes it against the override while the baseline keeps the base "
+        "data, so the two are comparable side by side."
     ),
     computation_kind="direct",
     model_family="urban_form",
@@ -121,12 +121,18 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
     slug="urban_form_block_composite",
     name="Urban Form Composite",
     description=(
-        "Weighted combination of block compactness and building density — the "
-        "shipped composite. Its purpose is structural as much as analytical: "
-        "without a composite the dirty-set is always a single wave, so nothing "
-        "exercises dependency ordering, downstream propagation, or the "
-        "skip-a-dependent-of-a-failed-input rule."
+        "Equal-weighted sum of block compactness (0.5) and building density "
+        "(0.5). ⚠ The inputs are on different scales — compactness is a 0–1 "
+        "ratio, density is buildings per hectare — so the density term "
+        "dominates and the result is closer to a density reading than to a "
+        "balance of the two. Useful for ranking blocks against each other, not "
+        "as an absolute score."
     ),
+    # ⚠ It also earns its place structurally, which is why it ships even though
+    # the scale mismatch above limits it: without a composite the dirty-set is
+    # always a single wave, so nothing exercises dependency ordering, downstream
+    # propagation, or the skip-a-dependent-of-a-failed-input rule. That is a
+    # note to ourselves — it used to be in `description`, which the API serves.
     computation_kind="composite",
     # Composites must have model_family NULL — indicator_catalog CHECK (r016).
     value_type="numeric",
@@ -342,14 +348,44 @@ ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Human-readable label and the plain-language scope of each category.
+#
+# ⚠ These exist because the keys above are **narrower than what they match**,
+# and the catalog description is what a planner reads before trusting a number.
+# "park" includes private gyms; "health" includes pharmacies; "school" spans
+# daycare through university. A description saying "the nearest park" while the
+# SQL also accepts `Clubs_deportivos_y_acondicionamiento_fisico` is not a
+# wording problem — it is the indicator claiming to measure something it does
+# not. Generated into the description rather than written beside it, so the two
+# cannot drift.
+ACCESSIBILITY_LABELS: dict[str, tuple[str, str]] = {
+    "school": (
+        "school",
+        "any education facility from daycare (guarderia) through university "
+        "(educacion superior) — it does not distinguish school level",
+    ),
+    "health": (
+        "health facility",
+        "pharmacies, doctors' offices and hospitals alike — a farmacia counts "
+        "the same as a hospital general",
+    ),
+    "park": (
+        "park or recreation site",
+        "public recreational parks, other recreational services, and private "
+        "sports and fitness clubs",
+    ),
+}
+
+
 def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
     """One accessibility spec. Six of these differ only by category and mode."""
     mode = "network" if network else "euclid"
+    label, scope = ACCESSIBILITY_LABELS[category]
     return IndicatorSpec(
         slug=f"accessibility_block_{category}_{mode}_m",
-        name=f"Distance to {category} ({'network' if network else 'straight-line'})",
+        name=f"Distance to {label} ({'network' if network else 'straight-line'})",
         description=(
-            f"Metres from the block's centroid to the nearest {category}, "
+            f"Metres from the block's centroid to the nearest {label}, "
             + (
                 "along the OSM pedestrian network via pgRouting. Reflects "
                 "actual walkable routes, so it responds to road-network edits."
@@ -357,6 +393,7 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
                 else "in a straight line. A lower bound on the network "
                 "distance; ignores barriers, so it is optimistic by design."
             )
+            + f" Counts {scope}."
             + f" Capped at {ACCESSIBILITY_CUTOFF_M:.0f} m, which is also what "
             "an unreachable block reports."
         ),
