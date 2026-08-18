@@ -4,6 +4,8 @@ SQL-level contract tests for the Reimagina database schema. These tests verify t
 
 **Framework:** [`pgTAP`](https://pgtap.org/) — a TAP-compliant PostgreSQL testing framework. Tests run against a disposable PostgreSQL + PostGIS database seeded with the schema and minimal reference data.
 
+⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`pyproject.toml:86`), split into `unit`, `contract`, `integration`, `conformance`, `parity`, `performance`, and `e2e`, driven by `make test`, `make test-integration`, and `make test-conformance` (`Makefile:43`, `:47`, `:51`).
+
 **Related documents:** `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, `JOB_LAYER.md`.
 
 ---
@@ -15,7 +17,9 @@ SQL-level contract tests for the Reimagina database schema. These tests verify t
 CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Run the full schema build order (see JOB_LAYER.md)
+-- Build the schema by running the Alembic migrations (r001 → r031):
+--   make migrate        # python -m apps.cli.app bootstrap-db  (Makefile:71-73)
+-- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:
 
 INSERT INTO curated_geo.data_source_catalog
@@ -829,9 +833,8 @@ ROLLBACK;
 BEGIN;
 SELECT plan(6);
 
--- Setup
-INSERT INTO app_core.project (id, name) VALUES ('44444444-0000-0000-0000-000000000002', 'Test Project 2');
-INSERT INTO app_core.scenario (id, project_id, name) VALUES ('88888888-0000-0000-0000-000000000001', '44444444-0000-0000-0000-000000000002', 'Test Scenario');
+-- Setup. scenario_id is a bare uuid with no FK (r016:7-10), so no scenario
+-- row is created — or creatable — here.
 INSERT INTO jobs_runtime.job_run (id, scenario_id, model_family, status, code_version)
 VALUES ('99999999-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000001', 'accessibility', 'succeeded', 'v1');
 INSERT INTO curated_geo.indicator_catalog
@@ -1013,8 +1016,8 @@ ROLLBACK;
 BEGIN;
 SELECT plan(3);
 
-INSERT INTO app_core.project (id, name) VALUES ('44444444-0000-0000-0000-000000000003', 'Job Test Project');
-INSERT INTO app_core.scenario (id, project_id, name) VALUES ('88888888-0000-0000-0000-000000000002', '44444444-0000-0000-0000-000000000003', 'Job Test Scenario');
+-- No scenario row: jobs_runtime.job_run.scenario_id is a plain uuid with no
+-- foreign key (r016:7-10, r016:32), so any uuid is accepted.
 
 -- Invalid status must be rejected
 SELECT throws_ok(
@@ -1056,49 +1059,65 @@ ROLLBACK;
 
 ## 8. Scenarios Layer
 
+A scenario has no table of its own — it is the set of `curated_geo.scenario_override`
+rows carrying its uuid (r030). The constraints to assert are therefore on that table.
+
 ```sql
 BEGIN;
-SELECT plan(3);
+SELECT plan(4);
 
-INSERT INTO app_core.project (id, name) VALUES ('44444444-0000-0000-0000-000000000004', 'Scenario Test Project');
-INSERT INTO app_core.scenario (id, project_id, name) VALUES ('88888888-0000-0000-0000-000000000003', '44444444-0000-0000-0000-000000000004', 'Test Scenario');
-
--- Configuration unique constraint: one row per (scenario, model_family)
-INSERT INTO app_core.configuration (scenario_id, model_family, parameters)
-VALUES ('88888888-0000-0000-0000-000000000003', 'accessibility', '{"walking_speed_kmh": 5}');
-
-SELECT throws_ok(
-  $$
-    INSERT INTO app_core.configuration (scenario_id, model_family, parameters)
-    VALUES ('88888888-0000-0000-0000-000000000003', 'accessibility', '{"walking_speed_kmh": 4}')
-  $$,
-  '23505',
-  'Duplicate (scenario_id, model_family) in configuration must be rejected'
-);
-
--- ON CONFLICT DO UPDATE must work as the upsert pattern
+-- One typed value per override: exactly one of value_numeric / value_text.
 SELECT lives_ok(
   $$
-    INSERT INTO app_core.configuration (scenario_id, model_family, parameters)
-    VALUES ('88888888-0000-0000-0000-000000000003', 'accessibility', '{"walking_speed_kmh": 4}')
-    ON CONFLICT (scenario_id, model_family) DO UPDATE SET parameters = EXCLUDED.parameters
+    INSERT INTO curated_geo.scenario_override
+      (scenario_id, feature_id, attribute_key, value_numeric)
+    VALUES ('88888888-0000-0000-0000-000000000003',
+            '33333333-0000-0000-0000-000000000001', 'floors', 10)
   $$,
-  'Configuration upsert via ON CONFLICT must succeed'
+  'Override with exactly one typed value must be accepted'
 );
 
--- Invalid scenario status must be rejected
 SELECT throws_ok(
   $$
-    INSERT INTO app_core.scenario (project_id, name, status)
-    VALUES ('44444444-0000-0000-0000-000000000004', 'Bad Status Scenario', 'running')
+    INSERT INTO curated_geo.scenario_override
+      (scenario_id, feature_id, attribute_key, value_numeric, value_text)
+    VALUES ('88888888-0000-0000-0000-000000000003',
+            '33333333-0000-0000-0000-000000000001', 'land_use', 5, 'green_area')
   $$,
   '23514',
-  'Invalid scenario status must be rejected'
+  'Override with both value_numeric and value_text must be rejected'
+);
+
+SELECT throws_ok(
+  $$
+    INSERT INTO curated_geo.scenario_override
+      (scenario_id, feature_id, attribute_key)
+    VALUES ('88888888-0000-0000-0000-000000000003',
+            '33333333-0000-0000-0000-000000000001', 'land_use')
+  $$,
+  '23514',
+  'Override with neither typed value must be rejected'
+);
+
+-- One override per (scenario, feature, attribute) — the upsert key.
+SELECT throws_ok(
+  $$
+    INSERT INTO curated_geo.scenario_override
+      (scenario_id, feature_id, attribute_key, value_numeric)
+    VALUES ('88888888-0000-0000-0000-000000000003',
+            '33333333-0000-0000-0000-000000000001', 'floors', 12)
+  $$,
+  '23505',
+  'Duplicate (scenario_id, feature_id, attribute_key) must be rejected'
 );
 
 SELECT * FROM finish();
 ROLLBACK;
 ```
+
+There is no scenario-status test and no configuration test: neither
+`app_core.scenario` nor `app_core.configuration` exists, and `app_core` holds
+only `project` (r001:27).
 
 ---
 
@@ -1206,17 +1225,25 @@ WHERE status = 'stale';
 
 ## Running the tests
 
+Nothing here runs today — there is no `.sql` test file in the tree and no
+`pg_prove` target. Wiring the suite up would take:
+
 ```bash
 # Start a disposable test database
 createdb reimagina_test
 psql reimagina_test -c "CREATE EXTENSION IF NOT EXISTS pgtap; CREATE EXTENSION IF NOT EXISTS postgis;"
 
-# Apply schema
-psql reimagina_test -f schema/build.sql   # your schema build script
+# Apply the schema — Alembic migrations, not a build script
+DATABASE_URL=postgresql:///reimagina_test make migrate
 
-# Run all tests
-pg_prove -d reimagina_test tests/*.sql
+# Run all tests (once the cases above are extracted into .sql files)
+pg_prove -d reimagina_test tests/sql/*.sql
+```
 
-# Run a single test file
-psql reimagina_test -f tests/02_observation.sql
+The Python suite that does run:
+
+```bash
+make test              # unit + contract
+make test-integration  # needs Postgres + PostGIS
+make test-conformance  # asserts the Orchestrator port contract
 ```

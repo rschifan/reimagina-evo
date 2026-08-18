@@ -1,30 +1,31 @@
-"""Intake — the single entry point that evaluates a scenario (component 2).
+"""Intake — evaluate a scenario edit in-process and return the per-unit report.
 
-``evaluate_scenario`` is the one call the application, CLI, and API depend on
-to turn a scenario edit into recomputed results: it composes the impact engine
-(what to recompute) and the coordinator (run it). It is also the seam the whole
-engine sits behind — when a second orchestrator arrives (the Dagster adapter in
-PHASE3_ORCHESTRATION_EXPLORATION.md §4), this signature is what it implements,
-so a formal port (component 13) gets extracted then, not speculatively now.
+Composes the impact engine (what to recompute) with the coordinator (run it),
+synchronously: everything has finished by the time the call returns.
 
-Rung-1 scope: synchronous — the coordinator runs in-process before the call
-returns. The design's "cheap intake / no compute in the request path" and
-run-level dedup (refuse a duplicate run for a scenario already computing) both
-belong to the async queue rung (rung 2); there is nothing to dedup against
-while runs are synchronous.
+This is **not** the general entry point any more. The API and the CLI's queue
+modes go through ``orchestration.port.Orchestrator`` via
+``orchestration.factory.get_orchestrator``; the only caller left here is the
+CLI's ``--sync`` mode, which wants the coordinator's richer ``RunReport`` (one
+outcome per unit, with detail) rather than the port's ``RunStatus``.
+
+It survives every ops-plane choice precisely because it needs no ops-plane: no
+queue, no worker, no run tables. That makes it the one path still runnable when
+the engine is down, and the reason ``coordinator.run_dirty_set`` is port-level
+rather than engine-level code.
+
+Run-level dedup is still not implemented anywhere — ``submit_run`` mints a fresh
+run id per call. See PHASE3_ORCHESTRATION_EXPLORATION.md §2.1 component 2.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Mapping, Sequence
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration.coordinator import RunReport, Runner, run_dirty_set
-from reimagina.orchestration.impact import compute_dirty_set
+from reimagina.orchestration.plan import plan_run
 from reimagina.orchestration.runners import default_runners
-
-logger = logging.getLogger(__name__)
 
 
 def evaluate_scenario(
@@ -44,29 +45,23 @@ def evaluate_scenario(
     on, compute the dirty-set and run it through the coordinator. ``runners``
     defaults to ``default_runners()`` (the shipped indicators); ``registry``
     defaults to the shipped catalog.
-    """
-    from reimagina.scenarios.overrides import resolve_change_set
 
-    resolved_runners = default_runners() if runners is None else runners
-    changed_attributes, edited_features = resolve_change_set(
+    An empty dirty-set is reported as ``noop`` by the returned report, the same
+    word the async orchestrators use — see ``plan.plan_run``.
+    """
+    plan = plan_run(
         conn,
         changed_attributes=changed_attributes,
         edited_features=edited_features,
         scenario_id=scenario_id,
-    )
-    dirty = compute_dirty_set(changed_attributes, edited_features, registry)
-    if not dirty:
-        logger.warning(
-            "scenario %s produced an empty dirty-set — nothing to recompute "
-            "(check changed_attributes / scenario overrides)",
-            scenario_id,
-        )
-    return run_dirty_set(
-        conn,
-        dirty,
-        registry,
-        resolved_runners,
-        scenario_id=scenario_id,
         aoi_id=aoi_id,
         code_version=code_version,
+        registry=registry,
+    )
+    return run_dirty_set(
+        conn,
+        plan.units,
+        registry,
+        default_runners() if runners is None else runners,
+        **plan.params,
     )

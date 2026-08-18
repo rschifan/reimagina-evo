@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from reimagina.tiles.service import _martin_base_and_default_function
+from reimagina.tiles.sources import _martin_base_and_default_function
 
 
 @pytest.mark.parametrize(

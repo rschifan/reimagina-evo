@@ -1,19 +1,19 @@
-"""PMTiles snapshot export and frontend-facing layer source resolution."""
+"""Resolve which tile layers exist, for the API's source manifest.
+
+Read-only: queries Postgres and formats URLs. The PMTiles export half, which
+shells out to GDAL, lives in ``tiles.export``.
+"""
 
 from __future__ import annotations
 
 import logging
 import re
-import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import psycopg2
 
-from reimagina.db import connect
-from reimagina.storage import backend_for_connection, backend_name_for_dsn
-from reimagina.paths import REPO_ROOT
+from reimagina.storage import backend_for_connection
 
 from .defaults import (
     tile_live_base_url,
@@ -22,242 +22,10 @@ from .defaults import (
     to_host_path,
     to_titiler_url,
 )
-from .manifest import TileLayerDefinition, get_tile_layer, load_tile_layers
+from .manifest import load_tile_layers
+
 
 logger = logging.getLogger(__name__)
-
-
-def default_pmtiles_output_dir() -> Path:
-    return REPO_ROOT / "data" / "tiles" / "pmtiles"
-
-
-def _postgres_ogr_connection_string(dsn: str) -> str:
-    parsed = urlparse(dsn)
-    if parsed.scheme not in {"postgres", "postgresql"}:
-        raise ValueError("PMTiles export requires a PostgreSQL/PostGIS DSN.")
-    if not parsed.hostname or not parsed.path:
-        raise ValueError(f"Unsupported PostgreSQL DSN for ogr2ogr: {dsn!r}")
-    parts = [
-        f"host='{parsed.hostname}'",
-        f"dbname='{parsed.path.lstrip('/')}'",
-    ]
-    if parsed.port:
-        parts.append(f"port='{parsed.port}'")
-    if parsed.username:
-        parts.append(f"user='{parsed.username}'")
-    if parsed.password:
-        parts.append(f"password='{parsed.password}'")
-    return "PG:" + " ".join(parts)
-
-
-def _redact_ogr_command(command: list[str]) -> list[str]:
-    """Replace password secrets in a PG: connection-string argument.
-
-    ogr2ogr takes the full PG connection string as an argv entry, which
-    includes the database password. Returning or logging the raw command
-    leaks that secret to terminals, CI logs, and pasted bug reports —
-    this helper produces a redacted copy safe to surface to callers.
-    """
-    redacted: list[str] = []
-    for arg in command:
-        if arg.startswith("PG:") and "password='" in arg:
-            redacted.append(re.sub(r"password='[^']*'", "password='***'", arg))
-        else:
-            redacted.append(arg)
-    return redacted
-
-
-def _layer_query(layer: TileLayerDefinition) -> str:
-    if not layer.source_relation:
-        raise ValueError(
-            f"Tile layer {layer.layer_id!r} does not define a source relation."
-        )
-    return (
-        "SELECT "
-        "CAST(id AS text) AS feature_id, "
-        "type_slug, "
-        "role, "
-        "name, "
-        "CAST(attributes AS text) AS attributes, "
-        "geometry "
-        f"FROM {layer.source_relation}"
-    )
-
-
-class _BenignGdalQuirk:
-    """Substrings in ogr2ogr stderr that indicate a benign, post-write failure.
-
-    The PMTiles driver sometimes invokes GDAL's SQLite dialect for an optional
-    post-write step; macOS GDAL builds frequently ship without that dialect
-    compiled in, so the subprocess exits non-zero even though the artifact is
-    fully written. We don't want that to fail the whole export when we can see
-    the artifact on disk and the only complaint is this known-benign message.
-    """
-
-    SQLITE_DIALECT_MISSING = "OGR2SQLITE_Setup"
-
-
-_OGR_EXPORT_TIMEOUT_SECONDS = 30 * 60  # 30 min — large CDMX layers are ~minutes
-
-
-def _run_export_command(command: list[str]) -> None:
-    """Run ogr2ogr and tolerate known-benign post-write quirks.
-
-    If ogr2ogr exits non-zero but the artifact file exists with a non-trivial
-    size AND the stderr matches a known-benign pattern, treat it as success
-    and move on. Any other non-zero exit re-raises the CalledProcessError.
-    Enforces a hard timeout so a wedged DB or stuck GDAL process can't hang
-    the operator indefinitely.
-    """
-    try:
-        subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_OGR_EXPORT_TIMEOUT_SECONDS,
-        )
-        return
-    except subprocess.CalledProcessError as exc:
-        # Command layout: [..., "-f", "PMTiles", <artifact_path>, ...]. Pull the
-        # artifact path out by index to stay driver-agnostic on argument order.
-        artifact_path: Path | None = None
-        if "-f" in command:
-            fmt_idx = command.index("-f")
-            if fmt_idx + 2 < len(command):
-                artifact_path = Path(command[fmt_idx + 2])
-        stderr = exc.stderr or ""
-        benign = _BenignGdalQuirk.SQLITE_DIALECT_MISSING in stderr
-        has_artifact = (
-            artifact_path is not None
-            and artifact_path.exists()
-            and artifact_path.stat().st_size > 0
-        )
-        if benign and has_artifact:
-            return
-        # Re-raise with a redacted cmd so the traceback / str(exc) does not
-        # leak the Postgres password embedded in the PG: connection string.
-        raise subprocess.CalledProcessError(
-            exc.returncode,
-            _redact_ogr_command(exc.cmd),
-            output=exc.output,
-            stderr=exc.stderr,
-        ) from None
-
-
-def _latest_lineage_marker(conn) -> dict[str, str | None]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-              MAX(completed_at)::text AS latest_successful_completed_at,
-              (
-                SELECT id::text
-                FROM curated_geo.ingestion_run
-                WHERE status = 'succeeded'
-                ORDER BY completed_at DESC NULLS LAST, started_at DESC
-                LIMIT 1
-              ) AS latest_successful_ingestion_run_id
-            FROM curated_geo.ingestion_run
-            WHERE status = 'succeeded'
-            """
-        )
-        row = cur.fetchone()
-    return {
-        "latest_successful_completed_at": row[0] if row else None,
-        "latest_successful_ingestion_run_id": row[1] if row else None,
-    }
-
-
-def export_pmtiles_snapshot(
-    *,
-    dsn: str,
-    layer_id: str,
-    output_dir: str | Path | None = None,
-    snapshot_base_url: str | None = None,
-    manifest_path: str | Path | None = None,
-    snapshot_version: str | None = None,
-) -> dict[str, object]:
-    if backend_name_for_dsn(dsn) != "postgres":
-        raise ValueError("PMTiles export is Postgres/PostGIS-only in v1.")
-
-    layer = get_tile_layer(layer_id, manifest_path)
-    if layer.source_mode != "pmtiles_snapshot":
-        raise ValueError(f"Layer {layer_id!r} is not configured for PMTiles snapshots.")
-    if not layer.implemented:
-        raise ValueError(f"Layer {layer_id!r} is reserved and cannot be exported yet.")
-
-    target_dir = Path(output_dir) if output_dir else default_pmtiles_output_dir()
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    version = snapshot_version or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_path = target_dir / f"{layer.layer_id}-{version}.pmtiles"
-
-    command = [
-        "ogr2ogr",
-        "-f",
-        "PMTiles",
-        str(output_path),
-        _postgres_ogr_connection_string(dsn),
-        "-sql",
-        _layer_query(layer),
-        "-nln",
-        layer.tile_layer_name or layer.layer_id,
-        "-dsco",
-        f"NAME={layer.logical_name}",
-        "-dsco",
-        f"DESCRIPTION={layer.description}",
-        "-dsco",
-        f"TYPE={layer.tileset_type}",
-        "-dsco",
-        f"MINZOOM={layer.minzoom or 0}",
-        "-dsco",
-        f"MAXZOOM={layer.maxzoom or 8}",
-        "-lco",
-        f"NAME={layer.tile_layer_name or layer.layer_id}",
-    ]
-    if layer.minzoom is not None:
-        command.extend(["-lco", f"MINZOOM={layer.minzoom}"])
-    if layer.maxzoom is not None:
-        command.extend(["-lco", f"MAXZOOM={layer.maxzoom}"])
-
-    _run_export_command(command)
-
-    artifact_uri = (
-        f"{snapshot_base_url.rstrip('/')}/{output_path.name}"
-        if snapshot_base_url
-        else output_path.resolve().as_uri()
-    )
-
-    with connect(dsn) as conn:
-        lineage = {
-            "source_relation": layer.source_relation,
-            **_latest_lineage_marker(conn),
-        }
-        snapshot_id = (
-            backend_for_connection(conn)
-            .tile_repo()
-            .register_snapshot(
-                layer_id=layer.layer_id,
-                artifact_path=str(output_path.resolve()),
-                artifact_uri=artifact_uri,
-                snapshot_version=version,
-                source_relation=layer.source_relation or "",
-                source_lineage_ref=lineage,
-                status="ready",
-            )
-        )
-
-    return {
-        "layer_id": layer.layer_id,
-        "snapshot_id": snapshot_id,
-        "snapshot_version": version,
-        "artifact_path": str(output_path.resolve()),
-        "artifact_uri": artifact_uri,
-        "source_mode": layer.source_mode,
-        "source_relation": layer.source_relation,
-        "command": _redact_ogr_command(command),
-    }
 
 
 _KNOWN_MARTIN_FUNCTION_TAILS = frozenset(
@@ -500,7 +268,7 @@ def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, o
     for recipe in recipes:
         attribute_key = _attribute_key_for_recipe(recipe, backend=backend)
         value_range = value_ranges_by_key.get(attribute_key)
-        available = value_range is not None and value_range["count"] > 0
+        available = value_range is not None and int(value_range["count"]) > 0  # type: ignore[call-overload]
         parent_id, parent_slug = _resolve_transitive_raster_parent(
             recipe,
             by_output_prefix,
@@ -680,7 +448,6 @@ def _aoi_display_tokens(backend) -> dict[str, tuple[str, ...]]:
     — ``Mexicali`` produces ``("mexicali", "mex")`` so a key ending
     in ``_mex_sum`` strips correctly.
     """
-    import re
 
     out: dict[str, tuple[str, ...]] = {}
     conn = backend.connection
@@ -708,6 +475,13 @@ def _aoi_display_tokens(backend) -> dict[str, tuple[str, ...]]:
                 unique.append(t)
         out[str(aoi_id)] = tuple(unique)
     return out
+
+
+# Conventional stat suffixes the worker writes after the operator's
+# attribute_key_prefix. Used to spot the AOI-shortcode segment in a
+# key like ``pop_worldpop_2020_cdmx_sum`` (segments
+# ``[pop, worldpop, 2020, cdmx, sum]`` — last is a stat → previous is
+# a candidate AOI hint).
 
 
 # Conventional stat suffixes the worker writes after the operator's
@@ -841,7 +615,7 @@ def _resolve_transitive_raster_parent(
         up_prefix = cursor.get("input_attribute_key_prefix")
         if not up_prefix:
             return None, None
-        upstream = by_output_prefix.get(up_prefix)
+        upstream = by_output_prefix.get(str(up_prefix))
         if upstream is None:
             # Input observations exist (e.g. hand-imported) but no recipe
             # produced them — no raster lineage.

@@ -141,3 +141,59 @@ def test_scenario_run_derives_change_set_from_overrides(conn):
     )
     assert scenario_result is not None
     assert scenario_result["value_numeric"] == 10.0  # derived + recomputed
+
+
+def test_synchronous_orchestrator_also_derives_the_change_set(conn):
+    """The port's reference implementation honours overrides too.
+
+    It used to call ``compute_dirty_set`` directly, skipping the change-set
+    resolution that ``evaluate_scenario`` and the async orchestrator both did —
+    so submitting a scenario with no explicit change-set through the port
+    silently recomputed nothing. Routing it through the shared prelude fixed
+    that; this pins it.
+    """
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="sync_derive_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    ingest = _start_run(conn, source_id)
+    block_id = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=ingest,
+        dataset_version="v1",
+        source_record_ref="sync-drv-blk-1",
+        geometry_wkt=_WKT,
+        attributes={"floors": 3},
+    )
+
+    scenario = str(uuid4())
+    apply_override(
+        conn,
+        scenario_id=scenario,
+        feature_id=block_id,
+        attribute_key="floors",
+        value_numeric=10.0,
+    )
+
+    handle = SynchronousOrchestrator().submit_run(
+        conn,
+        changed_attributes=[],
+        edited_features=[],
+        scenario_id=scenario,
+        code_version="test",
+    )
+
+    assert handle.status is not None
+    assert handle.status.status != "noop", "the override should have been derived"
+    assert _SLUG in {u.indicator for u in handle.status.units}
+    repo = backend_for_connection(conn).indicator_result_repo()
+    result = repo.get_current(
+        feature_id=block_id, indicator_slug=_SLUG, scenario_id=scenario
+    )
+    assert result is not None
+    assert result["value_numeric"] == 10.0

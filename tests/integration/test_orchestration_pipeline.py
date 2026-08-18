@@ -12,8 +12,10 @@ from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
+    URBAN_FORM_BLOCK_COMPOSITE,
     seed_catalog,
 )
+from reimagina.orchestration import runstore
 from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.storage import backend_for_connection
@@ -48,6 +50,23 @@ def _seed_two_blocks(conn) -> tuple[str, str]:
             geometry_wkt=wkt,
         )
 
+    # One building inside block_a. Without it the density indicator refuses to
+    # run (see _compute.require_nonempty) -- these tests exercise orchestration,
+    # and an empty building layer made them pass on a degenerate zero rather
+    # than on a computed value.
+    _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "global", "building"),
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="orch-bld-a",
+        geometry_wkt=(
+            "POLYGON((-99.1395 19.4305,-99.1390 19.4305,-99.1390 19.4310,"
+            "-99.1395 19.4310,-99.1395 19.4305))"
+        ),
+    )
+
     block_a = _block(
         "orch-blk-a",
         "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
@@ -64,7 +83,8 @@ def _seed_two_blocks(conn) -> tuple[str, str]:
 def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     block_a, block_b = _seed_two_blocks(conn)
 
-    # Edit block_a only; both shipped indicators read geometry → both dirty.
+    # Edit block_a only. Both direct indicators read geometry, and the composite
+    # is pulled in downstream of them — the shipped DAG's only two-wave path.
     report = evaluate_scenario(
         conn,
         changed_attributes={"geometry"},
@@ -75,6 +95,7 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
     assert {o.indicator for o in report.outcomes} == {
         URBAN_FORM_BLOCK_COMPACTNESS.slug,
         URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+        URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
 
     repo = backend_for_connection(conn).indicator_result_repo()
@@ -93,7 +114,10 @@ def test_geometry_edit_recomputes_only_the_dirty_feature(conn):
 def test_synchronous_orchestrator_persists_per_unit_state(conn):
     block_a, _block_b = _seed_two_blocks(conn)
 
-    orch = SynchronousOrchestrator()
+    # ``store`` must be passed explicitly: the orchestrator now defaults to an
+    # in-memory store, so the default would round-trip through a dict and this
+    # test would pass without jobs_runtime existing at all.
+    orch = SynchronousOrchestrator(store=runstore)
     handle = orch.submit_run(
         conn,
         changed_attributes={"geometry"},
@@ -110,5 +134,57 @@ def test_synchronous_orchestrator_persists_per_unit_state(conn):
     assert {u.indicator for u in persisted.units} == {
         URBAN_FORM_BLOCK_COMPACTNESS.slug,
         URBAN_FORM_BLOCK_BUILDING_DENSITY.slug,
+        URBAN_FORM_BLOCK_COMPOSITE.slug,
     }
     assert all(u.status == "succeeded" for u in persisted.units)
+
+
+def test_synchronous_orchestrator_defaults_to_an_in_memory_store(conn):
+    """The default store keeps jobs_runtime out of the port's reference impl.
+
+    Guards the 0.3 seam: an ops-plane that drops those tables must still be able
+    to run the synchronous path, so nothing may reach for them by default.
+    """
+    block_a, _block_b = _seed_two_blocks(conn)
+
+    orch = SynchronousOrchestrator()
+    handle = orch.submit_run(
+        conn,
+        changed_attributes={"geometry"},
+        edited_features={block_a},
+        code_version="test",
+    )
+
+    # Readable through the orchestrator, absent from the ops-plane tables.
+    assert orch.get_run(conn, handle.run_id) is not None
+    assert runstore.get_run(conn, handle.run_id) is None
+
+
+def test_a_run_stamps_its_id_on_every_job_run_it_opens(conn):
+    """The ambient run must survive the whole executor → runner → compute chain.
+
+    ``current_run`` is set by the executor and read four frames down, inside the
+    job_run lifecycle. Nothing in between mentions it, so only an end-to-end
+    check proves the plumbing is connected — and without it, cancel cannot find
+    a single backend to stop (r031).
+    """
+    block_a, _block_b = _seed_two_blocks(conn)
+
+    handle = SynchronousOrchestrator().submit_run(
+        conn,
+        changed_attributes={"geometry"},
+        edited_features={block_a},
+        code_version="test",
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), count(backend_pid) FROM jobs_runtime.job_run "
+            "WHERE run_id = %s",
+            (handle.run_id,),
+        )
+        rows, with_pid = cur.fetchone()
+
+    # One job_run per unit that actually computed, each carrying a pid.
+    assert rows == len(handle.status.units)
+    assert with_pid == rows

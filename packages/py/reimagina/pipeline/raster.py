@@ -55,7 +55,7 @@ class IngestResult:
     layer_id: str
     silver_path: Path
     storage_uri: str
-    crs: str
+    crs: str | None
     resolution_m: float | None
 
 

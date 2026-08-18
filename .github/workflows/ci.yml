@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # The long-lived ops-plane tracks are gated too. They are never merged into
+    # main — the comparison is the deliverable — so a PR-only trigger would
+    # leave both of them permanently untested.
+    branches: [main, "feat/**"]
   pull_request:
     branches: [main]
   schedule:
@@ -37,6 +40,12 @@ jobs:
 
       - name: ruff format --check
         run: ruff format --check .
+
+      - name: Install mypy
+        run: pip install mypy==2.3.1
+
+      - name: mypy
+        run: mypy packages/py/reimagina apps scripts
 
   test-py-unit:
     name: Unit + Contract tests (Python)
@@ -91,7 +100,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        # postgis/postgis plus pgRouting — same Postgres major and PostGIS minor,
+        # so an addition rather than an upgrade. Migration r037 needs
+        # pgr_drivingDistance. Keep in step with infra/docker/docker-compose.yml.
+        image: pgrouting/pgrouting:16-3.4-3.6.1
         env:
           POSTGRES_USER: reimagina
           POSTGRES_PASSWORD: reimagina
@@ -134,3 +146,10 @@ jobs:
 
       - name: pytest (integration)
         run: pytest tests/integration
+
+      # The Orchestrator port contract, asserted against every implementation
+      # this branch ships. Runs here rather than in the unit job because it
+      # needs Postgres, and separately from the integration step so an
+      # ops-plane branch's conformance output is its own diffable artifact.
+      - name: pytest (conformance)
+        run: pytest tests/conformance

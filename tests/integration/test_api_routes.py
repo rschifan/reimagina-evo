@@ -585,3 +585,98 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
     for key in ("min", "p05", "p50", "p95", "max"):
         assert payload[key] is None
     assert payload["aoi_id"] == bogus
+
+
+# ── POST /jobs — the submit endpoint's two response modes ───────────────────
+#
+# Isolated wiring tests: the enqueue/drain internals are covered deeply in the
+# orchestration suites, so here we swap the whole orchestrator out and only
+# assert the router wires the modes correctly (default 202+queued vs wait
+# 200+finished). ``connect`` is stubbed so no real DB/queue is touched.
+#
+# Both are faked at the same seam — ``factory.get_orchestrator``. The route no
+# longer names a mode at all: with one ops-plane, and one that a single process
+# can both submit to and drain, ``wait`` chooses a response shape rather than an
+# engine.
+
+
+class _StubConn:
+    """Enough connection to satisfy the route: it polls, so it ends read txns."""
+
+    def rollback(self) -> None:
+        pass
+
+    def commit(self) -> None:
+        pass
+
+
+def _stub_connect(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake(dsn):
+        yield _StubConn()
+
+    monkeypatch.setattr("reimagina.db.connect", _fake)
+
+
+def _install(monkeypatch, handle, *, final=None):
+    """Swap the whole orchestrator out; the route names no engine any more.
+
+    ``final`` is what ``get_run`` reports, for the ``wait: true`` path — which
+    now polls, because submitting to a durable-execution library returns as soon
+    as the run is durable rather than when it is done.
+    """
+
+    class _Fake:
+        def submit_run(self, conn, **kw):
+            return handle
+
+        def get_run(self, conn, run_id):
+            return final
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+
+
+def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
+    from reimagina.orchestration.port import RunHandle
+
+    _stub_connect(monkeypatch)
+    _install(monkeypatch, RunHandle(run_id="r-queued", status=None))
+
+    response = client.post(
+        "/jobs",
+        json={"changed_attributes": ["geometry"], "edited_features": ["f1"]},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"run_id": "r-queued", "status": "queued"}
+
+
+def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
+    from reimagina.orchestration.port import RunHandle, RunStatus, UnitStatusView
+
+    _stub_connect(monkeypatch)
+    _install(
+        monkeypatch,
+        RunHandle(run_id="r-done", status=None),
+        final=RunStatus(
+            run_id="r-done",
+            status="succeeded",
+            units=(UnitStatusView("urban_form_block_compactness", "succeeded", None),),
+        ),
+    )
+
+    response = client.post(
+        "/jobs",
+        json={
+            "wait": True,
+            "changed_attributes": ["geometry"],
+            "edited_features": ["f1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "r-done", "status": "succeeded"}

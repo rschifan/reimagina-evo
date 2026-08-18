@@ -57,13 +57,27 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    visible: false,
-    // z11 lets buildings appear at neighbourhood / district scale rather
-    // than only after the user zooms in to street level. Tile size stays
-    // bounded because get_tile applies aggressive ST_Simplify at lower
-    // zooms — 2 M building polygons across CDMX + Mexicali render cleanly
-    // from 11 onward without the renderer choking.
-    minzoom: 11,
+    // On by default now that r038 bounds the cost. Previously this layer
+    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
+    // was the only thing keeping the map usable; with footprints served
+    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
+    visible: true,
+    // z14 because get_tile (migration r038) stops serving building
+    // footprints below it — a request at 11-13 returns an empty tile, so a
+    // lower floor here only buys wasted round-trips.
+    //
+    // The earlier value was 11, justified by "ST_Simplify keeps tiles
+    // bounded". Measured, that was wrong twice over: on a dataset dense in
+    // one alcaldia a z12 tile reached 2.59 MB, and the reason the z10/z11
+    // rungs looked cheap is that ~10 m simplification collapses a ~10 m
+    // footprint to a degenerate ring, which ST_AsMVTGeom drops — 1,826 of
+    // 37,858 buildings survived. Cheap because 95% was discarded.
+    //
+    // At z12 one pixel is ~36 m, so footprints are sub-pixel anyway. For
+    // building information at AOI scale use the
+    // urban_form_block_building_density choropleth, which is the layer that
+    // question actually wants.
+    minzoom: 14,
   },
   {
     layerId: "baseline_live:block",
@@ -144,13 +158,56 @@ export function extractTileSources(sources: TileSource[]): TileSourceCatalog {
 }
 
 
+/** Baseline tile URL for one input layer, scoped to ``aoiId`` when one
+ *  is active.
+ *
+ *  Unscoped, ``get_tile`` serves every feature of that type in the
+ *  database — for the CDMX pilot that is all 16 alcaldías, so the
+ *  operator saw 62k blocks of context around the 5.3k the AOI covers,
+ *  and the AOI-scoped choropleth painted on top read as broken
+ *  coverage rather than as the pilot boundary.
+ *
+ *  Omitting the parameter still means "whole database", which is a
+ *  legitimate view — the urban-form indicators are computed city-wide.
+ *  A malformed id renders an EMPTY tile rather than everything (r039
+ *  fails closed on purpose), so only ever pass an id resolved from the
+ *  AOI catalog, which is what ``getActiveAoiId`` guarantees. */
+function _baselineTileUrl(
+  catalog: TileSourceCatalog,
+  layer: InputLayerSpec,
+  aoiId: string | null,
+): string {
+  const base = `${catalog.baselineTilesUrl}?type_slug=${encodeURIComponent(layer.typeSlug)}`;
+  return aoiId ? _appendAoiId(base, aoiId) : base;
+}
+
+
+/** Re-scope every baseline source to ``aoiId``. Mirrors
+ *  {@link refreshAggregationOverlayAoi} — MapLibre refetches the
+ *  visible tiles on ``setTiles``, so switching AOI re-frames the
+ *  spatial layers without rebuilding them. */
+export function refreshBaselineAoi(
+  map: MapLibreMap,
+  catalog: TileSourceCatalog,
+  aoiId: string | null,
+): void {
+  for (const layer of INPUT_LAYERS) {
+    const source = map.getSource(layer.sourceName) as unknown as
+      { setTiles?: (urls: string[]) => void } | undefined;
+    if (!source || typeof source.setTiles !== "function") continue;
+    source.setTiles([_baselineTileUrl(catalog, layer, aoiId)]);
+  }
+}
+
+
 export function installInputLayers(
   map: MapLibreMap,
   catalog: TileSourceCatalog,
   tooltips?: TooltipController,
+  aoiId: string | null = null,
 ): void {
   for (const layer of INPUT_LAYERS) {
-    const tileUrl = `${catalog.baselineTilesUrl}?type_slug=${encodeURIComponent(layer.typeSlug)}`;
+    const tileUrl = _baselineTileUrl(catalog, layer, aoiId);
     // promoteId surfaces the MVT 'feature_id' property as feature.id so
     // setFeatureState({...id}) can find the right feature for hover
     // highlighting. Every reimagina tile function emits feature_id.
@@ -348,8 +405,8 @@ export function installRasterLayers(
 
 
 /** Derive `<scheme>://<host>/cog` from a titiler tile URL template.
- *  Example: `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
- *  → `http://localhost:8000/cog`.
+ *  Example: `http://localhost:8001/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
+ *  → `http://localhost:8001/cog`.
  *
  *  Returning null skips the raster tooltip for an unexpected URL shape
  *  rather than emitting broken HTTP calls — the choropleth overlays
@@ -590,18 +647,12 @@ function _baselineTooltipFormat(
   const id = typeof props.id === "string" ? props.id : null;
 
   switch (layer.typeSlug) {
-    case "municipality":
-    case "state": {
+    case "municipality": {
       // ``name`` is always emitted by r010 at z >= 11 (and z >= 8 for
       // context roles via the role-context branch). Falls back to the
       // generic layer label if ``name`` is missing for any reason.
       const name = typeof props.name === "string" ? props.name : null;
-      return {
-        title: name ?? layer.label,
-        detail: layer.typeSlug === "municipality"
-          ? "Alcaldía / municipality"
-          : "Estado / state",
-      };
+      return { title: name ?? layer.label, detail: "Alcaldía / municipality" };
     }
     case "ageb": {
       const cvegeo = _composeCvegeo(props, /* withMza */ false);

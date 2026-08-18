@@ -8,7 +8,7 @@
  */
 import { downloadUrl } from "./api";
 
-export type DownloadFormat = "csv" | "geojson" | "parquet";
+type DownloadFormat = "csv" | "geojson" | "parquet";
 
 
 export function wireDownloadButtons(

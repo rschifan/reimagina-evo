@@ -1,23 +1,31 @@
 """Intake API (Phase 3, component 2) — submit a scenario evaluation, read status.
 
-``POST /jobs`` enqueues a run on the Procrastinate queue and returns ``202``
-immediately (no compute in the request path — a worker drains it). The enqueue
-runs on a dedicated committed connection, NOT the API's rollback-scoped pool.
-``GET /jobs/{run_id}`` reads the persisted run + per-unit status.
+``POST /jobs`` enqueues a run and returns ``202`` immediately (no compute in the
+request path — a worker drains it). Passing ``wait: true`` instead drains the
+run in-request and returns ``200`` with the
+finished status (a convenience for simple/test clients; production stays
+fire-and-forget). The enqueue runs on a dedicated committed connection, NOT the
+API's rollback-scoped pool. ``GET /jobs/{run_id}`` reads the persisted run +
+per-unit status.
+
+Every path goes through ``orchestration.factory.get_orchestrator`` — this module
+names no engine, so swapping the ops-plane does not touch it. ``wait`` selects
+whether to block, not which engine to use: under a durable-execution library one
+process can both submit and drain, so the 202-vs-200 split is a response-shape
+decision rather than a routing one.
 
 Requires ``DATABASE_URL_DIRECT`` + a running ``python -m apps.worker``.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import select
+import asyncio
+import contextlib
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 import psycopg2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -36,10 +44,18 @@ class SubmitRunBody(BaseModel):
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
+    # Opt-in: wait for the run to finish and return
+    # the finished status with 200 instead of a 202 + poll. Convenience for
+    # simple/test clients; production should stay fire-and-forget (default) with
+    # a real worker fleet, since this ties up the request for the whole compute.
+    wait: bool = False
 
 
 class SubmitRunResponse(BaseModel):
-    run_id: str
+    # None for a "noop" submit: the dirty-set was empty, so no run row exists
+    # and GET /jobs/{run_id} would 404. Handing back an unusable id makes a
+    # client following the documented poll loop fail after a *successful* submit.
+    run_id: str | None
     status: str
 
 
@@ -55,18 +71,23 @@ class RunView(BaseModel):
     units: list[UnitView] = []
 
 
+def _submit_response(run_id: str, status: str) -> SubmitRunResponse:
+    """Suppress the run_id on a noop — nothing was persisted to poll for."""
+    return SubmitRunResponse(run_id=None if status == "noop" else run_id, status=status)
+
+
 @router.post("", status_code=202, response_model=SubmitRunResponse)
-def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
+def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     from reimagina.db import connect
-    from reimagina.orchestration.procrastinate_orchestrator import (
-        ProcrastinateOrchestrator,
-    )
+    from reimagina.orchestration.factory import get_orchestrator
     from reimagina.provenance import code_version
+
+    orchestrator = get_orchestrator()
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
     with connect(api_dsn()) as conn:
-        handle = ProcrastinateOrchestrator().submit_run(
+        handle = orchestrator.submit_run(
             conn,
             changed_attributes=body.changed_attributes or [],
             edited_features=body.edited_features or [],
@@ -74,9 +95,42 @@ def submit_run(body: SubmitRunBody) -> SubmitRunResponse:
             aoi_id=body.aoi_id,
             code_version=code_version(),
         )
-    # "noop" when the run had nothing to recompute; else the queued run_id.
-    status = handle.status.status if handle.status else "queued"
-    return SubmitRunResponse(run_id=handle.run_id, status=status)
+        # "noop" when the run had nothing to recompute; else the queued run_id.
+        status = handle.status.status if handle.status else "queued"
+        if body.wait and handle.status is None:
+            status = _await_terminal(orchestrator, conn, handle.run_id)
+            response.status_code = 200  # finished, not merely accepted
+        elif body.wait:
+            response.status_code = 200
+
+    return _submit_response(handle.run_id, status)
+
+
+def _await_terminal(orchestrator, conn, run_id: str) -> str:
+    """Poll the port until the run is terminal, bounded by the stream deadline.
+
+    Submitting no longer blocks: the ops-plane is a library, so the run is
+    durable the moment it is accepted and progresses whether or not anyone is
+    waiting. ``wait: true`` is therefore a convenience for simple clients, and
+    the wait belongs here rather than in the port — an engine that needed a
+    separate worker could not implement a blocking submit at all.
+    """
+    from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+    deadline = time.monotonic() + _STREAM_MAX_SECONDS
+    while time.monotonic() < deadline:
+        conn.rollback()  # end the read txn so the next poll sees fresh rows
+        current = orchestrator.get_run(conn, run_id)
+        if current is not None and current.status in RUN_TERMINAL_STATES:
+            return current.status
+        time.sleep(0.25)
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"run {run_id} did not finish within {_STREAM_MAX_SECONDS:.0f}s; "
+            "it is still running — poll GET /jobs/{run_id}"
+        ),
+    )
 
 
 @router.get("/{run_id}", response_model=RunView)
@@ -84,11 +138,9 @@ def get_run(
     run_id: str,
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> RunView:
-    from reimagina.orchestration.procrastinate_orchestrator import (
-        ProcrastinateOrchestrator,
-    )
+    from reimagina.orchestration.factory import get_orchestrator
 
-    status = ProcrastinateOrchestrator().get_run(conn, run_id)
+    status = get_orchestrator().get_run(conn, run_id)
     if status is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     return RunView(
@@ -101,46 +153,51 @@ def get_run(
     )
 
 
-def _event_stream(run_id: str) -> Iterator[str]:
-    """SSE generator: snapshot frame, then LISTEN/NOTIFY updates until terminal.
+async def _event_stream(run_id: str) -> AsyncIterator[str]:
+    """Frame the orchestrator's progress events as SSE, with route-owned policy.
 
-    Own direct connection (LISTEN needs a non-transaction-pooled connection),
-    filtered to this run, capped lifetime with heartbeats.
+    The orchestrator decides *what* happened; this decides how it reaches the
+    wire — frame format, keep-alive cadence, and the lifetime cap. Where the
+    events come from (LISTEN/NOTIFY, a workflow stream, a websocket) is not this
+    module's business.
     """
-    from reimagina.orchestration import events, runstore
+    import reimagina.orchestration.frames as frames
+    from reimagina.orchestration.factory import get_orchestrator
 
-    dsn = os.environ.get("DATABASE_URL_DIRECT") or api_dsn()
-    conn = psycopg2.connect(dsn)
-    conn.autocommit = True
+    events = get_orchestrator().subscribe_progress(run_id).__aiter__()
+    deadline = time.monotonic() + _STREAM_MAX_SECONDS
+    # Hold one pending __anext__ across heartbeats rather than re-awaiting it.
+    # Wrapping the await in a timeout would cancel it mid-flight, which leaves
+    # an async generator unresumable — the keep-alive would break the stream it
+    # exists to keep open.
+    pending = asyncio.ensure_future(anext(events))
     try:
-        with conn.cursor() as cur:
-            cur.execute(f"LISTEN {events.CHANNEL}")
-        # Read the snapshot AFTER LISTEN so a finalise between the two isn't lost.
-        current = runstore.get_run(conn, run_id)
-        status = current["status"] if current else "unknown"
-        yield events.sse_frame(
-            events.notify_payload(run_id=run_id, indicator=None, status=status)
-        )
-        if events.is_run_terminal(status):
-            return
-        deadline = time.monotonic() + _STREAM_MAX_SECONDS
         while time.monotonic() < deadline:
-            if select.select([conn], [], [], _HEARTBEAT_SECONDS)[0]:
-                conn.poll()
-                while conn.notifies:
-                    note = conn.notifies.pop(0)
-                    data = json.loads(note.payload)
-                    if data.get("run_id") != run_id:
-                        continue
-                    yield events.sse_frame(note.payload)
-                    if data.get("indicator") is None and events.is_run_terminal(
-                        data.get("status", "")
-                    ):
-                        return
-            else:
+            done, _ = await asyncio.wait({pending}, timeout=_HEARTBEAT_SECONDS)
+            if not done:
                 yield ": keep-alive\n\n"
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = asyncio.ensure_future(anext(events))
+            yield frames.event_frame(event)
+            if event.indicator is None and frames.is_run_terminal(event.status):
+                return
     finally:
-        conn.close()
+        pending.cancel()
+        # Let the cancellation land inside the generator so its own cleanup runs
+        # before aclose() — closing one still suspended raises instead.
+        with contextlib.suppress(BaseException):
+            await pending
+        # `subscribe_progress` is typed AsyncIterator, which has no `aclose`;
+        # the concrete generator does, and closing it is what releases the
+        # progress-stream slot.
+        aclose = getattr(events, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
 
 
 @router.get("/{run_id}/events")
@@ -148,10 +205,8 @@ def stream_run_events(
     run_id: str,
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> StreamingResponse:
-    from reimagina.orchestration.procrastinate_orchestrator import (
-        ProcrastinateOrchestrator,
-    )
+    from reimagina.orchestration.factory import get_orchestrator
 
-    if ProcrastinateOrchestrator().get_run(conn, run_id) is None:
+    if get_orchestrator().get_run(conn, run_id) is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     return StreamingResponse(_event_stream(run_id), media_type="text/event-stream")

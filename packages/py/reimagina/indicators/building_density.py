@@ -7,6 +7,12 @@ each MEX:block, divides by block area in hectares, and writes one per-block
 not been observed is semantically different from one we have confirmed is
 empty, and zero-building blocks are real signal in urban form analysis.
 
+⚠ That distinction only holds while the building layer is actually loaded.
+With it absent, every block reports a *confirmed* zero and the claim above
+becomes a lie told 67,167 times — which is what happened, and what fed
+`urban_form_block_composite` a half-weight of nothing while reporting success.
+The two guards below establish the precondition the paragraph assumes.
+
 Centroid-in-polygon is the counting rule: a building is attributed to exactly
 one block, avoiding the double-counting that a geometric-intersection rule
 would produce at block boundaries. Standard convention in urban analysis.
@@ -17,6 +23,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
+from reimagina.indicators._compute import ComputeResult as _ComputeResult
+from reimagina.indicators._compute import (
+    require_measured,
+    require_nonempty,
+    require_seeded,
+)
 from reimagina.indicators._hamilton_driver import build_indicator_driver
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_BUILDING_DENSITY
 
@@ -28,15 +40,15 @@ from reimagina.storage import backend_for_connection
 
 
 @dataclass(frozen=True)
-class ComputeResult:
-    """Outcome of a compute_block_building_density run."""
+class ComputeResult(_ComputeResult):
+    """The shared result plus the one statistic only this indicator has.
 
-    job_run_id: str
-    indicator_slug: str
-    blocks_considered: int
-    buildings_attributed: int
-    rows_written: int
-    aoi_id: str | None
+    Kept out of the shared shape rather than widening it with a field five
+    other indicators would leave at None. `features_considered` is the block
+    count, matching every other indicator.
+    """
+
+    buildings_attributed: int = 0
 
 
 def compute_block_building_density(
@@ -57,12 +69,7 @@ def compute_block_building_density(
     """
     backend = backend_for_connection(conn)
     spec = URBAN_FORM_BLOCK_BUILDING_DENSITY
-    catalog = backend.indicator_catalog_repo().get_indicator(spec.slug)
-    if catalog is None:
-        raise RuntimeError(
-            f"Indicator {spec.slug!r} not found in indicator_catalog. "
-            "Run `indicators seed-catalog` first."
-        )
+    require_seeded(backend, spec)
     block_type_id = get_type_id(conn, "MEX", "block")
     building_type_id = get_type_id(conn, "global", "building")
 
@@ -72,11 +79,38 @@ def compute_block_building_density(
         code_version=code_version,
         scenario_id=scenario_id,
     ) as job_run_id:
+        # Inside job_run so a refusal still lands with provenance -- see the
+        # warning in _compute.py about indicator_result.job_run_id being a
+        # NOT NULL FK.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM curated_geo.feature WHERE type_id = %s)",
+                (building_type_id,),
+            )
+            require_nonempty(
+                cur.fetchone()[0],
+                indicator_slug=spec.slug,
+                needs="the global:building feature layer",
+                loader="`reimagina.pipeline.overture.bootstrap_overture_buildings_subset`",
+            )
+
         rows = backend.feature_repo().centroid_in_parent_counts(
             parent_type_id=block_type_id,
             child_type_id=building_type_id,
             aoi_id=aoi_id,
             feature_ids=feature_ids,
+        )
+        buildings_attributed = sum(count for _, count, _ in rows)
+        require_measured(
+            buildings_attributed,
+            len(rows),
+            indicator_slug=spec.slug,
+            what="buildings",
+            hint=(
+                "buildings are loaded but none fall inside these blocks — check "
+                "the ingest bbox covers this AOI, and that `aoi compute-features` "
+                "has run for it."
+            ),
         )
         frame = build_indicator_driver().execute(
             ["density_result_frame"],
@@ -94,8 +128,8 @@ def compute_block_building_density(
     return ComputeResult(
         job_run_id=job_run_id,
         indicator_slug=spec.slug,
-        blocks_considered=len(rows),
-        buildings_attributed=sum(count for _, count, _ in rows),
+        features_considered=len(rows),
+        buildings_attributed=buildings_attributed,
         rows_written=rows_written,
         aoi_id=aoi_id,
     )

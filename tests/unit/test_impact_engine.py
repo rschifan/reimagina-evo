@@ -119,3 +119,37 @@ def test_cycle_is_rejected():
     b = _spec("b", depends_on=(("a", None),))
     with pytest.raises(graphlib.CycleError):
         compute_dirty_set({"x"}, {"b1"}, (a, b))
+
+
+def test_independent_units_come_out_in_a_stable_order():
+    """The dirty-set order must not depend on set iteration order.
+
+    It used to: the topological sort was fed a `set`, so the result varied with
+    PYTHONHASHSEED and this pure function returned a different order in every
+    process. Ten processes gave ten distinct orders on a 20-node DAG — each
+    topologically valid, which is what made it invisible.
+
+    Two things downstream depend on it. A durable-execution ops-plane replays a
+    workflow by matching steps positionally, so a recovering process that
+    re-derived a different order fails the replay instead of resuming; and an
+    engine that declares the DAG statically builds it from this order at import,
+    so two processes could disagree on the workflow they are running.
+
+    Asserting the invariant directly — independent nodes ordered by slug — is
+    what makes this checkable in one process.
+    """
+    seeds = tuple(_spec(f"direct_{i:02d}", reads=("geometry",)) for i in range(6))
+    composite = _spec(
+        "roll_up",
+        kind="composite",
+        depends_on=tuple((s.slug, round(1 / 6, 10)) for s in seeds),
+    )
+    registry = (*seeds, composite)
+
+    order = [u.indicator for u in compute_dirty_set({"geometry"}, {"f1"}, registry)]
+
+    independent = order[:-1]
+    assert independent == sorted(
+        independent
+    ), "independent units must come out sorted, not in set-iteration order"
+    assert order[-1] == "roll_up"  # the dependent still comes last
