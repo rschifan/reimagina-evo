@@ -124,17 +124,26 @@ def summarise_aoi_indicator(
 def submit_after_ingest(
     *,
     dsn: str,
-    changed_attributes: list[str],
+    changed_attributes: list[str] | None = None,
     aoi_id: str | None = None,
     code_version: str = "dev",
     mode: str = "detach",
 ) -> dict[str, object]:
     """Recompute the indicators a completed ingestion invalidated.
 
-    The same selective-recompute path a scenario edit takes — ``reads`` seeds
-    the dirty set, ``depends_on`` propagates it — driven by a load instead of an
-    edit. An ingest that changed no attribute any indicator reads is a ``noop``,
-    exactly as an irrelevant scenario edit is.
+    With ``changed_attributes`` omitted — now the default — the dirty set comes
+    from **freshness**: the load published a new version for the layer it wrote,
+    so every indicator consuming that layer is out of date and says so on its
+    own. Nothing has to name an attribute standing in for the layer.
+
+    That default replaces a guess. The caller used to pass ``("geometry",)``
+    because writing building footprints changes geometry, which was true but
+    far too broad: it named an attribute three indicators read, so reloading
+    buildings also recomputed compactness, which never looks at a building. The
+    layer edge is exact where the attribute name was a proxy.
+
+    Passing ``changed_attributes`` explicitly still works and still takes
+    precedence, for a caller that genuinely knows something the graph does not.
 
     ⚠ **Deliberately not feature-scoped**, and this is the load-bearing decision
     in the function. A loader knows the ids of the rows *it wrote*, and passing
@@ -162,7 +171,7 @@ def submit_after_ingest(
     with connect(dsn) as conn:
         handle = get_orchestrator(mode).submit_run(
             conn,
-            changed_attributes=changed_attributes,
+            changed_attributes=changed_attributes or (),
             edited_features=(),
             scenario_id=None,  # an ingest changes the baseline, not a scenario
             aoi_id=aoi_id,
@@ -173,7 +182,7 @@ def submit_after_ingest(
         "run_id": None if status == "noop" else handle.run_id,
         "status": status,
         "mode": mode,
-        "changed_attributes": list(changed_attributes),
+        "changed_attributes": list(changed_attributes or ()),
     }
 
 

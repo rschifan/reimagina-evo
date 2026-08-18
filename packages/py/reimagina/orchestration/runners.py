@@ -55,21 +55,56 @@ _DIRECT_COMPUTE: dict[str, IndicatorCompute] = {
 }
 
 
-def _scoped(compute_fn: IndicatorCompute) -> Runner:
+def _recording(conn, slug: str, features, scenario_id, aoi_id):
+    """The materialization context for one dispatched unit.
+
+    Coverage is complete only when the run was neither feature-scoped nor
+    AOI-scoped. A run over a subset genuinely did not finish the partition, and
+    recording it as complete is the specific lie `coverage_scope` exists to
+    prevent — `indicators/edificability.py` relies on partial writes, so this is
+    a normal state rather than an error.
+    """
+    from reimagina.assets.keys import partition_key
+    from reimagina.assets.materialize import materializing
+
+    return materializing(
+        conn,
+        slug=slug,
+        partition_key=partition_key({"scenario": scenario_id}),
+        complete=not features and not aoi_id,
+    )
+
+
+def _record_outcome(outcome: dict, result: object) -> object:
+    outcome["job_run_id"] = getattr(result, "job_run_id", None)
+    outcome["row_count"] = getattr(result, "rows_written", None)
+    return result
+
+
+def _scoped(slug: str, compute_fn: IndicatorCompute) -> Runner:
     """Adapt a direct compute fn to the Runner protocol.
 
     The dirty-set's ``features`` become ``feature_ids`` (recompute only the
     dirty features); an empty set falls back to ``aoi_id`` scoping.
+
+    Wrapping here rather than inside each compute body is deliberate: this is
+    the one seam every dispatch passes through — the CLI resolves a runner from
+    this registry, and so do the coordinator and the queue task — so a compute
+    cannot be reached in a way that skips recording what it produced.
     """
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        return compute_fn(
-            conn,
-            aoi_id=aoi_id,
-            feature_ids=list(features) or None,
-            scenario_id=scenario_id,
-            code_version=code_version,
-        )
+        with _recording(conn, slug, features, scenario_id, aoi_id) as outcome:
+            return _record_outcome(
+                outcome,
+                compute_fn(
+                    conn,
+                    aoi_id=aoi_id,
+                    feature_ids=list(features) or None,
+                    scenario_id=scenario_id,
+                    code_version=code_version,
+                ),
+            )
 
     return run
 
@@ -78,14 +113,18 @@ def _composite(spec: IndicatorSpec) -> Runner:
     """Adapt the generic composite compute to the Runner protocol, per spec."""
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        return compute_composite(
-            conn,
-            spec=spec,
-            feature_ids=list(features) or None,
-            scenario_id=scenario_id,
-            code_version=code_version,
-            aoi_id=aoi_id,
-        )
+        with _recording(conn, spec.slug, features, scenario_id, aoi_id) as outcome:
+            return _record_outcome(
+                outcome,
+                compute_composite(
+                    conn,
+                    spec=spec,
+                    feature_ids=list(features) or None,
+                    scenario_id=scenario_id,
+                    code_version=code_version,
+                    aoi_id=aoi_id,
+                ),
+            )
 
     return run
 
@@ -103,5 +142,5 @@ def default_runners(
         if spec.computation_kind == "composite":
             runners[spec.slug] = _composite(spec)
         elif spec.slug in _DIRECT_COMPUTE:
-            runners[spec.slug] = _scoped(_DIRECT_COMPUTE[spec.slug])
+            runners[spec.slug] = _scoped(spec.slug, _DIRECT_COMPUTE[spec.slug])
     return runners
