@@ -348,8 +348,8 @@ export function installRasterLayers(
 
 
 /** Derive `<scheme>://<host>/cog` from a titiler tile URL template.
- *  Example: `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
- *  → `http://localhost:8000/cog`.
+ *  Example: `http://localhost:8001/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
+ *  → `http://localhost:8001/cog`.
  *
  *  Returning null skips the raster tooltip for an unexpected URL shape
  *  rather than emitting broken HTTP calls — the choropleth overlays

@@ -88,7 +88,7 @@ stack-down: ## Tear down the local Docker stack (preserves volumes).
 
 .PHONY: dev-api
 dev-api: ## Start the FastAPI read-side API with reload.
-	uvicorn apps.api.app:app --reload
+	uvicorn apps.api.app:app --reload --port 8001
 
 .PHONY: dev-web
 dev-web: ## Start the Vite dev server for the web app.

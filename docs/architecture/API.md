@@ -4,9 +4,9 @@ FastAPI + uvicorn service that exposes the curated data surface for
 browsers, analytical scripts, and anything else that wants to read the
 reimagina platform without talking to Postgres directly.
 
-- **OpenAPI**: `http://localhost:8000/docs` (Swagger) or `/redoc`.
+- **OpenAPI**: `http://localhost:8001/docs` (Swagger) or `/redoc`.
 - **Run locally**: `python -m apps.api`.
-- **Base URL in dev**: `http://127.0.0.1:8000`. Through the Vite dev
+- **Base URL in dev**: `http://127.0.0.1:8001`. Through the Vite dev
   proxy the frontend sees it at `/api/...` instead.
 
 The API owns no SQL. Every route goes through `reimagina.storage`
@@ -79,7 +79,7 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_APP_DSN` | `postgresql://localhost/reimagina_app` | DSN the API connects to. |
 | `REIMAGINA_API_POOL_MIN` | `1` | Min connections in the `psycopg2.pool.ThreadedConnectionPool`. |
 | `REIMAGINA_API_POOL_MAX` | `16` | Max connections. |
-| `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8000` | Comma-separated origins allowed through CORS. |
+| `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed through CORS. |
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host. |
 | `REIMAGINA_API_PORT` | `8000` | uvicorn bind port. |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level. |
@@ -137,16 +137,16 @@ Every test runs under `pytest -W error` with no warning silencers.
 ## Example calls
 
 ```bash
-curl -s http://localhost:8000/health/ready
+curl -s http://localhost:8001/health/ready
 # {"status":"ok","db":"reachable"}
 
-curl -s http://localhost:8000/indicators | jq '.[].slug'
+curl -s http://localhost:8001/indicators | jq '.[].slug'
 
-curl -s 'http://localhost:8000/indicators/urban_form_block_building_density/values?limit=5' | jq '.[].value_numeric'
+curl -s 'http://localhost:8001/indicators/urban_form_block_building_density/values?limit=5' | jq '.[].value_numeric'
 
-curl -s 'http://localhost:8000/indicators/urban_form_block_building_density/values.csv?feature_type=ageb' | head
+curl -s 'http://localhost:8001/indicators/urban_form_block_building_density/values.csv?feature_type=ageb' | head
 
-curl -s 'http://localhost:8000/indicators/urban_form_block_building_density/values.parquet?feature_type=ageb' \
+curl -s 'http://localhost:8001/indicators/urban_form_block_building_density/values.parquet?feature_type=ageb' \
   > /tmp/density.parquet
 python -c "import geopandas; print(geopandas.read_parquet('/tmp/density.parquet').head())"
 ```
