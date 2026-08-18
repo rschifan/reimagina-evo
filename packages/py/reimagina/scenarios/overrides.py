@@ -12,6 +12,7 @@ exactly the ``changed_attributes`` token it already keys the dirty-set off.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from reimagina.storage import backend_for_connection
@@ -30,8 +31,16 @@ def apply_override(
     attribute_key: str,
     value_numeric: float | None = None,
     value_text: str | None = None,
+    publish: bool = True,
 ) -> None:
-    """Upsert one scenario attribute edit (the what-if)."""
+    """Upsert one scenario attribute edit (the what-if).
+
+    ``publish`` writes a new version for this scenario's partition of
+    ``scenario.override``, which is what makes the edit visible to freshness.
+    Pass ``publish=False`` only when batching — ``apply_overrides`` does, and
+    publishes once at the end, because the version digests every override row in
+    the scenario and doing that per edit is quadratic.
+    """
     _require_postgres(conn)
     with conn.cursor() as cur:
         cur.execute(
@@ -45,6 +54,70 @@ def apply_override(
             """,
             (scenario_id, feature_id, attribute_key, value_numeric, value_text),
         )
+    if publish:
+        publish_scenario_version(conn, scenario_id)
+
+
+def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> int:
+    """Apply many edits to one scenario, publishing its version once.
+
+    ⚠ Use this for anything that edits more than one feature. The version is a
+    digest over *every* override row in the scenario, so publishing per edit is
+    quadratic: upzoning 10,000 blocks one call at a time digests 1 row, then 2,
+    then 10,000 — roughly 50 million row reads to record 10,000 upserts.
+
+    Each edit is a dict of the keyword arguments ``apply_override`` takes, minus
+    ``scenario_id``. Returns the number applied.
+    """
+    count = 0
+    for edit in edits:
+        apply_override(conn, scenario_id=scenario_id, publish=False, **edit)
+        count += 1
+    if count:
+        publish_scenario_version(conn, scenario_id)
+    return count
+
+
+def publish_scenario_version(conn: Any, scenario_id: str) -> str | None:
+    """Record this scenario's override set as a version of ``scenario.override``.
+
+    A content digest rather than an event id, and cheap because it is: a
+    scenario's override set is a handful of rows, not a layer. Digesting means
+    re-applying an edit that changes nothing publishes nothing, so a what-if is
+    not recomputed for being saved twice.
+
+    Bumping only this scenario's partition is what keeps the baseline out of it.
+    The baseline partition of ``scenario.override`` never has a version, so no
+    edit to any scenario can move a baseline result.
+    """
+    from reimagina.assets.freshness import graph_available
+    from reimagina.assets.keys import partition_key
+    from reimagina.assets.publish import publish_version
+    from reimagina.assets.registry import SCENARIO_OVERRIDE_ASSET
+
+    if not graph_available(conn):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT md5(string_agg(
+                       feature_id::text || '|' || attribute_key || '|' ||
+                       coalesce(value_numeric::text, '') || '|' ||
+                       coalesce(value_text, ''),
+                       E'\\n' ORDER BY feature_id, attribute_key))
+            FROM curated_geo.scenario_override WHERE scenario_id = %s
+            """,
+            (scenario_id,),
+        )
+        digest = cur.fetchone()[0]
+    if digest is None:
+        return None
+    return publish_version(
+        conn,
+        asset_key=SCENARIO_OVERRIDE_ASSET,
+        version=digest,
+        partition_key=partition_key({"scenario": scenario_id}),
+    )
 
 
 def effective_numeric(
