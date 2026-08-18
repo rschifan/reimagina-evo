@@ -199,9 +199,20 @@ class AOIRepository(Protocol):
         name: str,
         geometry_wkt: str,
         description: str | None = None,
+        membership_key: dict[str, str] | None = None,
     ) -> str: ...
 
-    def compute_overlaps(self, aoi_id: str) -> int: ...
+    def compute_overlaps(self, aoi_id: str) -> int:
+        """(Re)populate ``aoi_feature`` for one AOI. Returns rows inserted.
+
+        Membership is decided per feature, not per AOI (r040): a feature
+        carrying every key in the AOI's ``membership_key`` must match those
+        values exactly, and one carrying none of them falls back to spatial
+        overlap above ``MEMBERSHIP_MIN_OVERLAP_RATIO``. Both paths exist
+        because INEGI features have authoritative identifiers and Overture
+        buildings have none.
+        """
+        ...
 
     def list_aois(self) -> list[dict[str, Any]]:
         """Return every AOI as ``{aoi_id, project_id, name, description}``."""

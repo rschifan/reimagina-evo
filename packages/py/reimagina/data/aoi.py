@@ -12,8 +12,14 @@ def create_aoi(
     name: str,
     geometry_wkt: str,
     description: str | None = None,
+    membership_key: dict[str, str] | None = None,
 ) -> str:
-    """Create a project area of interest. Returns the new AOI UUID."""
+    """Create a project area of interest. Returns the new AOI UUID.
+
+    ``membership_key`` (r040) makes membership identifier-based for features
+    that carry those identifiers, and leaves it geometric for those that do
+    not. See the migration for why both paths have to exist.
+    """
     return (
         backend_for_connection(conn)
         .aoi_repo()
@@ -22,6 +28,7 @@ def create_aoi(
             name=name,
             geometry_wkt=geometry_wkt,
             description=description,
+            membership_key=membership_key,
         )
     )
 
