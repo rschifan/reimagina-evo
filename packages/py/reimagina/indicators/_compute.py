@@ -64,6 +64,77 @@ class Reader(Protocol):
     ) -> Sequence[tuple]: ...
 
 
+class MissingInputData(RuntimeError):
+    """An indicator's input layer is absent, empty, or contributed nothing.
+
+    Distinct from a compute bug: the code is fine, the data it needs is not
+    there. Raised *before* a plausible-looking number is written.
+    """
+
+
+def require_nonempty(
+    present: bool,
+    *,
+    indicator_slug: str,
+    needs: str,
+    loader: str,
+) -> None:
+    """Refuse to compute when an input layer is empty.
+
+    An indicator that joins another feature type cannot distinguish "no
+    buildings on this block" from "no buildings were ever loaded" — both are a
+    count of zero, and zero is a perfectly plausible measurement. It then flows
+    into composites as if it had been measured: with buildings absent,
+    ``urban_form_block_composite`` came out as exactly ``0.5 x compactness`` on
+    all 68,767 rows compared, and every layer reported success.
+
+    NULL means unknown, 0 means a confirmed none; they are not interchangeable.
+    Where the difference cannot be represented downstream, failing is the only
+    honest option -- Delta Live Tables' ``ON VIOLATION FAIL UPDATE`` rather than
+    ``DROP ROW``.
+
+    Callers own the existence query. The helper owns only the message, so that
+    the "what is missing / what loads it" pair cannot drift between call sites.
+    """
+    if present:
+        return
+    raise MissingInputData(
+        f"{indicator_slug} needs {needs}, which is empty — every result would "
+        f"be a confident zero rather than a measurement. Load it with {loader}."
+    )
+
+
+def require_measured(
+    measured: int,
+    considered: int,
+    *,
+    indicator_slug: str,
+    what: str,
+    hint: str,
+) -> None:
+    """Refuse to write when the input layer exists but contributed nothing.
+
+    ``require_nonempty`` only proves the layer is non-empty *somewhere*. It
+    passes when the data was loaded for a different AOI, loaded partially, or
+    loaded but not spatially linked — all of which still yield a full set of
+    zeros for the scope being computed. This is the row-count check that
+    data-observability practice pairs with an existence check, and here it is
+    free: the count is already computed and was, until now, discarded.
+
+    ⚠ Ceiling: a scope that genuinely contains none of ``what`` — a rural AOI
+    with no buildings — trips this too. That is the deliberate trade: a loud
+    false positive an operator resolves in one query beats a silent zero that
+    reaches a composite. Relax to a warning only with a real such AOI in hand.
+    """
+    if considered == 0 or measured > 0:
+        return
+    raise MissingInputData(
+        f"{indicator_slug} considered {considered} features and matched zero "
+        f"{what}. The layer is non-empty, so this is a scope problem rather "
+        f"than a missing load: {hint}"
+    )
+
+
 def require_seeded(backend, spec: IndicatorSpec) -> None:
     """Fail with the actionable message rather than a foreign-key violation."""
     if backend.indicator_catalog_repo().get_indicator(spec.slug) is None:

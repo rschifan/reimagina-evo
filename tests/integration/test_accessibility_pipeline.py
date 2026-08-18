@@ -11,9 +11,12 @@ a whole number of 95 m edges.
 
 from __future__ import annotations
 
+import pytest
+
 from uuid import uuid4
 
 from reimagina.data import feature as feat
+from reimagina.indicators._compute import MissingInputData
 from reimagina.indicators.accessibility import ACCESSIBILITY_COMPUTE
 from reimagina.indicators.catalog import (
     ACCESSIBILITY_CUTOFF_M,
@@ -259,14 +262,12 @@ def test_empty_road_network_raises_rather_than_reporting_cutoff(conn):
     Reporting 1500 m everywhere would render as a plausible choropleth and hide
     the fact that nothing was ever loaded.
     """
-    import pytest
-
     seed_catalog(conn)
     block = _tiny_block_at(conn, 0, 0)
     _amenity_at(conn, 1, 1, "school")
     # deliberately no load_graph
 
-    with pytest.raises(RuntimeError, match="road_edge is empty"):
+    with pytest.raises(MissingInputData, match="road_edge"):
         ACCESSIBILITY_COMPUTE[_NETWORK](conn, feature_ids=[block], code_version="test")
 
 

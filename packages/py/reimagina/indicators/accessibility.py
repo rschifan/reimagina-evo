@@ -50,6 +50,7 @@ from reimagina.data.feature import get_type_id
 from reimagina.indicators._compute import (
     ComputeResult as ComputeResult,
     compute_indicator,
+    require_nonempty,
 )
 from reimagina.indicators.catalog import (
     ACCESSIBILITY_CUTOFF_M,
@@ -177,13 +178,13 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
     covers the path that replaced them.
     """
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM curated_geo.road_edge")
-        if cur.fetchone()[0] == 0:
-            raise RuntimeError(
-                "curated_geo.road_edge is empty — no network to route over. "
-                "Load one with reimagina.pipeline.osm_network.bootstrap_network "
-                "before computing network accessibility."
-            )
+        cur.execute("SELECT EXISTS (SELECT 1 FROM curated_geo.road_edge)")
+        require_nonempty(
+            cur.fetchone()[0],
+            indicator_slug="accessibility (network family)",
+            needs="curated_geo.road_edge — the graph to route over",
+            loader="`reimagina.pipeline.osm_network.bootstrap_network`",
+        )
 
     aoi_join, feature_filter = _scope(aoi_id, feature_ids)
     sql = f"""
@@ -274,6 +275,30 @@ def _reader_for(spec: IndicatorSpec, rows_fn):
     categories = ACCESSIBILITY_SPEC_CATEGORY[spec.slug]
 
     def read(conn, *, aoi_id, feature_ids, scenario_id):
+        # Guard the *layer*, deliberately not the category.
+        #
+        # With no establishments loaded at all, every block reports the cutoff
+        # and the result reads as a real, uniformly bad accessibility surface —
+        # the same silent-zero failure as building_density, but harder to spot
+        # because 1500 m looks like a measurement in a way 0.0 does not.
+        #
+        # A category that is genuinely absent while the layer is loaded is a
+        # different question, and this module has already answered it: the
+        # cutoff is the wanted value (see _network_rows, and
+        # test_no_amenity_of_that_category_reports_the_cutoff, which seeds a
+        # park and asks for a school). Guarding per category would overturn
+        # that decision silently, so it stops at the layer.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM curated_geo.feature "
+                "WHERE type_slug = 'establishment')"
+            )
+            require_nonempty(
+                cur.fetchone()[0],
+                indicator_slug=spec.slug,
+                needs="the establishment (POI) layer",
+                loader="`apps.cli.app points bootstrap`",
+            )
         return rows_fn(
             conn,
             type_id=get_type_id(conn, "MEX", "block"),
