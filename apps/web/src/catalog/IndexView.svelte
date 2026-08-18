@@ -8,6 +8,21 @@
 
   const rows = $derived(catalog.visible);
 
+  /** Navigate when the row is clicked anywhere, without turning the row into
+   *  a second tab stop — the name anchor is already the keyboard target, and
+   *  a focusable row would make every indicator two stops instead of one.
+   *
+   *  Two clicks are deliberately ignored: one that originated on the anchor
+   *  itself (the browser is already navigating, and handling it again would
+   *  double the history entry), and one that ends a text selection, because
+   *  selecting a slug to copy it should not also navigate away. */
+  function onRowClick(event: MouseEvent, slug: string) {
+    if (event.defaultPrevented) return;
+    if ((event.target as HTMLElement).closest("a")) return;
+    if (window.getSelection()?.toString()) return;
+    location.hash = `#/i/${encodeURIComponent(slug)}`;
+  }
+
   function onFilters(f: Filters) {
     catalog.setFilters(f);
     // Replace rather than push: typing in a search box should not bury the
@@ -52,7 +67,11 @@
         </thead>
         <tbody>
           {#each rows as row (row.slug)}
-            <tr class="border-b border-line/60 last:border-0 hover:bg-accent/5">
+            <tr
+              class="cursor-pointer border-b border-line/60 last:border-0 hover:bg-accent/5
+                     has-[a:focus-visible]:bg-accent/5"
+              onclick={(e) => onRowClick(e, row.slug)}
+            >
               <td class="px-4 py-2.5">
                 <a
                   href={`#/i/${encodeURIComponent(row.slug)}`}
@@ -80,8 +99,11 @@
               <td class="px-4 py-2.5 text-right font-mono text-[11px] text-muted-foreground" data-numeric>
                 {row.valid_min ?? "—"} – {row.valid_max ?? "—"}
               </td>
-              <td class="px-2">
-                <ChevronRight class="size-4 text-muted-foreground" aria-hidden="true" />
+              <td class="px-2 text-right">
+                <ChevronRight
+                  class="inline size-4 text-muted-foreground transition-transform"
+                  aria-hidden="true"
+                />
               </td>
             </tr>
           {/each}
