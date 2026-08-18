@@ -556,6 +556,74 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 }
 
 
+# ── Livability score ────────────────────────────────────────────────────────
+#
+# The fourth worked example the Reimagina collaborators asked for: "a composite
+# that combines density and accessibility indicators into a score indicator".
+#
+# It needs no compute code. `default_runners()` binds every
+# `computation_kind="composite"` spec to the generic `compute_composite`, so a
+# score is a catalog entry — which is the extensibility claim this repo makes,
+# stated as a working example rather than as prose.
+#
+# **Network accessibility, not straight-line.** Both families exist and either
+# would compose, but only the network one responds to a road-network edit. Using
+# it makes the chain end to end: bump `network_version` -> three
+# `*_network_m` indicators recompute -> this score recomputes behind them. That
+# is the attribute -> run -> indicator mapping the collaborators asked to see,
+# demonstrated on the expensive path rather than the cheap one.
+#
+# **The weights are a choice, and an arbitrary one.** 0.4 to density, 0.2 to
+# each of three amenity classes. No literature backs that split; it is declared
+# here so it can be argued with, and changing it is a one-line edit that
+# restages the score through `params_digest`. What the platform guarantees is
+# not that these weights are right but that they are *applied* — each input is
+# rescaled to 0-1 against its declared bounds before weighting, so a 0-2000
+# units/ha density cannot drown three 0-1500 m distances the way raw summing
+# would.
+#
+# ⚠ The three distance inputs are `higher_is_better=False`, so `compute_composite`
+# folds them in as `1 - normalised`. Without that a block far from every school,
+# clinic and park would score *well* — `indicator_dependency` enforces
+# `weight >= 0` (r016:93), so it cannot be expressed as a negative weight.
+LIVABILITY_BLOCK_SCORE = IndicatorSpec(
+    slug="livability_block_score",
+    name="Livability Score",
+    description=(
+        "Blend of housing density and walking distance to schools, health "
+        "facilities and parks, on a 0-1 scale where 1 is the densest and "
+        "best-served block. Density contributes 40%, each amenity class 20%. "
+        "Each input is first rescaled against its own declared bounds, and the "
+        "three distances are inverted so nearer scores higher. A relative "
+        "ranking of blocks against each other, not an absolute measure of "
+        "livability — the weights are a stated choice, not a finding."
+    ),
+    computation_kind="composite",
+    # Composites must have model_family NULL — indicator_catalog CHECK (r016).
+    value_type="numeric",
+    unit="score_0_1",
+    valid_min=0.0,
+    valid_max=1.0,
+    aggregation_method="weighted_mean",
+    inputs=(
+        AssetEdge(
+            indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
+            relation="derived_from",
+            weight=0.4,
+        ),
+        *(
+            AssetEdge(
+                indicator_asset_key(spec.slug),
+                relation="derived_from",
+                weight=0.2,
+            )
+            for spec in ACCESSIBILITY_NETWORK
+        ),
+    ),
+    applies_to=("block",),
+)
+
+
 # Indicators Layer 1 / Layer 2 ships with. Order matters: dependencies must
 # be upserted before the composite indicators that reference them.
 #
@@ -572,6 +640,8 @@ SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     EDIFICABILITY_BLOCK_DENSITY,
     *ACCESSIBILITY_EUCLID,
     *ACCESSIBILITY_NETWORK,
+    # Last: see the warning above about the first model_family-NULL spec.
+    LIVABILITY_BLOCK_SCORE,
 )
 
 

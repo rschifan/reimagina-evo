@@ -132,6 +132,13 @@ def test_compactness_survives_a_building_reload(graph, conn):
 
 
 def test_a_road_reload_recomputes_only_the_network_family(graph, conn):
+    """A road edit reaches the network family and what consumes it — nothing else.
+
+    `livability_block_score` is planned too: it is a weighted consumer of all
+    three network indicators, so a stale input makes it stale. That is the
+    attribute -> run -> indicator chain, propagated rather than declared. The
+    straight-line family is the control and stays out, because it reads POIs.
+    """
     _materialize_everything(conn)
     publish_version(conn, asset_key="global.road_network", version="graph-2")
 
@@ -141,7 +148,9 @@ def test_a_road_reload_recomputes_only_the_network_family(graph, conn):
         "accessibility_block_school_network_m",
         "accessibility_block_health_network_m",
         "accessibility_block_park_network_m",
+        "livability_block_score",
     }
+    assert not any(s.endswith("_euclid_m") for s in slugs)
 
 
 def test_an_explicit_change_set_still_takes_the_attribute_path(graph, conn):
