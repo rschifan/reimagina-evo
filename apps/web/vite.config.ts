@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
@@ -52,16 +50,18 @@ export default defineConfig({
       // `dist/` is gitignored, so nothing in review would show it. Both
       // entries must stay listed.
       input: {
-        index: resolve(__dirname, "index.html"),
-        catalog: resolve(__dirname, "catalog.html"),
+        index: new URL("./index.html", import.meta.url).pathname,
+        catalog: new URL("./catalog.html", import.meta.url).pathname,
       },
     },
   },
   test: {
-    // Vitest reads this file — there is no vitest.config.ts. The existing
-    // suites (format, selection-geom) are pure and must keep running with
-    // no DOM, so `node` stays the default and only the catalog opts into
-    // jsdom.
-    environmentMatchGlobs: [["src/catalog/**", "jsdom"]],
+    // Vitest reads this file — there is no vitest.config.ts. The default
+    // environment stays `node` so the pure suites (format, selection-geom)
+    // keep running without a DOM. A catalog test that needs one opts in
+    // per file with a `// @vitest-environment jsdom` docblock; Vitest 4
+    // removed `environmentMatchGlobs`, and one docblock per DOM test is
+    // less machinery than a projects config for a single glob.
+    environment: "node",
   },
 });
