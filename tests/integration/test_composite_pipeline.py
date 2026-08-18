@@ -110,8 +110,20 @@ def test_composite_runs_after_inputs_and_combines_them(conn):
         feature_id=block_id, indicator_slug=URBAN_FORM_BLOCK_BUILDING_DENSITY.slug
     )
     composite = repo.get_current(feature_id=block_id, indicator_slug=_COMPOSITE.slug)
-    # Composite = 0.5·compactness + 0.5·density, from their just-written results.
     assert composite is not None
-    assert composite["value_numeric"] == pytest.approx(
-        0.5 * compactness["value_numeric"] + 0.5 * density["value_numeric"]
-    )
+
+    # Composite = 0.5·norm(compactness) + 0.5·norm(density), where norm rescales
+    # each input against its own declared bounds. Asserted from the specs rather
+    # than a literal, so widening a bound moves the expectation with it.
+    def _norm(spec, value: float) -> float:
+        return (value - spec.valid_min) / (spec.valid_max - spec.valid_min)
+
+    expected = 0.5 * _norm(
+        URBAN_FORM_BLOCK_COMPACTNESS, compactness["value_numeric"]
+    ) + 0.5 * _norm(URBAN_FORM_BLOCK_BUILDING_DENSITY, density["value_numeric"])
+    assert composite["value_numeric"] == pytest.approx(expected)
+
+    # And the thing the raw sum got wrong: the result stays inside 0-1, so the
+    # declared weights bound each input's contribution instead of its range
+    # doing it. Before normalisation this value could reach ~250.
+    assert 0.0 <= composite["value_numeric"] <= 1.0
