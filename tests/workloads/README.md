@@ -4,9 +4,9 @@ The conformance suite proves the `Orchestrator` port *contract* holds. It says
 nothing about **how** an engine schedules, because the shipped catalog is four
 indicators wide and only a `geometry` edit produces more than a single wave.
 
-This suite supplies the DAG shapes the catalog cannot: nine synthetic workloads
-varying topology (chain, diamond, lattice, wide fan-out, seeded random), cost
-class (CPU-bound vs IO-bound), unit size (10 ms to 3 s) and failure behaviour.
+This suite supplies the DAG shapes the catalog cannot: seven synthetic
+workloads varying topology (chain, diamond, lattice, seeded random), unit size
+(10 ms to 3 s) and failure behaviour.
 It **asserts** only what must hold whatever an engine does, and **records**
 everything the two tracks are allowed to differ on.
 
@@ -106,7 +106,7 @@ Two consecutive full runs on one track, same machine, same everything:
 
 | stable to ±2% | noisy |
 |---|---|
-| `lattice` 0.2%, `diamond` 0.4%, `cpu_vs_io` 0.6%, `barrier_probe` 1.8%, `fanout_wide` 1.8% | `partial_failure` 8.8%, `layered_random` 13%, `many_tiny` 15%, **`chain_deep` 35%** |
+| `lattice` 0.2%, `diamond` 0.4%, `barrier_probe` 1.8% | `partial_failure` 8.8%, `layered_random` 13%, `many_tiny` 15%, **`chain_deep` 35%** |
 
 The split is not random: the stable ones have real work to do, and the noisy
 ones are dominated by the engine's per-dispatch latency. `chain_deep` is the

@@ -13,6 +13,9 @@ SHELL := /bin/bash
 # remember `source .venv/bin/activate` first.
 PYTHON := uv run python
 PYTEST := uv run pytest
+# ruff is commonly installed globally; mypy ships in the dev extra, so it is run
+# through uv like the other Python entry points here.
+MYPY := uv run mypy
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -31,9 +34,10 @@ install: ## Install Python + web dependencies.
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
 
 .PHONY: lint
-lint: ## Run ruff check + format-check (mirrors CI).
+lint: ## Run ruff check + format-check + mypy (mirrors CI).
 	ruff check .
 	ruff format --check .
+	$(MYPY) packages/py/reimagina apps scripts
 
 .PHONY: format
 format: ## Reformat with ruff format (writes changes).

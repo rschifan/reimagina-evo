@@ -24,7 +24,7 @@ caller (apps/api/routers/jobs.py, apps/cli/indicators.py)
   │
   │   run_workflow(run_id, units, params)                   dbos_app.py:350
   │     ├─ s_open_run                dbos_app.py:214  → orchestration_run + job_unit
-  │     └─ loop: plan_wave(wave.py:39) → enqueue one unit_workflow per dispatchable unit
+  │     └─ loop: plan_wave → enqueue newly-ready units, DBOS.wait_first, settle one
   │           unit_workflow          dbos_app.py:334
   │             ├─ s_set_status running          dbos_app.py:230 → runstore.set_unit_status
   │             ├─ s_compute                     dbos_app.py:272
@@ -247,7 +247,7 @@ WHERE run_id = %s AND backend_pid IS NOT NULL
 
 The same step also **reconciles a unit its own child can no longer close.** Only the child writes a unit's status, so a child whose process died — and whose recovery attempts ran out — would leave `job_unit` stuck at `running` forever while the parent saw the failure and closed the run. `GET /jobs/{run_id}` would then report a terminal run containing a running unit, contradicting the progress stream, with nothing left to fix it (`dbos_app.py:245-249`).
 
-⚠ One path still announces unchecked: the skip loop writes `skipped` and emits it without consulting the return (`dbos_app.py:367-370`). The window is narrower — `plan_wave` only proposes a skip for a unit currently `queued` — but it is the same shape of bug the rest of this section exists to prevent.
+The skip loop follows the same discipline: it announces `s_settle_unit`'s return rather than the `skipped` it asked for, so a cancel that already closed the unit is not overwritten on the wire.
 
 Order matters: the workflow is cancelled and backends signalled first, then units are closed (`dbos_orchestrator.py:224-236`). A run that is unknown or already terminal returns `False` without side effects (`:217-219`). The final roll-up re-reads the units rather than trusting the snapshot it started from: a unit can reach a terminal state in between, and `set_unit_status` then refuses our `cancelled`, so assuming the write landed would report a cancelled run whose units all say they finished (`dbos_orchestrator.py:238-242`).
 
@@ -381,13 +381,21 @@ Two further properties of that step are cancellation-safety, and both are stated
 
 ### The workflows
 
-Two, not seven. `run_workflow` drives the dirty-set wave by wave; `unit_workflow` is one indicator.
+Two, not seven. `run_workflow` drives the dirty-set as each unit unblocks; `unit_workflow` is one indicator.
 
 `unit_workflow` (`dbos_app.py:334-342`) is three steps: mark `running`, compute, mark `succeeded` — or mark `failed` with a truncated `"<ExcType>: <msg>"` and re-raise, so the parent sees the failure (`:339-341`, `:345-346`).
 
-`run_workflow` (`dbos_app.py:350-410`) opens the run, then loops: `plan_wave` over the in-memory status map, write and announce the skips, enqueue one `unit_workflow` per dispatchable unit, await them, settle each outcome through a step and announce what that step returned, repeat until nothing dispatches; then roll up, finalise, emit the run-level event and close the stream.
+`run_workflow` opens the run, then loops: `plan_wave` over the in-memory status map, write and announce the skips, enqueue one `unit_workflow` per *newly* dispatchable unit, then `DBOS.wait_first` over everything still outstanding — settling **one** unit per iteration, through a step, announcing what that step returned. Repeat until nothing is outstanding and nothing was skipped; then roll up, finalise, emit the run-level event and close the stream.
 
-**Enqueue in a fixed order and await in the same one** (`dbos_app.py:375-386`). Child workflow ids are positional — parent id plus function id — so an as-completed loop would shift the ids of everything after it and mint duplicate children. This is the same positional-replay hazard as spike 2, in its other guise.
+**A unit starts the moment its last dependency clears**, rather than waiting for the slowest member of its level. Measured on the synthetic suite, head-of-line delay fell from 1600-1691 ms to 289-345 ms across every shape with dependencies, and makespan by 1.41-1.42x on the diverging ones. `lattice` and `diamond` are the designed controls: they reconverge, so the barrier never cost them makespan, and it did not move (1.03x).
+
+⚠ **The loop must keep going while skips are still landing, even with nothing running.** `plan_wave` recomputes readiness from the statuses it is handed, so it marks exactly one layer of skips per call: with `a → b → c` and `a` failed, one pass skips `b` and only the next can see `b` as terminal and skip `c`. Stopping as soon as nothing is outstanding stranded `c` at `queued` — permanently, on a run the API reported as finished, since `overall_status` returns `failed` either way.
+
+**`DBOS.wait_first` is what makes as-completed dispatch replayable.** It runs its poll through `call_function_as_step(..., "DBOS.waitFirst", ...)`, so the *completion order itself* becomes durable history — a replay returns the recorded winner instead of re-racing. Every value the loop branches on is therefore checkpointed: `plan_wave` is pure over `statuses`, `statuses` comes from `s_settle_unit`'s recorded return, and the outstanding set moves only on a dispatch or a recorded winner.
+
+⚠ **Why this needed a durable primitive rather than care.** Child workflow ids are positional — parent id plus function id — and DBOS resolves a replayed child by `(parent_id, function_id)` alone. `DBOSUnexpectedStepError` fires only on a function-*name* mismatch, and every child here is `unit_workflow`, so a reordered replay does **not** raise: it hands back a handle to the wrong child and cross-attributes one indicator's result to another. That is spike 2's failure mode in its other guise, and nothing in DBOS detects it.
+
+Children are enqueued under deterministic ids (`{run_id}-{slug}`) and the body asserts the returned handle carries the id it asked for. `SetWorkflowID` does not confer positional freedom — the counter increments regardless — but it makes a re-enqueue past recorded history dedup instead of minting a second child, and the assertion is the only available detector for the silent case above.
 
 **Fault isolation is preserved across the boundary.** A child that raises is caught, recorded as `failed`, and the loop continues; `plan_wave` then skips whatever depended on it (`dbos_app.py:387-404`). Exception payloads cross the process boundary intact — spike 4 disproved the plan's assumption that psycopg2 errors carrying a live cursor and `.diag` would not pickle, which is why no `UnitFailed` wrapper exists (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:120-137`).
 
@@ -403,7 +411,9 @@ Two, not seven. `run_workflow` drives the dirty-set wave by wave; `unit_workflow
 
 **`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
 
-**Use worker-local concurrency, not global concurrency.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around. `REIMAGINA_RUN_CONCURRENCY` limits parent runs per executor (default 2); `REIMAGINA_UNIT_CONCURRENCY` independently limits indicator units per executor (default 2).
+**Use worker-local concurrency, not global concurrency.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around. `REIMAGINA_RUN_CONCURRENCY` limits parent runs per executor (default 2); `REIMAGINA_UNIT_CONCURRENCY` independently limits indicator units per executor (default 8, defined once in `reimagina/settings.py`).
+
+That default is measured, not guessed: on the real catalog, 2 slots gives 3614 ms and 8 gives 1691 ms. The ceiling is the graph rather than the engine — a DAG's average parallelism is `work/span`, here 4.03, and 16 slots measure exactly that for a further 3.7%. 8 is the latency choice at 0.49 efficiency; lower it toward 4 (0.76) where many runs execute concurrently.
 
 `launch()` is idempotent and locked because an executor or `dev` CLI process can submit concurrently. The API does not call it in its default `client` mode. It registers the `runs` and `units` queues after DBOS has launched.
 
