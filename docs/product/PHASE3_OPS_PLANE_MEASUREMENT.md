@@ -6,10 +6,15 @@ the same thing and the numbers can be put side by side without arguing about
 definitions after the fact.
 
 This is a specification, not a harness. Each branch measures these natively:
-`packages/py/reimagina/perf/procrastinate_bench.py` cannot be generalised behind
-the port, because it times enqueue and drain of a **no-op job** while the port's
-granularity is a **run**, and the two engines do not share a transport. A shared
-harness would either measure nothing real or privilege one engine's shape.
+The queue branch's own timing harness (`perf/procrastinate_bench.py`, deleted
+here with the engine it measured) could not be generalised behind the port: it
+timed enqueue and drain of a **no-op job**, while the port's granularity is a
+**run**, and the two engines share no transport. A shared harness would either
+measure nothing real or privilege one engine's shape.
+
+Every metric below is therefore obtained from the port, from `jobs_runtime`, or
+from the process — never from an engine-specific probe. That is what makes the
+two branches' numbers comparable at all.
 
 ---
 
@@ -156,8 +161,8 @@ rounding error.
 
 **Submit-latency percentiles.** p50/p95/p99 on `submit_run` are noise against a
 multi-minute PostGIS unit, and reporting them to three digits invites a
-conclusion the measurement cannot support. `procrastinate_bench.py` produces
-them for the queue in isolation, which is a legitimate but different question.
+conclusion the measurement cannot support. An engine's own queue benchmark
+answers that question in isolation, which is legitimate but different.
 
 **Throughput at varying worker concurrency.** The dirty set is three units wide.
 Concurrency numbers here would describe the catalog, not the engine.

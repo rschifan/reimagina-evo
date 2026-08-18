@@ -10,20 +10,10 @@ catalog entry with weighted ``depends_on``, no new code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+from reimagina.indicators._compute import ComputeResult as ComputeResult
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
-
-
-@dataclass(frozen=True)
-class ComputeResult:
-    job_run_id: str
-    indicator_slug: str
-    features_considered: int
-    rows_written: int
-    aoi_id: str | None
 
 
 def compute_composite(

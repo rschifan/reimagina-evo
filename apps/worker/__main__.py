@@ -1,4 +1,4 @@
-"""Entry-point for `python -m apps.worker` — the Procrastinate worker."""
+"""Entry-point for `python -m apps.worker` — the DBOS ops-plane worker."""
 
 from __future__ import annotations
 
@@ -13,43 +13,30 @@ if str(_PACKAGES_DIR) not in sys.path:
 
 import argparse  # noqa: E402
 
-from .app import run_worker  # noqa: E402
+from .app import run_dbos_worker  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m apps.worker",
-        description="Run the Procrastinate worker over the orchestration queues.",
-    )
-    parser.add_argument(
-        "--queues",
-        help=(
-            "Comma-separated queue names to drain. Default: compute,control. "
-            "Run one process per resource profile rather than raising "
-            "--concurrency for blocking compute."
+        description=(
+            "Run a DBOS worker: register the workflows, drain the unit queue, "
+            "and recover this executor's own interrupted runs."
         ),
-    )
-    parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help=(
-            "Jobs run at once in this process (default: 1). Procrastinate runs "
-            "sync tasks in a thread, so raising this does not parallelise "
-            "CPU-bound work and risks starving the worker heartbeat."
+        epilog=(
+            "There are no queue or concurrency flags. Concurrency belongs to "
+            "the registered queue (REIMAGINA_UNIT_CONCURRENCY), not to the "
+            "process, and there is only one queue to drain. Give each process a "
+            "distinct REIMAGINA_EXECUTOR_ID: recovery is scoped by it, and DBOS "
+            "defaults every process to 'local'."
         ),
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = _parse_args(argv)
-    queues = (
-        [q.strip() for q in args.queues.split(",") if q.strip()]
-        if args.queues
-        else None
-    )
-    run_worker(queues, concurrency=args.concurrency)
+    _parse_args(argv)
+    run_dbos_worker()
 
 
 if __name__ == "__main__":

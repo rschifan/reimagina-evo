@@ -57,13 +57,27 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    visible: false,
-    // z11 lets buildings appear at neighbourhood / district scale rather
-    // than only after the user zooms in to street level. Tile size stays
-    // bounded because get_tile applies aggressive ST_Simplify at lower
-    // zooms — 2 M building polygons across CDMX + Mexicali render cleanly
-    // from 11 onward without the renderer choking.
-    minzoom: 11,
+    // On by default now that r038 bounds the cost. Previously this layer
+    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
+    // was the only thing keeping the map usable; with footprints served
+    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
+    visible: true,
+    // z14 because get_tile (migration r038) stops serving building
+    // footprints below it — a request at 11-13 returns an empty tile, so a
+    // lower floor here only buys wasted round-trips.
+    //
+    // The earlier value was 11, justified by "ST_Simplify keeps tiles
+    // bounded". Measured, that was wrong twice over: on a dataset dense in
+    // one alcaldia a z12 tile reached 2.59 MB, and the reason the z10/z11
+    // rungs looked cheap is that ~10 m simplification collapses a ~10 m
+    // footprint to a degenerate ring, which ST_AsMVTGeom drops — 1,826 of
+    // 37,858 buildings survived. Cheap because 95% was discarded.
+    //
+    // At z12 one pixel is ~36 m, so footprints are sub-pixel anyway. For
+    // building information at AOI scale use the
+    // urban_form_block_building_density choropleth, which is the layer that
+    // question actually wants.
+    minzoom: 14,
   },
   {
     layerId: "baseline_live:block",
@@ -348,8 +362,8 @@ export function installRasterLayers(
 
 
 /** Derive `<scheme>://<host>/cog` from a titiler tile URL template.
- *  Example: `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
- *  → `http://localhost:8000/cog`.
+ *  Example: `http://localhost:8001/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...`
+ *  → `http://localhost:8001/cog`.
  *
  *  Returning null skips the raster tooltip for an unexpected URL shape
  *  rather than emitting broken HTTP calls — the choropleth overlays

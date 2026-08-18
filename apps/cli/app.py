@@ -26,6 +26,7 @@ from reimagina.tiles.defaults import (  # noqa: E402
     tile_snapshot_base_url,
 )
 from .explore import (  # noqa: E402
+    list_executor_health,
     list_feature_stats,
     list_layers,
     list_serving_stats,
@@ -171,6 +172,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     explore_serving_stats.add_argument("--dsn", default=DEFAULT_APP_DSN)
     explore_serving_stats.set_defaults(handler=_handle_explore_serving_stats)
+
+    explore_executor_health = explore_subparsers.add_parser(
+        "executor-health",
+        help="Show DBOS executor liveness from explore.ops_executor_health_v",
+    )
+    explore_executor_health.add_argument("--dsn", default=DEFAULT_APP_DSN)
+    explore_executor_health.set_defaults(handler=_handle_explore_executor_health)
 
     overture_parser = subparsers.add_parser(
         "overture", help="First Overture source operations"
@@ -690,15 +698,17 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--scenario-id")
     evaluate_parser.add_argument("--code-version", default="dev")
     evaluate_parser.add_argument(
-        "--concurrency",
-        type=int,
-        default=1,
-        help="Worker concurrency for the embedded drain (default 1; ignored "
-        "for --detach / --sync).",
+        "--timeout",
+        type=float,
+        default=600.0,
+        help="Seconds to wait for the run to finish (default 600; ignored for "
+        "--detach / --sync). Unit concurrency is a property of the ops-plane "
+        "queue (REIMAGINA_UNIT_CONCURRENCY), not of this command.",
     )
-    # Default is embedded: enqueue on the Procrastinate queue + drain a bounded
-    # in-process worker to completion (needs DATABASE_URL_DIRECT). The two flags
-    # opt out — mutually exclusive.
+    # Default submits a durable run and waits for it. No standing worker is
+    # needed — the ops-plane is a library, so this process drives the run it
+    # submitted (needs DATABASE_URL_DIRECT). The two flags opt out — mutually
+    # exclusive.
     mode_group = evaluate_parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--detach",
@@ -1122,6 +1132,10 @@ def _handle_explore_serving_stats(args: argparse.Namespace) -> int:
     return _print(list_serving_stats(dsn=args.dsn))
 
 
+def _handle_explore_executor_health(args: argparse.Namespace) -> int:
+    return _print(list_executor_health(dsn=args.dsn))
+
+
 def _handle_overture_extract(args: argparse.Namespace) -> int:
     return _print(
         extract_mexico_city_buildings(
@@ -1386,7 +1400,7 @@ def _handle_evaluate_scenario(args: argparse.Namespace) -> int:
             aoi_id=args.aoi_id,
             code_version=args.code_version,
             mode=mode,
-            concurrency=args.concurrency,
+            timeout_s=args.timeout,
         )
     )
 

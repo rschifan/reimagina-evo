@@ -50,6 +50,23 @@ def _seed_two_blocks(conn) -> tuple[str, str]:
             geometry_wkt=wkt,
         )
 
+    # One building inside block_a. Without it the density indicator refuses to
+    # run (see _compute.require_nonempty) -- these tests exercise orchestration,
+    # and an empty building layer made them pass on a degenerate zero rather
+    # than on a computed value.
+    _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "global", "building"),
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="orch-bld-a",
+        geometry_wkt=(
+            "POLYGON((-99.1395 19.4305,-99.1390 19.4305,-99.1390 19.4310,"
+            "-99.1395 19.4310,-99.1395 19.4305))"
+        ),
+    )
+
     block_a = _block(
         "orch-blk-a",
         "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"

@@ -1694,6 +1694,15 @@ class PostgresExploreReader:
             """
         )
 
+    def list_executor_health(self) -> list[dict]:
+        return self._read_query(
+            """
+            SELECT *
+            FROM explore.ops_executor_health_v
+            ORDER BY heartbeat_at DESC, executor_id
+            """
+        )
+
 
 class PostgresTileSnapshotRepository:
     def __init__(self, connection):
@@ -1955,8 +1964,28 @@ class PostgresJobRunRepository:
         scenario_id: str | None = None,
         status: str = "queued",
         run_id: str | None = None,
+        started_at: datetime | None = None,
     ) -> str:
-        started_at = "now()" if status == "running" else "NULL"
+        # ⚠ clock_timestamp(), NOT now(). A unit opens its job_run row, runs its
+        # compute, and completes the row all on one connection inside ONE
+        # transaction — and now() is transaction_timestamp(), constant for that
+        # whole transaction. With now() on both ends, every finished unit
+        # recorded completed_at == started_at, so `sum(completed_at -
+        # started_at)` — the runner-time query the ops-plane measurement spec is
+        # written around — returned 00:00:00 on every row ever written.
+        # clock_timestamp() is the wall clock at statement time, which is what
+        # "when did this unit start" actually means. The recovered-provenance
+        # path supplies its original start for both queued_at and started_at;
+        # otherwise queued_at is stamped here. Both database ordering checks
+        # therefore remain true.
+        started_at_sql = (
+            "%s"
+            if started_at is not None
+            else "clock_timestamp()"
+            if status == "running"
+            else "NULL"
+        )
+        queued_at_sql = "%s" if started_at is not None else "clock_timestamp()"
         with self.connection.cursor() as cur:
             # pg_backend_pid() is evaluated on THIS connection, which is the one
             # that will run the compute — that is the whole point. Capturing it
@@ -1964,12 +1993,24 @@ class PostgresJobRunRepository:
             cur.execute(
                 f"""
                 INSERT INTO jobs_runtime.job_run
-                  (scenario_id, model_family, code_version, status, started_at,
+                  (scenario_id, model_family, code_version, status, queued_at, started_at,
                    run_id, backend_pid)
-                VALUES (%s, %s, %s, %s, {started_at}, %s, pg_backend_pid())
+                VALUES (%s, %s, %s, %s, {queued_at_sql}, {started_at_sql}, %s, pg_backend_pid())
                 RETURNING id::text
                 """,
-                (scenario_id, model_family, code_version, status, run_id),
+                (
+                    (
+                        scenario_id,
+                        model_family,
+                        code_version,
+                        status,
+                        started_at,
+                        started_at,
+                        run_id,
+                    )
+                    if started_at is not None
+                    else (scenario_id, model_family, code_version, status, run_id)
+                ),
             )
             return str(cur.fetchone()[0])
 
@@ -2012,28 +2053,13 @@ class PostgresJobRunRepository:
                 """
                 UPDATE jobs_runtime.job_run
                 SET status = %s,
-                    completed_at = now(),
+                    completed_at = clock_timestamp(),
                     error_message = %s,
-                    started_at = COALESCE(started_at, now())
+                    started_at = COALESCE(started_at, clock_timestamp())
                 WHERE id = %s
                 """,
                 (status, error_message, job_run_id),
             )
-
-    def get_job(self, job_run_id: str) -> dict | None:
-        with self.connection.cursor(
-            cursor_factory=psycopg2.extras.RealDictCursor
-        ) as cur:
-            cur.execute(
-                """
-                SELECT id::text, scenario_id::text, model_family, status, code_version,
-                       queued_at, started_at, completed_at, error_message
-                FROM jobs_runtime.job_run WHERE id = %s
-                """,
-                (job_run_id,),
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
 
 
 # ─── Indicator catalog ──────────────────────────────────────────────────────
@@ -2452,3 +2478,120 @@ class PostgresIndicatorResultRepository:
             "p95": float(p95) if p95 is not None else None,
             "max": float(vmax) if vmax is not None else None,
         }
+
+
+class PostgresRunPlanRepository:
+    """The resolved feature set for a run, stored once and read by handle.
+
+    Both ops planes used to carry this inside the workflow input — one uuid per
+    feature per dirty indicator, 258,675 of them for a full CDMX recompute, which
+    the Hatchet track cannot even submit. Here it costs three rows and the engine
+    carries a ``plan_id``.
+
+    ⚠ Write-once. Nothing updates a plan: replay, retry and crash recovery must
+    all see the set the submitter resolved, which is the whole reason this is a
+    table rather than a query the unit re-runs for itself.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def write(self, *, plan_id: str, units: dict[str, list[str]]) -> None:
+        """Persist one row per dirty indicator. Call once, before submitting.
+
+        ⚠ The caller must COMMIT before handing ``plan_id`` to an engine. A
+        worker can dequeue immediately and will read an uncommitted plan as a
+        missing one — which `features_for` reports as a lost write, on a run that
+        was perfectly valid.
+
+        ⚠ Explicit ``::uuid`` / ``::uuid[]`` casts. psycopg2 adapts a Python list
+        of strings to a *text* array, and Postgres will not implicitly cast
+        ``text[]`` to ``uuid[]``; without the cast this fails at insert.
+
+        Sorted by slug so two identical plans produce byte-identical statements —
+        the fingerprint that feeds run deduplication is computed from the same
+        content, and an unstable ordering there would silently defeat it.
+        """
+        if not units:
+            raise ValueError("refusing to write an empty run plan")
+        with self.connection.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                "INSERT INTO jobs_runtime.run_plan "
+                "(plan_id, indicator_slug, feature_ids) VALUES %s",
+                [
+                    (plan_id, slug, [str(f) for f in features])
+                    for slug, features in sorted(units.items())
+                ],
+                template="(%s::uuid, %s, %s::uuid[])",
+            )
+
+    def features_for(self, *, plan_id: str, indicator_slug: str) -> list[str]:
+        """The features this unit must compute.
+
+        ⚠ ``feature_ids::text[]``, not ``feature_ids``. psycopg2 has no typecaster
+        for ``uuid[]`` unless ``register_uuid`` has been called globally, so the
+        column comes back as the raw array *literal* — the string ``'{a,b,c}'``,
+        which iterates as characters and yields 180,001 one-character "features"
+        for a 5,000-feature unit. Casting in SQL keeps the fix local; registering
+        a global adapter would change how every other query in the process
+        decodes uuids.
+
+        ⚠ Raises rather than returning ``[]`` when the row is absent. An empty
+        feature set is indistinguishable from a successful no-op: the unit would
+        write nothing, report success, and leave the indicator stale with no
+        error anywhere. A missing plan row is always a defect — a lost write, an
+        uncommitted transaction, or a worker pointed at the wrong database — and
+        has to fail loudly enough to be seen.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT feature_ids::text[] FROM jobs_runtime.run_plan "
+                "WHERE plan_id = %s::uuid AND indicator_slug = %s",
+                (plan_id, indicator_slug),
+            )
+            row = cur.fetchone()
+        if row is None:
+            raise LookupError(
+                f"no run_plan row for plan {plan_id!r} / {indicator_slug!r} — "
+                "the plan was never written, was not committed before the run "
+                "was submitted, or this connection is on a different database"
+            )
+        return [str(feature_id) for feature_id in row[0]]
+
+    def delete(self, *, plan_id: str) -> int:
+        """Reclaim a plan whose run has reached a terminal state.
+
+        Best-effort by design: the sweep below is what guarantees the table
+        stays bounded. A run that crashed, was cancelled before its finalizer,
+        or lost its idempotency race never reaches here.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.run_plan WHERE plan_id = %s::uuid",
+                (plan_id,),
+            )
+            return cur.rowcount
+
+    def sweep(self, *, older_than_hours: int) -> int:
+        """Reclaim orphans — plans no terminal run will ever come back for.
+
+        Three ways a plan is abandoned, none of which reach `delete`: a submit
+        that crashed between writing the plan and enqueuing the work; a run
+        cancelled before its finalizer ran; and an idempotency collision, where
+        the engine hands back an existing run and the plan just written is
+        never referenced by anything.
+
+        ⚠ ``older_than_hours`` must exceed the longest run this deployment can
+        produce. Sweeping a plan out from under a live run makes every
+        subsequent unit fail with a missing-plan LookupError — the loud failure
+        that is supposed to mean "a write was lost". The unit timeout alone is
+        120 minutes by default, so the margin here is deliberately generous.
+        """
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.run_plan "
+                "WHERE created_at < now() - make_interval(hours => %s)",
+                (older_than_hours,),
+            )
+            return cur.rowcount

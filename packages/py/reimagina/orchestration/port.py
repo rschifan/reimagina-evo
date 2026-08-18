@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 # ── Status vocabulary ────────────────────────────────────────────────────────
 # One definition, imported by every executor. It lives here rather than in the
@@ -61,6 +61,26 @@ def overall_status(statuses: Iterable[str]) -> str:
     if "failed" not in seen and "cancelled" in seen:
         return "cancelled"
     return "failed"
+
+
+class DBConnection(Protocol):
+    """What this port actually needs of a database connection.
+
+    ``conn`` used to be typed ``object``, which was engine-neutral but untrue:
+    every implementation calls ``cursor``, ``commit``, ``rollback`` or
+    ``close`` on it, so the annotation promised less than the code required and
+    a type checker could not see any of those calls. A structural Protocol
+    keeps the port free of a psycopg2 import while stating the real contract —
+    any DB-API connection satisfies it.
+    """
+
+    def cursor(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -106,7 +126,7 @@ class RunEvent:
 class Orchestrator(Protocol):
     def submit_run(
         self,
-        conn: object,
+        conn: DBConnection,
         *,
         changed_attributes: Iterable[str],
         edited_features: Iterable[str],
@@ -115,9 +135,9 @@ class Orchestrator(Protocol):
         code_version: str = "dev",
     ) -> RunHandle: ...
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None: ...
+    def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None: ...
 
-    def cancel_run(self, conn: object, run_id: str) -> bool:
+    def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
         """Stop a run; True if it was live, False if unknown or already terminal.
 
         Marks every non-terminal unit ``cancelled`` and closes the run. It does

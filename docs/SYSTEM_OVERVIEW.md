@@ -83,7 +83,7 @@ introduces `curated_geo.raster_layer` with FK references to
 `serving_geo.raster_layer_v` + `explore.raster_layer_v`.
 
 The repository Protocol that every worker reads through:
-[`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces.py) —
+[`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces/raster.py) —
 impls at
 [`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L643).
 
@@ -164,7 +164,7 @@ missing file → 404, non-regular file → 403).
 
 `/tile-sources` emits each published raster as a `raster_cog` entry
 with a percent-encoded tile-URL template:
-[`reimagina.tiles.service._resolve_raster_layers`](../packages/py/reimagina/tiles/service.py#L352).
+[`reimagina.tiles.sources._resolve_raster_layers`](../packages/py/reimagina/tiles/sources.py).
 The web-side install:
 [`installRasterLayers`](../apps/web/src/layers.ts#L257).
 
@@ -193,7 +193,7 @@ One row per "source → observations at target grain" mapping:
   the retire-by-prefix contract.
 
 Repo Protocol + impls:
-[`AggregationRecipeRepository`](../packages/py/reimagina/storage/interfaces.py),
+[`AggregationRecipeRepository`](../packages/py/reimagina/storage/interfaces/raster.py),
 [`PostgresAggregationRecipeRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L742).
 
 ### Dispatcher + two worker arms
@@ -263,10 +263,10 @@ simplification ladder as the older
 Frontend-side source + tile URL assembly (with a `v=<epoch>`
 cache-buster sourced from `max(observation.updated_at)` so a
 rollup re-run invalidates MapLibre's in-memory tile cache):
-[`_resolve_aggregation_overlays`](../packages/py/reimagina/tiles/service.py#L402).
+[`_resolve_aggregation_overlays`](../packages/py/reimagina/tiles/sources.py).
 Transitive raster parent resolution — so observation-input recipes
 nest under the right raster in the UI:
-[`_resolve_transitive_raster_parent`](../packages/py/reimagina/tiles/service.py#L470)
+[`_resolve_transitive_raster_parent`](../packages/py/reimagina/tiles/sources.py)
 (same file).
 
 Test:
@@ -629,6 +629,44 @@ For the CDMX rollups to cover the whole city rather than one
 alcaldía, run `reimagina overlap compute-all` once without
 `--aoi-id` so `feature_overlap` holds block→AGEB and
 block→municipality rows for every block.
+
+---
+
+## 9. Scheduling — what runs, in what order
+
+Not part of the raster work, but the layer everything above is executed
+by, and the one that changed most recently. Detail lives in
+[`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md); this is the
+shape of it.
+
+**Four decisions, and only three of them exist.**
+
+| decision | who makes it |
+|---|---|
+| what runs at all | `orchestration/impact.py` — an attribute edit seeds every indicator whose `reads` matches, then propagates along `depends_on` |
+| what order is *legal* | the indicator DAG itself — a constraint, not a choice |
+| what is eligible *now* | `orchestration/wave.py::plan_wave` — a pure function: which queued units have all dependencies succeeded |
+| which eligible unit goes *first* | the DBOS `units` queue — FIFO by arrival. **Nothing orders by cost or critical path.** |
+
+**Dispatch is as-completed, not level-synchronous.** A unit starts the
+moment its last dependency clears, rather than waiting for the slowest
+member of its level. `plan_wave` is re-evaluated after every single
+completion, and `DBOS.wait_first` makes that replayable by recording the
+winning completion as durable history.
+
+That matters because the alternative is silently wrong rather than
+loudly wrong: DBOS resolves a replayed child by position, and raises only
+on a function-*name* mismatch — but every child is `unit_workflow`, so a
+reordered replay hands back the wrong child's result instead of failing.
+
+**The ceiling is the graph, not the engine.** A DAG's average parallelism
+is `work / span`; on today's catalog that is 4.03, and 16 worker slots
+measure exactly 4.03. The shipped default of 8 reaches 3.92.
+
+⚠ **Today's catalog barely exercises any of this.** 12 of 13 indicators
+are roots and only a `geometry` edit produces two waves, so the ordering
+machinery is real but mostly idle. It is built for the deeper catalogs
+that a cadastre or a wider indicator set would bring.
 
 ---
 

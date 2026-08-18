@@ -13,7 +13,7 @@ from typing import Any
 
 from reimagina.data import aoi as aoi_mod
 from reimagina.db import connect
-from reimagina.pipeline import cdmx as cdmx_pipeline
+import reimagina.pipeline.cdmx as cdmx_pipeline
 from reimagina.pipeline.inegi import InegiFetchError
 from reimagina.storage import backend_for_connection
 
