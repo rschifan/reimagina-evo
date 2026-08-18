@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import pytest
 
+from reimagina.assets.keys import indicator_asset_key
 from reimagina.assets.registry import SHIPPED_ASSETS, seed_assets
+from reimagina.indicators.catalog import SHIPPED_INDICATORS
 from reimagina.assets.version import components, expected_versions
 
 
@@ -364,7 +366,14 @@ def test_seed_assets_is_idempotent_and_stable(conn):
     """Re-seeding must keep ids: an asset's version history hangs off them."""
     first = seed_assets(conn)
     second = seed_assets(conn)
-    assert [r["asset_key"] for r in first] == [s.asset_key for s in SHIPPED_ASSETS]
+    seeded = [r["asset_key"] for r in first]
+    # Datasets first, then one derived asset per shipped indicator — projected
+    # from SHIPPED_INDICATORS rather than listed again, so the two cannot
+    # disagree about which indicators exist.
+    assert seeded[: len(SHIPPED_ASSETS)] == [s.asset_key for s in SHIPPED_ASSETS]
+    assert seeded[len(SHIPPED_ASSETS) :] == [
+        indicator_asset_key(s.slug) for s in SHIPPED_INDICATORS
+    ]
     assert first == second
 
 
@@ -387,3 +396,107 @@ def test_road_network_is_external_and_observed(conn):
             "FROM curated_geo.asset WHERE asset_key = 'global.road_network'"
         )
         assert cur.fetchone() == ("external", "observed", True)
+
+
+# ── the shipped graph ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def seeded_graph(conn):
+    """The real registry, seeded, with deferred validation forced to run.
+
+    SET CONSTRAINTS is what makes this a guard rather than a formality: the
+    acyclicity and weight-sum checks are DEFERRABLE INITIALLY DEFERRED and the
+    `conn` fixture never commits, so without it a broken shipped declaration
+    would sail through.
+    """
+    seed_assets(conn)
+    with conn.cursor() as cur:
+        cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    return conn
+
+
+def _lineage(conn, direction, root):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT related_key FROM serving_geo.asset_lineage_v "
+            "WHERE direction = %s AND root_key = %s",
+            (direction, root),
+        )
+        return {r[0] for r in cur.fetchall()}
+
+
+def test_the_shipped_declarations_form_a_valid_graph(seeded_graph):
+    """Seeding the real registry must satisfy every constraint in r041."""
+    with seeded_graph.cursor() as cur:
+        cur.execute("SELECT count(*) FROM curated_geo.asset_dependency")
+        assert cur.fetchone()[0] > 0
+
+
+def test_the_composite_reports_the_datasets_it_needs(seeded_graph):
+    """Requirement A: a composite's dataset set, deduped, never declared.
+
+    urban_form_block_composite declares only its two components; that it needs
+    blocks *and* buildings is derived from what those components consume.
+    """
+    upstream = _lineage(
+        seeded_graph, "upstream", "indicator.urban_form_block_composite"
+    )
+    assert {"mex.block", "global.building"} <= upstream
+    assert {
+        "indicator.urban_form_block_compactness",
+        "indicator.urban_form_block_building_density",
+    } <= upstream
+
+
+def test_changing_the_road_network_names_exactly_the_network_indicators(seeded_graph):
+    """Requirement B, and the discrimination the old world could not express.
+
+    `reads=("geometry",)` could not distinguish "the roads changed" from "the
+    blocks changed". Here the three straight-line accessibility indicators are
+    untouched by a road edit because they consume POIs, not the network.
+    """
+    downstream = _lineage(seeded_graph, "downstream", "global.road_network")
+    assert downstream == {
+        "indicator.accessibility_block_school_network_m",
+        "indicator.accessibility_block_health_network_m",
+        "indicator.accessibility_block_park_network_m",
+    }
+
+
+def test_changing_buildings_spares_compactness(seeded_graph):
+    """The control case: compactness reads blocks only."""
+    downstream = _lineage(seeded_graph, "downstream", "global.building")
+    assert "indicator.urban_form_block_building_density" in downstream
+    assert "indicator.urban_form_block_composite" in downstream
+    assert "indicator.urban_form_block_compactness" not in downstream
+
+
+def test_reseeding_removes_an_input_that_was_withdrawn(conn):
+    """A declaration is replaced, not merged.
+
+    A phantom edge left behind by a removed input would keep invalidating an
+    indicator forever, with nothing in the declaration to explain why.
+    """
+    seed_assets(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM curated_geo.asset WHERE asset_key = 'mex.lot'")
+        lot = cur.fetchone()[0]
+        cur.execute(
+            "SELECT id FROM curated_geo.asset "
+            "WHERE asset_key = 'indicator.urban_form_block_compactness'"
+        )
+        compactness = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO curated_geo.asset_dependency "
+            "(consumer_asset_id, producer_asset_id, relation) VALUES (%s, %s, 'self')",
+            (compactness, lot),
+        )
+    seed_assets(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.asset_dependency "
+            "WHERE consumer_asset_id = %s AND producer_asset_id = %s",
+            (compactness, lot),
+        )
+        assert cur.fetchone()[0] == 0

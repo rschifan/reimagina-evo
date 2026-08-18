@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from reimagina.assets.keys import indicator_asset_key
 from reimagina.storage import backend_for_connection
 
 
@@ -105,14 +106,106 @@ SHIPPED_ASSETS: tuple[AssetSpec, ...] = (
 )
 
 
-def seed_assets(
-    conn: Any, specs: tuple[AssetSpec, ...] = SHIPPED_ASSETS
-) -> list[dict[str, Any]]:
-    """Idempotently register every spec. Returns ``{asset_key, id}`` in order.
+#: The code version every indicator asset starts at.
+#:
+#: Per-asset and bumped by hand when that indicator's own logic changes — NOT
+#: ``provenance.code_version()``. That is a git SHA, so feeding it into the
+#: fingerprint would make a README commit invalidate every derived asset in the
+#: platform. Dagster's per-asset code_version works the same way, and SQLMesh
+#: goes further by classifying a change as breaking or not; this is the floor of
+#: that idea, not the ceiling.
+_INITIAL_INDICATOR_CODE_VERSION = "1"
 
-    Safe to re-run: an existing row is updated in place, so an asset keeps its id
-    and therefore its version history across a re-seed.
+
+def indicator_assets() -> tuple[AssetSpec, ...]:
+    """Project one asset per shipped indicator.
+
+    Derived from ``SHIPPED_INDICATORS`` rather than declared a second time here,
+    so the asset graph and the indicator catalog cannot disagree about which
+    indicators exist or what they consume.
     """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    return tuple(
+        AssetSpec(
+            asset_key=indicator_asset_key(spec.slug),
+            kind="derived",
+            backing_kind="indicator",
+            backing_ref=spec.slug,
+            producer=spec.slug,
+            code_version=_INITIAL_INDICATOR_CODE_VERSION,
+            # Results are partitioned by scenario: a what-if writes its own rows
+            # and must not stale the baseline's.
+            partition_dimensions=("scenario",),
+            description=spec.name,
+        )
+        for spec in SHIPPED_INDICATORS
+    )
+
+
+def seed_asset_edges(conn: Any) -> int:
+    """Write one ``asset_dependency`` row per declared indicator input.
+
+    ⚠ Must run inside the same transaction as ``seed_assets``, and not on an
+    autocommit connection. ``asset_dependency_validate`` is a DEFERRABLE
+    INITIALLY DEFERRED constraint trigger that checks acyclicity and that
+    ``derived_from`` weights sum to 1.0; under autocommit each INSERT commits
+    alone, so the first row of a 0.5/0.5 composite fails on its own. Same
+    constraint, and same reason, as ``seed_catalog``.
+    """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    written = 0
+    with conn.cursor() as cur:
+        cur.execute("SELECT asset_key, id FROM curated_geo.asset")
+        ids = dict(cur.fetchall())
+        for spec in SHIPPED_INDICATORS:
+            consumer = ids[indicator_asset_key(spec.slug)]
+            # Replace rather than merge, so removing an input from a declaration
+            # actually removes the edge instead of leaving a phantom dependency
+            # that keeps invalidating the indicator forever.
+            cur.execute(
+                "DELETE FROM curated_geo.asset_dependency WHERE consumer_asset_id = %s",
+                (consumer,),
+            )
+            for edge in spec.inputs:
+                if edge.asset_key not in ids:
+                    raise RuntimeError(
+                        f"indicator {spec.slug!r} declares input {edge.asset_key!r}, "
+                        "which is not a registered asset"
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO curated_geo.asset_dependency
+                      (consumer_asset_id, producer_asset_id, relation, attributes,
+                       radius_m, weight, partition_mapping)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        consumer,
+                        ids[edge.asset_key],
+                        edge.relation,
+                        list(edge.attributes),
+                        edge.radius_m,
+                        edge.weight,
+                        edge.partition_mapping,
+                    ),
+                )
+                written += 1
+    return written
+
+
+def seed_assets(
+    conn: Any, specs: tuple[AssetSpec, ...] | None = None
+) -> list[dict[str, Any]]:
+    """Idempotently register every asset and its declared edges.
+
+    Returns ``{asset_key, id}`` in order. Safe to re-run: an existing row is
+    updated in place, so an asset keeps its id and therefore its version history
+    across a re-seed.
+    """
+    if specs is None:
+        specs = SHIPPED_ASSETS + indicator_assets()
     if backend_for_connection(conn).name != "postgres":
         raise RuntimeError("the asset graph requires the Postgres backend")
 
@@ -172,4 +265,5 @@ def seed_assets(
                 ),
             )
             result.append({"asset_key": spec.asset_key, "id": cur.fetchone()[0]})
+    seed_asset_edges(conn)
     return result

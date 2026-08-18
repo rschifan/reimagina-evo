@@ -18,8 +18,49 @@ The baseline partition is the empty string, matching the column default in
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 BASELINE = ""
+
+#: Prefix for the asset that an indicator produces. Indicator assets are derived
+#: from ``SHIPPED_INDICATORS`` rather than declared twice, so this is the only
+#: place the two naming schemes meet.
+INDICATOR_PREFIX = "indicator."
+
+
+@dataclass(frozen=True)
+class AssetEdge:
+    """One dependency an asset declares on another.
+
+    Deliberately one edge type rather than two mechanisms. An *attribute*
+    dependency is an edge carrying a non-empty ``attributes`` projection; a
+    *dataset* dependency is the same edge with an empty one; a composite's
+    component is ``relation='derived_from'`` with a ``weight``. That is what lets
+    ``IndicatorSpec.reads`` and ``.depends_on`` be derived from a single
+    declaration instead of drifting apart as two.
+
+    Lives here, in a module that imports nothing from ``reimagina``, so that
+    ``indicators.catalog`` can declare edges while ``assets.registry`` reads the
+    catalog — one direction, no cycle.
+    """
+
+    asset_key: str
+    relation: str = "self"
+    attributes: tuple[str, ...] = field(default_factory=tuple)
+    radius_m: float | None = None
+    weight: float | None = None
+    partition_mapping: str = "identity"
+
+    @property
+    def indicator_slug(self) -> str | None:
+        """The indicator this edge points at, or None if it points at a dataset."""
+        if self.asset_key.startswith(INDICATOR_PREFIX):
+            return self.asset_key[len(INDICATOR_PREFIX) :]
+        return None
+
+
+def indicator_asset_key(slug: str) -> str:
+    return f"{INDICATOR_PREFIX}{slug}"
 
 
 def partition_key(dimensions: Mapping[str, str | None] | None = None) -> str:

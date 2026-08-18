@@ -92,3 +92,135 @@ def test_accessibility_descriptions_state_their_scope():
         assert spec.description is not None
         assert scope in spec.description, f"{spec.slug} omits what it counts"
         assert label in spec.name, f"{spec.name} does not use the display label"
+
+
+# ── input declarations ──────────────────────────────────────────────────────
+#
+# `inputs` is the single statement of what an indicator consumes; `reads` and
+# `depends_on` are projections of it. These guards keep the projection honest,
+# because everything downstream — the impact engine, the composite runner, the
+# wave scheduler — reads the projections and would not notice a bad one.
+
+
+_DIRECT = [s for s in SHIPPED_INDICATORS if s.computation_kind == "direct"]
+
+
+@pytest.mark.parametrize("spec", SHIPPED_INDICATORS, ids=lambda s: s.slug)
+def test_every_shipped_indicator_declares_inputs(spec):
+    """A spec with no inputs consumes nothing, so nothing can ever invalidate it."""
+    assert spec.inputs, f"{spec.slug} declares no inputs"
+
+
+@pytest.mark.parametrize("spec", _DIRECT, ids=lambda s: s.slug)
+def test_a_direct_indicator_declares_at_least_one_dataset(spec):
+    """`reads` alone never said which dataset an attribute lives on.
+
+    That was the gap: `get_type_id(conn, "global", "building")` inside a compute
+    body was the real dependency, invisible to the catalog and to the impact
+    engine.
+    """
+    datasets = [e for e in spec.inputs if e.relation != "derived_from"]
+    assert datasets, f"{spec.slug} declares no dataset input"
+
+
+@pytest.mark.parametrize("spec", _COMPOSITES, ids=lambda s: s.slug)
+def test_a_composite_declares_only_indicator_edges(spec):
+    """A composite's inputs are derived: whatever its components consume.
+
+    Declaring a dataset on it would be a second, drifting statement of something
+    already implied by the closure.
+    """
+    datasets = [e for e in spec.inputs if e.relation != "derived_from"]
+    assert not datasets, f"{spec.slug} declares dataset inputs: {datasets}"
+
+
+@pytest.mark.parametrize("spec", SHIPPED_INDICATORS, ids=lambda s: s.slug)
+def test_every_declared_input_resolves_to_a_registered_asset(spec):
+    """Seeding raises on an unknown key; failing here names the typo first."""
+    from reimagina.assets.keys import indicator_asset_key
+    from reimagina.assets.registry import SHIPPED_ASSETS
+
+    known = {a.asset_key for a in SHIPPED_ASSETS}
+    known |= {indicator_asset_key(s.slug) for s in SHIPPED_INDICATORS}
+    unknown = [e.asset_key for e in spec.inputs if e.asset_key not in known]
+    assert not unknown, f"{spec.slug} declares unknown inputs: {unknown}"
+
+
+@pytest.mark.parametrize("spec", SHIPPED_INDICATORS, ids=lambda s: s.slug)
+def test_a_radius_is_declared_exactly_for_within_radius_edges(spec):
+    """Mirrors the asset_dependency_radius CHECK, so a bad spec fails offline."""
+    for edge in spec.inputs:
+        if edge.relation == "within_radius":
+            assert edge.radius_m and edge.radius_m > 0, f"{spec.slug}: {edge}"
+        else:
+            assert edge.radius_m is None, f"{spec.slug}: {edge}"
+
+
+def test_accessibility_radius_equals_the_constant_the_sql_uses():
+    """Pins the declaration to the compute.
+
+    ACCESSIBILITY_CUTOFF_M is what `_euclid_rows` passes as `%(cutoff)s`. If the
+    two ever diverge the declaration becomes decorative — which is exactly how
+    `poi_version`/`network_version` rotted into tokens nothing produced.
+    """
+    from reimagina.indicators.catalog import ACCESSIBILITY_CUTOFF_M
+
+    radii = {
+        edge.radius_m
+        for spec in SHIPPED_INDICATORS
+        for edge in spec.inputs
+        if edge.relation == "within_radius"
+    }
+    assert radii == {ACCESSIBILITY_CUTOFF_M}
+
+
+def test_declaring_inputs_and_reads_together_is_refused():
+    """One statement or the other, never both — that is the whole point."""
+    from reimagina.assets.keys import AssetEdge
+    from reimagina.indicators.catalog import IndicatorSpec
+
+    with pytest.raises(ValueError, match="never both"):
+        IndicatorSpec(
+            slug="x",
+            name="X",
+            computation_kind="direct",
+            model_family="urban_form",
+            value_type="numeric",
+            aggregation_method="mean",
+            applies_to=("block",),
+            inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
+            reads=("geometry",),
+        )
+
+
+def test_projections_match_the_literals_they_replaced():
+    """Byte-for-byte, because everything downstream still reads the projections.
+
+    A drift here is a silent behaviour change in the dirty set: `scripts/demo.py`
+    submits `poi_version` and `network_version` as edited attributes, and the
+    conformance fixture seeds on `geometry`.
+    """
+    by_slug = {s.slug: s for s in SHIPPED_INDICATORS}
+    assert by_slug["urban_form_block_compactness"].reads == ("geometry",)
+    assert by_slug["urban_form_block_building_density"].reads == ("geometry",)
+    assert by_slug["urban_form_block_planned_floors"].reads == ("floors",)
+    assert by_slug["urban_form_block_composite"].reads == ()
+    assert by_slug["urban_form_block_composite"].depends_on == (
+        ("urban_form_block_compactness", 0.5),
+        ("urban_form_block_building_density", 0.5),
+    )
+    for slug in (
+        "edificability_block_housing_units",
+        "edificability_block_population",
+        "edificability_block_density",
+    ):
+        assert by_slug[slug].reads == (
+            "num_levels",
+            "unit_size",
+            "people_per_household",
+        )
+    assert by_slug["accessibility_block_school_euclid_m"].reads == ("poi_version",)
+    assert by_slug["accessibility_block_school_network_m"].reads == (
+        "poi_version",
+        "network_version",
+    )
