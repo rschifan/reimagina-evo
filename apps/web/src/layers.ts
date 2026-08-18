@@ -58,12 +58,22 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     lineColor: "#60a5fa",
     lineWidth: 0,
     visible: false,
-    // z11 lets buildings appear at neighbourhood / district scale rather
-    // than only after the user zooms in to street level. Tile size stays
-    // bounded because get_tile applies aggressive ST_Simplify at lower
-    // zooms — 2 M building polygons across CDMX + Mexicali render cleanly
-    // from 11 onward without the renderer choking.
-    minzoom: 11,
+    // z14 because get_tile (migration r038) stops serving building
+    // footprints below it — a request at 11-13 returns an empty tile, so a
+    // lower floor here only buys wasted round-trips.
+    //
+    // The earlier value was 11, justified by "ST_Simplify keeps tiles
+    // bounded". Measured, that was wrong twice over: on a dataset dense in
+    // one alcaldia a z12 tile reached 2.59 MB, and the reason the z10/z11
+    // rungs looked cheap is that ~10 m simplification collapses a ~10 m
+    // footprint to a degenerate ring, which ST_AsMVTGeom drops — 1,826 of
+    // 37,858 buildings survived. Cheap because 95% was discarded.
+    //
+    // At z12 one pixel is ~36 m, so footprints are sub-pixel anyway. For
+    // building information at AOI scale use the
+    // urban_form_block_building_density choropleth, which is the layer that
+    // question actually wants.
+    minzoom: 14,
   },
   {
     layerId: "baseline_live:block",
