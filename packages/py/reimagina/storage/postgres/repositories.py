@@ -14,6 +14,30 @@ from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 
 
+#: Smallest share of a feature that must fall inside an AOI for it to count as a
+#: member. Guards ``compute_overlaps`` against float-noise membership: two
+#: polygons that merely share a border line intersect to a sliver with a nonzero
+#: but physically meaningless area, and the ``overlap_ratio > 0`` CHECK on
+#: ``aoi_feature`` is not enough to reject it. Measured on Tlalpan: Coyoacan and
+#: Xochimilco were members at ratios of 6.2e-12 and 8.1e-12 — 0.000000 % of each
+#: municipality actually inside — and their entire polygons then rendered on an
+#: AOI-scoped map.
+#:
+#: 1e-9 is not a guess. In that database the largest noise ratio is 8.1e-12 and
+#: the smallest *genuine* overlap is 2.9e-06 (a straddling AGEB), and the band
+#: between 1e-9 and 1e-6 contains **zero rows** — six orders of magnitude of
+#: clear air on either side, so the threshold's exact position within it cannot
+#: change the outcome.
+#:
+#: ⚠ This rejects noise, not partial membership. A feature genuinely straddling
+#: the boundary stays a member at any real ratio — 42 AGEBs and 8 blocks do, and
+#: they still render past the AOI edge. That is accepted behaviour, not an
+#: oversight. Giving each feature exactly one AOI needs a majority-area rule
+#: (``>= 0.5``), which is a decision about what an AOI *means* and would move
+#: every AOI-scoped aggregate, so it is deliberately not made here.
+MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9
+
+
 class PostgresSourceCatalogRepository:
     def __init__(self, connection):
         self.connection = connection
@@ -1014,9 +1038,11 @@ class PostgresAOIRepository:
                     1.0
                   )
                 FROM intersections i
-                WHERE ST_Area(i.overlap_geometry::geography) > 0
+                WHERE ST_Area(i.overlap_geometry::geography)
+                        / NULLIF(ST_Area(i.feature_geometry::geography), 0)
+                      >= %s
                 """,
-                (aoi_id, aoi_id),
+                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
             )
             poly_count = cur.rowcount
             cur.execute(
@@ -1080,9 +1106,11 @@ class PostgresAOIRepository:
                     1.0
                   )
                 FROM intersections i
-                WHERE ST_Length(i.overlap_geometry::geography) > 0
+                WHERE ST_Length(i.overlap_geometry::geography)
+                        / NULLIF(ST_Length(i.feature_geometry::geography), 0)
+                      >= %s
                 """,
-                (aoi_id, aoi_id),
+                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
             )
             line_count = cur.rowcount
             cur.execute(
