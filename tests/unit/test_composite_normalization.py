@@ -71,3 +71,60 @@ def test_every_composite_input_declares_bounds_to_normalise_against():
                 dep.valid_min is not None and dep.valid_max is not None
             ), f"{spec.slug} depends on {dep_slug}, which declares no bounds"
             assert dep.valid_max > dep.valid_min, dep_slug
+
+
+# ── direction ────────────────────────────────────────────────────────────
+
+
+def _orient(slug: str, value: float) -> float:
+    """What compute_composite does to one input: normalise, then orient."""
+    spec = _BY_SLUG[slug]
+    assert spec.valid_min is not None and spec.valid_max is not None
+    x = min(1.0, max(0.0, _normalise(slug, value)))
+    return x if spec.higher_is_better else 1.0 - x
+
+
+def test_distance_indicators_declare_lower_is_better():
+    """The six that motivate the field. A distance is lower-is-better whatever
+    the implementation does, so this cannot drift from the compute."""
+    lower = {s.slug for s in SHIPPED_INDICATORS if not s.higher_is_better}
+    assert lower == {
+        f"accessibility_block_{c}_{m}_m"
+        for c in ("school", "health", "park")
+        for m in ("euclid", "network")
+    }
+
+
+def test_a_nearer_amenity_scores_higher():
+    """The bug this prevents: `weight >= 0` is enforced (r016:93), so without
+    orientation a distance added to a score ranks 'far from a school' as good."""
+    near = _orient("accessibility_block_school_network_m", 100.0)
+    far = _orient("accessibility_block_school_network_m", 1400.0)
+    assert near > far, (near, far)
+    # And the raw normalised values run the other way — which is precisely what
+    # would have reached the weighted sum before orientation.
+    assert _normalise("accessibility_block_school_network_m", 100.0) < _normalise(
+        "accessibility_block_school_network_m", 1400.0
+    )
+
+
+def test_orientation_stays_inside_0_1_including_at_the_cutoff():
+    """Unreachable blocks report the cutoff, which is also valid_max. That must
+    orient to 0 — the worst score — not to a negative contribution."""
+    from reimagina.indicators.catalog import ACCESSIBILITY_CUTOFF_M
+
+    slug = "accessibility_block_park_network_m"
+    assert _orient(slug, ACCESSIBILITY_CUTOFF_M) == pytest.approx(0.0)
+    assert _orient(slug, 0.0) == pytest.approx(1.0)
+    # Above the declared bound: clamped first, so it cannot orient negative.
+    assert _orient(slug, ACCESSIBILITY_CUTOFF_M * 2) == pytest.approx(0.0)
+
+
+def test_higher_is_better_indicators_are_unchanged_by_orientation():
+    """The default must be a no-op, or adding the field would have moved every
+    existing composite."""
+    for slug in ("urban_form_block_compactness", "urban_form_block_building_density"):
+        spec = _BY_SLUG[slug]
+        assert spec.higher_is_better
+        mid = (spec.valid_min + spec.valid_max) / 2
+        assert _orient(slug, mid) == pytest.approx(_normalise(slug, mid))

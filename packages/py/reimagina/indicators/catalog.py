@@ -54,6 +54,25 @@ class IndicatorSpec:
     # indicator declares `inputs` and lets the projection do the rest.
     reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
+    # Which end of the range is the good end. Read only by `compute_composite`,
+    # which flips a `False` input to `1 - normalised` so every contribution
+    # points the same way before weighting.
+    #
+    # Needed because `indicator_dependency` enforces `weight >= 0` (r016:93), so
+    # a lower-is-better input cannot be folded into a score with a negative
+    # weight. Without this, a composite over an accessibility *distance* would
+    # rank "far from a school" as good — silently, since the arithmetic is
+    # sound and only the meaning is inverted.
+    #
+    # Deliberately Python-side and not a catalog column: the only consumer is
+    # the composite, which already reads these specs for bounds. Add the column
+    # when a reader outside this process needs it — a legend that wants to
+    # reverse its ramp is the obvious first one.
+    #
+    # Unlike `reads`, this cannot drift from the compute: it states what the
+    # number *means*, not what the code touches. A distance is lower-is-better
+    # whatever the implementation does.
+    higher_is_better: bool = True
 
     def __post_init__(self) -> None:
         if not self.inputs:
@@ -476,6 +495,9 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         unit="m",
         valid_min=0.0,
         valid_max=ACCESSIBILITY_CUTOFF_M,
+        # Metres to the nearest amenity: nearer is better. All six of these are
+        # the reason `higher_is_better` exists.
+        higher_is_better=False,
         aggregation_method="weighted_mean",
         inputs=(
             # ⚠ `poi_version` / `network_version` are stand-in version markers
