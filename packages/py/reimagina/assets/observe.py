@@ -66,12 +66,23 @@ def observe_assets(
     results: list[Observation] = []
     for asset_key, probe_sql in probes:
         try:
+            # A SAVEPOINT, not a bare rollback. A failing probe aborts the
+            # transaction and something has to clear that, but `conn.rollback()`
+            # would discard everything the caller had done — including versions
+            # published for assets probed earlier in this same sweep, which would
+            # still be reported as `changed`. Losing a publish while announcing
+            # it is the failure this whole design exists to remove.
             with conn.cursor() as cur:
-                cur.execute(probe_sql)
-                row = cur.fetchone()
+                cur.execute("SAVEPOINT probe")
+                try:
+                    cur.execute(probe_sql)
+                    row = cur.fetchone()
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT probe")
+                    raise
+                cur.execute("RELEASE SAVEPOINT probe")
             version = "empty" if row is None or row[0] is None else str(row[0])
         except Exception as exc:  # noqa: BLE001 - reported per asset, see docstring
-            conn.rollback()
             results.append(
                 Observation(
                     asset_key=asset_key, version=None, changed=False, error=str(exc)

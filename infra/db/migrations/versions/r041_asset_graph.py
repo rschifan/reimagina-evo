@@ -164,8 +164,12 @@ def upgrade() -> None:
             -- An observed asset is one whose writes can bypass every pipeline.
             -- Without the probe it would silently report itself fresh forever,
             -- which is the most dangerous state a staleness system can reach.
+            -- COALESCE, because version_strategy is NULL for derived assets and
+            -- `NULL = anything` is NULL, which a CHECK accepts. Without it the
+            -- constraint is vacuous for exactly the rows where a stray probe
+            -- would be dead configuration nothing ever runs.
             CONSTRAINT asset_probe_shape CHECK (
-                (version_strategy = 'observed') = (probe_sql IS NOT NULL)
+                (COALESCE(version_strategy, '') = 'observed') = (probe_sql IS NOT NULL)
             )
         )
     """)

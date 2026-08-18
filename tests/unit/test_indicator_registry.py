@@ -279,3 +279,36 @@ def test_every_shipped_indicator_has_a_params_digest():
     from reimagina.assets.registry import indicator_assets
 
     assert all(asset.params_digest for asset in indicator_assets())
+
+
+def test_seeding_a_subset_reports_the_missing_asset(monkeypatch):
+    """A partial specs list must not surface as a bare KeyError.
+
+    seed_asset_edges always covers every shipped indicator, so indexing the id
+    map directly hides a seeding mistake behind KeyError instead of the message
+    written for exactly this case.
+    """
+    from reimagina.assets import registry
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *a, **k):
+            pass
+
+        def fetchall(self):
+            return []  # nothing registered
+
+    monkeypatch.setattr(
+        registry,
+        "backend_for_connection",
+        lambda conn: type("B", (), {"name": "postgres"})(),
+    )
+    conn = type("C", (), {"cursor": lambda self: _Cur()})()
+
+    with pytest.raises(RuntimeError, match="has no registered asset"):
+        registry.seed_asset_edges(conn)

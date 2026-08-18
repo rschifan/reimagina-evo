@@ -294,3 +294,112 @@ def test_a_failing_probe_is_reported_not_raised(seeded, conn):
     results = {o.asset_key: o for o in observe_assets(conn)}
     assert results["global.road_network"].error is not None
     assert results["global.road_network"].changed is False
+
+
+# ── review findings ────────────────────────────────────────────────────────
+
+
+def test_a_failing_probe_keeps_earlier_publishes(seeded, conn):
+    """A bad probe must not take down the rest of the sweep's work.
+
+    `conn.rollback()` would discard versions published for assets probed
+    earlier, while still reporting them as changed — losing a publish and
+    announcing it, which is the failure this design exists to remove.
+    """
+    _add_road_edge(conn, 4000)
+    with conn.cursor() as cur:
+        # A second observable asset that is probed after road_network
+        # alphabetically, so the failure lands *after* a successful publish.
+        cur.execute(
+            "INSERT INTO curated_geo.asset "
+            "(asset_key, kind, backing_kind, version_strategy, probe_sql) VALUES "
+            "('zz.broken', 'external', 'relation', 'observed', "
+            "'SELECT * FROM nope.nothing')"
+        )
+
+    results = {o.asset_key: o for o in observe_assets(conn)}
+
+    assert results["zz.broken"].error is not None
+    assert results["global.road_network"].changed is True
+    # The publish it reported must still be there.
+    assert _current(conn, "global.road_network") is not None
+
+
+def test_publishing_after_a_retire_without_replace(seeded, conn):
+    """Zero current rows is a legal state — the index is partial.
+
+    Deriving the next sequence from the live row would restart at 1 and collide
+    with retired history, failing the ingest that triggered it.
+    """
+    publish_version(conn, asset_key="global.building", version="v1")
+    publish_version(conn, asset_key="global.building", version="v2")
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.asset_version SET is_current = false, "
+            "valid_to = now() WHERE asset_id = "
+            "(SELECT id FROM curated_geo.asset WHERE asset_key = 'global.building')"
+        )
+
+    publish_version(conn, asset_key="global.building", version="v3")
+
+    _, sequence, _ = _current(conn, "global.building")
+    assert sequence == 3
+
+
+def test_a_derived_asset_cannot_carry_a_probe(seeded, conn):
+    """The CHECK was vacuous for NULL version_strategy: NULL = x is NULL."""
+    import pytest as _pytest
+
+    with _pytest.raises(Exception, match="asset_probe_shape"):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO curated_geo.asset "
+                "(asset_key, kind, backing_kind, producer, code_version, probe_sql) "
+                "VALUES ('x.derived', 'derived', 'indicator', 'p', '1', 'SELECT 1')"
+            )
+
+
+def test_batched_overrides_publish_once(seeded, conn):
+    """Per-edit publishing digests the whole scenario each time — quadratic."""
+    from reimagina.scenarios.overrides import apply_overrides
+
+    from tests.integration._helpers import insert_feature, register_source, start_run
+
+    source_id = register_source(
+        conn,
+        name="batch-src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = start_run(conn, source_id)
+    block_type = get_type_id(conn, "MEX", "block")
+    features = [
+        insert_feature(
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=f"blk-{i}",
+            geometry_wkt=f"POLYGON(({i} 0, {i} 1, {i + 1} 1, {i + 1} 0, {i} 0))",
+        )
+        for i in range(3)
+    ]
+
+    applied = apply_overrides(
+        conn,
+        scenario_id="33333333-3333-3333-3333-333333333333",
+        edits=[
+            {"feature_id": f, "attribute_key": "floors", "value_numeric": 9.0}
+            for f in features
+        ],
+    )
+
+    assert applied == 3
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'scenario.override'"
+        )
+        assert cur.fetchone()[0] == 1, "three edits, one published version"

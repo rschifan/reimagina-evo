@@ -123,15 +123,21 @@ def plan_run(
     """
     from reimagina.scenarios.overrides import resolve_change_set
 
+    # Materialised before anything reads them twice. These are typed `Iterable`,
+    # and resolve_change_set consumes them — so testing the raw arguments below
+    # would see an exhausted generator as truthy and route to the attribute path
+    # with an empty change set, silently skipping freshness.
+    requested_attributes = tuple(changed_attributes)
+    requested_features = tuple(edited_features)
     changed, edited = resolve_change_set(
         conn,
-        changed_attributes=changed_attributes,
-        edited_features=edited_features,
+        changed_attributes=requested_attributes,
+        edited_features=requested_features,
         scenario_id=scenario_id,
     )
     from reimagina.assets.freshness import graph_available
 
-    if changed_attributes or edited_features:
+    if requested_attributes or requested_features:
         # An explicit change-set wins: the caller knows something the graph does
         # not, and says so.
         units = compute_dirty_set(changed, edited, registry)

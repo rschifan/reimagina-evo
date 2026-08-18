@@ -483,3 +483,23 @@ def test_a_failed_compute_records_nothing(one_block, conn, monkeypatch):
         _run(conn, "urban_form_block_compactness")
 
     assert _state(conn, "urban_form_block_compactness") == "absent"
+
+
+def test_a_generator_change_set_still_reaches_freshness(graph, conn):
+    """`Iterable` invites a generator, and resolve_change_set consumes it.
+
+    Testing the raw argument afterwards would see an exhausted generator as
+    truthy, route to the attribute path with an empty change set, and silently
+    noop instead of consulting freshness.
+    """
+    _materialize_everything(conn)
+    publish_version(conn, asset_key="global.building", version="release-2")
+
+    plan = plan_run(
+        conn,
+        changed_attributes=(a for a in ()),
+        edited_features=(f for f in ()),
+        registry=SHIPPED_INDICATORS,
+    )
+
+    assert "urban_form_block_building_density" in [u.indicator for u in plan.units]

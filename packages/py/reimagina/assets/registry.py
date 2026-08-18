@@ -260,7 +260,17 @@ def seed_asset_edges(conn: Any) -> int:
         ids = {r[0]: r[1] for r in rows}
         kinds = {r[0]: r[2] for r in rows}
         for spec in SHIPPED_INDICATORS:
-            consumer = ids[indicator_asset_key(spec.slug)]
+            consumer_key = indicator_asset_key(spec.slug)
+            if consumer_key not in ids:
+                # Reachable whenever a caller seeds a subset of the registry:
+                # this loop always covers every shipped indicator, so index it
+                # and you get a bare KeyError instead of the message below.
+                raise RuntimeError(
+                    f"indicator {spec.slug!r} has no registered asset "
+                    f"({consumer_key!r}) — seed_assets must cover every indicator "
+                    "before its edges can be written"
+                )
+            consumer = ids[consumer_key]
             # Replace rather than merge, so removing an input from a declaration
             # actually removes the edge instead of leaving a phantom dependency
             # that keeps invalidating the indicator forever.

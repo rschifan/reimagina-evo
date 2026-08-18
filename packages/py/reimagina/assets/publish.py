@@ -71,14 +71,23 @@ def publish_version(
         asset_id = row[0]
 
         cur.execute(
-            "SELECT version, sequence FROM curated_geo.asset_version "
+            "SELECT version FROM curated_geo.asset_version "
             "WHERE asset_id = %s AND partition_key = %s AND is_current",
             (asset_id, partition_key),
         )
         current = cur.fetchone()
         if current and current[0] == version:
             return version
-        next_sequence = (current[1] + 1) if current else 1
+        # max(sequence) over the whole partition history, not the live row's + 1.
+        # Zero current rows is a legal state — asset_version_one_current is a
+        # *partial* unique index — so deriving from the live row would restart at
+        # 1 after a retire-without-replace and collide with retired history.
+        cur.execute(
+            "SELECT COALESCE(max(sequence), 0) + 1 FROM curated_geo.asset_version "
+            "WHERE asset_id = %s AND partition_key = %s",
+            (asset_id, partition_key),
+        )
+        next_sequence = cur.fetchone()[0]
 
         cur.execute(
             "UPDATE curated_geo.asset_version SET is_current = false, valid_to = now() "
