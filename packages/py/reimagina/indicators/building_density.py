@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
+from reimagina.indicators._compute import ComputeResult as _ComputeResult
+from reimagina.indicators._compute import require_seeded
 from reimagina.indicators._hamilton_driver import build_indicator_driver
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_BUILDING_DENSITY
 
@@ -28,15 +30,15 @@ from reimagina.storage import backend_for_connection
 
 
 @dataclass(frozen=True)
-class ComputeResult:
-    """Outcome of a compute_block_building_density run."""
+class ComputeResult(_ComputeResult):
+    """The shared result plus the one statistic only this indicator has.
 
-    job_run_id: str
-    indicator_slug: str
-    blocks_considered: int
-    buildings_attributed: int
-    rows_written: int
-    aoi_id: str | None
+    Kept out of the shared shape rather than widening it with a field five
+    other indicators would leave at None. `features_considered` is the block
+    count, matching every other indicator.
+    """
+
+    buildings_attributed: int = 0
 
 
 def compute_block_building_density(
@@ -57,12 +59,7 @@ def compute_block_building_density(
     """
     backend = backend_for_connection(conn)
     spec = URBAN_FORM_BLOCK_BUILDING_DENSITY
-    catalog = backend.indicator_catalog_repo().get_indicator(spec.slug)
-    if catalog is None:
-        raise RuntimeError(
-            f"Indicator {spec.slug!r} not found in indicator_catalog. "
-            "Run `indicators seed-catalog` first."
-        )
+    require_seeded(backend, spec)
     block_type_id = get_type_id(conn, "MEX", "block")
     building_type_id = get_type_id(conn, "global", "building")
 
@@ -94,7 +91,7 @@ def compute_block_building_density(
     return ComputeResult(
         job_run_id=job_run_id,
         indicator_slug=spec.slug,
-        blocks_considered=len(rows),
+        features_considered=len(rows),
         buildings_attributed=sum(count for _, count, _ in rows),
         rows_written=rows_written,
         aoi_id=aoi_id,

@@ -27,10 +27,12 @@ value it already had rather than being silently overwritten with 0.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
-from reimagina.indicators._hamilton_driver import build_indicator_driver
+from reimagina.indicators._compute import (
+    ComputeResult as ComputeResult,
+    compute_indicator,
+)
 from reimagina.indicators.catalog import (
     EDIFICABILITY_BLOCK_DENSITY,
     EDIFICABILITY_BLOCK_HOUSING_UNITS,
@@ -43,7 +45,6 @@ from reimagina.indicators.catalog import (
 from reimagina.indicators.kernels import housing_density as housing_density
 from reimagina.indicators.kernels import housing_units as housing_units
 from reimagina.indicators.kernels import resident_population as resident_population
-from reimagina.jobs._lifecycle import job_run
 from reimagina.scenarios.overrides import effective_numeric
 from reimagina.storage import backend_for_connection
 
@@ -56,17 +57,6 @@ _FRAME_FOR: dict[str, str] = {
 
 #: Attribute keys every edificability indicator needs, in row order.
 _ATTRIBUTES = ("num_levels", "unit_size", "people_per_household")
-
-
-@dataclass(frozen=True)
-class ComputeResult:
-    """Outcome of one edificability compute."""
-
-    job_run_id: str
-    indicator_slug: str
-    features_considered: int
-    rows_written: int
-    aoi_id: str | None
 
 
 def _edificability_rows(
@@ -117,70 +107,30 @@ def _edificability_rows(
     return rows
 
 
-def _compute(
-    conn,
-    *,
-    spec: IndicatorSpec,
-    aoi_id: str | None = None,
-    feature_ids: list[str] | None = None,
-    scenario_id: str | None = None,
-    code_version: str = "dev",
-) -> ComputeResult:
-    """Read, compute and write one edificability indicator."""
-    backend = backend_for_connection(conn)
-    if backend.indicator_catalog_repo().get_indicator(spec.slug) is None:
-        raise RuntimeError(
-            f"Indicator {spec.slug!r} not found in indicator_catalog. "
-            "Run `indicators seed-catalog` first."
-        )
-    block_type_id = get_type_id(conn, "MEX", "block")
-
-    # Read inside the job_run, not before it: indicator_result.job_run_id is a
-    # NOT NULL FK (r016), so a read that fails outside the context leaves a
-    # failure with no provenance row at all.
-    with job_run(
-        backend,
-        model_family=spec.model_family or "urban_form",
-        code_version=code_version,
-        scenario_id=scenario_id,
-    ) as job_run_id:
-        rows = _edificability_rows(
-            conn,
-            block_type_id=block_type_id,
-            aoi_id=aoi_id,
-            feature_ids=feature_ids,
-            scenario_id=scenario_id,
-        )
-        node = _FRAME_FOR[spec.slug]
-        frame = build_indicator_driver().execute(
-            [node], inputs={"edificability_rows": rows}
-        )[node]
-        rows_written = backend.indicator_result_repo().bulk_write_numeric_results(
-            list(frame.itertuples(index=False, name=None)),
-            indicator_slug=spec.slug,
-            job_run_id=job_run_id,
-            scenario_id=scenario_id,
-        )
-
-    return ComputeResult(
-        job_run_id=job_run_id,
-        indicator_slug=spec.slug,
-        features_considered=len(rows),
-        rows_written=rows_written,
+def _read(conn, *, aoi_id, feature_ids, scenario_id):
+    """All three read identically; only the Hamilton node differs. That is the
+    same property that keeps their `reads` tuples identical."""
+    return _edificability_rows(
+        conn,
+        block_type_id=get_type_id(conn, "MEX", "block"),
         aoi_id=aoi_id,
+        feature_ids=feature_ids,
+        scenario_id=scenario_id,
     )
 
 
-def compute_block_housing_units(conn, **kwargs) -> ComputeResult:
-    """Buildable dwellings per block."""
-    return _compute(conn, spec=EDIFICABILITY_BLOCK_HOUSING_UNITS, **kwargs)
+def _bind(spec: IndicatorSpec):
+    return compute_indicator(
+        spec,
+        reader=_read,
+        node=_FRAME_FOR[spec.slug],
+        input_key="edificability_rows",
+    )
 
 
-def compute_block_population(conn, **kwargs) -> ComputeResult:
-    """Residents implied by the buildable dwelling count."""
-    return _compute(conn, spec=EDIFICABILITY_BLOCK_POPULATION, **kwargs)
-
-
-def compute_block_housing_density(conn, **kwargs) -> ComputeResult:
-    """Buildable dwellings per hectare."""
-    return _compute(conn, spec=EDIFICABILITY_BLOCK_DENSITY, **kwargs)
+#: Buildable dwellings per block.
+compute_block_housing_units = _bind(EDIFICABILITY_BLOCK_HOUSING_UNITS)
+#: Residents implied by the buildable dwelling count.
+compute_block_population = _bind(EDIFICABILITY_BLOCK_POPULATION)
+#: Buildable dwellings per hectare.
+compute_block_housing_density = _bind(EDIFICABILITY_BLOCK_DENSITY)

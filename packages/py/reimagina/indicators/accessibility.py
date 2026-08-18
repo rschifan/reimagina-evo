@@ -45,10 +45,12 @@ behind a plausible-looking choropleth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 from reimagina.data.feature import get_type_id
-from reimagina.indicators._hamilton_driver import build_indicator_driver
+from reimagina.indicators._compute import (
+    ComputeResult as ComputeResult,
+    compute_indicator,
+)
 from reimagina.indicators.catalog import (
     ACCESSIBILITY_CUTOFF_M,
     ACCESSIBILITY_EUCLID,
@@ -56,8 +58,6 @@ from reimagina.indicators.catalog import (
     ACCESSIBILITY_SPEC_CATEGORY,
     IndicatorSpec,
 )
-from reimagina.jobs._lifecycle import job_run
-from reimagina.storage import backend_for_connection
 
 #: The edge set pgRouting walks. A string because pgr_* takes its graph as SQL.
 _EDGES_SQL = "SELECT id, source, target, cost, reverse_cost FROM curated_geo.road_edge"
@@ -92,17 +92,6 @@ _AMENITIES_CTE = """
           AND f.attributes->>'category' = ANY(%(categories)s)
     )
 """
-
-
-@dataclass(frozen=True)
-class ComputeResult:
-    """Outcome of one accessibility compute."""
-
-    job_run_id: str
-    indicator_slug: str
-    features_considered: int
-    rows_written: int
-    aoi_id: str | None
 
 
 def _scope(aoi_id: str | None, feature_ids: list[str] | None) -> tuple[str, str]:
@@ -276,82 +265,38 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
         return cur.fetchall()
 
 
-def _compute(
-    conn,
-    *,
-    spec: IndicatorSpec,
-    reader,
-    aoi_id: str | None = None,
-    feature_ids: list[str] | None = None,
-    scenario_id: str | None = None,
-    code_version: str = "dev",
-) -> ComputeResult:
-    """Read, compute and write one accessibility indicator."""
-    backend = backend_for_connection(conn)
-    if backend.indicator_catalog_repo().get_indicator(spec.slug) is None:
-        raise RuntimeError(
-            f"Indicator {spec.slug!r} not found in indicator_catalog. "
-            "Run `indicators seed-catalog` first."
-        )
-    block_type_id = get_type_id(conn, "MEX", "block")
+def _reader_for(spec: IndicatorSpec, rows_fn):
+    """Bind one spec's categories and row source into the shared read shape.
+
+    Which family a spec belongs to is known where the specs are built and
+    nowhere else, so `rows_fn` is passed in rather than derived here.
+    """
     categories = ACCESSIBILITY_SPEC_CATEGORY[spec.slug]
 
-    with job_run(
-        backend,
-        model_family=spec.model_family or "accessibility",
-        code_version=code_version,
-        scenario_id=scenario_id,
-    ) as job_run_id:
-        rows = reader(
+    def read(conn, *, aoi_id, feature_ids, scenario_id):
+        return rows_fn(
             conn,
-            type_id=block_type_id,
+            type_id=get_type_id(conn, "MEX", "block"),
             aoi_id=aoi_id,
             feature_ids=feature_ids,
             categories=categories,
         )
-        frame = build_indicator_driver().execute(
-            ["accessibility_result_frame"], inputs={"accessibility_rows": rows}
-        )["accessibility_result_frame"]
-        rows_written = backend.indicator_result_repo().bulk_write_numeric_results(
-            list(frame.itertuples(index=False, name=None)),
-            indicator_slug=spec.slug,
-            job_run_id=job_run_id,
-            scenario_id=scenario_id,
-        )
 
-    return ComputeResult(
-        job_run_id=job_run_id,
-        indicator_slug=spec.slug,
-        features_considered=len(rows),
-        rows_written=rows_written,
-        aoi_id=aoi_id,
+    return read
+
+
+def _bind(spec: IndicatorSpec, rows_fn):
+    return compute_indicator(
+        spec,
+        reader=_reader_for(spec, rows_fn),
+        node="accessibility_result_frame",
+        input_key="accessibility_rows",
+        default_family="accessibility",
     )
-
-
-def compute_for(spec: IndicatorSpec, reader):
-    """The compute fn for one accessibility spec, bound for the runner registry.
-
-    Six near-identical closures rather than six hand-written functions: they
-    differ only by spec and reader, and writing them out would be six places to
-    update when the signature moves.
-
-    ``reader`` is bound here rather than derived inside ``_compute``, because
-    which family a spec belongs to is known exactly where the specs are built
-    and nowhere else. It used to be recovered by comparing the spec's dispatch
-    group against the string ``"network_access"`` — which quietly made an
-    ops-plane scheduling hint decide whether this ran a Dijkstra or a KNN.
-    """
-
-    def run(conn, **kwargs) -> ComputeResult:
-        return _compute(conn, spec=spec, reader=reader, **kwargs)
-
-    run.__name__ = f"compute_{spec.slug}"
-    run.__doc__ = spec.description
-    return run
 
 
 #: slug -> compute fn, for every accessibility indicator.
 ACCESSIBILITY_COMPUTE = {
-    **{spec.slug: compute_for(spec, _euclid_rows) for spec in ACCESSIBILITY_EUCLID},
-    **{spec.slug: compute_for(spec, _network_rows) for spec in ACCESSIBILITY_NETWORK},
+    **{spec.slug: _bind(spec, _euclid_rows) for spec in ACCESSIBILITY_EUCLID},
+    **{spec.slug: _bind(spec, _network_rows) for spec in ACCESSIBILITY_NETWORK},
 }
