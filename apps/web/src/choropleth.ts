@@ -312,9 +312,12 @@ const GRAIN_LABELS: Record<string, string> = {
  * Render the grain switcher for ``indicator`` into ``container`` and
  * call ``onPick`` when the user changes it.
  *
- * Hidden entirely for single-grain indicators: eleven of the shipped
- * thirteen apply only to ``block``, and a radio group with one option
- * is furniture, not a control. Coarser grains are served by the same
+ * Always rendered, including for the eleven of thirteen shipped
+ * indicators published at ``block`` only — their single option shows
+ * as a disabled chip. Hiding the row entirely made the control
+ * invisible on most of the catalog, so nobody learned grain switching
+ * existed; a disabled chip states the grain the numbers are at, which
+ * is worth showing on its own. Coarser grains are served by the same
  * ``indicator_overlay_tile`` function via ``feature_type``, so
  * switching is a re-render, not a new code path.
  */
@@ -325,11 +328,13 @@ export function renderGrainToggle(
   onPick: (grain: string) => void,
 ): void {
   const grains = indicator.applies_to ?? [];
-  if (grains.length < 2) {
+  if (grains.length === 0) {
+    // No declared grain at all — nothing truthful to show.
     container.hidden = true;
     container.replaceChildren();
     return;
   }
+  const single = grains.length === 1;
   container.hidden = false;
   const label = document.createElement("span");
   label.className = "grain-toggle__label";
@@ -341,6 +346,13 @@ export function renderGrainToggle(
     btn.className = "grain-toggle__btn";
     btn.textContent = GRAIN_LABELS[grain] ?? grain;
     btn.setAttribute("aria-pressed", grain === active ? "true" : "false");
+    // A lone grain is a statement, not a choice: disabled so it can't
+    // be clicked, but still marked pressed so it reads as "this is
+    // what you are looking at" rather than as an unavailable option.
+    btn.disabled = single;
+    if (single) {
+      btn.title = `${indicator.name} is only published at this grain`;
+    }
     btn.addEventListener("click", () => {
       if (grain === active) return;
       onPick(grain);

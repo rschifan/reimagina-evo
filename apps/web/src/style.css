@@ -480,3 +480,17 @@ html, body, .app {
   border-color: #1d4ed8;
   color: #fff;
 }
+
+.grain-toggle__btn:disabled {
+  cursor: default;
+}
+
+/* A single-grain chip is disabled but still the active grain, so it
+   keeps a readable fill instead of the sidebar's generic 0.4-opacity
+   disabled wash — it is stating a fact, not offering a dead option. */
+.grain-toggle__btn:disabled[aria-pressed="true"] {
+  opacity: 1;
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--muted);
+}
