@@ -126,13 +126,13 @@ export function activateIndicator(
   tooltips?: TooltipController,
   aoiId?: string | null,
   selectionController?: SelectionController,
+  grain?: string | null,
 ): void {
   removeIndicator(map);
 
   // `{z}/{x}/{y}` in the template is literal and must survive query-
   // string composition, so use a plain concatenation — URLSearchParams
   // or `new URL(template)` would reject the curly-brace placeholders.
-  const grain = defaultGrain(indicator);
   const params = new URLSearchParams({ indicator_slug: indicator.slug });
   if (grain) params.set("feature_type", grain);
   if (aoiId) params.set("aoi_id", aoiId);
@@ -295,6 +295,64 @@ export function renderLegend(
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+/** Human label for a feature-type slug. Falls back to the slug so a
+ *  new grain shows up readable-ish rather than not at all. */
+const GRAIN_LABELS: Record<string, string> = {
+  block: "Blocks",
+  ageb: "AGEBs",
+  municipality: "Municipalities",
+  lot: "Lots",
+};
+
+
+/**
+ * Render the grain switcher for ``indicator`` into ``container`` and
+ * call ``onPick`` when the user changes it.
+ *
+ * Hidden entirely for single-grain indicators: eleven of the shipped
+ * thirteen apply only to ``block``, and a radio group with one option
+ * is furniture, not a control. Coarser grains are served by the same
+ * ``indicator_overlay_tile`` function via ``feature_type``, so
+ * switching is a re-render, not a new code path.
+ */
+export function renderGrainToggle(
+  container: HTMLElement,
+  indicator: IndicatorSummary,
+  active: string | null,
+  onPick: (grain: string) => void,
+): void {
+  const grains = indicator.applies_to ?? [];
+  if (grains.length < 2) {
+    container.hidden = true;
+    container.replaceChildren();
+    return;
+  }
+  container.hidden = false;
+  const label = document.createElement("span");
+  label.className = "grain-toggle__label";
+  label.textContent = "Grain";
+  container.replaceChildren(label);
+  for (const grain of grains) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "grain-toggle__btn";
+    btn.textContent = GRAIN_LABELS[grain] ?? grain;
+    btn.setAttribute("aria-pressed", grain === active ? "true" : "false");
+    btn.addEventListener("click", () => {
+      if (grain === active) return;
+      onPick(grain);
+    });
+    container.append(btn);
+  }
+}
+
+
+export function clearGrainToggle(container: HTMLElement): void {
+  container.hidden = true;
+  container.replaceChildren();
 }
 
 

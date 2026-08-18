@@ -34,11 +34,13 @@ import {
 import {
   activateIndicator,
   choroplethConfig,
+  clearGrainToggle,
   clearLegend,
   defaultGrain,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
+  renderGrainToggle,
   renderLegend,
 } from "./choropleth";
 import {
@@ -76,6 +78,10 @@ const FALLBACK_ZOOM = 12;
 
 interface AppState {
   activeIndicator: IndicatorSummary | null;
+  /** Feature type the choropleth is currently drawn at. Defaults to
+   *  the indicator's finest grain and is re-derived on every pick, so
+   *  a coarse choice never leaks onto an indicator that lacks it. */
+  activeGrain: string | null;
 }
 
 
@@ -186,7 +192,7 @@ async function main(): Promise<void> {
   setKnownAois(aois);
   const initialAoi = aois.find((a) => a.aoi_id === getActiveAoiId()) ?? null;
 
-  const state: AppState = { activeIndicator: null };
+  const state: AppState = { activeIndicator: null, activeGrain: null };
 
   const map = new maplibregl.Map({
     container: "map",
@@ -310,6 +316,7 @@ async function main(): Promise<void> {
     });
 
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
+    const grainToggle = document.getElementById("grain-toggle");
     const legend = document.getElementById("legend");
     const downloads = document.getElementById("downloads");
 
@@ -324,7 +331,7 @@ async function main(): Promise<void> {
       const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
       setStatus(`Loading ${indicator.name} stats…`);
-      const grain = defaultGrain(indicator) ?? undefined;
+      const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
       let stats = null;
       try {
         stats = await getIndicatorStats(indicator.slug, {
@@ -341,8 +348,17 @@ async function main(): Promise<void> {
       const domain = rampDomainFromStats(stats, indicator);
       activateIndicator(
         map, overlayConfig, indicator, domain,
-        tooltipController, aoiId, selectionController,
+        tooltipController, aoiId, selectionController, grain,
       );
+      // The ramp is per-grain — an AGEB mean spans a much narrower
+      // range than its child blocks — so the toggle re-renders with
+      // the legend rather than once at pick time.
+      if (grainToggle) {
+        renderGrainToggle(grainToggle, indicator, grain ?? null, (picked) => {
+          state.activeGrain = picked;
+          void renderIndicator(indicator);
+        });
+      }
       if (legend) renderLegend(legend, indicator, domain);
       if (downloads) setDownloadAvailability(downloads, true);
       setStatus(
@@ -359,7 +375,9 @@ async function main(): Promise<void> {
         const slug = select.value;
         if (!slug) {
           state.activeIndicator = null;
+          state.activeGrain = null;
           removeIndicator(map);
+          if (grainToggle) clearGrainToggle(grainToggle);
           if (legend) clearLegend(legend);
           if (downloads) setDownloadAvailability(downloads, false);
           setStatus("Indicator cleared.");
@@ -368,6 +386,11 @@ async function main(): Promise<void> {
         const indicator = indicators.find((i) => i.slug === slug);
         if (!indicator) return;
         state.activeIndicator = indicator;
+        // Reset to the new indicator's finest grain: the previous
+        // pick may not be in its applies_to at all, and asking for a
+        // grain an indicator was never computed at returns an empty
+        // overlay that looks like missing data.
+        state.activeGrain = defaultGrain(indicator);
         await renderIndicator(indicator);
       });
     }
