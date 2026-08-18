@@ -11,6 +11,8 @@ No real data is committed; every test rolls back cleanly.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,7 +20,7 @@ from apps.api.app import create_app
 from apps.api.deps import get_db_conn
 
 from reimagina.data import aoi, feature as feat
-from reimagina.indicators.catalog import seed_catalog
+from reimagina.indicators.catalog import IndicatorSpec, seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 
 
@@ -680,3 +682,95 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"run_id": "r-done", "status": "succeeded"}
+
+
+def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):
+    """``GET /indicators?aoi_id=`` offers only indicators with values there.
+
+    The catalog records what an indicator *is*; it says nothing about whether
+    anyone has computed it. ``urban_form_block_planned_floors`` sat registered
+    with zero rows until the ``floors`` attribute was seeded, and the picker
+    offered it — selecting it painted an empty map, which reads as a broken
+    indicator rather than an absent one.
+    """
+    from tests.integration.test_tile_aoi_filter import (
+        _attach_feature_to_aoi,
+        _insert_indicator_result,
+        _make_aoi,
+        _polygon_at,
+    )
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+    from reimagina.data import feature as feat
+
+    src = _register_source(
+        conn,
+        name=f"picker_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run = _start_run(conn, src)
+    feature_id = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=src,
+        ingestion_run_id=run,
+        dataset_version="v1",
+        source_record_ref=f"picker-{uuid4().hex[:8]}",
+        geometry_wkt=_polygon_at(-99.135, 19.430),
+    )
+    aoi_id = _make_aoi(
+        conn,
+        project_name=f"proj-picker-{uuid4().hex[:6]}",
+        aoi_name="AOI picker",
+        polygon_wkt=_polygon_at(-99.135, 19.430, side=0.05),
+    )
+    _attach_feature_to_aoi(conn, aoi_id=aoi_id, feature_id=feature_id)
+
+    computed = f"picker_computed_{uuid4().hex[:8]}"
+    _insert_indicator_result(
+        conn,
+        slug=computed,
+        feature_id=feature_id,
+        feature_type="block",
+        value_numeric=1.5,
+    )
+    # Registered in the catalog, never computed anywhere.
+    uncomputed = f"picker_uncomputed_{uuid4().hex[:8]}"
+    seed_catalog(
+        conn,
+        (
+            IndicatorSpec(
+                slug=uncomputed,
+                name="Uncomputed",
+                computation_kind="direct",
+                model_family="urban_form",
+                value_type="numeric",
+                aggregation_method="mean",
+                applies_to=("block",),
+            ),
+        ),
+    )
+    conn.commit()
+
+    unfiltered = {r["slug"] for r in client.get("/indicators").json()}
+    assert computed in unfiltered
+    assert uncomputed in unfiltered, "the bare catalog listing must not filter"
+
+    scoped = {r["slug"] for r in client.get(f"/indicators?aoi_id={aoi_id}").json()}
+    assert computed in scoped
+    assert uncomputed not in scoped
+
+    # An AOI nobody has computed anything for offers nothing, rather than
+    # offering the whole catalog.
+    empty_aoi = _make_aoi(
+        conn,
+        project_name=f"proj-empty-{uuid4().hex[:6]}",
+        aoi_name="AOI empty",
+        polygon_wkt=_polygon_at(-100.0, 20.0, side=0.05),
+    )
+    conn.commit()
+    assert client.get(f"/indicators?aoi_id={empty_aoi}").json() == []
