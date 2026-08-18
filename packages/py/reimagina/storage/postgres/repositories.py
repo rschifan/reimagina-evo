@@ -616,7 +616,13 @@ class PostgresObservationRepository:
             )
         return len(records)
 
-    def retire_current_by_prefix(self, *, prefix: str) -> int:
+    def retire_current_by_prefix(
+        self,
+        *,
+        prefix: str,
+        feature_type_id: str,
+        aoi_id: str | None = None,
+    ) -> int:
         # Match either the exact prefix OR `<prefix>_<anything>`. We
         # intentionally avoid LIKE + ESCAPE here — Postgres E-strings
         # silently swallow unknown backslash sequences (`\_` ≠ escape),
@@ -625,16 +631,35 @@ class PostgresObservationRepository:
         # `ndvi_mean`. `starts_with()` (Postgres 11+) has no such trap.
         if not prefix:
             raise ValueError("retire_current_by_prefix: prefix must be non-empty")
+        if not feature_type_id:
+            # Required, not defaulted. This retires rows; a caller that forgot
+            # to say which grain it recomputed would wipe every other grain's
+            # values for the prefix, which is exactly the bug this parameter
+            # exists to close. There is no sensible "all grains" default for a
+            # producer that only ever writes one.
+            raise ValueError(
+                "retire_current_by_prefix: feature_type_id must be non-empty — "
+                "retirement is scoped to the grain the run recomputed"
+            )
         with self.connection.cursor() as cur:
             cur.execute(
                 """
-                UPDATE curated_geo.observation
+                UPDATE curated_geo.observation o
                    SET is_current = false, valid_to = now(), updated_at = now()
-                 WHERE is_current
-                   AND (attribute_key = %s
-                        OR starts_with(attribute_key, %s || '_'))
+                 WHERE o.is_current
+                   AND (o.attribute_key = %(prefix)s
+                        OR starts_with(o.attribute_key, %(prefix)s || '_'))
+                   AND EXISTS (
+                         SELECT 1 FROM curated_geo.feature f
+                          WHERE f.id = o.feature_id
+                            AND f.type_id = %(type_id)s::uuid)
+                   AND (%(aoi_id)s::uuid IS NULL
+                        OR EXISTS (
+                             SELECT 1 FROM curated_geo.aoi_feature af
+                              WHERE af.feature_id = o.feature_id
+                                AND af.aoi_id = %(aoi_id)s::uuid))
                 """,
-                (prefix, prefix),
+                {"prefix": prefix, "type_id": feature_type_id, "aoi_id": aoi_id},
             )
             return cur.rowcount
 
@@ -643,19 +668,36 @@ class PostgresObservationRepository:
         *,
         prefix: str,
         excluding_source_id: str,
+        feature_type_id: str,
     ) -> bool:
+        # Scoped to the same grain `retire_current_by_prefix` is scoped to, and
+        # deliberately NOT to an AOI. The guard has to cover the widest thing a
+        # run could retire, and an AOI is only ever a narrowing the caller opts
+        # into: a whole-grain run retires the whole grain, so a collision
+        # outside some AOI is still a collision. Scoping by grain is what stops
+        # the guard refusing two recipes that own one prefix at two grains —
+        # which aggregation_recipe_prefix_uk (r020) explicitly permits, and
+        # which grain-scoped retirement makes safe.
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 SELECT 1
-                FROM curated_geo.observation
-                WHERE is_current
-                  AND source_id <> %s
-                  AND (attribute_key = %s
-                       OR starts_with(attribute_key, %s || '_'))
+                FROM curated_geo.observation o
+                WHERE o.is_current
+                  AND o.source_id <> %(source_id)s
+                  AND (o.attribute_key = %(prefix)s
+                       OR starts_with(o.attribute_key, %(prefix)s || '_'))
+                  AND EXISTS (
+                        SELECT 1 FROM curated_geo.feature f
+                         WHERE f.id = o.feature_id
+                           AND f.type_id = %(type_id)s::uuid)
                 LIMIT 1
                 """,
-                (excluding_source_id, prefix, prefix),
+                {
+                    "source_id": excluding_source_id,
+                    "prefix": prefix,
+                    "type_id": feature_type_id,
+                },
             )
             return cur.fetchone() is not None
 

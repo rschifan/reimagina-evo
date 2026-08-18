@@ -138,9 +138,17 @@ correctness-critical pieces:
   after the observations are durable can log a warning without
   crashing the caller.
 - **Prefix-collision guard** — CLI refuses to run a recipe whose
-  prefix is already owned by a different source. The SCD invariant
-  is per-`attribute_key`, not per-source, so co-ownership would
-  silently retire each other's rows.
+  prefix is already owned by a different source *at the same grain*.
+  The SCD invariant is per-`attribute_key`, not per-source, so
+  co-ownership at one grain would silently retire each other's rows.
+  Across grains it is safe and permitted: `aggregation_recipe`'s
+  uniqueness key is `(target_feature_type_slug, attribute_key_prefix)`.
+- **Retirement is scoped to what the run recomputed** — one grain,
+  optionally one AOI. `bulk_upsert_current` already retires per
+  `(feature_id, attribute_key)`, so the prefix-wide retire exists only
+  to catch rows the new run no longer writes; its scope has to be the
+  run's scope. Unscoped, an AOI-limited run retired the prefix for
+  every feature of the grain and re-inserted only the in-AOI ones.
 
 SCD retire + bulk insert:
 [`PostgresObservationRepository.bulk_upsert_current`](../packages/py/reimagina/storage/postgres/repositories.py#L485)
