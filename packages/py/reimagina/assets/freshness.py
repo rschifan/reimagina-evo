@@ -83,20 +83,22 @@ def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
     Membership is decided by one thing: whether the indicator has a node in this
     scenario's partition at all. ``asset_component_v`` propagates a partition
     downstream along ``identity`` edges, so an indicator gets a ``scenario=S``
-    row only where that propagation carried it there from
-    ``scenario.override@scenario=S``. An asset the override cannot reach has no
-    row and is never returned — no predicate needed, and none possible.
+    row only where that propagation carried it there from an override asset this
+    scenario has actually published a version for. An indicator the edit cannot
+    reach has no row and is never returned — no predicate needed, and none
+    possible.
 
-    ⚠ The reach is currently the whole catalog, and that bound is worth stating
-    plainly. ``scenario.override`` is *one* asset covering every attribute, so
-    ``registry._edges_for`` gives every attribute-reading indicator an identity
-    edge to it and everything downstream inherits the partition. An override on
-    ``floors`` therefore returns all 13 indicators, not the ones that read
-    ``floors``: correct, not minimal — the same over-approximation
-    ``resolve_change_set`` documents, one layer further down. Splitting the
-    override into one asset per attribute is what makes it exact, and this query
-    needs no change when that lands, because the unreached indicators simply
-    stop having a node.
+    That is exact per attribute, because there is one override asset per
+    attribute (``registry.scenario_override_assets``) and an indicator declares
+    an edge to each attribute it reads. Editing ``floors`` publishes a version
+    for ``scenario.override.floors`` alone, so the partition propagates to the
+    indicators reading ``floors`` and to whatever is downstream of those — the
+    composite, through its components — and to nothing else. Editing an
+    attribute no indicator reads returns nothing at all.
+
+    Still whole-indicator in *features*: an edit to one block invalidates that
+    indicator everywhere it applies, not the block. Narrowing that is
+    ``impact.FeatureExpander``'s job and a different axis entirely.
 
     ⚠ Do not narrow this by comparing expected versions. An earlier revision
     filtered on ``expected(scenario) <> expected(baseline)`` and that predicate

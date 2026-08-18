@@ -170,7 +170,9 @@ Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by thi
 
 Step 3 is why an override edits `attribute_key` rather than some scenario-specific vocabulary: the key *is* the `changed_attributes` token the impact engine keys the dirty-set off, so no translation layer is needed (`overrides.py:9-10`).
 
-**Scoping is a deliberate over-approximation.** `resolve_change_set` returns a flat union of `(attributes, features)`. With several overridden attributes, a dependent indicator may recompute a feature whose specific attribute did not change — never wrong, just not minimal. Per-attribute scoping is the upgrade path, noted in the code as moot while only `floors` is overridable (`overrides.py:123-126`).
+**Attribute scoping is exact; feature scoping is not.** A scenario submit that names nothing goes through the asset graph, where there is one override asset per overridable attribute (`assets/registry.py`, `scenario_override_assets`). Editing `floors` publishes a version for `scenario.override.floors` alone, so only the indicators declaring an edge to `floors` — and whatever is downstream of them — are recomputed. Editing an attribute no indicator reads recomputes nothing.
+
+Two paths remain a flat union and are honest about it. `resolve_change_set` (`overrides.py`) returns the union of `(attributes, features)` and is what runs when a caller passes an explicit change-set, or on a database with no asset graph. And *feature* scoping is whole-indicator on every path: an edit to one block invalidates that indicator everywhere it applies. Narrowing that is `impact.FeatureExpander`'s axis and is still unimplemented.
 
 ---
 

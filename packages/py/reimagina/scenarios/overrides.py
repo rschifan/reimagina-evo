@@ -36,10 +36,11 @@ def apply_override(
     """Upsert one scenario attribute edit (the what-if).
 
     ``publish`` writes a new version for this scenario's partition of
-    ``scenario.override``, which is what makes the edit visible to freshness.
-    Pass ``publish=False`` only when batching — ``apply_overrides`` does, and
-    publishes once at the end, because the version digests every override row in
-    the scenario and doing that per edit is quadratic.
+    ``scenario.override.<attribute_key>``, which is what makes the edit visible
+    to freshness. Pass ``publish=False`` only when batching —
+    ``apply_overrides`` does, and publishes once per attribute at the end,
+    because the version digests every override row for that attribute in the
+    scenario and doing that per edit is quadratic.
     """
     _require_postgres(conn)
     with conn.cursor() as cur:
@@ -55,69 +56,114 @@ def apply_override(
             (scenario_id, feature_id, attribute_key, value_numeric, value_text),
         )
     if publish:
-        publish_scenario_version(conn, scenario_id)
+        publish_scenario_version(conn, scenario_id, [attribute_key])
 
 
 def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> int:
-    """Apply many edits to one scenario, publishing its version once.
+    """Apply many edits to one scenario, publishing each touched attribute once.
 
-    ⚠ Use this for anything that edits more than one feature. The version is a
-    digest over *every* override row in the scenario, so publishing per edit is
-    quadratic: upzoning 10,000 blocks one call at a time digests 1 row, then 2,
-    then 10,000 — roughly 50 million row reads to record 10,000 upserts.
+    ⚠ Use this for anything that edits more than one feature. An attribute's
+    version is a digest over *every* override row it has in the scenario, so
+    publishing per edit is quadratic: upzoning 10,000 blocks one call at a time
+    digests 1 row, then 2, then 10,000 — roughly 50 million row reads to record
+    10,000 upserts.
 
     Each edit is a dict of the keyword arguments ``apply_override`` takes, minus
     ``scenario_id``. Returns the number applied.
     """
     count = 0
+    touched: set[str] = set()
     for edit in edits:
         apply_override(conn, scenario_id=scenario_id, publish=False, **edit)
+        touched.add(edit["attribute_key"])
         count += 1
-    if count:
-        publish_scenario_version(conn, scenario_id)
+    if touched:
+        publish_scenario_version(conn, scenario_id, touched)
     return count
 
 
-def publish_scenario_version(conn: Any, scenario_id: str) -> str | None:
-    """Record this scenario's override set as a version of ``scenario.override``.
+def publish_scenario_version(
+    conn: Any, scenario_id: str, attributes: Iterable[str] | None = None
+) -> dict[str, str | None]:
+    """Record this scenario's edits as versions of the per-attribute override assets.
 
-    A content digest rather than an event id, and cheap because it is: a
-    scenario's override set is a handful of rows, not a layer. Digesting means
-    re-applying an edit that changes nothing publishes nothing, so a what-if is
-    not recomputed for being saved twice.
+    Returns ``{attribute: version}``, with None where the attribute's version was
+    *retired* because the scenario no longer edits it.
 
-    Bumping only this scenario's partition is what keeps the baseline out of it.
-    The baseline partition of ``scenario.override`` never has a version, so no
-    edit to any scenario can move a baseline result.
+    One version per attribute, not one for the scenario, and that is what makes
+    a what-if exact. ``scenario.override.floors@scenario=S`` and
+    ``scenario.override.num_levels@scenario=S`` are partitions of different
+    assets, so editing ``floors`` bumps the first alone and only the indicators
+    that declared an edge to ``floors`` go out of date. A single scenario-wide
+    version made every attribute-reading indicator a consumer of every edit.
+
+    A content digest per attribute rather than an event id, and cheap because it
+    is: a scenario's edits to one attribute are a handful of rows, not a layer.
+    Digesting means re-applying an edit that changes nothing publishes nothing,
+    so a what-if is not recomputed for being saved twice.
+
+    ``attributes`` narrows the work to the ones a caller just touched. Left
+    unset, every attribute this scenario has rows for *or* a current version for
+    is reconciled — the second half is what notices an attribute whose last
+    override row was deleted, which is a real change and retires the version
+    rather than leaving the last digest current forever.
+
+    Bumping only this scenario's partitions is what keeps the baseline out of it.
+    The baseline partition of an override asset never has a version, so no edit
+    to any scenario can move a baseline result.
     """
     from reimagina.assets.freshness import graph_available
-    from reimagina.assets.keys import partition_key
-    from reimagina.assets.publish import publish_version
-    from reimagina.assets.registry import SCENARIO_OVERRIDE_ASSET
+    from reimagina.assets.keys import partition_key, scenario_override_asset_key
+    from reimagina.assets.publish import publish_version, retire_version
 
     if not graph_available(conn):
-        return None
+        return {}
+    partition = partition_key({"scenario": scenario_id})
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT md5(string_agg(
-                       feature_id::text || '|' || attribute_key || '|' ||
+            SELECT attribute_key,
+                   md5(string_agg(
+                       feature_id::text || '|' ||
                        coalesce(value_numeric::text, '') || '|' ||
                        coalesce(value_text, ''),
-                       E'\\n' ORDER BY feature_id, attribute_key))
-            FROM curated_geo.scenario_override WHERE scenario_id = %s
+                       E'\\n' ORDER BY feature_id))
+            FROM curated_geo.scenario_override
+            WHERE scenario_id = %s
+            GROUP BY attribute_key
             """,
             (scenario_id,),
         )
-        digest = cur.fetchone()[0]
-    if digest is None:
-        return None
-    return publish_version(
-        conn,
-        asset_key=SCENARIO_OVERRIDE_ASSET,
-        version=digest,
-        partition_key=partition_key({"scenario": scenario_id}),
-    )
+        digests = dict(cur.fetchall())
+        if attributes is None:
+            # Attributes this scenario *had* a version for, so one whose last
+            # override row was deleted is reconciled rather than left current.
+            cur.execute(
+                """
+                SELECT a.backing_ref
+                FROM curated_geo.asset_version av
+                JOIN curated_geo.asset a ON a.id = av.asset_id
+                WHERE a.backing_kind = 'scenario_override'
+                  AND av.partition_key = %s AND av.is_current
+                """,
+                (partition,),
+            )
+            targets = set(digests) | {r[0] for r in cur.fetchall()}
+        else:
+            targets = set(attributes)
+
+    published: dict[str, str | None] = {}
+    for attribute in sorted(targets):
+        asset_key = scenario_override_asset_key(attribute)
+        digest = digests.get(attribute)
+        if digest is None:
+            retire_version(conn, asset_key=asset_key, partition_key=partition)
+            published[attribute] = None
+        else:
+            published[attribute] = publish_version(
+                conn, asset_key=asset_key, version=digest, partition_key=partition
+            )
+    return published
 
 
 def effective_numeric(

@@ -252,34 +252,53 @@ OTHER_SCENARIO = "22222222-2222-2222-2222-222222222222"
 def test_a_what_if_recomputes_the_attribute_readers(graph, conn):
     """The unification: an edit is a version bump, not a second mechanism.
 
-    ⚠ **Scenario-wide granularity, not per-attribute.** The override version is
-    a digest of the whole scenario's rows, so editing `floors` also marks every
-    other attribute-reading indicator dirty. That is the same over-approximation
-    `resolve_change_set` already made — it returns the flat union of a
-    scenario's attributes — so this is not a regression, but neither is it the
-    exactness the baseline path now has.
+    Exact per attribute. There is one override asset per overridable attribute,
+    so editing `floors` publishes a version for `scenario.override.floors` alone
+    and the scenario partition propagates only to the indicators that declared
+    an edge to `floors`. Before the split there was one asset for all of them
+    and this returned every attribute-reading indicator in the catalog.
 
-    Making it exact means partitioning the override asset by attribute as well
-    as scenario, so an indicator's edge resolves only to the attributes it
-    declares. That needs a partition mapping keyed on the edge rather than the
-    node, which the view does not have.
+    The composite is absent here for a real reason, not a missing one: it
+    combines compactness and building density, neither of which reads `floors`.
+    `test_a_what_if_reaches_the_composite_through_its_components` is the other
+    half.
 
-    The composite is excluded for a different and correct reason: it reads no
-    attributes, so a what-if reaches it through its components rather than
-    directly.
+    Still whole-indicator in *features* — an edit to one block invalidates the
+    indicator everywhere it applies. That is `impact.FeatureExpander`'s axis and
+    a separate question.
     """
     _materialize_everything(conn)
     _edit(conn, SCENARIO, _block_id(conn))
 
     slugs = set(_slugs(_plan(conn, scenario_id=SCENARIO)))
 
-    assert "urban_form_block_planned_floors" in slugs
+    assert slugs == {"urban_form_block_planned_floors"}
+
+
+def test_a_what_if_reaches_the_composite_through_its_components(graph, conn):
+    """A composite reads no attributes, so an edit must arrive via its inputs.
+
+    `geometry` is read by compactness and building density, which are exactly
+    what the composite combines — so the scenario partition propagates one more
+    hop along the `derived_from` edges and the composite is recomputed too.
+    """
+    _materialize_everything(conn)
+    _edit(conn, SCENARIO, _block_id(conn), attribute="geometry", value=1.0)
+
+    slugs = _slugs(_plan(conn, scenario_id=SCENARIO))
+
+    assert set(slugs) == {
+        "urban_form_block_compactness",
+        "urban_form_block_building_density",
+        "urban_form_block_composite",
+    }
+    assert slugs.index("urban_form_block_composite") == 2, "queued behind its inputs"
 
 
 def test_a_what_if_leaves_the_baseline_alone(graph, conn):
     """The property that makes scenarios safe to model as versions.
 
-    scenario.override has no baseline partition, so no edit to any scenario can
+    An override asset has no baseline partition, so no edit to any scenario can
     move a baseline expected version.
     """
     _materialize_everything(conn)
@@ -318,7 +337,7 @@ def test_reapplying_the_same_edit_publishes_nothing(graph, conn):
         cur.execute(
             "SELECT sequence FROM curated_geo.asset_version av "
             "JOIN curated_geo.asset a ON a.id = av.asset_id "
-            "WHERE a.asset_key = 'scenario.override' AND av.is_current"
+            "WHERE a.asset_key = 'scenario.override.floors' AND av.is_current"
         )
         first = cur.fetchone()[0]
 
@@ -328,7 +347,7 @@ def test_reapplying_the_same_edit_publishes_nothing(graph, conn):
         cur.execute(
             "SELECT sequence FROM curated_geo.asset_version av "
             "JOIN curated_geo.asset a ON a.id = av.asset_id "
-            "WHERE a.asset_key = 'scenario.override' AND av.is_current"
+            "WHERE a.asset_key = 'scenario.override.floors' AND av.is_current"
         )
         assert cur.fetchone()[0] == first
 
