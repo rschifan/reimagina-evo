@@ -578,6 +578,60 @@ They still use the shared `require_seeded` guard — which `planned_floors`
 lacked while five hand-written copies of it existed, so an unseeded database
 failed there with a foreign-key error instead of the actionable message.
 
+### An indicator refuses to compute against a missing input
+
+An indicator that joins another feature type cannot distinguish "no buildings on
+this block" from "no buildings were ever loaded". Both are a count of zero, and
+zero is a perfectly plausible measurement — so it flows into composites as if it
+had been measured.
+
+That is not hypothetical. With the building layer absent,
+`urban_form_block_building_density` wrote `0.0` for all 5,273 Tlalpan blocks and
+`urban_form_block_composite` came out as **exactly `0.5 × compactness` on all
+68,767 rows compared**. Every layer reported success.
+
+Two guards in `indicators/_compute.py`, both raising `MissingInputData`:
+
+- **`require_nonempty`** — refuses when the input layer is empty. Callers own
+  the existence query; the helper owns the message, so the "what is missing /
+  what loads it" pair cannot drift between call sites.
+- **`require_measured`** — refuses when the layer is non-empty but contributed
+  nothing *in scope*: loaded for a different AOI, loaded partially, or never
+  linked by `aoi compute-features`. Free, because `building_density` already
+  computed `buildings_attributed` and then discarded it.
+
+`NULL` means unknown and `0` means a confirmed none; they are not
+interchangeable. Where the difference cannot be represented downstream, failing
+is the only honest option — Delta Live Tables' `ON VIOLATION FAIL UPDATE` rather
+than `DROP ROW`.
+
+**Accessibility guards the layer, deliberately not the category.** With no
+establishments at all, every block reports the 1500 m cutoff and renders as a
+real, uniformly bad accessibility surface — harder to spot than a zero. But a
+category genuinely absent while the layer is loaded is a different question this
+module already answered: the cutoff is the wanted value, pinned by
+`test_no_amenity_of_that_category_reports_the_cutoff`, which seeds a park and
+asks for a school. Guarding per category would overturn that silently.
+
+⚠ **Ceiling, accepted deliberately.** A scope that genuinely contains none of
+the joined type trips `require_measured`. A loud false positive an operator
+clears in one query beats a silent zero reaching a composite. Relax only with a
+real such AOI in hand.
+
+⚠ **What the catalog does *not* tell you.** `reads` is an invalidation
+vocabulary, not a data manifest. `urban_form_block_building_density` declares
+`reads=("geometry",)` while its compute joins `global:building`; the
+accessibility family declares `poi_version` / `network_version`, which are
+hand-maintained sentinels standing in for whole tables. Ask the catalog what
+`urban_form_block_composite` needs, transitively, and the answer is
+`['geometry']` — it needs 365,954 building features. `depends_on` is exact and
+machine-walkable; the leaves are under-declared by exactly that gap.
+
+A declarative `requires` field was considered and **not** added: a hand-typed
+list restating what the compute already says has nothing keeping the two in
+sync, which is the same defect class as `poi_version`. The data-contracts
+literature is blunt about it — a contract that is not executable will drift.
+
 ### Rolling up a block-grain indicator to AGEB
 
 *Worked example: block compactness.* `compute_block_compactness` writes

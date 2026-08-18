@@ -670,12 +670,65 @@ CREATE TABLE curated_geo.area_of_interest (
   description text,
   geometry    geometry(Geometry, 4326) NOT NULL
               CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_MultiPolygon')),
+  -- r040. Identifier-based membership, e.g. {"CVE_ENT":"09","CVE_MUN":"012"}.
+  -- NULL means geometry decides for everything, which is the pre-r040 behaviour.
+  membership_key jsonb
+              CHECK (membership_key IS NULL
+                     OR jsonb_typeof(membership_key) = 'object'
+                        AND membership_key <> '{}'::jsonb),
   created_at  timestamptz      NOT NULL DEFAULT now(),
   updated_at  timestamptz      NOT NULL DEFAULT now()
 );
 
 CREATE INDEX aoi_geometry_gist ON curated_geo.area_of_interest USING GIST (geometry);
 ```
+
+#### Membership is identifier-first where the data has an identifier
+
+`compute_overlaps` used to decide membership purely spatially. That is the only
+option for data with no identifiers and the wrong one for data that has them.
+
+INEGI's marco geoestadístico gives every block, AGEB and municipality an exact
+administrative address. A block is in Tlalpan **iff** `CVE_ENT='09' AND
+CVE_MUN='012'` — by definition, not by measurement. Measured before r040:
+
+| grain | by CVE code | by geometry | code-only | geometry-only |
+|---|---|---|---|---|
+| block | 5,267 | 5,273 | 0 | **6** |
+| ageb | 207 | 239 | 0 | **32** |
+| municipality | 1 | 1 | 0 | 0 |
+| building | **0** | 217,873 | 0 | 217,873 |
+| establishment | **0** | 1,785 | 0 | 1,785 |
+
+`code-only` is zero at every grain: geometry never missed a feature the codes
+claimed, it was a strict **superset**, and the extra blocks and AGEBs belong to
+neighbouring alcaldías. The spatial join was manufacturing ambiguity the data
+does not contain.
+
+The last two rows are why codes cannot simply replace geometry — buildings and
+establishments have none, and are 219,658 of Tlalpan's 225,133 members. So the
+rule is **per feature, not per AOI**:
+
+- carries every key the AOI declares → the values must match exactly
+- carries none of them → placed spatially, as before
+
+Applied uniformly across the polygon, line and point families so the three
+cannot disagree. `aoi-from-alcaldia` and `aoi-from-state` populate the key; a
+drawn AOI leaves it NULL and keeps the geometric behaviour.
+
+⚠ **A shared border is not membership.** Two polygons that merely touch
+intersect to a sliver with nonzero floating-point area, and `overlap_ratio > 0`
+does not reject it — Coyoacán and Xochimilco were members of Tlalpan at ratios
+of 6.2e-12 and 8.1e-12, and their whole polygons rendered on an AOI-scoped map.
+`MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9` is the floor, measured rather than
+guessed: largest noise ratio 8.1e-12, smallest genuine overlap 2.9e-06, and
+**zero rows** in between.
+
+⚠ This rejects noise, **not partial membership**. Features genuinely straddling
+a boundary stay members and still render past the AOI edge. Giving each feature
+exactly one AOI needs a majority-area rule (`>= 0.5`), which is a decision about
+what an AOI *means* and would move every AOI-scoped aggregate. Deliberately not
+made.
 
 ---
 
