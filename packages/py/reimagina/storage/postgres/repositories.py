@@ -14,6 +14,30 @@ from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 
 
+#: Smallest share of a feature that must fall inside an AOI for it to count as a
+#: member. Guards ``compute_overlaps`` against float-noise membership: two
+#: polygons that merely share a border line intersect to a sliver with a nonzero
+#: but physically meaningless area, and the ``overlap_ratio > 0`` CHECK on
+#: ``aoi_feature`` is not enough to reject it. Measured on Tlalpan: Coyoacan and
+#: Xochimilco were members at ratios of 6.2e-12 and 8.1e-12 — 0.000000 % of each
+#: municipality actually inside — and their entire polygons then rendered on an
+#: AOI-scoped map.
+#:
+#: 1e-9 is not a guess. In that database the largest noise ratio is 8.1e-12 and
+#: the smallest *genuine* overlap is 2.9e-06 (a straddling AGEB), and the band
+#: between 1e-9 and 1e-6 contains **zero rows** — six orders of magnitude of
+#: clear air on either side, so the threshold's exact position within it cannot
+#: change the outcome.
+#:
+#: ⚠ This rejects noise, not partial membership. A feature genuinely straddling
+#: the boundary stays a member at any real ratio — 42 AGEBs and 8 blocks do, and
+#: they still render past the AOI edge. That is accepted behaviour, not an
+#: oversight. Giving each feature exactly one AOI needs a majority-area rule
+#: (``>= 0.5``), which is a decision about what an AOI *means* and would move
+#: every AOI-scoped aggregate, so it is deliberately not made here.
+MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9
+
+
 class PostgresSourceCatalogRepository:
     def __init__(self, connection):
         self.connection = connection
@@ -935,16 +959,30 @@ class PostgresAOIRepository:
         name: str,
         geometry_wkt: str,
         description: str | None = None,
+        membership_key: dict[str, str] | None = None,
     ) -> str:
+        """``membership_key`` declares identifier-based membership (r040).
+
+        Pass it whenever the AOI is derived from an administrative unit, so
+        features carrying the same identifiers are placed exactly rather than
+        by spatial overlap. Leave it None for a drawn or arbitrary AOI, which
+        has no identifier to match on and must be decided geometrically.
+        """
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.area_of_interest
-                  (project_id, name, description, geometry)
-                VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326))
+                  (project_id, name, description, geometry, membership_key)
+                VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326), %s)
                 RETURNING id
                 """,
-                (project_id, name, description, geometry_wkt),
+                (
+                    project_id,
+                    name,
+                    description,
+                    geometry_wkt,
+                    psycopg2.extras.Json(membership_key) if membership_key else None,
+                ),
             )
             return str(cur.fetchone()[0])
 
@@ -956,7 +994,7 @@ class PostgresAOIRepository:
             cur.execute(
                 """
                 WITH aoi_raw AS (
-                  SELECT geometry
+                  SELECT geometry, membership_key
                   FROM curated_geo.area_of_interest
                   WHERE id = %s
                 ),
@@ -976,6 +1014,17 @@ class PostgresAOIRepository:
                   CROSS JOIN aoi_raw aoi
                   WHERE ST_GeometryType(f.geometry) IN ('ST_Polygon','ST_MultiPolygon')
                     AND f.geometry && aoi.geometry
+                    -- Identifiers beat geometry where both exist. A feature
+                    -- carrying every key the AOI declares is a member iff the
+                    -- values match exactly; one that carries none of them
+                    -- (Overture buildings, OSM establishments) is decided
+                    -- spatially as before. See migration r040.
+                    AND (
+                      aoi.membership_key IS NULL
+                      OR NOT (f.attributes ?& ARRAY(
+                           SELECT jsonb_object_keys(aoi.membership_key)))
+                      OR f.attributes @> aoi.membership_key
+                    )
                 ),
                 feature_fixed AS (
                   SELECT
@@ -1014,15 +1063,17 @@ class PostgresAOIRepository:
                     1.0
                   )
                 FROM intersections i
-                WHERE ST_Area(i.overlap_geometry::geography) > 0
+                WHERE ST_Area(i.overlap_geometry::geography)
+                        / NULLIF(ST_Area(i.feature_geometry::geography), 0)
+                      >= %s
                 """,
-                (aoi_id, aoi_id),
+                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
             )
             poly_count = cur.rowcount
             cur.execute(
                 """
                 WITH aoi_raw AS (
-                  SELECT geometry
+                  SELECT geometry, membership_key
                   FROM curated_geo.area_of_interest
                   WHERE id = %s
                 ),
@@ -1042,6 +1093,17 @@ class PostgresAOIRepository:
                   CROSS JOIN aoi_raw aoi
                   WHERE ST_GeometryType(f.geometry) IN ('ST_LineString','ST_MultiLineString')
                     AND f.geometry && aoi.geometry
+                    -- Identifiers beat geometry where both exist. A feature
+                    -- carrying every key the AOI declares is a member iff the
+                    -- values match exactly; one that carries none of them
+                    -- (Overture buildings, OSM establishments) is decided
+                    -- spatially as before. See migration r040.
+                    AND (
+                      aoi.membership_key IS NULL
+                      OR NOT (f.attributes ?& ARRAY(
+                           SELECT jsonb_object_keys(aoi.membership_key)))
+                      OR f.attributes @> aoi.membership_key
+                    )
                 ),
                 feature_fixed AS (
                   SELECT
@@ -1080,9 +1142,11 @@ class PostgresAOIRepository:
                     1.0
                   )
                 FROM intersections i
-                WHERE ST_Length(i.overlap_geometry::geography) > 0
+                WHERE ST_Length(i.overlap_geometry::geography)
+                        / NULLIF(ST_Length(i.feature_geometry::geography), 0)
+                      >= %s
                 """,
-                (aoi_id, aoi_id),
+                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
             )
             line_count = cur.rowcount
             cur.execute(
@@ -1098,6 +1162,16 @@ class PostgresAOIRepository:
                 JOIN curated_geo.area_of_interest aoi ON aoi.id = %s
                 WHERE ST_GeometryType(f.geometry) IN ('ST_Point','ST_MultiPoint')
                   AND ST_Within(f.geometry, aoi.geometry)
+                  -- Same identifier rule as the polygon and line families, so
+                  -- the three cannot disagree about who is a member. No point
+                  -- layer carries admin codes today; keeping the rule uniform
+                  -- is cheaper than discovering the inconsistency when one does.
+                  AND (
+                    aoi.membership_key IS NULL
+                    OR NOT (f.attributes ?& ARRAY(
+                         SELECT jsonb_object_keys(aoi.membership_key)))
+                    OR f.attributes @> aoi.membership_key
+                  )
                 """,
                 (aoi_id, aoi_id),
             )

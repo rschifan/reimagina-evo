@@ -109,6 +109,9 @@ def aoi_from_state(
             name=name,
             geometry_wkt=geometry_wkt,
             description=(f"AOI derived from MEX:state CVE_ENT={cve_ent} ({name})."),
+            # State scope needs only the entity code; every municipality, AGEB
+            # and block inside it carries the same CVE_ENT.
+            membership_key={"CVE_ENT": cve_ent},
         )
         conn.commit()
 
@@ -171,6 +174,10 @@ def aoi_from_alcaldia(
                 f"AOI derived from MEX:municipality "
                 f"CVE_ENT={cve_ent} CVE_MUN={cve_mun} ({name})."
             ),
+            # The same codes the description has always carried in prose, now
+            # in a form compute_overlaps can act on (r040). A block is in this
+            # alcaldia because INEGI says so, not because its polygon overlaps.
+            membership_key={"CVE_ENT": cve_ent, "CVE_MUN": cve_mun},
         )
         conn.commit()
 
