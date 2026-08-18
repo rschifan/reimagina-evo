@@ -47,13 +47,16 @@ rejecting legitimately dense blocks elsewhere. Separating the two is the right
 move when a real score needs a defensible balance; it is deliberately not done
 speculatively here.
 
-⚠ **Every input is treated as higher-is-better.** ``indicator_dependency``
-enforces ``weight >= 0`` (r016:93), so a lower-is-better input cannot be folded
-in with a negative weight. An accessibility *distance* added to a score would
-therefore make "far from a school" score well. Express such an input as its
-complement — a proximity indicator — rather than adding the distance raw. There
-is no ``direction`` field in the catalog yet, and adding one is the right move
-the first time a real score needs it.
+**Direction is handled, and has to be.** ``indicator_dependency`` enforces
+``weight >= 0`` (r016:93), so a lower-is-better input cannot be folded in with a
+negative weight. An accessibility *distance* added raw would make "far from a
+school" score well — silently, because the arithmetic stays sound and only the
+meaning inverts. Each spec declares ``higher_is_better``; a ``False`` input is
+flipped to ``1 - normalised`` after clamping and before weighting, so every
+contribution points the same way.
+
+Clamp first, then orient: a value stored above its declared bound would
+otherwise orient to a negative contribution.
 """
 
 from __future__ import annotations
@@ -102,11 +105,18 @@ def compute_composite(
         rows = result_repo.list_current_for_indicator(
             indicator_slug=dep_slug, scenario_id=scenario_id
         )
+        # Orient before weighting, so every contribution points the same way.
+        # `weight >= 0` is enforced by r016, so this cannot be expressed as a
+        # negative weight; without it a distance input would score "far" as good.
+        orient = (lambda x: x) if dep.higher_is_better else (lambda x: 1.0 - x)
         values = {
             # Clamped, because r016's trigger bounds what is *written* but a
             # bound can be widened later while old rows persist, and a value
-            # outside 0–1 would let one input exceed its weight.
-            str(r["feature_id"]): min(1.0, max(0.0, (r["value_numeric"] - lo) / span))
+            # outside 0–1 would let one input exceed its weight. Clamp before
+            # orienting, or a value above the bound would orient negative.
+            str(r["feature_id"]): orient(
+                min(1.0, max(0.0, (r["value_numeric"] - lo) / span))
+            )
             for r in rows
             if r.get("value_numeric") is not None
             # Only this composite's own grain. An input rolled up to a coarser
