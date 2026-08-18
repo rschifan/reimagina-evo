@@ -239,6 +239,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "outside the AOI polygon are deleted post-load — required when "
         "the bbox is wider than the actual AOI",
     )
+    overture_load.add_argument(
+        "--recompute",
+        action="store_true",
+        help="After a successful load, submit an indicator run for the "
+        "attributes it invalidated. Off by default: a city-scale load can "
+        "invalidate every block-grain indicator, and those units are budgeted "
+        "in minutes",
+    )
+    overture_load.add_argument(
+        "--recompute-attributes",
+        nargs="+",
+        default=["geometry"],
+        metavar="ATTR",
+        help="Attribute names the load changed, matched against each "
+        "indicator's declared `reads` (default: geometry). Only meaningful "
+        "with --recompute",
+    )
     overture_load.set_defaults(handler=_handle_overture_load)
 
     overture_validate = overture_subparsers.add_parser(
@@ -1139,6 +1156,8 @@ def _handle_overture_load(args: argparse.Namespace) -> int:
             release=args.release,
             source_name=args.source_name,
             aoi_id=args.aoi_id,
+            recompute=args.recompute,
+            recompute_attributes=tuple(args.recompute_attributes),
         )
     )
 
