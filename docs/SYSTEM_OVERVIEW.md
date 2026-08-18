@@ -632,6 +632,44 @@ block→municipality rows for every block.
 
 ---
 
+## 9. Scheduling — what runs, in what order
+
+Not part of the raster work, but the layer everything above is executed
+by, and the one that changed most recently. Detail lives in
+[`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md); this is the
+shape of it.
+
+**Four decisions, and only three of them exist.**
+
+| decision | who makes it |
+|---|---|
+| what runs at all | `orchestration/impact.py` — an attribute edit seeds every indicator whose `reads` matches, then propagates along `depends_on` |
+| what order is *legal* | the indicator DAG itself — a constraint, not a choice |
+| what is eligible *now* | `orchestration/wave.py::plan_wave` — a pure function: which queued units have all dependencies succeeded |
+| which eligible unit goes *first* | the DBOS `units` queue — FIFO by arrival. **Nothing orders by cost or critical path.** |
+
+**Dispatch is as-completed, not level-synchronous.** A unit starts the
+moment its last dependency clears, rather than waiting for the slowest
+member of its level. `plan_wave` is re-evaluated after every single
+completion, and `DBOS.wait_first` makes that replayable by recording the
+winning completion as durable history.
+
+That matters because the alternative is silently wrong rather than
+loudly wrong: DBOS resolves a replayed child by position, and raises only
+on a function-*name* mismatch — but every child is `unit_workflow`, so a
+reordered replay hands back the wrong child's result instead of failing.
+
+**The ceiling is the graph, not the engine.** A DAG's average parallelism
+is `work / span`; on today's catalog that is 4.03, and 16 worker slots
+measure exactly 4.03. The shipped default of 8 reaches 3.92.
+
+⚠ **Today's catalog barely exercises any of this.** 12 of 13 indicators
+are roots and only a `geometry` edit produces two waves, so the ordering
+machinery is real but mostly idle. It is built for the deeper catalogs
+that a cadastre or a wider indicator set would bring.
+
+---
+
 ## Further reading
 
 - [`architecture/DATA_LAYER.md`](architecture/DATA_LAYER.md) —
