@@ -163,7 +163,7 @@ def run_dirty_set(
                     aoi_id=aoi_id,
                 )
             outcomes[slug] = UnitOutcome(slug, UnitStatus.SUCCEEDED)
-        except Exception as exc:  # noqa: BLE001 — fault isolation is the point: one unit's failure must not abort the run, only its dependents.
+        except Exception as exc:
             logger.exception("indicator %s failed", slug)
             outcomes[slug] = UnitOutcome(slug, UnitStatus.FAILED, str(exc))
 

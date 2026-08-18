@@ -19,7 +19,8 @@ from reimagina.jobs import overlap as overlap_jobs
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.pipeline import loader
 from reimagina.storage import backend_for_connection
-from reimagina.tiles.service import export_pmtiles_snapshot, resolve_tile_sources
+from reimagina.tiles.export import export_pmtiles_snapshot
+from reimagina.tiles.sources import resolve_tile_sources
 from tests.integration._helpers import (
     insert_feature as _insert_feature,
     insert_project as _insert_project,
@@ -208,8 +209,8 @@ def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path)
     def fake_connect(_dsn: str):
         yield conn
 
-    monkeypatch.setattr("reimagina.tiles.service._run_export_command", fake_run_export)
-    monkeypatch.setattr("reimagina.tiles.service.connect", fake_connect)
+    monkeypatch.setattr("reimagina.tiles.export._run_export_command", fake_run_export)
+    monkeypatch.setattr("reimagina.tiles.export.connect", fake_connect)
 
     payload = export_pmtiles_snapshot(
         dsn="postgresql://localhost/reimagina_test",

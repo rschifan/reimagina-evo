@@ -44,11 +44,14 @@ def tile_raster_base_url() -> str:
       2. ``REIMAGINA_API_BASE_URL`` + ``/cog`` — derive from the same
          env var any other API-relative tool uses. Keeps the two in
          sync when a deployment runs on a non-default port / host.
-      3. ``http://localhost:8000/cog`` — dev default matching the
-         uvicorn default bind. **Misconfig trap**: a deployment that
-         binds uvicorn to a non-8000 port and doesn't set either env
-         var will silently emit broken raster tile URLs. The fix is
-         setting one of the two env vars above at deploy time.
+      3. ``http://localhost:8001/cog`` — dev default, matching the
+         port ``make dev-api`` pins. Note 8001 is *not* uvicorn's own
+         default (8000); 8000 is owned by another project on the dev
+         machine, so every entry point here binds 8001 explicitly.
+         **Misconfig trap**: a deployment that binds uvicorn elsewhere
+         and doesn't set either env var will silently emit broken
+         raster tile URLs. The fix is setting one of the two env vars
+         above at deploy time.
     """
     explicit = os.environ.get("REIMAGINA_TILE_RASTER_BASE_URL")
     if explicit:
@@ -56,7 +59,7 @@ def tile_raster_base_url() -> str:
     api_base = os.environ.get("REIMAGINA_API_BASE_URL")
     if api_base:
         return f"{api_base.rstrip('/')}/cog"
-    return "http://localhost:8000/cog"
+    return "http://localhost:8001/cog"
 
 
 def host_data_root() -> Path:

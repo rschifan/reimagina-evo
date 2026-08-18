@@ -13,8 +13,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from reimagina.indicators.accessibility import ACCESSIBILITY_COMPUTE
 from reimagina.indicators.building_density import compute_block_building_density
 from reimagina.indicators.catalog import (
+    EDIFICABILITY_BLOCK_DENSITY,
+    EDIFICABILITY_BLOCK_HOUSING_UNITS,
+    EDIFICABILITY_BLOCK_POPULATION,
     SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
@@ -23,6 +27,11 @@ from reimagina.indicators.catalog import (
 )
 from reimagina.indicators.compactness import compute_block_compactness
 from reimagina.indicators.composite import compute_composite
+from reimagina.indicators.edificability import (
+    compute_block_housing_density,
+    compute_block_housing_units,
+    compute_block_population,
+)
 from reimagina.indicators.planned_floors import compute_planned_floors
 from reimagina.orchestration.coordinator import Runner
 
@@ -35,6 +44,14 @@ _DIRECT_COMPUTE: dict[str, IndicatorCompute] = {
     URBAN_FORM_BLOCK_COMPACTNESS.slug: compute_block_compactness,
     URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: compute_block_building_density,
     URBAN_FORM_BLOCK_PLANNED_FLOORS.slug: compute_planned_floors,
+    # Edificability: one calculation, three slugs. Each entry writes only its
+    # own slug; every indicator is dispatched individually on both ops planes.
+    EDIFICABILITY_BLOCK_HOUSING_UNITS.slug: compute_block_housing_units,
+    EDIFICABILITY_BLOCK_POPULATION.slug: compute_block_population,
+    EDIFICABILITY_BLOCK_DENSITY.slug: compute_block_housing_density,
+    # Accessibility: six slugs across two families, all built from one spec-bound
+    # closure, so the registry stays in step with the catalog automatically.
+    **ACCESSIBILITY_COMPUTE,
 }
 
 

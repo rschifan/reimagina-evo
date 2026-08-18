@@ -14,6 +14,7 @@ test that needs to know how a run is stored belongs in that engine's own suite.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -36,12 +37,31 @@ def _drain(agen) -> list:
     return asyncio.run(_run())
 
 
+_SETTLE_TIMEOUT = 60.0
+
+
 def _make_terminal(orchestrator, conn, handle, impl):
     """Get a submitted run to a terminal state, however this engine allows."""
     if impl.blocking:
         return handle.status
     orchestrator.cancel_run(conn, handle.run_id)
     return orchestrator.get_run(conn, handle.run_id)
+
+
+def _await_terminal(orchestrator, conn, run_id, impl):
+    """Block until the run finishes on its own; fail rather than hang."""
+    if impl.blocking:
+        return orchestrator.get_run(conn, run_id)
+    deadline = time.monotonic() + _SETTLE_TIMEOUT
+    while time.monotonic() < deadline:
+        conn.rollback()  # end any read txn so the next poll sees fresh rows
+        status = orchestrator.get_run(conn, run_id)
+        if status is not None and status.status in RUN_TERMINAL_STATES:
+            return status
+        time.sleep(0.25)
+    raise AssertionError(
+        f"{impl.mode!r} run {run_id} did not settle within {_SETTLE_TIMEOUT}s"
+    )
 
 
 # ── Submit ──────────────────────────────────────────────────────────────────
@@ -151,11 +171,11 @@ def test_one_failed_unit_does_not_fail_its_independent_siblings(
     is why the expected rollup is declared per implementation rather than
     written here.
     """
-    if not impl.blocking:
-        pytest.skip(f"{impl.mode!r} needs a worker to reach a failure")
+    if not impl.settles:
+        pytest.skip(f"{impl.mode!r} needs a separate worker to reach a failure")
 
     handle = submit()
-    fetched = orchestrator.get_run(seeded.conn, handle.run_id)
+    fetched = _await_terminal(orchestrator, seeded.conn, handle.run_id, impl)
     assert fetched is not None
 
     by_slug = {u.indicator: u.status for u in fetched.units}
@@ -172,11 +192,11 @@ def test_a_composite_is_skipped_when_a_dirty_input_fails(
     Skipped, not failed: it never ran. The distinction is the one an
     engine-owned status model is most likely to lose.
     """
-    if not impl.blocking:
-        pytest.skip(f"{impl.mode!r} needs a worker to reach a failure")
+    if not impl.settles:
+        pytest.skip(f"{impl.mode!r} needs a separate worker to reach a failure")
 
     handle = submit()
-    fetched = orchestrator.get_run(seeded.conn, handle.run_id)
+    fetched = _await_terminal(orchestrator, seeded.conn, handle.run_id, impl)
     assert fetched is not None
 
     composites = [
