@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
+from .._utils import scenario_overlay as _scenario_overlay
 
 
 #: Smallest share of a feature that must fall inside an AOI for it to count as a
@@ -1437,9 +1438,7 @@ class PostgresOverlapRepository:
         target_feature_type: str,
         scenario_id: str | None = None,
     ) -> list[tuple[str, float | None, float, str]]:
-        scenario_clause, scenario_params = _scenario_filter(
-            "ir.scenario_id", scenario_id
-        )
+        scenario_clause, scenario_params = _scenario_overlay("ir", scenario_id)
         params: list = [
             source_feature_type,
             target_feature_type,
@@ -1993,9 +1992,7 @@ class PostgresAOISummaryRepository:
     ) -> list[tuple[float | None, float, str]]:
         # Weight = overlap_measure (absolute area inside the AOI); see
         # Protocol docstring for why overlap_ratio is wrong here.
-        scenario_clause, scenario_params = _scenario_filter(
-            "ir.scenario_id", scenario_id
-        )
+        scenario_clause, scenario_params = _scenario_overlay("ir", scenario_id)
         params: list = [indicator_slug, *scenario_params, aoi_id]
         with self.connection.cursor() as cur:
             cur.execute(
@@ -2449,14 +2446,15 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> dict | None:
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
+        scenario_clause, scenario_params = _scenario_overlay("civ", scenario_id)
         with self.connection.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
         ) as cur:
             cur.execute(
                 f"""
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE feature_id = %s AND {scenario_clause} AND indicator_slug = %s
+                SELECT civ.* FROM serving_geo.current_indicator_v civ
+                WHERE civ.feature_id = %s AND {scenario_clause}
+                  AND civ.indicator_slug = %s
                 """,
                 [feature_id, *scenario_params, indicator_slug],
             )
@@ -2470,7 +2468,7 @@ class PostgresIndicatorResultRepository:
         scenario_id: str | None = None,
         limit: int | None = None,
     ) -> list[dict]:
-        scenario_clause, scenario_params = _scenario_filter("scenario_id", scenario_id)
+        scenario_clause, scenario_params = _scenario_overlay("civ", scenario_id)
         limit_sql = "" if limit is None else "LIMIT %s"
         limit_params: list = [] if limit is None else [limit]
         with self.connection.cursor(
@@ -2478,8 +2476,8 @@ class PostgresIndicatorResultRepository:
         ) as cur:
             cur.execute(
                 f"""
-                SELECT * FROM serving_geo.current_indicator_v
-                WHERE indicator_slug = %s AND {scenario_clause}
+                SELECT civ.* FROM serving_geo.current_indicator_v civ
+                WHERE civ.indicator_slug = %s AND {scenario_clause}
                 {limit_sql}
                 """,
                 [indicator_slug, *scenario_params, *limit_params],
@@ -2504,7 +2502,7 @@ class PostgresIndicatorResultRepository:
         # and the optional feature_type filter compose cleanly.
         clauses = ["ir.indicator_slug = %s", "ir.status = 'current'"]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("ir.scenario_id", scenario_id)
+        clause, extra = _scenario_overlay("ir", scenario_id)
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
@@ -2552,7 +2550,7 @@ class PostgresIndicatorResultRepository:
             "ir.value_numeric IS NOT NULL",
         ]
         params: list = [indicator_slug]
-        clause, extra = _scenario_filter("ir.scenario_id", scenario_id)
+        clause, extra = _scenario_overlay("ir", scenario_id)
         clauses.append(clause)
         params.extend(extra)
         if feature_type is not None:
