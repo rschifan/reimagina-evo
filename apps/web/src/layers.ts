@@ -58,12 +58,19 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     lineColor: "#60a5fa",
     lineWidth: 0,
     visible: false,
-    // z11 lets buildings appear at neighbourhood / district scale rather
-    // than only after the user zooms in to street level. Tile size stays
-    // bounded because get_tile applies aggressive ST_Simplify at lower
-    // zooms — 2 M building polygons across CDMX + Mexicali render cleanly
-    // from 11 onward without the renderer choking.
-    minzoom: 11,
+    // Matches the server: r038 stops serving buildings below z14, so a
+    // lower minzoom here only buys empty round-trips.
+    //
+    // The floor is a data limit, not a tuning knob. At z12 one pixel is
+    // ~36 m, so a footprint is sub-pixel and there is no encoding that
+    // rescues it: dropping attributes saved 362 bytes of a 2.59 MB tile
+    // (ST_AsMVT dictionaries per tile, so size tracks cardinality, not
+    // column width — the 36-char uuids are 1.71 MB of it and hit-testing
+    // needs them), and simplifying hard enough to shrink the tile
+    // collapsed 36k of 37.8k footprints into degenerate rings that
+    // ST_AsMVTGeom drops. For "where are the buildings" at AOI scale use
+    // the urban_form_block_building_density choropleth instead.
+    minzoom: 14,
   },
   {
     layerId: "baseline_live:block",
