@@ -169,3 +169,155 @@ def test_planning_still_works_without_the_asset_graph(conn):
     assert _slugs(_plan(conn, changed_attributes=("floors",))) == [
         "urban_form_block_planned_floors"
     ]
+
+
+# ── scenarios, as the same mechanism ───────────────────────────────────────
+
+
+def _block_id(conn):
+    from tests.integration._helpers import insert_feature, register_source, start_run
+
+    source_id = register_source(
+        conn, name="scn-src", storage_type="vector", integration_role="canonical_entity"
+    )
+    run_id = start_run(conn, source_id)
+    from reimagina.data.feature import get_type_id
+
+    return insert_feature(
+        conn,
+        type_id=get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="blk-1",
+        geometry_wkt="POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
+    )
+
+
+def _edit(conn, scenario_id, feature_id, *, attribute="floors", value=9.0):
+    from reimagina.scenarios.overrides import apply_override
+
+    apply_override(
+        conn,
+        scenario_id=scenario_id,
+        feature_id=feature_id,
+        attribute_key=attribute,
+        value_numeric=value,
+    )
+
+
+SCENARIO = "11111111-1111-1111-1111-111111111111"
+OTHER_SCENARIO = "22222222-2222-2222-2222-222222222222"
+
+
+def test_a_what_if_recomputes_the_attribute_readers(graph, conn):
+    """The unification: an edit is a version bump, not a second mechanism.
+
+    ⚠ **Scenario-wide granularity, not per-attribute.** The override version is
+    a digest of the whole scenario's rows, so editing `floors` also marks every
+    other attribute-reading indicator dirty. That is the same over-approximation
+    `resolve_change_set` already made — it returns the flat union of a
+    scenario's attributes — so this is not a regression, but neither is it the
+    exactness the baseline path now has.
+
+    Making it exact means partitioning the override asset by attribute as well
+    as scenario, so an indicator's edge resolves only to the attributes it
+    declares. That needs a partition mapping keyed on the edge rather than the
+    node, which the view does not have.
+
+    The composite is excluded for a different and correct reason: it reads no
+    attributes, so a what-if reaches it through its components rather than
+    directly.
+    """
+    _materialize_everything(conn)
+    _edit(conn, SCENARIO, _block_id(conn))
+
+    slugs = set(_slugs(_plan(conn, scenario_id=SCENARIO)))
+
+    assert "urban_form_block_planned_floors" in slugs
+
+
+def test_a_what_if_leaves_the_baseline_alone(graph, conn):
+    """The property that makes scenarios safe to model as versions.
+
+    scenario.override has no baseline partition, so no edit to any scenario can
+    move a baseline expected version.
+    """
+    _materialize_everything(conn)
+    _edit(conn, SCENARIO, _block_id(conn))
+
+    assert _plan(conn).is_noop
+
+
+def test_one_scenario_does_not_disturb_another(graph, conn):
+    """Partitioned, so an edit reaches exactly its own slice."""
+    _materialize_everything(conn)
+    _edit(conn, SCENARIO, _block_id(conn))
+
+    assert _plan(conn, scenario_id=OTHER_SCENARIO).is_noop
+    assert not _plan(conn, scenario_id=SCENARIO).is_noop
+
+
+def test_an_unedited_scenario_computes_nothing(graph, conn):
+    """Where a scenario's expected version equals baseline, its answer IS baseline.
+
+    Computing it anyway would write a duplicate row and call it a what-if.
+    """
+    _materialize_everything(conn)
+    assert _plan(conn, scenario_id=SCENARIO).is_noop
+
+
+def test_reapplying_the_same_edit_publishes_nothing(graph, conn):
+    """The override version is a content digest, not an event id.
+
+    Saving a what-if twice is not a change, and must not queue a recompute.
+    """
+    _materialize_everything(conn)
+    block = _block_id(conn)
+    _edit(conn, SCENARIO, block)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT sequence FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'scenario.override' AND av.is_current"
+        )
+        first = cur.fetchone()[0]
+
+    _edit(conn, SCENARIO, block)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT sequence FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'scenario.override' AND av.is_current"
+        )
+        assert cur.fetchone()[0] == first
+
+
+def test_a_layer_reload_reaches_scenario_partitions_too(graph, conn):
+    """Dataset edges map to baseline, so a scenario reads the one shared layer.
+
+    If they mapped by identity, a scenario partition would look for a
+    `scenario=S` copy of the blocks, find nothing, and never notice the layer
+    changed at all.
+    """
+    _materialize_everything(conn)
+    _edit(conn, SCENARIO, _block_id(conn))
+    # Materialize the scenario partition so it starts fresh.
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO curated_geo.asset_materialization
+                (asset_id, partition_key, version)
+            SELECT e.asset_id, e.partition_key, e.expected_version
+            FROM serving_geo.asset_expected_version_v e
+            JOIN curated_geo.asset a ON a.id = e.asset_id
+            WHERE a.kind = 'derived' AND e.partition_key = %s
+            """,
+            (f"scenario={SCENARIO}",),
+        )
+    assert _plan(conn, scenario_id=SCENARIO).is_noop
+
+    publish_version(conn, asset_key="mex.block", version="blocks-2")
+
+    assert not _plan(conn, scenario_id=SCENARIO).is_noop

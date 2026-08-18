@@ -45,6 +45,49 @@ def apply_override(
             """,
             (scenario_id, feature_id, attribute_key, value_numeric, value_text),
         )
+    publish_scenario_version(conn, scenario_id)
+
+
+def publish_scenario_version(conn: Any, scenario_id: str) -> str | None:
+    """Record this scenario's override set as a version of ``scenario.override``.
+
+    A content digest rather than an event id, and cheap because it is: a
+    scenario's override set is a handful of rows, not a layer. Digesting means
+    re-applying an edit that changes nothing publishes nothing, so a what-if is
+    not recomputed for being saved twice.
+
+    Bumping only this scenario's partition is what keeps the baseline out of it.
+    The baseline partition of ``scenario.override`` never has a version, so no
+    edit to any scenario can move a baseline result.
+    """
+    from reimagina.assets.freshness import graph_available
+    from reimagina.assets.keys import partition_key
+    from reimagina.assets.publish import publish_version
+    from reimagina.assets.registry import SCENARIO_OVERRIDE_ASSET
+
+    if not graph_available(conn):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT md5(string_agg(
+                       feature_id::text || '|' || attribute_key || '|' ||
+                       coalesce(value_numeric::text, '') || '|' ||
+                       coalesce(value_text, ''),
+                       E'\\n' ORDER BY feature_id, attribute_key))
+            FROM curated_geo.scenario_override WHERE scenario_id = %s
+            """,
+            (scenario_id,),
+        )
+        digest = cur.fetchone()[0]
+    if digest is None:
+        return None
+    return publish_version(
+        conn,
+        asset_key=SCENARIO_OVERRIDE_ASSET,
+        version=digest,
+        partition_key=partition_key({"scenario": scenario_id}),
+    )
 
 
 def effective_numeric(

@@ -96,6 +96,19 @@ SHIPPED_ASSETS: tuple[AssetSpec, ...] = (
         description="OSM pedestrian network powering network accessibility",
     ),
     AssetSpec(
+        asset_key="scenario.override",
+        kind="source",
+        backing_kind="scenario_override",
+        backing_ref="curated_geo.scenario_override",
+        version_strategy="commit",
+        # Partitioned by scenario, which is what makes a what-if and a dataset
+        # reload the same mechanism rather than two. Editing scenario S moves the
+        # version of S's partition only; the baseline partition never has a
+        # version at all, so no edit can reach it.
+        partition_dimensions=("scenario",),
+        description="Per-scenario attribute overrides — the what-if input",
+    ),
+    AssetSpec(
         asset_key="censo.2020",
         kind="source",
         backing_kind="observation_prefix",
@@ -143,6 +156,52 @@ def indicator_assets() -> tuple[AssetSpec, ...]:
     )
 
 
+#: The asset carrying every scenario's attribute edits, partitioned by scenario.
+SCENARIO_OVERRIDE_ASSET = "scenario.override"
+
+
+def _partition_mapping(producer_kind: str) -> str:
+    """How a consumer's partition resolves on this producer.
+
+    A source or external asset has no scenario partitions — there is one shared
+    copy of the blocks, not one per what-if — so a scenario's results read its
+    baseline. A derived producer is partitioned the same way its consumer is, so
+    a composite under scenario S reads its components under S.
+
+    ``scenario.override`` is the exception that makes the model work: it *is*
+    partitioned by scenario, so it maps by identity and an edit to S reaches
+    only S.
+    """
+    return "identity" if producer_kind == "derived" else "baseline"
+
+
+def _edges_for(spec: Any) -> list[Any]:
+    """The declared edges, plus the scenario-override edge they imply.
+
+    An indicator that reads attributes can be changed by a what-if, so it
+    depends on that scenario's override set. Generated from the attribute
+    projection the indicator already declares rather than written out per
+    indicator: a hand-maintained second list is exactly how `poi_version` rotted.
+
+    Indicators that read no attributes — the composite — get no such edge, and
+    correctly so: a what-if reaches them through their components, not directly.
+    """
+    from reimagina.assets.keys import AssetEdge
+
+    attributes = tuple(key for edge in spec.inputs for key in edge.attributes)
+    if not attributes:
+        return list(spec.inputs)
+    return [
+        *spec.inputs,
+        AssetEdge(
+            SCENARIO_OVERRIDE_ASSET,
+            relation="self",
+            attributes=attributes,
+            partition_mapping="identity",
+        ),
+    ]
+
+
 def seed_asset_edges(conn: Any) -> int:
     """Write one ``asset_dependency`` row per declared indicator input.
 
@@ -157,8 +216,10 @@ def seed_asset_edges(conn: Any) -> int:
 
     written = 0
     with conn.cursor() as cur:
-        cur.execute("SELECT asset_key, id FROM curated_geo.asset")
-        ids = dict(cur.fetchall())
+        cur.execute("SELECT asset_key, id, kind FROM curated_geo.asset")
+        rows = cur.fetchall()
+        ids = {r[0]: r[1] for r in rows}
+        kinds = {r[0]: r[2] for r in rows}
         for spec in SHIPPED_INDICATORS:
             consumer = ids[indicator_asset_key(spec.slug)]
             # Replace rather than merge, so removing an input from a declaration
@@ -168,7 +229,7 @@ def seed_asset_edges(conn: Any) -> int:
                 "DELETE FROM curated_geo.asset_dependency WHERE consumer_asset_id = %s",
                 (consumer,),
             )
-            for edge in spec.inputs:
+            for edge in _edges_for(spec):
                 if edge.asset_key not in ids:
                     raise RuntimeError(
                         f"indicator {spec.slug!r} declares input {edge.asset_key!r}, "
@@ -188,7 +249,8 @@ def seed_asset_edges(conn: Any) -> int:
                         list(edge.attributes),
                         edge.radius_m,
                         edge.weight,
-                        edge.partition_mapping,
+                        edge.partition_mapping
+                        or _partition_mapping(kinds[edge.asset_key]),
                     ),
                 )
                 written += 1

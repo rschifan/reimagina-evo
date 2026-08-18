@@ -49,7 +49,13 @@ class AssetEdge:
     attributes: tuple[str, ...] = field(default_factory=tuple)
     radius_m: float | None = None
     weight: float | None = None
-    partition_mapping: str = "identity"
+    #: How the consumer's partition resolves on the producer. ``None`` means
+    #: "derive it", which is almost always what you want: a source layer has no
+    #: scenario partitions, so an indicator's ``scenario=S`` results still read
+    #: the one shared baseline copy of the blocks, while a composite under S
+    #: reads its components under S. Deriving it from the producer's kind means
+    #: it cannot be forgotten on one edge out of twenty.
+    partition_mapping: str | None = None
 
     @property
     def indicator_slug(self) -> str | None:

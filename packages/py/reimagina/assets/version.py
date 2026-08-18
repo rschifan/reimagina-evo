@@ -148,6 +148,22 @@ def components(conn: Any) -> dict[tuple[str, str], set[str]]:
     nodes: set[tuple[str, str]] = set(recorded) | materialized
     nodes |= {(a["id"], BASELINE) for a in assets}
 
+    # ...plus propagation downstream along identity edges, so a scenario
+    # partition exists for every indicator that scenario reaches, not only for
+    # those something has already materialized. Without it the first evaluation
+    # of a what-if has nothing to compare and reports "nothing to do".
+    consumers_of: dict[str, list[str]] = {a["id"]: [] for a in assets}
+    for edge in edges:
+        if edge["partition_mapping"] == "identity":
+            consumers_of[edge["producer_asset_id"]].append(edge["consumer_asset_id"])
+    frontier = [n for n in nodes if n[1] != BASELINE]
+    while frontier:
+        asset_id, partition = frontier.pop()
+        for consumer in consumers_of.get(asset_id, ()):
+            if (consumer, partition) not in nodes:
+                nodes.add((consumer, partition))
+                frontier.append((consumer, partition))
+
     # Which producer partitions a given consumer partition reaches, per mapping.
     def resolve(edge: dict[str, Any], partition: str) -> list[str]:
         mapping = edge["partition_mapping"]

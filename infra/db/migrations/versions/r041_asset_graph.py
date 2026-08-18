@@ -406,6 +406,21 @@ def upgrade() -> None:
             -- asset still has an expected version to compare against.
             SELECT a.id, ''
             FROM curated_geo.asset a
+            UNION
+            -- Partitions propagate downstream along identity edges. Without this
+            -- arm a scenario partition would exist only where something had
+            -- already materialized it, so the first evaluation of a what-if
+            -- would have no expected version to compare against and would report
+            -- "nothing to do" — the answer being asked for, missing.
+            --
+            -- Terminates because asset_dependency is acyclic, which its
+            -- constraint trigger enforces.
+            SELECT d.consumer_asset_id, n.partition_key
+            FROM node n
+            JOIN curated_geo.asset_dependency d
+              ON d.producer_asset_id = n.asset_id
+            WHERE d.partition_mapping = 'identity'
+              AND n.partition_key <> ''
         ),
         upstream(root_asset, root_partition, asset_id, partition_key, depth) AS (
             SELECT n.asset_id, n.partition_key, n.asset_id, n.partition_key, 0
