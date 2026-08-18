@@ -83,7 +83,7 @@ introduces `curated_geo.raster_layer` with FK references to
 `serving_geo.raster_layer_v` + `explore.raster_layer_v`.
 
 The repository Protocol that every worker reads through:
-[`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces.py) —
+[`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces/raster.py) —
 impls at
 [`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L643).
 
@@ -164,7 +164,7 @@ missing file → 404, non-regular file → 403).
 
 `/tile-sources` emits each published raster as a `raster_cog` entry
 with a percent-encoded tile-URL template:
-[`reimagina.tiles.service._resolve_raster_layers`](../packages/py/reimagina/tiles/service.py#L352).
+[`reimagina.tiles.sources._resolve_raster_layers`](../packages/py/reimagina/tiles/sources.py).
 The web-side install:
 [`installRasterLayers`](../apps/web/src/layers.ts#L257).
 
@@ -193,7 +193,7 @@ One row per "source → observations at target grain" mapping:
   the retire-by-prefix contract.
 
 Repo Protocol + impls:
-[`AggregationRecipeRepository`](../packages/py/reimagina/storage/interfaces.py),
+[`AggregationRecipeRepository`](../packages/py/reimagina/storage/interfaces/raster.py),
 [`PostgresAggregationRecipeRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L742).
 
 ### Dispatcher + two worker arms
@@ -263,10 +263,10 @@ simplification ladder as the older
 Frontend-side source + tile URL assembly (with a `v=<epoch>`
 cache-buster sourced from `max(observation.updated_at)` so a
 rollup re-run invalidates MapLibre's in-memory tile cache):
-[`_resolve_aggregation_overlays`](../packages/py/reimagina/tiles/service.py#L402).
+[`_resolve_aggregation_overlays`](../packages/py/reimagina/tiles/sources.py).
 Transitive raster parent resolution — so observation-input recipes
 nest under the right raster in the UI:
-[`_resolve_transitive_raster_parent`](../packages/py/reimagina/tiles/service.py#L470)
+[`_resolve_transitive_raster_parent`](../packages/py/reimagina/tiles/sources.py)
 (same file).
 
 Test:

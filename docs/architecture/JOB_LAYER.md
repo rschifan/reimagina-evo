@@ -41,7 +41,7 @@ caller (apps/api/routers/jobs.py, apps/cli/indicators.py)
 
 Three things follow from that shape and are stated plainly here because earlier drafts of this document assumed the opposite of the first two, and code was written against those assumptions:
 
-**There is no job message and no job claim.** Nothing in this repository enqueues a per-model-family envelope, and no worker races to `UPDATE … WHERE status='queued'`. `JobRunRepository` says so in the interface itself — "Ops-plane scheduling and claiming belong to the ops-plane, not here — there is no claim_job" (`packages/py/reimagina/storage/interfaces.py:550-551`). `job_unit` rows are a status projection the workflow writes; nothing ever claims one.
+**There is no job message and no job claim.** Nothing in this repository enqueues a per-model-family envelope, and no worker races to `UPDATE … WHERE status='queued'`. `JobRunRepository` says so in the interface itself — "Ops-plane scheduling and claiming belong to the ops-plane, not here — there is no claim_job" (`packages/py/reimagina/storage/interfaces/jobs.py`). `job_unit` rows are a status projection the workflow writes; nothing ever claims one.
 
 **`job_run` is not opened at submit.** `submit_run` returns before any compute exists; the `job_run` row is opened later, by whatever runs the compute, straight to `running` (`jobs/_lifecycle.py:63-70`, `storage/postgres/repositories.py:1959`). A run that is submitted but never executed leaves no `job_run` row at all.
 
