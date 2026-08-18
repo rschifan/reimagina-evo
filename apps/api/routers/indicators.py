@@ -60,10 +60,23 @@ class IndicatorValue(BaseModel):
 
 @router.get("", response_model=list[IndicatorSummary])
 def list_indicators(
+    aoi_id: str | None = Query(
+        default=None,
+        description=(
+            "Restrict to indicators that hold at least one current baseline "
+            "value on a feature in this AOI. Omitted, the full catalog is "
+            "returned — a registered indicator with no values yet is a real "
+            "catalog entry, just not something a picker should offer."
+        ),
+    ),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[IndicatorSummary]:
-    """Every indicator currently registered in the catalog."""
-    rows = get_backend(conn).indicator_catalog_repo().list_indicators()
+    """Indicators in the catalog, optionally only those with values in an AOI."""
+    rows = (
+        get_backend(conn)
+        .indicator_catalog_repo()
+        .list_indicators(with_values_for_aoi=aoi_id)
+    )
     return [IndicatorSummary(**_catalog_row_to_dict(row)) for row in rows]
 
 

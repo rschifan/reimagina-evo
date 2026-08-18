@@ -2209,17 +2209,56 @@ class PostgresIndicatorCatalogRepository:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def list_indicators(self) -> list[dict]:
+    def list_indicators(self, *, with_values_for_aoi: str | None = None) -> list[dict]:
+        """Catalog rows, optionally only those with current values in an AOI.
+
+        The catalog says what an indicator *is*, not whether anyone has
+        computed it. A registered-but-uncomputed indicator is a real state —
+        `urban_form_block_planned_floors` sat in the catalog with zero rows
+        until the `floors` attribute was seeded — and a caller that offers
+        every catalog row to a user offers dead options that render an empty
+        map, which reads as a broken indicator rather than an absent one.
+
+        ``with_values_for_aoi`` narrows to indicators holding at least one
+        ``status='current'`` baseline result on a feature belonging to that
+        AOI. Scenario rows are excluded (``scenario_id IS NULL``): a value
+        that exists only inside a what-if is not a reason to offer the
+        indicator on the baseline map.
+
+        ``EXISTS`` rather than a join, for the same reason the tile functions
+        use it — one row per indicator regardless of how many results match.
+        An unparseable uuid yields an empty list rather than an error, matching
+        the fail-closed direction r039 chose for the tile filter.
+        """
+        clause = ""
+        params: list = []
+        if with_values_for_aoi is not None:
+            clause = """
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM curated_geo.indicator_result ir
+                    JOIN curated_geo.aoi_feature af ON af.feature_id = ir.feature_id
+                    WHERE ir.indicator_slug = c.slug
+                      AND ir.status = 'current'
+                      AND ir.scenario_id IS NULL
+                      AND ir.value_numeric IS NOT NULL
+                      AND af.aoi_id = %s::uuid
+                )
+            """
+            params.append(with_values_for_aoi)
         with self.connection.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
         ) as cur:
             cur.execute(
-                """
-                SELECT id::text, slug, name, description, model_family, computation_kind,
-                       value_type, unit, valid_min, valid_max, aggregation_method, applies_to
-                FROM curated_geo.indicator_catalog
-                ORDER BY slug
-                """
+                f"""
+                SELECT c.id::text, c.slug, c.name, c.description, c.model_family,
+                       c.computation_kind, c.value_type, c.unit, c.valid_min,
+                       c.valid_max, c.aggregation_method, c.applies_to
+                FROM curated_geo.indicator_catalog c
+                {clause}
+                ORDER BY c.slug
+                """,
+                params,
             )
             return [dict(row) for row in cur.fetchall()]
 

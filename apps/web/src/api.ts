@@ -100,8 +100,13 @@ export interface IndicatorValueStats {
 }
 
 
-export function listIndicators(): Promise<IndicatorSummary[]> {
-  return jsonRequest<IndicatorSummary[]>("/indicators");
+/** Catalog indicators. With ``aoiId``, only those holding current values in
+ *  that AOI — the picker should not offer an indicator whose overlay would
+ *  render empty, because an empty map reads as a broken indicator rather
+ *  than an uncomputed one. */
+export function listIndicators(aoiId?: string | null): Promise<IndicatorSummary[]> {
+  const qs = aoiId ? `?aoi_id=${encodeURIComponent(aoiId)}` : "";
+  return jsonRequest<IndicatorSummary[]>(`/indicators${qs}`);
 }
 
 
