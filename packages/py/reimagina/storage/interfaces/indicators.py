@@ -31,7 +31,9 @@ class IndicatorCatalogRepository(Protocol):
 
     def get_indicator(self, slug: str) -> dict[str, Any] | None: ...
 
-    def list_indicators(self) -> list[dict[str, Any]]: ...
+    def list_indicators(
+        self, *, with_values_for_aoi: str | None = None
+    ) -> list[dict[str, Any]]: ...
 
     def set_dependencies(
         self,
