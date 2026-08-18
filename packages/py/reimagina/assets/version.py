@@ -178,9 +178,14 @@ def components(conn: Any) -> dict[tuple[str, str], set[str]]:
     for root in nodes:
         parts: set[str] = set()
         seen: set[tuple[str, str]] = set()
-        frontier = [(root, 0)]
-        while frontier:
-            (asset_id, partition), depth = frontier.pop()
+        # Named `stack`, not `frontier`: this walks *upstream* carrying a depth,
+        # so its element type is ((asset, partition), depth) rather than the
+        # (asset, partition) the propagation frontier above holds. Reusing one
+        # name for both shapes is what mypy rejected — the two loops were always
+        # correct, they just could not share an inferred type.
+        stack: list[tuple[tuple[str, str], int]] = [(root, 0)]
+        while stack:
+            (asset_id, partition), depth = stack.pop()
             if (asset_id, partition) in seen or depth > MAX_DEPTH:
                 continue
             seen.add((asset_id, partition))
@@ -189,7 +194,7 @@ def components(conn: Any) -> dict[tuple[str, str], set[str]]:
             for edge in out_edges[asset_id]:
                 parts.add(_edge_part(edge, by_id))
                 for producer_partition in resolve(edge, partition):
-                    frontier.append(
+                    stack.append(
                         ((edge["producer_asset_id"], producer_partition), depth + 1)
                     )
         out[(by_id[root[0]]["asset_key"], root[1])] = parts
