@@ -51,6 +51,33 @@ class RunPlan:
         return not self.units
 
 
+def _units_from_freshness(
+    conn: object, registry: Sequence[IndicatorSpec]
+) -> list[DirtyUnit]:
+    """Dirty units derived from what is actually out of date.
+
+    Whole-grain by design: ``DirtyUnit.features`` empty already means "every
+    feature this indicator applies to", which ``runners`` collapses to
+    ``feature_ids=None``. A layer change invalidates the indicator, not a
+    knowable subset of its rows — narrowing that would mean joining the changed
+    source rows onto the indicator's own grain, which is the
+    ``FeatureExpander`` hook's job and still unimplemented.
+
+    Contributes nothing when the asset graph is not present: a deployment that
+    has not seeded the registry, or is still on r040, must keep planning runs the
+    way it always did. That check is a ``to_regclass`` probe inside
+    ``stale_units`` rather than a caught exception here — a failed query would
+    leave psycopg2's transaction aborted and poison the connection the caller is
+    about to submit on.
+    """
+    from reimagina.assets.freshness import stale_units
+
+    return [
+        DirtyUnit(indicator=slug, features=frozenset())
+        for slug in stale_units(conn, registry)
+    ]
+
+
 def plan_run(
     conn: object,
     *,
@@ -66,6 +93,18 @@ def plan_run(
     Reads the scenario's overrides when the change-set is not given explicitly,
     so a caller can submit ``scenario_id`` alone and have the diff derived from
     the override rows.
+
+    **With nothing specified at all, the dirty set comes from freshness.** A
+    submit naming no attribute, no feature and no scenario used to be a
+    guaranteed noop with a warning; it now means "recompute what is actually out
+    of date", answered by comparing each indicator's materialized version against
+    the version its inputs imply. That is what lets an ingest stop guessing which
+    attribute name stands in for the layer it just reloaded.
+
+    ⚠ Only ``stale`` and ``partial`` count, never ``absent`` — see
+    ``assets.freshness``. On a database where nothing has been computed yet every
+    indicator is absent, and an empty submit must not mean "compute the entire
+    platform".
     """
     from reimagina.scenarios.overrides import resolve_change_set
 
@@ -75,7 +114,10 @@ def plan_run(
         edited_features=edited_features,
         scenario_id=scenario_id,
     )
-    units = compute_dirty_set(changed, edited, registry)
+    if changed or edited:
+        units = compute_dirty_set(changed, edited, registry)
+    else:
+        units = _units_from_freshness(conn, registry)
     if not units:
         logger.warning(
             "scenario %s produced an empty dirty-set — nothing to recompute "

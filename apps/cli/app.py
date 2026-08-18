@@ -314,11 +314,12 @@ def overture_load(
         "in minutes",
     ),
     recompute_attributes: list[str] = typer.Option(
-        ["geometry"],
+        [],
         "--recompute-attributes",
         metavar="ATTR",
         help="Attribute names the load changed, matched against each "
-        "indicator's declared `reads` (default: geometry). Only meaningful "
+        "indicator's declared `reads`. Empty by default: the dirty set is "
+        "derived from which layers the load actually changed. Only meaningful "
         "with --recompute",
     ),
 ) -> int:
