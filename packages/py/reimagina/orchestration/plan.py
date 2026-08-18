@@ -110,16 +110,16 @@ def plan_run(
     entire platform".
 
     **A scenario submit is the same mechanism, at that scenario's partition.**
-    Editing a what-if publishes a new version for its slice of
-    ``scenario.override``, so the indicators the override actually reaches go out
-    of date and the rest — and the whole baseline — do not. Where a scenario's
-    expected version equals the baseline's, its answer *is* the baseline's
-    answer, and computing it would write a duplicate row and call it a what-if.
+    Editing a what-if publishes a new version for that *attribute's* override
+    asset in that scenario's partition, so the indicators reading that attribute
+    go out of date, along with whatever is downstream of them — and nothing
+    else, and never the baseline.
 
     That replaces a deliberate over-approximation: ``resolve_change_set``
     returns the flat union of every attribute and feature the scenario touches,
     so editing one block's ``floors`` recomputed every indicator reading
-    ``floors`` across every block.
+    ``floors`` across every block. The attribute half is now exact; the feature
+    half is still whole-indicator, which is ``impact.FeatureExpander``'s axis.
     """
     from reimagina.scenarios.overrides import resolve_change_set
 

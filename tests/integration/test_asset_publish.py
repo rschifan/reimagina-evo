@@ -409,7 +409,7 @@ def test_batched_overrides_publish_once(seeded, conn):
         cur.execute(
             "SELECT count(*) FROM curated_geo.asset_version av "
             "JOIN curated_geo.asset a ON a.id = av.asset_id "
-            "WHERE a.asset_key = 'scenario.override'"
+            "WHERE a.asset_key = 'scenario.override.floors'"
         )
         assert cur.fetchone()[0] == 1, "three edits, one published version"
 
@@ -488,3 +488,63 @@ def test_a_probe_that_finds_nothing_retires_instead_of_publishing_a_sentinel(
     assert result.error is None, "a probe that ran and found nothing is not a failure"
     assert result.changed is True
     assert _state(conn, "global.road_network") == "absent"
+
+
+def test_deleting_a_scenario_last_override_retires_that_attribute(seeded, conn):
+    """The reconcile half of `publish_scenario_version`.
+
+    Removing the last override for an attribute is a real change: the scenario
+    no longer edits it. Leaving the last digest current would keep the scenario
+    reading a what-if it does not have.
+    """
+    from reimagina.scenarios.overrides import apply_override, publish_scenario_version
+
+    scenario = "99999999-9999-9999-9999-999999999999"
+    from tests.integration._helpers import insert_feature, start_run
+
+    source_id = register_source(
+        conn,
+        name="retire-src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = start_run(conn, source_id)
+    feature = insert_feature(
+        conn,
+        type_id=get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref="retire-blk",
+        geometry_wkt="POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
+    )
+    apply_override(
+        conn,
+        scenario_id=scenario,
+        feature_id=feature,
+        attribute_key="floors",
+        value_numeric=9.0,
+    )
+    assert _current_partition(conn, "scenario.override.floors", scenario) is not None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM curated_geo.scenario_override WHERE scenario_id = %s",
+            (scenario,),
+        )
+    # No `attributes` argument: the reconcile has to notice on its own.
+    assert publish_scenario_version(conn, scenario) == {"floors": None}
+
+    assert _current_partition(conn, "scenario.override.floors", scenario) is None
+
+
+def _current_partition(conn, asset_key, scenario_id):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT av.version FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = %s AND av.partition_key = %s AND av.is_current",
+            (asset_key, f"scenario={scenario_id}"),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
