@@ -3,7 +3,7 @@
 
   import { cn } from "../../utils";
 
-  type Tone = "neutral" | "fresh" | "stale" | "absent" | "partial" | "accent";
+  type Tone = "neutral" | "fresh" | "stale" | "partial" | "accent";
 
   let {
     tone = "neutral",
@@ -24,7 +24,6 @@
     neutral: "border-line text-muted-foreground",
     fresh: "border-state-fresh/40 text-state-fresh bg-state-fresh/10",
     stale: "border-state-stale/40 text-state-stale bg-state-stale/10",
-    absent: "border-state-absent/40 text-state-absent bg-state-absent/10",
     partial: "border-state-partial/40 text-state-partial bg-state-partial/10",
     accent: "border-accent/40 text-accent bg-accent/10",
   };

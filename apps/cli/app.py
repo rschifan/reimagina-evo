@@ -43,6 +43,7 @@ from reimagina.tiles.defaults import (  # noqa: E402
     tile_snapshot_base_url,
 )
 from .assets import (  # noqa: E402
+    backfill_versions as assets_backfill_cmd,
     consumers as assets_consumers_cmd,
     inputs as assets_inputs_cmd,
     observe as assets_observe_cmd,
@@ -614,6 +615,14 @@ app.add_typer(assets_app, name="assets")
 @assets_app.command("seed", help="Register shipped assets and their edges (idempotent)")
 def assets_seed(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     return _print(assets_seed_cmd(dsn=dsn))
+
+
+@assets_app.command(
+    "backfill-versions",
+    help="Publish versions for source layers loaded before the asset graph existed",
+)
+def assets_backfill_versions(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+    return _print(assets_backfill_cmd(dsn=dsn))
 
 
 @assets_app.command("observe", help="Probe observable assets and publish any change")

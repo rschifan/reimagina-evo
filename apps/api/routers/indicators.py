@@ -75,6 +75,11 @@ class LineageNode(BaseModel):
 class IndicatorLineage(BaseModel):
     slug: str
     asset_key: str
+    #: Freshness of the indicator itself. None when the asset graph has not
+    #: been seeded; "absent" when it has but nothing has computed the
+    #: indicator since.
+    state: str | None = None
+    materialized_at: datetime | None = None
     upstream: list[LineageNode]
     downstream: list[LineageNode]
 
@@ -186,8 +191,10 @@ def get_indicator_lineage(
     repo = backend.asset_graph_repo()
     up = repo.lineage(asset_key=asset_key, direction="upstream")
     down = repo.lineage(asset_key=asset_key, direction="downstream")
-    keys = [n["related_key"] for n in (*up, *down)]
-    states = {row["asset_key"]: row["state"] for row in repo.freshness(asset_keys=keys)}
+    keys = [n["related_key"] for n in (*up, *down)] + [asset_key]
+    rows = repo.freshness(asset_keys=keys)
+    states = {row["asset_key"]: row["state"] for row in rows}
+    own = next((r for r in rows if r["asset_key"] == asset_key), None)
 
     def node(row: dict) -> LineageNode:
         return LineageNode(
@@ -200,6 +207,8 @@ def get_indicator_lineage(
     return IndicatorLineage(
         slug=slug,
         asset_key=asset_key,
+        state=own["state"] if own else None,
+        materialized_at=own.get("materialized_at") if own else None,
         upstream=[node(r) for r in up],
         downstream=[node(r) for r in down],
     )

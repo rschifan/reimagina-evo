@@ -15,7 +15,14 @@
   const icon = (kind: string) => (kind === "external" ? HardDrive : kind === "source" ? Database : Layers);
 
   const stateTone = (state: string | null) =>
-    state === "fresh" ? "fresh" : state === "stale" ? "stale" : state === "partial" ? "partial" : "absent";
+    state === "fresh" ? "fresh" : state === "stale" ? "stale" : "partial";
+
+  // A dataset with no recorded version gets no badge rather than an "absent"
+  // one. Absent is the default state of a graph nobody has published into, so
+  // labelling it everywhere shouted a non-event on every row and drowned the
+  // states that do mean something.
+  const shown = (state: string | null) =>
+    state === "fresh" || state === "stale" || state === "partial";
 </script>
 
 {#if datasets.length === 0}
@@ -34,21 +41,13 @@
             {node.kind} · {node.depth} hop{node.depth === 1 ? "" : "s"} upstream
           </span>
         </span>
-        <Badge tone={stateTone(node.state)} title={node.state === "absent"
-          ? "No version recorded yet — nothing has published one for this asset."
-          : `Freshness: ${node.state}`}>
-          {node.state ?? "unknown"}
-        </Badge>
+        {#if shown(node.state)}
+          <Badge tone={stateTone(node.state)} title={`Freshness: ${node.state}`}>
+            {node.state}
+          </Badge>
+        {/if}
       </li>
     {/each}
   </ul>
 
-  {#if datasets.every((d) => d.state === "absent")}
-    <p class="mt-3 text-[11px] leading-relaxed text-muted-foreground">
-      Every asset reads <span class="font-mono">absent</span>: the graph is seeded
-      but no version or materialization has been published yet. The lineage above
-      is real; the freshness column will stay <span class="font-mono">absent</span>
-      until an ingest publishes a version and a compute records a materialization.
-    </p>
-  {/if}
 {/if}
