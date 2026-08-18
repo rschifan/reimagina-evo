@@ -25,6 +25,8 @@ dependencies = [
     # acquisition step only, and is imported lazily so nothing else pays for
     # it. Adds exactly two packages: osmnx and networkx.
     "osmnx>=2.0",
+    # CLI framework — replaces the hand-rolled argparse parser in apps/cli.
+    "typer>=0.12",
     # Read-side API stack. FastAPI is sync-compatible with the psycopg2
     # storage layer through the default thread-pool dispatch.
     "fastapi>=0.110",
