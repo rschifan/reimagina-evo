@@ -507,3 +507,104 @@ def test_reseeding_removes_an_input_that_was_withdrawn(conn):
             (compactness, lot),
         )
         assert cur.fetchone()[0] == 0
+
+
+# ── scenario partitions ─────────────────────────────────────────────────────
+
+
+SCENARIO = "77777777-7777-7777-7777-777777777777"
+
+
+def _dirty(conn, scenario_id=SCENARIO):
+    from reimagina.assets.freshness import scenario_dirty_slugs
+
+    return set(scenario_dirty_slugs(conn, scenario_id))
+
+
+def _publish_override(conn, version="digest-1", scenario_id=SCENARIO):
+    from reimagina.assets.keys import partition_key
+    from reimagina.assets.publish import publish_version
+
+    publish_version(
+        conn,
+        asset_key="scenario.override",
+        version=version,
+        partition_key=partition_key({"scenario": scenario_id}),
+    )
+
+
+def test_a_scenario_nobody_has_edited_is_not_dirty(seeded_graph):
+    """No override version means no scenario partition, so nothing to compute."""
+    assert _dirty(seeded_graph) == set()
+
+
+def test_an_override_reaches_every_indicator_and_that_is_the_current_bound(
+    seeded_graph,
+):
+    """The honest state of the art here, asserted rather than implied.
+
+    `scenario.override` is one asset covering every attribute, so every
+    attribute-reading indicator has an identity edge to it and the composite
+    inherits the partition through its components. An edit to any attribute
+    therefore reaches all of them. Correct, not minimal — an asset per attribute
+    is what narrows it, and this assertion is what will show that it did.
+    """
+    _publish_override(seeded_graph)
+
+    assert _dirty(seeded_graph) == {spec.slug for spec in SHIPPED_INDICATORS}
+
+
+def test_comparing_expected_versions_cannot_narrow_a_scenario(seeded_graph):
+    """Why `scenario_dirty_slugs` carries no version-comparison predicate.
+
+    An earlier revision filtered on `expected(scenario) <> expected(baseline)`,
+    which reads like the exactness the design promises and is in fact a
+    tautology: every component embeds the partition it was reached at, starting
+    with the root's own, so two partitions of one asset never hash alike. The
+    predicate excluded nothing. This pins that, so re-adding it is a failing
+    test rather than a silent no-op.
+    """
+    _publish_override(seeded_graph)
+    with seeded_graph.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FILTER (WHERE s.expected_version = b.expected_version),
+                   count(*)
+            FROM serving_geo.asset_expected_version_v s
+            JOIN serving_geo.asset_expected_version_v b
+              ON b.asset_id = s.asset_id AND b.partition_key = ''
+            WHERE s.partition_key = %s AND s.asset_key LIKE 'indicator.%%'
+            """,
+            (f"scenario={SCENARIO}",),
+        )
+        equal, total = cur.fetchone()
+
+    assert total == len(SHIPPED_INDICATORS)
+    assert equal == 0, "the predicate this replaced never excluded anything"
+
+
+def test_an_indicator_already_computed_for_the_scenario_drops_out(seeded_graph):
+    _publish_override(seeded_graph)
+    slug = "urban_form_block_compactness"
+    with seeded_graph.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO curated_geo.asset_materialization
+                   (asset_id, partition_key, version)
+            SELECT e.asset_id, e.partition_key, e.expected_version
+            FROM serving_geo.asset_expected_version_v e
+            WHERE e.asset_key = %s AND e.partition_key = %s
+            """,
+            (indicator_asset_key(slug), f"scenario={SCENARIO}"),
+        )
+
+    assert slug not in _dirty(seeded_graph)
+
+
+def test_one_scenario_does_not_dirty_another_or_the_baseline(seeded_graph):
+    from reimagina.assets.freshness import stale_indicator_slugs
+
+    _publish_override(seeded_graph)
+
+    assert _dirty(seeded_graph, "88888888-8888-8888-8888-888888888888") == set()
+    assert stale_indicator_slugs(seeded_graph) == []

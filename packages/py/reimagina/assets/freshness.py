@@ -78,21 +78,36 @@ def stale_indicator_slugs(
 
 
 def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
-    """Indicators a what-if actually changes, and has not yet computed.
+    """Indicators a what-if reaches, and has not yet computed at that version.
 
-    Two conditions, and the first is the interesting one:
+    Membership is decided by one thing: whether the indicator has a node in this
+    scenario's partition at all. ``asset_component_v`` propagates a partition
+    downstream along ``identity`` edges, so an indicator gets a ``scenario=S``
+    row only where that propagation carried it there from
+    ``scenario.override@scenario=S``. An asset the override cannot reach has no
+    row and is never returned — no predicate needed, and none possible.
 
-    * ``expected(scenario) <> expected(baseline)`` — the override reaches this
-      indicator at all. Where the two agree, the scenario's answer *is* the
-      baseline's answer, so computing it would write a duplicate row and call it
-      a what-if.
-    * it is not already materialized at the scenario's expected version.
+    ⚠ The reach is currently the whole catalog, and that bound is worth stating
+    plainly. ``scenario.override`` is *one* asset covering every attribute, so
+    ``registry._edges_for`` gives every attribute-reading indicator an identity
+    edge to it and everything downstream inherits the partition. An override on
+    ``floors`` therefore returns all 13 indicators, not the ones that read
+    ``floors``: correct, not minimal — the same over-approximation
+    ``resolve_change_set`` documents, one layer further down. Splitting the
+    override into one asset per attribute is what makes it exact, and this query
+    needs no change when that lands, because the unreached indicators simply
+    stop having a node.
 
-    ``absent`` counts here, unlike on the baseline. A scenario partition that has
-    never been computed is precisely the thing a what-if submit is asking for,
-    whereas an absent baseline is just a database nobody has run yet. The first
-    condition is what keeps that from meaning "every indicator": only those the
-    override reaches differ from baseline in the first place.
+    ⚠ Do not narrow this by comparing expected versions. An earlier revision
+    filtered on ``expected(scenario) <> expected(baseline)`` and that predicate
+    is a tautology: every component embeds the partition it was reached at,
+    beginning with the root's own (``asset_key || '@' || partition_key || '='``
+    in r041), so two partitions of one asset can never hash alike. It excluded
+    nothing while reading as though it did the whole job.
+
+    ``absent`` counts here, unlike on the baseline. A scenario partition nobody
+    has computed is precisely what a what-if submit is asking for, whereas an
+    absent baseline is just a database nobody has run yet.
     """
     if not graph_available(conn):
         return []
@@ -101,19 +116,15 @@ def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT scenario.asset_key
-            FROM serving_geo.asset_expected_version_v scenario
-            JOIN serving_geo.asset_expected_version_v baseline
-              ON baseline.asset_id = scenario.asset_id
-             AND baseline.partition_key = ''
+            SELECT e.asset_key
+            FROM serving_geo.asset_expected_version_v e
             LEFT JOIN serving_geo.asset_freshness_v f
-              ON f.asset_id = scenario.asset_id
-             AND f.partition_key = scenario.partition_key
-            WHERE scenario.partition_key = %s
-              AND scenario.asset_key LIKE %s
-              AND scenario.expected_version <> baseline.expected_version
+              ON f.asset_id = e.asset_id
+             AND f.partition_key = e.partition_key
+            WHERE e.partition_key = %s
+              AND e.asset_key LIKE %s
               AND (f.materialized_version IS NULL
-                   OR f.materialized_version <> scenario.expected_version
+                   OR f.materialized_version <> e.expected_version
                    OR NOT f.coverage_complete)
             """,
             (make_partition_key({"scenario": scenario_id}), f"{INDICATOR_PREFIX}%"),
