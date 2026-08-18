@@ -113,11 +113,13 @@ async function loadInitialState(): Promise<{
   indicators: IndicatorSummary[];
   aois: AOIRow[];
 }> {
-  const [sources, indicators, aois] = await Promise.all([
-    listTileSources(),
-    listIndicators(),
-    listAois(),
-  ]);
+  // Indicators are fetched after the AOIs, not alongside them: the list is
+  // scoped to the active AOI so a picker never offers an indicator whose
+  // overlay would render empty here. Resolving the AOI first costs one
+  // sequential round trip and saves fetching a list we would discard.
+  const [sources, aois] = await Promise.all([listTileSources(), listAois()]);
+  setKnownAois(aois);
+  const indicators = await listIndicators(getActiveAoiId());
   return { sources, indicators, aois };
 }
 
@@ -188,9 +190,8 @@ async function main(): Promise<void> {
   const tileCatalog = extractTileSources(sources);
   const overlayConfig = choroplethConfig(sources);
 
-  // Seed the AOI store before anything else so initial tile-source
-  // installs and the first map fitBounds use the resolved active AOI.
-  setKnownAois(aois);
+  // The AOI store was seeded inside loadInitialState (the indicator fetch
+  // needs the resolved AOI), so the active id is already authoritative here.
   const initialAoi = aois.find((a) => a.aoi_id === getActiveAoiId()) ?? null;
 
   const state: AppState = { activeIndicator: null, activeGrain: null };
@@ -313,12 +314,55 @@ async function main(): Promise<void> {
       if (toggleContainer) {
         wireRasterToggles(toggleContainer, map, sources, aoi?.aoi_id ?? null);
       }
+      // The indicator list is AOI-scoped, so it has to be re-fetched: an
+      // indicator computed for CDMX may have no values in Mexicali, and
+      // offering it would render an empty overlay.
+      await refreshIndicatorList(aoi?.aoi_id ?? null);
       // Re-render the active indicator so its tile URL + colour ramp
       // reflect the new AOI scope. No active indicator = no work.
       if (state.activeIndicator) {
         await renderIndicator(state.activeIndicator);
       }
     });
+
+    /**
+     * Re-fetch the AOI-scoped indicator list and rebuild the picker.
+     *
+     * Declared as a hoisted function, and it resolves the ``<select>`` by id
+     * rather than closing over one: the AOI store fires its subscriber
+     * immediately on registration, which happens before the ``const select``
+     * below is initialised, so a closure over it would hit the temporal dead
+     * zone on the very first call.
+     *
+     * If the active indicator is absent from the new list, the overlay is
+     * torn down rather than left painting the previous AOI's tiles.
+     */
+    async function refreshIndicatorList(aoiId: string | null): Promise<void> {
+      try {
+        indicators = await listIndicators(aoiId);
+      } catch (err) {
+        console.warn("indicator list refresh failed; keeping previous list", err);
+        return;
+      }
+      const el = document.getElementById("indicator-select") as HTMLSelectElement | null;
+      if (!el) return;
+      const previous = state.activeIndicator?.slug ?? "";
+      populateIndicatorSelect(el, indicators);
+      const stillListed = indicators.some((i) => i.slug === previous);
+      el.value = stillListed ? previous : "";
+      if (previous && !stillListed) {
+        state.activeIndicator = null;
+        state.activeGrain = null;
+        removeIndicator(map);
+        const grainEl = document.getElementById("grain-toggle");
+        if (grainEl) clearGrainToggle(grainEl);
+        const legendEl = document.getElementById("legend");
+        if (legendEl) clearLegend(legendEl);
+        const downloadsEl = document.getElementById("downloads");
+        if (downloadsEl) setDownloadAvailability(downloadsEl, false);
+        setStatus("Indicator cleared — it has no values in this AOI.");
+      }
+    }
 
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const grainToggle = document.getElementById("grain-toggle");
