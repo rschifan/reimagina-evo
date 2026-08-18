@@ -210,10 +210,8 @@ export function cogPointProvider(opts: {
   title: string;             // human-readable raster name
   cogUrl: string;            // file:// URL passed to titiler
   endpointBase: string;      // e.g. "/api/cog" — resolved once
-  debounceMs?: number;       // default 150
-  unit?: string;
 }): TooltipProvider {
-  const debounceMs = opts.debounceMs ?? 150;
+  const debounceMs = 150;
   let lastFire = 0;
   let pending: Promise<TooltipContent | null> | null = null;
   let cached: { key: string; content: TooltipContent | null } | null = null;
@@ -243,10 +241,7 @@ export function cogPointProvider(opts: {
           const content: TooltipContent | null =
             val === undefined || val === null || Number.isNaN(val)
               ? null
-              : {
-                  title: opts.title,
-                  detail: opts.unit ? `${fmtNumber(val)} ${opts.unit}` : fmtNumber(val),
-                };
+              : { title: opts.title, detail: fmtNumber(val) };
           cached = { key, content };
           return content;
         })

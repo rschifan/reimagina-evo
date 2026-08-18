@@ -439,3 +439,58 @@ html, body, .app {
   letter-spacing: 0.06em;
   color: var(--muted);
 }
+
+/* Grain switcher — shown only for indicators published at more than
+   one feature type. Segmented-button idiom rather than a select: two
+   or three options read faster as adjacent targets than as a
+   collapsed dropdown. */
+.grain-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.grain-toggle__label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 2px;
+}
+
+.grain-toggle__btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+}
+
+.grain-toggle__btn:hover {
+  background: var(--button-bg-hover);
+}
+
+.grain-toggle__btn[aria-pressed="true"] {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.grain-toggle__btn:disabled {
+  cursor: default;
+}
+
+/* A single-grain chip is disabled but still the active grain, so it
+   keeps a readable fill instead of the sidebar's generic 0.4-opacity
+   disabled wash — it is stating a fact, not offering a dead option. */
+.grain-toggle__btn:disabled[aria-pressed="true"] {
+  opacity: 1;
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--muted);
+}

@@ -44,22 +44,12 @@ import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import type { SelectionController, SelectionGeometry } from "./selection";
 
 
-export interface SelectionMaskOptions {
-  /** Hex / rgba colour of the dim wash painted outside the selection.
-   *  Default ``#0b1220`` matches the app's background so dimmed
-   *  areas read as "fading into the canvas" rather than "tinted
-   *  blue/grey". */
-  dimColor?: string;
-  /** Opacity of the dim wash (0-1). Default 0.7 — strong enough to
-   *  drop the eye's attention but not so opaque that the operator
-   *  loses geographic context for the rest of the AOI. */
-  dimOpacity?: number;
-  /** MapLibre source id used internally. Override only if you need
-   *  multiple masks on the same map. */
-  sourceId?: string;
-  /** MapLibre fill layer id used internally. */
-  layerId?: string;
-}
+// ``DIM_COLOR`` matches the app background so dimmed areas read as
+// "fading into the canvas" rather than "tinted blue/grey".
+// ``DIM_OPACITY`` is strong enough to drop the eye's attention without
+// costing the operator geographic context for the rest of the AOI.
+const DIM_COLOR = "#0b1220";
+const DIM_OPACITY = 0.7;
 
 
 /** Default mask layer id. Exported so callers (e.g. ``choropleth.ts``)
@@ -88,37 +78,23 @@ const _WORLD_RING: number[][] = [
 ];
 
 
-/**
- * Install the mask source + fill layer and wire it to the selection
- * controller. Call AFTER ``installInputLayers`` (so the mask paints
- * over data layers) and BEFORE ``enableSelection`` (so terra-draw's
- * shape outline paints on top of the mask).
- *
- * Returns a dispose function that removes the layer + source. Called
- * on AOI teardown / map dispose; not needed in the steady prototype.
- */
 export interface SelectionMaskHandle {
-  /** Update the mask to reflect a new selection. ``null`` clears the
-   *  mask (no dim wash). Safe to call at 60 fps — the underlying
-   *  ``setData`` updates a tiny GeoJSON source. */
-  setSelection(selection: SelectionGeometry | null): void;
-  /** Wire the mask up to a selection controller. Convenience over
-   *  the bare ``setSelection`` for the common case. Returns the
+  /** Wire the mask up to a selection controller. Returns the
    *  unsubscribe handle. */
   bindController(controller: SelectionController): () => void;
-  /** Remove the source + layer from the map. */
-  dispose(): void;
 }
 
 
-export function installSelectionMask(
-  map: MapLibreMap,
-  options: SelectionMaskOptions = {},
-): SelectionMaskHandle {
-  const sourceId = options.sourceId ?? SELECTION_MASK_SOURCE_ID;
-  const layerId = options.layerId ?? SELECTION_MASK_LAYER_ID;
-  const dimColor = options.dimColor ?? "#0b1220";
-  const dimOpacity = options.dimOpacity ?? 0.7;
+/**
+ * Install the mask source + fill layer. Call AFTER
+ * ``installInputLayers`` (so the mask paints over data layers) and
+ * BEFORE ``enableSelection`` (so terra-draw's shape outline paints on
+ * top of the mask), then ``bindController`` once the controller
+ * exists.
+ */
+export function installSelectionMask(map: MapLibreMap): SelectionMaskHandle {
+  const sourceId = SELECTION_MASK_SOURCE_ID;
+  const layerId = SELECTION_MASK_LAYER_ID;
 
   // HMR-safe idempotency: dispose any prior installation rather than
   // returning a dead no-op handle. On Vite hot reload the map
@@ -139,8 +115,8 @@ export function installSelectionMask(
     type: "fill",
     source: sourceId,
     paint: {
-      "fill-color": dimColor,
-      "fill-opacity": dimOpacity,
+      "fill-color": DIM_COLOR,
+      "fill-opacity": DIM_OPACITY,
       "fill-antialias": false,
     },
   });
@@ -174,7 +150,6 @@ export function installSelectionMask(
   };
 
   return {
-    setSelection,
     bindController(controller: SelectionController): () => void {
       // Live (undebounced) subscriber: the mask MUST track
       // terra-draw's shape at 60 fps for the spotlight to feel
@@ -182,10 +157,6 @@ export function installSelectionMask(
       // polygon is the cheapest operation MapLibre exposes —
       // comfortably under 1 ms per frame.
       return controller.subscribe(setSelection);
-    },
-    dispose(): void {
-      if (map.getLayer(layerId)) map.removeLayer(layerId);
-      if (map.getSource(sourceId)) map.removeSource(sourceId);
     },
   };
 }

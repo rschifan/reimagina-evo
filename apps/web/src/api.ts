@@ -31,11 +31,6 @@ export interface TileSource {
     source_layer?: string | null;
     minzoom?: number | null;
     maxzoom?: number | null;
-    // Raster (source_mode='raster_cog') fields. Populated alongside
-    // tiles_url_template so the frontend can expose the colormap /
-    // rescale in the UI without re-parsing the URL.
-    colormap_name?: string | null;
-    rescale?: string | null;
     // Resolved file:// URL that titiler opens (populated for raster_cog).
     // Used by the hover-tooltip provider to call titiler's /cog/point
     // endpoint under the cursor.
@@ -48,8 +43,6 @@ export interface TileSource {
     attribute_key?: string | null;
     target_feature_type_slug?: string | null;
     method?: string | null;
-    input_kind?: string | null;
-    parent_raster_layer_id?: string | null;
     parent_raster_layer_slug?: string | null;
     value_range?: {
       count: number;
@@ -133,18 +126,11 @@ export function listTileSources(): Promise<TileSource[]> {
 
 export interface AOIRow {
   aoi_id: string;
-  project_id: string;
   name: string;
   description: string | null;
   /** [minLon, minLat, maxLon, maxLat] in EPSG:4326. Null when the AOI
    *  was inserted without geometry (rare). */
   bbox: [number, number, number, number] | null;
-  /** [lon, lat] from ST_PointOnSurface — a point guaranteed to lie
-   *  inside the polygon. The picker prefers this over the bbox centre
-   *  for irregular AOIs (Mexicali's municipality is L-shaped around
-   *  the river delta; bbox centre is in agricultural desert south of
-   *  the populated area). Null when the AOI has no geometry. */
-  centroid: [number, number] | null;
   /** [minLon, minLat, maxLon, maxLat] envelope of every block loaded
    *  inside this AOI — i.e. where the actual data lives. Distinct
    *  from {@link bbox} above: ``bbox`` is the muni polygon envelope,

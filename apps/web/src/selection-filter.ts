@@ -59,10 +59,6 @@ export interface ValueAwareLayerConfig {
   sourceName: string;
   /** Vector source layer (the inner MVT layer name). */
   sourceLayer: string;
-  /** Optional pre-existing filter on each layer. ANDed with the in-
-   *  selection check so this module doesn't clobber whatever the
-   *  caller had. Pass ``null`` (or omit) when the layer had no filter. */
-  baseFilter?: FilterSpecification | null;
 }
 
 
@@ -76,7 +72,7 @@ export function registerValueAwareLayer(
   // filter accept only flagged features. TypeScript's
   // FilterSpecification union over-constrains the array shape for
   // expression-form filters, so we cast at the boundary.
-  const inSelectionFilter = [
+  const activeFilter = [
     "==",
     ["coalesce", ["feature-state", "inSelection"], false],
     true,
@@ -87,25 +83,14 @@ export function registerValueAwareLayer(
   // current colour / line-width for unhover restore: the dispose /
   // clear path puts back exactly what we changed, regardless of
   // whether a future caller mutated the filter after our register.
-  // ``cfg.baseFilter`` (when explicitly passed) takes precedence —
-  // the caller is asserting "compose with this exact base".
   const restoreFilters = new Map<string, FilterSpecification | null>();
   for (const layerId of cfg.layerIds) {
     if (!map.getLayer(layerId)) continue;
-    const live = cfg.baseFilter !== undefined
-      ? cfg.baseFilter
-      : (map.getFilter(layerId) as FilterSpecification | undefined) ?? null;
-    restoreFilters.set(layerId, live);
+    restoreFilters.set(
+      layerId,
+      (map.getFilter(layerId) as FilterSpecification | undefined) ?? null,
+    );
   }
-  // Compose with the caller's base filter when explicitly provided.
-  // Use the same ``!= null`` test as ``restoreFilters`` above — a
-  // truthiness check would silently drop a ``false`` filter (which
-  // MapLibre treats as a valid "filter everything out" expression),
-  // diverging from the restore-path semantics.
-  const hasBase = cfg.baseFilter !== undefined && cfg.baseFilter !== null;
-  const activeFilter: FilterSpecification = hasBase
-    ? (["all", cfg.baseFilter, inSelectionFilter] as unknown as FilterSpecification)
-    : inSelectionFilter;
 
   // Track the ids we currently flag inSelection so we can clear them
   // efficiently when the selection changes (rather than walking every
@@ -231,9 +216,9 @@ function _collectFeatures(
   sourceName: string,
   sourceLayer: string,
 ): GeoJSON.Feature[] {
-  // Union of rendered + source features — same robustness trick the
-  // metrics module uses; each path drops features in different
-  // cases (low zoom: source not parsed; tiny opacity: not painted).
+  // Union of rendered + source features — each path drops features in
+  // different cases (low zoom: source not parsed; tiny opacity: not
+  // painted), so the union is the robust read.
   const out: GeoJSON.Feature[] = [];
   try {
     const layers = map.getStyle().layers ?? [];
