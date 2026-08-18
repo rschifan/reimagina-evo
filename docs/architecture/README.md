@@ -38,6 +38,7 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 | `SCENARIOS_LAYER.md` | User-authored planning state and scenario overlays |
 | `JOB_LAYER.md` | Orchestrator port, run and unit state, **scheduling and dispatch**, execution provenance |
 | `INDICATORS_LAYER.md` | Indicator metadata, dependency graph, computed results |
+| `ASSET_LAYER.md` | Asset graph, version algebra, freshness-driven recompute |
 | `TILE_SERVING.md` | Live MVT serving, PMTiles snapshots, tile-layer classification |
 | `API.md` | Read-side HTTP surface (FastAPI routes, download formats, ops knobs) |
 | `PERFORMANCE.md` | Production performance contract, benchmarks, observability |
@@ -48,6 +49,9 @@ The `docs/architecture/` folder is the authoritative architecture set for Reimag
 - **Where does a new dataset land?** Start in `TERMINOLOGY.md`, then follow the onboarding playbook in `DATA_LAYER.md`.
 - **How do scenarios use baseline data?** Read `SCENARIOS_LAYER.md` and `JOB_LAYER.md` together.
 - **Where do outputs go?** `INDICATORS_LAYER.md`.
+- **What is actually out of date?** `ASSET_LAYER.md` — the attribute path answers
+  "an edit named X"; freshness answers the larger question, including reloads,
+  logic changes and crashes that no edit names.
 - **How are map layers served?** `TILE_SERVING.md`.
 - **How do we monitor production-read performance?** `PERFORMANCE.md`.
 - **In what order do a run's indicators execute?** `JOB_LAYER.md` — the dependency graph decides what is *legal*, the queue decides what is *actual*.

@@ -24,6 +24,48 @@ project  →  scenario_id  →  scenario_override rows  →  submit_run  →  in
 
 **The baseline is never touched.** An override is a *read-time overlay resolved in SQL*, not an edit to `feature` or `observation` and not an in-memory merge inside a worker. The effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins (`scenarios/overrides.py:50`).
 
+**The same rule applies on the way out** (r043). A scenario stores only what it
+changed, so an indicator it did not recompute has no row under it. Reads
+therefore resolve as an overlay too: *this scenario's row where it has one, the
+baseline's otherwise.* Before that, a `floors` override dirtied one indicator, a
+run materialised 1 of 14, and the other 13 were simply missing under that
+scenario — holes on the map, and `compute_composite` intersecting its components
+to nothing and writing zero rows.
+
+Six read paths carry it, plus the tile: `list_current_for_indicator`,
+`get_current`, `rollup_child_rows`, `fetch_aoi_children`,
+`list_current_with_geometry`, `value_stats`, and
+`serving_geo.indicator_overlay_tile`. The predicate is
+`storage/_utils.scenario_overlay`.
+
+⚠ **An anti-join, not `scenario_id = X OR scenario_id IS NULL`.** The widened
+form looks equivalent and silently double-counts: where a scenario *has*
+recomputed a feature, both rows match, so an aggregate averages it twice and a
+tile emits two features with the same id. A baseline row qualifies only when no
+scenario row exists for that `(feature, indicator)`, so exactly one row survives
+per pair — and the predicate drops into a `WHERE`, a `JOIN … ON` or an aggregate
+unchanged.
+
+⚠ **A scenario row shadows the baseline only when it carries a value.** Keying
+on row existence alone contradicts the `COALESCE` rule above:
+`effective_numeric` resolves `COALESCE(override, observation, base)`, and
+COALESCE skips a NULL override rather than letting it win.
+`write_result(value_numeric=None, quality_flag="missing")` is a supported call,
+so valueless current rows exist by design — and without the value test one of
+them suppresses the baseline *and* is itself dropped by the readers' own
+`value_numeric IS NOT NULL` filters, so the feature disappears from `value_stats`
+and from every composite that consumes it rather than falling back.
+
+The trade-off is deliberate: **a scenario cannot express "recomputed, and the
+answer is now unknown" and have that beat the baseline.** Doing so needs a
+distinct signal the read layer honours — a `quality_flag` it inspects — not the
+absence of a value, which is indistinguishable from "not computed".
+
+⚠ **Writes stay exact-match.** Supersession is not a fallback question:
+`_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
+So does the indicator picker (`list_indicators(with_values_for_aoi=)`), which is
+baseline-only by design.
+
 ⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created — `app_core` contains only `project` (r001:27). The mechanism is `curated_geo.scenario_override`.
 
 ---
