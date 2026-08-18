@@ -590,18 +590,12 @@ function _baselineTooltipFormat(
   const id = typeof props.id === "string" ? props.id : null;
 
   switch (layer.typeSlug) {
-    case "municipality":
-    case "state": {
+    case "municipality": {
       // ``name`` is always emitted by r010 at z >= 11 (and z >= 8 for
       // context roles via the role-context branch). Falls back to the
       // generic layer label if ``name`` is missing for any reason.
       const name = typeof props.name === "string" ? props.name : null;
-      return {
-        title: name ?? layer.label,
-        detail: layer.typeSlug === "municipality"
-          ? "Alcaldía / municipality"
-          : "Estado / state",
-      };
+      return { title: name ?? layer.label, detail: "Alcaldía / municipality" };
     }
     case "ageb": {
       const cvegeo = _composeCvegeo(props, /* withMza */ false);

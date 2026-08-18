@@ -49,10 +49,8 @@ export interface ChoroplethConfig {
 export interface RampDomain {
   min: number;
   max: number;
-  /** Observed percentiles — shown in the legend when present. */
-  p05: number | null;
+  /** Observed median — shown in the legend when present. */
   p50: number | null;
-  p95: number | null;
   /** Whether the domain came from observed stats (true) or catalog (false). */
   fromStats: boolean;
 }
@@ -93,33 +91,17 @@ export function rampDomainFromStats(
 ): RampDomain {
   // Prefer observed p05→p95 so outliers don't dominate the ramp.
   if (stats && stats.count > 0 && stats.p05 !== null && stats.p95 !== null && stats.p95 > stats.p05) {
-    return {
-      min: stats.p05,
-      max: stats.p95,
-      p05: stats.p05,
-      p50: stats.p50,
-      p95: stats.p95,
-      fromStats: true,
-    };
+    return { min: stats.p05, max: stats.p95, p50: stats.p50, fromStats: true };
   }
   // Flat distribution (p05 == p95) — widen to min/max so we still see something.
   if (stats && stats.count > 0 && stats.min !== null && stats.max !== null && stats.max > stats.min) {
-    return {
-      min: stats.min,
-      max: stats.max,
-      p05: stats.p05,
-      p50: stats.p50,
-      p95: stats.p95,
-      fromStats: true,
-    };
+    return { min: stats.min, max: stats.max, p50: stats.p50, fromStats: true };
   }
   // No data — fall back to catalog safety bounds.
   return {
     min: indicator.valid_min ?? 0,
     max: indicator.valid_max ?? 1,
-    p05: null,
     p50: null,
-    p95: null,
     fromStats: false,
   };
 }

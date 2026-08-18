@@ -5,8 +5,8 @@
  * prototype avoids external tile dependencies and licensing drift),
  * loads the tile-source catalog + indicator catalog from the API, and
  * wires:
- *   - AOI picker (Cuauhtémoc / Tlalpan / Mexicali / …) → flies the map
- *     and re-scopes server-side tile filters via aoi_id.
+ *   - AOI picker (whatever /aois returns — CDMX, Mexicali, …) → flies
+ *     the map and re-scopes server-side tile filters via aoi_id.
  *   - Spatial-input layer toggles served by Martin's serving_geo.get_tile.
  *   - Indicator picker → server-side MVT choropleth via Martin's
  *     serving_geo.indicator_overlay_tile function.
@@ -14,6 +14,7 @@
  *     selected.
  */
 import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 import type { AOIRow, IndicatorSummary, TileSource } from "./api";
 import type { StyleSpecification } from "maplibre-gl";
 
@@ -236,7 +237,7 @@ async function main(): Promise<void> {
     // so terra-draw's layers (added inside ``enableSelection``) paint
     // on top of the mask — otherwise the cyan shape outline gets
     // covered by the dim wash.
-    const mask = installSelectionMask(map, { dimOpacity: 0.7 });
+    const mask = installSelectionMask(map);
     const selectionController = enableSelection(map);
     mask.bindController(selectionController);
     // Custom radius handle: a single visible cyan dot on the circle's
@@ -520,8 +521,10 @@ function _wireSelectionPanel(
     try {
       await streamMetrics(selection, specs, aoiId, onResult, ctrl.signal);
     } catch (err) {
-      if (isAbortError(err)) return;
-      throw err;
+      // Subscriber callbacks are fire-and-forget, so a rethrow here
+      // lands as an unhandled rejection nobody sees. Per-spec failures
+      // already render as "—" in the panel; log the rest.
+      if (!isAbortError(err)) console.warn("selection metrics failed:", err);
     }
     if (inFlight === ctrl) inFlight = null;
   };
