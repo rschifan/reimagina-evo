@@ -25,7 +25,24 @@ depends_on = None
 def upgrade() -> None:
     op.execute("ALTER TABLE jobs_runtime.orchestration_run ADD COLUMN aoi_id text")
 
-    from procrastinate.schema import SchemaManager
+    # ⚠ Edited on the DBOS branch, and only the import is conditional.
+    #
+    # This revision is mixed: the aoi_id column above is kept by every branch,
+    # while the schema below belongs to an ops-plane this branch replaced. A
+    # revision cannot import a dependency the project no longer has, and keeping
+    # `procrastinate` installed purely so a historical migration can run would
+    # misreport this branch's dependency footprint — one of the things the two
+    # ops-planes are being compared on.
+    #
+    # Skipping the install is safe because r032 drops this schema immediately
+    # afterwards: a database that never creates it and one that creates then
+    # drops it reach the same state. Rewriting history to remove the install
+    # instead would break alembic for any database already at r030 or later,
+    # which is why that is not done.
+    try:
+        from procrastinate.schema import SchemaManager
+    except ImportError:
+        return
 
     op.execute("CREATE SCHEMA IF NOT EXISTS procrastinate")
     # Install Procrastinate's objects into the dedicated schema. SET LOCAL is

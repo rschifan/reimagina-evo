@@ -10,6 +10,20 @@ keep_alive: 75
 # Match available CPU cores; martin is async/Tokio-based so this is I/O threads
 worker_processes: 8
 
+# Tile cache OFF. Martin defaults to a 512 MB in-memory cache, which is right
+# for static data and wrong for this repo: indicators are recomputed constantly,
+# and the cache has no idea the underlying rows changed. Measured — after
+# computing urban_form_block_planned_floors, a tile requested *before* the
+# compute kept returning 204 Empty while the same call in SQL returned 603
+# bytes, and neighbouring tiles that had never been requested returned data
+# correctly. The failure mode is the worst kind: not an error, just the
+# pre-compute answer, indistinguishable from "the indicator produced nothing".
+#
+# Cost of turning it off is a re-query per tile — measured at ~230 ms for the
+# heaviest real block tile, which is inside the budget at this scale. Raise
+# this for a deployment where the data is not moving under the reader.
+cache_size_mb: 0
+
 postgres:
   - connection_string: ${DATABASE_URL}
 

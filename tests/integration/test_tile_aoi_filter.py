@@ -38,7 +38,7 @@ from tests.integration._helpers import (
 )
 
 
-try:  # noqa: SIM105
+try:
     import mapbox_vector_tile  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover
     mapbox_vector_tile = None
@@ -472,3 +472,129 @@ def test_indicator_tile_function_runs_with_aoi_id_param(conn):
         )
         row = cur.fetchone()[0]
     assert row is not None
+
+
+# ─── get_tile (baseline layers) ───────────────────────────────────────
+#
+# r039. Before it, get_tile ignored aoi_id entirely — unrecognised query
+# params are not rejected, they are dropped — so the baseline layers drew
+# every feature while the overlay above drew only the AOI's. These assert on
+# decoded feature ids rather than byte lengths, because a length comparison
+# would also pass if the filter merely simplified geometry differently.
+
+
+def _tile_xy(lon: float, lat: float, z: int) -> tuple[int, int]:
+    """Web-Mercator tile containing (lon, lat). Computed rather than
+    hard-coded so moving the fixture cannot silently render an empty tile
+    that then passes an `is empty` assertion for the wrong reason."""
+    import math
+
+    n = 2**z
+    x = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def _seed_two_blocks_in_two_aois(conn) -> tuple[str, str, str, str]:
+    """Two blocks ~1 km apart so a single tile covers both, one per AOI."""
+    source_id = _register_source(
+        conn,
+        name="gettile_aoi_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+
+    def _block(ref: str, lon: float, lat: float) -> str:
+        return _insert_feature(
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
+            geometry_wkt=_polygon_at(lon, lat),
+        )
+
+    feat_a = _block("gettile-blk-a", -99.140, 19.430)
+    feat_b = _block("gettile-blk-b", -99.150, 19.430)
+    aoi_a = _make_aoi(
+        conn,
+        project_name="gettile_proj_a",
+        aoi_name="gettile_aoi_a",
+        polygon_wkt=_polygon_at(-99.140, 19.430, side=0.02),
+    )
+    aoi_b = _make_aoi(
+        conn,
+        project_name="gettile_proj_b",
+        aoi_name="gettile_aoi_b",
+        polygon_wkt=_polygon_at(-99.150, 19.430, side=0.02),
+    )
+    _attach_feature_to_aoi(conn, aoi_id=aoi_a, feature_id=feat_a)
+    _attach_feature_to_aoi(conn, aoi_id=aoi_b, feature_id=feat_b)
+    return aoi_a, aoi_b, feat_a, feat_b
+
+
+def _render_get_tile(conn, *, aoi_id: str | None, z: int = 12) -> list[dict]:
+    import json
+
+    x, y = _tile_xy(-99.145, 19.430, z)
+    params: dict = {"type_slug": "block"}
+    if aoi_id is not None:
+        params["aoi_id"] = aoi_id
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT serving_geo.get_tile(%s, %s, %s, %s::json)",
+            (z, x, y, json.dumps(params)),
+        )
+        row = cur.fetchone()[0]
+    return _decode_overlay("features", bytes(row) if row else b"")
+
+
+def _ids(features: list[dict]) -> set[str]:
+    return {f["properties"]["id"] for f in features}
+
+
+def test_get_tile_without_aoi_id_returns_every_feature(conn):
+    """The unscoped view stays unscoped — a CDMX-wide render is legitimate."""
+    _, _, feat_a, feat_b = _seed_two_blocks_in_two_aois(conn)
+    assert _ids(_render_get_tile(conn, aoi_id=None)) >= {feat_a, feat_b}
+
+
+def test_get_tile_scopes_to_the_requested_aoi(conn):
+    """The bug r039 fixes: this used to return both features for either AOI."""
+    aoi_a, aoi_b, feat_a, feat_b = _seed_two_blocks_in_two_aois(conn)
+
+    ids_a = _ids(_render_get_tile(conn, aoi_id=aoi_a))
+    ids_b = _ids(_render_get_tile(conn, aoi_id=aoi_b))
+
+    assert feat_a in ids_a and feat_b not in ids_a
+    assert feat_b in ids_b and feat_a not in ids_b
+
+
+def test_get_tile_blank_aoi_id_reads_as_unscoped(conn):
+    """`?aoi_id=` is how a client serialises "no AOI selected". It must not
+    be treated as a uuid that fails the regex and blanks the map."""
+    _, _, feat_a, feat_b = _seed_two_blocks_in_two_aois(conn)
+    assert _ids(_render_get_tile(conn, aoi_id="")) >= {feat_a, feat_b}
+
+
+def test_get_tile_unknown_aoi_id_returns_empty(conn):
+    """A well-formed but unknown uuid scopes to nothing — fail closed."""
+    _seed_two_blocks_in_two_aois(conn)
+    assert _render_get_tile(conn, aoi_id=str(uuid4())) == []
+
+
+def test_get_tile_malformed_aoi_id_returns_empty_rather_than_erroring(conn):
+    """A tile function returns bytea and has no error channel, so a bad uuid
+    must render empty rather than raise — and must never reach the ::uuid
+    cast, which is what the regex guard is for."""
+    _seed_two_blocks_in_two_aois(conn)
+    for junk in ("not-a-uuid", "1;DROP TABLE curated_geo.feature", "' OR '1'='1"):
+        assert _render_get_tile(conn, aoi_id=junk) == [], junk
+    # The table the injection string names must still be there.
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('curated_geo.feature') IS NOT NULL")
+        assert cur.fetchone()[0]

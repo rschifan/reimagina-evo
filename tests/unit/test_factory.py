@@ -42,16 +42,24 @@ def test_default_mode_is_used_when_nothing_is_specified(monkeypatch):
 
 
 def test_env_var_selects_the_mode(monkeypatch):
-    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "embedded")
-    assert type(get_orchestrator()) is type(get_orchestrator("embedded"))
+    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "dbos")
+    assert type(get_orchestrator()) is type(get_orchestrator("dbos"))
 
 
 def test_explicit_mode_beats_the_env_var(monkeypatch):
-    """A caller that names a mode means it — POST /jobs picks embedded vs detach
-    to honour its own 200-vs-202 contract, which deployment config must not
-    silently override."""
-    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "embedded")
-    assert type(get_orchestrator("detach")) is not type(get_orchestrator("embedded"))
+    """A caller that names a mode means it, whatever deployment config says."""
+    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "dbos")
+    assert type(get_orchestrator("sync")) is not type(get_orchestrator("dbos"))
+
+
+def test_the_queue_era_modes_are_gone(monkeypatch):
+    """`detach` and `embedded` distinguished enqueue-and-return from
+    enqueue-and-drain-here. Under a durable-execution library one process does
+    both, so they are not modes — and a config carrying them must fail loudly
+    rather than silently fall back to the default."""
+    for mode in ("detach", "embedded"):
+        with pytest.raises(ValueError):
+            get_orchestrator(mode)
 
 
 def test_a_memory_backed_mode_cannot_be_the_deployment_default(monkeypatch):

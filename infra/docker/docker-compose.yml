@@ -2,7 +2,7 @@
 # Local development stack for Reimagina.
 #
 # Services:
-#   postgres   — PostgreSQL 16 + PostGIS 3.4
+#   postgres   — PostgreSQL 16 + PostGIS 3.4 + pgRouting 3.6
 #   pgbouncer  — Connection pooler (transaction mode) — apps connect here
 #   martin     — Vector tile server — frontend connects here for MVT tiles
 #
@@ -16,9 +16,14 @@ name: reimagina
 
 services:
 
-  # ── PostgreSQL + PostGIS ────────────────────────────────────────────────────
+  # ── PostgreSQL + PostGIS + pgRouting ────────────────────────────────────────
+  # pgrouting/pgrouting is postgis/postgis with pgRouting added: same Postgres
+  # major, same PostGIS minor, so this is an addition and not an upgrade. The
+  # network-accessibility indicators need pgr_drivingDistance (migration r037),
+  # and postgis/postgis does not ship it. Keep this tag in step with the CI
+  # service image in .github/workflows/ci.yml.
   postgres:
-    image: postgis/postgis:16-3.4
+    image: pgrouting/pgrouting:16-3.4-3.6.1
     restart: unless-stopped
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-reimagina}

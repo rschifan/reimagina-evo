@@ -172,7 +172,7 @@ def _probe_martin(martin_url: str, timeout: float = 2.0) -> bool:
     if not parsed.scheme:
         return False
     try:
-        with urllib.request.urlopen(  # noqa: S310 — internal URL
+        with urllib.request.urlopen(
             f"{martin_url.rstrip('/')}/catalog",
             timeout=timeout,
         ) as resp:

@@ -36,32 +36,29 @@ def create_run(
     aoi_id: str | None = None,
     status: str = "running",
 ) -> bool:
-    """Insert the run envelope. Returns True if persisted, False when skipped."""
+    """Insert the run envelope. Returns True if persisted, False when skipped.
+
+    Idempotent, because the ops-plane may re-run the step that calls it. A
+    durable-execution step only records its output once it completes, so one
+    interrupted partway through starts again from the top on recovery — and a
+    bare INSERT would then fail on the primary key, permanently. A run that
+    could not survive a crash during its own first step would defeat the point
+    of durable execution entirely.
+
+    ``DO NOTHING`` rather than ``DO UPDATE``: the row may have been advanced
+    since (to a terminal status, by a cancel), and re-opening a run that has
+    already closed is worse than not writing at all.
+    """
     if not _is_postgres(conn):
         return False
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs_runtime.orchestration_run "
-            "(id, scenario_id, aoi_id, status, code_version) VALUES (%s, %s, %s, %s, %s)",
+            "(id, scenario_id, aoi_id, status, code_version) VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
             (run_id, scenario_id, aoi_id, status, code_version),
         )
     return True
-
-
-def run_params(conn: Any, run_id: str) -> dict[str, Any] | None:
-    """Return the run-level params the async tasks need to dispatch units."""
-    if not _is_postgres(conn):
-        return None
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT scenario_id::text, aoi_id, code_version "
-            "FROM jobs_runtime.orchestration_run WHERE id = %s",
-            (run_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    return {"scenario_id": row[0], "aoi_id": row[1], "code_version": row[2]}
 
 
 def set_unit_status(
@@ -133,7 +130,13 @@ def list_units(conn: Any, run_id: str) -> list[dict[str, Any]]:
 
 def record_units(conn: Any, *, run_id: str, units: Sequence[dict[str, Any]]) -> None:
     """Insert one job_unit per dirty unit. ``units`` items:
-    ``{indicator, features(list[str]), status, detail}``."""
+    ``{indicator, features(list[str]), status, detail}``.
+
+    Idempotent for the same reason as ``create_run`` — and here ``DO NOTHING``
+    does more than avoid an error. Units that already progressed keep the status
+    they reached: a re-run must not reset a succeeded unit to ``queued`` and
+    schedule its minutes of PostGIS a second time.
+    """
     if not _is_postgres(conn):
         return
     with conn.cursor() as cur:
@@ -141,7 +144,8 @@ def record_units(conn: Any, *, run_id: str, units: Sequence[dict[str, Any]]) -> 
             cur.execute(
                 "INSERT INTO jobs_runtime.job_unit "
                 "(run_id, indicator_slug, feature_scope, status, detail) "
-                "VALUES (%s, %s, %s::jsonb, %s, %s)",
+                "VALUES (%s, %s, %s::jsonb, %s, %s) "
+                "ON CONFLICT (run_id, indicator_slug) DO NOTHING",
                 (
                     run_id,
                     unit["indicator"],

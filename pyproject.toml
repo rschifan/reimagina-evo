@@ -18,6 +18,13 @@ dependencies = [
     "fiona>=1.9",
     "pandas>=2.0",
     "pyarrow>=15.0",
+    # OSM road-network ingest for the accessibility indicators. Fetches an
+    # already-noded graph (u/v node ids + length in metres) for an arbitrary
+    # polygon, which loads straight into r037's pgRouting tables without a
+    # pgr_createTopology pass. Routing itself stays in Postgres — osmnx is the
+    # acquisition step only, and is imported lazily so nothing else pays for
+    # it. Adds exactly two packages: osmnx and networkx.
+    "osmnx>=2.0",
     # Read-side API stack. FastAPI is sync-compatible with the psycopg2
     # storage layer through the default thread-pool dispatch.
     "fastapi>=0.110",
@@ -33,10 +40,9 @@ dependencies = [
     # each pixel a fractional-area weight per polygon. Replaces
     # rasterstats here because rasterstats' default centroid-in-polygon
     # policy silently drops manzanas smaller than the WorldPop pixel.
-    # rasterstats stays as a transitive dep through other libraries
-    # but is no longer called directly.
+    # rasterstats is not declared: nothing imports it, and it still resolves
+    # transitively for whatever does.
     "exactextract>=0.2",
-    "rasterstats>=0.19",
     # Raster tile serving (R4). titiler.core ships the FastAPI router
     # we mount under /cog in apps/api so the API + tile server share a
     # process. Staying on core (no titiler.mosaic / titiler.application)
@@ -54,12 +60,20 @@ dependencies = [
     # @check_output. Declared directly (imported in indicators/validation.py)
     # rather than leaning on the sf-hamilton[pandera] transitive.
     "pandera>=0.20",
-    # Async ops-plane (Phase 3, components 5/6/7/8): Procrastinate is a
-    # Postgres-backed task queue (own durable jobs table, FOR UPDATE SKIP
-    # LOCKED, LISTEN/NOTIFY, retries, dead-letter, queueing locks). Its schema
-    # lives in the `procrastinate` schema (migration r029); the worker/enqueue
-    # paths use DATABASE_URL_DIRECT (LISTEN/NOTIFY needs a direct connection).
-    "procrastinate>=3.0",
+    # Durable execution as a library (MIT). Checkpoints land in our own
+    # Postgres under the `dbos` schema, so there is no standing service and no
+    # second database; we keep the wave scheduler and borrow only durability.
+    #
+    # Pinned >=2.28 because 2.28.0 IS the latest stable — the plan's `>=2.29`
+    # does not exist. 2.28.0 does not contain the idempotent-recovery fix (PR
+    # #786 merged six hours after it shipped), which is why the cross-executor
+    # sweep is built last and gated on a conservative liveness signal. Startup
+    # recovery is unaffected: a process only ever reclaims its own executor_id,
+    # at a moment when by definition it is not running those workflows.
+    #
+    # The upper bound is deliberate — breaking changes ship inside minor
+    # releases. See docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
+    "dbos>=2.28,<3",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +84,8 @@ dev = [
     "httpx>=0.27",
     # mapbox_vector_tile decodes MVT bytes in the r017 tile-function tests.
     "mapbox-vector-tile>=2.1",
+    # `make lint` runs this; CI gates on it. Pinned to match the CI step.
+    "mypy==2.3.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -88,3 +104,27 @@ addopts = "-v"
 
 [tool.coverage.run]
 source = ["packages/py/reimagina"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+# `storage/interfaces.py` declares 18 Protocols against one implementation, and
+# until this was added nothing verified they agreed — the contract was upheld by
+# hand across 90 methods. It had held, but only by care. This makes it
+# structural, and caught two real defects on adoption: a NOT NULL `crs` that a
+# raster without one would violate, and a `conn: object` the port called
+# `.commit()` on.
+
+# ⚠ `exclude` is NOT enough here, and using it alone passed locally while
+# failing CI. It filters directory *discovery* only — a module reached through
+# an import is analysed regardless, and `apps/cli/perf.py` imports
+# `reimagina.perf.runner`. It looked fine locally purely because the package is
+# installed without a `py.typed`, so mypy treated it as untyped and skipped it;
+# CI does not install the package, so `reimagina` resolved from source instead.
+# `ignore_errors` applies however the module was reached, which is the property
+# actually wanted.
+[[tool.mypy.overrides]]
+module = "reimagina.perf.*"
+ignore_errors = true
+# The benchmark harness builds workflow functions dynamically and is verified by
+# the workload suite running them, not by annotations.

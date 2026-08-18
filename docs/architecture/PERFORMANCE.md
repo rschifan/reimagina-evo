@@ -95,7 +95,7 @@ the INEGI hierarchy is pre-snapped). `overlap_measure` range: 16.9 m² →
 
 PMTiles export (`admin_reference`, 16 alcaldías): 35.3 KB artifact. `ogr2ogr`
 on macOS emits the benign `OGR2SQLITE_Setup` post-write warning;
-`reimagina.tiles.service._run_export_command` detects the warning and
+`reimagina.tiles.export._run_export_command` detects the warning and
 verifies the artifact on disk before treating the run as successful.
 
 Benchmark `overlap_block_to_ageb_cuauhtemoc` (5 iterations, warm cache,
