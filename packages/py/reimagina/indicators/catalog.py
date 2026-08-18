@@ -121,25 +121,30 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
     slug="urban_form_block_composite",
     name="Urban Form Composite",
     description=(
-        "Equal-weighted sum of block compactness (0.5) and building density "
-        "(0.5). ⚠ The inputs are on different scales — compactness is a 0–1 "
-        "ratio, density is buildings per hectare — so the density term "
-        "dominates and the result is closer to a density reading than to a "
-        "balance of the two. Useful for ranking blocks against each other, not "
-        "as an absolute score."
+        "Equal-weighted blend of block compactness (0.5) and building density "
+        "(0.5), each first rescaled to 0–1 against its own declared bounds, so "
+        "the two contribute equally as the weights say. 0 is least compact and "
+        "least dense; 1 is most compact and most dense at the catalog's "
+        "declared maxima. A relative score for ranking blocks against each "
+        "other, not an absolute measure of anything."
     ),
-    # ⚠ It also earns its place structurally, which is why it ships even though
-    # the scale mismatch above limits it: without a composite the dirty-set is
-    # always a single wave, so nothing exercises dependency ordering, downstream
-    # propagation, or the skip-a-dependent-of-a-failed-input rule. That is a
-    # note to ourselves — it used to be in `description`, which the API serves.
+    # ⚠ It also earns its place structurally: without a composite the dirty-set
+    # is always a single wave, so nothing exercises dependency ordering,
+    # downstream propagation, or the skip-a-dependent-of-a-failed-input rule.
+    # That is a note to ourselves — it used to be in `description`, which the
+    # API serves.
     computation_kind="composite",
     # Composites must have model_family NULL — indicator_catalog CHECK (r016).
     value_type="numeric",
-    # Inputs are a 0–1 ratio and a 0–500/ha density, so the weighted sum tops
-    # out near 250; 300 is a safety cap that catches pathological bugs.
+    # 0–1 because `compute_composite` rescales each input against its own
+    # declared bounds before weighting. Previously 0–300, when raw values were
+    # summed: a 0–1 ratio added to a 0–500/ha density, which made the declared
+    # 0.5/0.5 behave as 1.25 / 98.75 on real data. The weights were decorative
+    # and the widest range decided. Changing this bound is what makes r016's
+    # write trigger reject any pre-normalisation value that survives.
+    unit="score_0_1",
     valid_min=0.0,
-    valid_max=300.0,
+    valid_max=1.0,
     aggregation_method="weighted_mean",
     # Reads no attribute: a composite is invalidated through `depends_on`, not
     # by the impact engine's attribute seeding.
