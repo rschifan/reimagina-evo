@@ -112,6 +112,17 @@ ignore_missing_imports = true
 # structural, and caught two real defects on adoption: a NOT NULL `crs` that a
 # raster without one would violate, and a `conn: object` the port called
 # `.commit()` on.
-exclude = "^packages/py/reimagina/perf/"
-# The benchmark harness builds workflow functions dynamically and is checked by
+
+# ⚠ `exclude` is NOT enough here, and using it alone passed locally while
+# failing CI. It filters directory *discovery* only — a module reached through
+# an import is analysed regardless, and `apps/cli/perf.py` imports
+# `reimagina.perf.runner`. It looked fine locally purely because the package is
+# installed without a `py.typed`, so mypy treated it as untyped and skipped it;
+# CI does not install the package, so `reimagina` resolved from source instead.
+# `ignore_errors` applies however the module was reached, which is the property
+# actually wanted.
+[[tool.mypy.overrides]]
+module = "reimagina.perf.*"
+ignore_errors = true
+# The benchmark harness builds workflow functions dynamically and is verified by
 # the workload suite running them, not by annotations.
