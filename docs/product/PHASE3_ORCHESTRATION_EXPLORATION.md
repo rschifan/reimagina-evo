@@ -166,7 +166,7 @@ workers never compute the same unit. Units that keep failing are moved aside
   `orchestration/tasks.py:32`). `compute_unit` retries transient failures
   (`RetryStrategy(max_attempts=3, exponential_wait=2)`, `orchestration/tasks.py:92`);
   a deterministic runner exception is recorded terminal `failed` instead of
-  retried. There is no `claim_job` — `storage/interfaces.py:550` says so in the
+  retried. There is no `claim_job` — `storage/interfaces/jobs.py` says so in the
   protocol itself. Still missing: a dead-letter destination for retry exhaustion.)
 
 **7. Worker pools**
@@ -308,7 +308,7 @@ replaced (e.g. by Dagster) without touching the application.
   status vocabulary, in plain dataclasses that leak no Hamilton/Procrastinate
   type. Implementations are named in exactly one place —
   `orchestration/factory.py`, modes `detach` / `embedded` / `sync` — which is the
-  seam an ops-plane swap edits. The repository protocols in `storage/interfaces.py`
+  seam an ops-plane swap edits. The repository protocols in `storage/interfaces/`
   are the *storage* port, a different seam.)
 
 Coverage: every F1–F9 + N1–N9 maps to ≥1 component above. **N7 (ops

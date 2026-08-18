@@ -57,19 +57,26 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    visible: false,
-    // Matches the server: r038 stops serving buildings below z14, so a
-    // lower minzoom here only buys empty round-trips.
+    // On by default now that r038 bounds the cost. Previously this layer
+    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
+    // was the only thing keeping the map usable; with footprints served
+    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
+    visible: true,
+    // z14 because get_tile (migration r038) stops serving building
+    // footprints below it — a request at 11-13 returns an empty tile, so a
+    // lower floor here only buys wasted round-trips.
     //
-    // The floor is a data limit, not a tuning knob. At z12 one pixel is
-    // ~36 m, so a footprint is sub-pixel and there is no encoding that
-    // rescues it: dropping attributes saved 362 bytes of a 2.59 MB tile
-    // (ST_AsMVT dictionaries per tile, so size tracks cardinality, not
-    // column width — the 36-char uuids are 1.71 MB of it and hit-testing
-    // needs them), and simplifying hard enough to shrink the tile
-    // collapsed 36k of 37.8k footprints into degenerate rings that
-    // ST_AsMVTGeom drops. For "where are the buildings" at AOI scale use
-    // the urban_form_block_building_density choropleth instead.
+    // The earlier value was 11, justified by "ST_Simplify keeps tiles
+    // bounded". Measured, that was wrong twice over: on a dataset dense in
+    // one alcaldia a z12 tile reached 2.59 MB, and the reason the z10/z11
+    // rungs looked cheap is that ~10 m simplification collapses a ~10 m
+    // footprint to a degenerate ring, which ST_AsMVTGeom drops — 1,826 of
+    // 37,858 buildings survived. Cheap because 95% was discarded.
+    //
+    // At z12 one pixel is ~36 m, so footprints are sub-pixel anyway. For
+    // building information at AOI scale use the
+    // urban_form_block_building_density choropleth, which is the layer that
+    // question actually wants.
     minzoom: 14,
   },
   {

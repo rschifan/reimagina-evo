@@ -13,6 +13,9 @@ SHELL := /bin/bash
 # remember `source .venv/bin/activate` first.
 PYTHON := uv run python
 PYTEST := uv run pytest
+# ruff is commonly installed globally; mypy ships in the dev extra, so it is run
+# through uv like the other Python entry points here.
+MYPY := uv run mypy
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -31,9 +34,10 @@ install: ## Install Python + web dependencies.
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
 
 .PHONY: lint
-lint: ## Run ruff check + format-check (mirrors CI).
+lint: ## Run ruff check + format-check + mypy (mirrors CI).
 	ruff check .
 	ruff format --check .
+	$(MYPY) packages/py/reimagina apps scripts
 
 .PHONY: format
 format: ## Reformat with ruff format (writes changes).
@@ -50,6 +54,10 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 .PHONY: test-conformance
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
 	$(PYTEST) tests/conformance -q --no-header -rA
+
+.PHONY: test-workloads
+test-workloads: ## Measure how this ops plane schedules (see tests/workloads/README.md).
+	REIMAGINA_BENCH=1 $(PYTEST) tests/workloads -q --no-header -rA
 
 .PHONY: build-web
 build-web: ## Typecheck + build the web app.

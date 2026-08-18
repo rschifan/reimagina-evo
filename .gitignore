@@ -86,3 +86,11 @@ CLAUDE.md
 *.bak
 *.orig
 .hypothesis/
+
+# Workload-suite reports (tests/workloads) — regenerated, never reviewed.
+artifacts/
+
+# osmnx's Overpass response cache, written to ./cache by default. Worth keeping
+# locally — a repeat fetch of the same polygon drops from ~125 s to ~0 s — but
+# it is derived data; the graph that matters lives in Postgres.
+cache/

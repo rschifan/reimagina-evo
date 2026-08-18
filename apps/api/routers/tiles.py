@@ -14,7 +14,7 @@ import psycopg2
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from reimagina.tiles.service import resolve_tile_sources
+from reimagina.tiles.sources import resolve_tile_sources
 
 from ..deps import (
     get_db_conn,

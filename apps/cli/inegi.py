@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from reimagina.db import connect
-from reimagina.pipeline import inegi_censo, inegi_marco
+import reimagina.pipeline.inegi_censo as inegi_censo
+import reimagina.pipeline.inegi_marco as inegi_marco
 
 
 def bootstrap_inegi_marco(

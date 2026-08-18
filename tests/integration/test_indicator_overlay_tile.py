@@ -16,7 +16,7 @@ from reimagina.data import feature as feat
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.indicators.compactness import compute_block_compactness
 
-try:  # noqa: SIM105
+try:
     import mapbox_vector_tile  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover
     mapbox_vector_tile = None
