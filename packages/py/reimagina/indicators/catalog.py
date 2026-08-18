@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from reimagina.assets.keys import AssetEdge, indicator_asset_key
 from reimagina.storage import backend_for_connection
 
 
@@ -34,13 +35,62 @@ class IndicatorSpec:
     unit: str | None = None
     valid_min: float | None = None
     valid_max: float | None = None
+    # What this indicator consumes, as typed edges in the asset graph: the
+    # datasets, the attributes read off them, and the other indicators it
+    # combines. This is the declaration; `reads` and `depends_on` below are
+    # derived from it, so a dataset dependency and an attribute dependency
+    # cannot drift apart as two parallel statements about the same indicator.
+    inputs: tuple[AssetEdge, ...] = field(default_factory=tuple)
     # Input attribute keys this indicator reads off a feature. The impact
     # engine (reimagina.orchestration.impact) seeds the dirty-set from this:
     # a scenario that edits attribute X invalidates every indicator whose
     # `reads` contains X. Composite indicators read other indicators, not
     # attributes, so they leave this empty and declare `depends_on` instead.
+    #
+    # ⚠ Derived from `inputs` when `inputs` is given, and only settable directly
+    # when it is not. Synthetic registries — the perf workloads and the unit-test
+    # fixtures for wave/port/intake — build minimal specs with no dataset
+    # meaning, so they keep declaring these two directly. Every shipped
+    # indicator declares `inputs` and lets the projection do the rest.
     reads: tuple[str, ...] = field(default_factory=tuple)
     depends_on: tuple[tuple[str, float | None], ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not self.inputs:
+            return
+        derived_reads, derived_depends = self._projections()
+        # Tolerate being handed back exactly what this would derive. That is what
+        # `dataclasses.replace` does — it passes every current field, including
+        # the two this computes — and refusing it would break an ordinary
+        # dataclass operation. Anything *else* is a second, drifting statement.
+        conflicting = (self.reads and self.reads != derived_reads) or (
+            self.depends_on and self.depends_on != derived_depends
+        )
+        if conflicting:
+            raise ValueError(
+                f"{self.slug}: declare `inputs`, or `reads`/`depends_on` — "
+                "never both. The point of `inputs` is that there is one "
+                "statement of what this indicator consumes."
+            )
+        object.__setattr__(self, "reads", derived_reads)
+        object.__setattr__(self, "depends_on", derived_depends)
+
+    def _projections(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[tuple[str, float | None], ...]]:
+        attributes: list[str] = []
+        for edge in self.inputs:
+            for key in edge.attributes:
+                if key not in attributes:
+                    attributes.append(key)
+        return (
+            tuple(attributes),
+            tuple(
+                (edge.indicator_slug, edge.weight)
+                for edge in self.inputs
+                if edge.relation == "derived_from" and edge.indicator_slug
+            ),
+        )
 
 
 URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
@@ -63,8 +113,12 @@ URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
     valid_max=500.0,
     aggregation_method="weighted_mean",
     # Derived from the block polygon (building centroids ÷ block area), so a
-    # geometry edit invalidates it.
-    reads=("geometry",),
+    # geometry edit invalidates it — and it counts buildings, which is the
+    # dataset dependency that was previously invisible outside the compute body.
+    inputs=(
+        AssetEdge("mex.block", attributes=("geometry",)),
+        AssetEdge("global.building", relation="child_in_parent"),
+    ),
     applies_to=("block", "ageb"),
 )
 
@@ -85,8 +139,9 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     valid_max=1.0,
     aggregation_method="weighted_mean",
     # Polsby-Popper is a pure function of the block polygon, so a geometry
-    # edit invalidates it.
-    reads=("geometry",),
+    # edit invalidates it. One dataset, one attribute — which is what makes it
+    # the control case against building density in every dirty-set test.
+    inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
     # Indicator is produced directly at the block grain and rolled up to AGEB
     # via feature_overlap. Both grains appear in applies_to so indicator_result
     # rows land cleanly at either level.
@@ -112,7 +167,7 @@ URBAN_FORM_BLOCK_PLANNED_FLOORS = IndicatorSpec(
     aggregation_method="weighted_mean",
     # Reads the `floors` attribute (effective = base ⊕ scenario override), so a
     # scenario edit to `floors` invalidates it via the impact engine.
-    reads=("floors",),
+    inputs=(AssetEdge("mex.block", attributes=("floors",)),),
     applies_to=("block",),
 )
 
@@ -148,9 +203,17 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
     aggregation_method="weighted_mean",
     # Reads no attribute: a composite is invalidated through `depends_on`, not
     # by the impact engine's attribute seeding.
-    depends_on=(
-        (URBAN_FORM_BLOCK_COMPACTNESS.slug, 0.5),
-        (URBAN_FORM_BLOCK_BUILDING_DENSITY.slug, 0.5),
+    inputs=(
+        AssetEdge(
+            indicator_asset_key(URBAN_FORM_BLOCK_COMPACTNESS.slug),
+            relation="derived_from",
+            weight=0.5,
+        ),
+        AssetEdge(
+            indicator_asset_key(URBAN_FORM_BLOCK_BUILDING_DENSITY.slug),
+            relation="derived_from",
+            weight=0.5,
+        ),
     ),
     applies_to=("block",),
 )
@@ -179,6 +242,11 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 
 _EDIFICABILITY_READS = ("num_levels", "unit_size", "people_per_household")
 
+#: One block edge carrying all three attributes. `geometry` stays off it for the
+#: reason above: these divide by block area, but declaring it would drag them
+#: into every geometry-seeded dirty set, including the conformance fixture's.
+_EDIFICABILITY_INPUTS = (AssetEdge("mex.block", attributes=_EDIFICABILITY_READS),)
+
 
 EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     slug="edificability_block_housing_units",
@@ -206,7 +274,7 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     valid_min=0.0,
     valid_max=200_000.0,
     aggregation_method="weighted_mean",
-    reads=_EDIFICABILITY_READS,
+    inputs=_EDIFICABILITY_INPUTS,
     applies_to=("block",),
 )
 
@@ -228,7 +296,7 @@ EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
     valid_min=0.0,
     valid_max=750_000.0,
     aggregation_method="weighted_mean",
-    reads=_EDIFICABILITY_READS,
+    inputs=_EDIFICABILITY_INPUTS,
     applies_to=("block",),
 )
 
@@ -256,7 +324,7 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
     valid_min=0.0,
     valid_max=2_000.0,
     aggregation_method="weighted_mean",
-    reads=_EDIFICABILITY_READS,
+    inputs=_EDIFICABILITY_INPUTS,
     applies_to=("block",),
 )
 
@@ -409,7 +477,35 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         valid_min=0.0,
         valid_max=ACCESSIBILITY_CUTOFF_M,
         aggregation_method="weighted_mean",
-        reads=("poi_version", "network_version") if network else ("poi_version",),
+        inputs=(
+            # ⚠ `poi_version` / `network_version` are stand-in version markers
+            # written onto block features by scripts/seed_demo_attributes.py and
+            # bumped by hand — nothing in the ingest path produces them. They
+            # stay declared here, on the block edge where they actually live, so
+            # that scripts/demo.py keeps invalidating these indicators until
+            # freshness replaces attribute-seeding. The real dataset edges below
+            # are what will carry that job.
+            AssetEdge(
+                "mex.block",
+                attributes=(
+                    ("poi_version", "network_version") if network else ("poi_version",)
+                ),
+            ),
+            AssetEdge(
+                "global.poi", relation="within_radius", radius_m=ACCESSIBILITY_CUTOFF_M
+            ),
+            *(
+                (
+                    AssetEdge(
+                        "global.road_network",
+                        relation="within_radius",
+                        radius_m=ACCESSIBILITY_CUTOFF_M,
+                    ),
+                )
+                if network
+                else ()
+            ),
+        ),
         applies_to=("block",),
     )
 

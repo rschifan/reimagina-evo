@@ -403,7 +403,7 @@ def add_derivation(
     input_feature_type: str | None = None,
     weight_basis: str | None = None,
     params_json: str | None = None,
-    coverage_threshold: float = 0.5,
+    coverage_threshold: float = 0.0,
     aoi_id: str | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:

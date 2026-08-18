@@ -400,6 +400,11 @@ def bootstrap(
                 "columns": list(columns),
                 "observations_written": observations_written,
             },
+            # The census lands as observations under the `censo_2020` prefix,
+            # which is what censo.2020 is registered as backing.
+            asset_key="censo.2020",
+            rows_written=observations_written,
+            dataset_version=CENSO_VERSION,
         )
         conn.commit()
 

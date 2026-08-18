@@ -53,11 +53,19 @@ def bootstrap_local_platform(
     # manual `indicators seed-catalog` step. The impact engine reads the Python
     # specs and the write-triggers read this table; seeding here keeps the two
     # from drifting on a fresh deploy. Idempotent (ON CONFLICT).
+    #
+    # The asset registry is seeded from code for the same reason, and from *here*
+    # rather than from a migration body: r006/r015/r016/r019/r020 each insert
+    # their own explore.layer_catalog rows and that drifted far enough to need
+    # scripts/repair_layer_catalog.sql. Assets are seeded after feature types
+    # exist, since a feature-backed asset resolves its feature_type_id.
+    from reimagina.assets.registry import seed_assets
     from reimagina.db import connect
     from reimagina.indicators.catalog import seed_catalog
 
     with connect(app_dsn) as conn:
         seed_catalog(conn)
+        seed_assets(conn)
         conn.commit()
     return result
 

@@ -20,8 +20,9 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
         },
     )
 
-    # bootstrap_local_platform now seeds the indicator catalog after migrating,
-    # so a fresh DB isn't empty. Stub the DB round-trip to keep this test offline.
+    # bootstrap_local_platform seeds the indicator catalog and the asset registry
+    # after migrating, so a fresh DB isn't empty. Stub the DB round-trip to keep
+    # this test offline.
     seeded: dict[str, bool] = {}
 
     class _FakeConn:
@@ -39,6 +40,10 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
         "reimagina.indicators.catalog.seed_catalog",
         lambda conn: seeded.setdefault("called", True),
     )
+    monkeypatch.setattr(
+        "reimagina.assets.registry.seed_assets",
+        lambda conn: seeded.setdefault("assets_called", True),
+    )
 
     result = bootstrap_local_platform(
         app_dsn="postgresql://localhost/reimagina",
@@ -49,3 +54,6 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
     assert result["app"]["created"] is False
     assert result["test"]["created"] is True
     assert seeded.get("called") is True  # catalog seeded on bootstrap
+    # The asset registry is seeded from code rather than from a migration body,
+    # so bootstrap is the only thing that guarantees a fresh DB has it.
+    assert seeded.get("assets_called") is True

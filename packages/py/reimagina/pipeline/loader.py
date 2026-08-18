@@ -9,6 +9,7 @@ import pandas as pd
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
 from reimagina.data import observation as obs
+from reimagina.assets.publish import asset_key_for_feature_type
 from reimagina.storage import backend_for_connection
 from . import silver
 
@@ -103,7 +104,17 @@ def load_vector_source(
                 attributes_cols=attributes_cols,
             )
         cat.complete_ingestion_run(
-            conn, run_id, status="succeeded", details={"records_written": count}
+            conn,
+            run_id,
+            status="succeeded",
+            details={"records_written": count},
+            rows_written=count,
+            dataset_version=dataset_version,
+            # Derived, not threaded through every caller: this function already
+            # holds the type_id, and an asset carries feature_type_id as an FK.
+            # A layer with no registered asset publishes nothing — not an error,
+            # and an ingest must not fail because the graph has not adopted it.
+            asset_key=asset_key_for_feature_type(conn, type_id),
         )
         conn.commit()
         return {"ingestion_run_id": run_id, "records_written": count}
@@ -130,6 +141,7 @@ def load_tabular_source(
     value_col: str,
     orchestrator_run_id: str,
     code_version: str = "dev",
+    asset_key: str | None = None,
 ) -> dict[str, Any]:
     """Load a tabular DataFrame as observations into curated_geo.observation.
 
@@ -162,7 +174,12 @@ def load_tabular_source(
             conn, records, source_id=source_id, ingestion_run_id=run_id
         )
         cat.complete_ingestion_run(
-            conn, run_id, status="succeeded", details={"records_written": count}
+            conn,
+            run_id,
+            status="succeeded",
+            details={"records_written": count},
+            asset_key=asset_key,
+            rows_written=count,
         )
         conn.commit()
         return {"ingestion_run_id": run_id, "records_written": count}

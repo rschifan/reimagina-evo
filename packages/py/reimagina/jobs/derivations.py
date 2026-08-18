@@ -141,7 +141,7 @@ def _run_raster_recipe(
         feature_type_slug=recipe["target_feature_type_slug"],
         attribute_key_prefix=recipe["attribute_key_prefix"],
         aoi_id=recipe.get("aoi_id"),
-        coverage_threshold=float(recipe.get("coverage_threshold", 0.5)),
+        coverage_threshold=float(recipe.get("coverage_threshold", 0.0)),
         statistics=stats,
         direct_dsn=direct_dsn,
     )
