@@ -191,3 +191,34 @@ def test_an_explicit_attribute_still_drives_the_real_dirty_set():
     assert "urban_form_block_planned_floors" not in slugs
     # Not feature-scoped in, not feature-scoped out.
     assert all(u.features == frozenset() for u in units)
+
+
+def test_coverage_threshold_defaults_agree_across_entry_points():
+    """The same computation must not produce different data by entry point.
+
+    run_raster_zonal_stats documents 0.0 and why: under exactextract's area
+    weighting, writing a row for every polygon touching a non-nodata cell is the
+    conservative answer, and the older 0.5 silently dropped manzanas smaller
+    than one raster pixel. Four other entry points kept the 0.5, so a run
+    invoked directly and the same run invoked through a recipe disagreed about
+    which small blocks exist.
+    """
+    import inspect
+
+    from apps.cli import raster as raster_cli
+    from reimagina.jobs.raster_zonal_stats import run_raster_zonal_stats
+    from reimagina.storage.postgres.repositories import (
+        PostgresAggregationRecipeRepository,
+    )
+
+    def _default(fn, name):
+        return inspect.signature(fn).parameters[name].default
+
+    assert _default(run_raster_zonal_stats, "coverage_threshold") == 0.0
+    assert _default(raster_cli.run_zonal_stats, "coverage_threshold") == 0.0
+    assert (
+        _default(
+            PostgresAggregationRecipeRepository.register_recipe, "coverage_threshold"
+        )
+        == 0.0
+    )

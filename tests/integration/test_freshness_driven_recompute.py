@@ -321,3 +321,43 @@ def test_a_layer_reload_reaches_scenario_partitions_too(graph, conn):
     publish_version(conn, asset_key="mex.block", version="blocks-2")
 
     assert not _plan(conn, scenario_id=SCENARIO).is_noop
+
+
+# ── config is data ──────────────────────────────────────────────────────────
+
+
+def test_editing_a_catalog_bound_stales_only_that_indicator(graph, conn):
+    """`valid_max` lives in a table, so changing it needs no commit.
+
+    Not hypothetical: edificability's bound was 10,000, from an assumption that
+    a CDMX manzana tops out near 4 ha. False of Tlalpan, where it rejected 71 of
+    5,273 blocks and had to become 200,000. An edit like that has to restage the
+    results it changes, and a per-asset `code_version` would never notice.
+    """
+    _materialize_everything(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.asset SET params_digest = 'edited' "
+            "WHERE asset_key = 'indicator.urban_form_block_planned_floors'"
+        )
+
+    slugs = set(_slugs(_plan(conn)))
+
+    assert slugs == {"urban_form_block_planned_floors"}
+
+
+def test_a_params_edit_propagates_to_dependents(graph, conn):
+    """A composite reads its components, so their config reaches it too."""
+    _materialize_everything(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.asset SET params_digest = 'edited' "
+            "WHERE asset_key = 'indicator.urban_form_block_compactness'"
+        )
+
+    slugs = set(_slugs(_plan(conn)))
+
+    assert slugs == {
+        "urban_form_block_compactness",
+        "urban_form_block_composite",
+    }

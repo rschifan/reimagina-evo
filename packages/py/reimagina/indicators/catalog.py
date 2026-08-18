@@ -58,21 +58,33 @@ class IndicatorSpec:
     def __post_init__(self) -> None:
         if not self.inputs:
             return
-        if self.reads or self.depends_on:
+        derived_reads, derived_depends = self._projections()
+        # Tolerate being handed back exactly what this would derive. That is what
+        # `dataclasses.replace` does — it passes every current field, including
+        # the two this computes — and refusing it would break an ordinary
+        # dataclass operation. Anything *else* is a second, drifting statement.
+        conflicting = (self.reads and self.reads != derived_reads) or (
+            self.depends_on and self.depends_on != derived_depends
+        )
+        if conflicting:
             raise ValueError(
                 f"{self.slug}: declare `inputs`, or `reads`/`depends_on` — "
                 "never both. The point of `inputs` is that there is one "
                 "statement of what this indicator consumes."
             )
+        object.__setattr__(self, "reads", derived_reads)
+        object.__setattr__(self, "depends_on", derived_depends)
+
+    def _projections(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[tuple[str, float | None], ...]]:
         attributes: list[str] = []
         for edge in self.inputs:
             for key in edge.attributes:
                 if key not in attributes:
                     attributes.append(key)
-        object.__setattr__(self, "reads", tuple(attributes))
-        object.__setattr__(
-            self,
-            "depends_on",
+        return (
+            tuple(attributes),
             tuple(
                 (edge.indicator_slug, edge.weight)
                 for edge in self.inputs

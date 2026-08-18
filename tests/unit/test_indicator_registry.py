@@ -174,13 +174,18 @@ def test_accessibility_radius_equals_the_constant_the_sql_uses():
     assert radii == {ACCESSIBILITY_CUTOFF_M}
 
 
-def test_declaring_inputs_and_reads_together_is_refused():
-    """One statement or the other, never both — that is the whole point."""
+def test_a_conflicting_reads_declaration_is_refused():
+    """One statement or the other, never two that can drift apart.
+
+    Passing back exactly what `inputs` derives is allowed — that is what
+    `dataclasses.replace` does, and refusing it would break an ordinary
+    dataclass operation. A *different* value is the drift this guards.
+    """
     from reimagina.assets.keys import AssetEdge
     from reimagina.indicators.catalog import IndicatorSpec
 
-    with pytest.raises(ValueError, match="never both"):
-        IndicatorSpec(
+    def _spec(**kwargs):
+        return IndicatorSpec(
             slug="x",
             name="X",
             computation_kind="direct",
@@ -189,8 +194,14 @@ def test_declaring_inputs_and_reads_together_is_refused():
             aggregation_method="mean",
             applies_to=("block",),
             inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
-            reads=("geometry",),
+            **kwargs,
         )
+
+    with pytest.raises(ValueError, match="never both"):
+        _spec(reads=("floors",))
+
+    # The derived value handed straight back is not a conflict.
+    assert _spec(reads=("geometry",)).reads == ("geometry",)
 
 
 def test_projections_match_the_literals_they_replaced():
@@ -224,3 +235,47 @@ def test_projections_match_the_literals_they_replaced():
         "poi_version",
         "network_version",
     )
+
+
+# ── config is data ──────────────────────────────────────────────────────────
+
+
+def test_catalog_params_reach_the_asset_digest():
+    """`valid_max` and friends live in a table, so no commit ever changes.
+
+    They decide which rows survive validation and which arithmetic a rollup
+    uses, so an edit to one has to invalidate that indicator's results — and a
+    per-asset `code_version` would never notice.
+    """
+    from dataclasses import replace
+
+    from reimagina.assets.registry import _params_digest
+
+    spec = SHIPPED_INDICATORS[0]
+    assert _params_digest(spec) != _params_digest(replace(spec, valid_max=99.0))
+    assert _params_digest(spec) != _params_digest(
+        replace(spec, aggregation_method="sum")
+    )
+    assert _params_digest(spec) != _params_digest(replace(spec, applies_to=("ageb",)))
+
+
+def test_cosmetic_catalog_edits_do_not_move_the_digest():
+    """A reworded description must not restage every result in the platform.
+
+    The digest is built from a fixed field list rather than the whole dataclass
+    for exactly this reason.
+    """
+    from dataclasses import replace
+
+    from reimagina.assets.registry import _params_digest
+
+    spec = SHIPPED_INDICATORS[0]
+    assert _params_digest(spec) == _params_digest(
+        replace(spec, description="reworded", name="Renamed")
+    )
+
+
+def test_every_shipped_indicator_has_a_params_digest():
+    from reimagina.assets.registry import indicator_assets
+
+    assert all(asset.params_digest for asset in indicator_assets())

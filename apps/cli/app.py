@@ -1462,7 +1462,7 @@ def derivation_add(
         help='JSON blob of method-specific params (e.g. \'{"stats":["sum","count"]}\' '
         "for raster inputs that want multiple rasterstats primitives)",
     ),
-    coverage_threshold: float = typer.Option(0.5, "--coverage-threshold"),
+    coverage_threshold: float = typer.Option(0.0, "--coverage-threshold"),
     aoi_id: Optional[str] = typer.Option(
         None, "--aoi-id", help="Restrict recipe execution to features inside this AOI"
     ),

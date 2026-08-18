@@ -860,7 +860,7 @@ class PostgresAggregationRecipeRepository:
         input_feature_type_slug: str | None = None,
         weight_basis: str | None = None,
         params: dict | None = None,
-        coverage_threshold: float = 0.5,
+        coverage_threshold: float = 0.0,
         aoi_id: str | None = None,
         enabled: bool = True,
     ) -> str:

@@ -130,6 +130,44 @@ SHIPPED_ASSETS: tuple[AssetSpec, ...] = (
 _INITIAL_INDICATOR_CODE_VERSION = "1"
 
 
+#: Catalog fields that change an indicator's output or which rows survive it.
+#:
+#: These are *config*, not code — they live in `indicator_catalog` and can be
+#: edited with no commit — so a `code_version` bump would never catch them.
+#: Folding them into a digest is what makes "config is data" true rather than
+#: aspirational: change `valid_max` and that indicator's results go stale on
+#: their own.
+#:
+#: Not hypothetical. `edificability_block_housing_units.valid_max` was 10,000,
+#: from an assumption that a CDMX manzana tops out near 4 ha — false of Tlalpan,
+#: where the bound rejected 71 of 5,273 blocks and had to be raised to 200,000.
+#: Under this digest that edit restages exactly the affected results.
+_PARAMS_IN_DIGEST = (
+    "computation_kind",
+    "value_type",
+    "unit",
+    "aggregation_method",
+    "valid_min",
+    "valid_max",
+    "applies_to",
+)
+
+
+def _params_digest(spec: Any) -> str:
+    """A stable digest of the catalog params that affect this indicator's output.
+
+    Rendered from a fixed field order rather than from `dataclasses.asdict`, so
+    adding an unrelated field to `IndicatorSpec` — a description, a label — does
+    not silently invalidate every result in the platform.
+    """
+    import hashlib
+
+    rendered = "|".join(f"{name}={getattr(spec, name)!r}" for name in _PARAMS_IN_DIGEST)
+    return hashlib.md5(  # noqa: S324 - identity, not a security primitive
+        rendered.encode(), usedforsecurity=False
+    ).hexdigest()
+
+
 def indicator_assets() -> tuple[AssetSpec, ...]:
     """Project one asset per shipped indicator.
 
@@ -147,6 +185,7 @@ def indicator_assets() -> tuple[AssetSpec, ...]:
             backing_ref=spec.slug,
             producer=spec.slug,
             code_version=_INITIAL_INDICATOR_CODE_VERSION,
+            params_digest=_params_digest(spec),
             # Results are partitioned by scenario: a what-if writes its own rows
             # and must not stale the baseline's.
             partition_dimensions=("scenario",),
