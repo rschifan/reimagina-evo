@@ -14,7 +14,7 @@ import psycopg2
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from reimagina.tiles.service import resolve_tile_sources
+from reimagina.tiles.sources import resolve_tile_sources
 
 from ..deps import (
     get_db_conn,
@@ -69,7 +69,7 @@ def list_tile_sources(
         default=None,
         description=(
             "Base URL of the titiler COG endpoint (e.g. "
-            "http://localhost:8000/cog for the in-process mount). "
+            "http://localhost:8001/cog for the in-process mount). "
             "Defaults to REIMAGINA_TILE_RASTER_BASE_URL when omitted."
         ),
     ),

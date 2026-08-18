@@ -24,7 +24,7 @@
  *   - mousedown on the layer → start a custom drag: capture initial
  *     centre + radius, then on every mousemove compute the new
  *     radius from cursor distance and call
- *     ``controller.resizeCircleByScale``. terra-draw's
+ *     ``controller.setCircleRing``. terra-draw's
  *     ``updateFeatureGeometry`` flows the new polygon back through
  *     the store; the change event re-publishes; this module's
  *     subscriber updates the handle position; mask + metrics update
@@ -39,38 +39,22 @@ import type { GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent } from "mapl
 import type { SelectionController, SelectionGeometry } from "./selection";
 
 
-export interface SelectionHandleOptions {
-  /** Radius of the visible dot in pixels. Default 8. */
-  radius?: number;
-  /** Hex fill colour of the dot. Default #22d3ee (the same cyan
-   *  terra-draw uses for the shape outline — visual continuity). */
-  color?: string;
-  /** Stroke colour around the dot. Default #0b1220 (matches the
-   *  app background so the dot reads as "raised" against any
-   *  underlying feature colour). */
-  outlineColor?: string;
-  /** Internal source / layer ids — override only when running
-   *  multiple maps on one page. */
-  sourceId?: string;
-  layerId?: string;
-}
-
-
-export interface SelectionHandleHandle {
-  dispose(): void;
-}
+// Cyan matches terra-draw's shape outline (visual continuity); the
+// dark stroke matches the app background so the dot reads as "raised"
+// against whatever feature colour sits under it.
+const SOURCE_ID = "__selection_handle";
+const LAYER_ID = "__selection_handle__dot";
+const RADIUS = 8;
+const COLOR = "#22d3ee";
+const OUTLINE_COLOR = "#0b1220";
 
 
 export function installSelectionHandle(
   map: MapLibreMap,
   controller: SelectionController,
-  options: SelectionHandleOptions = {},
-): SelectionHandleHandle {
-  const sourceId = options.sourceId ?? "__selection_handle";
-  const layerId = options.layerId ?? "__selection_handle__dot";
-  const radius = options.radius ?? 8;
-  const color = options.color ?? "#22d3ee";
-  const outlineColor = options.outlineColor ?? "#0b1220";
+): void {
+  const sourceId = SOURCE_ID;
+  const layerId = LAYER_ID;
 
   // HMR-safe install: dispose any prior layer/source before adding
   // the new ones. Same idempotency contract as ``selection-mask``.
@@ -86,9 +70,9 @@ export function installSelectionHandle(
     type: "circle",
     source: sourceId,
     paint: {
-      "circle-radius": radius,
-      "circle-color": color,
-      "circle-stroke-color": outlineColor,
+      "circle-radius": RADIUS,
+      "circle-color": COLOR,
+      "circle-stroke-color": OUTLINE_COLOR,
       "circle-stroke-width": 2,
     },
   });
@@ -135,7 +119,7 @@ export function installSelectionHandle(
       ],
     });
   };
-  const unsubscribe = controller.subscribe(updateHandlePosition);
+  controller.subscribe(updateHandlePosition);
 
   // ── Drag wiring ────────────────────────────────────────────────
   //
@@ -242,18 +226,13 @@ export function installSelectionHandle(
   map.on("mouseenter", layerId, onLayerMouseEnter);
   map.on("mouseleave", layerId, onLayerMouseLeave);
 
-  return {
-    dispose(): void {
-      unsubscribe();
-      window.removeEventListener("mousemove", onWindowMouseMove);
-      window.removeEventListener("mouseup", onWindowMouseUp);
-      map.off("mousedown", layerId, onLayerMouseDown);
-      map.off("mouseenter", layerId, onLayerMouseEnter);
-      map.off("mouseleave", layerId, onLayerMouseLeave);
-      if (map.getLayer(layerId)) map.removeLayer(layerId);
-      if (map.getSource(sourceId)) map.removeSource(sourceId);
-    },
-  };
+}
+
+
+/** Trim float noise so a drag doesn't emit 17-significant-digit
+ *  coordinates into the polygon ring. */
+function _round8(n: number): number {
+  return Math.round(n * 1e8) / 1e8;
 }
 
 
@@ -265,11 +244,6 @@ export function installSelectionHandle(
  * accuracy doesn't matter — only the consistency of the metric for
  * "before drag" vs "during drag", which planar distance preserves.
  */
-function _round8(n: number): number {
-  return Math.round(n * 1e8) / 1e8;
-}
-
-
 function _planarDistance(a: [number, number], b: [number, number]): number {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];

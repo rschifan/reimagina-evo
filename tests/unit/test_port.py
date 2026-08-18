@@ -1,19 +1,15 @@
-"""Unit tests for next_ready_units + the synchronous orchestrator — pure, no DB.
+"""Unit tests for the synchronous orchestrator behind the port — pure, no DB.
 
-A None connection makes runstore no-op (persistence skipped), so the synchronous
-orchestrator runs entirely in-memory with fake runners here.
+A None connection makes runstore no-op (persistence skipped), so the
+orchestrator runs entirely in-memory with fake runners here. The wave-scheduler
+tests live in test_wave_scheduler.py.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 from reimagina.indicators.catalog import IndicatorSpec
-from reimagina.orchestration.coordinator import (
-    UnitStatus,
-    next_ready_units,
-    overall_status,
-    plan_wave,
-)
-from reimagina.orchestration.impact import compute_dirty_set
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 
 
@@ -47,32 +43,6 @@ def _runner(log, name, *, fail=False):
             raise RuntimeError(f"{name} boom")
 
     return run
-
-
-def _dirty():
-    return compute_dirty_set({"land_use"}, {"b1"}, REG)
-
-
-def test_next_ready_units_initial_wave_is_the_seeds():
-    ready = next_ready_units(_dirty(), REG, {})
-    assert {u.indicator for u in ready} == {"green_coverage", "walkability"}
-
-
-def test_next_ready_units_releases_composite_when_inputs_succeed():
-    finished = {
-        "green_coverage": UnitStatus.SUCCEEDED,
-        "walkability": UnitStatus.SUCCEEDED,
-    }
-    ready = next_ready_units(_dirty(), REG, finished)
-    assert {u.indicator for u in ready} == {"liveability_index"}
-
-
-def test_next_ready_units_never_releases_on_failed_input():
-    finished = {
-        "green_coverage": UnitStatus.SUCCEEDED,
-        "walkability": UnitStatus.FAILED,
-    }
-    assert next_ready_units(_dirty(), REG, finished) == []
 
 
 def test_synchronous_orchestrator_runs_and_reports_status():
@@ -110,63 +80,139 @@ def test_synchronous_orchestrator_reports_partial_on_failure():
     assert by_status["liveability_index"] == "skipped"
 
 
-def test_get_run_is_none_without_persistence():
+def test_get_run_is_none_for_an_unknown_run():
     orch = SynchronousOrchestrator(registry=REG, runners={})
     assert orch.get_run(None, "missing") is None
 
 
-# ── plan_wave (async distributor scheduler) ──────────────────────────────
+def test_submitted_run_round_trips_through_the_default_store():
+    """The in-memory store makes submit → get_run work with no database.
+
+    Previously the orchestrator wrote straight to jobs_runtime, so a run
+    submitted on a None connection silently vanished and get_run returned None.
+    """
+    log: list[str] = []
+    runners = {
+        s: _runner(log, s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(registry=REG, runners=runners)
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    fetched = orch.get_run(None, handle.run_id)
+    assert fetched is not None
+    assert fetched.status == "succeeded"
+    assert {u.indicator for u in fetched.units} == {
+        "green_coverage",
+        "walkability",
+        "liveability_index",
+    }
 
 
-def test_plan_wave_dispatches_the_seeds_first():
-    units = [
-        ("green_coverage", "queued"),
-        ("walkability", "queued"),
-        ("liveability_index", "queued"),
-    ]
-    plan = plan_wave(units, REG)
-    assert set(plan.dispatch) == {"green_coverage", "walkability"}
-    assert plan.skip == ()
-    assert plan.final_status is None  # composite still waiting
+def _collect(agen):
+    async def _run():
+        return [event async for event in agen]
+
+    return asyncio.run(_run())
 
 
-def test_plan_wave_releases_composite_after_inputs_succeed():
-    units = [
-        ("green_coverage", "succeeded"),
-        ("walkability", "succeeded"),
-        ("liveability_index", "queued"),
-    ]
-    plan = plan_wave(units, REG)
-    assert plan.dispatch == ("liveability_index",)
-    assert plan.final_status is None  # composite now running
+def test_cancel_is_always_false_here():
+    """No run is ever in flight: submit_run does not return until it is over."""
+    orch = SynchronousOrchestrator(registry=REG, runners={})
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+    assert orch.cancel_run(None, handle.run_id) is False
 
 
-def test_plan_wave_skips_dependent_of_failed_input():
-    units = [
-        ("green_coverage", "succeeded"),
-        ("walkability", "failed"),
-        ("liveability_index", "queued"),
-    ]
-    plan = plan_wave(units, REG)
-    assert plan.dispatch == ()
-    assert plan.skip == ("liveability_index",)
-    # green succeeded, walk failed, composite skipped → all terminal → final.
-    assert plan.final_status == "partial"
+def test_subscribe_progress_yields_the_final_status_then_stops():
+    log: list[str] = []
+    runners = {
+        s: _runner(log, s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(registry=REG, runners=runners)
+    handle = orch.submit_run(
+        None, changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    events = _collect(orch.subscribe_progress(handle.run_id))
+
+    assert len(events) == 1
+    assert events[0].indicator is None  # run-level: the event that closes a stream
+    assert events[0].status == "succeeded"
 
 
-def test_plan_wave_finalizes_when_all_terminal():
-    units = [
-        ("green_coverage", "succeeded"),
-        ("walkability", "succeeded"),
-        ("liveability_index", "succeeded"),
-    ]
-    plan = plan_wave(units, REG)
-    assert plan.dispatch == ()
-    assert plan.skip == ()
-    assert plan.final_status == "succeeded"
+def test_subscribe_progress_reports_unknown_for_a_missing_run():
+    """A subscriber must terminate on a bad id, not block forever."""
+    orch = SynchronousOrchestrator(registry=REG, runners={})
+    events = _collect(orch.subscribe_progress("missing"))
+    assert [e.status for e in events] == ["unknown"]
 
 
-def test_overall_status_rollup():
-    assert overall_status(["succeeded", "succeeded"]) == "succeeded"
-    assert overall_status(["succeeded", "failed"]) == "partial"
-    assert overall_status(["failed", "skipped"]) == "failed"
+def test_subscribe_progress_works_with_a_connection_bound_store():
+    """The port gives subscribe_progress no connection, so it must not need one.
+
+    It used to ask the store with ``conn=None``. That is fine for the in-memory
+    default and silently wrong for any store that talks to a database: the
+    Postgres store no-ops on a None connection, so every run — including one
+    just finished — reported ``unknown``.
+    """
+
+    class _ConnectionBoundStore:
+        """Rejects a None connection, the way a real database store no-ops on one."""
+
+        def create_run(self, conn, **kw):
+            assert conn is not None
+            return True
+
+        def record_units(self, conn, **kw):
+            assert conn is not None
+
+        def finalize_run(self, conn, **kw):
+            assert conn is not None
+
+        def get_run(self, conn, run_id):
+            assert conn is not None, "subscribe_progress must not reach the store"
+            return None
+
+    runners = {
+        s: _runner([], s)
+        for s in ("green_coverage", "walkability", "liveability_index")
+    }
+    orch = SynchronousOrchestrator(
+        registry=REG, runners=runners, store=_ConnectionBoundStore()
+    )
+    handle = orch.submit_run(
+        object(), changed_attributes={"land_use"}, edited_features={"b1"}
+    )
+
+    events = _collect(orch.subscribe_progress(handle.run_id))
+    assert [e.status for e in events] == ["succeeded"]
+
+
+def test_store_is_injectable():
+    """Any object with the runstore signatures can back the orchestrator."""
+    calls: list[str] = []
+
+    class _RecordingStore:
+        def create_run(self, conn, **kw):
+            calls.append("create_run")
+            return True
+
+        def record_units(self, conn, **kw):
+            calls.append("record_units")
+
+        def finalize_run(self, conn, **kw):
+            calls.append("finalize_run")
+
+        def get_run(self, conn, run_id):
+            return None
+
+    SynchronousOrchestrator(
+        registry=REG, runners={}, store=_RecordingStore()
+    ).submit_run(None, changed_attributes={"land_use"}, edited_features={"b1"})
+
+    assert calls == ["create_run", "record_units", "finalize_run"]

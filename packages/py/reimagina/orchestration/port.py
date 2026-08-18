@@ -1,20 +1,86 @@
 """Orchestrator port (Phase 3, component 13).
 
 The narrow interface the application depends on to run a scenario evaluation and
-read its status — so the whole engine behind it can be swapped (the synchronous
-in-process executor now, a Procrastinate distributor next, a Dagster adapter
-later) without touching callers. Deliberately leaks no Hamilton/Procrastinate
-types — only plain dataclasses.
+read its status, so the engine behind it can be swapped without touching
+callers. That swap is the point: this repository is about to fork into two
+branches carrying different ops-planes, and everything either branch keeps has
+to be expressible here.
 
-``subscribe_progress`` (live SSE stream) lands with the async distributor in a
-later phase; the port stays minimal until it has a real implementation.
+Deliberately leaks no engine types — only plain dataclasses. A signature that
+mentioned a queue, a workflow handle or a run table would be a signature one of
+the two branches could not implement.
+
+Construct implementations through ``orchestration.factory.get_orchestrator``
+rather than by name: the factory is the one place an ops-plane swap edits, and
+it is the seam tests monkeypatch.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
+
+# ── Status vocabulary ────────────────────────────────────────────────────────
+# One definition, imported by every executor. It lives here rather than in the
+# coordinator because the port is the module no ops-plane implementation
+# deletes; the scheduler and the in-process executor both come and go.
+#
+# NOTE: the database is a separate, *not* currently reconciled layer —
+# job_run, orchestration_run and job_unit each carry a different status CHECK
+# (`skipped` is legal only on job_unit, `partial` only on orchestration_run).
+# Unifying Python does not unify those; widening them is a migration decision.
+
+UNIT_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
+"""Unit statuses from which no further transition happens."""
+
+UNIT_UNSATISFIED_STATES = frozenset({"failed", "skipped", "cancelled"})
+"""Unit statuses that make a dependent unrunnable."""
+
+RUN_TERMINAL_STATES = frozenset({"succeeded", "partial", "failed", "cancelled"})
+"""Run statuses that close a progress stream."""
+
+
+def overall_status(statuses: Iterable[str]) -> str:
+    """Roll unit statuses into a run status.
+
+    succeeded (all ok) / partial (some ok) / cancelled (none ok, none failed, at
+    least one cancelled) / failed (anything else, including an all-skipped run —
+    nothing ran, so the run did not achieve its purpose).
+
+    ``cancelled`` only wins when no unit actually failed: a run that both failed
+    and was cancelled is a failure, and reporting it as cancelled would hide the
+    error. ``orchestration_run.status`` has no ``skipped``, which is why the
+    all-skipped case folds into ``failed`` rather than gaining a fourth value.
+    """
+    seen = set(statuses)
+    if not seen or seen <= {"succeeded"}:
+        return "succeeded"
+    if "succeeded" in seen:
+        return "partial"
+    if "failed" not in seen and "cancelled" in seen:
+        return "cancelled"
+    return "failed"
+
+
+class DBConnection(Protocol):
+    """What this port actually needs of a database connection.
+
+    ``conn`` used to be typed ``object``, which was engine-neutral but untrue:
+    every implementation calls ``cursor``, ``commit``, ``rollback`` or
+    ``close`` on it, so the annotation promised less than the code required and
+    a type checker could not see any of those calls. A structural Protocol
+    keeps the port free of a psycopg2 import while stating the real contract —
+    any DB-API connection satisfies it.
+    """
+
+    def cursor(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -40,10 +106,27 @@ class RunHandle:
     status: RunStatus | None = None
 
 
+@dataclass(frozen=True)
+class RunEvent:
+    """One progress update, as data — never a pre-formatted SSE string.
+
+    Framing it for the wire is the API route's job (``frames.event_frame``), so
+    an orchestrator never has to know it is feeding an HTTP endpoint.
+
+    ``indicator=None`` marks the run-level event carrying the overall status;
+    that is the event that ends a subscription.
+    """
+
+    run_id: str
+    indicator: str | None
+    status: str
+    detail: str | None = None
+
+
 class Orchestrator(Protocol):
     def submit_run(
         self,
-        conn: object,
+        conn: DBConnection,
         *,
         changed_attributes: Iterable[str],
         edited_features: Iterable[str],
@@ -52,4 +135,27 @@ class Orchestrator(Protocol):
         code_version: str = "dev",
     ) -> RunHandle: ...
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None: ...
+    def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None: ...
+
+    def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
+        """Stop a run; True if it was live, False if unknown or already terminal.
+
+        Marks every non-terminal unit ``cancelled`` and closes the run. It does
+        **not** promise that in-flight compute stops: no engine can interrupt a
+        thread blocked in a psycopg C call, so a unit already executing runs to
+        its next boundary. Killing the backend is a separate mechanism.
+        """
+        ...
+
+    def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]:
+        """Yield progress events until the run-level terminal event, then stop.
+
+        The first event is a snapshot of the run's current status, so a late
+        subscriber is not left waiting on a run that already finished.
+
+        Takes no connection: every engine has its own progress transport
+        (LISTEN/NOTIFY here, workflow streams elsewhere) and none of them is the
+        caller's pooled connection. Async because the service engines expose
+        async iterators; an engine whose stream is a sync generator wraps it.
+        """
+        ...

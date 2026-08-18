@@ -8,7 +8,7 @@ Operational rules for agents working in this repo.
 - `packages/py/reimagina/`: shared backend namespace
 - `infra/db/`: migrations and seeds
 - `docs/architecture/`: architecture source of truth
-- `tests/`: `unit`, `integration`, `contract`, future `e2e`
+- `tests/`: `unit`, `integration`, `contract`, `conformance`, future `e2e`
 - `tests/performance`: benchmark smoke checks and perf harness coverage
 
 ## Core architecture
@@ -45,6 +45,7 @@ Current `explore` contract:
 - `explore.source_runs_v`
 - `explore.feature_type_stats_v`
 - `explore.serving_stats_v`
+- `explore.ops_executor_health_v`
 
 Recommended tools:
 
@@ -58,6 +59,7 @@ python -m apps.cli.app explore layers
 python -m apps.cli.app explore sources
 python -m apps.cli.app explore feature-stats
 python -m apps.cli.app explore serving-stats
+python -m apps.cli.app explore executor-health
 
 # Tile snapshots and live-MVT source resolution
 python -m apps.cli.app tiles manifest
@@ -93,7 +95,7 @@ REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
 cd apps/web && npm install && npm run dev
 
 # Then
-open http://localhost:8000/docs      # OpenAPI / Swagger
+open http://localhost:8001/docs      # OpenAPI / Swagger
 open http://localhost:5173           # Map with input-layer toggles,
                                      # indicator picker, download buttons
 ```
@@ -107,6 +109,7 @@ Testing is non-optional.
 | `tests/unit` | pure logic, delegation, config, normalization |
 | `tests/integration` | real PostgreSQL/PostGIS behavior |
 | `tests/contract` | architectural boundaries and repo guardrails |
+| `tests/conformance` | the `Orchestrator` port contract, per implementation |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
 | `docs/architecture/TESTING.md` | DB contract target |
 

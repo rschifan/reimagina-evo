@@ -55,16 +55,23 @@ See plan file for the full schema design.
 
 ---
 
-### SSE job status endpoint (plan item 8)
-**Blocked by:** `jobs_runtime` tables not yet created (job layer not implemented).  
-**What to implement when unblocked:**
-1. Add `NOTIFY jobs_status, '{"job_id":"...", "status":"..."}'` call in the 
-   worker after writing to `jobs_runtime`.
-2. Optional: `CREATE TRIGGER notify_job_status AFTER UPDATE ON jobs_runtime.job ...`
-3. API route `GET /jobs/{job_id}/events` → `text/event-stream` using `LISTEN jobs_status`.  
-**Critical constraint:** `LISTEN/NOTIFY` is session-level and incompatible with 
-PgBouncer transaction mode. The SSE connection MUST use `DATABASE_URL_DIRECT` 
-(direct Postgres connection), not the PgBouncer DSN. See `infra/env/.env.example`.
+### SSE job status endpoint (plan item 8) — **shipped**
+**Built as:** `GET /jobs/{run_id}/events` → `text/event-stream`
+(`apps/api/routers/jobs.py:169-178`), streaming over `LISTEN`/`NOTIFY` on one
+fixed channel, `job_events` (`orchestration/events.py:19`). Progress is keyed by
+**run**, not by a per-job id — see `JOB_LAYER.md` — *Progress*.
+
+**Constraint that held:** `LISTEN/NOTIFY` is session-level and incompatible with
+PgBouncer transaction mode. The subscriber opens its own direct connection, and
+`DATABASE_URL_DIRECT` is mandatory and fails loudly when unset
+(`orchestration/queue_app.py:30-31`). See `infra/env/.env.example`.
+
+**Two things learned in the build, worth not re-deriving.** `emit` must be called
+*before* the commit that persists the same status change, since NOTIFY is
+delivered on commit (`events.py:24-27`). And no trigger-based `NOTIFY` was added:
+emitting from application code is what lets the event be gated on whether the
+status write actually landed, which is what keeps a cancelled unit from being
+announced as `failed`.
 
 ---
 
@@ -94,8 +101,13 @@ CREATE POLICY tenant_isolation ON <table>
         OR project_id::text = current_setting('app.current_project_id', true)
     );
 ```
-Tables that will need RLS when created: `app_core.scenario`, `indicator_result`, 
-`aoi_indicator_summary`.  
+Tables that will need RLS: `curated_geo.scenario_override`, `indicator_result`, 
+`aoi_indicator_summary`. None of them carries a `project_id`, so the policy above 
+cannot be applied verbatim. `aoi_indicator_summary` can reach one by joining 
+`aoi_id → area_of_interest.project_id` (r004:21). `scenario_override` and 
+`indicator_result` cannot: they are keyed by `scenario_id`, which is a bare uuid 
+with no FK and no link to a project (r016:7-10). Project-scoping those two needs a 
+scenario→project association that does not exist in the schema.  
 **API middleware required:** at the start of every request transaction:
 ```python
 conn.execute("SET LOCAL app.current_project_id = %s", (project_id,))
@@ -120,12 +132,18 @@ where `<tile_width_meters> = 40075017 / power(2, z)`.
 
 ---
 
-### Rollup worker contract (from TODO.md item 1 resolution)
-**Status:** `feature_overlap` and `feature_overlap_type_pair` tables exist (r009), 
-resolving the schema side of TODO #1 and #3. The rollup worker contract (queue name, 
-trigger condition, input/output spec) still needs to be added to 
-`docs/architecture/JOB_LAYER.md` once the first indicator that requires cross-grain 
-aggregation is implemented.
+### Rollup contract (from TODO.md item 1 resolution) — **resolved**
+**Status:** `feature_overlap` and `feature_overlap_type_pair` exist (r009), and the 
+contract is documented in `docs/architecture/JOB_LAYER.md` — *Rollup — a direct call, 
+not an orchestrated unit* — and implemented as `reimagina.jobs.rollup.run_rollup` 
+(`packages/py/reimagina/jobs/rollup.py:38`).
+
+**It did not become a queued worker type.** There is no rollup queue and no trigger 
+that fires after a fine-grain run: `run_rollup` is not in `SHIPPED_INDICATORS`, so 
+`default_runners` never binds it (`orchestration/runners.py:76-90`) and no run can 
+dispatch it. Callers invoke it directly from the CLI or an integration test 
+(`rollup.py:10-12`). Automatic stale-propagation from child to parent is still not 
+wired — the caller that staled a child must re-run the rollup.
 
 ---
 

@@ -49,10 +49,8 @@ export interface ChoroplethConfig {
 export interface RampDomain {
   min: number;
   max: number;
-  /** Observed percentiles — shown in the legend when present. */
-  p05: number | null;
+  /** Observed median — shown in the legend when present. */
   p50: number | null;
-  p95: number | null;
   /** Whether the domain came from observed stats (true) or catalog (false). */
   fromStats: boolean;
 }
@@ -93,33 +91,17 @@ export function rampDomainFromStats(
 ): RampDomain {
   // Prefer observed p05→p95 so outliers don't dominate the ramp.
   if (stats && stats.count > 0 && stats.p05 !== null && stats.p95 !== null && stats.p95 > stats.p05) {
-    return {
-      min: stats.p05,
-      max: stats.p95,
-      p05: stats.p05,
-      p50: stats.p50,
-      p95: stats.p95,
-      fromStats: true,
-    };
+    return { min: stats.p05, max: stats.p95, p50: stats.p50, fromStats: true };
   }
   // Flat distribution (p05 == p95) — widen to min/max so we still see something.
   if (stats && stats.count > 0 && stats.min !== null && stats.max !== null && stats.max > stats.min) {
-    return {
-      min: stats.min,
-      max: stats.max,
-      p05: stats.p05,
-      p50: stats.p50,
-      p95: stats.p95,
-      fromStats: true,
-    };
+    return { min: stats.min, max: stats.max, p50: stats.p50, fromStats: true };
   }
   // No data — fall back to catalog safety bounds.
   return {
     min: indicator.valid_min ?? 0,
     max: indicator.valid_max ?? 1,
-    p05: null,
     p50: null,
-    p95: null,
     fromStats: false,
   };
 }
@@ -144,13 +126,13 @@ export function activateIndicator(
   tooltips?: TooltipController,
   aoiId?: string | null,
   selectionController?: SelectionController,
+  grain?: string | null,
 ): void {
   removeIndicator(map);
 
   // `{z}/{x}/{y}` in the template is literal and must survive query-
   // string composition, so use a plain concatenation — URLSearchParams
   // or `new URL(template)` would reject the curly-brace placeholders.
-  const grain = defaultGrain(indicator);
   const params = new URLSearchParams({ indicator_slug: indicator.slug });
   if (grain) params.set("feature_type", grain);
   if (aoiId) params.set("aoi_id", aoiId);
@@ -313,6 +295,76 @@ export function renderLegend(
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+/** Human label for a feature-type slug. Falls back to the slug so a
+ *  new grain shows up readable-ish rather than not at all. */
+const GRAIN_LABELS: Record<string, string> = {
+  block: "Blocks",
+  ageb: "AGEBs",
+  municipality: "Municipalities",
+  lot: "Lots",
+};
+
+
+/**
+ * Render the grain switcher for ``indicator`` into ``container`` and
+ * call ``onPick`` when the user changes it.
+ *
+ * Always rendered, including for the eleven of thirteen shipped
+ * indicators published at ``block`` only — their single option shows
+ * as a disabled chip. Hiding the row entirely made the control
+ * invisible on most of the catalog, so nobody learned grain switching
+ * existed; a disabled chip states the grain the numbers are at, which
+ * is worth showing on its own. Coarser grains are served by the same
+ * ``indicator_overlay_tile`` function via ``feature_type``, so
+ * switching is a re-render, not a new code path.
+ */
+export function renderGrainToggle(
+  container: HTMLElement,
+  indicator: IndicatorSummary,
+  active: string | null,
+  onPick: (grain: string) => void,
+): void {
+  const grains = indicator.applies_to ?? [];
+  if (grains.length === 0) {
+    // No declared grain at all — nothing truthful to show.
+    container.hidden = true;
+    container.replaceChildren();
+    return;
+  }
+  const single = grains.length === 1;
+  container.hidden = false;
+  const label = document.createElement("span");
+  label.className = "grain-toggle__label";
+  label.textContent = "Grain";
+  container.replaceChildren(label);
+  for (const grain of grains) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "grain-toggle__btn";
+    btn.textContent = GRAIN_LABELS[grain] ?? grain;
+    btn.setAttribute("aria-pressed", grain === active ? "true" : "false");
+    // A lone grain is a statement, not a choice: disabled so it can't
+    // be clicked, but still marked pressed so it reads as "this is
+    // what you are looking at" rather than as an unavailable option.
+    btn.disabled = single;
+    if (single) {
+      btn.title = `${indicator.name} is only published at this grain`;
+    }
+    btn.addEventListener("click", () => {
+      if (grain === active) return;
+      onPick(grain);
+    });
+    container.append(btn);
+  }
+}
+
+
+export function clearGrainToggle(container: HTMLElement): void {
+  container.hidden = true;
+  container.replaceChildren();
 }
 
 

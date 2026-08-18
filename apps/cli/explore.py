@@ -42,3 +42,13 @@ def list_serving_stats(*, dsn: str) -> dict[str, Any]:
             .explore_reader()
             .list_serving_stats(),
         }
+
+
+def list_executor_health(*, dsn: str) -> dict[str, Any]:
+    with connect(dsn) as conn:
+        return {
+            "dsn": dsn,
+            "executor_health": backend_for_connection(conn)
+            .explore_reader()
+            .list_executor_health(),
+        }
