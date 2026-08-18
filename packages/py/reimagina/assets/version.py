@@ -21,6 +21,12 @@ The pinned decisions, each mirroring a comment in r041:
   for staleness, and far easier to keep two implementations agreeing on.
 * **Components are a set.** Diamonds reach the same node by several paths; a
   multiset would make the hash depend on graph shape rather than content.
+* **Components sort in byte order.** ``sorted()`` here, ``ORDER BY part
+  COLLATE "C"`` there (r044). Without the explicit collation the view would
+  order under the database's — ``en_US.UTF-8`` in practice, which weakens
+  punctuation at the primary level while byte order does not, so the two halves
+  would agree or not depending on which asset keys happened to be registered
+  and on what locale the cluster was created with.
 * **Floats format at a fixed scale of 6.** Postgres renders
   ``1500.0::double precision::text`` as ``'1500'`` while Python's ``str`` gives
   ``'1500.0'`` — and 1500.0 is ``ACCESSIBILITY_CUTOFF_M``, the only radius the
