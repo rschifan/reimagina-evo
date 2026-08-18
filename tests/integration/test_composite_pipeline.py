@@ -12,11 +12,15 @@ import pytest
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import (
+    ACCESSIBILITY_CUTOFF_M,
+    SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_BUILDING_DENSITY,
     URBAN_FORM_BLOCK_COMPACTNESS,
     IndicatorSpec,
     seed_catalog,
 )
+from reimagina.indicators.composite import compute_composite
+from reimagina.jobs._lifecycle import job_run
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 from reimagina.storage import backend_for_connection
 
@@ -127,3 +131,98 @@ def test_composite_runs_after_inputs_and_combines_them(conn):
     # declared weights bound each input's contribution instead of its range
     # doing it. Before normalisation this value could reach ~250.
     assert 0.0 <= composite["value_numeric"] <= 1.0
+
+
+# ── direction, through the real compute path ─────────────────────────────
+
+_DISTANCE = "accessibility_block_school_network_m"
+#: The shipped spec, not a copy — its bounds and `higher_is_better` are
+#: what compute_composite reads, so re-declaring them here could disagree.
+_DISTANCE_SPEC = next(s for s in SHIPPED_INDICATORS if s.slug == _DISTANCE)
+
+_SCORE = IndicatorSpec(
+    slug="livability_block_score",
+    name="Livability Score (test)",
+    computation_kind="composite",
+    value_type="numeric",
+    aggregation_method="weighted_mean",
+    applies_to=("block",),
+    valid_min=0.0,
+    valid_max=1.0,
+    depends_on=((URBAN_FORM_BLOCK_COMPACTNESS.slug, 0.5), (_DISTANCE, 0.5)),
+)
+
+
+def test_a_score_mixing_a_distance_ranks_nearer_blocks_higher(conn):
+    """The shape Uriel asked for: density/form combined with accessibility.
+
+    Exercised through `compute_composite` rather than a helper mirroring it,
+    because the whole risk here is that the real path forgets to orient. With
+    `weight >= 0` enforced by r016, an unoriented distance makes 'far from a
+    school' the high score — arithmetically sound, semantically inverted.
+    """
+    registry = (URBAN_FORM_BLOCK_COMPACTNESS, _DISTANCE_SPEC, _SCORE)
+    seed_catalog(conn, registry)
+    source_id = _register_source(
+        conn,
+        name="dir_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+
+    def _block(ref: str, wkt: str) -> str:
+        return _insert_feature(
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
+            geometry_wkt=wkt,
+        )
+
+    near = _block("dir-near", _BLOCK_WKT)
+    far = _block(
+        "dir-far",
+        "POLYGON((-99.130 19.430,-99.127 19.430,-99.127 19.433,"
+        "-99.130 19.433,-99.130 19.430))",
+    )
+
+    backend = backend_for_connection(conn)
+    repo = backend.indicator_result_repo()
+    # Identical compactness on both, so only the distance can move the score.
+    with job_run(
+        backend, model_family="urban_form", code_version="test", scenario_id=None
+    ) as jid:
+        repo.bulk_write_numeric_results(
+            [(near, 0.5), (far, 0.5)],
+            indicator_slug=URBAN_FORM_BLOCK_COMPACTNESS.slug,
+            job_run_id=jid,
+        )
+    with job_run(
+        backend,
+        model_family="accessibility",
+        code_version="test",
+        scenario_id=None,
+    ) as jid:
+        repo.bulk_write_numeric_results(
+            [(near, 100.0), (far, 1400.0)],
+            indicator_slug=_DISTANCE,
+            job_run_id=jid,
+        )
+
+    compute_composite(conn, spec=_SCORE, code_version="test")
+
+    near_score = repo.get_current(feature_id=near, indicator_slug=_SCORE.slug)
+    far_score = repo.get_current(feature_id=far, indicator_slug=_SCORE.slug)
+    assert near_score is not None and far_score is not None
+    assert near_score["value_numeric"] > far_score["value_numeric"], (
+        "a block 100 m from a school must score above one 1400 m away; "
+        f"got near={near_score['value_numeric']} far={far_score['value_numeric']}"
+    )
+    # Exact maths: 0.5·norm(compactness) + 0.5·(1 − norm(distance)).
+    assert near_score["value_numeric"] == pytest.approx(
+        0.5 * 0.5 + 0.5 * (1.0 - 100.0 / ACCESSIBILITY_CUTOFF_M)
+    )
