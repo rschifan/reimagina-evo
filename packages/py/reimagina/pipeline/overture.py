@@ -284,7 +284,7 @@ def bootstrap_overture_buildings_subset(
     if aoi_id is not None:
         clip_result = _clip_buildings_to_aoi(
             conn,
-            ingestion_run_id=load_result["ingestion_run_id"],
+            ingestion_run_id=str(load_result["ingestion_run_id"]),
             aoi_id=aoi_id,
         )
         conn.commit()

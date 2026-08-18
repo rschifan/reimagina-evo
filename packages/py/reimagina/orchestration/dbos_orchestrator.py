@@ -26,6 +26,7 @@ from reimagina.orchestration import runstore
 from reimagina.orchestration.plan import noop_handle, plan_run
 from contextlib import closing as _closing
 from reimagina.orchestration.port import (
+    DBConnection,
     RUN_TERMINAL_STATES,
     UNIT_TERMINAL_STATES,
     RunEvent,
@@ -146,7 +147,7 @@ class DBOSOrchestrator:
 
     def submit_run(
         self,
-        conn: object,
+        conn: DBConnection,
         *,
         changed_attributes: Iterable[str],
         edited_features: Iterable[str],
@@ -227,15 +228,20 @@ class DBOSOrchestrator:
             from dbos import SetWorkflowID
 
             with SetWorkflowID(run_id):
+                # DBOS types the payload as a plain dict; RunParams is a
+                # TypedDict, which is structurally compatible but not nominally.
                 dbos_app.runs_queue().enqueue(
-                    dbos_app.run_workflow, run_id, units, params
+                    dbos_app.run_workflow,
+                    run_id,
+                    units,
+                    params,  # type: ignore[arg-type]
                 )
 
         return RunHandle(run_id=run_id, status=None)
 
     # ── Read ────────────────────────────────────────────────────────────────
 
-    def get_run(self, conn: object, run_id: str) -> RunStatus | None:
+    def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None:
         """Detail from our tables; *existence* from the engine.
 
         A submitted run is durable the moment ``start_workflow`` returns, but
@@ -305,7 +311,7 @@ class DBOSOrchestrator:
 
     # ── Cancel ──────────────────────────────────────────────────────────────
 
-    def cancel_run(self, conn: object, run_id: str) -> bool:
+    def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
         """Stop scheduling, stop the running statement, then close the run.
 
         Three mechanisms, because each stops something the others cannot.

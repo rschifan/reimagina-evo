@@ -98,11 +98,12 @@ def _edificability_rows(
 
     rows: list[tuple[str, float, float, float, float]] = []
     for feature_id, area_m2, _perimeter_m in areas:
-        values = [attributes[key].get(feature_id) for key in _ATTRIBUTES]
-        if any(value is None for value in values):
+        levels = attributes["num_levels"].get(feature_id)
+        unit_size = attributes["unit_size"].get(feature_id)
+        people = attributes["people_per_household"].get(feature_id)
+        if levels is None or unit_size is None or people is None:
             # Missing input — leave whatever this feature already holds.
             continue
-        levels, unit_size, people = values
         rows.append((feature_id, area_m2, levels, unit_size, people))
     return rows
 

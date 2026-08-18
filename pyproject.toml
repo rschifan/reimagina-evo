@@ -102,3 +102,16 @@ addopts = "-v"
 
 [tool.coverage.run]
 source = ["packages/py/reimagina"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+# `storage/interfaces.py` declares 18 Protocols against one implementation, and
+# until this was added nothing verified they agreed — the contract was upheld by
+# hand across 90 methods. It had held, but only by care. This makes it
+# structural, and caught two real defects on adoption: a NOT NULL `crs` that a
+# raster without one would violate, and a `conn: object` the port called
+# `.commit()` on.
+exclude = "^packages/py/reimagina/perf/"
+# The benchmark harness builds workflow functions dynamically and is checked by
+# the workload suite running them, not by annotations.

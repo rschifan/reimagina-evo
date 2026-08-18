@@ -500,7 +500,7 @@ def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, o
     for recipe in recipes:
         attribute_key = _attribute_key_for_recipe(recipe, backend=backend)
         value_range = value_ranges_by_key.get(attribute_key)
-        available = value_range is not None and value_range["count"] > 0
+        available = value_range is not None and int(value_range["count"]) > 0  # type: ignore[call-overload]
         parent_id, parent_slug = _resolve_transitive_raster_parent(
             recipe,
             by_output_prefix,
@@ -841,7 +841,7 @@ def _resolve_transitive_raster_parent(
         up_prefix = cursor.get("input_attribute_key_prefix")
         if not up_prefix:
             return None, None
-        upstream = by_output_prefix.get(up_prefix)
+        upstream = by_output_prefix.get(str(up_prefix))
         if upstream is None:
             # Input observations exist (e.g. hand-imported) but no recipe
             # produced them — no raster lineage.

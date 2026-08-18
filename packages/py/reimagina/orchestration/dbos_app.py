@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime, timezone
 from graphlib import CycleError
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 import psycopg2
 from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID
@@ -696,7 +696,13 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
     outstanding: dict[str, str] = {}  # child workflow id -> slug
 
     while True:
-        wave = plan_wave([(slug, statuses[slug]) for slug in order], registry)
+        # `registry` is `_Spec`, a two-field stand-in carrying only what
+        # `plan_wave` reads. Structural, not nominal — the workflow input is
+        # the source of truth here, never the catalog.
+        wave = plan_wave(
+            [(slug, statuses[slug]) for slug in order],
+            registry,  # type: ignore[arg-type]
+        )
 
         for slug in wave.skip:
             # Announce only what the database accepted, exactly as the settled
@@ -756,7 +762,7 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         # way each iteration keeps the set a pure function of `outstanding`,
         # which matters because `wait_first` looks its recorded winner up in this
         # exact list and raises a bare KeyError if it is missing.
-        handles = [
+        handles: list[Any] = [
             DBOS.retrieve_workflow(child_id, existing_workflow=False)
             for child_id in sorted(outstanding)
         ]
