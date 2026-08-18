@@ -10,7 +10,11 @@ from __future__ import annotations
 import pytest
 
 from reimagina.assets.observe import observe_assets
-from reimagina.assets.publish import asset_key_for_feature_type, publish_version
+from reimagina.assets.publish import (
+    asset_key_for_feature_type,
+    publish_version,
+    retire_version,
+)
 from reimagina.assets.registry import seed_assets
 from reimagina.data import catalog as cat
 from reimagina.data.feature import get_type_id
@@ -176,11 +180,12 @@ def test_ingest_stamps_ingested_at(seeded, conn):
         assert cur.fetchone()[0] is True
 
 
-def test_publishing_buildings_stales_only_what_reads_them(seeded, conn):
-    """The user's question, end to end on the shipped graph.
+def _materialize_every_indicator(conn):
+    """Record a materialization at each derived asset's current expected version.
 
-    Reloading buildings must stale density and the composite, and must leave
-    compactness alone — it reads blocks only.
+    Cheaper than running the indicators and exactly as good for these tests: the
+    point is a graph where nothing is stale, so that whatever the test does next
+    is the only reason anything becomes stale.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -192,6 +197,15 @@ def test_publishing_buildings_stales_only_what_reads_them(seeded, conn):
             WHERE e.partition_key = '' AND a.kind = 'derived'
             """
         )
+
+
+def test_publishing_buildings_stales_only_what_reads_them(seeded, conn):
+    """The user's question, end to end on the shipped graph.
+
+    Reloading buildings must stale density and the composite, and must leave
+    compactness alone — it reads blocks only.
+    """
+    _materialize_every_indicator(conn)
     assert _state(conn, "indicator.urban_form_block_building_density") == "fresh"
 
     run_id = _start_run(conn)
@@ -333,12 +347,7 @@ def test_publishing_after_a_retire_without_replace(seeded, conn):
     """
     publish_version(conn, asset_key="global.building", version="v1")
     publish_version(conn, asset_key="global.building", version="v2")
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE curated_geo.asset_version SET is_current = false, "
-            "valid_to = now() WHERE asset_id = "
-            "(SELECT id FROM curated_geo.asset WHERE asset_key = 'global.building')"
-        )
+    assert retire_version(conn, asset_key="global.building") == "v2"
 
     publish_version(conn, asset_key="global.building", version="v3")
 
@@ -403,3 +412,79 @@ def test_batched_overrides_publish_once(seeded, conn):
             "WHERE a.asset_key = 'scenario.override'"
         )
         assert cur.fetchone()[0] == 1, "three edits, one published version"
+
+
+# ── retiring a version ──────────────────────────────────────────────────────
+
+
+def test_retiring_leaves_the_asset_absent_not_fresh(seeded, conn):
+    """The state `publish_version` alone cannot express.
+
+    A layer that was truncated or dropped has no new version to publish. Saying
+    so with a sentinel string would leave it reading `fresh` at a version whose
+    whole meaning is that it is gone.
+    """
+    publish_version(conn, asset_key="global.building", version="v1")
+    assert _state(conn, "global.building") == "fresh"
+
+    retire_version(conn, asset_key="global.building")
+
+    assert _state(conn, "global.building") == "absent"
+    assert _current(conn, "global.building") is None
+
+
+def test_retiring_stales_the_consumers_of_what_was_retired(seeded, conn):
+    """Retiring is a real change, not a hole — downstream must notice it."""
+    publish_version(conn, asset_key="global.building", version="v1")
+    _materialize_every_indicator(conn)
+    assert _state(conn, "indicator.urban_form_block_building_density") == "fresh"
+
+    retire_version(conn, asset_key="global.building")
+
+    assert _state(conn, "indicator.urban_form_block_building_density") == "stale"
+    # ...and only its consumers. Compactness reads blocks, not buildings.
+    assert _state(conn, "indicator.urban_form_block_compactness") == "fresh"
+
+
+def test_retiring_is_stable_so_the_consumer_does_not_oscillate(seeded, conn):
+    """`missing` is a fixed component, not a timestamp.
+
+    A retired asset that hashed differently on each read would make its
+    consumers permanently stale-on-arrival: recompute, materialize, and find
+    them stale again immediately.
+    """
+    publish_version(conn, asset_key="global.building", version="v1")
+    retire_version(conn, asset_key="global.building")
+    _materialize_every_indicator(conn)
+
+    assert _state(conn, "indicator.urban_form_block_building_density") == "fresh"
+
+
+def test_retiring_what_is_not_there_is_a_state_not_an_error(seeded, conn):
+    assert retire_version(conn, asset_key="global.building") is None
+    assert retire_version(conn, asset_key="does.not.exist") is None
+
+
+def test_a_probe_that_finds_nothing_retires_instead_of_publishing_a_sentinel(
+    seeded, conn
+):
+    """`road_edge` emptied out: observed, recorded, and honestly absent."""
+    _add_road_edge(conn, osm_id=1)
+    observe_assets(conn, asset_keys=["global.road_network"])
+    assert _state(conn, "global.road_network") == "fresh"
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM curated_geo.road_edge")
+        # The shipped probe counts, so an empty table still answers '0:'. Force
+        # the no-signal case the way a dropped relation would.
+        cur.execute(
+            "UPDATE curated_geo.asset SET probe_sql = 'SELECT max(osm_id) "
+            "FROM curated_geo.road_edge' WHERE asset_key = 'global.road_network'"
+        )
+
+    result = observe_assets(conn, asset_keys=["global.road_network"])[0]
+
+    assert result.version is None
+    assert result.error is None, "a probe that ran and found nothing is not a failure"
+    assert result.changed is True
+    assert _state(conn, "global.road_network") == "absent"
