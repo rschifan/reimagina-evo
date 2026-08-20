@@ -159,7 +159,7 @@ def test_independent_units_come_out_in_a_stable_order():
 
 
 def test_a_changed_dataset_seeds_from_its_edges_not_from_reads():
-    """"A street was added to the road network" — not an attribute edit.
+    """ "A street was added to the road network" — not an attribute edit.
 
     The accessibility indicators declare a spatial edge to `global.road_network`
     with no attributes on it, so `reads` cannot see the dependency at all. The
