@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import math
 from typing import Any
+from uuid import UUID
 
 import pandas as pd
 
@@ -161,3 +162,29 @@ def decode_cursor(cursor: str) -> tuple[str, str]:
         return ts, fid
     except Exception as exc:
         raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
+
+
+def is_run_id(run_id: Any) -> bool:
+    """Whether ``run_id`` could name a run row at all.
+
+    ``orchestration_run.id`` is ``uuid`` (r028), so anything that is not one
+    cannot be a run — but asked in SQL the question is not answered, it *fails*:
+    Postgres raises ``invalid input syntax for type uuid``, psycopg2 surfaces it
+    as ``DataError``, and ``apps.api.errors.database_error_handler`` maps every
+    non-connection driver error to 500. ``GET /jobs/whatever`` therefore returns
+    a server error for what is plainly a client typo, and aborts the request's
+    transaction on the way out.
+
+    Lives here rather than in ``orchestration.runstore``, where it started, because
+    it now has two callers on opposite sides of a seam: runstore itself, and the
+    Ops dashboard's ``OpsRunReader``. Public rather than underscored for the same
+    reason — reaching across a package boundary for a private name is the smell
+    this move exists to remove.
+    """
+    if isinstance(run_id, UUID):
+        return True
+    try:
+        UUID(str(run_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True

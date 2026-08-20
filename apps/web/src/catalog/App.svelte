@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { Boxes, Map as MapIcon, RefreshCw } from "@lucide/svelte";
+  import { RefreshCw } from "@lucide/svelte";
+
+  import TopBar from "../lib/TopBar.svelte";
 
   import DetailView from "./DetailView.svelte";
+  import ImpactCheck from "./ImpactCheck.svelte";
   import IndexView from "./IndexView.svelte";
   import { boot, catalog, startPolling } from "./store.svelte";
   import { filtersFromHash, slugFromHash } from "./derive";
@@ -30,13 +33,8 @@
   });
 </script>
 
-<div class="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-8">
-  <header class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line pb-4">
-    <a href="#/" class="flex items-center gap-2.5">
-      <Boxes class="size-5 text-interactive" aria-hidden="true" />
-      <span class="text-base font-semibold tracking-tight">Indicator catalog</span>
-    </a>
-
+<TopBar current="catalog">
+  {#snippet actions()}
     {#if catalog.aois.length > 1}
       <label class="flex items-center gap-2 text-xs text-muted-foreground">
         AOI
@@ -52,36 +50,31 @@
       </label>
     {/if}
 
-    <div class="ml-auto flex items-center gap-3">
-      {#if catalog.error}
-        <span class="font-mono text-[10px] text-state-stale" role="status">
-          refresh failed — showing last known
-        </span>
-      {:else if catalog.lastLoadedAt}
-        <span class="font-mono text-[10px] text-muted-foreground" role="status">
-          updated {catalog.lastLoadedAt.toLocaleTimeString()}
-        </span>
-      {/if}
-      <RefreshCw
-        class={`size-3.5 text-muted-foreground ${catalog.refreshing ? "animate-spin" : ""}`}
-        aria-hidden="true"
-      />
-      <a
-        href="/index.html"
-        class="inline-flex items-center gap-1.5 rounded border border-line px-2 py-1 text-xs
-               text-muted-foreground hover:text-foreground"
-      >
-        <MapIcon class="size-3.5" aria-hidden="true" />
-        Map
-      </a>
-    </div>
-  </header>
+    {#if catalog.error}
+      <span class="font-mono text-[10px] text-state-stale" role="status">
+        refresh failed — showing last known
+      </span>
+    {:else if catalog.lastLoadedAt}
+      <span class="font-mono text-[10px] text-muted-foreground" role="status">
+        updated {catalog.lastLoadedAt.toLocaleTimeString()}
+      </span>
+    {/if}
+    <RefreshCw
+      class={`size-3.5 text-muted-foreground ${catalog.refreshing ? "animate-spin" : ""}`}
+      aria-hidden="true"
+    />
+  {/snippet}
+</TopBar>
 
+<div class="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-8">
   <main class="flex-1">
     {#if slug}
       <DetailView {slug} />
     {:else}
       <IndexView />
+      <div class="mt-6">
+        <ImpactCheck />
+      </div>
     {/if}
   </main>
 </div>

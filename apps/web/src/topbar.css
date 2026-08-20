@@ -1,0 +1,47 @@
+/*
+ * Tailwind utilities for the shared TopBar, on the map page only.
+ *
+ * The map is vanilla TS with hand-written CSS in `style.css`, and a plain
+ * `@import "tailwindcss"` would drag in **preflight** — Tailwind's reset —
+ * which would flatten that layout. So this imports the theme and utility
+ * layers explicitly and leaves preflight out; `catalog.css`'s warning about
+ * keeping the reset away from the map bundle still holds, this just makes the
+ * utilities available without it.
+ *
+ * The consequence of skipping preflight is that `box-sizing` is not reset
+ * globally, so the bar sets it for its own subtree below.
+ */
+@layer theme, base, utilities;
+@import "tailwindcss/theme.css" layer(theme) source(none);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+
+@source "./lib/**/*.{svelte,ts}";
+@source "../index.html";
+
+@import "./tokens.css";
+
+/*
+ * The parts of preflight the bar actually depends on, scoped to its own tree.
+ *
+ * Without the anchor rule every link renders in the UA's default link blue
+ * (#0000ee) — brand and all three nav items — because nothing else resets it.
+ *
+ * ⚠ In `@layer base`, not unlayered. An unlayered `#topbar a` outranks every
+ * layered utility (unlayered CSS beats layered, and an id beats a class), so
+ * it silently flattened `text-accent` and `text-muted-foreground` to one
+ * colour — the current-page marker vanished. Preflight lives in a base layer
+ * for exactly this reason; utilities are declared after it and win.
+ */
+@layer base {
+  #topbar,
+  #topbar *,
+  #topbar *::before,
+  #topbar *::after {
+    box-sizing: border-box;
+  }
+
+  #topbar a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+}

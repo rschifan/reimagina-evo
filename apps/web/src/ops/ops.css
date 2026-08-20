@@ -1,0 +1,14 @@
+/*
+ * Ops page styles. Imported only by `src/ops/main.ts`, so nothing here —
+ * including Tailwind's preflight reset — reaches the map bundle.
+ *
+ * `source(none)` plus explicit `@source` lines: without it Tailwind would scan
+ * the map's TypeScript too and generate utilities for strings that merely look
+ * like class names. The shared `lib/` scan and every design token come from
+ * `ui.css`, which both Svelte pages import.
+ */
+@import "tailwindcss" source(none);
+@source "../../ops.html";
+@source "./**/*.{svelte,ts}";
+
+@import "../ui.css";

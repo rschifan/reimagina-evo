@@ -79,14 +79,45 @@ def job_run(
     try:
         yield job_run_id
     except Exception as exc:
+        _record_failure(repo, job_run_id, exc)
+        raise
+    else:
+        repo.complete_job(job_run_id, status="succeeded")
+
+
+def _record_failure(repo: Any, job_run_id: str, exc: Exception) -> None:
+    """Mark the row failed, but never at the cost of the error being recorded.
+
+    ⚠ An exception raised inside an ``except`` block *replaces* the one being
+    handled. The compute usually fails by aborting the transaction, so this
+    ``UPDATE`` then raises ``InFailedSqlTransaction`` — and that, not the fault,
+    is what reached the operator. A ``UniqueViolation`` naming the offending row
+    was reported in the run detail as "current transaction is aborted", a
+    message about the reporting rather than the problem. The exception is the
+    truth; the row is only provenance.
+
+    ⚠ Deliberately **no rollback** to make the write succeed. It would clear the
+    aborted state, but it would also discard this context manager's own
+    ``start_job`` INSERT, so the row it is trying to finalise would cease to
+    exist — verified by ``test_a_failed_job_still_records_the_run``.
+
+    Losing the row here is survivable: ``s_compute`` records the failure on a
+    fresh connection (``record_failed_job_run``) precisely because this one may
+    be unusable. Losing the error is not.
+    """
+    try:
         repo.complete_job(
             job_run_id,
             status="failed",
             error_message=f"{type(exc).__name__}: {exc}",
         )
-        raise
-    else:
-        repo.complete_job(job_run_id, status="succeeded")
+    except Exception:  # noqa: BLE001 — see the docstring: never mask the cause
+        logger.warning(
+            "could not mark job_run %s failed (connection likely aborted); "
+            "the original error is being re-raised and s_compute will record it",
+            job_run_id,
+            exc_info=True,
+        )
 
 
 def record_failed_job_run(
