@@ -89,9 +89,7 @@ def test_distance_indicators_declare_lower_is_better():
     the implementation does, so this cannot drift from the compute."""
     lower = {s.slug for s in SHIPPED_INDICATORS if not s.higher_is_better}
     assert lower == {
-        f"accessibility_block_{c}_{m}_m"
-        for c in ("school", "health", "park")
-        for m in ("euclid", "network")
+        f"accessibility_block_{c}_network_m" for c in ("school", "health", "park")
     }
 
 

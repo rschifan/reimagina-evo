@@ -208,15 +208,16 @@ def test_tile_filters_by_scenario_id(conn):
 
 
 def test_tile_filters_by_feature_type(conn):
-    """r018 regression: same slug written at two grains must not overlap.
+    """r018's feature_type param scopes a tile to one grain.
 
-    Before r018, a multi-grain indicator (e.g. block_building_density,
-    which has applies_to=['block', 'ageb'] and uses a rollup to produce
-    AGEB rows) rendered overlapping polygons on the same tile because
-    the server returned every grain in applies_to. r018 added an optional
-    feature_type query param that scopes the tile to one grain. This
-    test seeds a block + an overlapping AGEB row with the same slug and
-    asserts each filtered tile only carries its requested grain.
+    ⚠ The regression it was written for can no longer arise from the shipped
+    catalog. Every indicator is now `applies_to=("block",)`, and r016's write
+    trigger rejects a row at any other grain — so the original setup (the same
+    slug written at block *and* AGEB, rendering overlapping polygons) cannot be
+    built any more. What is still worth holding is that the param filters at
+    all, since the client sends it on every overlay request.
+
+    Restore the two-grain version if a multi-grain indicator returns.
     """
     from tests.integration._helpers import (
         insert_feature as _insert_feature,
@@ -246,7 +247,9 @@ def test_tile_filters_by_feature_type(conn):
         source_record_ref=f"block-{uuid4().hex[:8]}",
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
-    ageb_id = _insert_feature(
+    # An AGEB feature covering the same tile. No indicator applies to it any
+    # more, so it exists here only to prove the filter excludes its grain.
+    _insert_feature(
         conn,
         type_id=ageb_type,
         source_id=source_id,
@@ -256,7 +259,8 @@ def test_tile_filters_by_feature_type(conn):
         geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
     )
 
-    # Write one block row + one AGEB row for the same multi-grain slug.
+    # One block row. The AGEB write that used to accompany it is now rejected
+    # by r016: "feature type ageb is not in indicator applies_to ({block})".
     backend = backend_for_connection(conn)
     job_run_id = backend.job_run_repo().start_job(
         model_family="urban_form",
@@ -270,12 +274,6 @@ def test_tile_filters_by_feature_type(conn):
         indicator_slug=slug,
         job_run_id=job_run_id,
         value_numeric=12.0,
-    )
-    result_repo.write_result(
-        feature_id=ageb_id,
-        indicator_slug=slug,
-        job_run_id=job_run_id,
-        value_numeric=99.0,
     )
 
     def _render(params_json: str) -> list[dict]:
@@ -298,14 +296,13 @@ def test_tile_filters_by_feature_type(conn):
     assert block_only[0]["properties"]["feature_id"] == block_id
     assert block_only[0]["properties"]["type_slug"] == "block"
 
+    # Asking for a grain the indicator does not apply to returns nothing —
+    # the AGEB feature is present and overlaps the tile, so this fails if the
+    # param is ignored rather than because there is no candidate geometry.
     ageb_only = _render(f'{{"indicator_slug": "{slug}", "feature_type": "ageb"}}')
-    assert len(ageb_only) == 1
-    assert ageb_only[0]["properties"]["feature_id"] == ageb_id
-    assert ageb_only[0]["properties"]["type_slug"] == "ageb"
+    assert ageb_only == []
 
-    # No feature_type filter: both grains land in the tile (pre-r018
-    # behaviour). This half of the assertion protects r018 itself from
-    # regressing into "always filter by grain".
+    # No filter: the block row still lands, so r018 has not regressed into
+    # "always filter by grain".
     both = _render(f'{{"indicator_slug": "{slug}"}}')
-    type_slugs = {f["properties"]["type_slug"] for f in both}
-    assert type_slugs == {"block", "ageb"}
+    assert {f["properties"]["type_slug"] for f in both} == {"block"}

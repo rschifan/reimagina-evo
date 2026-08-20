@@ -9,7 +9,12 @@
   <body>
     <main class="app">
       <aside class="sidebar">
-        <h1>reimagina</h1>
+        <div class="app-nav">
+          <h1>reimagina</h1>
+          <!-- The catalog is a separate entry, not a route: different bundle,
+               different framework. A plain link is the whole navigation. -->
+          <a class="app-nav__link" href="/catalog.html">Catalog &rarr;</a>
+        </div>
 
         <section data-section="aoi">
           <h2>Pilot</h2>

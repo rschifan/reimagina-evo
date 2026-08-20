@@ -1472,51 +1472,6 @@ class PostgresOverlapRepository:
 
             return cur.rowcount
 
-    def rollup_child_rows(
-        self,
-        *,
-        indicator_slug: str,
-        source_feature_type: str,
-        target_feature_type: str,
-        scenario_id: str | None = None,
-    ) -> list[tuple[str, float | None, float, str]]:
-        scenario_clause, scenario_params = _scenario_overlay("ir", scenario_id)
-        params: list = [
-            source_feature_type,
-            target_feature_type,
-            indicator_slug,
-            *scenario_params,
-        ]
-        with self.connection.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT fo.target_feature_id::text,
-                       ir.value_numeric,
-                       fo.overlap_measure,
-                       ir.quality_flag
-                FROM curated_geo.feature_overlap fo
-                JOIN curated_geo.feature src ON src.id = fo.source_feature_id
-                     AND src.type_slug = %s
-                JOIN curated_geo.feature tgt ON tgt.id = fo.target_feature_id
-                     AND tgt.type_slug = %s
-                LEFT JOIN curated_geo.indicator_result ir
-                     ON ir.feature_id = fo.source_feature_id
-                    AND ir.indicator_slug = %s
-                    AND ir.status = 'current'
-                    AND {scenario_clause}
-                """,
-                params,
-            )
-            return [
-                (
-                    str(target_id),
-                    float(value) if value is not None else None,
-                    float(weight),
-                    quality or "missing",
-                )
-                for target_id, value, weight, quality in cur.fetchall()
-            ]
-
     def rollup_observation_child_rows(
         self,
         *,
@@ -2337,6 +2292,127 @@ class PostgresIndicatorCatalogRepository:
                     """,
                     (parent_id, child[0], weight),
                 )
+
+    def list_dependencies(self) -> list[dict]:
+        """Every composite → input edge, as slugs and weights.
+
+        The write side of `indicator_dependency` has existed since r016 and
+        nothing has ever read it back, so a composite's inputs were only
+        visible by inspecting the Python registry. Returning the whole edge
+        set in one query — there are single digits of them — lets a caller
+        build both directions of the graph without a query per indicator.
+        """
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT parent.slug        AS indicator_slug,
+                       parent.name        AS indicator_name,
+                       child.slug         AS depends_on_slug,
+                       child.name         AS depends_on_name,
+                       child.unit         AS depends_on_unit,
+                       d.weight
+                FROM curated_geo.indicator_dependency d
+                JOIN curated_geo.indicator_catalog parent ON parent.id = d.indicator_id
+                JOIN curated_geo.indicator_catalog child  ON child.id = d.depends_on_id
+                ORDER BY parent.slug, child.slug
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+# ─── Asset graph ────────────────────────────────────────────────────────────
+
+
+class PostgresAssetGraphRepository:
+    """Reads the r041 asset graph through its serving views.
+
+    Every query here is graph-sized — 25 assets and 40 edges in the shipped
+    catalog — so none of them paginate and `lineage` returns a whole closure
+    in one round trip rather than a query per node.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def get_asset(self, asset_key: str) -> dict | None:
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                """
+                SELECT asset_key, kind, backing_kind, backing_ref,
+                       version_strategy, code_version, partition_dimensions,
+                       feature_type_context, feature_type_slug, description
+                FROM explore.asset_v
+                WHERE asset_key = %s
+                """,
+                (asset_key,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def lineage(
+        self, *, asset_key: str, direction: str, max_depth: int | None = None
+    ) -> list[dict]:
+        """The transitive closure around `asset_key`.
+
+        `asset_lineage_v` emits both directions from one recursion, so
+        "what does this need" and "what breaks if this changes" cannot drift
+        apart into two implementations that disagree.
+        """
+        if direction not in {"upstream", "downstream"}:
+            raise ValueError(f"direction must be upstream or downstream: {direction!r}")
+        clauses = ["root_key = %s", "direction = %s"]
+        params: list = [asset_key, direction]
+        if max_depth is not None:
+            clauses.append("depth <= %s")
+            params.append(max_depth)
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                f"""
+                SELECT related_key, related_kind, depth
+                FROM serving_geo.asset_lineage_v
+                WHERE {" AND ".join(clauses)}
+                ORDER BY depth, related_key
+                """,
+                params,
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def freshness(self, *, asset_keys: list[str] | None = None) -> list[dict]:
+        """Freshness per asset and partition.
+
+        `state='absent'` means no materialization has been recorded, which is
+        the state of every derived asset until the compute path writes one.
+        It is reported rather than smoothed over: an absent version is a real
+        answer, and hiding it behind "unknown" would make a graph that has
+        never run look the same as one that is current.
+        """
+        clause = ""
+        params: list = []
+        if asset_keys is not None:
+            if not asset_keys:
+                return []
+            clause = "WHERE asset_key = ANY(%s)"
+            params.append(asset_keys)
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                f"""
+                SELECT asset_key, kind, partition_key, state, expected_version,
+                       materialized_version, coverage_complete, materialized_at
+                FROM explore.asset_freshness_v
+                {clause}
+                ORDER BY asset_key, partition_key
+                """,
+                params,
+            )
+            return [dict(row) for row in cur.fetchall()]
 
 
 # ─── Indicator result ───────────────────────────────────────────────────────

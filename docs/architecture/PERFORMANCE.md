@@ -125,7 +125,7 @@ Compute + rollup + AOI summary:
 | Step | Scope | Rows | Wall-clock |
 |---|---|---|---|
 | `indicators compute --slug urban_form_block_compactness` | 66 789 blocks CDMX-wide | 66 789 | 5.9 s |
-| `indicators rollup --source-type block --target-type ageb` | 153 AGEBs covered by populated `feature_overlap` pairs | 153 | 8.0 s |
+| `indicators rollup --source-type block --target-type ageb` ⚠ *command removed; every indicator is now block-only* | 153 AGEBs covered by populated `feature_overlap` pairs | 153 | 8.0 s |
 | `indicators aoi-summary --aoi-id <Cuauhtémoc> --slug urban_form_block_compactness` | 3 020 features weighted, 3 006 usable, 14 prorated | 1 | <0.5 s |
 
 Cuauhtémoc block-compactness (weighted-mean): **0.636** (ratio_0_1).
@@ -162,7 +162,7 @@ with GIST on `feature.geometry` doing the heavy lifting.
 |---|---|---|---|
 | `overture load` | 5 888 557 building features landed into `curated_geo.feature` | 5 888 557 | ~5 min (background) |
 | `indicators compute --slug urban_form_block_building_density` | 66 789 blocks CDMX-wide; 1 511 860 buildings attributed | 66 789 | 8.9 s |
-| `indicators rollup --source-type block --target-type ageb` | 153 AGEBs covered | 153 | 0.5 s |
+| `indicators rollup --source-type block --target-type ageb` ⚠ *command removed* | 153 AGEBs covered | 153 | 0.5 s |
 | `indicators aoi-summary --aoi-id <Cuauhtémoc>` | 3 020 features weighted, 3 006 usable | 1 | <0.5 s |
 
 Cuauhtémoc building-density (weighted-mean): **26.56 buildings/ha**.

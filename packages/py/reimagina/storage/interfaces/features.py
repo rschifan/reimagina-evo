@@ -288,27 +288,6 @@ class OverlapRepository(Protocol):
         """
         ...
 
-    def rollup_child_rows(
-        self,
-        *,
-        indicator_slug: str,
-        source_feature_type: str,
-        target_feature_type: str,
-        scenario_id: str | None = None,
-    ) -> list[tuple[str, float | None, float, str]]:
-        """Return ``(target_id, value_numeric, overlap_measure, quality_flag)`` per
-        (source, target) overlap pair, restricted to the given feature types and
-        the current indicator row for the given scenario scope.
-
-        Weight is ``overlap_measure`` (absolute intersection, m² for polygon
-        rollups) so ``weighted_mean`` is area-weighted. ``overlap_ratio`` is
-        wrong here: fully-nested children collapse to ~1.0 and degrade the
-        weighted mean to an arithmetic mean. Quality defaults to ``'missing'``
-        when the LEFT join misses an indicator row. Callers group by target
-        themselves.
-        """
-        ...
-
     def rollup_observation_child_rows(
         self,
         *,
@@ -324,14 +303,14 @@ class OverlapRepository(Protocol):
         ``attribute_key`` starts with ``:prefix`` or equals it exactly
         (same separator-safe matching as ``retire_current_by_prefix``),
         joins to ``feature_overlap``, restricts to target features of
-        ``target_feature_type``. Weight is ``overlap_measure`` for the
-        same reason ``rollup_child_rows`` picks it. Callers group by
+        ``target_feature_type``. Weight is ``overlap_measure`` — the
+        absolute area inside the target, not the ratio, so parents of
+        different sizes contribute proportionally. Callers group by
         ``(target_id, source_attribute_key)`` and aggregate per group
         so a prefix that spans multiple stat suffixes (e.g.
         ``pop_sum`` + ``pop_count``) rolls up each suffix independently.
 
-        Inner join on observation (unlike the LEFT join on indicator_result
-        for the indicator rollup): observations that don't exist aren't
+        Inner join on observation: observations that don't exist aren't
         "missing", they're absent — workers don't emit placeholder rows
         for them.
         """

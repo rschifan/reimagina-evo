@@ -150,7 +150,7 @@ def test_a_road_reload_recomputes_only_the_network_family(graph, conn):
         "accessibility_block_park_network_m",
         "livability_block_score",
     }
-    assert not any(s.endswith("_euclid_m") for s in slugs)
+    assert not any(s.startswith(("edificability_", "urban_form_")) for s in slugs)
 
 
 def test_an_explicit_change_set_still_takes_the_attribute_path(graph, conn):

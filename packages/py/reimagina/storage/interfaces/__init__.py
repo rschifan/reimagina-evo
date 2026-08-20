@@ -13,6 +13,9 @@ from reimagina.storage.interfaces.sources import (
     SourceCatalogRepository as SourceCatalogRepository,
     FileAssetRepository as FileAssetRepository,
 )
+from reimagina.storage.interfaces.assets import (
+    AssetGraphRepository as AssetGraphRepository,
+)
 from reimagina.storage.interfaces.features import (
     FeatureRepository as FeatureRepository,
     ObservationRepository as ObservationRepository,
@@ -41,6 +44,7 @@ from reimagina.storage.interfaces.serving import (
 from reimagina.storage.interfaces.backend import StorageBackend as StorageBackend
 
 __all__ = [
+    "AssetGraphRepository",
     "AOIRepository",
     "AOISummaryRepository",
     "AggregationRecipeRepository",

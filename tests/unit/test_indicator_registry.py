@@ -159,7 +159,7 @@ def test_a_radius_is_declared_exactly_for_within_radius_edges(spec):
 def test_accessibility_radius_equals_the_constant_the_sql_uses():
     """Pins the declaration to the compute.
 
-    ACCESSIBILITY_CUTOFF_M is what `_euclid_rows` passes as `%(cutoff)s`. If the
+    ACCESSIBILITY_CUTOFF_M is what `_network_rows` passes as `%(cutoff)s`. If the
     two ever diverge the declaration becomes decorative — which is exactly how
     `poi_version`/`network_version` rotted into tokens nothing produced.
     """
@@ -230,7 +230,6 @@ def test_projections_match_the_literals_they_replaced():
             "unit_size",
             "people_per_household",
         )
-    assert by_slug["accessibility_block_school_euclid_m"].reads == ("poi_version",)
     assert by_slug["accessibility_block_school_network_m"].reads == (
         "poi_version",
         "network_version",

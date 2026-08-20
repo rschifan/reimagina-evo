@@ -160,3 +160,77 @@ def retire_version(
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def backfill_versions(conn: Any) -> list[dict[str, Any]]:
+    """Publish a version for every source asset that has data but no version.
+
+    The ingest path publishes on completion (``data.catalog.finish_run``), so
+    this is only for layers loaded *before* the asset graph existed. Without it
+    those leaves stay unversioned, ``asset_component_v`` hashes them as the
+    literal ``'missing'``, and every indicator downstream reads stale forever —
+    a graph that is wired correctly and permanently wrong.
+
+    The version is the id of the most recent succeeded ingestion run that
+    touched the backing feature type, matching what a fresh load would have
+    recorded. Assets already carrying a current version are left alone: a
+    backfill that bumped them would stale the whole platform to recompute
+    identical numbers.
+    """
+    published: list[dict[str, Any]] = []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.asset_key, a.backing_ref, ft.id::text
+            FROM curated_geo.asset a
+            JOIN curated_geo.feature_type_catalog ft ON ft.id = a.feature_type_id
+            WHERE a.kind IN ('source', 'external')
+              AND a.version_strategy = 'commit'
+              AND NOT EXISTS (
+                  SELECT 1 FROM curated_geo.asset_version v
+                  WHERE v.asset_id = a.id AND v.is_current
+              )
+            ORDER BY a.asset_key
+            """
+        )
+        candidates = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+    for asset_key, backing_ref, type_id in candidates:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT f.ingestion_run_id::text,
+                       max(f.dataset_version) AS dataset_version,
+                       count(*) AS row_count
+                FROM curated_geo.feature f
+                JOIN curated_geo.ingestion_run r ON r.id = f.ingestion_run_id
+                WHERE f.type_id = %s AND r.status = 'succeeded'
+                GROUP BY f.ingestion_run_id, r.completed_at
+                ORDER BY r.completed_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (type_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            # Registered but never loaded — correctly left absent rather than
+            # given a fabricated version.
+            continue
+        run_id, dataset_version, row_count = row
+        version = publish_version(
+            conn,
+            asset_key=asset_key,
+            version=str(run_id),
+            ingestion_run_id=run_id,
+            dataset_version=dataset_version,
+            row_count=row_count,
+        )
+        published.append(
+            {
+                "asset_key": asset_key,
+                "backing_ref": backing_ref,
+                "version": version,
+                "row_count": row_count,
+            }
+        )
+    return published

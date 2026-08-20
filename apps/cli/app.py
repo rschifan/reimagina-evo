@@ -43,6 +43,7 @@ from reimagina.tiles.defaults import (  # noqa: E402
     tile_snapshot_base_url,
 )
 from .assets import (  # noqa: E402
+    backfill_versions as assets_backfill_cmd,
     consumers as assets_consumers_cmd,
     inputs as assets_inputs_cmd,
     observe as assets_observe_cmd,
@@ -95,7 +96,6 @@ from .points import bootstrap_points  # noqa: E402
 from .indicators import (  # noqa: E402
     compute_indicator,
     evaluate_scenario_cli,
-    rollup_indicator,
     seed_indicator_catalog,
     summarise_aoi_indicator,
 )
@@ -616,6 +616,14 @@ def assets_seed(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     return _print(assets_seed_cmd(dsn=dsn))
 
 
+@assets_app.command(
+    "backfill-versions",
+    help="Publish versions for source layers loaded before the asset graph existed",
+)
+def assets_backfill_versions(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+    return _print(assets_backfill_cmd(dsn=dsn))
+
+
 @assets_app.command("observe", help="Probe observable assets and publish any change")
 def assets_observe(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
@@ -1031,30 +1039,6 @@ def indicators_compute(
             dsn=dsn,
             slug=slug,
             aoi_id=aoi_id,
-            scenario_id=scenario_id,
-            code_version=code_version,
-        )
-    )
-
-
-@indicators_app.command(
-    "rollup",
-    help="Roll an indicator up from a source grain to a coarser target grain",
-)
-def indicators_rollup(
-    slug: str = typer.Option(..., "--slug"),
-    source_type: str = typer.Option(..., "--source-type"),
-    target_type: str = typer.Option(..., "--target-type"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
-    scenario_id: Optional[str] = typer.Option(None, "--scenario-id"),
-    code_version: str = typer.Option("dev", "--code-version"),
-) -> int:
-    return _print(
-        rollup_indicator(
-            dsn=dsn,
-            slug=slug,
-            source_feature_type=source_type,
-            target_feature_type=target_type,
             scenario_id=scenario_id,
             code_version=code_version,
         )
