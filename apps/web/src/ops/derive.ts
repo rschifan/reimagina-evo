@@ -214,9 +214,39 @@ export interface TimelineRow {
 
 export interface Timeline {
   rows: TimelineRow[];
+  /** The axis the bars are drawn against — not necessarily the elapsed time. */
   spanMs: number;
+  /** Actual elapsed time across the units, for display. */
+  elapsedMs: number;
+  /** Evenly spaced marks, so the row reads as time rather than as a fill. */
+  ticks: { atPct: number; label: string }[];
   /** Most units executing at once — the parallelism actually achieved. */
   peak: number;
+}
+
+/**
+ * Round an axis up to a stable, human ceiling.
+ *
+ * While a run is live the raw span grows every tick, and since each bar is a
+ * percentage of it, a *finished* bar's width shrinks each second — its right
+ * edge crawling backwards while the run continues. Quantising means the axis
+ * only jumps at these thresholds, so a completed bar holds still between them.
+ */
+export function niceSpan(ms: number): number {
+  const steps = [
+    5_000, 10_000, 15_000, 30_000, 45_000, 60_000, 120_000, 300_000, 600_000,
+    900_000, 1_800_000, 3_600_000,
+  ];
+  for (const step of steps) if (ms <= step) return step;
+  return Math.ceil(ms / 3_600_000) * 3_600_000;
+}
+
+/** Five marks across the axis, labelled as seconds from the run's start. */
+function axisTicks(spanMs: number): { atPct: number; label: string }[] {
+  return [0, 25, 50, 75, 100].map((atPct) => ({
+    atPct,
+    label: formatDuration((spanMs * atPct) / 100),
+  }));
 }
 
 /**
@@ -238,7 +268,8 @@ export function timelineOf(
   }[],
   now: number,
 ): Timeline {
-  if (!units.length) return { rows: [], spanMs: 0, peak: 0 };
+  if (!units.length)
+    return { rows: [], spanMs: 0, elapsedMs: 0, ticks: [], peak: 0 };
 
   const at = (iso: string | null): number | null => {
     if (!iso) return null;
@@ -251,7 +282,14 @@ export function timelineOf(
   const ends = units.map((u) => at(u.completed_at) ?? now);
   // Guard the degenerate case: every timestamp equal gives a zero span, and
   // dividing by it would put every bar at NaN% rather than at 0.
-  const spanMs = Math.max(1, Math.max(...ends) - t0);
+  const elapsedMs = Math.max(1, Math.max(...ends) - t0);
+
+  // A live run's axis is quantised so finished bars hold still; once every unit
+  // is terminal nothing can grow further, so the exact span fills the width.
+  const live = units.some(
+    (u) => u.started_at !== null && u.completed_at === null,
+  );
+  const spanMs = live ? Math.max(elapsedMs, niceSpan(elapsedMs)) : elapsedMs;
 
   const pct = (ms: number) => (ms / spanMs) * 100;
 
@@ -280,7 +318,13 @@ export function timelineOf(
     };
   });
 
-  return { rows, spanMs, peak: peakParallelism(units, now, at) };
+  return {
+    rows,
+    spanMs,
+    elapsedMs,
+    ticks: axisTicks(spanMs),
+    peak: peakParallelism(units, now, at),
+  };
 }
 
 /** Most units executing simultaneously, by sweeping start/end boundaries. */
