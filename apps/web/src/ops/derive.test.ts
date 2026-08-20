@@ -222,12 +222,20 @@ describe("timelineOf", () => {
     expect(row.durationMs).toBe(20_000);
   });
 
-  it("places bars proportionally across the run's span", () => {
+  it("places bars proportionally across the axis", () => {
     const t = timelineOf([unit("a", "00", "00", "10"), unit("b", "00", "10", "20")], now);
-    expect(t.spanMs).toBe(20_000);
+
+    // Elapsed is the run's real duration; the axis is quantised above it so it
+    // never has to rescale, which is why the two differ here.
+    expect(t.elapsedMs).toBe(20_000);
+    expect(t.spanMs).toBe(30_000);
+
+    // Two equal 10s units, back to back: same width, the second starting where
+    // the first ends.
     expect(t.rows[0].runLeft).toBe(0);
-    expect(t.rows[0].runWidth).toBe(50);
-    expect(t.rows[1].runLeft).toBe(50);
+    expect(t.rows[0].runWidth).toBeCloseTo(33.33, 1);
+    expect(t.rows[1].runWidth).toBeCloseTo(t.rows[0].runWidth, 5);
+    expect(t.rows[1].runLeft).toBeCloseTo(t.rows[0].runWidth, 5);
   });
 
   it("survives a run where every timestamp is identical", () => {
@@ -296,11 +304,30 @@ describe("timeline axis stability", () => {
     expect(t.spanMs).toBe(10_000); // quantised
   });
 
-  it("uses the exact span once nothing can grow", () => {
+  it("does not rescale when the last unit lands", () => {
+    // The jump that made every bar suddenly widen at the exact moment someone
+    // is watching the run finish. The axis must belong to the run, not to
+    // whether it happens to be over.
+    // Same units either side — only `b` transitions from running to completed
+    // at the same instant, so nothing about the run's shape actually changed.
+    const justFinished = {
+      ...running,
+      status: "succeeded" as const,
+      completed_at: at("06"),
+    };
+    const before = timelineOf([finished, running], Date.parse(at("06")));
+    const after = timelineOf([finished, justFinished], Date.parse(at("06")));
+
+    expect(after.spanMs).toBe(before.spanMs);
+    expect(after.rows[0].runWidth).toBe(before.rows[0].runWidth);
+    expect(after.rows[0].runLeft).toBe(before.rows[0].runLeft);
+  });
+
+  it("keeps a finished run on a quantised axis", () => {
     const t = timelineOf([finished], Date.parse(at("30")));
 
     expect(t.spanMs).toBe(5_000);
-    expect(t.rows[0].runWidth).toBe(100);
+    expect(t.elapsedMs).toBe(5_000);
   });
 
   it("rounds a long run up to whole hours rather than inventing steps", () => {
@@ -329,7 +356,7 @@ describe("axis ticks", () => {
     // The axis is what tells a reader the x-position means time rather than
     // a proportion filled — without it a bar that starts late looks reversed.
     expect(t.ticks[0].label).toBe("0.0s");
-    expect(t.ticks[4].label).toBe("20.0s");
+    expect(t.ticks[4].label).toBe("30.0s"); // axis quantised past 20s
   });
 
   it("has no ticks when there is nothing to draw", () => {

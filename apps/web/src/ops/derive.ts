@@ -284,12 +284,15 @@ export function timelineOf(
   // dividing by it would put every bar at NaN% rather than at 0.
   const elapsedMs = Math.max(1, Math.max(...ends) - t0);
 
-  // A live run's axis is quantised so finished bars hold still; once every unit
-  // is terminal nothing can grow further, so the exact span fills the width.
-  const live = units.some(
-    (u) => u.started_at !== null && u.completed_at === null,
-  );
-  const spanMs = live ? Math.max(elapsedMs, niceSpan(elapsedMs)) : elapsedMs;
+  // ⚠ Quantised always, including once the run is finished.
+  //
+  // Using the exact span for a terminal run was tempting — the chart fills its
+  // width — but it meant every bar jumped wider the instant the last unit
+  // landed, which is precisely the moment someone is watching. The axis has to
+  // be a property of the run rather than of whether it happens to be over: a
+  // bar drawn at 24% must still be at 24% a second later. The cost is some
+  // empty track on the right, which the axis labels make legible.
+  const spanMs = Math.max(elapsedMs, niceSpan(elapsedMs));
 
   const pct = (ms: number) => (ms / spanMs) * 100;
 

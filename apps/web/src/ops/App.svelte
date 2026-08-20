@@ -39,6 +39,20 @@
   /** Announced transitions only. Marking the table itself polite would
    *  re-announce fifty rows every two seconds. */
   let showLaunch = $state(false);
+
+  /**
+   * The launch form lives on the index, so opening it from a run's detail has
+   * to leave that route first. Toggling the flag alone did nothing visible —
+   * the form is rendered only when no run is open, so the click looked dead.
+   */
+  function openLaunch() {
+    if (openRunId) {
+      location.hash = "#/";
+      showLaunch = true;
+      return;
+    }
+    showLaunch = !showLaunch;
+  }
   // Same two-press confirmation as the per-run destructive actions.
   let armedClear = $state(false);
   let clearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,7 +154,7 @@
     {/if}
     <button
       class="rounded border border-accent/40 bg-accent/10 px-2 py-1 font-mono text-[11px] text-accent hover:bg-accent/20"
-      onclick={() => (showLaunch = !showLaunch)}
+      onclick={openLaunch}
     >
       New run
     </button>
