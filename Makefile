@@ -20,6 +20,12 @@ PYTEST := uv run pytest
 # pin. A formatter whose output *is* the gate cannot be left to happenstance.
 MYPY := uv run mypy
 RUFF := uv run ruff
+# Same reason again, and this one was a real break rather than a latent one:
+# bare `uvicorn` resolves to whichever install happens to be first on PATH, and
+# on a machine with a system-wide Python that is not the project venv — so the
+# server started under an interpreter with none of the project's dependencies
+# and died on `import dbos`.
+UVICORN := uv run uvicorn
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -98,9 +104,42 @@ stack-up: ## Bring up the local Docker stack (Postgres + pgbouncer + Martin).
 stack-down: ## Tear down the local Docker stack (preserves volumes).
 	docker compose -f infra/docker/docker-compose.yml down
 
+# The API port is a variable because 8000 is not available on every machine —
+# another project owns it here, which is why `vite.config.ts` deliberately
+# proxies to 8001 instead. Override for a one-off: `make dev API_PORT=8123`.
+# The Vite proxy target still points at 8001, so a different port here means
+# hitting the API directly rather than through the web app.
+API_PORT ?= 8001
+
+.PHONY: dev
+# ⚠ Deliberately NO `set -m` here, which is the opposite of the obvious fix.
+#
+# Ctrl-C is what stops this, and Ctrl-C signals the terminal's whole foreground
+# process group. Left alone, every process here — the recipe shell, `uv`, the
+# python it spawns, `npm`, the vite it spawns — shares that group, so all of
+# them receive the interrupt directly and shut down on their own.
+#
+# `set -m` breaks exactly that. It gives each background job its own process
+# group, which isolates the servers from the terminal's signal and leaves the
+# trap as the only thing that can stop them — and a trap cannot reliably reach
+# them, because neither job IS the server: `uv run uvicorn` spawns a child
+# python, `npm run dev` spawns a child vite. Measured, both ways: with `set -m`
+# and a group kill, vite died and uvicorn kept holding its port.
+#
+# The trap that remains is for the other exit: if one server dies on its own,
+# `wait` returns and it tears the survivor down rather than leaving it running.
+dev: ## Start the API and the web dev server together. Ctrl-C stops both.
+	@echo "API  → http://127.0.0.1:$(API_PORT)"; \
+	echo "Web  → http://localhost:5173  (proxies /api to the API)"; \
+	echo; \
+	trap 'kill $$api $$web 2>/dev/null' EXIT; \
+	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT) & api=$$!; \
+	( cd apps/web && npm run dev ) & web=$$!; \
+	wait
+
 .PHONY: dev-api
 dev-api: ## Start the FastAPI read-side API with reload.
-	uvicorn apps.api.app:app --reload --port 8001
+	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
 
 .PHONY: dev-web
 dev-web: ## Start the Vite dev server for the web app.
