@@ -15,6 +15,7 @@ import {
   timelineOf,
   tickStepSeconds,
   fitPxPerSecond,
+  liveWindowMs,
   PX_PER_SECOND,
   STALL_GRACE_MS,
 } from "./derive";
@@ -358,5 +359,76 @@ describe("fitPxPerSecond", () => {
     // First render, clientWidth still 0 — dividing by it would be Infinity.
     expect(fitPxPerSecond(6_000, 0)).toBe(PX_PER_SECOND);
     expect(fitPxPerSecond(0, 740)).toBe(PX_PER_SECOND);
+  });
+});
+
+describe("liveWindowMs", () => {
+  it("gives a short run a full 10s window rather than a stub", () => {
+    expect(liveWindowMs(1_000)).toBe(10_000);
+    expect(liveWindowMs(6_000)).toBe(10_000);
+  });
+
+  it("steps to the next whole 10s as the run grows", () => {
+    expect(liveWindowMs(10_000)).toBe(10_000);
+    expect(liveWindowMs(10_001)).toBe(20_000);
+    expect(liveWindowMs(47_900)).toBe(50_000);
+  });
+
+  it("holds bars still between thresholds", () => {
+    // The property the window exists for: two different `now` values inside the
+    // same 10s band must place a finished bar identically.
+    const finished = {
+      indicator: "a",
+      status: "succeeded" as const,
+      depends_on: [],
+      queued_at: "2026-08-20T10:00:00+00:00",
+      started_at: "2026-08-20T10:00:00+00:00",
+      completed_at: "2026-08-20T10:00:03+00:00",
+    };
+    const running = {
+      indicator: "b",
+      status: "running" as const,
+      depends_on: [],
+      queued_at: "2026-08-20T10:00:00+00:00",
+      started_at: "2026-08-20T10:00:01+00:00",
+      completed_at: null,
+    };
+
+    const scaleAt = (nowIso: string) => {
+      const now = Date.parse(nowIso);
+      const measured = timelineOf([finished, running], now, PX_PER_SECOND);
+      const axis = liveWindowMs(measured.elapsedMs);
+      return timelineOf([finished, running], now, fitPxPerSecond(axis, 740), axis);
+    };
+
+    const early = scaleAt("2026-08-20T10:00:04+00:00");
+    const later = scaleAt("2026-08-20T10:00:09+00:00");
+
+    expect(later.rows[0].runLeftPx).toBe(early.rows[0].runLeftPx);
+    expect(later.rows[0].runWidthPx).toBe(early.rows[0].runWidthPx);
+    // …and the running bar still grows rightward from a fixed left edge.
+    expect(later.rows[1].runLeftPx).toBe(early.rows[1].runLeftPx);
+    expect(later.rows[1].runWidthPx).toBeGreaterThan(early.rows[1].runWidthPx);
+  });
+
+  it("draws the axis across the whole window, not just to the last bar", () => {
+    const t = timelineOf(
+      [
+        {
+          indicator: "a",
+          status: "running" as const,
+          depends_on: [],
+          queued_at: "2026-08-20T10:00:00+00:00",
+          started_at: "2026-08-20T10:00:00+00:00",
+          completed_at: null,
+        },
+      ],
+      Date.parse("2026-08-20T10:00:03+00:00"),
+      fitPxPerSecond(10_000, 740),
+      10_000,
+    );
+
+    expect(t.widthPx).toBeCloseTo(740, 5);
+    expect(t.elapsedMs).toBe(3_000);
   });
 });

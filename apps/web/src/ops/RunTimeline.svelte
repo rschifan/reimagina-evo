@@ -4,6 +4,7 @@
   import {
     fitPxPerSecond,
     formatDuration,
+    liveWindowMs,
     timelineOf,
     unitTone,
     PX_PER_SECOND,
@@ -18,24 +19,24 @@
   );
 
   /**
-   * A live run is drawn at a fixed scale so nothing already on screen moves; a
-   * finished one is scaled to fill the panel.
+   * Both modes fill the panel; they differ in what they divide by.
    *
-   * The asymmetry is the point rather than an inconsistency. Fitting to width
-   * means dividing by the run's elapsed time, and while a run is live that
-   * divisor grows every second — which is exactly what made every bar drift
-   * leftward. Once the run is over the divisor is final, so the same fit is
-   * computed once and can never move anything.
+   * A finished run divides by its own elapsed time — final, computed once, so
+   * nothing it produces can move. A live run divides by a *window* that steps
+   * to the next whole 10 s, because dividing by a growing elapsed time is what
+   * made every bar drift leftward. Between thresholds the scale is constant and
+   * nothing moves; crossing 10 s, 20 s, 30 s rescales once.
    */
   // Measured once at the fixed scale purely to learn the run's elapsed time,
   // which is what the fit divides by. Durations do not depend on the scale.
   const measured = $derived(timelineOf(units, now, PX_PER_SECOND));
 
-  const scale = $derived(
-    anyLive ? PX_PER_SECOND : fitPxPerSecond(measured.elapsedMs, trackWidth),
+  const axisMs = $derived(
+    anyLive ? liveWindowMs(measured.elapsedMs) : measured.elapsedMs,
   );
+  const scale = $derived(fitPxPerSecond(axisMs, trackWidth));
 
-  const t = $derived(timelineOf(units, now, scale));
+  const t = $derived(timelineOf(units, now, scale, axisMs));
 
   /**
    * Rows in dispatch order, so the picture reads top-to-bottom as the run

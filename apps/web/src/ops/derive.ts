@@ -250,6 +250,23 @@ export interface Timeline {
 export const PX_PER_SECOND = 15;
 
 /**
+ * The axis a *live* run is drawn against: the next whole 10 s above elapsed.
+ *
+ * A live run cannot be fitted to its own elapsed time — that divisor grows
+ * every second, which is what made bars drift leftward. A fixed pixels-per-
+ * second held them still but drew a 6 s run as a stub in a wide panel. A
+ * stepped window gives both: between thresholds the scale is constant so
+ * nothing moves, and the window always fills the panel so the run is legible
+ * from the first second.
+ *
+ * The cost is one rescale each time a run crosses 10 s, 20 s, 30 s — a handful
+ * of discrete moments rather than continuous drift.
+ */
+export function liveWindowMs(elapsedMs: number, stepMs = 10_000): number {
+  return Math.max(stepMs, Math.ceil(elapsedMs / stepMs) * stepMs);
+}
+
+/**
  * The scale that makes a finished run fill the width.
  *
  * Safe precisely because the run is over: its elapsed time is final, so the
@@ -301,6 +318,8 @@ export function timelineOf(
   }[],
   now: number,
   pxPerSecond: number = PX_PER_SECOND,
+  /** Axis length, when it should extend past the run — a live run's window. */
+  axisMs?: number,
 ): Timeline {
   if (!units.length)
     return { rows: [], elapsedMs: 0, widthPx: 0, ticks: [], peak: 0 };
@@ -343,11 +362,15 @@ export function timelineOf(
     };
   });
 
+  // The axis can run past the last bar (a live run's window); the bars
+  // themselves are always placed from their own timestamps.
+  const axisSpanMs = Math.max(elapsedMs, axisMs ?? 0);
+
   return {
     rows,
     elapsedMs,
-    widthPx: px(elapsedMs),
-    ticks: axisTicks(elapsedMs, pxPerSecond),
+    widthPx: px(axisSpanMs),
+    ticks: axisTicks(axisSpanMs, pxPerSecond),
     peak: peakParallelism(units, now, at),
   };
 }
