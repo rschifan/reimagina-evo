@@ -155,7 +155,9 @@ def plan_run(
         unknown = [slug for slug in indicators if slug not in known]
         if unknown:
             raise UnknownIndicators(unknown)
-        deps = {spec.slug: [dep for dep, _weight in spec.depends_on] for spec in registry}
+        deps = {
+            spec.slug: [dep for dep, _weight in spec.depends_on] for spec in registry
+        }
         # Dependency order, not the caller's order: a unit whose prerequisite is
         # also in the set has to be scheduled after it. `nodes=` takes the
         # induced subgraph, so prerequisites outside the set are treated as

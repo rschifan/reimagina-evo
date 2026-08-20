@@ -534,7 +534,7 @@ def test_submit_forwards_named_indicators_to_the_port(monkeypatch):
 
 
 def test_preview_resolves_a_changed_dataset(monkeypatch):
-    """"I added a street" must be answerable without naming an attribute."""
+    """ "I added a street" must be answerable without naming an attribute."""
     app = create_app(initialise_pool=False)
     app.dependency_overrides[get_db_conn] = lambda: iter([object()])
 
