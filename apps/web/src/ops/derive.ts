@@ -202,11 +202,19 @@ export interface TimelineRow {
   indicator: string;
   status: UnitStatus;
   depends_on: string[];
-  /** Percentages across the run's own span, for direct use as CSS widths. */
-  queuedLeft: number;
-  queuedWidth: number;
-  runLeft: number;
-  runWidth: number;
+  /**
+   * Pixels, not percentages.
+   *
+   * A percentage is a share of the run's span, and that span grows while a run
+   * is live — so every bar's left edge slid leftward, and a running bar looked
+   * like it extended *backwards* with its right edge pinned to the axis end. At
+   * a fixed pixels-per-second a bar is placed once and never moves again: it
+   * starts where it started, and a running one grows to the right.
+   */
+  queuedLeftPx: number;
+  queuedWidthPx: number;
+  runLeftPx: number;
+  runWidthPx: number;
   durationMs: number | null;
   /** True while the bar's right edge is "now" rather than a completion. */
   live: boolean;
@@ -214,31 +222,56 @@ export interface TimelineRow {
 
 export interface Timeline {
   rows: TimelineRow[];
-  /** The axis the bars are drawn against — not necessarily the elapsed time. */
-  spanMs: number;
-  /** Actual elapsed time across the units, for display. */
+  /** Elapsed time across the units. */
   elapsedMs: number;
-  /** Evenly spaced marks, so the row reads as time rather than as a fill. */
-  ticks: { atPct: number; label: string }[];
+  /** Track width in pixels. The track grows with the run; it never rescales. */
+  widthPx: number;
+  /** Marks placed in pixels, like everything else here. */
+  ticks: { atPx: number; label: string }[];
   /** Most units executing at once — the parallelism actually achieved. */
   peak: number;
 }
 
-/** Five marks across the axis, labelled as seconds from the run's start. */
-function axisTicks(spanMs: number): { atPct: number; label: string }[] {
-  return [0, 25, 50, 75, 100].map((atPct) => ({
-    atPct,
-    label: formatDuration((spanMs * atPct) / 100),
-  }));
+/**
+ * How wide one second is drawn.
+ *
+ * Constant on purpose: it is what makes a bar's geometry independent of how
+ * long the run turns out to be, so nothing already drawn ever moves, and it
+ * makes two runs comparable by eye — neither of which a percentage layout
+ * could do.
+ *
+ * 15 px/s is chosen against the panel, not picked for looks: the track is about
+ * 740 px here, so roughly 50 s of run is visible at once, which covers the
+ * observed runs (3–48 s) without scrolling. Longer runs scroll rather than
+ * being squeezed, because squeezing is exactly what made bars appear to move.
+ */
+export const PX_PER_SECOND = 15;
+
+/** Seconds between ticks, so labels stay readable as a run grows. */
+export function tickStepSeconds(elapsedMs: number): number {
+  const seconds = elapsedMs / 1000;
+  for (const step of [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]) {
+    if (seconds / step <= 8) return step;
+  }
+  return 900;
+}
+
+function axisTicks(elapsedMs: number): { atPx: number; label: string }[] {
+  const step = tickStepSeconds(elapsedMs);
+  const marks: { atPx: number; label: string }[] = [];
+  for (let sec = 0; sec * 1000 <= elapsedMs; sec += step) {
+    marks.push({ atPx: sec * PX_PER_SECOND, label: `${sec}s` });
+  }
+  return marks;
 }
 
 /**
- * Lay the units out on the run's own clock.
+ * Lay the units out on the run's own clock, in pixels.
  *
  * Order and parallelism are read off real timestamps rather than inferred from
  * the dependency graph: the scheduler dispatches a unit as soon as its last
- * input clears, so what actually overlapped is a fact about the run, not a
- * property of the DAG. A unit still running is measured to `now`.
+ * input clears, so what actually overlapped is a fact about the run. A unit
+ * still running is measured to `now`, and grows rightward as `now` advances.
  */
 export function timelineOf(
   units: {
@@ -252,7 +285,7 @@ export function timelineOf(
   now: number,
 ): Timeline {
   if (!units.length)
-    return { rows: [], spanMs: 0, elapsedMs: 0, ticks: [], peak: 0 };
+    return { rows: [], elapsedMs: 0, widthPx: 0, ticks: [], peak: 0 };
 
   const at = (iso: string | null): number | null => {
     if (!iso) return null;
@@ -263,26 +296,9 @@ export function timelineOf(
   const starts = units.map((u) => at(u.queued_at) ?? now);
   const t0 = Math.min(...starts);
   const ends = units.map((u) => at(u.completed_at) ?? now);
-  // Guard the degenerate case: every timestamp equal gives a zero span, and
-  // dividing by it would put every bar at NaN% rather than at 0.
-  const elapsedMs = Math.max(1, Math.max(...ends) - t0);
+  const elapsedMs = Math.max(0, Math.max(...ends) - t0);
 
-  // The axis is the elapsed time, exactly. No rounding, no padding.
-  //
-  // This went through two wrong shapes first. Rounding the axis up to a "nice"
-  // ceiling did hold finished bars still while a run continued, but it left a
-  // 20.4 s run drawn on a 30 s axis — a third of the track empty, which reads
-  // as bars failing to reach the end. Rounding only while live traded that for
-  // a worse one: every bar jumped wider the instant the last unit landed.
-  //
-  // Exact is right because the axis is now *labelled*. The original complaint —
-  // bars appearing to crawl backwards — was never really about rescaling; it
-  // was that the scale was invisible, so a shrinking bar had no explanation. A
-  // tick row that reads 0 / 5 / 10 / 15 / 20 s and relabels as the run grows
-  // shows the scale extending, which is what a time axis does.
-  const spanMs = elapsedMs;
-
-  const pct = (ms: number) => (ms / spanMs) * 100;
+  const px = (ms: number) => (ms / 1000) * PX_PER_SECOND;
 
   const rows: TimelineRow[] = units.map((u) => {
     const queued = at(u.queued_at) ?? t0;
@@ -294,13 +310,13 @@ export function timelineOf(
       indicator: u.indicator,
       status: u.status,
       depends_on: u.depends_on,
-      queuedLeft: pct(queued - t0),
-      queuedWidth: pct(Math.max(0, (runFrom ?? now) - queued)),
-      runLeft: runFrom === null ? 0 : pct(runFrom - t0),
-      runWidth:
+      queuedLeftPx: px(queued - t0),
+      queuedWidthPx: px(Math.max(0, (runFrom ?? now) - queued)),
+      runLeftPx: runFrom === null ? 0 : px(runFrom - t0),
+      runWidthPx:
         runFrom === null || runTo === null
           ? 0
-          : pct(Math.max(0, runTo - runFrom)),
+          : px(Math.max(0, runTo - runFrom)),
       durationMs:
         runFrom === null || runTo === null
           ? null
@@ -311,14 +327,13 @@ export function timelineOf(
 
   return {
     rows,
-    spanMs,
     elapsedMs,
-    ticks: axisTicks(spanMs),
+    widthPx: px(elapsedMs),
+    ticks: axisTicks(elapsedMs),
     peak: peakParallelism(units, now, at),
   };
 }
 
-/** Most units executing simultaneously, by sweeping start/end boundaries. */
 function peakParallelism(
   units: { started_at: string | null; completed_at: string | null }[],
   now: number,

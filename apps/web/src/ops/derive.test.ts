@@ -13,6 +13,8 @@ import {
   statusesFromHash,
   statusesToHash,
   timelineOf,
+  tickStepSeconds,
+  PX_PER_SECOND,
   STALL_GRACE_MS,
 } from "./derive";
 
@@ -197,7 +199,6 @@ describe("timelineOf", () => {
   const now = Date.parse("2026-08-20T10:00:30+00:00");
 
   it("reports the parallelism actually achieved, not the DAG's width", () => {
-    // Two overlap 00-10; the third only starts at 10.
     const t = timelineOf(
       [
         unit("a", "00", "00", "10"),
@@ -216,156 +217,111 @@ describe("timelineOf", () => {
 
   it("measures a still-running unit to now", () => {
     const t = timelineOf([unit("a", "00", "10", null)], now);
-    const row = t.rows[0];
-    expect(row.live).toBe(true);
-    expect(row.durationMs).toBe(20_000);
+    expect(t.rows[0].live).toBe(true);
+    expect(t.rows[0].durationMs).toBe(20_000);
   });
 
-  it("places bars proportionally across the axis", () => {
-    const t = timelineOf([unit("a", "00", "00", "10"), unit("b", "00", "10", "20")], now);
+  it("draws a second as a constant width, whatever the run's length", () => {
+    // The whole point of pixels: ten seconds is the same size in a short run
+    // and a long one, so two runs are comparable and nothing rescales.
+    const short = timelineOf([unit("a", "00", "00", "10")], now);
+    const long = timelineOf(
+      [unit("a", "00", "00", "10"), unit("b", "00", "10", "30")],
+      now,
+    );
 
-    // Elapsed is the run's real duration; the axis is quantised above it so it
-    // never has to rescale, which is why the two differ here.
-    expect(t.elapsedMs).toBe(20_000);
-    expect(t.spanMs).toBe(20_000);
-
-    // Two equal 10 s units, back to back: half the axis each, the second
-    // starting where the first ends, and together filling the track.
-    expect(t.rows[0].runLeft).toBe(0);
-    expect(t.rows[0].runWidth).toBe(50);
-    expect(t.rows[1].runLeft).toBe(50);
-    expect(t.rows[1].runWidth).toBe(50);
-  });
-
-  it("survives a run where every timestamp is identical", () => {
-    // Zero span would divide by zero and put every bar at NaN%.
-    const t = timelineOf([unit("a", "00", "00", "00")], now);
-    expect(Number.isFinite(t.rows[0].runWidth)).toBe(true);
+    expect(short.rows[0].runWidthPx).toBe(10 * PX_PER_SECOND);
+    expect(long.rows[0].runWidthPx).toBe(short.rows[0].runWidthPx);
+    expect(long.rows[0].runLeftPx).toBe(short.rows[0].runLeftPx);
   });
 
   it("is empty for a run with no units", () => {
     expect(timelineOf([], now)).toEqual({
       rows: [],
-      spanMs: 0,
       elapsedMs: 0,
+      widthPx: 0,
       ticks: [],
       peak: 0,
     });
   });
 
-  it("shows the wait before a prerequisite cleared as queued time", () => {
+  it("shows the wait before a prerequisite cleared", () => {
     const t = timelineOf([unit("c", "00", "10", "20", ["a"])], now);
-    expect(t.rows[0].queuedWidth).toBeGreaterThan(0);
+    expect(t.rows[0].queuedWidthPx).toBe(10 * PX_PER_SECOND);
     expect(t.rows[0].depends_on).toEqual(["a"]);
   });
 });
 
-describe("timeline axis stability", () => {
-  const at = (s: string) => `2026-08-20T10:00:${s}+00:00`;
-  const finished = {
-    indicator: "a",
-    status: "succeeded" as const,
+describe("nothing already drawn ever moves", () => {
+  const u = (
+    indicator: string,
+    started: string,
+    completed: string | null,
+  ) => ({
+    indicator,
+    status: completed ? ("succeeded" as const) : ("running" as const),
     depends_on: [],
-    queued_at: at("00"),
-    started_at: at("00"),
-    completed_at: at("05"),
-  };
-  const running = {
-    indicator: "b",
-    status: "running" as const,
-    depends_on: [],
-    queued_at: at("00"),
-    started_at: at("00"),
-    completed_at: null,
-  };
-
-  it("keeps finished bars proportional to each other as the run grows", () => {
-    // The axis is the elapsed time, so it extends while a run continues and
-    // every bar is redrawn against it. What must stay true is the *ratio*: a
-    // unit that took twice as long as another still looks twice as long. The
-    // labelled tick row is what makes the rescale legible rather than
-    // mysterious — that, not a frozen axis, was the fix for bars appearing to
-    // crawl backwards.
-    const a = { ...finished, indicator: "a", completed_at: at("02") }; // 2 s
-    const b = { ...finished, indicator: "b", completed_at: at("04") }; // 4 s
-
-    const early = timelineOf([a, b, running], Date.parse(at("06")));
-    const later = timelineOf([a, b, running], Date.parse(at("12")));
-
-    expect(later.rows[1].runWidth / later.rows[0].runWidth).toBeCloseTo(
-      early.rows[1].runWidth / early.rows[0].runWidth,
-      5,
-    );
+    queued_at: "2026-08-20T10:00:00+00:00",
+    started_at: `2026-08-20T10:00:${started}+00:00`,
+    completed_at: completed ? `2026-08-20T10:00:${completed}+00:00` : null,
   });
 
-  it("draws a still-running unit out to the end of the axis", () => {
-    // Its right edge *is* now, and the axis ends at now, so it reaches the end
-    // — which is what makes the chart read as "still going".
-    const t = timelineOf([finished, running], Date.parse(at("09")));
+  const finished = u("a", "00", "05");
+  const running = u("b", "02", null);
 
-    expect(t.rows[1].runWidth).toBe(100);
-    expect(t.rows[1].live).toBe(true);
+  it("holds a finished bar exactly still while the run continues", () => {
+    // The defect this layout exists to remove: with percentages, `span` grew
+    // every tick and each bar's left edge slid leftward.
+    const early = timelineOf([finished, running], Date.parse("2026-08-20T10:00:06+00:00"));
+    const later = timelineOf([finished, running], Date.parse("2026-08-20T10:00:25+00:00"));
+
+    expect(later.rows[0].runLeftPx).toBe(early.rows[0].runLeftPx);
+    expect(later.rows[0].runWidthPx).toBe(early.rows[0].runWidthPx);
   });
 
-  it("reports elapsed time as the axis, with no padding", () => {
-    const t = timelineOf([finished, running], Date.parse(at("06")));
+  it("grows a running bar to the right, from a fixed left edge", () => {
+    const early = timelineOf([finished, running], Date.parse("2026-08-20T10:00:06+00:00"));
+    const later = timelineOf([finished, running], Date.parse("2026-08-20T10:00:25+00:00"));
 
-    expect(t.elapsedMs).toBe(6_000);
-    expect(t.spanMs).toBe(6_000);
+    expect(later.rows[1].runLeftPx).toBe(early.rows[1].runLeftPx);
+    expect(later.rows[1].runWidthPx).toBeGreaterThan(early.rows[1].runWidthPx);
   });
 
-  it("does not jump when the last unit lands", () => {
-    // The jump that made every bar suddenly widen at the exact moment someone
-    // is watching the run finish. The axis must belong to the run, not to
-    // whether it happens to be over.
-    // Same units either side — only `b` transitions from running to completed
-    // at the same instant, so nothing about the run's shape actually changed.
-    const justFinished = {
-      ...running,
-      status: "succeeded" as const,
-      completed_at: at("06"),
-    };
-    const before = timelineOf([finished, running], Date.parse(at("06")));
-    const after = timelineOf([finished, justFinished], Date.parse(at("06")));
+  it("does not move anything when the last unit lands", () => {
+    const at6 = Date.parse("2026-08-20T10:00:06+00:00");
+    const stillRunning = timelineOf([finished, running], at6);
+    const justFinished = timelineOf([finished, u("b", "02", "06")], at6);
 
-    expect(after.spanMs).toBe(before.spanMs);
-    expect(after.rows[0].runWidth).toBe(before.rows[0].runWidth);
-    expect(after.rows[0].runLeft).toBe(before.rows[0].runLeft);
+    expect(justFinished.rows[0].runWidthPx).toBe(stillRunning.rows[0].runWidthPx);
+    expect(justFinished.rows[1].runWidthPx).toBe(stillRunning.rows[1].runWidthPx);
   });
-
-  it("draws a finished run against its exact elapsed time", () => {
-    // No padding: a run that took 5 s is drawn on a 5 s axis, so the last bar
-    // reaches the end instead of stopping short of it.
-    const t = timelineOf([finished], Date.parse(at("30")));
-
-    expect(t.spanMs).toBe(5_000);
-    expect(t.elapsedMs).toBe(5_000);
-    expect(t.rows[0].runWidth).toBe(100);
-  });
-
 });
 
 describe("axis ticks", () => {
-  it("labels five marks across the axis in elapsed time", () => {
-    const t = timelineOf(
-      [
-        {
-          indicator: "a",
-          status: "succeeded" as const,
-          depends_on: [],
-          queued_at: "2026-08-20T10:00:00+00:00",
-          started_at: "2026-08-20T10:00:00+00:00",
-          completed_at: "2026-08-20T10:00:20+00:00",
-        },
-      ],
-      Date.parse("2026-08-20T10:00:20+00:00"),
-    );
+  const oneUnit = (completedAt: string) => [
+    {
+      indicator: "a",
+      status: "succeeded" as const,
+      depends_on: [],
+      queued_at: "2026-08-20T10:00:00+00:00",
+      started_at: "2026-08-20T10:00:00+00:00",
+      completed_at: completedAt,
+    },
+  ];
 
-    expect(t.ticks.map((x) => x.atPct)).toEqual([0, 25, 50, 75, 100]);
-    // The axis is what tells a reader the x-position means time rather than
-    // a proportion filled — without it a bar that starts late looks reversed.
-    expect(t.ticks[0].label).toBe("0.0s");
-    expect(t.ticks[4].label).toBe("20.0s"); // the axis is the elapsed time
+  it("places marks in pixels on the same scale as the bars", () => {
+    const t = timelineOf(oneUnit("2026-08-20T10:00:20+00:00"), Date.parse("2026-08-20T10:00:20+00:00"));
+
+    expect(t.ticks[0]).toEqual({ atPx: 0, label: "0s" });
+    expect(t.ticks[1].atPx).toBe(
+      Number(t.ticks[1].label.replace("s", "")) * PX_PER_SECOND,
+    );
+  });
+
+  it("widens the tick step so labels stay readable on a long run", () => {
+    expect(tickStepSeconds(8_000)).toBe(1);
+    expect(tickStepSeconds(60_000)).toBe(10);
+    expect(tickStepSeconds(600_000)).toBe(120);
   });
 
   it("has no ticks when there is nothing to draw", () => {
