@@ -107,3 +107,13 @@ def inputs(*, dsn: str, asset_key: str) -> dict[str, Any]:
 def consumers(*, dsn: str, asset_key: str) -> dict[str, Any]:
     """Every asset that would need recomputing if this one changed."""
     return _lineage(dsn, asset_key, "downstream")
+
+
+def backfill_versions(*, dsn: str | None = None) -> dict[str, Any]:
+    """Publish versions for source layers loaded before the asset graph existed."""
+    from reimagina.assets.publish import backfill_versions as _backfill
+
+    with connect(dsn) as conn:
+        published = _backfill(conn)
+        conn.commit()
+    return {"published": published, "count": len(published)}

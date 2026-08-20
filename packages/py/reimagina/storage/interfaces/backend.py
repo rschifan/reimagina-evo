@@ -14,6 +14,7 @@ from reimagina.storage.interfaces.sources import (
     SourceCatalogRepository,
     FileAssetRepository,
 )
+from reimagina.storage.interfaces.assets import AssetGraphRepository
 from reimagina.storage.interfaces.features import (
     FeatureRepository,
     ObservationRepository,
@@ -43,6 +44,8 @@ class StorageBackend(Protocol):
     connection: Any
 
     def verify_required_relations(self, relations: list[str]) -> dict[str, bool]: ...
+
+    def asset_graph_repo(self) -> AssetGraphRepository: ...
 
     def catalog_repo(self) -> SourceCatalogRepository: ...
 
