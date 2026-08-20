@@ -603,7 +603,24 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
 
 
 class _StubConn:
-    """Enough connection to satisfy the route: it polls, so it ends read txns."""
+    """Enough connection to satisfy the route: it polls, so it ends read txns.
+
+    ⚠ Shaped like a *connection*, including ``close``, because that is what
+    ``reimagina.db.connect`` returns. The stub used to be a context manager
+    yielding one, which no route could have closed even if it tried.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def close(self) -> None:
+        self.closed = True
 
     def rollback(self) -> None:
         pass
@@ -613,13 +630,7 @@ class _StubConn:
 
 
 def _stub_connect(monkeypatch):
-    from contextlib import contextmanager
-
-    @contextmanager
-    def _fake(dsn):
-        yield _StubConn()
-
-    monkeypatch.setattr("reimagina.db.connect", _fake)
+    monkeypatch.setattr("reimagina.db.connect", lambda dsn=None: _StubConn())
 
 
 def _install(monkeypatch, handle, *, final=None):
