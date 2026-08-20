@@ -9,7 +9,12 @@
  * starts reading it, add it here then — not before.
  */
 
-const API_BASE = "/api";
+import { API_BASE, ApiError, isAbortError, jsonRequest } from "./http";
+
+// Re-exported so existing map-app importers keep their import site. The
+// definitions moved to ./http when the catalog page needed the same
+// request/abort semantics without inheriting this module's map-specific types.
+export { ApiError, isAbortError };
 
 export interface IndicatorSummary {
   slug: string;
@@ -61,33 +66,6 @@ export interface TileSource {
      */
     aois?: string[] | null;
   };
-}
-
-async function jsonRequest<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new ApiError(`${response.status} ${response.statusText} on ${path}`, response);
-  }
-  return response.json() as Promise<T>;
-}
-
-export class ApiError extends Error {
-  constructor(message: string, readonly response: Response) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
-
-/** True when ``err`` is the AbortError raised by ``fetch`` / ``signal``
- *  cancellations. Both DOMException-shaped (browsers) and plain-Error-
- *  shaped (some test runtimes) instances surface ``name === "AbortError"``,
- *  so name-checking is the portable predicate. Centralised here so the
- *  two abort-aware request sites stay in lock-step. */
-export function isAbortError(err: unknown): boolean {
-  return (err as { name?: string } | null)?.name === "AbortError";
 }
 
 export interface IndicatorValueStats {

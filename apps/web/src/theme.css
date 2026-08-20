@@ -1,0 +1,20 @@
+/*
+ * Palette shared by every page in this app.
+ *
+ * Lifted out of style.css so the catalog page can adopt the same colours
+ * without importing the map's layout — style.css also sets `html, body,
+ * .app { height: 100% }` and the 320px sidebar grid, which would fight a
+ * page that is not the map.
+ *
+ * Variables only. No rule bodies, no selectors.
+ */
+:root {
+  --sidebar-bg: #111827;
+  --sidebar-fg: #f9fafb;
+  --accent: #60a5fa;
+  --muted: #9ca3af;
+  --border: #1f2937;
+  --panel: #1f2937;
+  --button-bg: #374151;
+  --button-bg-hover: #4b5563;
+}

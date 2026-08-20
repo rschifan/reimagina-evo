@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .repositories import (
     PostgresAggregationRecipeRepository,
+    PostgresAssetGraphRepository,
     PostgresAOIRepository,
     PostgresAOISummaryRepository,
     PostgresExploreReader,
@@ -81,6 +82,9 @@ class PostgresStorageBackend:
 
     def indicator_catalog_repo(self) -> PostgresIndicatorCatalogRepository:
         return PostgresIndicatorCatalogRepository(self.connection)
+
+    def asset_graph_repo(self) -> PostgresAssetGraphRepository:
+        return PostgresAssetGraphRepository(self.connection)
 
     def indicator_result_repo(self) -> PostgresIndicatorResultRepository:
         return PostgresIndicatorResultRepository(self.connection)
