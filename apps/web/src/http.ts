@@ -19,14 +19,30 @@ export class ApiError extends Error {
   }
 }
 
-/** GET ``path`` under {@link API_BASE} and parse JSON, throwing
- *  {@link ApiError} on a non-2xx so callers can branch on status. */
+/** Request ``path`` under {@link API_BASE} and parse JSON, throwing
+ *  {@link ApiError} on a non-2xx so callers can branch on status.
+ *
+ *  GET by default. ``body`` is JSON-encoded and sets the method to POST unless
+ *  one is given; `Content-Type` is attached only when there is a body, because
+ *  sending it on a GET makes some proxies preflight a request that needs none. */
 export async function jsonRequest<T>(
   path: string,
-  init: { signal?: AbortSignal; headers?: Record<string, string> } = {},
+  init: {
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    method?: string;
+    body?: unknown;
+  } = {},
 ): Promise<T> {
+  const hasBody = init.body !== undefined;
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json", ...(init.headers ?? {}) },
+    method: init.method ?? (hasBody ? "POST" : "GET"),
+    headers: {
+      Accept: "application/json",
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      ...(init.headers ?? {}),
+    },
+    body: hasBody ? JSON.stringify(init.body) : undefined,
     signal: init.signal,
   });
   if (!response.ok) {

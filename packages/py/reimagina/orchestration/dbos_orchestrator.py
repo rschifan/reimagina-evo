@@ -154,6 +154,7 @@ class DBOSOrchestrator:
         scenario_id: str | None = None,
         aoi_id: str | None = None,
         code_version: str = "dev",
+        indicators: Sequence[str] | None = None,
     ) -> RunHandle:
         from reimagina.orchestration import dbos_app
 
@@ -168,6 +169,7 @@ class DBOSOrchestrator:
             aoi_id=aoi_id,
             code_version=code_version,
             registry=self._registry,
+            indicators=indicators,
         )
         if plan.is_noop:
             return noop_handle(run_id)

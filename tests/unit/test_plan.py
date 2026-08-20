@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from reimagina.indicators.catalog import IndicatorSpec
-from reimagina.orchestration.plan import noop_handle, plan_run
+from reimagina.orchestration.plan import UnknownIndicators, noop_handle, plan_run
 
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct"):
@@ -99,3 +101,86 @@ def test_noop_handle_carries_a_terminal_noop_status():
     assert handle.status is not None
     assert handle.status.status == "noop"
     assert handle.status.units == ()
+
+
+# ── Explicit indicator scoping ───────────────────────────────────────────────
+
+
+def test_named_indicators_skip_derivation_entirely():
+    """The "recompute exactly these" request, which no change-set can express."""
+    plan = plan_run(
+        None,
+        changed_attributes=[],
+        edited_features=[],
+        indicators=["urban_form_block_compactness"],
+    )
+    assert [u.indicator for u in plan.units] == ["urban_form_block_compactness"]
+    assert not plan.is_noop
+
+
+def test_named_indicators_come_back_in_dependency_order():
+    """Caller order must not decide scheduling order.
+
+    A composite named before its input would otherwise be dispatched first and
+    read a value the run is about to replace.
+    """
+    plan = plan_run(
+        None,
+        changed_attributes=[],
+        edited_features=[],
+        indicators=["urban_form_block_composite", "urban_form_block_compactness"],
+    )
+    order = [u.indicator for u in plan.units]
+    assert order.index("urban_form_block_compactness") < order.index(
+        "urban_form_block_composite"
+    )
+
+
+def test_named_indicators_carry_the_run_params():
+    """`RunPlan.params` is required and splatted by the synchronous engine."""
+    plan = plan_run(
+        None,
+        changed_attributes=[],
+        edited_features=[],
+        scenario_id="s-1",
+        aoi_id="a-1",
+        code_version="v9",
+        indicators=["urban_form_block_compactness"],
+    )
+    assert plan.params == {
+        "scenario_id": "s-1",
+        "aoi_id": "a-1",
+        "code_version": "v9",
+    }
+
+
+def test_an_unknown_indicator_is_refused_at_submit():
+    """Not left to fail inside the unit.
+
+    An unregistered slug reaches `s_compute` as `LookupError: no runner
+    registered`, which reads as one failed unit in an otherwise healthy run
+    rather than as the typo it is.
+    """
+    with pytest.raises(UnknownIndicators) as excinfo:
+        plan_run(
+            None,
+            changed_attributes=[],
+            edited_features=[],
+            indicators=["urban_form_block_compactness", "not_an_indicator"],
+        )
+    assert excinfo.value.unknown == ("not_an_indicator",)
+
+
+def test_named_indicators_recompute_whole_indicators():
+    """Empty `features` means "everything this indicator applies to".
+
+    The original per-feature scope lived in `run_plan` and is released when the
+    run ends, so a later retry is deliberately the wider recompute.
+    """
+    plan = plan_run(
+        None,
+        changed_attributes=[],
+        edited_features=[],
+        indicators=["urban_form_block_compactness"],
+    )
+    assert plan.units[0].features == frozenset()

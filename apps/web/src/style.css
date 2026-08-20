@@ -4,7 +4,7 @@
   box-sizing: border-box;
 }
 
-html, body, .app {
+html, body {
   height: 100%;
   margin: 0;
   padding: 0;
@@ -16,10 +16,19 @@ html, body, .app {
   background: var(--sidebar-bg);
 }
 
+/* The shared TopBar sits above this, so the map layout takes the remaining
+ * height rather than the whole viewport. `min-height: 0` lets the sidebar's
+ * own overflow-y work inside a flex child. */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .sidebar {

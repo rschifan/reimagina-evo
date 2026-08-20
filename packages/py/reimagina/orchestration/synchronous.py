@@ -63,6 +63,7 @@ class SynchronousOrchestrator:
         scenario_id: str | None = None,
         aoi_id: str | None = None,
         code_version: str = "dev",
+        indicators: Sequence[str] | None = None,
     ) -> RunHandle:
         runners = (
             default_runners(self._registry) if self._runners is None else self._runners
@@ -76,6 +77,7 @@ class SynchronousOrchestrator:
             aoi_id=aoi_id,
             code_version=code_version,
             registry=self._registry,
+            indicators=indicators,
         )
         if plan.is_noop:
             # Same answer the async orchestrators give, and for the same reason:

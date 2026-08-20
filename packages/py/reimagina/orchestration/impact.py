@@ -51,6 +51,49 @@ class DirtyUnit:
 FeatureExpander = Callable[[IndicatorSpec, frozenset[str]], frozenset[str]]
 
 
+def indicators_for_datasets(
+    changed_datasets: Iterable[str],
+    registry: Sequence[IndicatorSpec],
+) -> tuple[str, ...]:
+    """Indicators to recompute when whole *datasets* change, in dependency order.
+
+    The question ``compute_dirty_set`` cannot answer. A change-set names
+    attributes, which suits an edit to a field on a feature — but "a street was
+    added to the road network" is not an attribute edit. It invalidates every
+    indicator that declared an edge to that dataset, whatever attributes it
+    reads, plus everything downstream of those.
+
+    Seeds come from the indicator's typed ``inputs`` edges rather than from
+    ``reads``: ``reads`` is the flattened attribute list and drops the dataset
+    entirely, so it cannot see a dataset-level dependency at all. An indicator
+    that relates to ``global.road_network`` spatially declares that edge with no
+    attributes on it, which is exactly the case this exists for.
+
+    Same propagate-then-order shape as ``compute_dirty_set``, and `sorted` for
+    the same reason — a stable order across processes, not tidiness.
+    """
+    wanted = frozenset(changed_datasets)
+    deps: dict[str, set[str]] = {
+        spec.slug: {dep for dep, _weight in spec.depends_on} for spec in registry
+    }
+
+    seed = set()
+    for spec in registry:
+        for edge in spec.inputs:
+            key = getattr(edge, "key", None) or getattr(edge, "asset_key", "")
+            if key in wanted:
+                seed.add(spec.slug)
+                break
+
+    dirty = downstream_closure(seed, dependents_of(deps))
+    if not dirty:
+        return ()
+    return topological_order(
+        {slug: sorted(deps.get(slug, ())) for slug in sorted(dirty)},
+        nodes=sorted(dirty),
+    )
+
+
 def compute_dirty_set(
     changed_attributes: Iterable[str],
     edited_features: Iterable[str],

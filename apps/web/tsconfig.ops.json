@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "verbatimModuleSyntax": true,
+    "types": ["svelte", "vite/client"]
+  },
+  "include": [
+    "src/ops/**/*.ts",
+    "src/ops/**/*.svelte",
+    "src/lib/**/*.ts",
+    "src/lib/**/*.svelte",
+    "src/http.ts"
+  ]
+}

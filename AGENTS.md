@@ -93,6 +93,9 @@ Web read-side (API + map frontend):
 # Start both from two terminals
 REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
 cd apps/web && npm install && npm run dev
+# Map at /, indicator catalog at /catalog.html, run dashboard at /ops.html.
+# The dashboard needs a worker to show anything running:
+#   DATABASE_URL_DIRECT=... python -m apps.worker
 
 # Then
 open http://localhost:8001/docs      # OpenAPI / Swagger
