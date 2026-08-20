@@ -31,11 +31,14 @@ def run_dbos_worker() -> None:
     by executor id and DBOS defaults every process to ``local``, so sharing it
     would make each process claim the others' in-flight work.
     """
+    import logging
     import os
     import threading
 
     from reimagina.orchestration import dbos_app
     from reimagina.orchestration.executor_health import heartbeat
+
+    logger = logging.getLogger(__name__)
 
     # Distinguishes this process from the API on the same host, so each
     # reclaims only its own interrupted work. Explicit REIMAGINA_EXECUTOR_ID
@@ -49,9 +52,35 @@ def run_dbos_worker() -> None:
         raise RuntimeError("REIMAGINA_EXECUTOR_HEARTBEAT_S must be positive")
 
     def _heartbeat_loop() -> None:
-        while not stop.wait(interval):
-            heartbeat()
+        """Publish liveness until asked to stop. Survives a failed beat.
 
+        ⚠ The ``except`` is the point, and it is not defensive padding.
+        ``heartbeat()`` opens a short direct connection, so any ordinary blip —
+        a failover, a restart, a full connection pool, a network hiccup — raises
+        here. Unhandled, that ends the *thread*, silently: the worker keeps
+        dequeuing and executing units while its row in
+        ``jobs_runtime.ops_executor_heartbeat`` stops advancing forever, and
+        nothing logs a word.
+
+        Which is worse than a dead thread, because of what reads that row.
+        ``dbos>=2.28,<3`` is pinned below the idempotent-recovery fix, so the
+        cross-executor sweep is deliberately gated on a conservative liveness
+        signal — and "stale but very much alive" is the one input that gate must
+        never be handed. A missed beat is transient; a dead reporter is not.
+        """
+        while not stop.wait(interval):
+            try:
+                heartbeat()
+            except Exception:  # noqa: BLE001 — a missed beat must not end the loop
+                logger.warning(
+                    "executor heartbeat failed; retrying in %ss",
+                    interval,
+                    exc_info=True,
+                )
+
+    # Not guarded: the first beat runs before the loop starts, and a worker that
+    # cannot reach its own database at startup should fail loudly rather than
+    # come up looking healthy.
     heartbeat()
     thread = threading.Thread(
         target=_heartbeat_loop, name="dbos-executor-heartbeat", daemon=True
