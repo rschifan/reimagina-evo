@@ -138,7 +138,7 @@ URBAN_FORM_BLOCK_BUILDING_DENSITY = IndicatorSpec(
         AssetEdge("mex.block", attributes=("geometry",)),
         AssetEdge("global.building", relation="child_in_parent"),
     ),
-    applies_to=("block", "ageb"),
+    applies_to=("block",),
 )
 
 
@@ -164,7 +164,7 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     # Indicator is produced directly at the block grain and rolled up to AGEB
     # via feature_overlap. Both grains appear in applies_to so indicator_result
     # rows land cleanly at either level.
-    applies_to=("block", "ageb"),
+    applies_to=("block",),
 )
 
 
@@ -269,7 +269,7 @@ _EDIFICABILITY_INPUTS = (AssetEdge("mex.block", attributes=_EDIFICABILITY_READS)
 
 EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     slug="edificability_block_housing_units",
-    name="Housing Units (buildable)",
+    name="Housing Units (potential)",
     description=(
         "Dwellings the block's envelope supports: (block area × num_levels) / "
         "unit_size. Block area stands in for lot area until a cadastral lot "
@@ -300,7 +300,7 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
 
 EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
     slug="edificability_block_population",
-    name="Resident Population (buildable)",
+    name="Resident Population (potential)",
     description=(
         "Residents implied by the buildable dwelling count: housing_units × "
         "people_per_household."
@@ -322,7 +322,7 @@ EDIFICABILITY_BLOCK_POPULATION = IndicatorSpec(
 
 EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
     slug="edificability_block_density",
-    name="Housing Density (buildable)",
+    name="Housing Density (potential)",
     description=(
         "Buildable dwellings per hectare: housing_units / block area in "
         "hectares. Distinct from urban_form_block_building_density, which "
@@ -469,24 +469,25 @@ ACCESSIBILITY_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
-def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
-    """One accessibility spec. Six of these differ only by category and mode."""
-    mode = "network" if network else "euclid"
+def _accessibility_spec(category: str) -> IndicatorSpec:
+    """One accessibility spec. Three of these differ only by category.
+
+    The straight-line (`*_euclid_m`) family was removed: it was a lower bound on
+    the network distance that ignored barriers, and it did not respond to a
+    road-network edit — so it answered a question no consumer asked while
+    doubling the accessibility catalog. `livability_block_score` always consumed
+    the network family, which is why removing it costs nothing downstream.
+    """
     label, scope = ACCESSIBILITY_LABELS[category]
     return IndicatorSpec(
-        slug=f"accessibility_block_{category}_{mode}_m",
-        name=f"Distance to {label} ({'network' if network else 'straight-line'})",
+        slug=f"accessibility_block_{category}_network_m",
+        name=f"Distance to {label} (network)",
         description=(
             f"Metres from the block's centroid to the nearest {label}, "
-            + (
-                "along the OSM pedestrian network via pgRouting. Reflects "
-                "actual walkable routes, so it responds to road-network edits."
-                if network
-                else "in a straight line. A lower bound on the network "
-                "distance; ignores barriers, so it is optimistic by design."
-            )
-            + f" Counts {scope}."
-            + f" Capped at {ACCESSIBILITY_CUTOFF_M:.0f} m, which is also what "
+            "along the OSM pedestrian network via pgRouting. Reflects actual "
+            "walkable routes, so it responds to road-network edits."
+            f" Counts {scope}."
+            f" Capped at {ACCESSIBILITY_CUTOFF_M:.0f} m, which is also what "
             "an unreachable block reports."
         ),
         computation_kind="direct",
@@ -495,8 +496,8 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
         unit="m",
         valid_min=0.0,
         valid_max=ACCESSIBILITY_CUTOFF_M,
-        # Metres to the nearest amenity: nearer is better. All six of these are
-        # the reason `higher_is_better` exists.
+        # Metres to the nearest amenity: nearer is better. All three of these
+        # are the reason `higher_is_better` exists.
         higher_is_better=False,
         aggregation_method="weighted_mean",
         inputs=(
@@ -507,52 +508,33 @@ def _accessibility_spec(category: str, *, network: bool) -> IndicatorSpec:
             # that scripts/demo.py keeps invalidating these indicators until
             # freshness replaces attribute-seeding. The real dataset edges below
             # are what will carry that job.
-            AssetEdge(
-                "mex.block",
-                attributes=(
-                    ("poi_version", "network_version") if network else ("poi_version",)
-                ),
-            ),
+            AssetEdge("mex.block", attributes=("poi_version", "network_version")),
             AssetEdge(
                 "global.poi", relation="within_radius", radius_m=ACCESSIBILITY_CUTOFF_M
             ),
-            *(
-                (
-                    AssetEdge(
-                        "global.road_network",
-                        relation="within_radius",
-                        radius_m=ACCESSIBILITY_CUTOFF_M,
-                    ),
-                )
-                if network
-                else ()
+            AssetEdge(
+                "global.road_network",
+                relation="within_radius",
+                radius_m=ACCESSIBILITY_CUTOFF_M,
             ),
         ),
         applies_to=("block",),
     )
 
 
-ACCESSIBILITY_EUCLID: tuple[IndicatorSpec, ...] = tuple(
-    _accessibility_spec(category, network=False)
-    for category in ACCESSIBILITY_CATEGORIES
-)
 ACCESSIBILITY_NETWORK: tuple[IndicatorSpec, ...] = tuple(
-    _accessibility_spec(category, network=True) for category in ACCESSIBILITY_CATEGORIES
+    _accessibility_spec(category) for category in ACCESSIBILITY_CATEGORIES
 )
 
 #: slug -> the source `category` values it matches.
 #
-# Read off the two spec tuples rather than rebuilding them: both are
-# comprehensions over ACCESSIBILITY_CATEGORIES, so they share its order by
-# construction and zip lines each category up with its own pair.
+# Read off the spec tuple rather than rebuilding it: both are comprehensions
+# over ACCESSIBILITY_CATEGORIES, so they share its order by construction.
 ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
     spec.slug: ACCESSIBILITY_CATEGORIES[category]
-    for category, pair in zip(
-        ACCESSIBILITY_CATEGORIES,
-        zip(ACCESSIBILITY_EUCLID, ACCESSIBILITY_NETWORK, strict=True),
-        strict=True,
+    for category, spec in zip(
+        ACCESSIBILITY_CATEGORIES, ACCESSIBILITY_NETWORK, strict=True
     )
-    for spec in pair
 }
 
 
@@ -638,7 +620,6 @@ SHIPPED_INDICATORS: tuple[IndicatorSpec, ...] = (
     EDIFICABILITY_BLOCK_HOUSING_UNITS,
     EDIFICABILITY_BLOCK_POPULATION,
     EDIFICABILITY_BLOCK_DENSITY,
-    *ACCESSIBILITY_EUCLID,
     *ACCESSIBILITY_NETWORK,
     # Last: see the warning above about the first model_family-NULL spec.
     LIVABILITY_BLOCK_SCORE,
