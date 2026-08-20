@@ -20,6 +20,18 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The interpreter every uv command uses. `requires-python` is `>=3.11`, so
+  # without this uv is free to pick — or download — any version satisfying it,
+  # and the Python the suite ran on would be a resolution detail rather than a
+  # decision. Note the floor is 3.11 while this is 3.12: nothing tests 3.11
+  # today, so the declared range is wider than the gated one.
+  UV_PYTHON: "3.12"
+  # Makes every `uv run` assert the lockfile too, not just the explicit
+  # `uv sync` step — `uv run` performs an implicit sync, and this keeps it from
+  # quietly resolving anything the install step refused.
+  UV_LOCKED: "1"
+
 jobs:
   lint-py:
     name: Lint (Python)
@@ -27,25 +39,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          enable-cache: true
 
-      - name: Install ruff
-        run: pip install ruff==0.6.9
+      # `--locked`, not `--frozen`. Both install from uv.lock, but `--frozen`
+      # merely declines to update it — a lock left stale by a pyproject edit is
+      # used silently. `--locked` asserts the lock would not change, so that
+      # edit fails here instead of shipping. Both linters are declared in the
+      # dev extra, so the versions that gate CI are the versions `make lint`
+      # runs.
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
 
       - name: ruff check
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: ruff format --check
-        run: ruff format --check .
-
-      - name: Install mypy
-        run: pip install mypy==2.3.1
+        run: uv run ruff format --check .
 
       - name: mypy
-        run: mypy packages/py/reimagina apps scripts
+        run: uv run mypy packages/py/reimagina apps scripts
 
   test-py-unit:
     name: Unit + Contract tests (Python)
@@ -53,23 +67,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          enable-cache: true
 
       - name: System dependencies (GDAL for fiona/rasterio wheels fallback)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgdal-dev
 
-      - name: Install package (editable + dev extras)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+      # ⚠ `--locked`, not a bare install. This was `pip install -e '.[dev]'`,
+      # which re-resolved every dependency on every run and ignored the
+      # committed uv.lock entirely — so a green build said nothing about the
+      # versions that would actually deploy, and an upstream release could turn
+      # CI red on a PR that changed no code. `dbos` makes that concrete: the
+      # constraint is `>=2.28,<3` because, as the comment beside it says,
+      # breaking changes ship inside its minor releases.
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
 
       - name: pytest (unit + contract)
-        run: pytest tests/unit tests/contract
+        run: uv run pytest tests/unit tests/contract
 
   build-web:
     name: Build web app
@@ -129,27 +147,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          enable-cache: true
 
       - name: System dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgdal-dev postgresql-client
 
-      - name: Install package (editable + dev extras)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
 
       - name: pytest (integration)
-        run: pytest tests/integration
+        run: uv run pytest tests/integration
 
       # The Orchestrator port contract, asserted against every implementation
       # this branch ships. Runs here rather than in the unit job because it
       # needs Postgres, and separately from the integration step so an
       # ops-plane branch's conformance output is its own diffable artifact.
       - name: pytest (conformance)
-        run: pytest tests/conformance
+        run: uv run pytest tests/conformance

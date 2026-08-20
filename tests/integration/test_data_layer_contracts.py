@@ -1517,7 +1517,9 @@ def test_r1_retire_current_by_prefix_is_separator_safe(conn):
         ingestion_run_id=run_id,
     )
 
-    retired = obs_repo.retire_current_by_prefix(prefix="ndvi")
+    retired = obs_repo.retire_current_by_prefix(
+        prefix="ndvi", feature_type_id=block_type
+    )
     assert retired == 2  # 'ndvi' + 'ndvi_mean', NOT 'ndvi2_mean'
 
     with conn.cursor() as cur:
@@ -1533,9 +1535,173 @@ def test_r1_retire_current_by_prefix_is_separator_safe(conn):
 
 
 def test_r1_retire_current_by_prefix_rejects_empty(conn):
+    """Both guards exist to stop a catch-all retire, so both are asserted."""
     obs_repo = backend_for_connection(conn).observation_repo()
-    with pytest.raises(ValueError, match="non-empty"):
-        obs_repo.retire_current_by_prefix(prefix="")
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    with pytest.raises(ValueError, match="prefix must be non-empty"):
+        obs_repo.retire_current_by_prefix(prefix="", feature_type_id=block_type)
+    with pytest.raises(ValueError, match="feature_type_id must be non-empty"):
+        obs_repo.retire_current_by_prefix(prefix="ndvi", feature_type_id="")
+
+
+def _observe(conn, *, source_id, run_id, feature_id, key, value):
+    backend_for_connection(conn).observation_repo().bulk_upsert_current(
+        [
+            {
+                "feature_id": feature_id,
+                "attribute_key": key,
+                "value": value,
+                "value_type": "numeric",
+            }
+        ],
+        source_id=source_id,
+        ingestion_run_id=run_id,
+    )
+
+
+def _is_current(conn, feature_id, key):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT is_current FROM curated_geo.observation "
+            "WHERE feature_id = %s::uuid AND attribute_key = %s "
+            "ORDER BY valid_from DESC LIMIT 1",
+            (feature_id, key),
+        )
+        return cur.fetchone()[0]
+
+
+def _two_blocks_and_an_ageb(conn):
+    """One AGEB and two blocks, the first block inside an AOI, all with `ndvi_mean`."""
+    source_id = _register_source(
+        conn,
+        name="r1_scope_src",
+        storage_type="tabular",
+        integration_role="enrichment",
+    )
+    run_id = _start_run(conn, source_id)
+    types = {slug: feat.get_type_id(conn, "MEX", slug) for slug in ("block", "ageb")}
+    geoms = {
+        "in": "POLYGON((0 0,1 0,1 1,0 1,0 0))",
+        "out": "POLYGON((10 10,11 10,11 11,10 11,10 10))",
+        "ageb": "POLYGON((0 0,2 0,2 2,0 2,0 0))",
+    }
+    ids = {}
+    for name, type_slug in (("in", "block"), ("out", "block"), ("ageb", "ageb")):
+        ids[name] = _insert_feature(
+            conn,
+            type_id=types[type_slug],
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=f"r1-scope-{name}",
+            geometry_wkt=geoms[name],
+        )
+        _observe(
+            conn,
+            source_id=source_id,
+            run_id=run_id,
+            feature_id=ids[name],
+            key="ndvi_mean",
+            value=0.5,
+        )
+    aoi_id = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="R1 Scope AOI Project"),
+        name="R1 Scope AOI",
+        geometry_wkt=geoms["in"],
+    )
+    aoi.compute_aoi_features(conn, aoi_id)
+    return types, ids, aoi_id
+
+
+def test_r1_retire_by_prefix_spares_the_other_grains(conn):
+    """`aggregation_recipe` lets two recipes own one prefix at two grains.
+
+    Its uniqueness key is `(target_feature_type_slug, attribute_key_prefix)`
+    (r020), so a block recipe and an AGEB recipe writing `ndvi_*` is supported
+    configuration. Unscoped, whichever ran last retired the other's values and
+    re-inserted nothing for them — the rows simply stopped being current.
+    """
+    types, ids, _aoi = _two_blocks_and_an_ageb(conn)
+    obs_repo = backend_for_connection(conn).observation_repo()
+
+    retired = obs_repo.retire_current_by_prefix(
+        prefix="ndvi", feature_type_id=types["block"]
+    )
+
+    assert retired == 2, "both blocks, and only the blocks"
+    assert _is_current(conn, ids["ageb"], "ndvi_mean") is True
+
+
+def test_r1_retire_by_prefix_spares_features_outside_the_aoi(conn):
+    """The sharp edge of the old behaviour.
+
+    An AOI-scoped run recomputes only in-AOI features but retired the prefix
+    for every feature of the grain, then re-inserted just its own. Everything
+    outside the AOI lost its value with nothing written in its place.
+    """
+    types, ids, aoi_id = _two_blocks_and_an_ageb(conn)
+    obs_repo = backend_for_connection(conn).observation_repo()
+
+    retired = obs_repo.retire_current_by_prefix(
+        prefix="ndvi", feature_type_id=types["block"], aoi_id=aoi_id
+    )
+
+    assert retired == 1
+    assert _is_current(conn, ids["in"], "ndvi_mean") is False
+    assert _is_current(conn, ids["out"], "ndvi_mean") is True
+    assert _is_current(conn, ids["ageb"], "ndvi_mean") is True
+
+
+def test_r1_retire_by_prefix_without_an_aoi_covers_the_whole_grain(conn):
+    """A whole-grain run has no AOI, and must still retire the whole grain.
+
+    The AOI filter is what a scoped run passes, not a narrowing that applies
+    by default — otherwise a full re-run would leave orphaned rows current.
+    """
+    types, ids, _aoi = _two_blocks_and_an_ageb(conn)
+    obs_repo = backend_for_connection(conn).observation_repo()
+
+    obs_repo.retire_current_by_prefix(prefix="ndvi", feature_type_id=types["block"])
+
+    assert _is_current(conn, ids["in"], "ndvi_mean") is False
+    assert _is_current(conn, ids["out"], "ndvi_mean") is False
+
+
+def test_r1_retire_by_prefix_stays_cross_source(conn):
+    """Scoping by grain and AOI must not quietly become scoping by source.
+
+    `obs_one_current` is unique on `(feature_id, attribute_key)` and ignores
+    `source_id`, so retiring only one source's rows would leave the invariant
+    broken. Grain and AOI partition on `feature_id`, which is why they are safe
+    and `source_id` is not.
+    """
+    types, ids, _aoi = _two_blocks_and_an_ageb(conn)
+    other_source = _register_source(
+        conn,
+        name="r1_scope_src_b",
+        storage_type="tabular",
+        integration_role="enrichment",
+    )
+    other_run = _start_run(conn, other_source)
+    # A second source taking ownership of the same pair on the AGEB.
+    _observe(
+        conn,
+        source_id=other_source,
+        run_id=other_run,
+        feature_id=ids["ageb"],
+        key="ndvi_mean",
+        value=0.9,
+    )
+
+    retired = (
+        backend_for_connection(conn)
+        .observation_repo()
+        .retire_current_by_prefix(prefix="ndvi", feature_type_id=types["ageb"])
+    )
+
+    assert retired == 1, "the other source's row is retired too, not skipped"
+    assert _is_current(conn, ids["ageb"], "ndvi_mean") is False
 
 
 def test_r1_has_active_prefix_excludes_own_source(conn):
@@ -1574,12 +1740,18 @@ def test_r1_has_active_prefix_excludes_own_source(conn):
     )
 
     # Excluding A → no other source has it → False.
-    assert obs_repo.has_active_prefix(prefix="lst", excluding_source_id=src_a) is False
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="lst", excluding_source_id=src_a, feature_type_id=block_type
+        )
+        is False
+    )
     # Excluding a random UUID → A still owns it → True.
     assert (
         obs_repo.has_active_prefix(
             prefix="lst",
             excluding_source_id=str(uuid4()),
+            feature_type_id=block_type,
         )
         is True
     )
@@ -1588,6 +1760,7 @@ def test_r1_has_active_prefix_excludes_own_source(conn):
         obs_repo.has_active_prefix(
             prefix="lst_mean",
             excluding_source_id=str(uuid4()),
+            feature_type_id=block_type,
         )
         is True
     )
@@ -1596,9 +1769,58 @@ def test_r1_has_active_prefix_excludes_own_source(conn):
         obs_repo.has_active_prefix(
             prefix="ls",
             excluding_source_id=str(uuid4()),
+            feature_type_id=block_type,
         )
         is False
     )
+
+
+def test_r1_has_active_prefix_does_not_collide_across_grains(conn):
+    """The guard has to track what retirement can actually reach.
+
+    Retirement is grain-scoped, so a block source and an AGEB source owning
+    `ndvi_*` cannot retire each other — and `aggregation_recipe_prefix_uk`
+    (r020) keys on `(target_feature_type_slug, attribute_key_prefix)`, so that
+    pairing is supported configuration. Unscoped, this guard refused it.
+    """
+    types, ids, _aoi = _two_blocks_and_an_ageb(conn)
+    other = _register_source(
+        conn,
+        name="r1_grain_guard_src",
+        storage_type="tabular",
+        integration_role="enrichment",
+    )
+    obs_repo = backend_for_connection(conn).observation_repo()
+
+    # The blocks' rows belong to another source, and they do collide at `block`.
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="ndvi",
+            excluding_source_id=other,
+            feature_type_id=types["block"],
+        )
+        is True
+    )
+    # Retire them, leaving only the AGEB's row current.
+    obs_repo.retire_current_by_prefix(prefix="ndvi", feature_type_id=types["block"])
+
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="ndvi",
+            excluding_source_id=other,
+            feature_type_id=types["block"],
+        )
+        is False
+    ), "no current block rows left, so a block run is free to take the prefix"
+    assert (
+        obs_repo.has_active_prefix(
+            prefix="ndvi",
+            excluding_source_id=other,
+            feature_type_id=types["ageb"],
+        )
+        is True
+    ), "the AGEB's row survived and still owns the prefix at its own grain"
+    assert _is_current(conn, ids["ageb"], "ndvi_mean") is True
 
 
 def test_r1_raster_layer_repo_lifecycle(conn):

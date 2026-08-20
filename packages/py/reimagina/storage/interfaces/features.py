@@ -150,23 +150,48 @@ class ObservationRepository(Protocol):
         ingestion_run_id: str,
     ) -> int: ...
 
-    def retire_current_by_prefix(self, *, prefix: str) -> int:
+    def retire_current_by_prefix(
+        self,
+        *,
+        prefix: str,
+        feature_type_id: str,
+        aoi_id: str | None = None,
+    ) -> int:
         """Retire every current observation whose ``attribute_key`` either
         equals ``:prefix`` exactly or starts with ``:prefix_`` (literal
-        separator, NOT a SQL LIKE wildcard).
+        separator, NOT a SQL LIKE wildcard), **within the scope the caller
+        recomputed**.
 
         Implementations use ``starts_with(attribute_key, :prefix || '_')``
         so ``prefix='ndvi'`` does not accidentally retire ``ndvi2_mean``.
-        Retirement is cross-source by design — the ``obs_one_current``
-        SCD invariant is per ``(feature_id, attribute_key)`` regardless
-        of source, and retiring only one source's rows would leave the
-        invariant broken. Callers that want per-source scoping should
-        enforce single-source prefix ownership via
-        ``has_active_prefix`` before calling this.
 
-        Raises ``ValueError`` on empty prefix to prevent catch-all
-        retirement. Returns the number of rows transitioned to
-        ``is_current = false``.
+        ``feature_type_id`` is required and restricts retirement to
+        observations on features of that grain. It is not optional because
+        a producer only ever writes one grain: ``aggregation_recipe``'s
+        uniqueness key is ``(target_feature_type_slug,
+        attribute_key_prefix)`` (r020), so two recipes may legitimately
+        publish the same prefix at different grains, and an unscoped
+        retire lets either run silently wipe the other's values before
+        re-inserting only its own.
+
+        ``aoi_id`` restricts it further to features in that AOI, and must
+        be passed whenever the run itself was AOI-scoped. Without it an
+        AOI-scoped run retires the prefix for every feature of the grain
+        in the database and then re-inserts only the in-AOI ones, so
+        everything outside the AOI loses its value permanently.
+
+        Both filters partition on ``feature_id``, which is why they are
+        safe: ``obs_one_current`` is unique on
+        ``(feature_id, attribute_key) WHERE is_current`` (r003), so
+        narrowing by grain or AOI can never leave two current rows for one
+        pair. Retirement stays **cross-source** for exactly that reason —
+        the invariant ignores ``source_id``, so retiring one source's rows
+        alone would leave it broken. Callers wanting per-source ownership
+        enforce it up front via ``has_active_prefix``.
+
+        Raises ``ValueError`` on an empty prefix or an empty
+        ``feature_type_id``, both to prevent catch-all retirement. Returns
+        the number of rows transitioned to ``is_current = false``.
         """
         ...
 
@@ -175,18 +200,34 @@ class ObservationRepository(Protocol):
         *,
         prefix: str,
         excluding_source_id: str,
+        feature_type_id: str,
     ) -> bool:
         """Return True iff any ``curated_geo.observation`` row exists with
-        ``is_current = true``, ``source_id != :excluding_source_id``,
-        and an ``attribute_key`` equal to ``:prefix`` or matching
+        ``is_current = true``, ``source_id != :excluding_source_id``, an
+        ``attribute_key`` equal to ``:prefix`` or matching
         ``:prefix_<suffix>`` under the same separator-safe pattern as
-        ``retire_current_by_prefix``.
+        ``retire_current_by_prefix``, **on a feature of
+        ``:feature_type_id``**.
 
         No "active source" concept — what matters for SCD safety is
         whether some other source's current observation already owns
         the prefix, because the writer retires/upserts on
         ``(feature_id, attribute_key)`` regardless of source. Published
         status is irrelevant. Backs the CLI prefix-collision check.
+
+        ``feature_type_id`` is required and mirrors
+        ``retire_current_by_prefix``'s grain scope, because a guard that
+        does not match what the action can actually reach is either
+        wrong or useless. Unscoped, this refused two recipes owning one
+        prefix at two different grains — supported configuration under
+        ``aggregation_recipe_prefix_uk`` (r020), and safe now that
+        retirement is grain-scoped.
+
+        Deliberately **not** AOI-scoped, unlike retirement. A guard has
+        to cover the widest thing a run could retire, and an AOI is only
+        a narrowing the caller opts into: a whole-grain run retires the
+        whole grain, so a collision outside any given AOI is still a
+        collision.
         """
         ...
 
