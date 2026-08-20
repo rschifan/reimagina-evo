@@ -240,12 +240,26 @@ export interface Timeline {
  * makes two runs comparable by eye — neither of which a percentage layout
  * could do.
  *
- * 15 px/s is chosen against the panel, not picked for looks: the track is about
- * 740 px here, so roughly 50 s of run is visible at once, which covers the
- * observed runs (3–48 s) without scrolling. Longer runs scroll rather than
- * being squeezed, because squeezing is exactly what made bars appear to move.
+ * 15 px/s is chosen against the panel, not for looks: the track is about 740 px,
+ * so roughly 50 s is visible at once. Longer live runs scroll rather than being
+ * squeezed, because squeezing is exactly what made bars appear to move.
+ *
+ * Used only while a run is *live*. A finished run cannot grow, so nothing can
+ * move if it is scaled to fit the panel — see `fitPxPerSecond`.
  */
 export const PX_PER_SECOND = 15;
+
+/**
+ * The scale that makes a finished run fill the width.
+ *
+ * Safe precisely because the run is over: its elapsed time is final, so the
+ * scale is computed once and no later tick can change it. A live run must not
+ * use this — recomputing it as the run grew is what made every bar drift.
+ */
+export function fitPxPerSecond(elapsedMs: number, trackPx: number): number {
+  if (elapsedMs <= 0 || trackPx <= 0) return PX_PER_SECOND;
+  return trackPx / (elapsedMs / 1000);
+}
 
 /** Seconds between ticks, so labels stay readable as a run grows. */
 export function tickStepSeconds(elapsedMs: number): number {
@@ -256,11 +270,14 @@ export function tickStepSeconds(elapsedMs: number): number {
   return 900;
 }
 
-function axisTicks(elapsedMs: number): { atPx: number; label: string }[] {
+function axisTicks(
+  elapsedMs: number,
+  pxPerSecond: number,
+): { atPx: number; label: string }[] {
   const step = tickStepSeconds(elapsedMs);
   const marks: { atPx: number; label: string }[] = [];
   for (let sec = 0; sec * 1000 <= elapsedMs; sec += step) {
-    marks.push({ atPx: sec * PX_PER_SECOND, label: `${sec}s` });
+    marks.push({ atPx: sec * pxPerSecond, label: `${sec}s` });
   }
   return marks;
 }
@@ -283,6 +300,7 @@ export function timelineOf(
     completed_at: string | null;
   }[],
   now: number,
+  pxPerSecond: number = PX_PER_SECOND,
 ): Timeline {
   if (!units.length)
     return { rows: [], elapsedMs: 0, widthPx: 0, ticks: [], peak: 0 };
@@ -298,7 +316,7 @@ export function timelineOf(
   const ends = units.map((u) => at(u.completed_at) ?? now);
   const elapsedMs = Math.max(0, Math.max(...ends) - t0);
 
-  const px = (ms: number) => (ms / 1000) * PX_PER_SECOND;
+  const px = (ms: number) => (ms / 1000) * pxPerSecond;
 
   const rows: TimelineRow[] = units.map((u) => {
     const queued = at(u.queued_at) ?? t0;
@@ -329,7 +347,7 @@ export function timelineOf(
     rows,
     elapsedMs,
     widthPx: px(elapsedMs),
-    ticks: axisTicks(elapsedMs),
+    ticks: axisTicks(elapsedMs, pxPerSecond),
     peak: peakParallelism(units, now, at),
   };
 }

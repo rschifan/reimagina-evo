@@ -1,11 +1,41 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import type { UnitDetail } from "./api";
-  import { formatDuration, timelineOf, unitTone, PX_PER_SECOND } from "./derive";
+  import {
+    fitPxPerSecond,
+    formatDuration,
+    timelineOf,
+    unitTone,
+    PX_PER_SECOND,
+  } from "./derive";
 
   let { units, now }: { units: UnitDetail[]; now: number } = $props();
 
-  const t = $derived(timelineOf(units, now));
+  let trackWidth = $state(0);
+
+  const anyLive = $derived(
+    units.some((u) => u.started_at !== null && u.completed_at === null),
+  );
+
+  /**
+   * A live run is drawn at a fixed scale so nothing already on screen moves; a
+   * finished one is scaled to fill the panel.
+   *
+   * The asymmetry is the point rather than an inconsistency. Fitting to width
+   * means dividing by the run's elapsed time, and while a run is live that
+   * divisor grows every second — which is exactly what made every bar drift
+   * leftward. Once the run is over the divisor is final, so the same fit is
+   * computed once and can never move anything.
+   */
+  // Measured once at the fixed scale purely to learn the run's elapsed time,
+  // which is what the fit divides by. Durations do not depend on the scale.
+  const measured = $derived(timelineOf(units, now, PX_PER_SECOND));
+
+  const scale = $derived(
+    anyLive ? PX_PER_SECOND : fitPxPerSecond(measured.elapsedMs, trackWidth),
+  );
+
+  const t = $derived(timelineOf(units, now, scale));
 
   /**
    * Rows in dispatch order, so the picture reads top-to-bottom as the run
@@ -78,7 +108,11 @@
         already drawn moves when the run gets longer — a running bar simply
         grows to the right, which is the direction time goes.
       -->
-      <div bind:this={scroller} class="grow overflow-x-auto py-3">
+      <div
+        bind:this={scroller}
+        bind:clientWidth={trackWidth}
+        class="grow overflow-x-auto py-3"
+      >
         <div class="relative" style={`width:${Math.max(t.widthPx, 1)}px`}>
           <div class="relative h-5">
             {#each t.ticks as tick (tick.atPx)}

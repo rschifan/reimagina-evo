@@ -14,6 +14,7 @@ import {
   statusesToHash,
   timelineOf,
   tickStepSeconds,
+  fitPxPerSecond,
   PX_PER_SECOND,
   STALL_GRACE_MS,
 } from "./derive";
@@ -326,5 +327,36 @@ describe("axis ticks", () => {
 
   it("has no ticks when there is nothing to draw", () => {
     expect(timelineOf([], Date.now()).ticks).toEqual([]);
+  });
+});
+
+describe("fitPxPerSecond", () => {
+  it("scales a finished run to fill the track exactly", () => {
+    // 6 s run in a 740 px panel: the last bar must end at the right-hand edge
+    // rather than 90 px in, which is what a fixed scale did to a short run.
+    const scale = fitPxPerSecond(6_000, 740);
+    const t = timelineOf(
+      [
+        {
+          indicator: "a",
+          status: "succeeded" as const,
+          depends_on: [],
+          queued_at: "2026-08-20T10:00:00+00:00",
+          started_at: "2026-08-20T10:00:00+00:00",
+          completed_at: "2026-08-20T10:00:06+00:00",
+        },
+      ],
+      Date.parse("2026-08-20T10:00:06+00:00"),
+      scale,
+    );
+
+    expect(t.widthPx).toBeCloseTo(740, 5);
+    expect(t.rows[0].runWidthPx).toBeCloseTo(740, 5);
+  });
+
+  it("falls back to the fixed scale before the track has been measured", () => {
+    // First render, clientWidth still 0 — dividing by it would be Infinity.
+    expect(fitPxPerSecond(6_000, 0)).toBe(PX_PER_SECOND);
+    expect(fitPxPerSecond(0, 740)).toBe(PX_PER_SECOND);
   });
 });
