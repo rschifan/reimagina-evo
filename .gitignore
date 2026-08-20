@@ -36,6 +36,10 @@ data/
 .env
 .env.local
 .env.*.local
+# Timestamped copies made before editing .env. They carry the same DSNs as the
+# real file and are not covered by the patterns above, so they would otherwise
+# be offered up as untracked files at the next `git add`.
+.env.backup-*
 !.env.example
 
 # ── Node / TypeScript ────────────────────────────────────────────────────────
