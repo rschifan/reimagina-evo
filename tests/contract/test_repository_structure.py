@@ -125,3 +125,77 @@ def test_explore_module_is_not_used_by_domain_logic_outside_cli():
         assert not disallowed_import.search(
             content
         ), f"Unexpected explore dependency in {path}"
+
+
+# ── Dependency pinning ───────────────────────────────────────────────────────
+#
+# CI used to run `pip install -e '.[dev]'`, which re-resolved every dependency
+# on every run and ignored the committed `uv.lock` entirely. A green build
+# therefore said nothing about the versions that would actually deploy, and an
+# upstream release could turn CI red on a PR that changed no code. `dbos` makes
+# that concrete: its constraint is `>=2.28,<3` precisely because breaking
+# changes ship inside its minor releases.
+#
+# Asserted as text rather than parsed YAML on purpose — these are claims about
+# literal command strings, and a YAML parse would add a dependency this file
+# does not otherwise need.
+
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def test_ci_installs_python_dependencies_from_the_lockfile():
+    """No unpinned install may reach CI, and the lock must be enforced.
+
+    ``--locked``, not ``--frozen``: both install from ``uv.lock``, but
+    ``--frozen`` merely declines to update it, so a lock left stale by a
+    pyproject edit is used silently. ``--locked`` asserts the lock would not
+    change, which is what makes a pyproject edit without a re-lock a CI failure
+    instead of a divergence nobody notices.
+    """
+    assert (ROOT / "uv.lock").is_file(), "the lockfile CI installs from must exist"
+    ci = CI_WORKFLOW.read_text()
+
+    installs = re.findall(r"run: (uv sync[^\n]*)", ci)
+    assert installs, "no `uv sync` install step found in CI"
+    for step in installs:
+        assert "--locked" in step, (
+            f"{step!r} does not assert the lockfile; `--frozen` and a bare sync "
+            "both accept a stale lock"
+        )
+
+    # Executable lines only. A comment is allowed to name `pip install` — the
+    # one above this test does, explaining what it replaced — and a check that
+    # cannot tell an instruction from a description of one would forbid saying
+    # why the rule exists.
+    offenders = [
+        stripped
+        for line in ci.splitlines()
+        if not (stripped := line.strip()).startswith("#") and "pip install" in stripped
+    ]
+    assert (
+        not offenders
+    ), f"CI installs Python dependencies outside the lockfile: {offenders}"
+
+
+def test_the_linters_ci_gates_on_are_locked():
+    """A gate whose *output* is the contract cannot float.
+
+    Two ruff versions disagree about how to wrap the same line, so an unpinned
+    one means ``ruff format --check`` fails CI on code the author's own ruff had
+    just formatted. Both linters are declared in the dev extra so ``uv.lock``
+    governs them, and both the workflow and the Makefile run them through ``uv``
+    — which is what makes "it passed locally" mean something.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    for tool in ("ruff", "mypy"):
+        assert re.search(rf'"{tool}==[\d.]+"', pyproject), (
+            f"{tool} gates CI but is not exact-pinned in the dev extra, so the "
+            "lockfile does not govern the version that runs"
+        )
+
+    ci = CI_WORKFLOW.read_text()
+    makefile = (ROOT / "Makefile").read_text()
+    for tool in ("ruff", "mypy"):
+        assert f"uv run {tool}" in ci, f"CI must invoke {tool} through uv"
+    assert "RUFF := uv run ruff" in makefile
+    assert "MYPY := uv run mypy" in makefile
