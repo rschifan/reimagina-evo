@@ -199,3 +199,39 @@ def test_the_linters_ci_gates_on_are_locked():
         assert f"uv run {tool}" in ci, f"CI must invoke {tool} through uv"
     assert "RUFF := uv run ruff" in makefile
     assert "MYPY := uv run mypy" in makefile
+
+
+def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
+    """A bare tool name runs whatever is first on PATH, not the project's.
+
+    `make dev-api` shipped as bare `uvicorn` and was simply broken on any
+    machine whose PATH offers a system-wide Python first: the server started
+    under an interpreter without the project's dependencies and died on
+    `import dbos`. The same shape in `ruff` was subtler and worse — a formatter
+    that runs at the wrong version does not fail, it reformats, so `make lint`
+    and CI disagreed about the same file.
+
+    Both are the same rule: anything installed by `uv.lock` is invoked through
+    `uv`, so the version that runs is the version the lockfile pins.
+    """
+    makefile = (ROOT / "Makefile").read_text()
+
+    # Recipe lines are the tab-indented ones; everything else is a variable
+    # definition, a comment, or a target.
+    recipes = [
+        line.lstrip("\t")
+        for line in makefile.splitlines()
+        if line.startswith("\t") and not line.lstrip("\t").startswith("@")
+    ]
+    # Entry points that come from the Python environment rather than the OS.
+    managed = ("python", "pytest", "ruff", "mypy", "uvicorn", "alembic")
+    offenders = [
+        line
+        for line in recipes
+        for tool in managed
+        if line.split(" ")[0] == tool  # first word, so `uv run ruff` is fine
+    ]
+    assert not offenders, (
+        "Makefile recipes invoke a lockfile-managed tool without `uv run`, so "
+        f"they resolve against PATH instead of the project: {offenders}"
+    )
