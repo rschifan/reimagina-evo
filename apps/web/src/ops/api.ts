@@ -71,6 +71,8 @@ export interface UnitDetail {
   queued_at: string;
   started_at: string | null;
   completed_at: string | null;
+  /** Prerequisites within this run — not the whole registry graph. */
+  depends_on: string[];
 }
 
 export interface RunDetailResponse {

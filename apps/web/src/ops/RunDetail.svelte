@@ -2,6 +2,7 @@
   import Badge from "../lib/components/ui/Badge.svelte";
   import Card from "../lib/components/ui/Card.svelte";
   import type { RunDetailResponse } from "./api";
+  import RunTimeline from "./RunTimeline.svelte";
   import {
     durationMs,
     formatDuration,
@@ -99,6 +100,8 @@
       {/if}
     </Card>
   </div>
+
+  <RunTimeline units={detail.units} {now} />
 
   <div class="mt-4 overflow-x-auto">
     <table class="w-full border-collapse text-sm">

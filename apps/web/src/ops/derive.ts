@@ -172,3 +172,115 @@ export function statusesFromHash(
 export function statusesToHash(statuses: RunStatus[]): string {
   return statuses.length ? `#/?status=${statuses.join(",")}` : "#/";
 }
+
+// ── Run timeline ────────────────────────────────────────────────────────────
+
+export interface TimelineRow {
+  indicator: string;
+  status: UnitStatus;
+  depends_on: string[];
+  /** Percentages across the run's own span, for direct use as CSS widths. */
+  queuedLeft: number;
+  queuedWidth: number;
+  runLeft: number;
+  runWidth: number;
+  durationMs: number | null;
+  /** True while the bar's right edge is "now" rather than a completion. */
+  live: boolean;
+}
+
+export interface Timeline {
+  rows: TimelineRow[];
+  spanMs: number;
+  /** Most units executing at once — the parallelism actually achieved. */
+  peak: number;
+}
+
+/**
+ * Lay the units out on the run's own clock.
+ *
+ * Order and parallelism are read off real timestamps rather than inferred from
+ * the dependency graph: the scheduler dispatches a unit as soon as its last
+ * input clears, so what actually overlapped is a fact about the run, not a
+ * property of the DAG. A unit still running is measured to `now`.
+ */
+export function timelineOf(
+  units: {
+    indicator: string;
+    status: UnitStatus;
+    depends_on: string[];
+    queued_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+  }[],
+  now: number,
+): Timeline {
+  if (!units.length) return { rows: [], spanMs: 0, peak: 0 };
+
+  const at = (iso: string | null): number | null => {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    return Number.isNaN(t) ? null : t;
+  };
+
+  const starts = units.map((u) => at(u.queued_at) ?? now);
+  const t0 = Math.min(...starts);
+  const ends = units.map((u) => at(u.completed_at) ?? now);
+  // Guard the degenerate case: every timestamp equal gives a zero span, and
+  // dividing by it would put every bar at NaN% rather than at 0.
+  const spanMs = Math.max(1, Math.max(...ends) - t0);
+
+  const pct = (ms: number) => (ms / spanMs) * 100;
+
+  const rows: TimelineRow[] = units.map((u) => {
+    const queued = at(u.queued_at) ?? t0;
+    const started = at(u.started_at);
+    const completed = at(u.completed_at);
+    const runFrom = started ?? completed ?? null;
+    const runTo = completed ?? (started ? now : null);
+    return {
+      indicator: u.indicator,
+      status: u.status,
+      depends_on: u.depends_on,
+      queuedLeft: pct(queued - t0),
+      queuedWidth: pct(Math.max(0, (runFrom ?? now) - queued)),
+      runLeft: runFrom === null ? 0 : pct(runFrom - t0),
+      runWidth:
+        runFrom === null || runTo === null
+          ? 0
+          : pct(Math.max(0, runTo - runFrom)),
+      durationMs:
+        runFrom === null || runTo === null
+          ? null
+          : Math.max(0, runTo - runFrom),
+      live: started !== null && completed === null,
+    };
+  });
+
+  return { rows, spanMs, peak: peakParallelism(units, now, at) };
+}
+
+/** Most units executing simultaneously, by sweeping start/end boundaries. */
+function peakParallelism(
+  units: { started_at: string | null; completed_at: string | null }[],
+  now: number,
+  at: (iso: string | null) => number | null,
+): number {
+  const events: { t: number; delta: number }[] = [];
+  for (const u of units) {
+    const s = at(u.started_at);
+    if (s === null) continue;
+    events.push({ t: s, delta: 1 });
+    events.push({ t: at(u.completed_at) ?? now, delta: -1 });
+  }
+  // Ends before starts at the same instant: a unit that finished exactly as
+  // another began was not running alongside it.
+  events.sort((a, b) => a.t - b.t || a.delta - b.delta);
+  let current = 0;
+  let peak = 0;
+  for (const e of events) {
+    current += e.delta;
+    peak = Math.max(peak, current);
+  }
+  return peak;
+}

@@ -12,6 +12,7 @@ import {
   statusCounts,
   statusesFromHash,
   statusesToHash,
+  timelineOf,
   STALL_GRACE_MS,
 } from "./derive";
 
@@ -174,5 +175,73 @@ describe("statusCounts", () => {
     expect(counts.succeeded).toBe(2);
     expect(counts.failed).toBe(0);
     expect(Object.keys(counts)).toHaveLength(RUN_STATUSES.length);
+  });
+});
+
+describe("timelineOf", () => {
+  const unit = (
+    indicator: string,
+    queued: string,
+    started: string | null,
+    completed: string | null,
+    depends_on: string[] = [],
+  ) => ({
+    indicator,
+    status: "succeeded" as const,
+    depends_on,
+    queued_at: `2026-08-20T10:00:${queued}+00:00`,
+    started_at: started ? `2026-08-20T10:00:${started}+00:00` : null,
+    completed_at: completed ? `2026-08-20T10:00:${completed}+00:00` : null,
+  });
+
+  const now = Date.parse("2026-08-20T10:00:30+00:00");
+
+  it("reports the parallelism actually achieved, not the DAG's width", () => {
+    // Two overlap 00-10; the third only starts at 10.
+    const t = timelineOf(
+      [
+        unit("a", "00", "00", "10"),
+        unit("b", "00", "00", "08"),
+        unit("c", "00", "10", "20", ["a"]),
+      ],
+      now,
+    );
+    expect(t.peak).toBe(2);
+  });
+
+  it("does not count a unit that ended exactly as another began", () => {
+    const t = timelineOf([unit("a", "00", "00", "10"), unit("b", "00", "10", "20")], now);
+    expect(t.peak).toBe(1);
+  });
+
+  it("measures a still-running unit to now", () => {
+    const t = timelineOf([unit("a", "00", "10", null)], now);
+    const row = t.rows[0];
+    expect(row.live).toBe(true);
+    expect(row.durationMs).toBe(20_000);
+  });
+
+  it("places bars proportionally across the run's span", () => {
+    const t = timelineOf([unit("a", "00", "00", "10"), unit("b", "00", "10", "20")], now);
+    expect(t.spanMs).toBe(20_000);
+    expect(t.rows[0].runLeft).toBe(0);
+    expect(t.rows[0].runWidth).toBe(50);
+    expect(t.rows[1].runLeft).toBe(50);
+  });
+
+  it("survives a run where every timestamp is identical", () => {
+    // Zero span would divide by zero and put every bar at NaN%.
+    const t = timelineOf([unit("a", "00", "00", "00")], now);
+    expect(Number.isFinite(t.rows[0].runWidth)).toBe(true);
+  });
+
+  it("is empty for a run with no units", () => {
+    expect(timelineOf([], now)).toEqual({ rows: [], spanMs: 0, peak: 0 });
+  });
+
+  it("shows the wait before a prerequisite cleared as queued time", () => {
+    const t = timelineOf([unit("c", "00", "10", "20", ["a"])], now);
+    expect(t.rows[0].queuedWidth).toBeGreaterThan(0);
+    expect(t.rows[0].depends_on).toEqual(["a"]);
   });
 });

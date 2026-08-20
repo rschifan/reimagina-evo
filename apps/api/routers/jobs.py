@@ -102,6 +102,11 @@ class UnitDetail(BaseModel):
     queued_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Prerequisites *within this run*. The registry knows the full dependency
+    # graph, but a unit whose input was not part of this run was not waiting on
+    # it — that input was already materialised — so showing the whole graph
+    # would misrepresent why a unit started when it did.
+    depends_on: list[str] = []
 
 
 class RunDetailResponse(BaseModel):
@@ -503,11 +508,26 @@ def get_run_detail(
     row = reader.get_run_row(run_id)
     if row is None:
         return _detail_before_envelope(conn, run_id)
+    units = reader.list_units_detailed(run_id)
+    within = {u["indicator"] for u in units}
     return RunDetailResponse(
         run=RunRow(**row),
-        units=[UnitDetail(**unit) for unit in reader.list_units_detailed(run_id)],
+        units=[
+            UnitDetail(**unit, depends_on=_prerequisites(unit["indicator"], within))
+            for unit in units
+        ],
         server_now=_server_now(),
     )
+
+
+def _prerequisites(slug: str, within: set[str]) -> list[str]:
+    """This indicator's declared inputs, restricted to the ones in this run."""
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    for spec in SHIPPED_INDICATORS:
+        if spec.slug == slug:
+            return sorted({dep for dep, _weight in spec.depends_on} & within)
+    return []
 
 
 def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
