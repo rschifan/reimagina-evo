@@ -120,9 +120,7 @@ def test_a_malformed_run_id_is_an_empty_answer_not_an_error(conn, bad_id):
 
 def test_units_carry_their_timings_in_dispatch_order(conn):
     """``started_at``/``completed_at`` are what the dashboard renders as duration."""
-    run_id = _make_run(
-        conn, units=[("beta", "queued"), ("alpha", "running")]
-    )
+    run_id = _make_run(conn, units=[("beta", "queued"), ("alpha", "running")])
     runstore.set_unit_status(
         conn, run_id=run_id, indicator_slug="alpha", status="succeeded"
     )

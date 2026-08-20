@@ -181,7 +181,11 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
         from reimagina.orchestration.impact import indicators_for_datasets
 
         resolved = indicators_for_datasets(body.changed_datasets, SHIPPED_INDICATORS)
-        indicators = sorted(set(indicators or ()) | set(resolved)) if indicators else list(resolved)
+        indicators = (
+            sorted(set(indicators or ()) | set(resolved))
+            if indicators
+            else list(resolved)
+        )
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
@@ -314,24 +318,31 @@ def list_change_inputs() -> ChangeVocabulary:
 
     attrs: dict[tuple[str, str], list[str]] = {}
     datasets: dict[tuple[str, str], list[str]] = {}
+    # `spec.inputs` is `tuple[AssetEdge, ...]`, so these are plain attribute
+    # reads. They were `getattr(edge, "key", None) or getattr(edge, "asset_key",
+    # "")` — defensive over a frozen dataclass that has no `key` field at all,
+    # so the first half evaluated to None on every edge and only the fallback
+    # ever ran. The cost was not just the dead branch: `getattr` with a default
+    # erases the type, which is what left `key` as `Any | None` and produced
+    # three mypy errors on a value that is always `str`.
     for spec in SHIPPED_INDICATORS:
         for edge in spec.inputs:
-            key = getattr(edge, "key", None) or getattr(edge, "asset_key", "")
-            names = getattr(edge, "attributes", None) or ()
-            if names:
-                for name in names:
-                    attrs.setdefault((key, name), []).append(spec.slug)
-            elif not key.startswith("indicator."):
+            if edge.attributes:
+                for name in edge.attributes:
+                    attrs.setdefault((edge.asset_key, name), []).append(spec.slug)
+            elif not edge.asset_key.startswith("indicator."):
                 # Composites depend on other indicators, which the run planner
                 # already orders; they are not something a person "changes".
-                rel = getattr(edge, "relation", "") or ""
-                datasets.setdefault((key, rel), []).append(spec.slug)
+                datasets.setdefault((edge.asset_key, edge.relation), []).append(
+                    spec.slug
+                )
 
     consumed = {dataset for dataset, _ in attrs} | {dataset for dataset, _ in datasets}
     unconsumed = sorted(
         spec.asset_key
         for spec in SHIPPED_ASSETS
-        if spec.asset_key not in consumed and not spec.asset_key.startswith("indicator.")
+        if spec.asset_key not in consumed
+        and not spec.asset_key.startswith("indicator.")
     )
 
     return ChangeVocabulary(
@@ -403,7 +414,11 @@ def preview_impact(
         from reimagina.orchestration.impact import indicators_for_datasets
 
         resolved = indicators_for_datasets(body.changed_datasets, SHIPPED_INDICATORS)
-        indicators = sorted(set(indicators or ()) | set(resolved)) if indicators else list(resolved)
+        indicators = (
+            sorted(set(indicators or ()) | set(resolved))
+            if indicators
+            else list(resolved)
+        )
         if not indicators:
             return ImpactPreview(
                 indicators=[],
@@ -642,9 +657,10 @@ def list_runs(
     # reach the reader as None, not as the empty list a query string produces.
     statuses = [s.value for s in status] if status else None
     return RunListResponse(
-        runs=[RunRow(**row) for row in reader.list_runs(
-            statuses=statuses, limit=limit, offset=offset
-        )],
+        runs=[
+            RunRow(**row)
+            for row in reader.list_runs(statuses=statuses, limit=limit, offset=offset)
+        ],
         server_now=_server_now(),
         total=reader.count_runs(statuses=statuses),
         status_counts=reader.count_runs_by_status(),
@@ -720,8 +736,9 @@ def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
             units_total=len(status.units),
         ),
         units=[
-            UnitDetail(indicator=u.indicator, status=u.status, detail=u.detail,
-                       queued_at=now)
+            UnitDetail(
+                indicator=u.indicator, status=u.status, detail=u.detail, queued_at=now
+            )
             for u in status.units
         ],
         server_now=now,
