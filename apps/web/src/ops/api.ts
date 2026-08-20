@@ -173,3 +173,30 @@ export function submitRun(
     body,
   });
 }
+
+export interface RerunResponse extends SubmitRunResponse {
+  rerun_of: string;
+  indicators: string[];
+}
+
+export function cancelRun(
+  runId: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<unknown> {
+  return jsonRequest(`/jobs/${encodeURIComponent(runId)}/cancel`, {
+    ...init,
+    method: "POST",
+    body: {},
+  });
+}
+
+export function rerunRun(
+  runId: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<RerunResponse> {
+  return jsonRequest<RerunResponse>(`/jobs/${encodeURIComponent(runId)}/rerun`, {
+    ...init,
+    method: "POST",
+    body: {},
+  });
+}

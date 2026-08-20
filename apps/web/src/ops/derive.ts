@@ -127,6 +127,29 @@ export const STALL_GRACE_MS = 15_000;
  * unit as `queued` in one step, and the units queue holds eight per worker, so a
  * healthy run waiting for a slot looks identical.
  */
+/** Cancel is offered only while the run can still change. */
+export function canCancel(run: { status: RunStatus }): boolean {
+  return !isRunTerminal(run.status);
+}
+
+/**
+ * Rerun is offered on a finished run that still has work left undone.
+ *
+ * Not on a live one: it would race the run's own remaining units for the same
+ * indicators. Not on a wholly successful one: there is nothing to redo.
+ */
+export function canRerun(run: {
+  status: RunStatus;
+  units_total: number;
+  units_succeeded: number;
+}): boolean {
+  return (
+    isRunTerminal(run.status) &&
+    run.units_total > 0 &&
+    run.units_succeeded < run.units_total
+  );
+}
+
 export function isStalled(run: RunRow, now: number): boolean {
   if (run.status !== "running" || run.completed_at) return false;
   if (run.units_total === 0 || run.units_terminal !== run.units_total)

@@ -8,9 +8,11 @@
  */
 import { isAbortError } from "../http";
 import {
+  cancelRun,
   getRunDetail,
   listAois,
   listRuns,
+  rerunRun,
   submitRun,
   RUN_STATUSES,
   type AOIRow,
@@ -340,6 +342,65 @@ export async function launchRun(
   } finally {
     release();
   }
+}
+
+/**
+ * Cancel a run. Returns the error message, or null on success.
+ *
+ * Errors are returned rather than thrown so the caller can render the API's own
+ * `detail` — "already succeeded" is a useful sentence, and a bare status code
+ * is not.
+ */
+export async function cancel(runId: string, refreshNow: () => void) {
+  return await _action(`${runId}:cancel`, () => cancelRun(runId), refreshNow);
+}
+
+/** Rerun a finished run's non-succeeded indicators as a new run. */
+export async function rerun(
+  runId: string,
+  refreshNow: () => void,
+): Promise<{ error: string | null; newRunId?: string }> {
+  const release = beginAction(`${runId}:rerun`);
+  try {
+    const res = await rerunRun(runId);
+    refreshNow();
+    return { error: null, newRunId: res.run_id ?? undefined };
+  } catch (err) {
+    return { error: await describeApiError(err) };
+  } finally {
+    release();
+  }
+}
+
+async function _action(
+  key: string,
+  call: () => Promise<unknown>,
+  refreshNow: () => void,
+): Promise<string | null> {
+  const release = beginAction(key);
+  try {
+    await call();
+    refreshNow();
+    return null;
+  } catch (err) {
+    return await describeApiError(err);
+  } finally {
+    release();
+  }
+}
+
+/** Prefer FastAPI's `detail` over the status line `ApiError` carries. */
+async function describeApiError(err: unknown): Promise<string> {
+  const response = (err as { response?: Response })?.response;
+  if (response) {
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") return body.detail;
+    } catch {
+      // Fall through to the message below.
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Mark an action in flight; returns a release for a `finally`. */

@@ -31,7 +31,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from reimagina.storage._utils import is_run_id
+
 from ..deps import api_dsn, get_backend, get_db_conn
+
+# Run statuses from which nothing further happens; mirrors port.RUN_TERMINAL_STATES
+# without importing the ops-plane into a module that names no engine.
+_RUN_TERMINAL = frozenset({"succeeded", "partial", "failed", "cancelled"})
 
 _STREAM_MAX_SECONDS = 300.0
 _HEARTBEAT_SECONDS = 15.0
@@ -443,6 +449,118 @@ def _preview_reason(body: SubmitRunBody, slugs: list[str]) -> str:
     if body.changed_attributes or body.edited_features:
         return "nothing reads what you changed"
     return "nothing is out of date (freshness counts stale and partial, never absent)"
+
+
+class RerunResponse(SubmitRunResponse):
+    """The *new* run, plus what it was scoped from."""
+
+    rerun_of: str
+    indicators: list[str] = []
+
+
+@router.post("/{run_id}/cancel", response_model=RunView)
+def cancel_run(run_id: str) -> RunView:
+    """Stop a live run. 404 unknown, 409 already finished.
+
+    ``cancel_run`` returns False for both "unknown" and "already terminal", and
+    a 409 for a run that does not exist is the wrong answer — so the existence
+    check happens here first.
+
+    ⚠ Its own committed connection, not ``Depends(get_db_conn)``. The port
+    implementation calls ``conn.commit()`` itself, so on a pooled connection it
+    would commit on a connection this route does not own — worse than the
+    rollback it would otherwise get.
+    """
+    from reimagina.db import connect
+    from reimagina.orchestration.factory import get_orchestrator
+
+    if not is_run_id(run_id):
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+
+    orchestrator = get_orchestrator()
+    with contextlib.closing(connect(api_dsn())) as conn, conn:
+        current = orchestrator.get_run(conn, run_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+        if not orchestrator.cancel_run(conn, run_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id} is already {current.status}",
+            )
+        after = orchestrator.get_run(conn, run_id) or current
+
+    return RunView(
+        run_id=after.run_id,
+        status=after.status,
+        units=[
+            UnitView(indicator=u.indicator, status=u.status, detail=u.detail)
+            for u in after.units
+        ],
+    )
+
+
+@router.post("/{run_id}/rerun", status_code=202, response_model=RerunResponse)
+def rerun_run(run_id: str, response: Response) -> RerunResponse:
+    """Recompute this run's non-succeeded indicators, as a **new** run.
+
+    Not a resume. A unit cannot be recomputed under its own run id: the child
+    workflow id is ``{run_id}-{slug}``, a re-enqueue past recorded history dedups
+    on that id rather than minting a second child, and a step that recorded an
+    error re-raises it on replay instead of executing. A new run id is the only
+    thing that actually recomputes.
+
+    Every non-succeeded unit is included — failed, skipped and cancelled alike.
+    ``skipped`` is not optional: a unit is skipped exactly when a dirty input was
+    unsatisfied, so rerunning the failure without its skipped dependents would
+    leave those stale for good.
+    """
+    from reimagina.db import connect
+    from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.provenance import code_version
+
+    if not is_run_id(run_id):
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+
+    with contextlib.closing(connect(api_dsn())) as conn, conn:
+        reader = get_backend(conn).ops_run_reader()
+        row = reader.get_run_row(run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+        if row["status"] not in _RUN_TERMINAL:
+            # Rerunning a live run would race its own remaining units for the
+            # same indicators.
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id} is still {row['status']} — cancel it first",
+            )
+        slugs = [
+            unit["indicator"]
+            for unit in reader.list_units_detailed(run_id)
+            if unit["status"] != "succeeded"
+        ]
+        if not slugs:
+            raise HTTPException(
+                status_code=409, detail="every indicator in that run succeeded"
+            )
+
+        handle = get_orchestrator().submit_run(
+            conn,
+            changed_attributes=[],
+            edited_features=[],
+            scenario_id=row["scenario_id"],
+            aoi_id=row["aoi_id"],
+            code_version=code_version(),
+            indicators=slugs,
+        )
+
+    status = handle.status.status if handle.status else "queued"
+    response.status_code = 202
+    return RerunResponse(
+        run_id=handle.run_id,
+        status=status,
+        rerun_of=run_id,
+        indicators=slugs,
+    )
 
 
 @router.get("", response_model=RunListResponse)

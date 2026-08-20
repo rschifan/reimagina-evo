@@ -147,7 +147,12 @@
 
 <main aria-live="off">
   {#if openRunId && ops.openRun}
-    <RunDetail detail={ops.openRun} {now} onBack={() => (location.hash = "#/")} />
+    <RunDetail
+      detail={ops.openRun}
+      {now}
+      onBack={() => (location.hash = "#/")}
+      refreshNow={() => refresh?.()}
+    />
   {:else}
     <RunList
       runs={ops.runs}

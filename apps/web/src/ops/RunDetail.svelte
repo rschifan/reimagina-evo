@@ -3,7 +3,10 @@
   import Card from "../lib/components/ui/Card.svelte";
   import type { RunDetailResponse } from "./api";
   import RunTimeline from "./RunTimeline.svelte";
+  import { cancel, ops, rerun } from "./store.svelte";
   import {
+    canCancel,
+    canRerun,
     durationMs,
     formatDuration,
     isStalled,
@@ -16,11 +19,46 @@
     detail,
     now,
     onBack,
+    refreshNow,
   }: {
     detail: RunDetailResponse;
     now: number;
     onBack: () => void;
+    refreshNow: () => void;
   } = $props();
+
+  // Cancel is effectively irreversible — nothing resumes a cancelled unit, it
+  // can only be rerun as a new run — and this codebase has no modal library.
+  // A two-press button is the cheapest honest confirmation.
+  let armed = $state(false);
+  let armedTimer: ReturnType<typeof setTimeout> | null = null;
+  let actionError = $state<string | null>(null);
+
+  function arm() {
+    armed = true;
+    if (armedTimer) clearTimeout(armedTimer);
+    armedTimer = setTimeout(() => (armed = false), 4_000);
+  }
+
+  $effect(() => () => {
+    if (armedTimer) clearTimeout(armedTimer);
+  });
+
+  async function doCancel() {
+    if (!armed) return arm();
+    armed = false;
+    actionError = await cancel(run.run_id, refreshNow);
+  }
+
+  async function doRerun() {
+    actionError = null;
+    const { error, newRunId } = await rerun(run.run_id, refreshNow);
+    if (error) {
+      actionError = error;
+      return;
+    }
+    if (newRunId) location.hash = `#/r/${newRunId}`;
+  }
 
   const run = $derived(detail.run);
   const p = $derived(progressOf(run));
@@ -52,6 +90,44 @@
   >
     {run.run_id}
   </h1>
+
+  <div class="mt-3 flex flex-wrap items-center gap-2">
+    {#if canCancel(run)}
+      <button
+        type="button"
+        onclick={doCancel}
+        disabled={ops.isBusy(`${run.run_id}:cancel`)}
+        aria-busy={ops.isBusy(`${run.run_id}:cancel`)}
+        class={`rounded border px-3 py-1 text-xs disabled:opacity-40 ${
+          armed
+            ? "border-state-error/60 bg-state-error/15 text-state-error"
+            : "border-line text-muted-foreground hover:text-foreground"
+        }`}
+      >
+        {armed ? "Confirm cancel?" : "Cancel run"}
+      </button>
+    {/if}
+
+    {#if canRerun(run)}
+      <button
+        type="button"
+        onclick={doRerun}
+        disabled={ops.isBusy(`${run.run_id}:rerun`)}
+        aria-busy={ops.isBusy(`${run.run_id}:rerun`)}
+        title="Recomputes whole indicators — the original per-feature scope is not retained"
+        class="rounded border border-accent/40 bg-accent/10 px-3 py-1 text-xs text-accent
+               hover:bg-accent/20 disabled:opacity-40"
+      >
+        Rerun {run.units_total - run.units_succeeded} unfinished
+      </button>
+    {/if}
+
+    {#if actionError}
+      <span class="font-mono text-[11px] text-state-error" role="status">
+        {actionError}
+      </span>
+    {/if}
+  </div>
 
   <div class="mt-3 grid gap-3 sm:grid-cols-2">
     <Card title="Run">
