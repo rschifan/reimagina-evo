@@ -302,7 +302,6 @@ export function renderLegend(
  *  new grain shows up readable-ish rather than not at all. */
 const GRAIN_LABELS: Record<string, string> = {
   block: "Blocks",
-  ageb: "AGEBs",
   municipality: "Municipalities",
   lot: "Lots",
 };

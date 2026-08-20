@@ -451,6 +451,20 @@ async function main(): Promise<void> {
         state.activeGrain = defaultGrain(indicator);
         await renderIndicator(indicator);
       });
+
+      // Open on the first indicator rather than on "(none)". An empty overlay
+      // is the same picture as an AOI with no data at all, so the map greeted
+      // every visitor with the one view that cannot be told apart from a
+      // broken one.
+      //
+      // Dispatching the event rather than calling `renderIndicator` directly:
+      // the handler above already resets the grain, renders, wires the legend,
+      // enables the downloads and sets the status line. Reaching past it would
+      // mean keeping a second copy of that sequence in step with this one.
+      if (!select.value && indicators.length > 0) {
+        select.value = indicators[0].slug;
+        select.dispatchEvent(new Event("change"));
+      }
     }
 
     if (downloads) {
