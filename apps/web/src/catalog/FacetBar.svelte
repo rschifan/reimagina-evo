@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Search, X } from "@lucide/svelte";
 
-  import Chip from "./lib/components/ui/Chip.svelte";
+  import Chip from "../lib/components/ui/Chip.svelte";
   import { catalog } from "./store.svelte";
   import { EMPTY_FILTERS, type Filters } from "./derive";
 

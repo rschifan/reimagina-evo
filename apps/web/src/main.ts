@@ -15,6 +15,10 @@
  */
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { mount } from "svelte";
+
+import TopBar from "./lib/TopBar.svelte";
+import "./topbar.css";
 import type { AOIRow, IndicatorSummary, TileSource } from "./api";
 import type { StyleSpecification } from "maplibre-gl";
 
@@ -166,6 +170,11 @@ function renderAoiInfo(aoi: AOIRow | null): void {
 
 
 async function main(): Promise<void> {
+  // The nav bar is independent of every API call below, so mount it first:
+  // it must be there even if the API is down and this function throws.
+  const topbar = document.getElementById("topbar");
+  if (topbar) mount(TopBar, { target: topbar, props: { current: "map" } });
+
   setStatus("Connecting to reimagina API…");
 
   // Show the spinner immediately so the user has feedback while the

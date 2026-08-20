@@ -228,3 +228,360 @@ def test_events_404s_for_an_unknown_run(monkeypatch):
     assert resp.status_code == 404
     # Closed on the 404 path too, where there is no stream to end and release it.
     assert [c.closed for c in opened] == [True]
+
+
+# ── Ops dashboard read routes ────────────────────────────────────────────────
+#
+# The reader is faked at ``get_backend`` rather than at the SQL, for the same
+# reason the orchestrator is faked at the factory: these assert the route's
+# contract — binding, normalisation, status codes — and the SQL itself has its
+# own tests against a real database in tests/integration/test_ops_run_reader.py.
+
+
+class _FakeOpsReader:
+    """Records what the route asked for, so the binding can be asserted."""
+
+    def __init__(self, runs=None):
+        self.runs = runs or []
+        self.calls: list[dict] = []
+
+    def list_runs(self, *, statuses=None, limit=50, offset=0):
+        self.calls.append({"statuses": statuses, "limit": limit, "offset": offset})
+        return self.runs
+
+    def count_runs(self, *, statuses=None):
+        return len(self.runs)
+
+    def count_runs_by_status(self):
+        return {"succeeded": 1}
+
+    def get_run_row(self, run_id):
+        return self.runs[0] if self.runs else None
+
+    def list_units_detailed(self, run_id):
+        return [
+            {
+                "indicator": "urban_form_block_compactness",
+                "status": "succeeded",
+                "detail": None,
+                "queued_at": "2026-08-20T10:00:00+00:00",
+                "started_at": "2026-08-20T10:00:01+00:00",
+                "completed_at": "2026-08-20T10:00:09+00:00",
+            }
+        ]
+
+    def list_executor_health(self):
+        return [
+            {
+                "executor_id": "worker-1",
+                "role": "worker",
+                "app_version": None,
+                "heartbeat_age_s": 4.2,
+            }
+        ]
+
+
+def _run_row(**overrides):
+    row = {
+        "run_id": "06baed8c-a6c9-47c1-ab0c-cc38a77f260c",
+        "status": "succeeded",
+        "scenario_id": None,
+        "aoi_id": None,
+        "code_version": "test",
+        "submitted_at": "2026-08-20T10:00:00+00:00",
+        "completed_at": "2026-08-20T10:00:10+00:00",
+        "units_total": 3,
+        "units_terminal": 3,
+        "units_succeeded": 3,
+        "units_failed": 0,
+        "units_running": 0,
+        "units_last_terminal_at": "2026-08-20T10:00:09+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+def _app_with_reader(reader, monkeypatch):
+    monkeypatch.setattr(
+        "apps.api.routers.jobs.get_backend",
+        lambda conn: type("_B", (), {"ops_run_reader": lambda self: reader})(),
+    )
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = lambda: iter([object()])
+    return app
+
+
+def test_list_jobs_returns_the_whole_index_in_one_response(monkeypatch):
+    reader = _FakeOpsReader([_run_row()])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # One request per tick has to carry everything the index renders.
+    assert body["runs"][0]["units_total"] == 3
+    assert body["total"] == 1
+    assert body["status_counts"] == {"succeeded": 1}
+    assert body["executors"][0]["heartbeat_age_s"] == 4.2
+    # The clock the page corrects against; without it every duration is the
+    # browser's guess.
+    assert body["server_now"]
+
+
+def test_repeated_status_params_reach_the_reader(monkeypatch):
+    """The regression ``Query(None)`` prevents: a silently ignored filter.
+
+    With a bare ``list[RunStatus] | None`` annotation FastAPI reads this as a
+    body parameter, binds None, and returns 200 with every run — a filter that
+    looks like it worked.
+    """
+    reader = _FakeOpsReader([])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs?status=failed&status=running")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert reader.calls[0]["statuses"] == ["failed", "running"]
+
+
+def test_absent_status_binds_none_not_empty_list(monkeypatch):
+    """``[]`` matches no row in SQL, so "no filter" must not arrive as one."""
+    reader = _FakeOpsReader([])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        client.get("/jobs")
+    app.dependency_overrides.clear()
+
+    assert reader.calls[0]["statuses"] is None
+
+
+def test_unknown_status_is_a_422(monkeypatch):
+    reader = _FakeOpsReader([])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs?status=definitely-not-a-status")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 422
+
+
+def test_limit_is_bounded(monkeypatch):
+    """An unbounded limit on a two-second poll is a self-inflicted load test."""
+    reader = _FakeOpsReader([])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        assert client.get("/jobs?limit=100000").status_code == 422
+        assert client.get("/jobs?limit=0").status_code == 422
+        assert client.get("/jobs?offset=-1").status_code == 422
+    app.dependency_overrides.clear()
+
+
+def test_run_detail_carries_unit_timings(monkeypatch):
+    reader = _FakeOpsReader([_run_row()])
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    unit = resp.json()["units"][0]
+    assert unit["started_at"] and unit["completed_at"]
+
+
+def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatch):
+    """The window between ``submit_run`` returning and the workflow's first step.
+
+    ``orchestration_run`` is written by ``s_open_run``, so for a second or two a
+    purely SQL answer is 404 — precisely when the user has just been navigated
+    to the run they launched.
+    """
+
+    class _FakeOrchestrator:
+        def get_run(self, conn, run_id):
+            return RunStatus(
+                run_id=run_id,
+                status="queued",
+                units=(UnitStatusView("urban_form_block_compactness", "queued"),),
+            )
+
+    _install(monkeypatch, _FakeOrchestrator())
+    reader = _FakeOpsReader([])  # no envelope row yet
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["run"]["status"] == "queued"
+    assert resp.json()["units"][0]["indicator"] == "urban_form_block_compactness"
+
+
+def test_run_detail_404s_when_neither_plane_knows_the_run(monkeypatch):
+    class _FakeOrchestrator:
+        def get_run(self, conn, run_id):
+            return None
+
+    _install(monkeypatch, _FakeOrchestrator())
+    app = _app_with_reader(_FakeOpsReader([]), monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 404
+
+
+# ── Impact preview ───────────────────────────────────────────────────────────
+
+
+def _preview_app(monkeypatch, plan_units, raises=None):
+    """Fake `plan_run` at the route's import site; no DB, no engine."""
+    from reimagina.orchestration.plan import RunPlan
+
+    def _plan_run(conn, **kwargs):
+        if raises is not None:
+            raise raises
+        return RunPlan(
+            units=[
+                type("U", (), {"indicator": slug, "features": frozenset()})()
+                for slug in plan_units
+            ],
+            params={"scenario_id": None, "aoi_id": None, "code_version": "test"},
+        )
+
+    monkeypatch.setattr("reimagina.orchestration.plan.plan_run", _plan_run)
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = lambda: iter([object()])
+    return app
+
+
+def test_preview_reports_what_a_submit_would_recompute(monkeypatch):
+    """The dry run: derive the dirty set, persist nothing, enqueue nothing."""
+    app = _preview_app(monkeypatch, ["edificability_block_density"])
+
+    with TestClient(app) as client:
+        resp = client.post("/jobs/preview", json={"changed_attributes": ["num_levels"]})
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["indicators"] == ["edificability_block_density"]
+    assert body["count"] == 1
+    assert body["noop"] is False
+    assert "change-set" in body["reason"]
+
+
+def test_preview_distinguishes_a_noop_from_a_failure(monkeypatch):
+    """An empty dirty set is a correct answer and must read as one.
+
+    This is the case an operator most needs named: the submit that follows
+    would return `noop` with a null run id, and without a reason that looks
+    like the engine is broken.
+    """
+    app = _preview_app(monkeypatch, [])
+
+    with TestClient(app) as client:
+        resp = client.post("/jobs/preview", json={})
+    app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["count"] == 0
+    assert body["noop"] is True
+    assert "nothing is out of date" in body["reason"]
+
+
+def test_preview_422s_an_unknown_indicator(monkeypatch):
+    from reimagina.orchestration.plan import UnknownIndicators
+
+    app = _preview_app(monkeypatch, [], raises=UnknownIndicators(["nope"]))
+
+    with TestClient(app) as client:
+        resp = client.post("/jobs/preview", json={"indicators": ["nope"]})
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 422
+    assert "nope" in resp.json()["detail"]
+
+
+def test_submit_forwards_named_indicators_to_the_port(monkeypatch):
+    """`indicators` must reach `submit_run`, not be silently dropped."""
+    _fake_connections(monkeypatch)
+    seen: dict = {}
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            seen.update(kwargs)
+            return RunHandle(run_id="run-9", status=None)
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    with TestClient(create_app(initialise_pool=False)) as client:
+        resp = client.post("/jobs", json={"indicators": ["livability_block_score"]})
+
+    assert resp.status_code == 202
+    assert seen["indicators"] == ["livability_block_score"]
+
+
+def test_preview_resolves_a_changed_dataset(monkeypatch):
+    """"I added a street" must be answerable without naming an attribute."""
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = lambda: iter([object()])
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/jobs/preview", json={"changed_datasets": ["global.road_network"]}
+        )
+    app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["noop"] is False
+    assert "accessibility_block_school_network_m" in body["indicators"]
+    # downstream of the accessibility indicators
+    assert "livability_block_score" in body["indicators"]
+    assert "downstream" in body["reason"]
+
+
+def test_preview_says_so_when_nothing_reads_the_dataset(monkeypatch):
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = lambda: iter([object()])
+
+    with TestClient(app) as client:
+        resp = client.post("/jobs/preview", json={"changed_datasets": ["mex.lot"]})
+    app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["count"] == 0
+    assert body["noop"] is True
+    assert "no indicator declares an edge" in body["reason"]
+
+
+def test_submitting_a_changed_dataset_scopes_the_run_the_same_way(monkeypatch):
+    """The preview and the run must not be able to disagree."""
+    _fake_connections(monkeypatch)
+    seen: dict = {}
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            seen.update(kwargs)
+            return RunHandle(run_id="run-ds", status=None)
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    with TestClient(create_app(initialise_pool=False)) as client:
+        resp = client.post("/jobs", json={"changed_datasets": ["global.building"]})
+
+    assert resp.status_code == 202
+    assert "urban_form_block_building_density" in seen["indicators"]
+    assert "urban_form_block_composite" in seen["indicators"]

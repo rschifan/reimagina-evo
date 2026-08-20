@@ -70,6 +70,7 @@ def _protocol_methods(protocol_cls: type) -> set[str]:
         ("JobRunRepository", "job_run_repo"),
         ("IndicatorCatalogRepository", "indicator_catalog_repo"),
         ("IndicatorResultRepository", "indicator_result_repo"),
+        ("OpsRunReader", "ops_run_reader"),
     ],
 )
 @pytest.mark.parametrize(

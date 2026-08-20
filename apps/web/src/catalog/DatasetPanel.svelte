@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Database, HardDrive, Layers } from "@lucide/svelte";
 
-  import Badge from "./lib/components/ui/Badge.svelte";
+  import Badge from "../lib/components/ui/Badge.svelte";
   import type { LineageNode } from "./api";
 
   let { upstream }: { upstream: LineageNode[] } = $props();

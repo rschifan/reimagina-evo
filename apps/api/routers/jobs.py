@@ -23,18 +23,91 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from enum import Enum
 
 import psycopg2
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..deps import api_dsn, get_db_conn
+from ..deps import api_dsn, get_backend, get_db_conn
 
 _STREAM_MAX_SECONDS = 300.0
 _HEARTBEAT_SECONDS = 15.0
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+class RunStatus(str, Enum):
+    """The ``orchestration_run.status`` CHECK vocabulary (r028), as a filter type.
+
+    A ``str`` mixin, not a bare ``Enum``: FastAPI binds repeated query params to
+    Enum *members*, and psycopg2 can only adapt those if they are also strings —
+    a plain Enum reaches the driver as ``can't adapt type``, which the API's
+    error handler turns into a 500 with an aborted transaction, on the happy path.
+    """
+
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    partial = "partial"
+    failed = "failed"
+    cancelling = "cancelling"
+    cancelled = "cancelled"
+
+
+class RunRow(BaseModel):
+    run_id: str
+    status: str
+    scenario_id: str | None = None
+    aoi_id: str | None = None
+    code_version: str
+    submitted_at: datetime
+    completed_at: datetime | None = None
+    units_total: int = 0
+    units_terminal: int = 0
+    units_succeeded: int = 0
+    units_failed: int = 0
+    units_running: int = 0
+    # Stall detection reads this: a run whose units all finished but which never
+    # closed is one whose workflow died past its last step. See the Ops plan, H5.
+    units_last_terminal_at: datetime | None = None
+
+
+class ExecutorRow(BaseModel):
+    executor_id: str
+    role: str
+    app_version: str | None = None
+    # Seconds, not the view's ``interval`` — a timedelta here is a 500.
+    heartbeat_age_s: float
+
+
+class RunListResponse(BaseModel):
+    runs: list[RunRow] = []
+    # The dashboard computes every elapsed time against this rather than the
+    # browser clock, so a skewed client neither hides nor invents a stalled run.
+    server_now: datetime
+    total: int = 0
+    # Unfiltered on purpose: a count that shrank to match the active filter would
+    # make the chips useless for finding what you just filtered away.
+    status_counts: dict[str, int] = {}
+    executors: list[ExecutorRow] = []
+
+
+class UnitDetail(BaseModel):
+    indicator: str
+    status: str
+    detail: str | None = None
+    queued_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class RunDetailResponse(BaseModel):
+    run: RunRow
+    units: list[UnitDetail] = []
+    server_now: datetime
 
 
 class SubmitRunBody(BaseModel):
@@ -44,6 +117,13 @@ class SubmitRunBody(BaseModel):
     edited_features: list[str] | None = None
     scenario_id: str | None = None
     aoi_id: str | None = None
+    # Recompute exactly these indicators, skipping change-set derivation.
+    # Used by the Ops launch form and by retry-the-failed-units.
+    indicators: list[str] | None = None
+    # Whole datasets that changed — "a street was added to the road network".
+    # Resolved to the indicators declaring an edge to them, plus everything
+    # downstream. Not expressible as a change-set: those name attributes.
+    changed_datasets: list[str] | None = None
     # Opt-in: wait for the run to finish and return
     # the finished status with 200 instead of a 202 + poll. Convenience for
     # simple/test clients; production should stay fire-and-forget (default) with
@@ -84,6 +164,14 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
 
     orchestrator = get_orchestrator()
 
+    indicators = body.indicators
+    if body.changed_datasets:
+        from reimagina.indicators.catalog import SHIPPED_INDICATORS
+        from reimagina.orchestration.impact import indicators_for_datasets
+
+        resolved = indicators_for_datasets(body.changed_datasets, SHIPPED_INDICATORS)
+        indicators = sorted(set(indicators or ()) | set(resolved)) if indicators else list(resolved)
+
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
     #
@@ -102,6 +190,7 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
             scenario_id=body.scenario_id,
             aoi_id=body.aoi_id,
             code_version=code_version(),
+            indicators=indicators,
         )
         # "noop" when the run had nothing to recompute; else the queued run_id.
         status = handle.status.status if handle.status else "queued"
@@ -138,6 +227,311 @@ def _await_terminal(orchestrator, conn, run_id: str) -> str:
             f"run {run_id} did not finish within {_STREAM_MAX_SECONDS:.0f}s; "
             "it is still running — poll GET /jobs/{run_id}"
         ),
+    )
+
+
+def _server_now() -> datetime:
+    """One clock for every elapsed time the dashboard renders.
+
+    The page polls every two seconds and shows live durations and a stalled
+    badge; computing those against ``Date.now()`` would let a skewed client
+    clock invent or suppress both. The server states its own time and the page
+    corrects by the offset.
+    """
+    return datetime.now(timezone.utc)
+
+
+class ChangeInput(BaseModel):
+    """One thing a change-set can name, with the dataset it belongs to."""
+
+    # `mex.block · geometry` rather than a bare `geometry`: the attribute name
+    # alone does not say what it is an attribute *of*, and every one of them
+    # currently belongs to a different dataset in principle.
+    dataset: str
+    attribute: str
+    indicators: list[str] = []
+    # True for the hand-bumped stand-in markers that exist only so the demo can
+    # invalidate work. Flagged rather than hidden — they are the only way to
+    # express "the POI dataset changed" today, and a caller should know that is
+    # what they are reaching for.
+    is_version_marker: bool = False
+
+
+class DatasetDependency(BaseModel):
+    """A whole-dataset input — no attribute, so no way to name it in a change-set."""
+
+    dataset: str
+    relation: str
+    indicators: list[str] = []
+    stand_in_attribute: str | None = None
+
+
+class ChangeVocabulary(BaseModel):
+    attributes: list[ChangeInput] = []
+    datasets: list[DatasetDependency] = []
+    # Registered datasets that no indicator consumes. Changing one recomputes
+    # nothing — which is worth showing rather than leaving someone to conclude
+    # the planner is broken when a real edit produces an empty dirty set.
+    unconsumed: list[str] = []
+
+
+# The demo-only markers, named where they are interpreted rather than guessed
+# at in the UI. `catalog.py` states it: nothing in the ingest path produces
+# these; `scripts/seed_demo_attributes.py` writes them and they are bumped by
+# hand, standing in for a real version on the dataset edge beside them.
+_VERSION_MARKERS = {
+    "poi_version": "global.poi",
+    "network_version": "global.road_network",
+}
+
+
+@router.get("/attributes", response_model=ChangeVocabulary)
+def list_change_inputs() -> ChangeVocabulary:
+    """What a change-set can name, derived from the registry's own edges.
+
+    Read off each indicator's ``inputs`` — the typed asset edges — rather than
+    the flattened ``reads`` list, because ``reads`` drops the dataset an
+    attribute belongs to, which is precisely the thing a caller needs to know.
+
+    Also reports the whole-dataset edges (a POI layer reloaded, a road network
+    re-ingested). Those cannot be expressed as a change-set today: the API
+    accepts attribute names only, so the honest answer is to surface them with
+    the stand-in marker that currently substitutes for them.
+    """
+    from reimagina.assets.registry import SHIPPED_ASSETS
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    attrs: dict[tuple[str, str], list[str]] = {}
+    datasets: dict[tuple[str, str], list[str]] = {}
+    for spec in SHIPPED_INDICATORS:
+        for edge in spec.inputs:
+            key = getattr(edge, "key", None) or getattr(edge, "asset_key", "")
+            names = getattr(edge, "attributes", None) or ()
+            if names:
+                for name in names:
+                    attrs.setdefault((key, name), []).append(spec.slug)
+            elif not key.startswith("indicator."):
+                # Composites depend on other indicators, which the run planner
+                # already orders; they are not something a person "changes".
+                rel = getattr(edge, "relation", "") or ""
+                datasets.setdefault((key, rel), []).append(spec.slug)
+
+    consumed = {dataset for dataset, _ in attrs} | {dataset for dataset, _ in datasets}
+    unconsumed = sorted(
+        spec.asset_key
+        for spec in SHIPPED_ASSETS
+        if spec.asset_key not in consumed and not spec.asset_key.startswith("indicator.")
+    )
+
+    return ChangeVocabulary(
+        unconsumed=unconsumed,
+        attributes=[
+            ChangeInput(
+                dataset=dataset,
+                attribute=name,
+                indicators=sorted(set(slugs)),
+                is_version_marker=name in _VERSION_MARKERS,
+            )
+            for (dataset, name), slugs in sorted(attrs.items())
+        ],
+        datasets=[
+            DatasetDependency(
+                dataset=dataset,
+                relation=rel,
+                indicators=sorted(set(slugs)),
+                stand_in_attribute=next(
+                    (a for a, d in _VERSION_MARKERS.items() if d == dataset), None
+                ),
+            )
+            for (dataset, rel), slugs in sorted(datasets.items())
+        ],
+    )
+
+
+class ImpactPreview(BaseModel):
+    """What a submit *would* do, without doing it."""
+
+    indicators: list[str] = []
+    count: int = 0
+    # True when the change-set invalidated nothing. A correct answer, not a
+    # failure — and the one a caller most needs distinguished, because the
+    # submit that follows would return `noop` and no run id.
+    noop: bool = True
+    reason: str = ""
+
+
+@router.post("/preview", response_model=ImpactPreview)
+def preview_impact(
+    body: SubmitRunBody,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> ImpactPreview:
+    """Dry-run the planner: which indicators would this change-set recompute?
+
+    Pure derivation — reads the catalog and, for a scenario or a freshness
+    submit, the graph. Persists nothing, enqueues nothing, and takes the pooled
+    read connection rather than a committed one precisely because it must not
+    be able to write.
+
+    Exists so the recomputation engine can be inspected rather than trusted:
+    the Ops launch form shows the answer before you submit, and the catalog page
+    uses it to answer "if I changed this, what goes stale?".
+
+    ⚠ Registered before ``/{run_id}``-shaped routes is unnecessary — Starlette
+    matches ``/preview`` as its own literal path — but it is a POST while the
+    id routes are GETs, so there is no ambiguity either way.
+    """
+    from reimagina.orchestration.plan import UnknownIndicators, plan_run
+    from reimagina.provenance import code_version
+
+    # A dataset-level change is resolved from the registry's edges, then handed
+    # to the planner as an explicit indicator list — which is also exactly how
+    # it would be submitted, so the preview and the run cannot disagree.
+    indicators = body.indicators
+    if body.changed_datasets:
+        from reimagina.indicators.catalog import SHIPPED_INDICATORS
+        from reimagina.orchestration.impact import indicators_for_datasets
+
+        resolved = indicators_for_datasets(body.changed_datasets, SHIPPED_INDICATORS)
+        indicators = sorted(set(indicators or ()) | set(resolved)) if indicators else list(resolved)
+        if not indicators:
+            return ImpactPreview(
+                indicators=[],
+                count=0,
+                noop=True,
+                reason="no indicator declares an edge to that dataset",
+            )
+
+    try:
+        plan = plan_run(
+            conn,
+            changed_attributes=body.changed_attributes or [],
+            edited_features=body.edited_features or [],
+            scenario_id=body.scenario_id,
+            aoi_id=body.aoi_id,
+            code_version=code_version(),
+            indicators=indicators,
+        )
+    except UnknownIndicators as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    slugs = [unit.indicator for unit in plan.units]
+    return ImpactPreview(
+        indicators=slugs,
+        count=len(slugs),
+        noop=plan.is_noop,
+        reason=_preview_reason(body, slugs),
+    )
+
+
+def _preview_reason(body: SubmitRunBody, slugs: list[str]) -> str:
+    """One line naming which planning path answered, so the answer is auditable."""
+    if body.changed_datasets:
+        return "indicators reading that dataset, plus everything downstream"
+    if body.indicators is not None:
+        return "named explicitly, in dependency order"
+    if slugs and (body.changed_attributes or body.edited_features):
+        return "derived from the change-set you named"
+    if slugs and body.scenario_id:
+        return "derived from that scenario's overrides"
+    if slugs:
+        return "derived from freshness — these are out of date"
+    if body.changed_attributes or body.edited_features:
+        return "nothing reads what you changed"
+    return "nothing is out of date (freshness counts stale and partial, never absent)"
+
+
+@router.get("", response_model=RunListResponse)
+def list_runs(
+    status: list[RunStatus] | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> RunListResponse:
+    """The Ops dashboard's index, in one response.
+
+    List, totals, chip counts and executor health together because the page
+    polls this every two seconds: splitting executor health into its own route
+    would double that against a sixteen-connection pool shared with tiles and
+    indicators.
+
+    ⚠ ``status`` needs the explicit ``Query(None)``. With a bare
+    ``list[RunStatus] | None`` FastAPI reads a non-scalar annotation as a *body*
+    parameter, so ``?status=failed&status=running`` binds to None, returns 200,
+    and silently ignores the filter.
+    """
+    reader = get_backend(conn).ops_run_reader()
+    # ``[]`` binds as an empty array, which matches no row — "no filter" has to
+    # reach the reader as None, not as the empty list a query string produces.
+    statuses = [s.value for s in status] if status else None
+    return RunListResponse(
+        runs=[RunRow(**row) for row in reader.list_runs(
+            statuses=statuses, limit=limit, offset=offset
+        )],
+        server_now=_server_now(),
+        total=reader.count_runs(statuses=statuses),
+        status_counts=reader.count_runs_by_status(),
+        executors=[
+            ExecutorRow(
+                executor_id=row["executor_id"],
+                role=row["role"],
+                app_version=row["app_version"],
+                heartbeat_age_s=row["heartbeat_age_s"],
+            )
+            for row in reader.list_executor_health()
+        ],
+    )
+
+
+@router.get("/{run_id}/detail", response_model=RunDetailResponse)
+def get_run_detail(
+    run_id: str,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> RunDetailResponse:
+    """One run with per-unit timings — the drill-down the run list links to.
+
+    A separate route rather than widening ``GET /jobs/{run_id}``: that response
+    is built from the port's ``RunStatus``/``UnitStatusView``, which carry no
+    timestamps, so widening it would be a port change obliging every ops-plane
+    implementation for two columns.
+
+    ⚠ Falls back to the port when the envelope row is missing. ``orchestration_run``
+    is written by the workflow's *first step*, not by ``submit_run``, so for a
+    second or two after launch a purely SQL answer is 404 — which is exactly when
+    the user has just been navigated here.
+    """
+    reader = get_backend(conn).ops_run_reader()
+    row = reader.get_run_row(run_id)
+    if row is None:
+        return _detail_before_envelope(conn, run_id)
+    return RunDetailResponse(
+        run=RunRow(**row),
+        units=[UnitDetail(**unit) for unit in reader.list_units_detailed(run_id)],
+        server_now=_server_now(),
+    )
+
+
+def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
+    """Synthesise a detail response for a run the engine knows and our tables do not."""
+    from reimagina.orchestration.factory import get_orchestrator
+
+    status = get_orchestrator().get_run(conn, run_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    now = _server_now()
+    return RunDetailResponse(
+        run=RunRow(
+            run_id=status.run_id,
+            status=status.status,
+            code_version="",
+            submitted_at=now,
+            units_total=len(status.units),
+        ),
+        units=[
+            UnitDetail(indicator=u.indicator, status=u.status, detail=u.detail,
+                       queued_at=now)
+            for u in status.units
+        ],
+        server_now=now,
     )
 
 

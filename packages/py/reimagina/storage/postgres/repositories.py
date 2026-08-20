@@ -10,6 +10,7 @@ import geopandas as gpd
 import psycopg2.extras
 import pyarrow.parquet as pq
 
+from .._utils import is_run_id as _is_run_id
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 from .._utils import scenario_overlay as _scenario_overlay
@@ -2824,3 +2825,192 @@ class PostgresRunPlanRepository:
                 (older_than_hours,),
             )
             return cur.rowcount
+
+
+class PostgresOpsRunReader:
+    """Read side of the run envelope, for the Ops dashboard.
+
+    Every query here is polled every two seconds by every open dashboard tab, so
+    the shapes are chosen for that cadence rather than for brevity.
+    """
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    def _read_query(self, sql: str, params: tuple | dict | None = None) -> list[dict]:
+        """Own helper, not ``PostgresExploreReader``'s — that one takes no params."""
+        with self.connection.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    # ── Runs ────────────────────────────────────────────────────────────────
+
+    _UNIT_COUNTS = """
+        LEFT JOIN LATERAL (
+            SELECT count(u.indicator_slug)                                AS units_total,
+                   count(*) FILTER (WHERE u.status = ANY(%(terminal)s))   AS units_terminal,
+                   count(*) FILTER (WHERE u.status = 'succeeded')         AS units_succeeded,
+                   count(*) FILTER (WHERE u.status = 'failed')            AS units_failed,
+                   count(*) FILTER (WHERE u.status = 'running')           AS units_running,
+                   max(u.completed_at)                                    AS units_last_terminal_at
+            FROM jobs_runtime.job_unit u
+            WHERE u.run_id = r.id
+        ) c ON TRUE
+    """
+    """Counts for one run, applied *after* the run set is limited.
+
+    ⚠ ``count(u.indicator_slug)``, not ``count(*)``: a bare ``count(*)`` in a
+    correlated subquery over zero rows still returns 1 for the aggregate row.
+
+    ⚠ The terminal list is bound, not written out — ``port.UNIT_TERMINAL_STATES``
+    is the one definition, and ``max(completed_at)`` is only meaningful because
+    ``set_unit_status`` stamps it for every member of that set, skipped and
+    cancelled included.
+    """
+
+    def list_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Newest runs first, each with its unit counts.
+
+        ⚠ The runs are limited in a CTE and the counts joined onto that. Joining
+        ``job_unit`` first and grouping after — the obvious shape — makes Postgres
+        aggregate every ``job_unit`` row ever written before ``LIMIT`` applies.
+
+        ⚠ ``statuses=[]`` must not reach the bind. ``%(s)s IS NULL OR x = ANY(%(s)s)``
+        is true for a NULL bind and false for an empty array, so an empty list
+        would silently mean "no runs" where the caller meant "no filter". The
+        route normalises, and so does this, because both are one expression and
+        the failure is invisible.
+        """
+        from reimagina.orchestration.port import UNIT_TERMINAL_STATES
+
+        return self._read_query(
+            f"""
+            WITH page AS (
+                SELECT r.id, r.scenario_id, r.aoi_id, r.status,
+                       r.code_version, r.submitted_at, r.completed_at
+                FROM jobs_runtime.orchestration_run r
+                WHERE (%(statuses)s IS NULL OR r.status = ANY(%(statuses)s))
+                ORDER BY r.submitted_at DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+            )
+            SELECT r.id::text        AS run_id,
+                   r.status,
+                   r.scenario_id::text AS scenario_id,
+                   r.aoi_id,
+                   r.code_version,
+                   r.submitted_at,
+                   r.completed_at,
+                   c.units_total, c.units_terminal, c.units_succeeded,
+                   c.units_failed, c.units_running, c.units_last_terminal_at
+            FROM page r
+            {self._UNIT_COUNTS}
+            ORDER BY r.submitted_at DESC
+            """,
+            {
+                "statuses": list(statuses) if statuses else None,
+                "terminal": sorted(UNIT_TERMINAL_STATES),
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+    def count_runs(self, *, statuses: list[str] | None = None) -> int:
+        rows = self._read_query(
+            """
+            SELECT count(*) AS total
+            FROM jobs_runtime.orchestration_run r
+            WHERE (%(statuses)s IS NULL OR r.status = ANY(%(statuses)s))
+            """,
+            {"statuses": list(statuses) if statuses else None},
+        )
+        return int(rows[0]["total"])
+
+    def count_runs_by_status(self) -> dict[str, int]:
+        """Unfiltered tallies. Statuses with no rows are absent; caller zero-fills."""
+        rows = self._read_query(
+            """
+            SELECT status, count(*) AS n
+            FROM jobs_runtime.orchestration_run
+            GROUP BY status
+            """
+        )
+        return {row["status"]: int(row["n"]) for row in rows}
+
+    def get_run_row(self, run_id: str) -> dict | None:
+        """One run with its counts, or None — including for an id no run can have."""
+        from reimagina.orchestration.port import UNIT_TERMINAL_STATES
+
+        if not _is_run_id(run_id):
+            return None
+        rows = self._read_query(
+            f"""
+            SELECT r.id::text        AS run_id,
+                   r.status,
+                   r.scenario_id::text AS scenario_id,
+                   r.aoi_id,
+                   r.code_version,
+                   r.submitted_at,
+                   r.completed_at,
+                   c.units_total, c.units_terminal, c.units_succeeded,
+                   c.units_failed, c.units_running, c.units_last_terminal_at
+            FROM jobs_runtime.orchestration_run r
+            {self._UNIT_COUNTS}
+            WHERE r.id = %(run_id)s::uuid
+            """,
+            {"run_id": str(run_id), "terminal": sorted(UNIT_TERMINAL_STATES)},
+        )
+        return rows[0] if rows else None
+
+    def list_units_detailed(self, run_id: str) -> list[dict]:
+        """Units with their timings, ordered as the run dispatched them.
+
+        ``COALESCE(started_at, queued_at)`` rather than the slug: the operator is
+        reading a timeline, and a unit that never started still has a place in it.
+        """
+        if not _is_run_id(run_id):
+            return []
+        return self._read_query(
+            """
+            SELECT indicator_slug AS indicator,
+                   status, detail, queued_at, started_at, completed_at
+            FROM jobs_runtime.job_unit
+            WHERE run_id = %(run_id)s::uuid
+            ORDER BY COALESCE(started_at, queued_at), indicator_slug
+            """,
+            {"run_id": str(run_id)},
+        )
+
+    # ── Executors ───────────────────────────────────────────────────────────
+
+    def list_executor_health(self) -> list[dict]:
+        """Live executors, heartbeat age already in seconds.
+
+        ⚠ ``clock_timestamp()``, not ``now()``: this runs inside the API's pooled
+        request transaction, where ``now()`` is the transaction's start time.
+
+        ⚠ The base table, not ``explore.ops_executor_health_v``. ``explore`` is a
+        human-facing contract rather than an application dependency (AGENTS.md),
+        and the view emits ``heartbeat_age`` as an ``interval`` — which a Pydantic
+        float field rejects outright, as a 500.
+        """
+        return self._read_query(
+            """
+            SELECT executor_id,
+                   role,
+                   app_version,
+                   started_at,
+                   heartbeat_at,
+                   EXTRACT(EPOCH FROM (clock_timestamp() - heartbeat_at))::float
+                       AS heartbeat_age_s
+            FROM jobs_runtime.ops_executor_heartbeat
+            ORDER BY heartbeat_at DESC, executor_id
+            """
+        )

@@ -125,3 +125,75 @@ export function getLineage(
     init,
   );
 }
+
+
+// ── Recomputation impact (testing aid) ──────────────────────────────────────
+//
+// Declared here rather than imported from the ops page for the same reason
+// this module does not import `../api.ts`: pages do not depend on each other's
+// clients. Both go through `../http.ts`.
+
+export interface ImpactPreview {
+  indicators: string[];
+  count: number;
+  noop: boolean;
+  reason: string;
+}
+
+export interface ChangeInput {
+  dataset: string;
+  attribute: string;
+  indicators: string[];
+  /** A hand-bumped stand-in for "this dataset changed", not a real field. */
+  is_version_marker: boolean;
+}
+
+export interface DatasetDependency {
+  dataset: string;
+  relation: string;
+  indicators: string[];
+}
+
+export interface ChangeVocabulary {
+  attributes: ChangeInput[];
+  datasets: DatasetDependency[];
+  /** Registered datasets no indicator reads — changing one recomputes nothing. */
+  unconsumed: string[];
+}
+
+export function listChangeInputs(
+  init: { signal?: AbortSignal } = {},
+): Promise<ChangeVocabulary> {
+  return jsonRequest<ChangeVocabulary>("/jobs/attributes", init);
+}
+
+/** Ask the planner what a change would invalidate. Persists nothing. */
+export function previewImpact(
+  body: {
+    changed_attributes?: string[];
+    edited_features?: string[];
+    changed_datasets?: string[];
+  },
+  init: { signal?: AbortSignal } = {},
+): Promise<ImpactPreview> {
+  return jsonRequest<ImpactPreview>("/jobs/preview", {
+    ...init,
+    method: "POST",
+    body,
+  });
+}
+
+export interface SubmitRunResponse {
+  /** Null on a noop — nothing was persisted, so there is no run to open. */
+  run_id: string | null;
+  status: string;
+}
+
+/** Submit the change-set the preview just described. */
+export function submitRun(
+  body: { changed_attributes?: string[]; changed_datasets?: string[] },
+  init: { signal?: AbortSignal } = {},
+): Promise<SubmitRunResponse> {
+  // `wait` is never sent: it holds the request open for the whole compute.
+  return jsonRequest<SubmitRunResponse>("/jobs", { ...init, method: "POST", body });
+}

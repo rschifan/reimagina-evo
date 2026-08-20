@@ -1,0 +1,41 @@
+/*
+ * Design tokens only — no Tailwind import, no base layer, no preflight.
+ *
+ * Split out of `ui.css` so the map page can use Tailwind *utilities* for the
+ * shared TopBar without inheriting Tailwind's preflight reset, which would
+ * stomp the hand-written layout in `style.css`. The Svelte pages get these via
+ * `ui.css`; the map gets them via `topbar.css`.
+ */
+/* The app's palette, shared with the map via src/theme.css. */
+@import "./theme.css";
+
+/*
+ * Semantic tokens, mapped onto the app's existing colours so the two pages
+ * read as one product. Named by role rather than by hue: a light theme
+ * becomes a token swap rather than a rewrite.
+ *
+ * The literals here are the ones style.css hard-codes outside its :root
+ * block — cyan #22d3ee for interaction, #1d4ed8 for a pressed control —
+ * plus the freshness palette, which is semantic state and deliberately
+ * distinct from the accent.
+ */
+@theme {
+  --color-background: #0b1220;
+  --color-surface: var(--sidebar-bg);
+  --color-surface-raised: var(--panel);
+  --color-foreground: var(--sidebar-fg);
+  --color-muted-foreground: var(--muted);
+  --color-line: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-strong: #1d4ed8;
+  --color-interactive: #22d3ee;
+
+  --color-state-fresh: #34d399;
+  --color-state-stale: #fbbf24;
+  --color-state-absent: #9ca3af;
+  --color-state-partial: #60a5fa;
+  --color-state-error: #f87171;
+
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}

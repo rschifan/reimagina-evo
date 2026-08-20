@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
+from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.impact import DirtyUnit, compute_dirty_set
 from reimagina.orchestration.port import RunHandle, RunStatus
 
@@ -81,6 +82,20 @@ def _units_from_freshness(
     ]
 
 
+class UnknownIndicators(ValueError):
+    """Named indicators that no registry entry matches.
+
+    Raised at submit rather than left to fail inside the unit: an unregistered
+    slug reaches ``s_compute`` as ``LookupError: no runner registered``, which
+    surfaces as one failed unit in a run that looks like it was going to work.
+    A caller that named a slug wrong deserves to be told immediately.
+    """
+
+    def __init__(self, unknown: Sequence[str]) -> None:
+        self.unknown = tuple(unknown)
+        super().__init__(f"unknown indicator(s): {', '.join(sorted(self.unknown))}")
+
+
 def plan_run(
     conn: object,
     *,
@@ -90,6 +105,7 @@ def plan_run(
     aoi_id: str | None = None,
     code_version: str = "dev",
     registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
+    indicators: Sequence[str] | None = None,
 ) -> RunPlan:
     """Resolve the change-set and derive the dirty-set, in dependency order.
 
@@ -121,6 +137,38 @@ def plan_run(
     ``floors`` across every block. The attribute half is now exact; the feature
     half is still whole-indicator, which is ``impact.FeatureExpander``'s axis.
     """
+    params: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "aoi_id": aoi_id,
+        "code_version": code_version,
+    }
+
+    # An explicit indicator list short-circuits derivation entirely.
+    #
+    # This is the "recompute exactly these" request — a retry of the units that
+    # failed, or an operator asking for a named set — and neither freshness nor
+    # a change-set can express it. Freshness in particular cannot: it counts
+    # only `stale` and `partial`, never `absent`, so asking it to recompute an
+    # indicator that has never materialised returns nothing at all.
+    if indicators is not None:
+        known = {spec.slug for spec in registry}
+        unknown = [slug for slug in indicators if slug not in known]
+        if unknown:
+            raise UnknownIndicators(unknown)
+        deps = {spec.slug: [dep for dep, _weight in spec.depends_on] for spec in registry}
+        # Dependency order, not the caller's order: a unit whose prerequisite is
+        # also in the set has to be scheduled after it. `nodes=` takes the
+        # induced subgraph, so prerequisites outside the set are treated as
+        # already materialised, which is exactly right for a partial retry.
+        ordered = topological_order(deps, nodes=set(indicators))
+        # Empty `features` means "every feature this indicator applies to" —
+        # the original per-feature scope lived in `run_plan` and is gone by the
+        # time anyone retries, so this is deliberately the wider recompute.
+        return RunPlan(
+            units=[DirtyUnit(indicator=slug, features=frozenset()) for slug in ordered],
+            params=params,
+        )
+
     from reimagina.scenarios.overrides import resolve_change_set
 
     # Materialised before anything reads them twice. These are typed `Iterable`,
@@ -158,14 +206,7 @@ def plan_run(
             "(check changed_attributes / scenario overrides)",
             scenario_id,
         )
-    return RunPlan(
-        units=units,
-        params={
-            "scenario_id": scenario_id,
-            "aoi_id": aoi_id,
-            "code_version": code_version,
-        },
-    )
+    return RunPlan(units=units, params=params)
 
 
 def noop_handle(run_id: str) -> RunHandle:

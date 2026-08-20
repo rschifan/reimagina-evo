@@ -48,10 +48,11 @@ export default defineConfig({
       // ⚠ Naming `input` REPLACES Vite's default entry discovery. Omit
       // `index` here and the map app silently stops being built — and
       // `dist/` is gitignored, so nothing in review would show it. Both
-      // entries must stay listed.
+      // All three entries must stay listed.
       input: {
         index: new URL("./index.html", import.meta.url).pathname,
         catalog: new URL("./catalog.html", import.meta.url).pathname,
+        ops: new URL("./ops.html", import.meta.url).pathname,
       },
     },
   },
