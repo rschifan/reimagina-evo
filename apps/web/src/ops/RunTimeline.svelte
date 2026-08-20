@@ -25,7 +25,7 @@
         Execution
       </h3>
       <span class="font-mono text-[11px] text-muted-foreground" data-numeric>
-        {rows.length} units · up to {t.peak} at once · {formatDuration(t.spanMs)}
+        {rows.length} units · up to {t.peak} at once · {formatDuration(t.elapsedMs)}
       </span>
       <span class="ml-auto flex items-center gap-3 text-[10px] text-muted-foreground">
         <span class="flex items-center gap-1">

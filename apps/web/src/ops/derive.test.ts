@@ -12,6 +12,7 @@ import {
   statusCounts,
   statusesFromHash,
   statusesToHash,
+  niceSpan,
   timelineOf,
   STALL_GRACE_MS,
 } from "./derive";
@@ -236,12 +237,68 @@ describe("timelineOf", () => {
   });
 
   it("is empty for a run with no units", () => {
-    expect(timelineOf([], now)).toEqual({ rows: [], spanMs: 0, peak: 0 });
+    expect(timelineOf([], now)).toEqual({ rows: [], spanMs: 0, elapsedMs: 0, peak: 0 });
   });
 
   it("shows the wait before a prerequisite cleared as queued time", () => {
     const t = timelineOf([unit("c", "00", "10", "20", ["a"])], now);
     expect(t.rows[0].queuedWidth).toBeGreaterThan(0);
     expect(t.rows[0].depends_on).toEqual(["a"]);
+  });
+});
+
+describe("timeline axis stability", () => {
+  const at = (s: string) => `2026-08-20T10:00:${s}+00:00`;
+  const finished = {
+    indicator: "a",
+    status: "succeeded" as const,
+    depends_on: [],
+    queued_at: at("00"),
+    started_at: at("00"),
+    completed_at: at("05"),
+  };
+  const running = {
+    indicator: "b",
+    status: "running" as const,
+    depends_on: [],
+    queued_at: at("00"),
+    started_at: at("00"),
+    completed_at: null,
+  };
+
+  it("holds a finished bar still while another unit runs on", () => {
+    // The bug: the axis grew with `now`, so a completed bar's percentage width
+    // shrank every tick and its right edge crawled leftward.
+    const t1 = timelineOf([finished, running], Date.parse(at("06")));
+    const t2 = timelineOf([finished, running], Date.parse(at("09")));
+
+    expect(t2.rows[0].runWidth).toBe(t1.rows[0].runWidth);
+    expect(t2.rows[0].runLeft).toBe(t1.rows[0].runLeft);
+  });
+
+  it("still grows the running bar as time passes", () => {
+    const t1 = timelineOf([finished, running], Date.parse(at("06")));
+    const t2 = timelineOf([finished, running], Date.parse(at("09")));
+
+    expect(t2.rows[1].runWidth).toBeGreaterThan(t1.rows[1].runWidth);
+  });
+
+  it("reports elapsed time, not the padded axis", () => {
+    const t = timelineOf([finished, running], Date.parse(at("06")));
+
+    expect(t.elapsedMs).toBe(6_000);
+    expect(t.spanMs).toBe(10_000); // quantised
+  });
+
+  it("uses the exact span once nothing can grow", () => {
+    const t = timelineOf([finished], Date.parse(at("30")));
+
+    expect(t.spanMs).toBe(5_000);
+    expect(t.rows[0].runWidth).toBe(100);
+  });
+
+  it("rounds a long run up to whole hours rather than inventing steps", () => {
+    expect(niceSpan(3_600_001)).toBe(7_200_000);
+    expect(niceSpan(1_000)).toBe(5_000);
   });
 });
