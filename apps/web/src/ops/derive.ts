@@ -224,23 +224,6 @@ export interface Timeline {
   peak: number;
 }
 
-/**
- * Round an axis up to a stable, human ceiling.
- *
- * While a run is live the raw span grows every tick, and since each bar is a
- * percentage of it, a *finished* bar's width shrinks each second — its right
- * edge crawling backwards while the run continues. Quantising means the axis
- * only jumps at these thresholds, so a completed bar holds still between them.
- */
-export function niceSpan(ms: number): number {
-  const steps = [
-    5_000, 10_000, 15_000, 30_000, 45_000, 60_000, 120_000, 300_000, 600_000,
-    900_000, 1_800_000, 3_600_000,
-  ];
-  for (const step of steps) if (ms <= step) return step;
-  return Math.ceil(ms / 3_600_000) * 3_600_000;
-}
-
 /** Five marks across the axis, labelled as seconds from the run's start. */
 function axisTicks(spanMs: number): { atPct: number; label: string }[] {
   return [0, 25, 50, 75, 100].map((atPct) => ({
@@ -284,15 +267,20 @@ export function timelineOf(
   // dividing by it would put every bar at NaN% rather than at 0.
   const elapsedMs = Math.max(1, Math.max(...ends) - t0);
 
-  // ⚠ Quantised always, including once the run is finished.
+  // The axis is the elapsed time, exactly. No rounding, no padding.
   //
-  // Using the exact span for a terminal run was tempting — the chart fills its
-  // width — but it meant every bar jumped wider the instant the last unit
-  // landed, which is precisely the moment someone is watching. The axis has to
-  // be a property of the run rather than of whether it happens to be over: a
-  // bar drawn at 24% must still be at 24% a second later. The cost is some
-  // empty track on the right, which the axis labels make legible.
-  const spanMs = Math.max(elapsedMs, niceSpan(elapsedMs));
+  // This went through two wrong shapes first. Rounding the axis up to a "nice"
+  // ceiling did hold finished bars still while a run continued, but it left a
+  // 20.4 s run drawn on a 30 s axis — a third of the track empty, which reads
+  // as bars failing to reach the end. Rounding only while live traded that for
+  // a worse one: every bar jumped wider the instant the last unit landed.
+  //
+  // Exact is right because the axis is now *labelled*. The original complaint —
+  // bars appearing to crawl backwards — was never really about rescaling; it
+  // was that the scale was invisible, so a shrinking bar had no explanation. A
+  // tick row that reads 0 / 5 / 10 / 15 / 20 s and relabels as the run grows
+  // shows the scale extending, which is what a time axis does.
+  const spanMs = elapsedMs;
 
   const pct = (ms: number) => (ms / spanMs) * 100;
 
