@@ -167,6 +167,12 @@ def run_observation_rollup(
             records=records,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
+            # The *target* grain, not the input's: a rollup writes the coarser
+            # one, and that is the grain whose rows it may retire.
+            feature_type_id=backend.feature_repo().get_type_id(
+                "MEX", target_feature_type_slug
+            ),
+            aoi_id=aoi_id,
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(

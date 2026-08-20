@@ -227,10 +227,12 @@ def run_zonal_stats(
     CLI-only concerns the worker itself stays out of:
 
     - **Prefix-collision check**: calls ``has_active_prefix`` on the
-      observation repo with ``excluding_source_id=source_id``. If
-      another source already owns current observations under this
-      prefix, refuses the run unless ``force=True`` — preventing two
-      sources from silently retiring each other's rows.
+      observation repo with ``excluding_source_id=source_id`` and this
+      run's grain. If another source already owns current observations
+      under this prefix *at that grain*, refuses the run unless
+      ``force=True`` — preventing two sources from silently retiring
+      each other's rows. Two sources owning one prefix at two different
+      grains no longer collide, because retirement is grain-scoped.
     - **Small-feature warning**: for extensive aggregations against a
       coarse raster, emits a warning when the equivalent-circle
       diameter of the median feature is less than ``3 × resolution_m``.
@@ -255,6 +257,12 @@ def run_zonal_stats(
             collides = backend.observation_repo().has_active_prefix(
                 prefix=attribute_key_prefix,
                 excluding_source_id=source_id,
+                # Same grain the run will retire. Not AOI-scoped: an
+                # unscoped run retires the whole grain, so a collision
+                # outside this run's AOI is still a collision.
+                feature_type_id=backend.feature_repo().get_type_id(
+                    "MEX", feature_type_slug
+                ),
             )
             if collides:
                 raise PrefixCollisionError(

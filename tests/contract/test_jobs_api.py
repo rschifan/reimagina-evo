@@ -10,7 +10,6 @@ ops-plane swap moves — and these tests keep working across such a swap.
 
 from __future__ import annotations
 
-import contextlib
 import json
 
 from fastapi.testclient import TestClient
@@ -33,12 +32,56 @@ def _install(monkeypatch, orchestrator):
     )
 
 
-def test_post_jobs_enqueues_and_returns_202(monkeypatch):
-    @contextlib.contextmanager
-    def _fake_connect(dsn=None):
-        yield object()
+class _FakeConn:
+    """A stand-in shaped like what ``reimagina.db.connect`` actually returns.
 
-    monkeypatch.setattr("reimagina.db.connect", _fake_connect)
+    ⚠ A raw connection, **not** a context manager yielding one — which is what
+    this fake used to be, and why nothing here could see that the routes leaked.
+    psycopg2's ``__enter__``/``__exit__`` scope the *transaction*: entering and
+    leaving commits or rolls back and leaves the socket open. Modelling that
+    faithfully is what lets ``closed`` below be an assertion rather than a hope.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.committed = False
+        self.rolled_back = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.committed = True
+        else:
+            self.rolled_back = True
+        return False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+def _fake_connections(monkeypatch) -> list[_FakeConn]:
+    """Hand every ``connect()`` in the route a fake, and keep them for inspection."""
+    opened: list[_FakeConn] = []
+
+    def _connect(dsn=None):
+        conn = _FakeConn()
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr("reimagina.db.connect", _connect)
+    return opened
+
+
+def test_post_jobs_enqueues_and_returns_202(monkeypatch):
+    opened = _fake_connections(monkeypatch)
 
     class _FakeOrchestrator:
         def submit_run(self, conn, **kwargs):
@@ -53,6 +96,10 @@ def test_post_jobs_enqueues_and_returns_202(monkeypatch):
         )
     assert resp.status_code == 202
     assert resp.json() == {"run_id": "run-123", "status": "queued"}
+    # The submit connection is committed *and* closed. Committed because the
+    # enqueue must survive; closed because this route runs on every submit in a
+    # long-lived process, and psycopg2's context manager does not close.
+    assert [(c.committed, c.closed) for c in opened] == [(True, True)]
 
 
 def test_get_jobs_returns_run_status(monkeypatch):
@@ -105,11 +152,7 @@ def test_post_jobs_noop_returns_null_run_id(monkeypatch):
     GET /jobs/{run_id} immediately after a *successful* submit.
     """
 
-    @contextlib.contextmanager
-    def _fake_connect(dsn=None):
-        yield object()
-
-    monkeypatch.setattr("reimagina.db.connect", _fake_connect)
+    _fake_connections(monkeypatch)
 
     class _FakeOrchestrator:
         def submit_run(self, conn, **kwargs):
@@ -150,19 +193,20 @@ def test_events_streams_the_orchestrators_progress(monkeypatch):
             yield RunEvent(run_id, None, "succeeded")
 
     _install(monkeypatch, _FakeOrchestrator())
+    opened = _fake_connections(monkeypatch)
 
-    def _fake_conn():
-        yield object()
-
-    app = create_app(initialise_pool=False)
-    app.dependency_overrides[get_db_conn] = _fake_conn
-    with TestClient(app) as client:
+    with TestClient(create_app(initialise_pool=False)) as client:
         resp = client.get("/jobs/run-123/events")
         body = resp.text
-    app.dependency_overrides.clear()
 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+    # ⚠ The route takes no `Depends(get_db_conn)`. FastAPI closes a yield
+    # dependency only after the *response* completes, and a StreamingResponse
+    # does not complete until its body iterator is exhausted — so a pooled
+    # connection borrowed for the 404 check stayed borrowed for the whole
+    # subscription. Its own connection instead, closed before streaming starts.
+    assert [c.closed for c in opened] == [True]
     frames = [
         json.loads(line.removeprefix("data: "))
         for line in body.splitlines()
@@ -177,13 +221,10 @@ def test_events_404s_for_an_unknown_run(monkeypatch):
             return None
 
     _install(monkeypatch, _FakeOrchestrator())
+    opened = _fake_connections(monkeypatch)
 
-    def _fake_conn():
-        yield object()
-
-    app = create_app(initialise_pool=False)
-    app.dependency_overrides[get_db_conn] = _fake_conn
-    with TestClient(app) as client:
+    with TestClient(create_app(initialise_pool=False)) as client:
         resp = client.get("/jobs/missing/events")
-    app.dependency_overrides.clear()
     assert resp.status_code == 404
+    # Closed on the 404 path too, where there is no stream to end and release it.
+    assert [c.closed for c in opened] == [True]

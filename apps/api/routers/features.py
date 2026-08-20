@@ -7,6 +7,8 @@ attribute/catalog side so list views and search don't have to parse tiles.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -37,7 +39,10 @@ class FeaturePage(BaseModel):
 def list_features(
     type_slug: str | None = Query(default=None),
     role: str | None = Query(default=None),
-    aoi_id: str | None = Query(default=None),
+    # ``UUID``, not ``str``: the column is declared ``uuid``, so a malformed one
+    # used to reach Postgres and come back as a DataError the generic handler
+    # turns into a 500. A client typo belongs at the boundary, as a 422.
+    aoi_id: UUID | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5_000),
     after_cursor: str | None = Query(default=None),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -50,7 +55,7 @@ def list_features(
             .get_features(
                 type_slug=type_slug,
                 role=role,
-                aoi_id=aoi_id,
+                aoi_id=None if aoi_id is None else str(aoi_id),
                 limit=limit,
                 after_cursor=after_cursor,
             )

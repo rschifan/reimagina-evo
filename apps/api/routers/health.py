@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import urllib.error
 import urllib.request
@@ -141,14 +142,22 @@ def _probe_db() -> str:
 
 def _api_database_name() -> str | None:
     """Return the database name the API is connected to. Single-source-of-truth
-    for the operator comparing API↔Martin DSNs."""
+    for the operator comparing API↔Martin DSNs.
+
+    ⚠ ``closing()``: psycopg2's connection context manager scopes the
+    transaction, not the socket, so the bare ``with psycopg2.connect(...)`` this
+    replaces leaked a backend per call. Same reason ``_probe_db`` above closes
+    in a ``finally``.
+    """
     from ..deps import api_dsn
 
     try:
-        with psycopg2.connect(api_dsn(), connect_timeout=2) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT current_database()")
-                return cur.fetchone()[0]
+        with (
+            contextlib.closing(psycopg2.connect(api_dsn(), connect_timeout=2)) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute("SELECT current_database()")
+            return cur.fetchone()[0]
     except psycopg2.Error:
         return None
 

@@ -396,6 +396,17 @@ class DBOSOrchestrator:
         generator, not of how it is scheduled. A process-wide slot limit bounds
         the remaining daemon threads, and the bounded handoff queue turns a
         slow SSE consumer into a reconnect rather than unbounded memory growth.
+
+        ⚠ The slot is held by the **thread**, and released in ``_pump``'s own
+        ``finally`` — not by this generator. Releasing it here, which is what
+        this did, made the limit count live *subscriptions* rather than live
+        threads, and those are not the same number for exactly the reason the
+        limit exists: a client that disconnects one second into a twenty-minute
+        run ends this generator immediately while its pump stays blocked in
+        ``read_stream`` for the remaining nineteen. The freed slot then admits
+        the next subscriber, which starts another thread, so the count of
+        uninterruptible threads was bounded by nothing at all — the failure the
+        semaphore was added to prevent.
         """
         import threading as _threading
 
@@ -442,13 +453,22 @@ class DBOSOrchestrator:
             except Exception as exc:  # noqa: BLE001 — surfaced as stream end
                 logger.warning("progress stream for %s ended: %s", run_id, exc)
             finally:
+                # Released here, where the thread actually ends. See the
+                # docstring: this is the whole point of the slot.
+                _PROGRESS_SLOTS.release()
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(_offer, done)
 
         thread = _threading.Thread(
             target=_pump, name=f"dbos-progress-{run_id[:8]}", daemon=True
         )
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            # The slot is released by the pump, so a thread that never starts
+            # would hold it for the life of the process.
+            _PROGRESS_SLOTS.release()
+            raise
         try:
             while True:
                 payload = await events.get()
@@ -463,21 +483,26 @@ class DBOSOrchestrator:
         finally:
             # Tells the pump to stop at its next event. It cannot be woken any
             # sooner, so the thread outlives this generator until the stream
-            # produces something or closes.
+            # produces something or closes — which is why the slot is released
+            # there and not here.
             stop.set()
-            _PROGRESS_SLOTS.release()
 
     def _snapshot(self, run_id: str) -> RunEvent | None:
         """The run-level status, read without the caller's connection.
 
         The port hands ``subscribe_progress`` no connection — no engine's
         progress transport is the caller's pooled one — so this opens its own.
+
+        ⚠ ``_closing``, not a bare ``with connect(...)``. psycopg2's connection
+        context manager scopes the transaction and leaves the socket open, and
+        this runs once per subscriber in a long-lived API process — the same
+        leak ``_pg`` and ``_persist_plan`` already spell out.
         """
         from reimagina.db import connect
 
         from reimagina.orchestration import dbos_app
 
-        with connect(dbos_app.dbos_dsn()) as conn:
+        with _closing(connect(dbos_app.dbos_dsn())) as conn:
             row = runstore.get_run(conn, run_id)
         return RunEvent(
             run_id=run_id,

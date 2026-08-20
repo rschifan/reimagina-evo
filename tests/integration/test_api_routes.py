@@ -603,7 +603,24 @@ def test_stats_endpoint_with_unknown_aoi_id_is_empty(client, two_aois_one_block_
 
 
 class _StubConn:
-    """Enough connection to satisfy the route: it polls, so it ends read txns."""
+    """Enough connection to satisfy the route: it polls, so it ends read txns.
+
+    ⚠ Shaped like a *connection*, including ``close``, because that is what
+    ``reimagina.db.connect`` returns. The stub used to be a context manager
+    yielding one, which no route could have closed even if it tried.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def close(self) -> None:
+        self.closed = True
 
     def rollback(self) -> None:
         pass
@@ -613,13 +630,7 @@ class _StubConn:
 
 
 def _stub_connect(monkeypatch):
-    from contextlib import contextmanager
-
-    @contextmanager
-    def _fake(dsn):
-        yield _StubConn()
-
-    monkeypatch.setattr("reimagina.db.connect", _fake)
+    monkeypatch.setattr("reimagina.db.connect", lambda dsn=None: _StubConn())
 
 
 def _install(monkeypatch, handle, *, final=None):
@@ -772,3 +783,29 @@ def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):
         polygon_wkt=_polygon_at(-100.0, 20.0, side=0.05),
     )
     assert client.get(f"/indicators?aoi_id={empty_aoi}").json() == []
+
+
+def test_runstore_answers_a_malformed_run_id_instead_of_raising(conn):
+    """`get_run` is typed `dict | None`, and a driver error is not either one.
+
+    ``orchestration_run.id`` is ``uuid``, so asking Postgres about
+    ``'not-a-uuid'`` does not return "no such run" — it raises
+    ``invalid input syntax for type uuid`` and aborts the transaction. Through
+    the API that surfaced as a 500 (``database_error_handler`` maps every
+    non-connection driver error there) for what is plainly a client typo.
+
+    Asserted against a real connection because the guard only matters against a
+    real cast; a stub connection short-circuits on the backend check before the
+    id is ever looked at.
+    """
+    from reimagina.orchestration import runstore
+
+    assert runstore.get_run(conn, "not-a-uuid") is None
+    # The transaction is still usable — an aborted one would fail here, which is
+    # the other half of what the raise used to cost.
+    assert runstore.get_run(conn, str(uuid4())) is None
+
+
+def test_jobs_route_404s_a_malformed_run_id_end_to_end(client):
+    """The same thing through the live app, with the real orchestrator."""
+    assert client.get("/jobs/not-a-uuid").status_code == 404

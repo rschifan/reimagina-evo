@@ -13,9 +13,13 @@ SHELL := /bin/bash
 # remember `source .venv/bin/activate` first.
 PYTHON := uv run python
 PYTEST := uv run pytest
-# ruff is commonly installed globally; mypy ships in the dev extra, so it is run
-# through uv like the other Python entry points here.
+# Both linters go through uv, for the same reason as everything else here: the
+# version that runs is the one in uv.lock. This used to call bare `ruff` on the
+# assumption it was "commonly installed globally" — which meant `make lint` and
+# CI agreed only as long as your global ruff happened to match the workflow's
+# pin. A formatter whose output *is* the gate cannot be left to happenstance.
 MYPY := uv run mypy
+RUFF := uv run ruff
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -35,13 +39,13 @@ install: ## Install Python + web dependencies.
 
 .PHONY: lint
 lint: ## Run ruff check + format-check + mypy (mirrors CI).
-	ruff check .
-	ruff format --check .
+	$(RUFF) check .
+	$(RUFF) format --check .
 	$(MYPY) packages/py/reimagina apps scripts
 
 .PHONY: format
 format: ## Reformat with ruff format (writes changes).
-	ruff format .
+	$(RUFF) format .
 
 .PHONY: test
 test: ## Run fast Python tests (unit + contract).
