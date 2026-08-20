@@ -1,18 +1,63 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import type { UnitDetail } from "./api";
-  import { formatDuration, timelineOf, unitTone } from "./derive";
+  import {
+    fitPxPerSecond,
+    formatDuration,
+    liveWindowMs,
+    timelineOf,
+    unitTone,
+    PX_PER_SECOND,
+  } from "./derive";
 
   let { units, now }: { units: UnitDetail[]; now: number } = $props();
 
-  const t = $derived(timelineOf(units, now));
+  let trackWidth = $state(0);
+
+  const anyLive = $derived(
+    units.some((u) => u.started_at !== null && u.completed_at === null),
+  );
+
+  /**
+   * Both modes fill the panel; they differ in what they divide by.
+   *
+   * A finished run divides by its own elapsed time — final, computed once, so
+   * nothing it produces can move. A live run divides by a *window* that steps
+   * to the next whole 10 s, because dividing by a growing elapsed time is what
+   * made every bar drift leftward. Between thresholds the scale is constant and
+   * nothing moves; crossing 10 s, 20 s, 30 s rescales once.
+   */
+  // Measured once at the fixed scale purely to learn the run's elapsed time,
+  // which is what the fit divides by. Durations do not depend on the scale.
+  const measured = $derived(timelineOf(units, now, PX_PER_SECOND));
+
+  const axisMs = $derived(
+    anyLive ? liveWindowMs(measured.elapsedMs) : measured.elapsedMs,
+  );
+  const scale = $derived(fitPxPerSecond(axisMs, trackWidth));
+
+  const t = $derived(timelineOf(units, now, scale, axisMs));
 
   /**
    * Rows in dispatch order, so the picture reads top-to-bottom as the run
-   * happened — a dependency chain becomes a diagonal, a wave becomes a block of
-   * aligned bars.
+   * happened — a dependency chain becomes a diagonal, a wave a block of bars.
    */
-  const rows = $derived([...t.rows].sort((a, b) => a.runLeft - b.runLeft));
+  const rows = $derived([...t.rows].sort((a, b) => a.runLeftPx - b.runLeftPx));
+
+  let scroller = $state<HTMLElement | null>(null);
+  const liveEdge = $derived(
+    t.rows.some((r) => r.live) ? Math.max(...t.rows.map((r) => r.runLeftPx + r.runWidthPx)) : null,
+  );
+
+  // Follow a growing run, but only when the reader is already at the right-hand
+  // end — yanking the view while someone is inspecting an earlier unit would be
+  // its own kind of "it moved on its own".
+  $effect(() => {
+    if (liveEdge === null || !scroller) return;
+    const atEnd =
+      scroller.scrollWidth - scroller.scrollLeft - scroller.clientWidth < 48;
+    if (atEnd) scroller.scrollLeft = scroller.scrollWidth;
+  });
 </script>
 
 {#if rows.length}
@@ -36,63 +81,70 @@
       </span>
     </header>
 
-    <!--
-      This is a timeline, not a row of progress bars, and it has to say so.
-      A bar positioned by start time reads as "filled from the right" when it
-      starts late — so the x-axis is labelled, gridlines run behind every row,
-      and the wait before a unit starts is drawn rather than left as blank track.
-    -->
-    <div class="px-3 py-3">
-      <div class="grid grid-cols-[15rem_1fr_5rem] items-center gap-2">
-        <span class="font-mono text-[10px] text-muted-foreground uppercase">
-          time from start
-        </span>
-        <div class="relative h-4">
-          {#each t.ticks as tick (tick.atPct)}
-            <span
-              class="absolute top-0 font-mono text-[10px] text-muted-foreground"
-              style={`left:${tick.atPct}%;transform:translateX(${
-                tick.atPct === 0 ? "0" : tick.atPct === 100 ? "-100%" : "-50%"
-              })`}
-              data-numeric
-            >
-              {tick.label}
-            </span>
-          {/each}
+    <div class="flex">
+      <!-- Labels sit outside the scroller so they stay put while the track
+           scrolls; the two panes share a row height to stay aligned. -->
+      <div class="shrink-0 border-r border-line/60 py-3">
+        <div class="h-5 px-3 font-mono text-[10px] text-muted-foreground uppercase">
+          unit
         </div>
-        <span></span>
+        {#each rows as row (row.indicator)}
+          <div class="h-9 w-56 px-3">
+            <div class="truncate font-mono text-[11px]">{row.indicator}</div>
+            {#if row.depends_on.length}
+              <div class="truncate font-mono text-[10px] text-muted-foreground">
+                after {row.depends_on.join(", ")}
+              </div>
+            {/if}
+          </div>
+        {/each}
       </div>
 
-      <div class="space-y-1">
-        {#each rows as row (row.indicator)}
-          <div class="grid grid-cols-[15rem_1fr_5rem] items-center gap-2">
-            <div class="min-w-0">
-              <div class="truncate font-mono text-[11px]">{row.indicator}</div>
-              {#if row.depends_on.length}
-                <div class="truncate font-mono text-[10px] text-muted-foreground">
-                  after {row.depends_on.join(", ")}
-                </div>
-              {/if}
-            </div>
+      <!--
+        A fixed pixels-per-second track, wide enough for the whole run and
+        scrolled when that exceeds the panel.
 
-            <div class="relative h-5 rounded bg-surface-raised">
-              <!-- Gridlines, so a bar's position is read against the axis
-                   above rather than as a proportion of its own row. -->
-              {#each t.ticks as tick (tick.atPct)}
+        This is the point of the layout: a bar's position and width are computed
+        from its own timestamps alone, never from the run's total. Nothing
+        already drawn moves when the run gets longer — a running bar simply
+        grows to the right, which is the direction time goes.
+      -->
+      <div
+        bind:this={scroller}
+        bind:clientWidth={trackWidth}
+        class="grow overflow-x-auto py-3"
+      >
+        <div class="relative" style={`width:${Math.max(t.widthPx, 1)}px`}>
+          <div class="relative h-5">
+            {#each t.ticks as tick (tick.atPx)}
+              <span
+                class="absolute top-0 font-mono text-[10px] text-muted-foreground"
+                style={`left:${tick.atPx}px`}
+                data-numeric
+              >
+                {tick.label}
+              </span>
+            {/each}
+          </div>
+
+          {#each rows as row (row.indicator)}
+            <div class="relative h-9">
+              {#each t.ticks as tick (tick.atPx)}
                 <span
-                  class="absolute inset-y-0 w-px bg-line/60"
-                  style={`left:${tick.atPct}%`}
+                  class="absolute inset-y-0 w-px bg-line/40"
+                  style={`left:${tick.atPx}px`}
                 ></span>
               {/each}
 
-              <!-- The wait. Drawn, not blank: it is the reason a unit that
-                   started late starts late, and leaving it empty is what made
-                   the bar look like a progress fill pinned to the wrong end. -->
-              {#if row.queuedWidth > 0.4}
+              <!-- The wait, drawn rather than left blank: it is why a unit that
+                   started late started late. -->
+              {#if row.queuedWidthPx > 1}
                 <span
                   class="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-sm bg-line"
-                  style={`left:${row.queuedLeft}%;width:${row.queuedWidth}%`}
-                  title={`waiting ${formatDuration((t.spanMs * row.queuedWidth) / 100)}`}
+                  style={`left:${row.queuedLeftPx}px;width:${row.queuedWidthPx}px`}
+                  title={`waited ${formatDuration(
+                    ((row.runLeftPx - row.queuedLeftPx) / PX_PER_SECOND) * 1000,
+                  )}`}
                 ></span>
               {/if}
 
@@ -106,17 +158,22 @@
                         ? "bg-interactive"
                         : "bg-state-stale"
                 }`}
-                style={`left:${row.runLeft}%;width:${Math.max(row.runWidth, 0.6)}%`}
+                style={`left:${row.runLeftPx}px;width:${Math.max(row.runWidthPx, 2)}px`}
                 title={`${row.indicator} · ${row.status} · ran ${formatDuration(row.durationMs)}`}
               ></span>
             </div>
+          {/each}
+        </div>
+      </div>
 
-            <div class="flex items-center justify-end gap-1.5">
-              <span class="font-mono text-[10.5px] text-muted-foreground" data-numeric>
-                {formatDuration(row.durationMs)}
-              </span>
-              <Badge tone={unitTone[row.status]}>{row.status.slice(0, 4)}</Badge>
-            </div>
+      <div class="shrink-0 border-l border-line/60 py-3">
+        <div class="h-5"></div>
+        {#each rows as row (row.indicator)}
+          <div class="flex h-9 items-start gap-1.5 px-3">
+            <span class="font-mono text-[10.5px] text-muted-foreground" data-numeric>
+              {formatDuration(row.durationMs)}
+            </span>
+            <Badge tone={unitTone[row.status]}>{row.status.slice(0, 4)}</Badge>
           </div>
         {/each}
       </div>
