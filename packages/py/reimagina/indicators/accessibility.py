@@ -54,7 +54,6 @@ from reimagina.indicators._compute import (
 )
 from reimagina.indicators.catalog import (
     ACCESSIBILITY_CUTOFF_M,
-    ACCESSIBILITY_EUCLID,
     ACCESSIBILITY_NETWORK,
     ACCESSIBILITY_SPEC_CATEGORY,
     IndicatorSpec,
@@ -101,43 +100,6 @@ def _scope(aoi_id: str | None, feature_ids: list[str] | None) -> tuple[str, str]
         _AOI_JOIN if aoi_id else "",
         "AND f.id = ANY(%(feature_ids)s::uuid[])" if feature_ids else "",
     )
-
-
-def _euclid_rows(conn, *, type_id, aoi_id, feature_ids, categories):
-    """``(feature_id, straight_line_m | None)`` per block.
-
-    ``ST_DWithin`` on geography bounds the search so the KNN cannot wander the
-    whole city for a block with no amenity nearby; the LATERAL then takes the
-    single nearest. Ordering by ``geography <->`` gives true metres rather than
-    the degrees a planar ``<->`` on EPSG:4326 would compare.
-    """
-    aoi_join, feature_filter = _scope(aoi_id, feature_ids)
-    sql = f"""
-        WITH {_BLOCKS_CTE.format(aoi_join=aoi_join, feature_filter=feature_filter)},
-        {_AMENITIES_CTE}
-        SELECT b.feature_id, nearest.distance_m
-        FROM blocks b
-        LEFT JOIN LATERAL (
-            SELECT ST_Distance(b.centroid::geography, a.geometry::geography)
-                   AS distance_m
-            FROM amenities a
-            WHERE ST_DWithin(b.centroid::geography, a.geometry::geography, %(cutoff)s)
-            ORDER BY b.centroid::geography <-> a.geometry::geography
-            LIMIT 1
-        ) nearest ON true
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            {
-                "type_id": type_id,
-                "aoi_id": aoi_id,
-                "feature_ids": feature_ids,
-                "categories": list(categories),
-                "cutoff": ACCESSIBILITY_CUTOFF_M,
-            },
-        )
-        return cur.fetchall()
 
 
 def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
@@ -322,6 +284,5 @@ def _bind(spec: IndicatorSpec, rows_fn):
 
 #: slug -> compute fn, for every accessibility indicator.
 ACCESSIBILITY_COMPUTE = {
-    **{spec.slug: _bind(spec, _euclid_rows) for spec in ACCESSIBILITY_EUCLID},
-    **{spec.slug: _bind(spec, _network_rows) for spec in ACCESSIBILITY_NETWORK},
+    spec.slug: _bind(spec, _network_rows) for spec in ACCESSIBILITY_NETWORK
 }

@@ -292,10 +292,6 @@ def test_a_road_change_stales_only_the_network_indicators(seeded, conn):
             _state(conn, f"indicator.accessibility_block_{category}_network_m")
             == "stale"
         )
-        assert (
-            _state(conn, f"indicator.accessibility_block_{category}_euclid_m")
-            == "fresh"
-        )
 
 
 def test_a_failing_probe_is_reported_not_raised(seeded, conn):

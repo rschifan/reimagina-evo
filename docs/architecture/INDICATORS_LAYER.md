@@ -387,7 +387,7 @@ defensible balance.
 #### Direction: `higher_is_better`
 
 ⚠ `indicator_dependency` enforces `weight >= 0` (r016:93), so a lower-is-better
-input **cannot** be folded in with a negative weight. Six shipped indicators are
+input **cannot** be folded in with a negative weight. Three shipped indicators are
 distances in metres; a score adding one raw ranks "far from a school" as good —
 silently, because the arithmetic stays sound and only the meaning inverts.
 Measured on two blocks differing only in distance: near (100 m) scored 0.283,
@@ -681,45 +681,32 @@ list restating what the compute already says has nothing keeping the two in
 sync, which is the same defect class as `poi_version`. The data-contracts
 literature is blunt about it — a contract that is not executable will drift.
 
-### Rolling up a block-grain indicator to AGEB
+### Multi-grain rollup — removed
 
-*Worked example: block compactness.* `compute_block_compactness` writes
-`indicator_result` rows at the `block` grain. The indicator declares
-`aggregation_method = 'weighted_mean'` and `applies_to = ("block", "ageb")`, so
-rows may land at either grain (`indicators/catalog.py:72`, `:86`, `:93`), and a
-row exists in `curated_geo.feature_overlap_type_pair` (r009:26) declaring
-`(MEX:block) → (MEX:ageb)`.
+Every shipped indicator is `applies_to=("block",)`. The block→AGEB rollup that
+produced coarser-grain `indicator_result` rows is gone: `jobs/rollup.py`, the
+`indicators rollup` CLI command, and `rollup_child_rows` on the overlap
+repository. r016's write trigger now rejects any result written at a grain the
+indicator does not declare — *"feature type ageb is not in indicator
+applies_to ({block})"*.
 
-The rollup is then a **direct call** — `run_rollup(conn, indicator_slug=…,
-source_feature_type="block", target_feature_type="ageb")`. Nothing queues it and
-no run dispatches it; the caller decides when to roll up (see `JOB_LAYER.md` —
-*Rollup — a direct call, not an orchestrated unit*). For each AGEB, it:
+What remains, and is unaffected:
 
-1. reads the current block-grain walkability `indicator_result` rows,
-2. joins them to `curated_geo.feature_overlap` on the target AGEB,
-3. computes the weighted mean using `overlap_measure` (absolute intersection
-   area) as the per-block weight — not `overlap_ratio`, which collapses to
-   ~1.0 for fully-contained children and would degrade the aggregate to a
-   plain arithmetic mean for extensive metrics like building density,
-4. marks any existing AGEB-grain `current` rows stale,
-5. inserts a new AGEB-grain row with `quality_flag = 'estimated'`
-   (`jobs/rollup.py:180-187`), or `'missing'` with a `missing_reason` when too
-   much child weight was missing (`rollup.py:169-178`).
+- **`curated_geo.feature_overlap`** and its type pairs. Still populated, still
+  read by AOI summaries and by the *observation* rollup, which is a different
+  mechanism from the indicator one.
+- **`jobs/aggregation.aggregate_children`** — the weighted-mean and
+  missing-data policy, shared with `jobs/aoi_summary.py`.
+- **`aggregation_method` on `IndicatorSpec`**, which the AOI summary still uses
+  to decide how children combine.
+- **The tile's `feature_type` param** (r018). Nothing in the shipped catalog can
+  now produce the two-grain overlap it was added to prevent, but the client
+  still sends it and it still filters.
 
-Provenance is the rollup's own `job_run` row, opened with
-`model_family = 'rollup'` (`rollup.py:75-79`) and cited by every row it writes.
-There is no per-row list of the block runs that fed it — `indicator_result` has
-no `lineage_ref` column (r016:167-190).
-
-Consumers read the AGEB-grain value through `serving_geo.current_indicator_v`
-exactly as they read the block-grain value — the rollup is invisible at
-the read boundary except for `quality_flag`. The pure aggregation math
-is implemented in `reimagina.jobs.aggregation` — `aggregate` for the raw
-methods (`aggregation.py:27`) and `aggregate_children` for the shared
-missing-data policy the rollup actually calls (`aggregation.py:108`) — so it
-can be reused and tested outside the rollup.
-
----
+⚠ Restoring it is not just re-adding a grain to `applies_to`: the trigger would
+then accept AGEB rows with nothing writing them, which is the shape that lets an
+indicator look computed at a grain it never covered. Bring back the worker and
+its test in the same change.
 
 ## Build order
 
