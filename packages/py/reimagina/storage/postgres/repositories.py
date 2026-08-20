@@ -2988,6 +2988,38 @@ class PostgresOpsRunReader:
             {"run_id": str(run_id)},
         )
 
+    # ── Deletion ────────────────────────────────────────────────────────────
+
+    def delete_run(self, run_id: str) -> bool:
+        """Forget one run. ``job_unit`` goes with it by cascade (r028)."""
+        if not _is_run_id(run_id):
+            return False
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.orchestration_run WHERE id = %(run_id)s::uuid",
+                {"run_id": str(run_id)},
+            )
+            return cur.rowcount > 0
+
+    def delete_terminal_runs(self) -> int:
+        """Forget every finished run.
+
+        ⚠ Terminal only, and the filter is bound from ``RUN_TERMINAL_STATES``
+        rather than written out. A live run's workflow still owns these rows —
+        deleting the envelope mid-flight would have ``s_open_run``'s successors
+        write into a run that no longer exists, and ``s_finalize`` recreate part
+        of it.
+        """
+        from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM jobs_runtime.orchestration_run "
+                "WHERE status = ANY(%(terminal)s)",
+                {"terminal": sorted(RUN_TERMINAL_STATES)},
+            )
+            return cur.rowcount
+
     # ── Executors ───────────────────────────────────────────────────────────
 
     def list_executor_health(self) -> list[dict]:

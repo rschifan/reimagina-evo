@@ -200,3 +200,25 @@ export function rerunRun(
     body: {},
   });
 }
+
+export interface DeletedRuns {
+  deleted: number;
+}
+
+/** Forget one finished run. History only — computed values are not touched. */
+export function deleteRun(
+  runId: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<DeletedRuns> {
+  return jsonRequest<DeletedRuns>(`/jobs/${encodeURIComponent(runId)}`, {
+    ...init,
+    method: "DELETE",
+  });
+}
+
+/** Forget every finished run. Live runs are left alone. */
+export function deleteFinishedRuns(
+  init: { signal?: AbortSignal } = {},
+): Promise<DeletedRuns> {
+  return jsonRequest<DeletedRuns>("/jobs", { ...init, method: "DELETE" });
+}

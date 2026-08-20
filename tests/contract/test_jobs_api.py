@@ -585,3 +585,78 @@ def test_submitting_a_changed_dataset_scopes_the_run_the_same_way(monkeypatch):
     assert resp.status_code == 202
     assert "urban_form_block_building_density" in seen["indicators"]
     assert "urban_form_block_composite" in seen["indicators"]
+
+
+# ── Deleting run history ─────────────────────────────────────────────────────
+
+
+class _DeletingReader(_FakeOpsReader):
+    def __init__(self, runs=None):
+        super().__init__(runs)
+        self.deleted: list[str] = []
+        self.cleared = 0
+
+    def delete_run(self, run_id):
+        self.deleted.append(run_id)
+        return True
+
+    def delete_terminal_runs(self):
+        self.cleared += 1
+        return 4
+
+
+def test_deleting_a_finished_run_removes_it(monkeypatch):
+    reader = _DeletingReader([_run_row(status="succeeded")])
+    _fake_connections(monkeypatch)
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.delete("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 1}
+    assert reader.deleted == ["06baed8c-a6c9-47c1-ab0c-cc38a77f260c"]
+
+
+def test_deleting_a_live_run_is_refused(monkeypatch):
+    """Its workflow still owns those rows — deleting mid-flight would have the
+    remaining steps write into a run that no longer exists."""
+    reader = _DeletingReader([_run_row(status="running", completed_at=None)])
+    _fake_connections(monkeypatch)
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.delete("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 409
+    assert "cancel it first" in resp.json()["detail"]
+    assert reader.deleted == []
+
+
+def test_deleting_an_unknown_run_is_a_404(monkeypatch):
+    reader = _DeletingReader([])
+    _fake_connections(monkeypatch)
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.delete("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c")
+        assert resp.status_code == 404
+        # A non-uuid must not reach Postgres as a DataError either.
+        assert client.delete("/jobs/not-a-uuid").status_code == 404
+    app.dependency_overrides.clear()
+
+
+def test_clearing_history_reports_how_many_went(monkeypatch):
+    reader = _DeletingReader([])
+    _fake_connections(monkeypatch)
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.delete("/jobs")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 4}
+    assert reader.cleared == 1

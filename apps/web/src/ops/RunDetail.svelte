@@ -3,7 +3,7 @@
   import Card from "../lib/components/ui/Card.svelte";
   import type { RunDetailResponse } from "./api";
   import RunTimeline from "./RunTimeline.svelte";
-  import { cancel, ops, rerun } from "./store.svelte";
+  import { cancel, ops, remove, rerun } from "./store.svelte";
   import {
     canCancel,
     canRerun,
@@ -28,16 +28,17 @@
   } = $props();
 
   // Cancel is effectively irreversible — nothing resumes a cancelled unit, it
-  // can only be rerun as a new run — and this codebase has no modal library.
-  // A two-press button is the cheapest honest confirmation.
-  let armed = $state(false);
+  // can only be rerun as a new run — and deleting a run is plainly so. This
+  // codebase has no modal library, so each arms itself for four seconds and
+  // wants a second press. Tracked by name so arming one does not arm the other.
+  let armed = $state<"cancel" | "delete" | null>(null);
   let armedTimer: ReturnType<typeof setTimeout> | null = null;
   let actionError = $state<string | null>(null);
 
-  function arm() {
-    armed = true;
+  function arm(which: "cancel" | "delete") {
+    armed = which;
     if (armedTimer) clearTimeout(armedTimer);
-    armedTimer = setTimeout(() => (armed = false), 4_000);
+    armedTimer = setTimeout(() => (armed = null), 4_000);
   }
 
   $effect(() => () => {
@@ -45,9 +46,21 @@
   });
 
   async function doCancel() {
-    if (!armed) return arm();
-    armed = false;
+    if (armed !== "cancel") return arm("cancel");
+    armed = null;
     actionError = await cancel(run.run_id, refreshNow);
+  }
+
+  async function doDelete() {
+    if (armed !== "delete") return arm("delete");
+    armed = null;
+    const error = await remove(run.run_id, refreshNow);
+    if (error) {
+      actionError = error;
+      return;
+    }
+    // The run no longer exists; staying on its detail would 404 on next tick.
+    onBack();
   }
 
   async function doRerun() {
@@ -99,12 +112,12 @@
         disabled={ops.isBusy(`${run.run_id}:cancel`)}
         aria-busy={ops.isBusy(`${run.run_id}:cancel`)}
         class={`rounded border px-3 py-1 text-xs disabled:opacity-40 ${
-          armed
+          armed === "cancel"
             ? "border-state-error/60 bg-state-error/15 text-state-error"
             : "border-line text-muted-foreground hover:text-foreground"
         }`}
       >
-        {armed ? "Confirm cancel?" : "Cancel run"}
+        {armed === "cancel" ? "Confirm cancel?" : "Cancel run"}
       </button>
     {/if}
 
@@ -119,6 +132,23 @@
                hover:bg-accent/20 disabled:opacity-40"
       >
         Rerun {run.units_total - run.units_succeeded} unfinished
+      </button>
+    {/if}
+
+    {#if !canCancel(run)}
+      <button
+        type="button"
+        onclick={doDelete}
+        disabled={ops.isBusy(`${run.run_id}:delete`)}
+        aria-busy={ops.isBusy(`${run.run_id}:delete`)}
+        title="Removes this run from the history. The values it computed are not affected."
+        class={`ml-auto rounded border px-3 py-1 text-xs disabled:opacity-40 ${
+          armed === "delete"
+            ? "border-state-error/60 bg-state-error/15 text-state-error"
+            : "border-line text-muted-foreground hover:text-foreground"
+        }`}
+      >
+        {armed === "delete" ? "Confirm delete?" : "Delete run"}
       </button>
     {/if}
 

@@ -5,6 +5,7 @@
 
   import { RUN_STATUSES, type RunStatus } from "./api";
   import {
+    isRunTerminal,
     runIdFromHash,
     serverNow,
     statusesFromHash,
@@ -17,6 +18,7 @@
   import {
     boot,
     ops,
+    removeFinished,
     setFilters,
     setOpenRun,
     setPaused,
@@ -37,6 +39,30 @@
   /** Announced transitions only. Marking the table itself polite would
    *  re-announce fifty rows every two seconds. */
   let showLaunch = $state(false);
+  // Same two-press confirmation as the per-run destructive actions.
+  let armedClear = $state(false);
+  let clearTimer: ReturnType<typeof setTimeout> | null = null;
+  let clearMessage = $state<string | null>(null);
+
+  const finishedCount = $derived(
+    ops.runs.filter((r) => isRunTerminal(r.status)).length,
+  );
+
+  $effect(() => () => {
+    if (clearTimer) clearTimeout(clearTimer);
+  });
+
+  async function clearFinished() {
+    if (!armedClear) {
+      armedClear = true;
+      if (clearTimer) clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => (armedClear = false), 4_000);
+      return;
+    }
+    armedClear = false;
+    const { error, deleted } = await removeFinished(() => refresh?.());
+    clearMessage = error ?? `removed ${deleted} run${deleted === 1 ? "" : "s"}`;
+  }
   let announcement = $state("");
   let previous = new Map<string, string>();
 
@@ -124,6 +150,25 @@
     >
       Refresh now
     </button>
+    {#if !openRunId && finishedCount > 0}
+      <button
+        class={`rounded border px-2 py-1 font-mono text-[11px] ${
+          armedClear
+            ? "border-state-error/60 bg-state-error/15 text-state-error"
+            : "border-line text-muted-foreground hover:text-foreground"
+        }`}
+        disabled={ops.isBusy("delete-all")}
+        title="Removes finished runs from the history. Computed values are not affected."
+        onclick={clearFinished}
+      >
+        {armedClear ? `Delete ${finishedCount} finished?` : "Clear history"}
+      </button>
+    {/if}
+    {#if clearMessage}
+      <span class="font-mono text-[11px] text-muted-foreground" role="status">
+        {clearMessage}
+      </span>
+    {/if}
     <button
       class="rounded border border-line px-2 py-1 font-mono text-[11px] text-muted-foreground hover:text-foreground"
       aria-pressed={ops.paused}

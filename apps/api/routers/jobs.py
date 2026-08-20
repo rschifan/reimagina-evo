@@ -563,6 +563,61 @@ def rerun_run(run_id: str, response: Response) -> RerunResponse:
     )
 
 
+class DeletedRuns(BaseModel):
+    deleted: int
+
+
+@router.delete("/{run_id}", response_model=DeletedRuns)
+def delete_run(
+    run_id: str,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> DeletedRuns:
+    """Forget one finished run. 404 unknown, 409 still live.
+
+    Removes the run envelope and its unit rows — the dashboard's history. It
+    does **not** touch the values the run computed (``indicator_result``) or its
+    provenance (``job_run``): forgetting that a run happened is not undoing what
+    it produced.
+
+    A live run is refused rather than deleted. Its workflow still owns these
+    rows, so deleting the envelope mid-flight would have the remaining steps
+    write into a run that no longer exists — cancel it first.
+    """
+    from reimagina.db import connect
+
+    if not is_run_id(run_id):
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+
+    reader = get_backend(conn).ops_run_reader()
+    row = reader.get_run_row(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
+    if row["status"] not in _RUN_TERMINAL:
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} is still {row['status']} — cancel it first",
+        )
+
+    # Its own committed connection: the pooled one rolls back on teardown, which
+    # would make this look like it worked and change nothing.
+    with contextlib.closing(connect(api_dsn())) as write_conn, write_conn:
+        deleted = get_backend(write_conn).ops_run_reader().delete_run(run_id)
+    return DeletedRuns(deleted=1 if deleted else 0)
+
+
+@router.delete("", response_model=DeletedRuns)
+def delete_finished_runs() -> DeletedRuns:
+    """Forget every finished run, leaving live ones alone.
+
+    Same boundary as the single delete: history goes, computed values stay.
+    """
+    from reimagina.db import connect
+
+    with contextlib.closing(connect(api_dsn())) as conn, conn:
+        deleted = get_backend(conn).ops_run_reader().delete_terminal_runs()
+    return DeletedRuns(deleted=deleted)
+
+
 @router.get("", response_model=RunListResponse)
 def list_runs(
     status: list[RunStatus] | None = Query(None),

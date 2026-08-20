@@ -115,6 +115,24 @@ class OpsRunReader(Protocol):
 
     def list_units_detailed(self, run_id: str) -> list[dict]: ...
 
+    def delete_run(self, run_id: str) -> bool:
+        """Delete one run's envelope and its unit rows. True if a row went.
+
+        History only. ``job_unit`` cascades, but the computed values in
+        ``indicator_result`` and the ``job_run`` provenance rows are separate and
+        deliberately untouched — forgetting that a run happened is not the same
+        as undoing what it produced.
+        """
+        ...
+
+    def delete_terminal_runs(self) -> int:
+        """Delete every finished run, returning how many went.
+
+        Live runs are left alone: their workflow is still writing to these rows,
+        so deleting one would have it recreate a half-run envelope behind you.
+        """
+        ...
+
     def list_executor_health(self) -> list[dict]:
         """Live executors with their heartbeat age in seconds.
 

@@ -164,3 +164,42 @@ def test_executor_health_reports_age_as_a_number(conn):
 
     assert isinstance(rows["test-exec"]["heartbeat_age_s"], float)
     assert rows["test-exec"]["heartbeat_age_s"] >= 0
+
+
+def test_deleting_a_run_takes_its_units_and_leaves_everything_else(conn):
+    """History goes; what the run computed does not.
+
+    `job_unit` cascades from the envelope (r028), but `indicator_result` and
+    `job_run` are separate tables — forgetting that a run happened must not undo
+    what it produced.
+    """
+    keep = _make_run(conn, units=[("alpha", "succeeded")])
+    drop = _make_run(conn, status="succeeded", units=[("beta", "succeeded")])
+    reader = _reader(conn)
+
+    assert reader.delete_run(drop) is True
+
+    assert reader.get_run_row(drop) is None
+    assert reader.list_units_detailed(drop) == []
+    # The untouched run is still whole.
+    assert reader.get_run_row(keep)["units_total"] == 1
+
+
+def test_deleting_an_unknown_or_malformed_run_reports_false(conn):
+    reader = _reader(conn)
+
+    assert reader.delete_run(str(uuid4())) is False
+    assert reader.delete_run("not-a-uuid") is False
+
+
+def test_clearing_history_spares_live_runs(conn):
+    """A running run's workflow is still writing to these rows."""
+    live = _make_run(conn, status="running", units=[("alpha", "running")])
+    done = _make_run(conn, status="succeeded", units=[("beta", "succeeded")])
+    reader = _reader(conn)
+
+    removed = reader.delete_terminal_runs()
+
+    assert removed >= 1
+    assert reader.get_run_row(done) is None
+    assert reader.get_run_row(live) is not None

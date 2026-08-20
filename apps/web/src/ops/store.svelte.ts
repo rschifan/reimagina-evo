@@ -9,6 +9,8 @@
 import { isAbortError } from "../http";
 import {
   cancelRun,
+  deleteFinishedRuns,
+  deleteRun,
   getRunDetail,
   listAois,
   listRuns,
@@ -365,6 +367,27 @@ export async function rerun(
     const res = await rerunRun(runId);
     refreshNow();
     return { error: null, newRunId: res.run_id ?? undefined };
+  } catch (err) {
+    return { error: await describeApiError(err) };
+  } finally {
+    release();
+  }
+}
+
+/** Forget one finished run. Returns an error message, or null. */
+export async function remove(runId: string, refreshNow: () => void) {
+  return await _action(`${runId}:delete`, () => deleteRun(runId), refreshNow);
+}
+
+/** Forget every finished run; returns how many went, or an error. */
+export async function removeFinished(
+  refreshNow: () => void,
+): Promise<{ error: string | null; deleted?: number }> {
+  const release = beginAction("delete-all");
+  try {
+    const res = await deleteFinishedRuns();
+    refreshNow();
+    return { error: null, deleted: res.deleted };
   } catch (err) {
     return { error: await describeApiError(err) };
   } finally {
