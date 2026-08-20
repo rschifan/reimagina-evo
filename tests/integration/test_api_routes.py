@@ -783,3 +783,29 @@ def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):
         polygon_wkt=_polygon_at(-100.0, 20.0, side=0.05),
     )
     assert client.get(f"/indicators?aoi_id={empty_aoi}").json() == []
+
+
+def test_runstore_answers_a_malformed_run_id_instead_of_raising(conn):
+    """`get_run` is typed `dict | None`, and a driver error is not either one.
+
+    ``orchestration_run.id`` is ``uuid``, so asking Postgres about
+    ``'not-a-uuid'`` does not return "no such run" — it raises
+    ``invalid input syntax for type uuid`` and aborts the transaction. Through
+    the API that surfaced as a 500 (``database_error_handler`` maps every
+    non-connection driver error there) for what is plainly a client typo.
+
+    Asserted against a real connection because the guard only matters against a
+    real cast; a stub connection short-circuits on the backend check before the
+    id is ever looked at.
+    """
+    from reimagina.orchestration import runstore
+
+    assert runstore.get_run(conn, "not-a-uuid") is None
+    # The transaction is still usable — an aborted one would fail here, which is
+    # the other half of what the raise used to cost.
+    assert runstore.get_run(conn, str(uuid4())) is None
+
+
+def test_jobs_route_404s_a_malformed_run_id_end_to_end(client):
+    """The same thing through the live app, with the real orchestrator."""
+    assert client.get("/jobs/not-a-uuid").status_code == 404
