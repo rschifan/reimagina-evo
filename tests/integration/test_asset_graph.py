@@ -484,9 +484,13 @@ def test_changing_the_road_network_names_exactly_the_network_indicators(seeded_g
         "indicator.accessibility_block_park_network_m",
         "indicator.livability_block_score",
     }
-    # The discrimination that matters is unchanged: no euclid indicator is
-    # reached, so "the roads changed" still does not mean "the POIs changed".
-    assert not any("_euclid_m" in node for node in downstream)
+    # The discrimination that matters: a road edit must not reach the
+    # edificability or urban-form families, which read attributes and geometry
+    # rather than the network.
+    assert not any(
+        node.startswith(("indicator.edificability_", "indicator.urban_form_"))
+        for node in downstream
+    )
 
 
 def test_changing_buildings_spares_compactness(seeded_graph):
