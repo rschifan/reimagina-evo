@@ -106,21 +106,13 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     // and the user reported the map feeling empty at city scale.
     minzoom: 8,
   },
-  {
-    layerId: "baseline_live:ageb",
-    sourceName: "baseline_agebs",
-    sourceLayerName: "features",
-    typeSlug: "ageb",
-    label: "AGEBs",
-    fillColor: "#374151",
-    fillOpacity: 0.20,
-    lineColor: "#cbd5e1",
-    lineWidth: 1.2,
-    visible: false,
-    // AGEBs are ~50× larger than manzanas — they survive even the
-    // z<10 simplification and read clearly at z=8.
-    minzoom: 8,
-  },
+  // AGEBs are withdrawn from the picker for now. The grain carried no
+  // observations, no indicator results and no aggregation recipes — it was an
+  // empty checkbox, and its rows have been removed from the dataset. Everything
+  // needed to bring it back is still here: the ingest in
+  // `pipeline/inegi_marco.py`, the `ageb` branch in `describeFeature` below, and
+  // the tile function's `role='analysis_unit'` handling. Restoring it means
+  // re-ingesting the grain and reinstating this entry, not rewriting anything.
   {
     layerId: "baseline_live:municipality",
     sourceName: "baseline_municipalities",
