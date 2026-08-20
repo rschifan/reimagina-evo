@@ -118,8 +118,34 @@ export interface SubmitRunBody {
   aoi_id?: string | null;
   scenario_id?: string | null;
   changed_attributes?: string[];
+  /** Whole datasets that changed — resolved to the indicators reading them. */
+  changed_datasets?: string[];
   /** Recompute exactly these, skipping change-set derivation. */
   indicators?: string[];
+}
+
+export interface ChangeInput {
+  dataset: string;
+  attribute: string;
+  indicators: string[];
+  is_version_marker: boolean;
+}
+
+export interface DatasetDependency {
+  dataset: string;
+  relation: string;
+  indicators: string[];
+}
+
+/** What a change-set can name. Declared here rather than imported from the
+ *  catalog page: pages do not depend on each other's clients. */
+export function listChangeInputs(
+  init: { signal?: AbortSignal } = {},
+): Promise<{ attributes: ChangeInput[]; datasets: DatasetDependency[] }> {
+  return jsonRequest<{ attributes: ChangeInput[]; datasets: DatasetDependency[] }>(
+    "/jobs/attributes",
+    init,
+  );
 }
 
 export interface ImpactPreview {

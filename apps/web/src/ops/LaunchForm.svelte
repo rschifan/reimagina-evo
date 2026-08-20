@@ -2,8 +2,11 @@
   import Badge from "../lib/components/ui/Badge.svelte";
   import Card from "../lib/components/ui/Card.svelte";
   import {
+    listChangeInputs,
     listIndicators,
     previewImpact,
+    type ChangeInput,
+    type DatasetDependency,
     type ImpactPreview,
     type IndicatorSummary,
   } from "./api";
@@ -13,19 +16,23 @@
     $props();
 
   /**
-   * Two ways to scope a run, because they answer different questions.
+   * Three ways to scope a run, because they answer different questions.
    *
-   * "stale" is the operational one — recompute whatever is out of date.
-   * "pick" is the one that needs no internal vocabulary: choose indicators by
-   * name. The old form only offered a free-text attribute list, which required
-   * knowing that `num_levels` exists and which indicators read it.
+   * "stale" — recompute whatever is out of date. The operational one.
+   * "changed" — name what changed (an attribute, or a whole dataset such as the
+   *   road network) and let the planner derive the indicators that read it.
+   * "pick" — choose indicators by name, needing no internal vocabulary at all.
    */
-  type Mode = "stale" | "pick";
+  type Mode = "stale" | "changed" | "pick";
 
   let mode = $state<Mode>("stale");
   let aoiId = $state("");
   let scenarioId = $state("");
   let picked = $state.raw<Set<string>>(new Set());
+  let pickedAttrs = $state.raw<Set<string>>(new Set());
+  let pickedDatasets = $state.raw<Set<string>>(new Set());
+  let attrInputs = $state.raw<ChangeInput[]>([]);
+  let datasetInputs = $state.raw<DatasetDependency[]>([]);
   let catalog = $state.raw<IndicatorSummary[]>([]);
   let preview = $state.raw<ImpactPreview | null>(null);
   let previewError = $state<string | null>(null);
@@ -37,10 +44,16 @@
   const body = $derived(
     mode === "pick"
       ? { aoi_id: aoiId || null, indicators: [...picked] }
-      : {
-          aoi_id: aoiId || null,
-          scenario_id: scenarioId.trim() || null,
-        },
+      : mode === "changed"
+        ? {
+            aoi_id: aoiId || null,
+            changed_attributes: [...pickedAttrs],
+            changed_datasets: [...pickedDatasets],
+          }
+        : {
+            aoi_id: aoiId || null,
+            scenario_id: scenarioId.trim() || null,
+          },
   );
 
   $effect(() => {
@@ -48,6 +61,17 @@
     listIndicators()
       .then((rows) => (catalog = rows))
       .catch(() => (catalog = []));
+    listChangeInputs()
+      .then((r) => {
+        // Version markers resolve to the same indicators as the datasets they
+        // stand for, so offering both would be two controls for one change.
+        attrInputs = r.attributes.filter((a) => !a.is_version_marker);
+        datasetInputs = r.datasets;
+      })
+      .catch(() => {
+        attrInputs = [];
+        datasetInputs = [];
+      });
   });
 
   // Ask the planner what this scope would do, before anyone commits to it.
@@ -72,6 +96,12 @@
     picked = next;
   }
 
+  function toggleIn(set: Set<string>, key: string): Set<string> {
+    const next = new Set(set);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  }
+
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     message = null;
@@ -91,7 +121,11 @@
   }
 
   const canSubmit = $derived(
-    !busy && (mode === "stale" || picked.size > 0) && preview?.noop !== true,
+    !busy &&
+      preview?.noop !== true &&
+      (mode === "stale" ||
+        (mode === "pick" && picked.size > 0) ||
+        (mode === "changed" && pickedAttrs.size + pickedDatasets.size > 0)),
   );
 </script>
 
@@ -114,6 +148,18 @@
         </button>
         <button
           type="button"
+          aria-pressed={mode === "changed"}
+          onclick={() => (mode = "changed")}
+          class={`rounded border px-2.5 py-1 text-xs ${
+            mode === "changed"
+              ? "border-accent-strong bg-accent-strong text-white"
+              : "border-line bg-surface-raised text-foreground hover:border-accent/50"
+          }`}
+        >
+          what changed
+        </button>
+        <button
+          type="button"
           aria-pressed={mode === "pick"}
           onclick={() => (mode = "pick")}
           class={`rounded border px-2.5 py-1 text-xs ${
@@ -126,7 +172,60 @@
         </button>
       </div>
 
-      {#if mode === "pick"}
+      {#if mode === "changed"}
+        <div class="rounded border border-line p-2">
+          <div class="mb-1 font-mono text-[11px] text-foreground">
+            attributes
+            <span class="ml-1 text-[10px] text-muted-foreground">
+              a field on a feature
+            </span>
+          </div>
+          <div class="mb-3 flex flex-wrap gap-1.5">
+            {#each attrInputs as input (input.attribute)}
+              <button
+                type="button"
+                aria-pressed={pickedAttrs.has(input.attribute)}
+                title={`${input.dataset}.${input.attribute} — read by ${input.indicators.length} indicator(s)`}
+                onclick={() => (pickedAttrs = toggleIn(pickedAttrs, input.attribute))}
+                class={`rounded border px-2 py-1 font-mono text-[11px] ${
+                  pickedAttrs.has(input.attribute)
+                    ? "border-accent-strong bg-accent-strong text-white"
+                    : "border-line bg-surface-raised text-foreground hover:border-accent/50"
+                }`}
+              >
+                {input.attribute}
+                <span class="ml-1 opacity-60" data-numeric>{input.indicators.length}</span>
+              </button>
+            {/each}
+          </div>
+
+          <div class="mb-1 font-mono text-[11px] text-foreground">
+            whole datasets
+            <span class="ml-1 text-[10px] text-muted-foreground">
+              reloaded or edited — e.g. a street added to the network
+            </span>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {#each datasetInputs as d (d.dataset)}
+              <button
+                type="button"
+                aria-pressed={pickedDatasets.has(d.dataset)}
+                title={`${d.indicators.length} indicator(s) declare an edge to ${d.dataset} (${d.relation})`}
+                onclick={() => (pickedDatasets = toggleIn(pickedDatasets, d.dataset))}
+                class={`rounded border px-2 py-1 font-mono text-[11px] ${
+                  pickedDatasets.has(d.dataset)
+                    ? "border-accent-strong bg-accent-strong text-white"
+                    : "border-line bg-surface-raised text-foreground hover:border-accent/50"
+                }`}
+              >
+                {d.dataset}
+                <span class="ml-1 opacity-60">{d.relation}</span>
+                <span class="ml-1 opacity-60" data-numeric>{d.indicators.length}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {:else if mode === "pick"}
         <div class="rounded border border-line p-2">
           <div class="mb-2 flex items-center gap-2">
             <button
