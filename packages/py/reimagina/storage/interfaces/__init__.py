@@ -34,6 +34,7 @@ from reimagina.storage.interfaces.indicators import (
 )
 from reimagina.storage.interfaces.jobs import (
     JobRunRepository as JobRunRepository,
+    OpsRunReader as OpsRunReader,
     RunPlanRepository as RunPlanRepository,
 )
 from reimagina.storage.interfaces.serving import (
@@ -54,6 +55,7 @@ __all__ = [
     "IndicatorCatalogRepository",
     "IndicatorResultRepository",
     "JobRunRepository",
+    "OpsRunReader",
     "ObservationRepository",
     "OverlapRepository",
     "OverlapTypePairRepository",

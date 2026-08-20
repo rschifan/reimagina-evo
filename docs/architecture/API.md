@@ -32,6 +32,31 @@ domain packages don't import app code") holds.
 | GET | `/aois/{aoi_id}/summaries` | Cached `aoi_indicator_summary` rows. 422 on malformed UUID. |
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features`. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with snapshot registry; frontend-ready. |
+| POST | `/jobs` | Submit a run. Scope it with `changed_attributes`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with the run id, or `status:"noop"` and a **null** run id when the dirty set was empty. |
+| GET | `/jobs` | Run list for the dashboard: rows with unit counts, `total`, unfiltered `status_counts`, executor health and `server_now`, in one response. Repeatable `status=`, `limit=1..200`, `offset`. |
+| GET | `/jobs/{run_id}` | Run status through the orchestrator port. Unchanged. |
+| GET | `/jobs/{run_id}/detail` | Run plus per-unit timings and in-run prerequisites. Falls back to the port during the pre-envelope window. |
+| GET | `/jobs/{run_id}/events` | SSE progress stream, 15 s keep-alive, 300 s cap. |
+| POST | `/jobs/preview` | Dry-run the planner: which indicators *would* recompute, in dependency order, and why. Persists nothing. |
+| GET | `/jobs/attributes` | What a change-set can name — attributes with their dataset, whole-dataset edges, and datasets no indicator consumes. Derived from the registry. |
+| POST | `/jobs/{run_id}/cancel` | Stop a live run. 404 unknown, 409 already finished. |
+| POST | `/jobs/{run_id}/rerun` | New run scoped to this run's non-succeeded indicators. 409 if live or wholly successful. |
+| DELETE | `/jobs/{run_id}` | Forget one finished run (envelope + units). 409 if live. |
+| DELETE | `/jobs` | Forget every finished run; returns how many. |
+
+**Runs: what deleting does and does not touch.** `DELETE` removes the run
+envelope and, by the r028 cascade, its `job_unit` rows — the dashboard's
+history. It does not touch `indicator_result` or the `job_run` provenance:
+forgetting that a run happened is not undoing what it produced. The DBOS system
+tables keep their own record, so `GET /jobs/{run_id}` can still resolve a deleted
+run from the engine plane.
+
+⚠ **The mutating routes are unauthenticated**, like every other route here. That
+is survivable while `REIMAGINA_API_HOST` stays at its `127.0.0.1` default, and
+is not once the API is bound to an interface anything else can reach: `POST
+/jobs` spends real compute and `DELETE /jobs` clears run history for anyone who
+can reach the port. Authentication is the next slice; until it lands, do not
+expose this API beyond loopback.
 
 Download filters (`/values.csv`, `/values.geojson`, `/values.parquet`):
 

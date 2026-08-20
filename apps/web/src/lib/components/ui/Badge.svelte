@@ -2,8 +2,7 @@
   import type { Snippet } from "svelte";
 
   import { cn } from "../../utils";
-
-  type Tone = "neutral" | "fresh" | "stale" | "partial" | "accent";
+  import type { Tone } from "./tone";
 
   let {
     tone = "neutral",
@@ -26,6 +25,7 @@
     stale: "border-state-stale/40 text-state-stale bg-state-stale/10",
     partial: "border-state-partial/40 text-state-partial bg-state-partial/10",
     accent: "border-accent/40 text-accent bg-accent/10",
+    error: "border-state-error/40 text-state-error bg-state-error/10",
   };
 </script>
 

@@ -153,3 +153,47 @@ def test_independent_units_come_out_in_a_stable_order():
         independent
     ), "independent units must come out sorted, not in set-iteration order"
     assert order[-1] == "roll_up"  # the dependent still comes last
+
+
+# ── Dataset-level change ─────────────────────────────────────────────────────
+
+
+def test_a_changed_dataset_seeds_from_its_edges_not_from_reads():
+    """"A street was added to the road network" — not an attribute edit.
+
+    The accessibility indicators declare a spatial edge to `global.road_network`
+    with no attributes on it, so `reads` cannot see the dependency at all. The
+    seed has to come from `inputs`.
+    """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import indicators_for_datasets
+
+    hit = indicators_for_datasets(["global.road_network"], SHIPPED_INDICATORS)
+
+    assert "accessibility_block_school_network_m" in hit
+    assert "accessibility_block_health_network_m" in hit
+    assert "accessibility_block_park_network_m" in hit
+
+
+def test_a_changed_dataset_propagates_downstream():
+    """A composite reading a dirty indicator is dirty too."""
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import indicators_for_datasets
+
+    hit = indicators_for_datasets(["global.building"], SHIPPED_INDICATORS)
+
+    assert "urban_form_block_building_density" in hit
+    # composite is derived_from building_density, so it must follow
+    assert "urban_form_block_composite" in hit
+    assert hit.index("urban_form_block_building_density") < hit.index(
+        "urban_form_block_composite"
+    )
+
+
+def test_a_dataset_nothing_reads_recomputes_nothing():
+    """A coverage gap, not a fault — and it must not read as one."""
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import indicators_for_datasets
+
+    assert indicators_for_datasets(["mex.lot"], SHIPPED_INDICATORS) == ()
+    assert indicators_for_datasets(["not.a.dataset"], SHIPPED_INDICATORS) == ()

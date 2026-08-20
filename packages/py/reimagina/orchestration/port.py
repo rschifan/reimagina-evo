@@ -17,7 +17,7 @@ it is the seam tests monkeypatch.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -133,7 +133,17 @@ class Orchestrator(Protocol):
         scenario_id: str | None = None,
         aoi_id: str | None = None,
         code_version: str = "dev",
-    ) -> RunHandle: ...
+        indicators: Sequence[str] | None = None,
+    ) -> RunHandle:
+        """Submit a run and return a handle to it.
+
+        ``indicators``, when given, names the units to compute directly and
+        skips change-set derivation. It is an optional keyword rather than a
+        separate port method on purpose: every implementation already resolves
+        its plan through ``plan_run``, so honouring it is a pass-through, while
+        a new method would be an obligation each ops-plane has to implement.
+        """
+        ...
 
     def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None: ...
 

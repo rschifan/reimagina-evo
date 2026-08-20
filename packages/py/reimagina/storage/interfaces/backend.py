@@ -31,7 +31,11 @@ from reimagina.storage.interfaces.indicators import (
     IndicatorResultRepository,
     AOISummaryRepository,
 )
-from reimagina.storage.interfaces.jobs import JobRunRepository, RunPlanRepository
+from reimagina.storage.interfaces.jobs import (
+    JobRunRepository,
+    OpsRunReader,
+    RunPlanRepository,
+)
 from reimagina.storage.interfaces.serving import (
     ServingReader,
     ExploreReader,
@@ -80,3 +84,5 @@ class StorageBackend(Protocol):
     def indicator_result_repo(self) -> IndicatorResultRepository: ...
 
     def run_plan_repo(self) -> RunPlanRepository: ...
+
+    def ops_run_reader(self) -> OpsRunReader: ...

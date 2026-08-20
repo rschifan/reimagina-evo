@@ -1,8 +1,8 @@
 <script lang="ts">
   import { ArrowLeft, Download } from "@lucide/svelte";
 
-  import Badge from "./lib/components/ui/Badge.svelte";
-  import Card from "./lib/components/ui/Card.svelte";
+  import Badge from "../lib/components/ui/Badge.svelte";
+  import Card from "../lib/components/ui/Card.svelte";
   import DatasetPanel from "./DatasetPanel.svelte";
   import LineageGraph from "./LineageGraph.svelte";
   import {

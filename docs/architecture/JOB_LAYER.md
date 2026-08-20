@@ -74,11 +74,19 @@ The queue engine's own modules — the task definitions, the queue app, the LIST
 ```python
 class Orchestrator(Protocol):                                    # port.py:106
     def submit_run(self, conn, *, changed_attributes, edited_features,
-                   scenario_id=None, aoi_id=None, code_version="dev") -> RunHandle: ...
+                   scenario_id=None, aoi_id=None, code_version="dev",
+                   indicators=None) -> RunHandle: ...
     def get_run(self, conn, run_id: str) -> RunStatus | None: ...
     def cancel_run(self, conn, run_id: str) -> bool: ...
     def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]: ...
 ```
+
+`indicators` names the units to compute directly and skips change-set
+derivation — the "recompute exactly these" request, which neither a change-set
+nor freshness can express. It is an optional keyword rather than a fifth method
+on purpose: every implementation already resolves its plan through `plan_run`,
+so honouring it is a pass-through, while a new method would be an obligation
+each ops-plane has to implement.
 
 | Type | Shape | Note |
 |---|---|---|

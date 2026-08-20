@@ -66,3 +66,79 @@ class RunPlanRepository(Protocol):
     def delete(self, *, plan_id: str) -> int: ...
 
     def sweep(self, *, older_than_hours: int) -> int: ...
+
+
+class OpsRunReader(Protocol):
+    """Read side of the run envelope, for the Ops dashboard.
+
+    Reads ``jobs_runtime.orchestration_run`` / ``job_unit`` /
+    ``ops_executor_heartbeat`` — the same tables ``orchestration.runstore``
+    writes, and deliberately not through it. ``runstore`` belongs to the
+    ops-plane and its own docstring lists it among the modules an ops-plane
+    branch may delete outright; a dashboard the API serves must outlive that.
+    Writes stay entirely in ``runstore``: this Protocol has no mutator.
+
+    Every method that takes a ``run_id`` guards the id shape before it reaches
+    Postgres. ``orchestration_run.id`` is a uuid, so a non-uuid arrives as a
+    ``DataError``, which the API's error handler maps to a 500 *and* aborts the
+    request transaction on the way out — a 404 has to be decided here.
+    """
+
+    def list_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Newest runs first, each with its unit counts.
+
+        The counts come from a lateral aggregate over the *already limited* run
+        set. Joining first and grouping after would aggregate every ``job_unit``
+        row ever written before the limit applied, on a query the dashboard
+        polls every two seconds.
+        """
+        ...
+
+    def count_runs(self, *, statuses: list[str] | None = None) -> int: ...
+
+    def count_runs_by_status(self) -> dict[str, int]:
+        """Unfiltered tallies, one per status that has rows.
+
+        Unfiltered on purpose: counts that shrink to match the active filter
+        make the filter chips useless for finding what you filtered away.
+        Statuses with no rows are absent — the caller zero-fills.
+        """
+        ...
+
+    def get_run_row(self, run_id: str) -> dict | None: ...
+
+    def list_units_detailed(self, run_id: str) -> list[dict]: ...
+
+    def delete_run(self, run_id: str) -> bool:
+        """Delete one run's envelope and its unit rows. True if a row went.
+
+        History only. ``job_unit`` cascades, but the computed values in
+        ``indicator_result`` and the ``job_run`` provenance rows are separate and
+        deliberately untouched — forgetting that a run happened is not the same
+        as undoing what it produced.
+        """
+        ...
+
+    def delete_terminal_runs(self) -> int:
+        """Delete every finished run, returning how many went.
+
+        Live runs are left alone: their workflow is still writing to these rows,
+        so deleting one would have it recreate a half-run envelope behind you.
+        """
+        ...
+
+    def list_executor_health(self) -> list[dict]:
+        """Live executors with their heartbeat age in seconds.
+
+        Reads the ``jobs_runtime`` base table rather than
+        ``explore.ops_executor_health_v``: ``explore`` is a human-facing
+        contract, not an application dependency (AGENTS.md), and the view emits
+        an ``interval`` where this consumer needs a float.
+        """
+        ...

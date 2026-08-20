@@ -120,3 +120,42 @@ def test_an_unusable_run_id_is_404_not_500(monkeypatch, run_id):
     with TestClient(app) as c:
         assert c.get(f"/jobs/{run_id}").status_code == 404
     app.dependency_overrides.clear()
+
+
+def test_malformed_run_id_on_detail_is_404_not_500(monkeypatch):
+    """A non-uuid must not reach Postgres.
+
+    ``orchestration_run.id`` is uuid, so a bad id surfaces as ``DataError``,
+    which ``errors.database_error_handler`` maps to 500 *and* aborts the
+    request's transaction on the way out — a 500 for what is plainly a typo.
+    """
+    from apps.api.app import create_app
+    from apps.api.deps import get_db_conn
+
+    class _FakeOrchestrator:
+        def get_run(self, conn, run_id):
+            return None
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator",
+        lambda mode=None: _FakeOrchestrator(),
+    )
+
+    class _Reader:
+        def get_run_row(self, run_id):
+            return None
+
+        def list_units_detailed(self, run_id):
+            return []
+
+    monkeypatch.setattr(
+        "apps.api.routers.jobs.get_backend",
+        lambda conn: type("_B", (), {"ops_run_reader": lambda self: _Reader()})(),
+    )
+
+    app = create_app(initialise_pool=False)
+    app.dependency_overrides[get_db_conn] = lambda: iter([object()])
+    with TestClient(app) as c:
+        for bad in ("not-a-uuid", "42", "1;DROP TABLE x"):
+            assert c.get(f"/jobs/{bad}/detail").status_code == 404, bad
+    app.dependency_overrides.clear()
