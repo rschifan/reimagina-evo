@@ -109,9 +109,22 @@ class IndicatorDependencies(BaseModel):
     downstream: list[DependencyEdge]
 
 
+def _as_str(value: UUID | None) -> str | None:
+    """Repositories take ids as strings; the routes take them as ``UUID``.
+
+    Typing the parameter is the whole fix. These ids reach columns declared
+    ``uuid``, so a malformed one used to travel all the way to Postgres, come
+    back as ``InvalidTextRepresentation`` — a ``psycopg2.DataError`` — and land
+    on ``errors.database_error_handler``, which maps every non-connection driver
+    error to 500. A client typo is not a server fault. FastAPI rejects it at the
+    boundary with 422 instead, and the repositories keep their string signatures.
+    """
+    return None if value is None else str(value)
+
+
 @router.get("", response_model=list[IndicatorSummary])
 def list_indicators(
-    aoi_id: str | None = Query(
+    aoi_id: UUID | None = Query(
         default=None,
         description=(
             "Restrict to indicators that hold at least one current baseline "
@@ -126,7 +139,7 @@ def list_indicators(
     rows = (
         get_backend(conn)
         .indicator_catalog_repo()
-        .list_indicators(with_values_for_aoi=aoi_id)
+        .list_indicators(with_values_for_aoi=_as_str(aoi_id))
     )
     return [IndicatorSummary(**_catalog_row_to_dict(row)) for row in rows]
 
@@ -217,7 +230,7 @@ def get_indicator_lineage(
 @router.get("/{slug}/values", response_model=list[IndicatorValue])
 def list_values(
     slug: str,
-    scenario_id: str | None = Query(
+    scenario_id: UUID | None = Query(
         default=None, description="Optional scenario filter; base city if omitted"
     ),
     limit: int = Query(default=1_000, ge=1, le=10_000),
@@ -238,7 +251,7 @@ def list_values(
         .indicator_result_repo()
         .list_current_for_indicator(
             indicator_slug=slug,
-            scenario_id=scenario_id,
+            scenario_id=_as_str(scenario_id),
             limit=limit,
         )
     )
@@ -272,7 +285,7 @@ class IndicatorValueStats(BaseModel):
 @router.get("/{slug}/stats", response_model=IndicatorValueStats)
 def get_values_stats(
     slug: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
     aoi_id: UUID | None = Query(
         default=None,
@@ -286,20 +299,21 @@ def get_values_stats(
 ) -> IndicatorValueStats:
     """Return count + percentiles for an indicator's current numeric values."""
     _ensure_indicator_exists(conn, slug)
-    aoi_id_str = str(aoi_id) if aoi_id is not None else None
+    aoi_id_str = _as_str(aoi_id)
+    scenario_id_str = _as_str(scenario_id)
     stats = (
         get_backend(conn)
         .indicator_result_repo()
         .value_stats(
             indicator_slug=slug,
-            scenario_id=scenario_id,
+            scenario_id=scenario_id_str,
             feature_type=feature_type,
             aoi_id=aoi_id_str,
         )
     )
     return IndicatorValueStats(
         slug=slug,
-        scenario_id=scenario_id,
+        scenario_id=scenario_id_str,
         feature_type=feature_type,
         aoi_id=aoi_id_str,
         **stats,
@@ -309,7 +323,7 @@ def get_values_stats(
 @router.get("/{slug}/values.csv", response_class=StreamingResponse)
 def download_values_csv(
     slug: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -327,7 +341,7 @@ def download_values_csv(
         .indicator_result_repo()
         .list_current_with_geometry(
             indicator_slug=slug,
-            scenario_id=scenario_id,
+            scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             limit=limit,
         )
@@ -343,7 +357,7 @@ def download_values_csv(
 @router.get("/{slug}/values.geojson")
 def download_values_geojson(
     slug: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -355,7 +369,7 @@ def download_values_geojson(
         .indicator_result_repo()
         .list_current_with_geometry(
             indicator_slug=slug,
-            scenario_id=scenario_id,
+            scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             limit=limit,
         )
@@ -372,7 +386,7 @@ def download_values_geojson(
 @router.get("/{slug}/values.parquet")
 def download_values_parquet(
     slug: str,
-    scenario_id: str | None = Query(default=None),
+    scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -384,7 +398,7 @@ def download_values_parquet(
         .indicator_result_repo()
         .list_current_with_geometry(
             indicator_slug=slug,
-            scenario_id=scenario_id,
+            scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             limit=limit,
         )

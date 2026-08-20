@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException
@@ -37,7 +38,12 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 class WithinPolygonRequest(BaseModel):
     """Inputs for the within-polygon count."""
 
-    aoi_id: str = Field(
+    # ``UUID``, not ``str``. ``feature_aoi_v.aoi_id`` is declared ``uuid``, so a
+    # malformed value reached Postgres and returned
+    # ``InvalidTextRepresentation`` — which is a ``DataError``, *not* the
+    # ``InvalidParameterValue`` the handler below catches, so it fell through to
+    # the generic 500. Pydantic rejects it as a 422 before any SQL runs.
+    aoi_id: UUID = Field(
         ..., description="AOI scope — bounds the search to one city / area."
     )
     polygon: dict = Field(
@@ -98,7 +104,7 @@ def count_within_polygon(
             get_backend(conn)
             .serving_reader()
             .count_features_within_polygon(
-                aoi_id=payload.aoi_id,
+                aoi_id=str(payload.aoi_id),
                 polygon_geojson=polygon_json,
                 type_slugs=list(payload.type_slugs),
             )

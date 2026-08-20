@@ -86,8 +86,15 @@ dev = [
     "httpx>=0.27",
     # mapbox_vector_tile decodes MVT bytes in the r017 tile-function tests.
     "mapbox-vector-tile>=2.1",
-    # `make lint` runs this; CI gates on it. Pinned to match the CI step.
+    # Both gates, exact-pinned, and declared here so `uv.lock` governs them like
+    # everything else. A formatter is a gate whose *output* is the contract: two
+    # ruff versions disagree about how to wrap the same line, so an unpinned one
+    # means `ruff format --check` fails CI on code the author's own ruff had just
+    # formatted. It used to be pinned only in the workflow, with the Makefile
+    # calling bare `ruff` on the assumption it was "commonly installed globally"
+    # — which made agreement a coincidence rather than a property.
     "mypy==2.3.1",
+    "ruff==0.6.9",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -120,11 +127,14 @@ ignore_missing_imports = true
 # ⚠ `exclude` is NOT enough here, and using it alone passed locally while
 # failing CI. It filters directory *discovery* only — a module reached through
 # an import is analysed regardless, and `apps/cli/perf.py` imports
-# `reimagina.perf.runner`. It looked fine locally purely because the package is
-# installed without a `py.typed`, so mypy treated it as untyped and skipped it;
-# CI does not install the package, so `reimagina` resolved from source instead.
-# `ignore_errors` applies however the module was reached, which is the property
-# actually wanted.
+# `reimagina.perf.runner`. It looked fine locally purely because the package was
+# then installed without a `py.typed`, so mypy treated it as untyped and skipped
+# it, while CI did not install the package at all and resolved `reimagina` from
+# source. Both halves of that have since changed — the package ships a
+# `py.typed`, and CI installs it through `uv sync` — so the two now agree. Keep
+# `ignore_errors` regardless: it applies however the module was reached, which
+# is the property actually wanted and the only one that survives another such
+# change.
 [[tool.mypy.overrides]]
 module = "reimagina.perf.*"
 ignore_errors = true

@@ -86,7 +86,15 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
 
     # Enqueue on a dedicated committed connection — the API pool connection
     # rolls back on teardown, which would discard the run + queued units.
-    with connect(api_dsn()) as conn:
+    #
+    # ⚠ `closing()` around it, and the connection itself as the inner context.
+    # psycopg2's connection context manager scopes the *transaction*: it commits
+    # or rolls back and leaves the socket open. This runs once per submit in a
+    # long-lived API process, so the bare `with connect(...)` it replaces leaked
+    # a backend on every POST until Postgres ran out. Same reasoning as
+    # `dbos_app._pg` and `jobs._lifecycle.record_failed_job_run`; the inner
+    # context keeps the commit-on-success the enqueue depends on.
+    with contextlib.closing(connect(api_dsn())) as conn, conn:
         handle = orchestrator.submit_run(
             conn,
             changed_attributes=body.changed_attributes or [],
@@ -201,12 +209,28 @@ async def _event_stream(run_id: str) -> AsyncIterator[str]:
 
 
 @router.get("/{run_id}/events")
-def stream_run_events(
-    run_id: str,
-    conn: psycopg2.extensions.connection = Depends(get_db_conn),
-) -> StreamingResponse:
+def stream_run_events(run_id: str) -> StreamingResponse:
+    """404 an unknown run, then stream. Owns its connection for the check only.
+
+    ⚠ **Not** ``Depends(get_db_conn)``, which is what this used to take. FastAPI
+    closes a ``yield`` dependency after the *response completes*, and a
+    ``StreamingResponse`` does not complete until its body iterator is
+    exhausted — so a pool connection borrowed here stayed borrowed for the whole
+    subscription, up to ``_STREAM_MAX_SECONDS``. With ``REIMAGINA_API_POOL_MAX``
+    at 16, seventeen concurrent subscribers starved every other route in the
+    process for five minutes, for a connection this route stops using the moment
+    the check returns.
+
+    A short-lived connection of its own instead, closed before streaming starts,
+    exactly as ``submit_run`` and ``health._probe_db`` do. The progress stream
+    itself needs no connection from us: ``subscribe_progress`` takes none,
+    because no engine's progress transport is the caller's pooled one.
+    """
+    from reimagina.db import connect
     from reimagina.orchestration.factory import get_orchestrator
 
-    if get_orchestrator().get_run(conn, run_id) is None:
+    with contextlib.closing(connect(api_dsn())) as conn:
+        found = get_orchestrator().get_run(conn, run_id) is not None
+    if not found:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     return StreamingResponse(_event_stream(run_id), media_type="text/event-stream")

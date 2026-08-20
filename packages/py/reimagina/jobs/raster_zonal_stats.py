@@ -265,6 +265,12 @@ def run_raster_zonal_stats(
             records=records,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
+            # The scope this run actually recomputed: one grain, optionally one
+            # AOI. Retirement is restricted to it, so a block-grain run cannot
+            # retire the same prefix's AGEB values and an AOI-scoped run cannot
+            # retire everything outside its AOI.
+            feature_type_id=feature_type_id,
+            aoi_id=aoi_id,
         )
     except ConcurrentRasterRun:
         _finalise_run_safely(
@@ -453,7 +459,20 @@ def _run_critical_section_postgres(
     records: list[dict[str, Any]],
     source_id: str,
     ingestion_run_id: str,
+    feature_type_id: str,
+    aoi_id: str | None = None,
 ) -> None:
+    """Retire the prefix and write the new rows, under the prefix lock.
+
+    ``feature_type_id`` and ``aoi_id`` describe **what this run recomputed**,
+    and scoping the retire to them is load-bearing rather than tidy.
+    ``bulk_upsert_current`` already retires per ``(feature_id, attribute_key)``,
+    so the prefix-wide retire exists only to catch rows the new run *no longer
+    writes* — a feature that dropped below the coverage threshold, a statistic
+    no longer produced. Its scope therefore has to be exactly the run's scope.
+    Unscoped, it also caught every other grain's and every other AOI's rows,
+    retired them, and re-inserted nothing in their place.
+    """
     dsn = direct_dsn or os.environ.get("DATABASE_URL_DIRECT")
     if not dsn:
         raise RuntimeError(
@@ -479,6 +498,8 @@ def _run_critical_section_postgres(
         tx_backend = backend_for_connection(tx_conn)
         tx_backend.observation_repo().retire_current_by_prefix(
             prefix=attribute_key_prefix,
+            feature_type_id=feature_type_id,
+            aoi_id=aoi_id,
         )
         tx_backend.observation_repo().bulk_upsert_current(
             records,

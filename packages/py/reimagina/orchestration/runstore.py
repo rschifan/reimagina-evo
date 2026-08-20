@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from typing import Any
+from uuid import UUID
 
 from reimagina.orchestration.port import RUN_TERMINAL_STATES, UNIT_TERMINAL_STATES
 from reimagina.storage import backend_for_connection
@@ -25,6 +26,33 @@ def _is_postgres(conn: Any) -> bool:
         return backend_for_connection(conn).name == "postgres"
     except TypeError:
         return False
+
+
+def _is_run_id(run_id: Any) -> bool:
+    """Whether ``run_id`` could name a row at all.
+
+    ``orchestration_run.id`` is ``uuid`` (r028), so anything that is not one
+    cannot be a run — but asked in SQL the question is not answered, it *fails*:
+    Postgres raises ``invalid input syntax for type uuid``, psycopg2 surfaces it
+    as ``DataError``, and ``apps.api.errors.database_error_handler`` maps every
+    non-connection driver error to 500. ``GET /jobs/whatever`` therefore returned
+    a server error for what is plainly a client typo, and aborted the request's
+    transaction on the way out.
+
+    Answering it here keeps the port's contract intact rather than patching the
+    status code at the route: ``get_run`` is typed ``dict | None``, and None is
+    the truthful answer for an id no run can have. Exactly the reasoning
+    ``dbos_orchestrator._from_workflow`` already applies to a database DBOS has
+    never launched against — a question with an obvious answer must not reach the
+    caller as a driver exception.
+    """
+    if isinstance(run_id, UUID):
+        return True
+    try:
+        UUID(str(run_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def create_run(
@@ -178,8 +206,13 @@ def finalize_run(conn: Any, *, run_id: str, status: str) -> bool:
 
 
 def get_run(conn: Any, run_id: str) -> dict[str, Any] | None:
-    """Return ``{run_id, status, units:[{indicator,status,detail}]}`` or None."""
-    if not _is_postgres(conn):
+    """Return ``{run_id, status, units:[{indicator,status,detail}]}`` or None.
+
+    Only this reader guards the id shape, and only because only this one is
+    reachable with an id a client made up. The writers below are called with ids
+    that came from a run this process already opened.
+    """
+    if not _is_postgres(conn) or not _is_run_id(run_id):
         return None
     with conn.cursor() as cur:
         cur.execute(
