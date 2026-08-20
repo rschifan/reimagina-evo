@@ -237,7 +237,13 @@ describe("timelineOf", () => {
   });
 
   it("is empty for a run with no units", () => {
-    expect(timelineOf([], now)).toEqual({ rows: [], spanMs: 0, elapsedMs: 0, peak: 0 });
+    expect(timelineOf([], now)).toEqual({
+      rows: [],
+      spanMs: 0,
+      elapsedMs: 0,
+      ticks: [],
+      peak: 0,
+    });
   });
 
   it("shows the wait before a prerequisite cleared as queued time", () => {
@@ -300,5 +306,33 @@ describe("timeline axis stability", () => {
   it("rounds a long run up to whole hours rather than inventing steps", () => {
     expect(niceSpan(3_600_001)).toBe(7_200_000);
     expect(niceSpan(1_000)).toBe(5_000);
+  });
+});
+
+describe("axis ticks", () => {
+  it("labels five marks across the axis in elapsed time", () => {
+    const t = timelineOf(
+      [
+        {
+          indicator: "a",
+          status: "succeeded" as const,
+          depends_on: [],
+          queued_at: "2026-08-20T10:00:00+00:00",
+          started_at: "2026-08-20T10:00:00+00:00",
+          completed_at: "2026-08-20T10:00:20+00:00",
+        },
+      ],
+      Date.parse("2026-08-20T10:00:20+00:00"),
+    );
+
+    expect(t.ticks.map((x) => x.atPct)).toEqual([0, 25, 50, 75, 100]);
+    // The axis is what tells a reader the x-position means time rather than
+    // a proportion filled — without it a bar that starts late looks reversed.
+    expect(t.ticks[0].label).toBe("0.0s");
+    expect(t.ticks[4].label).toBe("20.0s");
+  });
+
+  it("has no ticks when there is nothing to draw", () => {
+    expect(timelineOf([], Date.now()).ticks).toEqual([]);
   });
 });
