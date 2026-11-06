@@ -146,3 +146,25 @@ load this file directly, so the duplicate was a maintenance instruction
 pointing at nothing. Keep it that way — one file, no copy to drift from.
 
 If a system change makes inspection harder, that is a maintenance failure.
+
+## Authorship — non-negotiable
+
+**Rossano Schifanella is the only actor on this repository's history.** Every
+commit, in every situation, without exception:
+
+- author and committer are `Rossano <rossano.schifanella@gmail.com>`
+- no `Co-Authored-By` trailer for any agent or tool
+- no `Claude-Session`, session URL, or any other agent attribution, in commit
+  messages, pull request titles and descriptions, code comments, or anything
+  else written into this repository
+- an agent that cannot push under that identity hands the work over as a patch
+  for Rossano to apply and push; it does not push under its own credential
+
+This is enforced, not merely documented. `.claude/settings.json` sets
+`attribution` to empty for commits and PRs and turns off `sessionUrl`, and a
+`PreToolUse` hook refuses `git commit` whenever `user.email` is anything else.
+Keep both in place; deleting either silently returns the repository to
+tool-attributed history.
+
+A `CLAUDE.md`-style filename appearing in a commit message because the
+*codebase* references one is not attribution and is fine.
