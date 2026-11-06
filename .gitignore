@@ -98,3 +98,9 @@ artifacts/
 # locally — a repeat fetch of the same polygon drops from ~125 s to ~0 s — but
 # it is derived data; the graph that matters lives in Postgres.
 cache/
+
+# Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
+# retirement left 6.8 MB of them tracked under a dotted directory, where a
+# review diff never showed them). Derived data: reproducible from the pipeline
+# against the INEGI sources, and the old rows stay in git history regardless.
+.*-backup/

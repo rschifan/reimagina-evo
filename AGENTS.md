@@ -114,7 +114,12 @@ Testing is non-optional.
 | `tests/contract` | architectural boundaries and repo guardrails |
 | `tests/conformance` | the `Orchestrator` port contract, per implementation |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
+| `tests/workloads` | how an ops plane schedules; asserts what must hold for any engine, records what two may differ on |
+| `tests/recovery` | crash recovery across a real SIGKILL; opt-in via `REIMAGINA_RECOVERY_TEST=1` |
 | `docs/architecture/TESTING.md` | DB contract target |
+
+CI gates `unit`, `contract`, `integration` and `conformance` only. The other
+three are hand-run.
 
 Rules:
 
@@ -133,6 +138,11 @@ When changing DB structure, read paths, or inspection surfaces:
 3. update `explore` if the engineer-facing inspection surface changed
 4. keep CLI inspection commands reading from `explore`
 5. add/update tests
-6. update `CLAUDE.md`, `AGENTS.md`, `infra/tiles/layers.json`, and relevant docs when the contract changes
+6. update `AGENTS.md`, `infra/tiles/layers.json`, and relevant docs when the contract changes
+
+This file is the only agent-instruction file in the repo. It used to name a
+`CLAUDE.md` alongside itself; there has never been one, and agent harnesses
+load this file directly, so the duplicate was a maintenance instruction
+pointing at nothing. Keep it that way — one file, no copy to drift from.
 
 If a system change makes inspection harder, that is a maintenance failure.
