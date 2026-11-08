@@ -107,3 +107,6 @@ artifacts/
 # locally — a repeat fetch of the same polygon drops from ~125 s to ~0 s — but
 # it is derived data; the graph that matters lives in Postgres.
 cache/
+
+# ── Delivery PDFs (generated; built at delivery time from docs/delivery/*.md)
+docs/delivery/pdf/

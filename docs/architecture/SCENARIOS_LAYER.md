@@ -281,7 +281,7 @@ apply_override(
 
 `apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:42-44`).
 
-No CLI command or API route writes override rows today. The only caller in the tree is the what-if integration test (`tests/integration/test_scenario_whatif.py:69`); everything downstream of the table — change-set derivation, the overlay, the run — is wired.
+No CLI command or API route writes override rows today, so nothing a user can reach authors an edit. The write surface itself exists and is exercised: `apply_override` (`overrides.py:26`), `apply_overrides` (`:62`) and `publish_scenario_version` (`:85`) are called from four integration tests — `test_scenario_whatif.py`, `test_edificability_pipeline.py`, `test_asset_publish.py` and `test_freshness_driven_recompute.py`. Everything downstream of the table — change-set derivation, the overlay, the run — is wired. What is missing is an HTTP or CLI route into it.
 
 ---
 
@@ -449,4 +449,4 @@ curated_geo.observation ─────┼──► scenario_override ──► 
 
 `feature` is the shared anchor. Scenarios contribute only override rows. A run resolves the three-way overlay in SQL at read time and writes its effects to `indicator_result`. The baseline is never modified.
 
-Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`overrides.py:74-90`).
+Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`effective_numeric`, `overrides.py:169-181`).
