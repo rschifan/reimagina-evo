@@ -21,7 +21,9 @@ These modes are not mutually exclusive — a project will typically use all thre
 ## Pipeline
 
 ### Bronze
-The raw landing zone in object storage. Every external dataset is copied here exactly as received from the source, before any transformation. Bronze files are **immutable** — they are never modified or deleted. This enables full re-processing from scratch at any time without re-fetching data from the source.
+The raw landing zone in object storage. An external dataset is copied here exactly as received from the source, before any transformation. Bronze files are **immutable** — never modified or deleted — which is what makes full re-processing possible without re-fetching from the source.
+
+⚠ **Bronze is required unless the registered source is already an immutable mirror, in which case that mirror *is* bronze.** The Azure data lake is such a mirror, so `points` and `inegi_marco` land straight to silver rather than duplicating gigabytes to buy a guarantee that already holds; both record the reason in their own docstrings. `cdmx`, which fetches from upstream portals directly, does land bronze. Read the rule as being about the guarantee, not about the copy.
 
 ### Silver
 The cleaned intermediate zone in object storage. Bronze data is standardized here: coordinate reference systems are reprojected to EPSG:4326, invalid geometries are repaired, and records are validated against the registered schema. Silver files are still in source structure, not yet in the canonical model.

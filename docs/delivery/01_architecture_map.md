@@ -189,11 +189,18 @@ twelve times more expensive.
 
 ### 6.2 Ingestion
 
-An ingestion run follows a medallion pattern. The source file is copied **as
-received** into bronze, so the original bytes survive whatever happens later.
-Silver holds the normalised form — one CRS, validated geometry, consistent
-column names. Only then does data reach `curated_geo`, where features and
-observations are written under a source and a dataset version.
+An ingestion run follows a medallion pattern. Bronze holds the source **as
+received**, so the original bytes survive whatever happens later; silver holds
+the normalised form — one CRS, validated geometry, consistent column names.
+Only then does data reach `curated_geo`, where features and observations are
+written under a source and a dataset version.
+
+The bronze stage is about the *guarantee*, not the copy. Where the registered
+source is already an immutable mirror — as the Azure data lake is — the
+pipeline lands straight to silver rather than duplicating gigabytes to buy a
+guarantee that already holds. Two of the three vector pipelines do this and
+record why; the one that fetches from upstream portals directly does land
+bronze.
 
 ## 7. Deployment View
 
@@ -315,6 +322,10 @@ that does not.
 | T4 | **Geometry cannot be edited by a scenario.** Overrides carry numeric and text values only | Scenario support is attribute-level; geometric what-ifs are future work |
 | T5 | **A single database is the scaling bound.** Every indicator contends for the same PostGIS | Adequate at the delivered scale; revisit before a multi-city deployment |
 | T6 | **Row-level security is inert.** The `r011` policies are permissive while `app.current_project_id` is unset, and nothing sets it; `FORCE ROW LEVEL SECURITY` and a non-owner role were deferred | Multi-tenant isolation is not enforced today. Required before more than one project shares a database |
+| T7 | **`storage_uri` records two different things.** `points` and `inegi_marco` register the upstream path; `cdmx` overwrites it with the local bronze path | Both are traceable, but a provenance column that answers "where did this come from" for two sources and "where is my copy" for a third is not provenance. Needs a decision, not a patch |
+| T8 | **Geometry validity is enforced only in the pipeline.** `silver.clean_vector` repairs and validates; nothing asserts the invariant at the database boundary | The failure mode is a loud GEOS `TopologyException`, not a silently wrong number, which is why this ranks where it does. A per-row `ST_IsValid` CHECK is the wrong fix on ~1.5M polygons; an `explore` view counting invalid geometries per type would fit the existing inspection contract |
+| T9 | **`ST_Intersection` is evaluated three times per candidate pair** in the overlap query — in the measure, the ratio and the `WHERE` | A single evaluation via `LATERAL` is semantically identical, but no measurement supports a rewrite yet. `PERFORMANCE.md` benchmarks this path; change it only against those numbers |
+| T10 | **Three database stacks are in play.** Performance baselines were measured on PostgreSQL 17 / PostGIS 3.4, CI runs PostgreSQL 16 / PostGIS 3.4 / pgRouting 3.6.1 | GEOS behaviour on invalid input changes between PostGIS minors, which is the layer T8 concerns. The stacks should be made to agree and the baselines re-measured |
 
 ## 12. Glossary
 
