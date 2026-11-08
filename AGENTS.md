@@ -2,6 +2,36 @@
 
 Operational rules for agents working in this repo.
 
+## Authorship
+
+Rossano Schifanella is the only actor on this repository's history. Every
+commit is authored **and** committed by `Rossano
+<rossano.schifanella@gmail.com>`. There is no co-author trailer, no session
+URL, and no agent attribution anywhere — not in commit messages, not in pull
+request text, not in code comments, not in docs.
+
+First thing in a fresh clone:
+
+```bash
+git config user.name "Rossano"
+git config user.email "rossano.schifanella@gmail.com"
+```
+
+An agent that cannot commit under that identity hands over a patch. It does
+not push under its own credential.
+
+Two things in `.claude/` enforce this, and both are tracked rather than local,
+because a rule that does not travel with the repository is not a rule:
+
+- `settings.json` empties agent commit and PR attribution, so no trailer is
+  appended in the first place
+- `hooks/require-rossano-identity.sh` refuses `git commit` outright when
+  `user.email` is anything else
+
+The hook exists because the failure is silent and one-way: a wrong
+`user.email` is invisible until the commit already carries it, and by then
+only rewriting history takes it back out.
+
 ## Repo map
 
 - `apps/`: deployable entrypoints

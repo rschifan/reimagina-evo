@@ -80,9 +80,18 @@ infra/docker/volumes/
 # ── Dated backup snapshots ───────────────────────────────────────────────────
 [0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 
-# ── Agent instruction files (local only, not published) ─────────────────────
+# ── Agent instruction files ─────────────────────────────────────────────────
+# CLAUDE.md stays local. `.claude/` does not, in full: the authorship rule is
+# only a rule if it travels with the repository, so the settings that empty
+# agent attribution and the hook that enforces the committer identity are
+# tracked. A directory ignored with a trailing slash cannot be re-included
+# file by file — git never descends into it — hence `.claude/*` and the two
+# negations. Everything else under `.claude/`, settings.local.json included,
+# stays ignored.
 CLAUDE.md
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.log
