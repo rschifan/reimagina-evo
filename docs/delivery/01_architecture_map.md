@@ -242,13 +242,44 @@ and scenario coexist and can be read side by side. An indicator a scenario
 has not recomputed falls back to its baseline value rather than showing a
 hole in the map.
 
-### 8.4 Testing
+### 8.4 Security posture
 
-Tests are layered by what they can honestly prove: unit tests for pure logic,
-integration tests against a real PostGIS, contract tests for architectural
-boundaries, conformance tests asserting the orchestrator port contract
-against each implementation, and performance tests for explain-plan and
-budget checks.
+Two things are worth stating precisely, because one is stronger than a
+reader would assume and the other is weaker.
+
+**Raster access is closed by default.** titiler's own `DatasetPathParams`
+accepts any `url` and hands it to GDAL, so mounting it in-process would have
+exposed arbitrary host-file reads — `/cog/info?url=file:///etc/passwd`.
+`apps/api/cog_security.py` replaces it with a validator accepting only
+`file://` URLs beneath the configured data root, resolving symlinks and
+rejecting escapes.
+
+**Row-level security is not a tenancy boundary.** Policies exist from
+migration `r011`, but their condition is permissive whenever
+`app.current_project_id` is unset, and no application code sets it. The
+migration itself records that `FORCE ROW LEVEL SECURITY` and a non-owner
+application role were deliberately deferred — and table owners bypass RLS in
+PostgreSQL regardless. The policies are scaffolding for a tenancy model not
+yet in force, and must not be read as one. See T6 in §11.
+
+**Injection.** SQL is parameterised throughout; the only dynamic construction
+is a `sql.Identifier` composition and the performance harness's own benchmark
+statements.
+
+### 8.5 Testing
+
+Tests are layered by what they can honestly prove. Four suites gate CI;
+three are hand-run.
+
+| Suite | Gated | Proves |
+|---|---|---|
+| `unit` | yes | Pure logic, delegation, configuration, normalisation |
+| `contract` | yes | Architectural boundaries — that `explore` is not imported by domain logic, that CI installs from the lockfile, that gating linters are pinned |
+| `integration` | yes | Real PostgreSQL/PostGIS behaviour |
+| `conformance` | yes | The orchestrator port contract, asserted against every implementation |
+| `performance` | no | Benchmark budgets and explain-plan shape |
+| `workloads` | no | How an ops plane schedules, over synthetic DAG topologies |
+| `recovery` | no | Crash recovery across a real process kill; opt-in |
 
 ## 9. Architecture Decisions
 
@@ -283,6 +314,7 @@ that does not.
 | T3 | **No user-facing way to author a scenario edit.** The storage, resolution, graph propagation and recomputation all work and are tested, but no API route or CLI command writes an override | The scenario engine is complete; the entry point into it is not |
 | T4 | **Geometry cannot be edited by a scenario.** Overrides carry numeric and text values only | Scenario support is attribute-level; geometric what-ifs are future work |
 | T5 | **A single database is the scaling bound.** Every indicator contends for the same PostGIS | Adequate at the delivered scale; revisit before a multi-city deployment |
+| T6 | **Row-level security is inert.** The `r011` policies are permissive while `app.current_project_id` is unset, and nothing sets it; `FORCE ROW LEVEL SECURITY` and a non-owner role were deferred | Multi-tenant isolation is not enforced today. Required before more than one project shares a database |
 
 ## 12. Glossary
 

@@ -223,38 +223,65 @@ def api_section() -> list[str]:
     paths: dict[str, Any] = spec.get("paths", {})
 
     grouped: dict[str, list[str]] = {}
+    mounted: list[str] = []
     for path, operations in sorted(paths.items()):
         for method, operation in sorted(operations.items()):
             if method.upper() not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
                 continue
-            tags = operation.get("tags") or ["untagged"]
             summary = (operation.get("summary") or "").strip()
             params = operation.get("parameters") or []
             names = ", ".join(f"`{p['name']}`" for p in params) or "—"
             body = "yes" if operation.get("requestBody") else "no"
-            grouped.setdefault(str(tags[0]), []).append(
-                f"| `{method.upper()}` | `{path}` | {summary or '—'} | {names} | {body} |"
+            row = (
+                f"| `{method.upper()}` | `{path}` | {summary or '—'} "
+                f"| {names} | {body} |"
             )
+            # `/cog/*` is titiler's own router, mounted in-process. It is part
+            # of the delivered surface but it is not code written for this
+            # project, and a reader counting "the API" should not be handed
+            # eighteen third-party paths as though they were ours.
+            if path.startswith("/cog"):
+                mounted.append(row)
+            else:
+                tags = operation.get("tags") or ["untagged"]
+                grouped.setdefault(str(tags[0]), []).append(row)
 
+    header = [
+        "| Method | Path | Summary | Parameters | Request body |",
+        "|---|---|---|---|---|",
+    ]
+    own = sum(len(v) for v in grouped.values())
     out = [
         "## API",
         "",
-        f"{sum(len(v) for v in grouped.values())} endpoints, taken from the "
-        f"application's own OpenAPI document "
-        f"(`{spec['info']['title']}` {spec['info'].get('version', '')}). The "
-        "machine-readable form is served at `/openapi.json` and rendered at "
-        "`/docs`.",
+        f"Taken from the application's own OpenAPI document "
+        f"(`{spec['info']['title']}` {spec['info'].get('version', '')}), served "
+        "at `/openapi.json` and rendered at `/docs`.",
+        "",
+        f"The API exposes **{own + len(mounted)} operations** in total. "
+        f"**{own}** are written for this project; the remaining "
+        f"**{len(mounted)}** belong to titiler's raster router, which is "
+        "mounted in-process rather than deployed separately, and are listed "
+        "apart for that reason.",
+        "",
+        f"### Project endpoints ({own})",
         "",
     ]
     for tag in sorted(grouped):
-        out += [
-            f"### `{tag}`",
-            "",
-            "| Method | Path | Summary | Parameters | Request body |",
-            "|---|---|---|---|---|",
-            *grouped[tag],
-            "",
-        ]
+        out += [f"#### `{tag}`", "", *header, *grouped[tag], ""]
+
+    out += [
+        f"### Mounted raster endpoints ({len(mounted)})",
+        "",
+        "Provided by titiler. Access is restricted by `apps/api/cog_security.py` "
+        "to `file://` URLs beneath the configured data root, with symlink "
+        "escapes resolved and rejected; titiler's own default would hand any "
+        "`url` parameter to GDAL.",
+        "",
+        *header,
+        *mounted,
+        "",
+    ]
     return out
 
 

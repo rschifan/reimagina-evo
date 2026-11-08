@@ -1057,22 +1057,26 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 ## API
 
-48 endpoints, taken from the application's own OpenAPI document (`reimagina API` 0.1.0). The machine-readable form is served at `/openapi.json` and rendered at `/docs`.
+Taken from the application's own OpenAPI document (`reimagina API` 0.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-### `aois`
+The API exposes **48 operations** in total. **29** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+
+### Project endpoints (29)
+
+#### `aois`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
 | `GET` | `/aois` | List Aois | — | no |
 | `GET` | `/aois/{aoi_id}/summaries` | List Summaries | `aoi_id`, `scenario_id`, `only_current` | no |
 
-### `features`
+#### `features`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
 | `GET` | `/features` | List Features | `type_slug`, `role`, `aoi_id`, `limit`, `after_cursor` | no |
 
-### `indicators`
+#### `indicators`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
@@ -1086,7 +1090,7 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 | `GET` | `/indicators/{slug}/values.geojson` | Download Values Geojson | `slug`, `scenario_id`, `feature_type`, `limit` | no |
 | `GET` | `/indicators/{slug}/values.parquet` | Download Values Parquet | `slug`, `scenario_id`, `feature_type`, `limit` | no |
 
-### `jobs`
+#### `jobs`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
@@ -1102,7 +1106,7 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 | `GET` | `/jobs/{run_id}/events` | Stream Run Events | `run_id` | no |
 | `POST` | `/jobs/{run_id}/rerun` | Rerun Run | `run_id` | no |
 
-### `meta`
+#### `meta`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
@@ -1111,13 +1115,21 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 | `GET` | `/health/ready` | Readiness | — | no |
 | `GET` | `/health/tile-server` | Tile Server | — | no |
 
-### `metrics`
+#### `metrics`
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
 | `POST` | `/metrics/within-polygon` | Count Within Polygon | — | yes |
 
-### `raster-tiles`
+#### `tiles`
+
+| Method | Path | Summary | Parameters | Request body |
+|---|---|---|---|---|
+| `GET` | `/tile-sources` | List Tile Sources | `live_tilejson_base_url`, `snapshot_base_url`, `raster_base_url` | no |
+
+### Mounted raster endpoints (19)
+
+Provided by titiler. Access is restricted by `apps/api/cog_security.py` to `file://` URLs beneath the configured data root, with symlink escapes resolved and rejected; titiler's own default would hand any `url` parameter to GDAL.
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
@@ -1140,10 +1152,4 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 | `GET` | `/cog/tiles/{tileMatrixSetId}/{z}/{x}/{y}.{format}` | Tile | `z`, `x`, `y`, `tileMatrixSetId`, `format`, `tilesize`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/{tileMatrixSetId}/map.html` | Map Viewer | `tileMatrixSetId`, `tile_format`, `tilesize`, `minzoom`, `maxzoom`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/{tileMatrixSetId}/tilejson.json` | Tilejson | `tileMatrixSetId`, `tilesize`, `tile_format`, `minzoom`, `maxzoom`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
-
-### `tiles`
-
-| Method | Path | Summary | Parameters | Request body |
-|---|---|---|---|---|
-| `GET` | `/tile-sources` | List Tile Sources | `live_tilejson_base_url`, `snapshot_base_url`, `raster_base_url` | no |
 
