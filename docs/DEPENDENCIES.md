@@ -5,7 +5,7 @@
 
 Generated 2026-11-08 from installed package metadata, after `uv sync --locked --extra dev` and `npm ci`.
 
-**92 Python distributions · 68 npm production packages · 145 npm dev-only packages.**
+**92 Python distributions · 65 npm production packages · 143 npm dev-only packages.**
 
 Licences come from each package's own metadata. Where metadata declares nothing, the package's LICENSE file is read and the entry says so. Anything still undetermined reads `UNRESOLVED` rather than a guess.
 
@@ -15,7 +15,6 @@ Copyleft, public-domain dedications, and anything unresolved. This is a prompt t
 
 | Package | Version | Licence |
 |---|---|---|
-| `@mapbox/jsonlint-lines-primitives` | 2.0.2 | UNRESOLVED |
 | `certifi` | 2026.2.25 | MPL-2.0 |
 | `numpy` | 2.4.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
 | `pathspec` | 1.1.1 | MPL-2.0 |
@@ -51,12 +50,11 @@ Copyleft, public-domain dedications, and anything unresolved. This is a prompt t
 
 | Licence | Count |
 |---|---|
-| MIT | 42 |
-| ISC | 12 |
+| MIT | 44 |
+| ISC | 9 |
 | Apache-2.0 | 4 |
-| BSD-3-Clause | 4 |
+| BSD-3-Clause | 3 |
 | BSD-2-Clause | 2 |
-| UNRESOLVED | 1 |
 | (MIT OR Apache-2.0) | 1 |
 | MIT License (from LICENSE file) | 1 |
 | 0BSD | 1 |
@@ -172,53 +170,50 @@ Copyleft, public-domain dedications, and anything unresolved. This is a prompt t
 | `@jridgewell/sourcemap-codec` | 1.5.5 | MIT |
 | `@jridgewell/trace-mapping` | 0.3.31 | MIT |
 | `@lucide/svelte` | 1.32.0 | ISC |
-| `@mapbox/jsonlint-lines-primitives` | 2.0.2 | UNRESOLVED |
+| `@mapbox/jsonlint-lines-primitives` | 2.0.3 | MIT |
 | `@mapbox/point-geometry` | 1.1.0 | ISC |
-| `@mapbox/tiny-sdf` | 2.1.0 | BSD-2-Clause |
-| `@mapbox/unitbezier` | 0.0.1 | BSD-2-Clause |
-| `@mapbox/vector-tile` | 2.0.4 | BSD-3-Clause |
-| `@mapbox/whoots-js` | 3.1.0 | ISC |
-| `@maplibre/geojson-vt` | 5.0.4 | ISC |
-| `@maplibre/geojson-vt` | 6.1.0 | ISC |
-| `@maplibre/maplibre-gl-style-spec` | 24.8.1 | ISC |
-| `@maplibre/mlt` | 1.1.9 | (MIT OR Apache-2.0) |
-| `@maplibre/vt-pbf` | 4.3.0 | MIT |
+| `@mapbox/tiny-sdf` | 2.3.0 | BSD-2-Clause |
+| `@mapbox/unitbezier` | 1.0.0 | BSD-2-Clause |
+| `@mapbox/vector-tile` | 3.0.0 | BSD-3-Clause |
+| `@maplibre/geojson-vt` | 6.3.0 | ISC |
+| `@maplibre/maplibre-gl-style-spec` | 26.5.1 | ISC |
+| `@maplibre/mlt` | 1.3.0 | (MIT OR Apache-2.0) |
+| `@maplibre/vt-pbf` | 4.3.3 | MIT |
 | `@sveltejs/acorn-typescript` | 1.0.13 | MIT |
 | `@swc/helpers` | 0.5.23 | Apache-2.0 |
 | `@types/estree` | 1.0.8 | MIT |
 | `@types/geojson` | 7946.0.16 | MIT |
-| `@types/supercluster` | 7.1.3 | MIT |
 | `@types/trusted-types` | 2.0.7 | MIT |
 | `acorn` | 8.18.0 | MIT |
 | `aria-query` | 5.3.1 | Apache-2.0 |
 | `axobject-query` | 4.1.0 | Apache-2.0 |
+| `bidi-js` | 1.1.0 | MIT |
 | `bits-ui` | 2.18.1 | MIT |
 | `clsx` | 2.1.1 | MIT |
 | `dequal` | 2.0.3 | MIT |
 | `devalue` | 5.9.0 | MIT |
-| `earcut` | 3.0.2 | ISC |
+| `earcut` | 3.2.4 | ISC |
 | `esm-env` | 1.2.2 | MIT |
 | `esrap` | 2.3.4 | MIT |
 | `gl-matrix` | 3.4.4 | MIT |
 | `inline-style-parser` | 0.2.7 | MIT |
 | `is-reference` | 3.0.3 | MIT |
 | `json-stringify-pretty-compact` | 4.0.0 | MIT |
-| `kdbush` | 4.0.2 | ISC |
+| `kdbush` | 4.1.0 | ISC |
 | `locate-character` | 3.0.0 | MIT |
 | `lz-string` | 1.5.0 | MIT |
 | `magic-string` | 0.30.21 | MIT |
-| `maplibre-gl` | 5.24.0 | BSD-3-Clause |
+| `maplibre-gl` | 6.17.0 | BSD-3-Clause |
 | `minimist` | 1.2.8 | MIT |
 | `murmurhash-js` | 1.0.0 | MIT |
-| `pbf` | 4.0.1 | BSD-3-Clause |
+| `pbf` | 5.1.2 | BSD-3-Clause |
 | `potpack` | 2.1.0 | ISC |
 | `protocol-buffers-schema` | 3.6.1 | MIT |
 | `quickselect` | 3.0.0 | ISC |
+| `require-from-string` | 2.0.2 | MIT |
 | `resolve-protobuf-schema` | 2.1.0 | MIT |
 | `runed` | 0.35.1 | MIT |
-| `rw` | 1.3.3 | BSD-3-Clause |
 | `style-to-object` | 1.0.14 | MIT |
-| `supercluster` | 8.0.1 | ISC |
 | `svelte` | 5.56.9 | MIT |
 | `svelte-toolbelt` | 0.10.6 | MIT License (from LICENSE file) |
 | `tabbable` | 6.5.0 | MIT |
@@ -231,11 +226,11 @@ Copyleft, public-domain dedications, and anything unresolved. This is a prompt t
 | `tslib` | 2.8.1 | 0BSD |
 | `zimmerframe` | 1.1.4 | MIT |
 
-## npm dev-only — 145 packages, not shipped
+## npm dev-only — 143 packages, not shipped
 
 | Licence | Count |
 |---|---|
-| MIT | 105 |
+| MIT | 103 |
 | MPL-2.0 | 24 |
 | Apache-2.0 | 4 |
 | ISC | 4 |
