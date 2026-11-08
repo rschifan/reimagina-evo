@@ -1,0 +1,18 @@
+flowchart TB
+  curated[("curated_geo")]
+  serving[["serving_geo<br/>read contract"]]
+  explore[["explore<br/>inspection"]]
+  api["apps.api<br/>FastAPI + titiler"]
+  martin["Martin<br/>vector tiles"]
+  cli["apps.cli"]
+  web["apps.web<br/>MapLibre GL"]
+  browser(["Browser"])
+
+  curated --> serving
+  curated --> explore
+  serving --> api
+  serving --> martin
+  explore --> cli
+  api --> web
+  martin --> web
+  web --> browser

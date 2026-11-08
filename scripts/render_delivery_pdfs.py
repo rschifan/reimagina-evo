@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,8 @@ th, td { border: 1px solid #d5d9e0; padding: .32em .5em; text-align: left;
 th { background: #eef1f5; font-weight: 600; }
 tr { break-inside: avoid; }
 a { color: #1c4fd8; text-decoration: none; }
+.diagram { break-inside: avoid; text-align: center; margin: 1.2em 0; }
+.diagram svg { max-width: 100%; max-height: 222mm; height: auto; }
 hr { border: none; border-top: 1px solid #d5d9e0; margin: 1.6em 0; }
 """
 
@@ -96,6 +99,32 @@ const [html, pdf, footer] = process.argv.slice(2);
   await browser.close();
 })().catch((err) => { console.error(err); process.exit(1); });
 """
+
+
+def _inline_svg(page: str, assets: Path) -> str:
+    """Replace `<img src="*.svg">` with the SVG itself.
+
+    Referencing the file and letting the browser fetch it does not survive the
+    trip: the HTML is built in a different directory from the diagrams, and
+    Chromium would not load the file even with a correct base href — the page
+    rendered a broken-image icon and the PDF came out looking perfectly
+    typeset with nothing where each diagram should be. That is the worst kind
+    of defect in a delivered document, because it does not announce itself.
+
+    Inlining removes the question. The PDF carries the vector artwork itself
+    and depends on no file beside it.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        src = match.group("src")
+        if not src.endswith(".svg"):
+            return match.group(0)
+        path = (assets / src).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"diagram referenced but missing: {src}")
+        return f'<div class="diagram">{path.read_text()}</div>'
+
+    return re.sub(r'<img[^>]*src="(?P<src>[^"]+)"[^>]*/?>', replace, page)
 
 
 def _split_title(markdown: str) -> tuple[str, str]:
@@ -140,6 +169,8 @@ def render(source: Path, css: Path, js: Path) -> Path:
         cwd=ROOT,
     )
     stripped.unlink()
+
+    html.write_text(_inline_svg(html.read_text(), source.parent))
     subprocess.run(
         ["node", str(js), str(html), str(pdf), f"Reimagina — {title}"],
         check=True,
