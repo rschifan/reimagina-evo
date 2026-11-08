@@ -104,17 +104,19 @@ python -m apps.cli.app overlap declare-pair \
 python -m apps.cli.app overlap list-pairs
 python -m apps.cli.app overlap compute-all --aoi-id <uuid>
 
-# Indicator catalog + compute + rollup + AOI summary (Layer 2)
+# Indicator catalog + compute + AOI summary (Layer 2)
+# Every shipped indicator is block-grain. There is no `indicators rollup`:
+# a coarser number is an AOI summary. See JOB_LAYER.md.
 python -m apps.cli.app indicators seed-catalog
 python -m apps.cli.app indicators compute \
     --slug urban_form_block_compactness [--aoi-id <uuid>]
 python -m apps.cli.app indicators compute \
     --slug urban_form_block_building_density [--aoi-id <uuid>]
-python -m apps.cli.app indicators rollup \
-    --slug urban_form_block_compactness \
-    --source-type block --target-type ageb
 python -m apps.cli.app indicators aoi-summary \
     --aoi-id <uuid> --slug urban_form_block_compactness
+
+# A territory to run all of the above against, without the data lake
+python scripts/synthetic_territory.py
 ```
 
 Web read-side (API + map frontend):

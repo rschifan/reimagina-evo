@@ -132,18 +132,19 @@ where `<tile_width_meters> = 40075017 / power(2, z)`.
 
 ---
 
-### Rollup contract (from TODO.md item 1 resolution) — **resolved**
-**Status:** `feature_overlap` and `feature_overlap_type_pair` exist (r009), and the 
-contract is documented in `docs/architecture/JOB_LAYER.md` — *Rollup — a direct call, 
-not an orchestrated unit* — and implemented as `reimagina.jobs.rollup.run_rollup` 
-(`packages/py/reimagina/jobs/rollup.py:38`).
+### Rollup contract (from TODO.md item 1 resolution) — **superseded**
+**Status:** the indicator rollup this item asked for was built, then deliberately
+removed. `39ab70a` dropped `jobs/rollup.py`, the `indicators rollup` CLI command
+and `rollup_child_rows`, taking the catalog from 14 indicators to 11, all
+`applies_to=("block",)`. r016's write trigger rejects a result at an undeclared
+grain, so block-only is now enforced rather than intended.
 
-**It did not become a queued worker type.** There is no rollup queue and no trigger 
-that fires after a fine-grain run: `run_rollup` is not in `SHIPPED_INDICATORS`, so 
-`default_runners` never binds it (`orchestration/runners.py:76-90`) and no run can 
-dispatch it. Callers invoke it directly from the CLI or an integration test 
-(`rollup.py:10-12`). Automatic stale-propagation from child to parent is still not 
-wired — the caller that staled a child must re-run the rollup.
+`feature_overlap` and `feature_overlap_type_pair` (r009) remain, and are still
+read by AOI summaries and by the *observation* rollup
+(`jobs/observation_rollup.py`). A coarser-grain number for an indicator is
+produced as an AOI summary, not as a second `indicator_result` row. See
+`docs/architecture/JOB_LAYER.md` — *Indicator rollup — removed, and what
+replaced each part of it*.
 
 ---
 

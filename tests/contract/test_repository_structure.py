@@ -300,3 +300,103 @@ def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
         "Makefile recipes invoke a lockfile-managed tool without `uv run`, so "
         f"they resolve against PATH instead of the project: {offenders}"
     )
+
+
+# Documents that describe the system as built. A path or a command named in one
+# of these has to resolve. Deliberately NOT the whole of `docs/`:
+# `docs/product/` holds architecture *proposals* and `docs/superpowers/specs/`
+# holds specs for work not yet done, and both legitimately name files that do
+# not exist yet. Adding a proposal to this list would force the proposal to be
+# implemented before it could be written down.
+AS_BUILT_DOCS = (
+    "AGENTS.md",
+    "README.md",
+    "docs/*.md",
+    "docs/architecture/*.md",
+    "docs/delivery/*.md",
+)
+
+# Repo-relative source paths, as the docs write them in links and prose.
+_DOC_PATH_RE = re.compile(
+    r"(?:packages/py|apps|infra|tests|scripts)/[A-Za-z0-9_./-]*"
+    r"\.(?:py|yml|yaml|json|sql|ts|tsx)"
+)
+
+# `python -m apps.cli.app <group> <command>` as the docs spell it, including
+# across a trailing backslash continuation.
+_DOC_CLI_RE = re.compile(
+    r"python -m apps\.cli\.app\s+([a-z][a-z0-9-]*)(?:\s+([a-z][a-z0-9-]*))?"
+)
+
+
+def _as_built_doc_files() -> list[Path]:
+    seen: dict[Path, None] = {}
+    for pattern in AS_BUILT_DOCS:
+        for path in sorted(ROOT.glob(pattern)):
+            seen.setdefault(path, None)
+    assert seen, "no as-built docs matched; the glob list is wrong"
+    return list(seen)
+
+
+def test_every_source_path_the_as_built_docs_name_exists():
+    """A dead path in a document that claims to describe the system is a lie.
+
+    Two of these were found at once, and they had the same cause: `39ab70a`
+    deleted `jobs/rollup.py` and four documents went on pointing at it, while
+    `r003_feature_schema.py` had been `r003_feature_tables.py` since it was
+    written. Neither is caught by any linter, because the reference lives in
+    prose; both are caught by reading the filesystem.
+    """
+    missing: list[str] = []
+    for doc in _as_built_doc_files():
+        for match in sorted(set(_DOC_PATH_RE.findall(doc.read_text()))):
+            if not (ROOT / match).exists():
+                missing.append(f"{doc.relative_to(ROOT)} -> {match}")
+    assert not missing, (
+        "as-built docs name source files that do not exist. Either the file "
+        "moved and the reference needs updating, or the feature was removed "
+        "and the passage describing it is stale:\n  " + "\n  ".join(missing)
+    )
+
+
+def test_every_cli_command_the_as_built_docs_quote_is_registered():
+    """A documented command that does not exist sends the reader nowhere.
+
+    `AGENTS.md` quoted `indicators rollup` for three months after `39ab70a`
+    removed it — and `AGENTS.md` is the file an agent reads first, so the
+    first thing it learned about the indicator layer was false.
+
+    Resolved against Typer's registry rather than by running the CLI: a
+    subprocess per command would make this slow enough to skip, and `--help`
+    exits 0 for a group whose subcommand is wrong.
+    """
+    from apps.cli.app import app as cli_app
+
+    groups = {
+        group.name: {cmd.name for cmd in group.typer_instance.registered_commands}
+        for group in cli_app.registered_groups
+        if group.name and group.typer_instance is not None
+    }
+    top_level = {
+        cmd.name or (cmd.callback.__name__.replace("_", "-") if cmd.callback else "")
+        for cmd in cli_app.registered_commands
+    }
+
+    unknown: list[str] = []
+    for doc in _as_built_doc_files():
+        text = doc.read_text()
+        for group, command in sorted(set(_DOC_CLI_RE.findall(text))):
+            if group in top_level and not command:
+                continue
+            if group not in groups:
+                if group not in top_level:
+                    unknown.append(f"{doc.relative_to(ROOT)} -> {group}")
+                continue
+            # A group named with no subcommand (`... app explore`) is a usage
+            # listing, not a claim that a command exists.
+            if command and command not in groups[group]:
+                unknown.append(f"{doc.relative_to(ROOT)} -> {group} {command}")
+    assert not unknown, (
+        "as-built docs quote CLI commands that are not registered:\n  "
+        + "\n  ".join(unknown)
+    )

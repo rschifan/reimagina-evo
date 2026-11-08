@@ -489,18 +489,44 @@ Unchanged by any of this, and the reason an engine swap is safe:
 
 ---
 
-## Rollup — a direct call, not an orchestrated unit
+## Indicator rollup — removed, and what replaced each part of it
 
-`reimagina.jobs.rollup.run_rollup` (`jobs/rollup.py:38`) aggregates `indicator_result` rows from a fine grain to a coarse one via `curated_geo.feature_overlap`, applying the indicator's `aggregation_method` with math from the pure `reimagina.jobs.aggregation` module.
+`reimagina.jobs.rollup.run_rollup` aggregated `indicator_result` rows from a
+fine grain to a coarse one. It no longer exists. `39ab70a` ("block grain only")
+deleted the module, the `indicators rollup` CLI command, and
+`rollup_child_rows` on the overlap repository, which served only that worker.
+Every shipped indicator now declares `applies_to=("block",)`, and r016's write
+trigger rejects a result at a grain the indicator does not declare — so
+block-only is enforced in the database rather than merely intended.
 
-**It is not part of a run.** It is not in `SHIPPED_INDICATORS`, so `default_runners` never binds it (`runners.py:76-90`) and no `plan_wave` cascade can dispatch it. Callers invoke it directly from the CLI or an integration test (`jobs/rollup.py:10-11`, `apps/cli/indicators.py:58`). It opens its own `job_run` with `model_family="rollup"` (`rollup.py:75-79`), so its outputs carry provenance like any other compute.
+⚠ This section described the deleted worker as present for three months after it
+went. The paragraphs below are what remains, because four mechanisms share the
+word "rollup" and only one of them was removed:
 
-Behaviour worth keeping on the record:
+| Still here | What it does |
+|---|---|
+| `curated_geo.feature_overlap` + type pairs (r009) | the cross-grain bridge, read by AOI summaries and the observation rollup |
+| `reimagina.jobs.observation_rollup.run_observation_rollup` | observation → observation at a coarser grain, driven by `aggregation_recipe` |
+| `reimagina.jobs.aggregation.aggregate_children` | the weighted-mean and missing-data policy, shared with `jobs/aoi_summary.py` |
+| `aggregation_method` on `IndicatorSpec` | read by the AOI summary, which is how a scalar per AOI is still produced |
 
-- Weights are `feature_overlap.overlap_measure` — the absolute intersection (m² for polygon rollups) — not `overlap_ratio`, which collapses to ~1.0 for fully-nested children and degrades a weighted mean into an arithmetic one (`interfaces.py:445-448`).
-- Missing-data policy is shared with the AOI-summary worker in `aggregation.aggregate_children` (`aggregation.py:108`): sum weights, classify the missing share against a threshold defaulting to 0.5, drop missing children, aggregate the rest.
-- Idempotency comes from the write path, not from the worker: the repository stales any existing `current` row for the same `(feature, scenario, indicator)` before inserting (`repositories.py:2173-2190`), and the partial unique indexes `ir_one_current_base` / `ir_one_current_scenario` (`r016:193-196`, `:198-201`) enforce it in the database.
-- Stale-propagation from below is still not automatic: staling a child does not stale its parent rollup, and the caller that staled the child must re-run the rollup.
+Behaviour worth keeping on the record, because it governs the surviving
+aggregations:
+
+- Weights are `feature_overlap.overlap_measure` — the absolute intersection (m²
+  for polygon aggregation) — not `overlap_ratio`, which collapses to ~1.0 for
+  fully-nested children and degrades a weighted mean into an arithmetic one
+  (`interfaces.py:445-448`).
+- Missing-data policy lives in `aggregation.aggregate_children`
+  (`aggregation.py:108`): sum weights, classify the missing share against a
+  threshold defaulting to 0.5, drop missing children, aggregate the rest.
+- Idempotency comes from the write path, not from any worker: the repository
+  stales any existing `current` row for the same `(feature, scenario,
+  indicator)` before inserting (`repositories.py:2173-2190`), and the partial
+  unique indexes `ir_one_current_base` / `ir_one_current_scenario`
+  (`r016:193-196`, `:198-201`) enforce it in the database.
+- Stale-propagation upward was never automatic and is now moot for indicators:
+  there is no coarser indicator row to stale.
 
 ---
 
