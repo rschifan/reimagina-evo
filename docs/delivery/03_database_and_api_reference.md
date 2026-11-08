@@ -1,6 +1,18 @@
-# Database and API reference
+---
+title: "Database and API reference"
+subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"
+author: "Rossano Schifanella"
+date: "8 November 2026"
+---
 
-*Reimagina — Schedule A, Work 3.*
+## Document control
+
+| | |
+|---|---|
+| **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |
+| **Deliverable** | Schedule A, Work 3 — Database/API schemas and documentation |
+| **Status** | Draft for review |
+| **Audience** | Technical reviewers, maintainers and operators |
 
 > **Generated — do not edit.** Regenerate with
 > `python scripts/build_schema_reference.py`. The schema is

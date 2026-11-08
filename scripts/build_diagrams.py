@@ -66,7 +66,8 @@ HOST_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <script>
   mermaid.initialize({{
     startOnLoad: false, theme: 'neutral', securityLevel: 'strict',
-    flowchart: {{ htmlLabels: false, curve: 'basis', nodeSpacing: 34, rankSpacing: 46 }},
+    flowchart: {{ htmlLabels: false, curve: 'basis', nodeSpacing: 40,
+                  rankSpacing: 60, wrappingWidth: 260, padding: 14 }},
     fontFamily: 'DejaVu Sans, Helvetica Neue, Arial, sans-serif',
     themeVariables: {{ fontSize: '28px' }},
   }});

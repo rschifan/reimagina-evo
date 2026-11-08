@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph browser["Client device [Deployment node: web browser]"]
+    webi["Web application<br/>[Container: static bundle]"]
+  end
+
+  subgraph host["Application host [Deployment node: Linux]"]
+    apii["API application<br/>[Container: uvicorn]"]
+    workeri["Recomputation worker<br/>[Container: Python process]"]
+  end
+
+  subgraph infra["Data services [Deployment node: Docker Compose]"]
+    pool["Connection pooler<br/>[Container: pgbouncer 1.23]<br/>Transaction-mode pooling<br/>for the API only"]
+    dbi[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]")]
+    martini["Vector tile server<br/>[Container: Martin 0.14]"]
+    static["Snapshot tile host<br/>[Container: nginx 1.27]<br/>Serves PMTiles exports of<br/>stable reference layers"]
+  end
+
+  webi -->|"[JSON/HTTPS]"| apii
+  webi -->|"[MVT/HTTPS]"| martini
+  webi -->|"[HTTPS]"| static
+  apii -->|"Pooled reads [SQL]"| pool
+  pool -->|"[SQL]"| dbi
+  workeri -->|"Direct connection: LISTEN/NOTIFY<br/>cannot cross the pooler [SQL]"| dbi
+  martini -->|"[SQL]"| dbi
+
+  classDef container fill:#438dd5,stroke:#2e6295,color:#fff
+  class webi,apii,workeri,pool,dbi,martini,static container

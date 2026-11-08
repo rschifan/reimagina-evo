@@ -1,0 +1,31 @@
+flowchart LR
+  planner["Urban planner / analyst<br/>[Person]"]
+  operator["Platform operator<br/>[Person]"]
+
+  subgraph sys["Reimagina [Software System]"]
+    web["Web application<br/>[Container: TypeScript, Vite,<br/>MapLibre GL]<br/>Map, indicator catalogue<br/>and run dashboard"]
+    api["API application<br/>[Container: Python, FastAPI,<br/>titiler]<br/>Serves features, indicators,<br/>downloads and job control"]
+    worker["Recomputation worker<br/>[Container: Python, DBOS]<br/>Executes indicator runs<br/>durably and resumably"]
+    cli["Operator CLI<br/>[Container: Python, Typer]<br/>Ingestion, publishing<br/>and inspection"]
+    martin["Vector tile server<br/>[Container: Martin 0.14]<br/>Serves live MVT tiles<br/>from the serving views"]
+    db[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]<br/>Curated, serving, explore<br/>and job-runtime schemas")]
+  end
+
+  lake["Azure data lake<br/>[Software System]"]
+
+  planner -->|"Loads the map<br/>application [HTTPS]"| web
+  operator -->|"Runs commands with"| cli
+  web -->|"Reads indicators and<br/>features [JSON/HTTPS]"| api
+  web -->|"Requests tiles<br/>[MVT/HTTPS]"| martin
+  api -->|"Reads serving views,<br/>submits runs [SQL]"| db
+  worker -->|"Reads plan, writes results<br/>[SQL, LISTEN/NOTIFY]"| db
+  martin -->|"Queries geometry [SQL]"| db
+  cli -->|"Loads data, reads<br/>inspection views [SQL]"| db
+  cli -->|"Downloads datasets<br/>[HTTPS]"| lake
+
+  classDef person fill:#0b4884,stroke:#073962,color:#fff
+  classDef container fill:#438dd5,stroke:#2e6295,color:#fff
+  classDef external fill:#8a8a8a,stroke:#6b6b6b,color:#fff
+  class planner,operator person
+  class web,api,worker,cli,martin,db container
+  class lake external

@@ -1,0 +1,13 @@
+flowchart LR
+  s1["1. Planner records a scenario edit<br/>A row is written to curated_geo.scenario_override<br/>keyed by scenario, feature and attribute"]
+  s2["2. An asset version is published<br/>One version per edited attribute, so the edit is<br/>visible to freshness resolution"]
+  s3["3. The asset graph resolves the dirty set<br/>Only the indicators declaring an edge to that<br/>attribute are marked stale"]
+  s4["4. A run is planned and executed<br/>The worker drains the compute queue,<br/>checkpointing each unit durably"]
+  s5["5. Effective values are resolved in SQL<br/>override, then observation, then the base attribute;<br/>the baseline itself is never modified"]
+  s6["6. Results are written under the scenario<br/>New indicator_result rows carry the scenario_id<br/>alongside the baseline rows"]
+  s7["7. The client reads by scenario<br/>Indicators the scenario did not recompute<br/>fall back to baseline values"]
+
+  s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> s7
+
+  classDef step fill:#f2f5f9,stroke:#5d82a8,color:#000
+  class s1,s2,s3,s4,s5,s6,s7 step

@@ -1,0 +1,20 @@
+flowchart LR
+  planner["Urban planner / analyst<br/>[Person]<br/>Explores the territory and<br/>compares what-if scenarios"]
+  operator["Platform operator<br/>[Person]<br/>Runs ingestion, inspects data,<br/>triggers recomputation"]
+
+  reimagina["Reimagina<br/>[Software System]<br/>Ingests territorial data, computes<br/>urban indicators, and evaluates<br/>scenario edits against a baseline"]
+
+  lake["Azure data lake<br/>[Software System]<br/>Immutable mirror of the<br/>upstream open-data sources"]
+  inegi["INEGI / SIGCDMX / Overture / WorldPop<br/>[Software System]<br/>Upstream publishers of census,<br/>boundary, amenity and raster data"]
+
+  planner -->|"Views maps and indicator<br/>comparisons using"| reimagina
+  operator -->|"Loads data and triggers<br/>recomputation using"| reimagina
+  reimagina -->|"Reads source datasets from<br/>[HTTPS]"| lake
+  inegi -->|"Publishes datasets mirrored into"| lake
+
+  classDef person fill:#0b4884,stroke:#073962,color:#fff
+  classDef focus fill:#1168bd,stroke:#0b4884,color:#fff
+  classDef external fill:#8a8a8a,stroke:#6b6b6b,color:#fff
+  class planner,operator person
+  class reimagina focus
+  class lake,inegi external
