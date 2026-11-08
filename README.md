@@ -53,16 +53,26 @@ make stack-up                        # or: docker compose -f infra/docker/docker
 
 # 3. Install deps + apply migrations
 make install                         # uv + npm
-make migrate                         # alembic upgrade head
+make migrate                         # creates both DBs, then alembic upgrade head
 
 # 4. Run dev servers (two terminals)
 make dev-api                         # FastAPI on :8001
 make dev-web                         # Vite on :5173
 ```
 
+`make migrate` takes no arguments: it reads `DATABASE_URL`,
+`TEST_DATABASE_URL` and `DATABASE_URL_ADMIN` from your `.env`. The last one is
+the connection it uses to *create* the other two databases — creating a
+database requires a connection to a different one — so it needs a role that
+may create databases and extensions. `.env.example` sets all three for both
+paths; if you change the password, change it there too.
+
 If you prefer host-installed Postgres over the compose stack, switch to
 "Path B" inside `.env.example`, run `createdb reimagina_app reimagina_test`
-yourself, and skip step 2.
+yourself, and skip step 2. Path B's DSNs name no user, so they assume your own
+OS username is a Postgres role that can connect without a password and create
+databases — the usual Homebrew or Postgres.app arrangement. If yours is not,
+put a user and password in the four Path B DSNs.
 
 See [`docs/architecture/`](docs/architecture) for per-layer deep-dives.
 For the full fresh-machine data bootstrap, follow

@@ -792,3 +792,70 @@ def test_cli_assets_stale_delegates(monkeypatch, capsys):
 
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["count"] == 0
+
+
+def test_cli_bootstrap_db_reads_every_dsn_from_the_environment(monkeypatch, capsys):
+    """`make migrate` takes no arguments, so the environment is the only way in.
+
+    The three DSNs were module-level constants pinned at import
+    (``postgresql://localhost/reimagina``, ``.../reimagina_test``,
+    ``.../postgres``), so `bootstrap-db` consulted none of the variables the
+    README and `.env.example` tell you to set. Two failures followed, and the
+    quiet one is worse:
+
+    - the admin connection carried no user and no password and could not be
+      given either, so `make migrate` died with ``fe_sendauth: no password
+      supplied`` on any Postgres that asks for one — the compose stack
+      included, which sets ``POSTGRES_PASSWORD`` and no trust override
+    - even with that fixed it migrated ``reimagina`` while the API read
+      whatever ``DATABASE_URL`` named, reporting ``migrated: true`` over an
+      app database that stayed empty
+
+    ``DATABASE_URL`` and ``TEST_DATABASE_URL`` already existed and were simply
+    not read here. ``DATABASE_URL_ADMIN`` is new: creating a database needs a
+    connection to another one, and nothing in the project named it.
+    """
+    monkeypatch.setenv("DATABASE_URL", "postgresql://someone@db.example:5432/app")
+    monkeypatch.setenv(
+        "TEST_DATABASE_URL", "postgresql://someone@db.example:5432/app_test"
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL_ADMIN", "postgresql://someone@db.example:5432/postgres"
+    )
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+
+    exit_code = main(["bootstrap-db"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["app_dsn"] == "postgresql://someone@db.example:5432/app"
+    assert payload["test_dsn"] == "postgresql://someone@db.example:5432/app_test"
+    assert payload["admin_dsn"] == "postgresql://someone@db.example:5432/postgres"
+
+
+def test_cli_bootstrap_db_flags_still_beat_the_environment(monkeypatch, capsys):
+    """An explicit flag outranks the environment, or `--admin-dsn` is a lie."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://env.example/app")
+    monkeypatch.setenv("DATABASE_URL_ADMIN", "postgresql://env.example/postgres")
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+
+    exit_code = main(
+        [
+            "bootstrap-db",
+            "--app-dsn",
+            "postgresql://flag.example/app",
+            "--admin-dsn",
+            "postgresql://flag.example/postgres",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["app_dsn"] == "postgresql://flag.example/app"
+    assert payload["admin_dsn"] == "postgresql://flag.example/postgres"

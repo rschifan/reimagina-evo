@@ -180,10 +180,42 @@ def status() -> int:
     help="Create local app/test DBs if needed and migrate both to head",
 )
 def bootstrap_db(
-    app_dsn: str = typer.Option(DEFAULT_APP_DSN, "--app-dsn"),
-    test_dsn: str = typer.Option(DEFAULT_TEST_DSN, "--test-dsn"),
-    admin_dsn: str = typer.Option(DEFAULT_ADMIN_DSN, "--admin-dsn"),
+    app_dsn: str = typer.Option(
+        DEFAULT_APP_DSN,
+        "--app-dsn",
+        envvar="DATABASE_URL",
+        help="App database to create and migrate.",
+    ),
+    test_dsn: str = typer.Option(
+        DEFAULT_TEST_DSN,
+        "--test-dsn",
+        envvar="TEST_DATABASE_URL",
+        help="Test database to create and migrate.",
+    ),
+    admin_dsn: str = typer.Option(
+        DEFAULT_ADMIN_DSN,
+        "--admin-dsn",
+        envvar="DATABASE_URL_ADMIN",
+        help=(
+            "Database to connect to in order to CREATE the other two. Needs a "
+            "role that may create databases and extensions."
+        ),
+    ),
 ) -> int:
+    """Create the app and test databases if absent, then migrate both to head.
+
+    Every DSN is read from the environment when the flag is absent, because
+    ``make migrate`` passes no arguments and the environment is therefore the
+    only way to reach this command. They were import-time constants, which made
+    the documented variables inert: the admin connection could not be given a
+    user or a password, so this died with ``fe_sendauth: no password supplied``
+    against any Postgres that asks for one, and once past that it migrated
+    ``postgresql://localhost/reimagina`` while the API read ``DATABASE_URL`` —
+    ``migrated: true`` over an app database that stayed empty.
+
+    ``DATABASE_URL_ADMIN`` is the one new name. Creating a database requires a
+    connection to a different one, and no variable in the project named it.
+    """
     return _print(
         bootstrap_local_platform(
             app_dsn=app_dsn,
