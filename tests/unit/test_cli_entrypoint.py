@@ -859,3 +859,40 @@ def test_cli_bootstrap_db_flags_still_beat_the_environment(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["app_dsn"] == "postgresql://flag.example/app"
     assert payload["admin_dsn"] == "postgresql://flag.example/postgres"
+
+
+def test_cli_dsn_options_read_the_environment(monkeypatch, capsys):
+    """Every `--dsn` option falls back to ``DATABASE_URL``.
+
+    `bootstrap-db` was fixed first because `make migrate` exposed it, but the
+    defect was never confined to that command: 48 options across the CLI took
+    an import-time constant and consulted no variable at all. So on any
+    PostgreSQL that asks for a password — the compose stack included — every
+    inspection and ingest command failed with ``fe_sendauth: no password
+    supplied``, and the only way through was to repeat ``--dsn`` on each
+    invocation. Found by following this project's own operator documentation
+    on a clean installation.
+
+    An explicit flag still wins; this is a fallback, not an override.
+    """
+    monkeypatch.setenv("DATABASE_URL", "postgresql://someone@db.example:5432/app")
+    monkeypatch.setattr(
+        "apps.cli.app.list_layers", lambda **kwargs: {"layers": [], **kwargs}
+    )
+
+    assert main(["explore", "layers"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dsn"] == "postgresql://someone@db.example:5432/app"
+
+
+def test_cli_dsn_flag_beats_the_environment(monkeypatch, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://env.example/app")
+    monkeypatch.setattr(
+        "apps.cli.app.list_layers", lambda **kwargs: {"layers": [], **kwargs}
+    )
+
+    assert main(["explore", "layers", "--dsn", "postgresql://flag.example/app"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dsn"] == "postgresql://flag.example/app"
