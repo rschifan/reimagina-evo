@@ -400,3 +400,23 @@ def test_every_cli_command_the_as_built_docs_quote_is_registered():
         "as-built docs quote CLI commands that are not registered:\n  "
         + "\n  ".join(unknown)
     )
+
+
+def test_the_acceptance_run_exercises_every_shipped_indicator():
+    """A capability the acceptance run skips is a capability nobody checks.
+
+    `scripts/acceptance_run.sh` is the evidence behind Schedule A's "the code
+    builds and runs" criterion, and its value rests entirely on being
+    exhaustive. An indicator added to `SHIPPED_INDICATORS` and not to the
+    script would leave a documented capability unobserved while the run still
+    came out green — the quietest way for the proof to stop being one.
+    """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    script = (ROOT / "scripts" / "acceptance_run.sh").read_text()
+    missing = [spec.slug for spec in SHIPPED_INDICATORS if spec.slug not in script]
+    assert not missing, (
+        "scripts/acceptance_run.sh does not compute these shipped indicators, "
+        "so the acceptance run would pass without ever exercising them: "
+        f"{missing}"
+    )

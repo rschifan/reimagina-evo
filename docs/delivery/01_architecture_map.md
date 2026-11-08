@@ -17,6 +17,7 @@ date: "8 November 2026"
 | Version | Date | Author | Summary |
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
+| 0.2 | 2026-11-08 | Rossano Schifanella | Indicator count corrected to eleven, measured against the running system |
 
 ### About this document
 

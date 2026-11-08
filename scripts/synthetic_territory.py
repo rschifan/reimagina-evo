@@ -271,6 +271,77 @@ def build_amenities(blocks_per_side: int):
     )
 
 
+def write_raster(path: str, blocks_per_side: int, *, pixel_m: float = 5.0) -> dict:
+    """Write a single-band population-count GeoTIFF over the grid.
+
+    One more thing the lake holds and a reviewer does not: a raster. Without
+    one, the raster half of the platform — COG staging, zonal statistics,
+    aggregation recipes, the raster tile endpoint — cannot be exercised at all.
+
+    The surface is a smooth bump centred on the grid, so zonal statistics come
+    out different per block. **Population per pixel**, i.e. an *extensive*
+    quantity, because that is the harder case: an extensive raster has to be
+    summed and rescaled by pixel area, and a mistake there is invisible on an
+    intensive one where the mean happens to be scale-free. Ingest it with
+    ``--aggregation-kind extensive``.
+
+    Returns the written file's shape and value range.
+    """
+    import math
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    pitch = BLOCK_M + STREET_M
+    span_m = blocks_per_side * pitch
+    west = ORIGIN_LON - _deg(STREET_M, lat=ORIGIN_LAT, east_west=True)
+    south = ORIGIN_LAT - _deg(STREET_M, lat=ORIGIN_LAT, east_west=False)
+    east = west + _deg(span_m + STREET_M, lat=ORIGIN_LAT, east_west=True)
+    north = south + _deg(span_m + STREET_M, lat=ORIGIN_LAT, east_west=False)
+
+    cols = max(16, int(span_m / pixel_m))
+    rows = cols
+    px = (east - west) / cols
+    py = (north - south) / rows
+
+    # A gaussian centred on the grid, sigma a third of its half-width, scaled
+    # so a pixel at the peak holds ~12 people — a plausible figure for a 5 m
+    # pixel of dense housing, which keeps the zonal sums readable.
+    yy, xx = np.mgrid[0:rows, 0:cols]
+    cx = cy = (cols - 1) / 2.0
+    sigma = cols / 6.0
+    band = 12.0 * np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2)))
+    band = band.astype("float32")
+
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=rows,
+        width=cols,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(west, north, px, py),
+        nodata=float("nan"),
+    ) as dst:
+        dst.write(band, 1)
+        dst.set_band_description(1, "synthetic population per pixel")
+
+    return {
+        "path": path,
+        "pixels": f"{cols}x{rows}",
+        "pixel_m": round(pixel_m, 2),
+        "value_min": float(band.min()),
+        "value_max": float(band.max()),
+        "total_population": float(band.sum()),
+        "bbox": [west, south, east, north],
+        "sigma_px": round(sigma, 1),
+        "diagonal_m": round(math.hypot(span_m, span_m), 1),
+    }
+
+
 def seed(
     dsn: str, blocks_per_side: int, *, ageb_side: int = 2
 ) -> tuple[dict[str, int], str]:
@@ -436,6 +507,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dsn", default=os.environ.get("DATABASE_URL", ""), help="Target database."
     )
+    parser.add_argument(
+        "--raster-out",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Also write a synthetic single-band population GeoTIFF here, for "
+            "`raster ingest --raw-path <PATH> --aggregation-kind extensive`."
+        ),
+    )
     args = parser.parse_args(argv)
     if not args.dsn:
         print("No DSN. Set DATABASE_URL or pass --dsn.", file=sys.stderr)
@@ -444,6 +524,12 @@ def main(argv: list[str] | None = None) -> int:
     features = sum(counts[k] for k in FEATURE_LAYERS if k in counts)
     print(f"  seeded {features} features into {args.dsn.rsplit('@', 1)[-1]}")
     print(f"  AOI_ID={aoi_id}")
+    if args.raster_out:
+        info = write_raster(args.raster_out, args.blocks)
+        print(
+            f"  raster    {info['pixels']} px @ ~{info['pixel_m']} m, "
+            f"{info['total_population']:.0f} people total -> {info['path']}"
+        )
     return 0
 
 

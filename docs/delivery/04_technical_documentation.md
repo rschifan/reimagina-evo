@@ -17,6 +17,7 @@ date: "8 November 2026"
 | Version | Date | Author | Summary |
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
+| 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
 
 ### About this document
 
@@ -196,6 +197,10 @@ cd apps/web && npm test                # web unit tests
 > `tests/integration`, whose session fixture ends by dropping every managed
 > schema from `TEST_DATABASE_URL`. Name the suites you want.
 
+For an end-to-end check that the platform *does* something rather than merely
+starts — a populated database, eleven computed indicators, tiles with features
+in them — run `scripts/acceptance_run.sh` (§7.1). It needs no credentials.
+
 The three hand-run suites are `performance` (benchmark budgets and
 explain-plan shape), `workloads` (how an ops plane schedules, over synthetic
 DAG topologies) and `recovery` (crash recovery across a real process kill;
@@ -203,13 +208,48 @@ opt-in through `REIMAGINA_RECOVERY_TEST=1`).
 
 ## 7. Loading data
 
+### 7.1 Without credentials — a generated territory
+
+If you have no access to the data lake, this is the path to a populated
+system. It takes about a minute and needs no network:
+
+```bash
+scripts/acceptance_run.sh
+```
+
+The script drops the database named in `DATABASE_URL`, migrates it from
+empty, generates a small territory on Mexicali coordinates — AGEBs containing
+blocks containing buildings, a pedestrian street graph, three amenities, an
+area of interest and a single-band population raster — and then runs every
+analysis stage over it: feature overlaps, all eleven indicators including the
+pgRouting network family, raster ingest through COG staging, zonal
+statistics, an observation rollup, a scenario, and the live tile functions.
+Any failure stops the run.
+
+To generate the territory without the rest:
+
+```bash
+python scripts/synthetic_territory.py --blocks 6
+python scripts/synthetic_territory.py --raster-out /tmp/population.tif
+```
+
+Everything is written through the production loaders, so what lands passes
+the same triggers and carries the same provenance columns as an ingested
+dataset. ⚠ **The geometry is a regular grid, not a city.** Use it to exercise
+and demonstrate the platform; never to draw a conclusion about Mexicali.
+
+`docs/delivery/05_capability_proof.md` records what one run of the script
+produced, capability by capability.
+
+### 7.2 With credentials — the real dataset
+
 The pipeline ingests from a private Azure data lake (`cfcetlsadls/raw`) that
 mirrors INEGI 2024 marco geoestadístico, INEGI 2020 census, SIGCDMX/EXE
 amenities, Overture and WorldPop. `docs/AZURE_DATA_INVENTORY.md` documents
 the expected layout under `data/sources/azure/`.
 
 **You need read access to that container to reproduce the dataset.** Without
-it, ingestion fails at the source-existence check; everything else works.
+it, ingestion fails at the source-existence check; §7.1 is the alternative.
 `docs/BOOTSTRAP.md` is the full fresh-machine runbook.
 
 The shape of a load, once the mirror is in place:
