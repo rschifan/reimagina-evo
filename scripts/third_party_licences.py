@@ -56,19 +56,7 @@ OWN_PACKAGES = {"reimagina"}
 # the document does not discard the research. Keep each one to what was
 # actually checked — an inventory that launders an assumption into a statement
 # is worse than one that admits a gap.
-MANUAL_NOTES: dict[str, str] = {
-    "@mapbox/jsonlint-lines-primitives": (
-        "`@mapbox/jsonlint-lines-primitives` 2.0.2 declares no licence: no "
-        "`license` field, no LICENSE file and no copyright header in the "
-        "published package. Both of its source repositories state MIT — "
-        "github.com/mapbox/jsonlint carries a LICENSE file and is labelled "
-        "MIT, and the upstream github.com/zaach/jsonlint README states "
-        "'MIT License, Copyright (C) 2012 Zachary Carter'. That was **not** "
-        "confirmed against this published version: the npm registry page, the "
-        "only source tying a licence to 2.0.2, returned HTTP 403. It reaches "
-        "the browser as a transitive dependency of `maplibre-gl`."
-    ),
-}
+MANUAL_NOTES: dict[str, str] = {}
 
 # Order matters: LGPL must be recognised before GPL, or every LGPL package is
 # reported as strong copyleft and the one category that would stop a delivery

@@ -310,7 +310,7 @@ that does not.
 | # | Risk or debt | Assessment |
 |---|---|---|
 | T1 | **The API has no authentication.** It carries CORS and a request-id middleware only, so anyone who can reach the port can read all data and delete job history | Acceptable only while the deployment is private. Authentication is required before any networked deployment |
-| T2 | **`maplibre-gl` 5.24.0 carries a critical advisory** (sanitiser bypass). The fix is 6.16.0, a major version step | Should be addressed before the platform is exposed to untrusted content |
+| T2 | ~~`maplibre-gl` 5.24.0 carried a critical sanitiser-bypass advisory~~ | **Resolved.** Upgraded to 6.17.0; no critical or high advisory now reaches the shipped bundle |
 | T3 | **No user-facing way to author a scenario edit.** The storage, resolution, graph propagation and recomputation all work and are tested, but no API route or CLI command writes an override | The scenario engine is complete; the entry point into it is not |
 | T4 | **Geometry cannot be edited by a scenario.** Overrides carry numeric and text values only | Scenario support is attribute-level; geometric what-ifs are future work |
 | T5 | **A single database is the scaling bound.** Every indicator contends for the same PostGIS | Adequate at the delivered scale; revisit before a multi-city deployment |

@@ -13,7 +13,12 @@
  *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
  *     selected.
  */
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
+// maplibre-gl 6 ships its web worker as a separate module instead of
+// inlining it, so the bundler has to emit it and the library has to be
+// told where it landed. Without this the map renders its canvas and
+// controls, then fails at "Worker failed to load" and parses no tiles.
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mount } from "svelte";
 
@@ -205,6 +210,7 @@ async function main(): Promise<void> {
 
   const state: AppState = { activeIndicator: null, activeGrain: null };
 
+  maplibregl.setWorkerUrl(maplibreWorkerUrl);
   const map = new maplibregl.Map({
     container: "map",
     style: emptyStyle(),

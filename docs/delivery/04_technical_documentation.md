@@ -42,7 +42,9 @@ A working installation serves four things:
 | API | `http://localhost:8001` | Features, indicators, downloads, job control; OpenAPI at `/docs` |
 | Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`) |
 | Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin |
-| Database | `localhost:5432` | PostgreSQL with PostGIS and pgRouting |
+| Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |
+| Database | `localhost:5432` | Path A: the **connection pooler**. Path B: PostgreSQL itself |
+| Database, direct | `localhost:5433` | Path A only: PostgreSQL behind the pooler. This is what `DATABASE_URL_DIRECT` must point at |
 
 An installation without access to the source data lake still runs: you can
 install, migrate, start every process, run the test suites and build the web
@@ -304,17 +306,32 @@ database you care about.
 
 ### 9.6 `npm audit` reports vulnerabilities after installation
 
-It currently reports nine. Of those, two reach the browser bundle; the rest
-are build-time only. One is **critical** — see T2 in the risk register of
-Work 1. The audit output does not distinguish what ships from what builds;
+It currently reports eight, **none critical**. Only one is reported against
+the production tree, and it does not reach the browser: `devalue` arrives
+through `svelte`, and no `devalue` code appears anywhere in `dist/` — verified
+by searching the built output rather than assumed. The rest are build-time
+only.
+
+`npm audit` does not distinguish what ships from what builds;
 `docs/THIRD_PARTY_LICENSES.md` does, in its `Distribution` column.
 
-### 9.7 Known environment caveat
+### 9.7 Path A requires `DATABASE_URL_DIRECT` before the stack will start
 
-`make stack-up` could not be executed in the environment used to verify this
-document, which had no Docker daemon. Every other command in this document was
-run end to end. Path A's configuration is read from
-`infra/docker/docker-compose.yml` rather than observed.
+Martin's service definition interpolates `DATABASE_URL_DIRECT`, so
+`make stack-up` fails at configuration time if it is unset — before any
+container is created. In Path A it must name port **5433**, PostgreSQL
+behind the pooler, not 5432, which is the pooler itself.
+
+### 9.8 Known verification caveat
+
+The containers themselves were never started in the environment used to verify
+this document: Docker Hub refused anonymous image pulls with HTTP 429. What
+*was* verified there is that the stack definition parses and that every
+variable it requires resolves — `docker compose config` validates clean with a
+complete Path A environment, and the service, image and port mapping in §1 is
+read from that resolved configuration rather than from the file by eye.
+
+Everything else in this document was executed end to end.
 
 ## 10. Appendix — a verified clean install
 

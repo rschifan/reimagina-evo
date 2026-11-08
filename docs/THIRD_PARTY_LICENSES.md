@@ -20,12 +20,12 @@ disclosure.
 | | Count |
 |---|---|
 | Python distributions | 91 |
-| npm packages | 166 |
-| of which ship in the production bundle | 66 |
+| npm packages | 162 |
+| of which ship in the production bundle | 64 |
 | **Strong copyleft (GPL / AGPL / SSPL)** | **0** |
 | Weak copyleft (LGPL / MPL / EPL / CDDL) | 8 |
-| Undeclared | 1 |
-| Permissive | 248 |
+| Undeclared | 0 |
+| Permissive | 245 |
 
 ## Needing attention
 
@@ -35,7 +35,6 @@ attribution.
 
 | Package | Version | Licence | Category | Distribution |
 |---|---|---|---|---|
-| `@mapbox/jsonlint-lines-primitives` | 2.0.2 | **undeclared** | undeclared | browser bundle |
 | `certifi` | 2026.2.25 | Mozilla Public License 2.0 (MPL 2.0) | weak-copyleft | server-side |
 | `lightningcss` | 1.32.0 | MPL-2.0 | weak-copyleft | build/test only |
 | `lightningcss-linux-x64-gnu` | 1.32.0 | MPL-2.0 | weak-copyleft | build/test only |
@@ -44,10 +43,6 @@ attribution.
 | `psycopg` | 3.3.4 | LGPL-3.0-only | weak-copyleft | server-side |
 | `psycopg-binary` | 3.3.4 | LGPL-3.0-only | weak-copyleft | server-side |
 | `psycopg2-binary` | 2.9.11 | GNU Library or Lesser General Public License (LGPL) | weak-copyleft | server-side |
-
-### Findings on specific packages
-
-- `@mapbox/jsonlint-lines-primitives` 2.0.2 declares no licence: no `license` field, no LICENSE file and no copyright header in the published package. Both of its source repositories state MIT — github.com/mapbox/jsonlint carries a LICENSE file and is labelled MIT, and the upstream github.com/zaach/jsonlint README states 'MIT License, Copyright (C) 2012 Zachary Carter'. That was **not** confirmed against this published version: the npm registry page, the only source tying a licence to 2.0.2, returned HTTP 403. It reaches the browser as a transitive dependency of `maplibre-gl`.
 
 ## Python
 
@@ -173,16 +168,15 @@ attribution.
 | `@jridgewell/sourcemap-codec` | 1.5.5 | MIT | browser bundle |
 | `@jridgewell/trace-mapping` | 0.3.31 | MIT | browser bundle |
 | `@lucide/svelte` | 1.32.0 | ISC | browser bundle |
-| `@mapbox/jsonlint-lines-primitives` | 2.0.2 | **undeclared** | browser bundle |
+| `@mapbox/jsonlint-lines-primitives` | 2.0.3 | MIT | browser bundle |
 | `@mapbox/point-geometry` | 1.1.0 | ISC | browser bundle |
-| `@mapbox/tiny-sdf` | 2.1.0 | BSD-2-Clause | browser bundle |
-| `@mapbox/unitbezier` | 0.0.1 | BSD-2-Clause | browser bundle |
-| `@mapbox/vector-tile` | 2.0.4 | BSD-3-Clause | browser bundle |
-| `@mapbox/whoots-js` | 3.1.0 | ISC | browser bundle |
-| `@maplibre/geojson-vt` | 6.1.0 | ISC | browser bundle |
-| `@maplibre/maplibre-gl-style-spec` | 24.8.1 | ISC | browser bundle |
-| `@maplibre/mlt` | 1.1.9 | (MIT OR Apache-2.0) | browser bundle |
-| `@maplibre/vt-pbf` | 4.3.0 | MIT | browser bundle |
+| `@mapbox/tiny-sdf` | 2.3.0 | BSD-2-Clause | browser bundle |
+| `@mapbox/unitbezier` | 1.0.0 | BSD-2-Clause | browser bundle |
+| `@mapbox/vector-tile` | 3.0.0 | BSD-3-Clause | browser bundle |
+| `@maplibre/geojson-vt` | 6.3.0 | ISC | browser bundle |
+| `@maplibre/maplibre-gl-style-spec` | 26.5.1 | ISC | browser bundle |
+| `@maplibre/mlt` | 1.3.0 | (MIT OR Apache-2.0) | browser bundle |
+| `@maplibre/vt-pbf` | 4.3.3 | MIT | browser bundle |
 | `@oxc-project/types` | 0.144.0 | MIT | build/test only |
 | `@rolldown/binding-linux-x64-gnu` | 1.2.4 | MIT | build/test only |
 | `@rolldown/binding-linux-x64-musl` | 1.2.4 | MIT | build/test only |
@@ -201,7 +195,6 @@ attribution.
 | `@types/deep-eql` | 4.0.2 | MIT | build/test only |
 | `@types/estree` | 1.0.8 | MIT | browser bundle |
 | `@types/geojson` | 7946.0.16 | MIT | browser bundle |
-| `@types/supercluster` | 7.1.3 | MIT | browser bundle |
 | `@types/trusted-types` | 2.0.7 | MIT | browser bundle |
 | `@vitest/expect` | 4.1.11 | MIT | build/test only |
 | `@vitest/mocker` | 4.1.11 | MIT | build/test only |
@@ -214,7 +207,7 @@ attribution.
 | `aria-query` | 5.3.1 | Apache-2.0 | browser bundle |
 | `assertion-error` | 2.0.1 | MIT | build/test only |
 | `axobject-query` | 4.1.0 | Apache-2.0 | browser bundle |
-| `bidi-js` | 1.0.3 | MIT | build/test only |
+| `bidi-js` | 1.1.0 | MIT | browser bundle |
 | `bits-ui` | 2.18.1 | MIT | browser bundle |
 | `chai` | 6.2.2 | MIT | build/test only |
 | `chokidar` | 4.0.3 | MIT | build/test only |
@@ -227,7 +220,7 @@ attribution.
 | `dequal` | 2.0.3 | MIT | browser bundle |
 | `detect-libc` | 2.1.2 | Apache-2.0 | build/test only |
 | `devalue` | 5.9.0 | MIT | browser bundle |
-| `earcut` | 3.0.2 | ISC | browser bundle |
+| `earcut` | 3.2.4 | ISC | browser bundle |
 | `enhanced-resolve` | 5.24.5 | MIT | build/test only |
 | `entities` | 8.0.0 | BSD-2-Clause | build/test only |
 | `es-module-lexer` | 2.3.2 | MIT | build/test only |
@@ -245,7 +238,7 @@ attribution.
 | `jiti` | 2.7.0 | MIT | build/test only |
 | `jsdom` | 29.1.1 | MIT | build/test only |
 | `json-stringify-pretty-compact` | 4.0.0 | MIT | browser bundle |
-| `kdbush` | 4.0.2 | ISC | browser bundle |
+| `kdbush` | 4.1.0 | ISC | browser bundle |
 | `lightningcss` | 1.32.0 | MPL-2.0 | build/test only |
 | `lightningcss-linux-x64-gnu` | 1.32.0 | MPL-2.0 | build/test only |
 | `lightningcss-linux-x64-musl` | 1.32.0 | MPL-2.0 | build/test only |
@@ -253,7 +246,7 @@ attribution.
 | `lru-cache` | 11.5.2 | BlueOak-1.0.0 | build/test only |
 | `lz-string` | 1.5.0 | MIT | browser bundle |
 | `magic-string` | 0.30.21 | MIT | browser bundle |
-| `maplibre-gl` | 5.24.0 | BSD-3-Clause | browser bundle |
+| `maplibre-gl` | 6.17.0 | BSD-3-Clause | browser bundle |
 | `mdn-data` | 2.27.1 | CC0-1.0 | build/test only |
 | `minimist` | 1.2.8 | MIT | browser bundle |
 | `mri` | 1.2.0 | MIT | build/test only |
@@ -262,7 +255,7 @@ attribution.
 | `obug` | 2.1.4 | MIT | build/test only |
 | `parse5` | 8.0.1 | MIT | build/test only |
 | `pathe` | 2.0.3 | MIT | build/test only |
-| `pbf` | 4.0.1 | BSD-3-Clause | browser bundle |
+| `pbf` | 5.1.2 | BSD-3-Clause | browser bundle |
 | `picocolors` | 1.1.1 | ISC | build/test only |
 | `picomatch` | 4.0.5 | MIT | build/test only |
 | `postcss` | 8.5.26 | MIT | build/test only |
@@ -271,10 +264,9 @@ attribution.
 | `punycode` | 2.3.1 | MIT | build/test only |
 | `quickselect` | 3.0.0 | ISC | browser bundle |
 | `readdirp` | 4.1.2 | MIT | build/test only |
-| `require-from-string` | 2.0.2 | MIT | build/test only |
+| `require-from-string` | 2.0.2 | MIT | browser bundle |
 | `resolve-protobuf-schema` | 2.1.0 | MIT | browser bundle |
 | `rolldown` | 1.2.4 | MIT | build/test only |
-| `rw` | 1.3.3 | BSD-3-Clause | browser bundle |
 | `sade` | 1.8.1 | MIT | build/test only |
 | `saxes` | 6.0.0 | ISC | build/test only |
 | `siginfo` | 2.0.0 | ISC | build/test only |
@@ -282,7 +274,6 @@ attribution.
 | `stackback` | 0.0.2 | MIT | build/test only |
 | `std-env` | 4.2.0 | MIT | build/test only |
 | `style-to-object` | 1.0.14 | MIT | browser bundle |
-| `supercluster` | 8.0.1 | ISC | browser bundle |
 | `svelte` | 5.56.9 | MIT | browser bundle |
 | `svelte-check` | 4.7.6 | MIT | build/test only |
 | `svelte-toolbelt` | 0.10.6 | MIT (per LICENSE; not declared in manifest) | browser bundle |
