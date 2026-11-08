@@ -144,6 +144,15 @@ jobs:
       # The app pool (deps.api_dsn) reads REIMAGINA_APP_DSN; test_api_routes
       # exercises a live app against it. Point it at the same migrated DB.
       REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      # And the ops plane's own DSN, which is not optional: dbos_dsn() raises
+      # rather than let DBOS fall back to SQLite and write checkpoints
+      # somewhere unrecoverable. One integration test reaches the real
+      # orchestrator through the job routes, so without this line that test
+      # failed, the step failed, and `pytest (conformance)` below — a later
+      # step in this same job — was reported skipped rather than run. Direct
+      # and never pooled: LISTEN/NOTIFY backs the progress streams and cannot
+      # cross PgBouncer in transaction mode.
+      DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
     steps:
       - uses: actions/checkout@v7
 

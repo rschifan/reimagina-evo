@@ -202,6 +202,70 @@ def test_the_linters_ci_gates_on_are_locked():
     assert "MYPY := uv run mypy" in makefile
 
 
+def _ci_jobs(ci: str) -> dict[str, str]:
+    """Split the workflow's ``jobs:`` mapping into its job bodies, by name.
+
+    Text rather than parsed YAML, for the reason given at the top of this
+    section. Job headers are the two-space keys *after* the ``jobs:`` line —
+    ``on:`` has two-space keys of its own, and matching those would invent jobs
+    called ``push`` and ``schedule``.
+    """
+    assert "\njobs:\n" in ci, "CI workflow has no `jobs:` block"
+    jobs: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in ci.split("\njobs:\n", 1)[1].splitlines():
+        if line[:1] not in ("", " ", "#"):
+            break  # back to column 0: the jobs mapping has ended
+        header = re.fullmatch(r"  ([A-Za-z0-9_-]+):[ \t]*", line)
+        if header:
+            current = jobs.setdefault(header.group(1), [])
+        elif current is not None:
+            current.append(line)
+    return {name: "\n".join(body) for name, body in jobs.items()}
+
+
+def test_ci_gives_the_db_backed_suites_a_direct_postgres_dsn():
+    """A suite that reaches the real ops plane needs ``DATABASE_URL_DIRECT``.
+
+    This is the one missing line that kept CI red for months. The integration
+    suite reaches the real orchestrator through the API's job routes, and
+    ``dbos_dsn()`` raises rather than let DBOS fall back to SQLite and write
+    checkpoints somewhere unrecoverable. The job set ``TEST_DATABASE_URL`` and
+    ``REIMAGINA_APP_DSN`` but not this one, so the step failed on a single
+    test — and because ``pytest (conformance)`` is a *later step in the same
+    job*, the Orchestrator port contract was reported skipped rather than run,
+    and had not executed on main in months.
+
+    A red build is visible; a suite that silently never runs is not. Asserting
+    the variable here is what turns removing it back into one failing test.
+    """
+    ci = CI_WORKFLOW.read_text()
+    jobs = _ci_jobs(ci)
+    assert jobs, "no CI jobs found to check"
+
+    # A workflow-level `env:` reaches every job, so the variable is in scope
+    # whether it is declared there or on the job itself.
+    workflow_env = re.search(r"\nenv:\n((?:[ \t]+[^\n]*\n|\n)*)", ci)
+    in_workflow_env = bool(
+        workflow_env and "DATABASE_URL_DIRECT:" in workflow_env.group(1)
+    )
+
+    db_backed = {
+        name: body
+        for name, body in jobs.items()
+        if re.search(r"pytest tests/(integration|conformance)", body)
+    }
+    assert db_backed, "no CI job runs the DB-backed suites"
+
+    for name, body in db_backed.items():
+        assert in_workflow_env or "DATABASE_URL_DIRECT:" in body, (
+            f"CI job {name!r} runs a suite that reaches the DBOS ops plane but "
+            "does not set DATABASE_URL_DIRECT. dbos_dsn() raises without it, so "
+            "the step fails and every later step in the job — conformance "
+            "included — never runs at all"
+        )
+
+
 def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
     """A bare tool name runs whatever is first on PATH, not the project's.
 
