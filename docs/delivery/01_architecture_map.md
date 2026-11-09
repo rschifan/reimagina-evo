@@ -2,7 +2,7 @@
 title: "Software and systems architecture map"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 1"
 author: "Rossano Schifanella"
-date: "8 November 2026"
+date: "9 November 2026"
 ---
 
 ## Document control

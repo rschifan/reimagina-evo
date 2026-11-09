@@ -2,7 +2,7 @@
 title: "Capability proof"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — annex to Schedule A"
 author: "Rossano Schifanella"
-date: "8 November 2026"
+date: "9 November 2026"
 ---
 
 ## Document control

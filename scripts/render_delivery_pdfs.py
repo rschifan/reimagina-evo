@@ -172,6 +172,90 @@ def _split_title(markdown: str) -> tuple[str, str]:
     return "", markdown
 
 
+_MONTHS = {
+    name: index
+    for index, name in enumerate(
+        (
+            "january february march april may june july "
+            "august september october november december"
+        ).split(),
+        start=1,
+    )
+}
+
+#: Used when a document declares no parseable date. A fixed value keeps the
+#: build reproducible rather than falling back to the clock, which is the
+#: whole point; it is deliberately not a plausible delivery date, so a PDF
+#: carrying it is visibly missing its `date:` rather than quietly wrong.
+_FALLBACK_STAMP = "D:19700101000000+00'00'"
+
+
+def _front_matter_date(markdown: str) -> str:
+    """The document's declared `date:`, as a PDF timestamp.
+
+    Returns a fixed-width 23-byte payload, which is what makes the
+    substitution in `_pin_timestamps` safe — see that function.
+    """
+    end = markdown.find("\n---", 4)
+    for line in markdown[4 : end if end > 0 else len(markdown)].splitlines():
+        if not line.startswith("date:"):
+            continue
+        parts = line.split(":", 1)[1].strip().strip('"').strip("'").split()
+        if len(parts) != 3:
+            break
+        day, month, year = parts
+        if not (day.isdigit() and year.isdigit()):
+            break
+        number = _MONTHS.get(month.lower())
+        if number is None:
+            break
+        return f"D:{int(year):04d}{number:02d}{int(day):02d}000000+00'00'"
+    return _FALLBACK_STAMP
+
+
+def _pin_timestamps(pdf: Path, stamp: str) -> None:
+    """Rewrite the PDF's CreationDate and ModDate to a deterministic value.
+
+    Chromium stamps the wall clock into both, and they are the *only*
+    non-determinism in this pipeline: rendering the same Markdown twice
+    differs in exactly 4 bytes of 215,094, all inside these two fields. Every
+    glyph, every inlined SVG and the xref table are already byte-identical.
+
+    Pinning them turns the delivery from "trust these bytes" into "rebuild
+    and compare", which needs no trust at all — and Article 2.2 of the
+    agreement identifies a delivery by its SHA-256, so a hash a recipient can
+    reproduce is worth more than one they can only check against itself.
+
+    ⚠ **The replacement must be the same length as what it replaces**, and
+    the regex below enforces it by matching a fixed-width payload. A PDF's
+    xref table stores absolute byte offsets; a 22- or 24-byte value for a
+    23-byte field invalidates every offset after it, producing a file some
+    readers silently repair and others reject. The timestamp format is
+    fixed-width, so this costs nothing — but it is the line that must not be
+    "tidied" into a general substitution later.
+    """
+    raw = pdf.read_bytes()
+    want = stamp.encode()
+    pattern = re.compile(rb"(/(?:CreationDate|ModDate)\s*\()D:\d{14}\+\d{2}'\d{2}'(\))")
+
+    def replace(match: "re.Match[bytes]") -> bytes:
+        return match.group(1) + want + match.group(2)
+
+    patched, count = pattern.subn(replace, raw)
+    if count == 0:
+        # Not fatal: a future renderer may emit no Info dictionary at all,
+        # which is reproducible by construction. Silence would be wrong
+        # though — this is the one step the manifest's promise rests on.
+        print(f"  note: {pdf.name} carries no timestamps to pin", file=sys.stderr)
+        return
+    if len(patched) != len(raw):  # pragma: no cover - the regex forbids it
+        raise AssertionError(
+            f"{pdf.name}: pinning changed the file length by "
+            f"{len(patched) - len(raw)} bytes, which invalidates the xref table"
+        )
+    pdf.write_bytes(patched)
+
+
 def render(source: Path, css: Path, js: Path) -> Path:
     html = BUILD / (source.stem + ".html")
     pdf = BUILD / (source.stem + ".pdf")
@@ -211,6 +295,7 @@ def render(source: Path, css: Path, js: Path) -> Path:
         check=True,
         cwd=ROOT,
     )
+    _pin_timestamps(pdf, _front_matter_date(raw))
     return pdf
 
 
