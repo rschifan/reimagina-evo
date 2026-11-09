@@ -95,7 +95,16 @@ def test_post_jobs_enqueues_and_returns_202(monkeypatch):
             json={"changed_attributes": ["geometry"], "edited_features": ["b1"]},
         )
     assert resp.status_code == 202
-    assert resp.json() == {"run_id": "run-123", "status": "queued"}
+    # Exact body, not a subset: this is the documented wire contract, so a
+    # field appearing is a change clients must be told about. `deduplicated`
+    # was added when submit learned to collapse a resubmission onto work
+    # already in flight; it defaults to False so existing clients are
+    # unaffected, and this assertion is what made that explicit.
+    assert resp.json() == {
+        "run_id": "run-123",
+        "status": "queued",
+        "deduplicated": False,
+    }
     # The submit connection is committed *and* closed. Committed because the
     # enqueue must survive; closed because this route runs on every submit in a
     # long-lived process, and psycopg2's context manager does not close.
@@ -171,7 +180,11 @@ def test_post_jobs_noop_returns_null_run_id(monkeypatch):
         )
 
     assert resp.status_code == 202
-    assert resp.json() == {"run_id": None, "status": "noop"}
+    assert resp.json() == {
+        "run_id": None,
+        "status": "noop",
+        "deduplicated": False,
+    }
 
 
 def test_events_streams_the_orchestrators_progress(monkeypatch):
@@ -660,3 +673,29 @@ def test_clearing_history_reports_how_many_went(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 4}
     assert reader.cleared == 1
+
+
+def test_post_jobs_reports_a_deduplicated_resubmission(monkeypatch):
+    """A resubmission and a fresh submit are otherwise indistinguishable.
+
+    Both answer 202 with a run id and a status, so a client that resubmits —
+    a retried POST, a double-clicked button — cannot otherwise tell whether
+    its request started anything or was collapsed onto work already running.
+    """
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            return RunHandle(run_id="already-running", status=None, deduplicated=True)
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    with TestClient(create_app(initialise_pool=False)) as client:
+        resp = client.post("/jobs", json={"changed_attributes": ["floors"]})
+
+    assert resp.status_code == 202
+    assert resp.json() == {
+        "run_id": "already-running",
+        "status": "queued",
+        "deduplicated": True,
+    }

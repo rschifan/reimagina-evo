@@ -665,7 +665,14 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
     )
 
     assert response.status_code == 202
-    assert response.json() == {"run_id": "r-queued", "status": "queued"}
+    # `deduplicated` joined the wire contract when submit learned to collapse
+    # a resubmission onto work already in flight. False here: this is a
+    # fresh submit, and the flag exists so a client can tell the difference.
+    assert response.json() == {
+        "run_id": "r-queued",
+        "status": "queued",
+        "deduplicated": False,
+    }
 
 
 def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
@@ -692,7 +699,11 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": "r-done", "status": "succeeded"}
+    assert response.json() == {
+        "run_id": "r-done",
+        "status": "succeeded",
+        "deduplicated": False,
+    }
 
 
 def test_list_indicators_aoi_filter_hides_uncomputed(client, conn):

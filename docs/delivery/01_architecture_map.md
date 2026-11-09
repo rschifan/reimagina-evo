@@ -19,6 +19,7 @@ date: "8 November 2026"
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-08 | Rossano Schifanella | Indicator count corrected to eleven, measured against the running system |
 | 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented (§5.4, Figure 5); current dependency set |
+| 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
 
 ### About this document
 
@@ -227,6 +228,14 @@ plausible-looking number. The dirty set is therefore resolved *before* the
 workflow starts and passed in as an input. This was measured rather than
 reasoned about; the experiment is in the project's spike report.
 
+**A resubmission does not start a second run.** Submitting work that is
+already outstanding returns the run already doing it, flagged so the caller
+can tell. The identity is not the request, though: a scenario edit leaves the
+request byte-identical while changing the values it resolves to, so the
+identity folds in a content fingerprint of everything the planned units read.
+Edit an override and the fingerprint moves, so the resubmission is correctly a
+new run; click twice with nothing changed and it is correctly one.
+
 **Two different recoveries exist**, covering two different failures:
 
 - A process that **comes back** reclaims its own interrupted workflows when it
@@ -375,7 +384,7 @@ three are hand-run.
 
 | Goal | How it is judged |
 |---|---|
-| Q1 Correctness | 534 unit and contract tests, 322 integration tests against a real PostGIS, 17 conformance tests of the orchestrator port contract, and an opt-in recovery suite that kills a running process |
+| Q1 Correctness | 546 unit and contract tests, 322 integration tests against a real PostGIS, 17 conformance tests of the orchestrator port contract, and an opt-in recovery suite that kills a running process |
 | Q2 Baseline integrity | Structural: no scenario identifier exists on `feature` or `observation`, so a scenario cannot write to either |
 | Q3 Inspectability | The `explore` schema and the CLI commands that read it |
 | Q4 Efficient recomputation | An attribute edit dirties only the indicators declaring an edge to that attribute |

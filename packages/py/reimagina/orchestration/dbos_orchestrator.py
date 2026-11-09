@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration import runstore
+from reimagina.orchestration.dedup import deduplication_id
 from reimagina.orchestration.plan import noop_handle, plan_run
 from contextlib import closing as _closing
 from reimagina.orchestration.port import (
@@ -204,6 +205,22 @@ class DBOSOrchestrator:
         }
         dbos_app.validate_workflow_input(units, params)
 
+        # Computed before the enqueue and passed to it, so the queue itself is
+        # what rejects a duplicate. Doing the check here instead would be a
+        # read followed by a write with no lock between them — two concurrent
+        # submits of the same work would both see nothing and both enqueue.
+        # None means "do not deduplicate"; see `dedup` for when it fails open.
+        dedup_id = deduplication_id(
+            conn,
+            unit_slugs=[unit.indicator for unit in plan.units],
+            changed_attributes=changed_attributes,
+            edited_features=edited_features,
+            scenario_id=scenario_id,
+            aoi_id=aoi_id,
+            code_version=code_version,
+            indicators=indicators,
+        )
+
         mode = self._execution_mode or dbos_app.execution_mode()
         if mode not in {"client", "executor", "dev"}:
             raise ValueError(f"unknown DBOS execution mode: {mode!r}")
@@ -213,31 +230,55 @@ class DBOSOrchestrator:
             # database; a worker with the definitions later dequeues it.
             from dbos import EnqueueOptions
 
-            _client().enqueue(
-                EnqueueOptions(
-                    workflow_name=dbos_app.run_workflow.__name__,
-                    queue_name=dbos_app.RUNS_QUEUE,
-                    workflow_id=run_id,
-                ),
-                run_id,
-                units,
-                params,
+            options = EnqueueOptions(
+                workflow_name=dbos_app.run_workflow.__name__,
+                queue_name=dbos_app.RUNS_QUEUE,
+                workflow_id=run_id,
             )
+            if dedup_id is not None:
+                options["deduplication_id"] = dedup_id
+                options["duplication_policy"] = "return-existing"
+            handle = _client().enqueue(options, run_id, units, params)
         else:
             # ``dev`` intentionally self-executes; an executor process does
             # the same when it is also an interactive submitter.
             dbos_app.launch()
-            from dbos import SetWorkflowID
+            from dbos import SetEnqueueOptions, SetWorkflowID
 
-            with SetWorkflowID(run_id):
+            with (
+                SetWorkflowID(run_id),
+                SetEnqueueOptions(
+                    deduplication_id=dedup_id,
+                    duplication_policy="return-existing" if dedup_id else None,
+                ),
+            ):
                 # DBOS types the payload as a plain dict; RunParams is a
                 # TypedDict, which is structurally compatible but not nominally.
-                dbos_app.runs_queue().enqueue(
+                handle = dbos_app.runs_queue().enqueue(
                     dbos_app.run_workflow,
                     run_id,
                     units,
                     params,  # type: ignore[arg-type]
                 )
+
+        # The id the queue handed back is the authority. With
+        # `return-existing`, a collision yields a handle to the workflow
+        # already holding the id and discards the arguments just submitted —
+        # so a differing id is how, and the only way, this learns it happened.
+        settled = getattr(handle, "workflow_id", run_id) or run_id
+        if settled != run_id:
+            logger.info(
+                "run %s matched work already in flight as %s; returning that run",
+                run_id,
+                settled,
+            )
+            # ⚠ The plan written above is now unreferenced. It is reclaimed by
+            # the TTL sweep that `_persist_plan` already runs on every submit —
+            # the idempotency-collision case its docstring names. Deleting it
+            # here would be the obvious alternative and is wrong: this path
+            # also runs when the collision was with *this* process's own
+            # retry, and the plan is keyed per submit, not per run.
+            return RunHandle(run_id=settled, status=None, deduplicated=True)
 
         return RunHandle(run_id=run_id, status=None)
 

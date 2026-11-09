@@ -18,6 +18,7 @@ date: "8 November 2026"
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-09 | Rossano Schifanella | Current dependency set; GeoParquet 1.1; cross-executor recovery |
+| 0.3 | 2026-11-09 | Rossano Schifanella | Run-level deduplication (§13.1) |
 
 ### Why this document exists
 
@@ -619,7 +620,29 @@ recorded against the executor's own id. The worker warns when
 correct for one process per role per host and wrong the moment there are two.
 Set it per replica.
 
-### 13.1 A worker that never comes back
+### 13.1 A resubmission does not start a second run
+
+Submitting work that is already outstanding returns the run already doing it,
+rather than a second run writing the same rows a moment later:
+
+```
+resubmit while outstanding          -> same run, deduplicated=True
+resubmit after the run is terminal  -> new run
+edit an override, same request      -> new run
+then resubmit with nothing changed  -> same run, deduplicated=True
+```
+
+The third line is the one that decides whether this is correct or merely
+present. A scenario edit does not change the request — same attribute, same
+features, same scenario — only the values those features resolve to. An
+identity built from the request would collapse those two submissions and hand
+the operator the run computing the numbers they had just replaced. So the
+identity folds in a content fingerprint of everything the planned units read,
+taken from the asset graph; editing an override moves it, and restoring the
+old value moves it back, because the fingerprint is content addressed rather
+than a counter.
+
+### 13.2 A worker that never comes back
 
 The transcript above is a process that *restarts*. A process that **dies** —
 a destroyed host, a scaled-away replica — is a different failure, and the
@@ -650,7 +673,7 @@ beat, and **startup refuses** any configuration where it is below four beats
 — the two are separate environment variables, and nothing else would notice
 an operator slowing the beat without widening the window.
 
-### 13.2 Dependencies are respected, and parallelism is taken
+### 13.3 Dependencies are respected, and parallelism is taken
 
 For a change dirtying two base indicators and one composite:
 
@@ -665,7 +688,7 @@ The two independent units started 10 ms apart and ran concurrently; the
 composite started 255 ms after the later of them finished. The DAG is
 enforced, and where it permits concurrency the queue uses it.
 
-### 13.3 Progress without polling
+### 13.4 Progress without polling
 
 `GET /jobs/{run_id}/events` is a server-sent event stream:
 
@@ -751,7 +774,7 @@ Stated so that the absence is not mistaken for a claim.
 | GeoArrow encoding | The export is GeoParquet 1.1 with a covering bbox (§12), but geometries are WKB. 1.1's native GeoArrow encoding avoids a decode step on read; geopandas still labels it experimental, so WKB is the interoperable choice today. |
 | TypeScript 7 | The web app stays on 5.9. 7.0 is the native compiler port and needs both TS 7 and TS 6 installed plus a `--tsgo` flag, which `svelte-check` is not set up for. Everything else in the web stack is current and `npm audit` is clean. |
 | `resolution_m` on raster ingest | Came back `null` for the EPSG:4326 raster — the resolution is in degrees and the field wants metres. Cosmetic in the registry, but it is a null where a number belongs. |
-| First SSE frame | Can read `"status": "unknown"` (§13.3). |
+| First SSE frame | Can read `"status": "unknown"` (§13.4). |
 
 ---
 

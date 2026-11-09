@@ -104,6 +104,14 @@ class RunHandle:
     # populates ``status`` here; an async orchestrator leaves it None and the
     # caller polls ``get_run``.
     status: RunStatus | None = None
+    deduplicated: bool = False
+    """True when ``run_id`` names work that was already outstanding.
+
+    Without it a caller cannot distinguish "your run started" from "a run
+    doing exactly this was already in flight, here it is" — the two are the
+    same shape, and only one of them means the submission did anything. It is
+    a defaulted field so an implementation that never deduplicates says so by
+    omission rather than by writing False everywhere."""
 
 
 @dataclass(frozen=True)

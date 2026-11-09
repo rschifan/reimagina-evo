@@ -445,6 +445,32 @@ Two consequences, and they are the comparison:
 - **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans are reclaimed by the sweep below, which is now built. Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, and a live peer adopted nothing until swept (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`).
 
 
+
+### Deduplication — one identity for one piece of outstanding work
+
+`submit_run` minted a fresh uuid per call, so a double-clicked button, a retried POST or an impatient operator started a second run recomputing what the first was already computing. Both wrote the same `indicator_result` rows, one after the other.
+
+DBOS 3 deduplicates natively. An enqueue carrying a `deduplication_id` collides with any workflow already holding that id on the same queue; `duplication_policy="return-existing"` returns a handle to it and discards the arguments just submitted. The id is cleared on every terminal transition, so **the key is held only while the work is outstanding**. `RunHandle.deduplicated` and the API's `deduplicated` field carry the fact back, because a resubmission is otherwise answered exactly like a fresh submit.
+
+⚠ **An identical request is not the same thing as identical work, and this is where a request-shaped id would be a correctness bug.** A scenario edit does not change the request — same attribute, same features, same scenario id. It changes the values those features resolve to. Deduplicate on request shape and an operator who edits an override mid-run and resubmits is handed back the run computing the values they just replaced, with nothing to say so.
+
+So the id folds in the content fingerprint of everything the planned units read. `serving_geo.asset_expected_version_v` gives each indicator the hash of its whole upstream closure, which includes `scenario.override.<attribute>` for that scenario. Editing an override republishes that asset, the closure hash moves, the id changes, and the resubmission is a new run. Measured rather than assumed: editing one override value moves the indicator's expected version from `79b1aeffc19f2aef` to `fc302faf525037df`, and restoring it moves it back, because the version is content addressed rather than a counter.
+
+**It fails open.** A planned unit with no expected version — an asset graph not yet backfilled — means input changes cannot be detected, so no id is produced and nothing is deduplicated. A redundant run costs CPU; a wrongly suppressed one costs an answer someone asked for.
+
+**The queue decides, not a prior read.** Checking for an in-flight twin and then enqueuing would be a read followed by a write with nothing holding between them: two concurrent submits of the same work would both see nothing and both enqueue. Handing the id to DBOS makes the uniqueness check and the insert one operation.
+
+Observed end to end on the live queue:
+
+```
+resubmit while outstanding          -> same run, deduplicated=True
+resubmit after the run is terminal  -> new run
+edit an override, same request      -> new run
+then resubmit with nothing changed  -> same run, deduplicated=True
+```
+
+`tests/integration/test_run_deduplication.py` holds all four, in `client` mode so nothing drains the queue and the window is not a race. It also asserts that the asset graph is seeded — without that, every test in the file would pass by never deduplicating anything.
+
 ### Recovery — two mechanisms, and only one of them is DBOS's
 
 They are easy to conflate and they cover different failures.

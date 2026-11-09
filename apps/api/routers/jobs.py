@@ -148,6 +148,13 @@ class SubmitRunResponse(BaseModel):
     # client following the documented poll loop fail after a *successful* submit.
     run_id: str | None
     status: str
+    deduplicated: bool = False
+    """True when ``run_id`` names a run that was already doing this work.
+
+    A resubmission is answered exactly like a fresh submit — 202, a run id, a
+    status — so without this flag a client cannot tell whether its request
+    started anything. Defaulted, so every existing consumer keeps working and
+    reads False."""
 
 
 class UnitView(BaseModel):
@@ -162,9 +169,15 @@ class RunView(BaseModel):
     units: list[UnitView] = []
 
 
-def _submit_response(run_id: str, status: str) -> SubmitRunResponse:
+def _submit_response(
+    run_id: str, status: str, *, deduplicated: bool = False
+) -> SubmitRunResponse:
     """Suppress the run_id on a noop — nothing was persisted to poll for."""
-    return SubmitRunResponse(run_id=None if status == "noop" else run_id, status=status)
+    return SubmitRunResponse(
+        run_id=None if status == "noop" else run_id,
+        status=status,
+        deduplicated=deduplicated,
+    )
 
 
 @router.post("", status_code=202, response_model=SubmitRunResponse)
@@ -215,7 +228,7 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
         elif body.wait:
             response.status_code = 200
 
-    return _submit_response(handle.run_id, status)
+    return _submit_response(handle.run_id, status, deduplicated=handle.deduplicated)
 
 
 def _await_terminal(orchestrator, conn, run_id: str) -> str:
