@@ -66,16 +66,28 @@ dependencies = [
     # Postgres under the `dbos` schema, so there is no standing service and no
     # second database; we keep the wave scheduler and borrow only durability.
     #
-    # Pinned >=2.28 because 2.28.0 IS the latest stable — the plan's `>=2.29`
-    # does not exist. 2.28.0 does not contain the idempotent-recovery fix (PR
-    # #786 merged six hours after it shipped), which is why the cross-executor
-    # sweep is built last and gated on a conservative liveness signal. Startup
-    # recovery is unaffected: a process only ever reclaims its own executor_id,
-    # at a moment when by definition it is not running those workflows.
+    # Pinned >=3.4. The 2.x line was capped below the idempotent-recovery fix
+    # (PR #786 merged six hours after 2.28.0 shipped), which is why the
+    # cross-executor sweep went unbuilt: without it, two peers sweeping the
+    # same dead executor could each start a runner for one workflow. DBOS 3
+    # re-enqueues on recovery, so the queue's atomic ENQUEUED->PENDING dequeue
+    # admits exactly one — and the sweep now exists
+    # (reimagina.orchestration.reclaim).
+    #
+    # Upgrading 2 -> 3 cost one line: `run_admin_server` left DBOSConfig
+    # because DBOS 3 removed the in-process admin HTTP server outright.
+    # Everything else this repo uses — register_queue, wait_first, the stream
+    # API, DBOSClient(system_database_url=..., use_listen_notify=True) —
+    # carried over unchanged, because the removals in 3.0 (@DBOS.transaction,
+    # sql_session, @DBOS.scheduled, the fastapi/flask constructor arguments)
+    # are all things this design had already chosen not to use.
+    #
+    # ⚠ The migration is one-way: DBOS 3 reads workflows created by 2.x, 2.x
+    # cannot read workflows created by 3. Drain before upgrading.
     #
     # The upper bound is deliberate — breaking changes ship inside minor
     # releases. See docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
-    "dbos>=2.28,<3",
+    "dbos>=3.4,<4",
 ]
 
 [project.optional-dependencies]

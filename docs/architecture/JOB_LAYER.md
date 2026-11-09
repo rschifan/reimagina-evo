@@ -415,7 +415,7 @@ Children are enqueued under deterministic ids (`{run_id}-{slug}`) and the body a
 
 **A direct DSN is mandatory and fails loudly.** `DATABASE_URL_DIRECT` or a `RuntimeError` — because DBOS falls back to a local SQLite file when no database URL is set, so a missing environment variable in production would produce a *working* process with private, unrecoverable checkpoints instead of an error. LISTEN/NOTIFY backs the progress streams and cannot cross PgBouncer in transaction mode, so it must be the direct one (`dbos_app.py:57-74`).
 
-**`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running; on 2.28.0 recovery is not idempotent, so that is a double execution. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
+**`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running — a double execution. DBOS 3 made duplicate *recovery requests* idempotent, which is a different thing and does not help here: recovering an executor that never stopped re-enqueues a workflow its original runner is still executing, and admits a second runner beside it. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
 
 **`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
 
@@ -429,12 +429,88 @@ Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the
 
 ### The worker
 
-`python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. The worker also writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`.
+`python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. Every process that launches — not only the worker — writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`. It belongs to `launch()` rather than to the worker entrypoint because the queues registered there carry a worker concurrency, so **any** process that launches can dequeue and execute units, the API included; an executor that can own work and never announces itself is one whose work can never be reclaimed.
 
 Two consequences, and they are the comparison:
 
 - **A worker is required in production.** The API is client-only by default, keeping long-running PostGIS work outside request processes. `dev` is the explicit one-process mode for the CLI and integration tests; it is not a deployment default.
-- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans need a deliberate sweep against a liveness signal, which is not built yet (`apps/worker/app.py:12-14`). Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, a live peer adopted nothing, and a manual sweep from the peer drove the run to completion. The sweep is built last and gated conservatively because the pinned 2.28.0 predates the idempotent-recovery fix, so a sweep fired against a live executor can double-execute (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`, `:191-195`, `pyproject.toml:56-69`).
+- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans are reclaimed by the sweep below, which is now built. Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, and a live peer adopted nothing until swept (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`).
+
+
+### Recovery — two mechanisms, and only one of them is DBOS's
+
+They are easy to conflate and they cover different failures.
+
+| | Covers | Who does it | Gate |
+|---|---|---|---|
+| **Startup recovery** | a process that comes back | `DBOS.launch()`, for its own `executor_id` only | none needed — a process is not running the workflows it is about to reclaim |
+| **Cross-executor sweep** | a process that never comes back | `orchestration.reclaim.sweep`, from a peer | `jobs_runtime.ops_executor_heartbeat` |
+
+Startup recovery is the library's, it is free, and it is enough for a restart,
+a redeploy, or an OOM kill followed by a supervisor restart. It is **not**
+enough for a death: a destroyed host or a scaled-away replica leaves PENDING
+workflows recorded against an id no process will ever claim again, and the run
+they belong to never reaches a terminal state. Nothing times it out, because
+from the database's point of view the work is still in progress.
+
+**The sweep.** A live executor periodically asks which executors have stopped
+publishing liveness and calls DBOS recovery for each, which re-enqueues their
+pending workflows onto itself. `reclaim.sweep` is one pass;
+`apps/worker/app.py` runs it on a loop every `REIMAGINA_RECLAIM_SWEEP_S`
+seconds. A reclaimed executor's heartbeat row is deleted, so the same corpse
+is not swept forever and does not sit permanently in
+`explore.ops_executor_health_v` as noise an operator learns to ignore.
+
+**Why it waited for DBOS 3.** Spike 1 measured the mechanism working on 2.28
+— `_recover_pending_workflows(["exec-A"])` from B returned two handles, drove
+the run to SUCCESS, and recomputed exactly one unit — and then recommended
+building it last, because 2.28.0 shipped six hours before the
+idempotent-recovery fix merged. Without that fix two peers sweeping the same
+dead executor could each start a runner for the same workflow. DBOS 3's
+`_recovery._recover_workflow` re-enqueues rather than executing directly,
+"so that every recovered workflow starts through the queue's atomic
+ENQUEUED->PENDING dequeue. That handoff admits exactly one runner, which makes
+duplicate recovery requests idempotent." Racing sweepers are therefore safe.
+
+⚠ **That fix does not make sweeping a *live* executor safe, which is why the
+liveness gate is a correctness requirement rather than a courtesy.**
+Re-enqueuing a workflow that a running process is still executing admits a
+second runner alongside the first. The idempotency is about duplicate
+*recovery requests*, not about recovering work that was never abandoned.
+
+Three properties follow, and each is enforced rather than documented:
+
+- **The threshold is many multiples of the beat.** `REIMAGINA_EXECUTOR_STALE_S`
+  defaults to 300 s against a 30 s beat, and `reclaim.stale_after_seconds`
+  **refuses to start** if the ratio falls below 4. The two are separate
+  environment variables, so nothing else would notice an operator slowing the
+  beat — the tempting edit, because beats look like chatter — without widening
+  the window. The asymmetry is the argument: reclaiming a dead executor late
+  costs latency; reclaiming a live one costs a duplicate execution.
+- **A sweeper never sweeps itself.** The exclusion is in the SQL, not left to
+  the caller. A process busy in a long unit with a wedged heartbeat thread is
+  exactly the case where its own row looks stale.
+- **An executor with no heartbeat row is never swept.** Absence is not
+  evidence of death. The one process that can be in that state is running code
+  old enough not to publish liveness, which is when guessing is worst.
+
+`tests/recovery/test_crash_recovery.py::test_a_peer_reclaims_a_dead_executors_run`
+is the end-to-end proof, with a real `SIGKILL` and two distinct executor ids.
+Observed on a 22,500-block territory: three units unfinished before the sweep,
+three recovered, run `succeeded`, dead heartbeat row gone.
+
+```
+LAUNCHED_AS             recovery-probe-sweeper
+UNFINISHED_BEFORE_SWEEP 3
+DEAD                    ['recovery-probe-dead']
+RECOVERED               3
+STATUS                  succeeded
+DEAD_HEARTBEAT_ROWS     0
+```
+
+Set `REIMAGINA_RECLAIM_ENABLED=0` to turn the sweep off. The worker logs a
+warning when you do, naming the consequence: a dead executor's runs stay in
+progress forever until a process with its id restarts.
 
 ---
 

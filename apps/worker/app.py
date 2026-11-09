@@ -5,10 +5,20 @@ a poll loop of its own: launching registers the workflow definitions, starts the
 queue dequeuer and the startup-recovery thread, and then there is nothing to do
 but stay alive. All the interesting behaviour is in the library.
 
-Launching reclaims *this executor's* interrupted workflows automatically. It
-  does not touch another executor's — that needs a deliberate sweep against a
-  liveness signal, which is not built yet (see the spike report).
+Two kinds of recovery meet here, and they are not the same mechanism:
 
+- **Its own.** ``dbos_app.launch()`` reclaims the workflows recorded against
+  *this* ``executor_id``. That covers a restart, and needs nothing from this
+  module.
+- **Someone else's.** An executor that never restarts — a destroyed host, a
+  scaled-away replica — leaves PENDING workflows nobody will claim. The sweep
+  below reclaims them, gated on the liveness table so a merely slow peer is
+  never mistaken for a dead one. ``orchestration.reclaim`` holds the argument
+  for why the gate is a correctness requirement rather than a courtesy.
+
+The sweep lives in the worker rather than in the submit path because it wants
+a long-lived process with an executor to recover *onto*, and because a
+submit-time sweep would fire at the one moment the system is already busy.
 """
 
 from __future__ import annotations
@@ -36,7 +46,8 @@ def run_dbos_worker() -> None:
     import threading
 
     from reimagina.orchestration import dbos_app
-    from reimagina.orchestration.executor_health import heartbeat
+    from reimagina.orchestration.executor_health import interval_seconds
+    from reimagina.orchestration.reclaim import stale_after_seconds, sweep
 
     logger = logging.getLogger(__name__)
 
@@ -45,49 +56,69 @@ def run_dbos_worker() -> None:
     # still wins.
     os.environ.setdefault("REIMAGINA_EXECUTOR_ROLE", "worker")
     os.environ.setdefault("REIMAGINA_DBOS_EXECUTION_MODE", "executor")
+
+    # Validated before launch, not after: both raise on a misconfiguration,
+    # and failing with the queues already draining would leave work half-done
+    # in a process about to exit.
+    beat_interval = interval_seconds()
+    stale_after = stale_after_seconds()
+
+    # Launching starts the liveness heartbeat for this executor.
     dbos_app.launch()
+
     stop = threading.Event()
-    interval = float(os.environ.get("REIMAGINA_EXECUTOR_HEARTBEAT_S", "30"))
-    if interval <= 0:
-        raise RuntimeError("REIMAGINA_EXECUTOR_HEARTBEAT_S must be positive")
-
-    def _heartbeat_loop() -> None:
-        """Publish liveness until asked to stop. Survives a failed beat.
-
-        ⚠ The ``except`` is the point, and it is not defensive padding.
-        ``heartbeat()`` opens a short direct connection, so any ordinary blip —
-        a failover, a restart, a full connection pool, a network hiccup — raises
-        here. Unhandled, that ends the *thread*, silently: the worker keeps
-        dequeuing and executing units while its row in
-        ``jobs_runtime.ops_executor_heartbeat`` stops advancing forever, and
-        nothing logs a word.
-
-        Which is worse than a dead thread, because of what reads that row.
-        ``dbos>=2.28,<3`` is pinned below the idempotent-recovery fix, so the
-        cross-executor sweep is deliberately gated on a conservative liveness
-        signal — and "stale but very much alive" is the one input that gate must
-        never be handed. A missed beat is transient; a dead reporter is not.
-        """
-        while not stop.wait(interval):
-            try:
-                heartbeat()
-            except Exception:  # noqa: BLE001 — a missed beat must not end the loop
-                logger.warning(
-                    "executor heartbeat failed; retrying in %ss",
-                    interval,
-                    exc_info=True,
-                )
-
-    # Not guarded: the first beat runs before the loop starts, and a worker that
-    # cannot reach its own database at startup should fail loudly rather than
-    # come up looking healthy.
-    heartbeat()
-    thread = threading.Thread(
-        target=_heartbeat_loop, name="dbos-executor-heartbeat", daemon=True
+    sweep_every = float(
+        os.environ.get("REIMAGINA_RECLAIM_SWEEP_S", max(stale_after / 2, 60.0))
     )
-    thread.start()
+    enabled = os.environ.get("REIMAGINA_RECLAIM_ENABLED", "1") != "0"
+
+    def _sweep_loop() -> None:
+        """Reclaim dead executors' workflows until asked to stop.
+
+        The first sweep waits a full interval rather than running at startup.
+        A process that has just launched has not yet beaten often enough for
+        its *peers* to look stale relative to it, and more importantly a fleet
+        restarting together would otherwise have every member sweep every
+        other member in the same second.
+        """
+        while not stop.wait(sweep_every):
+            try:
+                report = sweep()
+            except Exception:  # noqa: BLE001 — a failed sweep must not end the loop
+                logger.warning("reclaim sweep failed; will retry", exc_info=True)
+                continue
+            if report.acted:
+                logger.info(
+                    "reclaim sweep: %d workflow(s) from %s",
+                    report.workflows_recovered,
+                    ", ".join(report.dead_executors),
+                )
+            for error in report.errors:
+                logger.warning("reclaim sweep could not finish an executor: %s", error)
+
+    threads = []
+    if enabled:
+        sweeper = threading.Thread(
+            target=_sweep_loop, name="dbos-reclaim-sweep", daemon=True
+        )
+        sweeper.start()
+        threads.append(sweeper)
+        logger.info(
+            "reclaim sweep every %gs for executors silent for %gs (beat %gs)",
+            sweep_every,
+            stale_after,
+            beat_interval,
+        )
+    else:
+        logger.warning(
+            "REIMAGINA_RECLAIM_ENABLED=0 — a dead executor's runs will stay "
+            "in progress forever until a process with its id restarts"
+        )
+
     try:
         _wait_for_shutdown(stop)  # DBOS owns the dequeue/recovery loops.
     finally:
         stop.set()
-        thread.join(timeout=interval + 1)
+        dbos_app.stop_liveness()
+        for thread in threads:
+            thread.join(timeout=5.0)

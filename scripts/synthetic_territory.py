@@ -81,14 +81,28 @@ def build(blocks_per_side: int, *, ageb_side: int = 2):
     # the blocks it actually got rather than an assumed square.
     ageb_bounds: dict[str, list[float]] = {}
 
+    # ⚠ Reference widths are computed, not fixed, and the separator is not
+    # decoration. `f"SYN{row:02d}{col:02d}"` is ambiguous the moment either
+    # index reaches three digits: row 101 column 0 and row 10 column 100 both
+    # render "SYN10100". At --blocks 150 that silently cost 250 of 22,500
+    # blocks to ON CONFLICT DO NOTHING, and merged 5 of 225 AGEBs into their
+    # neighbours — giving those five a wrong geometry rather than no geometry,
+    # which is the worse failure. Zero-padding keeps lexical order equal to
+    # numeric order; the hyphen is what makes the two fields unambiguous at
+    # any width.
+    cell_w = len(str(max(blocks_per_side - 1, 0)))
+    ageb_w = len(str(max((blocks_per_side - 1) // ageb_side, 0)))
+
     for row in range(blocks_per_side):
         for col in range(blocks_per_side):
             west = ORIGIN_LON + _deg(col * pitch, lat=ORIGIN_LAT, east_west=True)
             south = ORIGIN_LAT + _deg(row * pitch, lat=ORIGIN_LAT, east_west=False)
             east = west + _deg(BLOCK_M, lat=ORIGIN_LAT, east_west=True)
             north = south + _deg(BLOCK_M, lat=ORIGIN_LAT, east_west=False)
-            ref = f"SYN{row:02d}{col:02d}"
-            ageb_ref = f"SYNAGEB{row // ageb_side}{col // ageb_side}"
+            ref = f"SYN{row:0{cell_w}d}-{col:0{cell_w}d}"
+            ageb_ref = (
+                f"SYNAGEB{row // ageb_side:0{ageb_w}d}-{col // ageb_side:0{ageb_w}d}"
+            )
             box = ageb_bounds.setdefault(ageb_ref, [west, south, east, north])
             box[0], box[1] = min(box[0], west), min(box[1], south)
             box[2], box[3] = max(box[2], east), max(box[3], north)
@@ -134,7 +148,7 @@ def build(blocks_per_side: int, *, ageb_side: int = 2):
     ageb_rows = [
         {
             "ref": ref,
-            "name": f"Synthetic AGEB {ref[-2:]}",
+            "name": f"Synthetic AGEB {ref.removeprefix('SYNAGEB')}",
             "geometry": Polygon(
                 [
                     (w - pad_x, s_ - pad_y),

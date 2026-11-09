@@ -176,3 +176,141 @@ def test_a_killed_executor_resumes_the_same_feature_set(clean_run_state):
     )[0][0]
     assert after == 0
     assert before, "no plan was captured before the crash"
+
+
+# A beat every second and death declared after four. The ratio is the shipped
+# one (`reclaim.MIN_STALE_RATIO`); only the scale is compressed, so the real
+# validation still runs and a test cannot accidentally configure a window the
+# product would refuse.
+SWEEP_ENV = {
+    "REIMAGINA_EXECUTOR_HEARTBEAT_S": "1",
+    "REIMAGINA_EXECUTOR_STALE_S": "4",
+}
+DEAD_EXECUTOR = "recovery-probe-dead"
+SWEEPER_EXECUTOR = "recovery-probe-sweeper"
+
+
+def test_a_peer_reclaims_a_dead_executors_run(clean_run_state):
+    """The cross-executor sweep, end to end, with a real SIGKILL.
+
+    This is the property `_recover.py` cannot show. There, the second process
+    reuses the dead one's `executor_id`, so `DBOS.launch()` reclaims the work
+    by itself — which covers a restart and not a death. Here the second
+    process launches under a *different* id, so launching recovers nothing,
+    and the run can only finish because `reclaim.sweep` judged the first
+    executor dead and re-enqueued its workflows.
+
+    `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md` measured the mechanism
+    working on DBOS 2.28 and then deferred shipping it, because that version
+    predates the idempotent-recovery fix. On DBOS 3 recovery re-enqueues
+    through the queue's atomic ENQUEUED->PENDING dequeue, so a duplicate
+    recovery admits exactly one runner. This test is what holds the
+    difference.
+    """
+    blocks = _query(
+        "SELECT count(*) FROM curated_geo.feature f "
+        "JOIN curated_geo.feature_type_catalog t ON t.id = f.type_id "
+        "WHERE t.type_slug = 'block' AND f.geometry IS NOT NULL"
+    )[0][0]
+    if blocks < MIN_BLOCKS:
+        pytest.skip(
+            f"{blocks} blocks is too few to crash mid-compute; need {MIN_BLOCKS}."
+        )
+    _query(
+        "DELETE FROM jobs_runtime.ops_executor_heartbeat WHERE executor_id = ANY(%s)",
+        [DEAD_EXECUTOR, SWEEPER_EXECUTOR],
+    )
+
+    victim_env = {**_env(), **SWEEP_ENV, "REIMAGINA_EXECUTOR_ID": DEAD_EXECUTOR}
+    victim = subprocess.Popen(
+        [sys.executable, str(HERE / "_submit_and_block.py")],
+        env=victim_env,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        run_id = None
+        for line in victim.stdout:  # type: ignore[union-attr]
+            if line.startswith("RUN_ID="):
+                run_id = line.strip().split("=", 1)[1]
+            elif line.startswith("BLOCKS="):
+                break
+        assert run_id, "submitter never reported its run id"
+
+        deadline = time.time() + 300
+        killed = False
+        while time.time() < deadline:
+            running, done = _query(
+                "SELECT count(*) FILTER (WHERE status='running'), "
+                "count(*) FILTER (WHERE status='succeeded') "
+                "FROM jobs_runtime.job_unit WHERE run_id = %s::uuid",
+                run_id,
+            )[0]
+            if running >= 1 and done < 3:
+                victim.kill()
+                killed = True
+                break
+            if done >= 3:
+                pytest.skip("run completed before the kill could land")
+            time.sleep(0.2)
+        assert killed, "never observed a unit running"
+        victim.wait(timeout=30)
+    finally:
+        if victim.poll() is None:
+            victim.kill()
+
+    # It published liveness before it died — that row is the only thing that
+    # lets a peer tell "dead" from "slow".
+    beats = _query(
+        "SELECT count(*) FROM jobs_runtime.ops_executor_heartbeat "
+        "WHERE executor_id = %s",
+        DEAD_EXECUTOR,
+    )[0][0]
+    assert beats == 1, "the killed executor never announced itself"
+
+    # Past the staleness window, but only just: a test that slept a minute
+    # would pass even if the gate were ignored entirely.
+    time.sleep(float(SWEEP_ENV["REIMAGINA_EXECUTOR_STALE_S"]) + 1.5)
+
+    sweeper_env = {**_env(), **SWEEP_ENV, "REIMAGINA_EXECUTOR_ID": SWEEPER_EXECUTOR}
+    swept = subprocess.run(
+        [sys.executable, str(HERE / "_sweep.py"), run_id, DEAD_EXECUTOR],
+        env=sweeper_env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    out = dict(
+        line.split("=", 1)
+        for line in swept.stdout.splitlines()
+        if "=" in line and not line.startswith(" ")
+    )
+
+    # Printed, not just asserted: run with `-s` and this is the transcript
+    # that shows the mechanism working, which is what gets quoted when someone
+    # asks whether a dead worker strands its runs.
+    print("\n  cross-executor reclaim:")
+    for key in (
+        "LAUNCHED_AS",
+        "UNFINISHED_BEFORE_SWEEP",
+        "DEAD",
+        "RECOVERED",
+        "STATUS",
+        "UNITS",
+        "DEAD_HEARTBEAT_ROWS",
+    ):
+        print(f"    {key:<24}{out.get(key)}")
+
+    assert out.get("LAUNCHED_AS") == SWEEPER_EXECUTOR, swept.stdout[-2000:]
+    assert int(out.get("UNFINISHED_BEFORE_SWEEP", "0")) >= 1, (
+        "the run was already finished before the sweep ran, so nothing was "
+        "proved: " + swept.stdout[-2000:]
+    )
+    assert out.get("SWEPT_THE_DEAD_ONE") == "True", swept.stdout[-2000:]
+    assert out.get("ERRORS") == "[]", out.get("ERRORS")
+    assert int(out.get("RECOVERED", "0")) >= 1, swept.stdout[-2000:]
+    assert out.get("STATUS") == "succeeded", swept.stdout[-2000:]
+    assert "queued" not in out.get("UNITS", ""), out.get("UNITS")
+    assert "running" not in out.get("UNITS", ""), out.get("UNITS")
+    # Reclaimed, then forgotten: otherwise the same corpse is swept forever.
+    assert out.get("DEAD_HEARTBEAT_ROWS") == "0", out.get("DEAD_HEARTBEAT_ROWS")
