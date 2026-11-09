@@ -7,9 +7,9 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 9 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `26f069271e0a8381e8b1e2edd0f084155f63bfb3` |
+| **Generated from commit** | `0fd21017ab6eab3c0e194e92ddd687ed7f71447e` |
 | **Branch** | `delivery/schedule-a` |
-| **Working tree at generation** | MODIFIED — not a clean delivery |
+| **Working tree at generation** | clean |
 
 ⚠ The tag is the authoritative identifier. The commit above is the one
 this file was generated *from*, which is necessarily the commit before
