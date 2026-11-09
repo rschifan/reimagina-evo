@@ -114,3 +114,52 @@ def test_capacity_is_refused_rather_than_queued(monkeypatch):
         asyncio.run(_two_subscribers())
     finally:
         release.set()
+
+
+def test_the_pump_releases_the_semaphore_it_acquired(monkeypatch):
+    """Not whatever the module global points at by the time it finishes.
+
+    The pump runs on a daemon thread that deliberately outlives the generator,
+    so it can reach its `finally` long after the call that started it has
+    returned. Resolving `_PROGRESS_SLOTS` there rather than capturing it meant
+    releasing a *different* object if anything had rebound the name in
+    between — which is not hypothetical, because that is precisely what the
+    test above does, and what a second worker process configuring its own cap
+    would do.
+
+    The symptom was not a leaked slot. `BoundedSemaphore.release` raises when
+    the count is already full, and it raised *inside* the `finally` — so the
+    `done` sentinel queued after it never reached the subscriber, and an SSE
+    client waited for a stream end that never came.
+    """
+    real = dbos_orchestrator._PROGRESS_SLOTS
+    acquired = threading.BoundedSemaphore(1)
+    release = threading.Event()
+    entered = threading.Event()
+    orchestrator = _subscriber(monkeypatch, release, entered, acquired)
+
+    async def _subscribe_then_disconnect():
+        events = orchestrator.subscribe_progress("run-1").__aiter__()
+        await anext(events)
+        await events.aclose()
+
+    asyncio.run(_subscribe_then_disconnect())
+    assert entered.wait(timeout=5), "pump never reached the blocking read"
+
+    # The cap is rebound while the pump is still blocked, exactly as
+    # monkeypatch teardown does when a test returns before its pump wakes.
+    monkeypatch.setattr(dbos_orchestrator, "_PROGRESS_SLOTS", real)
+    release.set()
+
+    for _ in range(100):
+        if acquired.acquire(blocking=False):
+            acquired.release()
+            break
+        threading.Event().wait(0.05)
+    else:  # pragma: no cover - only on a regression
+        pytest.fail("the pump did not release the semaphore it acquired")
+
+    # And the rebound one was left alone: releasing a full BoundedSemaphore
+    # raises, so this is what the regression actually looked like.
+    assert real.acquire(blocking=False), "the real cap was disturbed"
+    real.release()

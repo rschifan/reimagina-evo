@@ -17,6 +17,7 @@ date: "8 November 2026"
 | Version | Date | Author | Summary |
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
+| 0.2 | 2026-11-09 | Rossano Schifanella | Current dependency set; GeoParquet 1.1; cross-executor recovery |
 
 ### Why this document exists
 
@@ -68,13 +69,20 @@ see §5.
 | | |
 |---|---|
 | PostgreSQL | 16.15 (x86_64-pc-linux-gnu) |
-| PostGIS | 3.7.0 |
-| pgRouting | 4.0.2 |
-| Python | 3.13.18 |
-| GeoPandas · rasterio | 1.1.3 · 1.5.0 |
-| FastAPI | 0.136.0 |
+| PostGIS · pgRouting | 3.7.0 · 4.0.2 |
+| Python | 3.13.18 (floor 3.12) |
+| GeoPandas · Shapely · pyproj | 1.2.0 · 2.2.0 · 3.8.0 |
+| rasterio · pyogrio · PyArrow | 1.5.2 · 0.13.0 · 26.0.1 |
+| titiler.core · rio-tiler | 2.4.0 · 9.4.13 |
+| exactextract · OSMnx | 0.3.0 · 2.1.1 |
+| FastAPI · SQLAlchemy · DBOS | 0.162.2 · 2.1.8 · 3.4.0 |
 | Migration head | `r047` (46 revisions) |
-| Third-party dependencies declared | 261 (`docs/THIRD_PARTY_LICENSES.md`, Article 4.1) |
+| Third-party dependencies declared | 259 (`docs/THIRD_PARTY_LICENSES.md`, Article 4.1) — 0 strong copyleft, 8 weak |
+
+Every one of these is the current release at the time of writing. Declared
+floors in `pyproject.toml` are the oldest versions CI has run, not the oldest
+that might work, so an install without the lockfile still gets software this
+project has been tested against.
 
 Whole-run wall time, from `DROP DATABASE` to the last inspection command:
 **58 seconds**, measured three times (56.9 s, 58.9 s, 58.3 s).
@@ -545,19 +553,34 @@ defeated.
 The media types are the registered ones, not `application/octet-stream`, and
 the CSV carries a `Content-Disposition` filename.
 
-The Parquet file is **GeoParquet**, with the metadata that makes it readable
-by GDAL, DuckDB and QGIS without being told what it is:
+The Parquet file is **GeoParquet 1.1 with a covering bbox**, which is the
+metadata that makes it readable by GDAL, DuckDB and QGIS without being told
+what it is — and skippable by a query engine without decoding it:
 
 ```
-metadata keys:        ['pandas', 'geo']
-geoparquet version:   1.0.0
-primary column:       geometry
-geometry column:      WKB encoding, ['Polygon'], EPSG:4326
+metadata keys:      ['pandas', 'geo']
+geoparquet version: 1.1.0
+primary column:     geometry
+geometry column:    WKB encoding, ['Polygon'], EPSG:4326
+covering:           {'bbox': {'xmin': ['bbox','xmin'], 'ymin': ['bbox','ymin'],
+                              'xmax': ['bbox','xmax'], 'ymax': ['bbox','ymax']}}
+parquet columns:    feature_id, type_slug, value, quality_flag, computed_at,
+                    geometry, bbox
 ```
 
-**What it proves.** The analysis leaves the platform in open formats, with
-the CRS declared in the file. A city department that wants the numbers in
-ArcGIS or QGIS does not need an export script written for it.
+The covering is the 1.1 feature that stores each row's bounding box as a
+Parquet struct and names it in the file metadata, so a reader can skip row
+groups that cannot intersect its query instead of decoding every geometry.
+
+**What it proves.** The analysis leaves the platform in open formats, with the
+CRS declared in the file, and in the shape a cloud-native reader can push
+predicates into. The asymmetry it closes is worth naming: this platform
+already *depends* on that feature when reading — `pipeline/overture.py`
+filters the Overture cloud release on its `bbox` struct columns — while
+writing plain 1.0, which made it a consumer of cloud-native geospatial and not
+a producer of it. The failure was invisible by construction: a file without a
+covering opens perfectly in QGIS, it is merely slower to query at scale, and
+nothing says so.
 
 ---
 
@@ -596,7 +619,38 @@ recorded against the executor's own id. The worker warns when
 correct for one process per role per host and wrong the moment there are two.
 Set it per replica.
 
-### 13.1 Dependencies are respected, and parallelism is taken
+### 13.1 A worker that never comes back
+
+The transcript above is a process that *restarts*. A process that **dies** —
+a destroyed host, a scaled-away replica — is a different failure, and the
+library does not cover it: its PENDING workflows stay recorded against an id
+nothing will ever claim, and the run never reaches a terminal state. Nothing
+times it out, because from the database's point of view the work is still in
+progress.
+
+A live peer reclaims those, gated on a liveness table every executor writes.
+Proven the same way — a real `SIGKILL`, but this time the second process
+launches under a **different** executor id, so launching recovers nothing and
+only the sweep can finish the run:
+
+```
+LAUNCHED_AS             recovery-probe-sweeper
+UNFINISHED_BEFORE_SWEEP 3
+DEAD                    ['recovery-probe-dead']
+RECOVERED               3
+STATUS                  succeeded
+DEAD_HEARTBEAT_ROWS     0
+```
+
+⚠ The gate is a correctness requirement, not a courtesy, and the asymmetry
+decides its default. Reclaiming a dead executor late costs latency;
+reclaiming a *live* one re-enqueues work it is still executing and runs that
+indicator twice. So the staleness window defaults to 300 s against a 30 s
+beat, and **startup refuses** any configuration where it is below four beats
+— the two are separate environment variables, and nothing else would notice
+an operator slowing the beat without widening the window.
+
+### 13.2 Dependencies are respected, and parallelism is taken
 
 For a change dirtying two base indicators and one composite:
 
@@ -611,7 +665,7 @@ The two independent units started 10 ms apart and ran concurrently; the
 composite started 255 ms after the later of them finished. The DAG is
 enforced, and where it permits concurrency the queue uses it.
 
-### 13.2 Progress without polling
+### 13.3 Progress without polling
 
 `GET /jobs/{run_id}/events` is a server-sent event stream:
 
@@ -692,11 +746,12 @@ Stated so that the absence is not mistaken for a claim.
 | Martin, the vector tile HTTP server | The container registry rate-limits anonymous pulls in this environment. Martin's job is to publish `serving_geo.*(z,x,y,query_params) RETURNS bytea` over HTTP; the functions themselves were exercised in SQL and their bytes decoded (§10), which is the part that could be wrong. The HTTP hop is configuration. |
 | PMTiles snapshot export | `admin_reference` reports `not available` above — correct, nothing has been exported. PMTiles are for stable reference layers; every layer here is live. |
 | API authentication | There is none. It is risk **T1** in Work 1's register and must be closed before any deployment reachable beyond localhost. |
-| Scale | Sixteen blocks. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works, not how it behaves on 67,000 blocks. |
+| Scale | The capability transcripts above are a sixteen-block territory. The crash-recovery and sweep proofs ran on a generated 22,500-block, 67,500-building one, seeded in 38 seconds. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works. |
 | The real Mexicali data | Needs data-lake credentials. §2's territory is generated, and §5 says where that shows. |
-| GeoParquet 1.1 | The export declares 1.0.0. 1.1 adds bbox covering and GeoArrow encoding, both of which help predicate pushdown on large files. Worth doing; not done. |
+| GeoArrow encoding | The export is GeoParquet 1.1 with a covering bbox (§12), but geometries are WKB. 1.1's native GeoArrow encoding avoids a decode step on read; geopandas still labels it experimental, so WKB is the interoperable choice today. |
+| TypeScript 7 | The web app stays on 5.9. 7.0 is the native compiler port and needs both TS 7 and TS 6 installed plus a `--tsgo` flag, which `svelte-check` is not set up for. Everything else in the web stack is current and `npm audit` is clean. |
 | `resolution_m` on raster ingest | Came back `null` for the EPSG:4326 raster — the resolution is in degrees and the field wants metres. Cosmetic in the registry, but it is a null where a number belongs. |
-| First SSE frame | Can read `"status": "unknown"` (§13.2). |
+| First SSE frame | Can read `"status": "unknown"` (§13.3). |
 
 ---
 
@@ -705,6 +760,7 @@ Stated so that the absence is not mistaken for a claim.
 | Capability | Entry point |
 |---|---|
 | Acceptance run | `scripts/acceptance_run.sh` |
+| Reclaiming a dead executor | `packages/py/reimagina/orchestration/reclaim.py` |
 | Territory generator | `scripts/synthetic_territory.py` |
 | Tile inspector | `scripts/mvt_inspect.py` |
 | Live tiles | `infra/db/migrations/versions/r039_get_tile_aoi_filter.py` |

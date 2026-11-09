@@ -422,7 +422,20 @@ class DBOSOrchestrator:
             if snapshot.status in RUN_TERMINAL_STATES:
                 return
 
-        if not _PROGRESS_SLOTS.acquire(blocking=False):
+        # ⚠ Bound to a local, and released through that local everywhere below.
+        # The pump releases from a daemon thread that outlives this generator,
+        # so resolving the module global at release time means releasing
+        # whatever that name happens to point at *then* — a different object if
+        # anything rebound it in between. A test that patches the cap to one
+        # slot and returns before its pump wakes did exactly that: the thread
+        # acquired the patched semaphore and released the real one, which had
+        # never been acquired, raising "released too many times" inside the
+        # `finally` — so the `done` sentinel after it never reached the
+        # subscriber, and an SSE client would hang rather than see the stream
+        # close. Releasing the object you acquired is the invariant; a local
+        # makes it structural instead of a convention.
+        slots = _PROGRESS_SLOTS
+        if not slots.acquire(blocking=False):
             raise RuntimeError(
                 "progress subscriber capacity reached; reconnect shortly"
             )
@@ -457,7 +470,7 @@ class DBOSOrchestrator:
             finally:
                 # Released here, where the thread actually ends. See the
                 # docstring: this is the whole point of the slot.
-                _PROGRESS_SLOTS.release()
+                slots.release()
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(_offer, done)
 
@@ -469,7 +482,7 @@ class DBOSOrchestrator:
         except BaseException:
             # The slot is released by the pump, so a thread that never starts
             # would hold it for the life of the process.
-            _PROGRESS_SLOTS.release()
+            slots.release()
             raise
         try:
             while True:

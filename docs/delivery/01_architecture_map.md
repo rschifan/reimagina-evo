@@ -18,6 +18,7 @@ date: "8 November 2026"
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-08 | Rossano Schifanella | Indicator count corrected to eleven, measured against the running system |
+| 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented (§5.4, Figure 5); current dependency set |
 
 ### About this document
 
@@ -174,13 +175,81 @@ single most load-bearing decision in the schema.
 Indicator results, feature overlaps and the asset graph all hang off those
 two. The full schema is Work 3 of this delivery.
 
+### 5.4 Level 3 — Inside the orchestration module
+
+![Orchestration components](diagrams/c4_06_orchestration_components.svg)
+
+*Figure 5 — Component diagram for the orchestration module.*
+
+Schedule A names the orchestration module as a deliverable in its own right,
+and it is the part of the system whose design is least visible from the
+outside, so it is drawn here rather than left at the one box of Figure 4.
+
+**The shape is a port with one adapter behind it.** Callers — the API, the
+CLI — depend on `Orchestrator`, an interface of five methods carrying plain
+dataclasses. It names no queue, no workflow handle and no run table, which is
+the property that makes the engine replaceable: a signature mentioning any of
+those would be one a different ops plane could not implement. `factory.py` is
+the single place an implementation is named, so swapping engines edits one
+file rather than every call site.
+
+That is not a hypothetical. The port exists because this repository ran two
+ops planes side by side to choose between them, and the conformance suite
+(`tests/conformance`) asserts the same seventeen behaviours against each
+implementation. An engine that cannot satisfy them is rejected by a test
+rather than by an argument.
+
+**Half the module survives an engine change and half does not**, and the
+diagram separates them because the distinction governs where work belongs:
+
+| Survives | Why |
+|---|---|
+| Impact engine | Deciding what an edit invalidates is a property of the indicator catalogue, not of how work is scheduled |
+| Planner and graph | Resolving a dirty set into dependency-ordered units touches no queue and no run table |
+| Wave scheduler | A pure function from unit statuses to "what may start now" — an engine that schedules DAGs natively deletes it; one that only provides durability keeps it |
+
+| Replaceable | Why |
+|---|---|
+| Adapter and workflow definitions | Every durable-execution concept lives here: workflow ids, steps, checkpoints, queue registration |
+| Reclaim and liveness | How a dead process's work is recovered is an engine question |
+
+**Durability is a library, not a service.** Run state is checkpointed into the
+same PostgreSQL as the domain data, under its own `dbos` schema. There is no
+second system to deploy, and a checkpoint is transactional with the data it
+describes. The cost is stated in AD5: the ops plane is tied to Postgres.
+
+**One rule shapes the workflow bodies, and it is not obvious.** A durable
+workflow is re-executed from the top on recovery, and its recorded step
+outputs are matched by position. So a workflow body that rebuilt its unit list
+from the catalogue would not fail loudly if the catalogue changed mid-run — it
+would hand one indicator's recorded result to another, with no exception and a
+plausible-looking number. The dirty set is therefore resolved *before* the
+workflow starts and passed in as an input. This was measured rather than
+reasoned about; the experiment is in the project's spike report.
+
+**Two different recoveries exist**, covering two different failures:
+
+- A process that **comes back** reclaims its own interrupted workflows when it
+  launches. That covers a restart, a redeploy, or an OOM kill with a
+  supervisor behind it, and the library does it unaided.
+- A process that **never comes back** — a destroyed host, a scaled-away
+  replica — leaves work recorded against an identity nothing will ever claim.
+  A live peer reclaims that, gated on a liveness table every executor writes.
+  The gate is a correctness requirement: re-enqueuing work a running process
+  is still executing would compute that indicator twice, so an executor must
+  be silent for several heartbeat intervals before it is presumed dead, and
+  the system refuses to start with a window narrower than that.
+
+Both are proven against a real `SIGKILL` in `tests/recovery`, and the
+transcripts are in the capability-proof annex.
+
 ## 6. Runtime View
 
 ### 6.1 Scenario recomputation
 
 ![Scenario recomputation](diagrams/c4_04_scenario_dynamic.svg)
 
-*Figure 5 — Dynamic diagram: recomputing indicators after a scenario edit.*
+*Figure 6 — Dynamic diagram: recomputing indicators after a scenario edit.*
 
 The step that carries the most weight is the third. Because the asset graph
 records which indicators read which *attribute*, an edit to `floors` marks
@@ -209,7 +278,7 @@ bronze.
 
 ![Deployment diagram](diagrams/c4_05_deployment.svg)
 
-*Figure 6 — Deployment diagram for a single-host installation.*
+*Figure 7 — Deployment diagram for a single-host installation.*
 
 The local stack is defined in `infra/docker/docker-compose.yml`. Two aspects
 are architectural rather than operational:
@@ -299,14 +368,14 @@ three are hand-run.
 | AD2 | Three schemas with distinct audiences | Lets the source of truth and the inspection surface evolve without breaking the application | More views to maintain |
 | AD3 | Scenarios are overrides resolved at read time, not a mutated copy | Makes Q2 structural — there is no scenario column on the baseline tables to write to | Scenario reads cost a resolution step; a materialised projection would be faster but was not justified by measurement |
 | AD4 | Recomputation is driven by a per-attribute dependency graph | An edit recomputes what it affects | The graph must be kept in step with what indicators actually read |
-| AD5 | Durable execution in the same database rather than a separate engine | No second system to deploy or operate; checkpoints are transactional with the data | Ties the ops plane to Postgres |
+| AD5 | Durable execution in the same database rather than a separate engine | No second system to deploy or operate; checkpoints are transactional with the data | Ties the ops plane to Postgres, and to that library's major version — see T11 |
 | AD6 | Live vector tiles primary, PMTiles for stable layers only | Scenario-aware and filtered layers cannot be static | Two tile paths to understand |
 
 ## 10. Quality Requirements
 
 | Goal | How it is judged |
 |---|---|
-| Q1 Correctness | 507 unit and contract tests, 322 integration tests against a real PostGIS, 17 conformance tests of the orchestrator port contract |
+| Q1 Correctness | 534 unit and contract tests, 322 integration tests against a real PostGIS, 17 conformance tests of the orchestrator port contract, and an opt-in recovery suite that kills a running process |
 | Q2 Baseline integrity | Structural: no scenario identifier exists on `feature` or `observation`, so a scenario cannot write to either |
 | Q3 Inspectability | The `explore` schema and the CLI commands that read it |
 | Q4 Efficient recomputation | An attribute edit dirties only the indicators declaring an edge to that attribute |
@@ -328,6 +397,7 @@ that does not.
 | T7 | **`storage_uri` records two different things.** `points` and `inegi_marco` register the upstream path; `cdmx` overwrites it with the local bronze path | Both are traceable, but a provenance column that answers "where did this come from" for two sources and "where is my copy" for a third is not provenance. Needs a decision, not a patch |
 | T8 | **Geometry validity is enforced only in the pipeline.** `silver.clean_vector` repairs and validates; nothing asserts the invariant at the database boundary | The failure mode is a loud GEOS `TopologyException`, not a silently wrong number, which is why this ranks where it does. A per-row `ST_IsValid` CHECK is the wrong fix on ~1.5M polygons; an `explore` view counting invalid geometries per type would fit the existing inspection contract |
 | T9 | **`ST_Intersection` is evaluated three times per candidate pair** in the overlap query — in the measure, the ratio and the `WHERE` | A single evaluation via `LATERAL` is semantically identical, but no measurement supports a rewrite yet. `PERFORMANCE.md` benchmarks this path; change it only against those numbers |
+| T11 | **The ops plane is coupled to one library's major version.** The durable-execution library's 3.0 changed its stored schema for workflow inputs and outputs: version 3 reads version 2's workflows, version 2 cannot read version 3's | The upgrade performed in this delivery cost one configuration line, and the port exists precisely so the engine can be replaced. But the migration is one-way, so a deployment must drain its in-flight runs before upgrading, and a rollback is not available |
 | T10 | **Three database stacks are in play.** Performance baselines were measured on PostgreSQL 17 / PostGIS 3.4, CI runs PostgreSQL 16 / PostGIS 3.4 / pgRouting 3.6.1 | GEOS behaviour on invalid input changes between PostGIS minors, which is the layer T8 concerns. The stacks should be made to agree and the baselines re-measured |
 
 ## 12. Glossary

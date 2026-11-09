@@ -1,0 +1,34 @@
+flowchart LR
+  db[("Database<br/>[Container: PostgreSQL 16]")]
+
+  subgraph orch["Orchestration module [Component: reimagina.orchestration]"]
+    direction TB
+    port["Orchestrator port<br/>[Code: port.py, factory.py]<br/>The interface callers depend on.<br/>Plain dataclasses, no engine types"]
+
+    subgraph durable["Survives an engine change"]
+      direction TB
+      impact["Impact engine<br/>[Code: impact.py]<br/>Which indicators an<br/>attribute edit invalidates"]
+      plan["Planner and graph<br/>[Code: plan.py, graph.py]<br/>Dirty set to ordered units,<br/>touching no run table"]
+      wavemod["Wave scheduler<br/>[Code: wave.py]<br/>Given these statuses,<br/>what may start now"]
+    end
+
+    subgraph engine["DBOS adapter — replaceable"]
+      direction TB
+      adapter["Adapter<br/>[Code: dbos_orchestrator.py]<br/>Implements the port over<br/>durable execution"]
+      app["Workflows and steps<br/>[Code: dbos_app.py]<br/>run_workflow, unit_workflow,<br/>every write"]
+      reclaimmod["Reclaim and liveness<br/>[Code: reclaim.py, executor_health.py]<br/>Recovers a dead executor's work"]
+    end
+  end
+
+  port -->|"Is implemented by"| adapter
+  adapter -->|"Asks what the edit dirties"| impact
+  adapter -->|"Resolves units with"| plan
+  adapter -->|"Enqueues those units as"| app
+  app -->|"Asks what may start now"| wavemod
+  app -->|"Checkpoints and writes<br/>status to [SQL/TCP]"| db
+  reclaimmod -->|"Reads liveness and recovers<br/>workflows via [SQL/TCP]"| db
+
+  classDef component fill:#85bbf0,stroke:#5d82a8,color:#000
+  classDef container fill:#438dd5,stroke:#2e6295,color:#fff
+  class port,impact,plan,wavemod,adapter,app,reclaimmod component
+  class db container

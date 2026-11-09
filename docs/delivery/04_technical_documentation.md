@@ -162,6 +162,10 @@ Four DSNs, deliberately distinct so that one tool never takes another's pool.
 | `REIMAGINA_EXECUTOR_ROLE` | `app` | Distinguishes co-located processes. `python -m apps.worker` sets `worker` itself |
 | `REIMAGINA_UNIT_CONCURRENCY` | `2` | How many indicator units one process runs at once |
 | `REIMAGINA_APP_VERSION` | derived | Pins the version gating recovery. Set deliberately or not at all — see §9.3 |
+| `REIMAGINA_EXECUTOR_HEARTBEAT_S` | `30` | How often a process publishes liveness |
+| `REIMAGINA_EXECUTOR_STALE_S` | `300` | How silent an executor must be before a peer presumes it dead — see §9.9 |
+| `REIMAGINA_RECLAIM_SWEEP_S` | half the window | How often the worker looks for dead executors |
+| `REIMAGINA_RECLAIM_ENABLED` | `1` | Set `0` to disable the sweep entirely |
 
 ## 5. Running the platform
 
@@ -372,6 +376,39 @@ complete Path A environment, and the service, image and port mapping in §1 is
 read from that resolved configuration rather than from the file by eye.
 
 Everything else in this document was executed end to end.
+
+### 9.9 A dead worker's run is stuck at `running` forever
+
+Two different recoveries exist and they cover different failures.
+
+`DBOS.launch()` reclaims the workflows recorded against *its own*
+`executor_id`, which covers a process that comes back — a restart, a redeploy,
+an OOM kill with a supervisor behind it. It does nothing for a process that
+never comes back. A destroyed host or a scaled-away replica leaves PENDING
+workflows recorded against an id nothing will ever claim, and the run never
+reaches a terminal state, because from the database's point of view the work
+is still in progress.
+
+A live worker sweeps those. Every `REIMAGINA_RECLAIM_SWEEP_S` seconds it asks
+which executors have stopped publishing liveness for longer than
+`REIMAGINA_EXECUTOR_STALE_S`, and re-enqueues their pending workflows onto
+itself. So the first thing to check is whether a worker is running at all:
+
+```bash
+python -m apps.cli.app explore executor-health
+```
+
+If the dead executor is still listed with a large `heartbeat_age`, no live
+worker has swept it yet — wait one sweep interval. If it is not listed and the
+run is still `running`, the executor died before it ever published liveness,
+which means it was running code older than this feature; restart a worker with
+that same `REIMAGINA_EXECUTOR_ID` and `launch()` will reclaim it directly.
+
+⚠ **Do not lower `REIMAGINA_EXECUTOR_STALE_S` to make the sweep react faster.**
+The window must stay at least 4x the heartbeat interval, and startup refuses a
+configuration where it is not. Reclaiming a dead executor late costs latency;
+reclaiming a live one re-enqueues work it is still executing and runs that
+indicator twice.
 
 ## 10. Appendix — a verified clean install
 
