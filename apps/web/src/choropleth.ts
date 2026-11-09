@@ -16,9 +16,15 @@
  * /indicators/{slug}/stats endpoint and fall back to the catalog
  * bounds only when stats aren't available (zero rows, etc.).
  */
-import type { Map as MapLibreMap } from "maplibre-gl";
+import type { MapLayerMouseEvent, Map as MapLibreMap } from "maplibre-gl";
 
-import type { IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
+import type {
+  IndicatorSummary,
+  IndicatorValueStats,
+  TileSource,
+  ValueHistogram,
+} from "./api";
+import { distributionSvg, percentileOf } from "./distribution";
 import { escapeHtml, fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import type { SelectionController } from "./selection";
@@ -212,6 +218,30 @@ export function activateIndicator(
     }),
   );
 
+  // Publish the hovered feature's value so the legend can mark where it
+  // falls in the distribution.
+  //
+  // A bus rather than another `activateIndicator` parameter, matching
+  // `hover-highlight`'s own suspend bus: the listener is owned by the page
+  // and lives longer than any one indicator, while these handlers are torn
+  // down and rebuilt on every pick. Registered here so they land in
+  // `_activeDisposers` and cannot outlive the layer they read from.
+  const onMove = (event: MapLayerMouseEvent): void => {
+    const raw = event.features?.[0]?.properties?.["value_numeric"];
+    const value = typeof raw === "number" ? raw : Number(raw);
+    _valueHoverListener?.(Number.isFinite(value) ? value : null);
+  };
+  const onLeave = (): void => _valueHoverListener?.(null);
+  map.on("mousemove", OVERLAY_LAYER, onMove);
+  map.on("mouseleave", OVERLAY_LAYER, onLeave);
+  _activeDisposers.push(() => {
+    map.off("mousemove", OVERLAY_LAYER, onMove);
+    map.off("mouseleave", OVERLAY_LAYER, onLeave);
+    // Clear the mark on teardown: a cursor left pointing at the previous
+    // indicator's value is worse than no cursor, because it looks current.
+    _valueHoverListener?.(null);
+  });
+
   // Clip the choropleth to the active selection (if any). Value
   // layers should render features ONLY where the user has selected
   // — outside the selection, they don't render at all (the spotlight
@@ -274,10 +304,29 @@ export function removeIndicator(map: MapLibreMap): void {
 }
 
 
+/**
+ * Who hears the hovered value, if anyone.
+ *
+ * Module-level and single-slot on purpose, mirroring
+ * `hover-highlight`'s suspend bus: there is one map and one legend, and a
+ * subscriber list would imply a fan-out this page does not have.
+ */
+let _valueHoverListener: ((value: number | null) => void) | null = null;
+
+
+/** Register (or with ``null``, clear) the hovered-value listener. */
+export function setValueHoverListener(
+  listener: ((value: number | null) => void) | null,
+): void {
+  _valueHoverListener = listener;
+}
+
+
 export function renderLegend(
   container: HTMLElement,
   indicator: IndicatorSummary,
   domain: RampDomain,
+  histogram: ValueHistogram | null = null,
 ): void {
   container.hidden = false;
   const p50Row =
@@ -287,14 +336,75 @@ export function renderLegend(
   const scopeRow = domain.fromStats
     ? `<div class="scope">ramp: observed p05–p95</div>`
     : `<div class="scope">ramp: catalog bounds (no data yet)</div>`;
+  // The distribution, and a slot the hover handler rewrites in place.
+  //
+  // Kept as a sibling of the gradient rather than replacing it: the gradient
+  // answers "what does this colour mean" and the histogram answers "how many
+  // are like this". A legend needs both, and the second is the one that was
+  // missing.
+  const dist = distributionSvg(histogram, {
+    rampMin: domain.min,
+    rampMax: domain.max,
+    median: domain.p50,
+  }, indicator.unit ?? "");
+  const distBlock = dist
+    ? `<div class="dist-wrap" data-distribution>${dist}</div>` +
+      `<div class="dist-readout" data-readout hidden></div>`
+    : "";
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
     <div class="gradient"></div>
     <div class="bounds"><span>${formatNumber(domain.min)}</span><span>${formatNumber(domain.max)}</span></div>
     <div class="unit">${escapeHtml(indicator.unit ?? "")}</div>
+    ${distBlock}
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+/**
+ * Move the legend's cursor to ``value``, or clear it when ``null``.
+ *
+ * Called from the hover path, so it must be cheap and must not re-render the
+ * whole legend: rebuilding `innerHTML` on every mousemove would drop the
+ * `<title>` tooltips mid-hover and churn the DOM at pointer rate.
+ */
+export function markLegendValue(
+  container: HTMLElement,
+  indicator: IndicatorSummary,
+  domain: RampDomain,
+  histogram: ValueHistogram | null,
+  value: number | null,
+): void {
+  const wrap = container.querySelector<HTMLElement>("[data-distribution]");
+  const readout = container.querySelector<HTMLElement>("[data-readout]");
+  if (!wrap || !readout || !histogram) return;
+  wrap.innerHTML = distributionSvg(
+    histogram,
+    {
+      rampMin: domain.min,
+      rampMax: domain.max,
+      median: domain.p50,
+      hovered: value,
+    },
+    indicator.unit ?? "",
+  );
+  if (value === null) {
+    readout.hidden = true;
+    readout.textContent = "";
+    return;
+  }
+  const pct = percentileOf(value, histogram);
+  const unit = indicator.unit ? ` ${indicator.unit}` : "";
+  readout.hidden = false;
+  // "higher than 81% of blocks" rather than "p81": a rank stated as a
+  // comparison is a finding, and a bare number is another reading of the
+  // same thing the map already shows.
+  readout.textContent =
+    pct === null
+      ? `${formatNumber(value)}${unit}`
+      : `${formatNumber(value)}${unit} · higher than ${pct}% of features`;
 }
 
 

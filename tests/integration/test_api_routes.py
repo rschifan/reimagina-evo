@@ -272,6 +272,55 @@ def test_features_endpoint_returns_paginated_rows(client, conn):
     assert all(f["type_slug"] == "block" for f in payload["features"])
 
 
+@pytest.fixture
+def seeded_many_blocks(conn):
+    """Several blocks with a spread of compactness values.
+
+    The one-feature fixture cannot exercise a histogram: with a single value
+    `min == max`, which is the degenerate single-bin path rather than the
+    normal one. These blocks differ in shape, so compactness differs too, and
+    the distribution has a real low end and a real high end.
+    """
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="hist_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+
+    # Rectangles of increasing elongation. A square is maximally compact for
+    # a rectangle; a sliver is minimally so — so this spans the measure's
+    # range rather than clustering, and the bins have something to separate.
+    for index in range(8):
+        west = -99.150 + index * 0.004
+        height = 0.003
+        width = 0.003 / (index + 1)
+        _insert_feature(
+            conn,
+            type_id=block_type,
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=f"hist-blk-{index}",
+            geometry_wkt=(
+                f"POLYGON(({west} 19.430,{west + width} 19.430,"
+                f"{west + width} {19.430 + height},{west} {19.430 + height},"
+                f"{west} 19.430))"
+            ),
+        )
+    compute_block_compactness(conn, code_version="test")
+    return {"slug": "urban_form_block_compactness", "blocks": 8}
+
+
 def test_stats_endpoint_returns_percentiles(client, seeded_block_with_compactness):
     response = client.get(f"/indicators/{seeded_block_with_compactness['slug']}/stats")
     assert response.status_code == 200
@@ -292,6 +341,116 @@ def test_stats_endpoint_returns_empty_for_unseeded_indicator(client, conn):
     assert payload["count"] == 0
     for key in ("min", "p05", "p50", "p95", "max"):
         assert payload[key] is None
+
+
+class TestStatsHistogram:
+    """Distribution shape, which min/max/median cannot carry.
+
+    Two territories with identical summary statistics can have completely
+    different distributions, so a legend built from percentiles alone renders
+    a pattern without letting anyone place a value inside it.
+
+    ⚠ Server-side by necessity, not preference. The obvious client
+    implementation is `queryRenderedFeatures`, and `selection-metrics`
+    already abandoned exactly that because it "silently undercounted whenever
+    the renderer hadn't loaded the relevant tiles". A histogram that changes
+    shape while tiles load is worse than none, because a reader cannot tell
+    which shape was the real one.
+    """
+
+    def test_bins_are_absent_unless_asked_for(
+        self, client, seeded_block_with_compactness
+    ) -> None:
+        """The default response is byte-for-byte what it always was."""
+        slug = seeded_block_with_compactness["slug"]
+        assert client.get(f"/indicators/{slug}/stats").json()["histogram"] is None
+
+    def test_the_bins_account_for_every_counted_value(
+        self, client, seeded_many_blocks
+    ) -> None:
+        """The histogram must describe the same population as `count`.
+
+        A bin array that sums to less than `count` means values fell outside
+        every bin, which is how a distribution quietly loses its own
+        extremes.
+        """
+        response = client.get(f"/indicators/{seeded_many_blocks['slug']}/stats?bins=8")
+        payload = response.json()
+        histogram = payload["histogram"]
+        assert histogram["bins"] == 8
+        assert len(histogram["counts"]) == 8
+        assert sum(histogram["counts"]) == payload["count"]
+
+    def test_the_maximum_lands_inside_the_histogram(
+        self, client, seeded_many_blocks
+    ) -> None:
+        """⚠ `width_bucket` puts a value equal to `hi` in bucket n+1.
+
+        That bucket is an overflow, not a bin, so without folding it back the
+        tallest-value bar is always missing exactly the maximum — the single
+        value a reader is most likely to go looking for.
+        """
+        payload = client.get(
+            f"/indicators/{seeded_many_blocks['slug']}/stats?bins=4"
+        ).json()
+        assert payload["histogram"]["counts"][-1] >= 1
+        assert payload["histogram"]["hi"] == payload["max"]
+
+    def test_the_range_is_the_full_one_not_the_ramp(
+        self, client, seeded_many_blocks
+    ) -> None:
+        """The ramp clips to p05–p95; the histogram must not.
+
+        Clipping both would hide the outlier the histogram exists to show.
+        """
+        payload = client.get(
+            f"/indicators/{seeded_many_blocks['slug']}/stats?bins=8"
+        ).json()
+        assert payload["histogram"]["lo"] == payload["min"]
+        assert payload["histogram"]["hi"] == payload["max"]
+
+    def test_one_value_is_one_full_bin_rather_than_an_error(
+        self, client, seeded_block_with_compactness
+    ) -> None:
+        """`width_bucket` requires `lo < hi` and raises otherwise.
+
+        One feature is the common case for a fresh AOI, not an edge case.
+        """
+        payload = client.get(
+            f"/indicators/{seeded_block_with_compactness['slug']}/stats?bins=10"
+        ).json()
+        assert payload["count"] == 1
+        assert payload["histogram"]["counts"] == [1]
+        assert payload["histogram"]["width"] == 0
+
+    def test_nothing_to_bin_is_null_rather_than_empty_bins(self, client, conn) -> None:
+        """An array of zeros would draw a histogram of a population of none."""
+        seed_catalog(conn)
+        payload = client.get(
+            "/indicators/urban_form_block_building_density/stats?bins=10"
+        ).json()
+        assert payload["count"] == 0
+        assert payload["histogram"] is None
+
+    def test_bins_are_scoped_by_aoi_like_every_other_number(
+        self, client, two_aois_one_block_each
+    ) -> None:
+        """Otherwise the legend's shape and its percentiles describe
+        different populations."""
+        first = two_aois_one_block_each["aoi_a"]
+        payload = client.get(
+            f"/indicators/{two_aois_one_block_each['slug']}/stats?aoi_id={first}&bins=6"
+        ).json()
+        assert payload["count"] == 1
+        assert sum(payload["histogram"]["counts"]) == payload["count"]
+
+    def test_an_absurd_bin_count_is_rejected_not_served(
+        self, client, seeded_block_with_compactness
+    ) -> None:
+        """The bin count sizes an array the server allocates per request."""
+        slug = seeded_block_with_compactness["slug"]
+        assert client.get(f"/indicators/{slug}/stats?bins=100000").status_code == 422
+        assert client.get(f"/indicators/{slug}/stats?bins=-1").status_code == 422
 
 
 def test_stats_endpoint_404s_on_unknown_slug(client, conn):

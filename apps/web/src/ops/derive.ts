@@ -70,6 +70,32 @@ export interface Progress {
   failed: number;
   total: number;
   pct: number;
+  /** Percentage widths that sum to <= 100, in render order. */
+  segments: ProgressSegments;
+  /** One line describing the whole bar, for assistive technology. */
+  label: string;
+}
+
+/**
+ * The bar's four parts, as percentages of ``total``.
+ *
+ * ⚠ This exists because a single-value bar cannot tell the truth about a
+ * run. The component rendered ``<progress value={done} max={total}>`` where
+ * ``done`` was ``units_terminal`` — *finished*, not *succeeded* — so a run
+ * whose only unit failed drew a **full green bar** beside a red `failed`
+ * badge. Observed on 25 of 27 runs in the dashboard, every one of them a
+ * failure.
+ *
+ * The bar is the largest, most saturated element in the row, and green means
+ * success in every convention a dashboard inherits. Where a glance and a read
+ * disagree, the glance wins.
+ */
+export interface ProgressSegments {
+  succeeded: number;
+  failed: number;
+  running: number;
+  /** Neither finished nor started: the part still to come. */
+  pending: number;
 }
 
 export function progressOf(run: RunRow): Progress {
@@ -77,7 +103,53 @@ export function progressOf(run: RunRow): Progress {
   const done = run.units_terminal;
   // A run whose plan was empty has no units; 0/0 is 0 % here, never NaN.
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  return { done, failed: run.units_failed, total, pct };
+
+  // Clamped and ordered so the four segments can never sum past 100 %, even
+  // if the server's counters disagree with each other mid-transition — a
+  // unit can be observed as both terminal and running across two queries.
+  // A bar that overflows its track is a worse failure than one that is
+  // briefly a percent short.
+  const share = (n: number): number =>
+    total > 0 ? Math.max(0, Math.min(100, (n / total) * 100)) : 0;
+  const succeeded = share(run.units_succeeded);
+  const failed = share(run.units_failed);
+  const running = Math.min(share(run.units_running), 100 - succeeded - failed);
+  // Zero units means zero of everything, not "100 % pending". The bar is
+  // not rendered in that case, but a `Progress` that claims a full track of
+  // pending work for a run that planned none would be wrong wherever it is
+  // read next.
+  const pending =
+    total > 0 ? Math.max(0, 100 - succeeded - failed - running) : 0;
+
+  return {
+    done,
+    failed: run.units_failed,
+    total,
+    pct,
+    segments: { succeeded, failed, running: Math.max(0, running), pending },
+    label: progressLabel(run),
+  };
+}
+
+/**
+ * The bar in one sentence, for a screen reader and for a tooltip.
+ *
+ * Spelled out rather than "60 %": a percentage of *what* is exactly the
+ * ambiguity that made the old bar wrong.
+ */
+export function progressLabel(run: RunRow): string {
+  if (run.units_total === 0) return "no units";
+  const parts: string[] = [];
+  if (run.units_succeeded) parts.push(`${run.units_succeeded} succeeded`);
+  if (run.units_failed) parts.push(`${run.units_failed} failed`);
+  if (run.units_running) parts.push(`${run.units_running} running`);
+  const accounted =
+    run.units_succeeded + run.units_failed + run.units_running;
+  const pending = Math.max(0, run.units_total - accounted);
+  if (pending) parts.push(`${pending} pending`);
+  return `${run.units_total} unit${run.units_total === 1 ? "" : "s"}: ${
+    parts.length ? parts.join(", ") : "none started"
+  }`;
 }
 
 /**

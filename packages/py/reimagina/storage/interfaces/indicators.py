@@ -131,6 +131,7 @@ class IndicatorResultRepository(Protocol):
         scenario_id: str | None = None,
         feature_type: str | None = None,
         aoi_id: str | None = None,
+        bins: int = 0,
     ) -> dict[str, Any]:
         """Summary statistics for a numeric indicator's current values.
 
@@ -142,6 +143,19 @@ class IndicatorResultRepository(Protocol):
         ``aoi_id`` scopes the stats to that AOI's features only via
         ``curated_geo.aoi_feature``. Multi-site UIs need this so
         Mexicali's colour ramp doesn't get pulled by CDMX's distribution.
+
+        ``bins`` greater than zero adds a ``histogram`` key:
+        ``{bins, lo, hi, width, counts}``, equal-width over the **full**
+        observed range, computed from the same population as the
+        percentiles above. ``None`` when there is nothing to bin.
+
+        The histogram is server-side rather than derived from what the map
+        has rendered, and that is a constraint rather than a preference:
+        ``selection-metrics`` in the web app abandoned
+        ``queryRenderedFeatures`` precisely because it "silently undercounted
+        whenever the renderer hadn't loaded the relevant tiles". A
+        distribution that changes shape while tiles load is worse than none,
+        because a reader cannot tell which shape was the real one.
         """
         ...
 

@@ -53,7 +53,20 @@
       </p>
     </div>
   {:else}
-    <div class="overflow-x-auto rounded-lg border border-line">
+<!--
+      `relative` is load-bearing, not decoration.
+
+      ⚠ An `overflow` container only clips absolutely-positioned descendants
+      when it is itself a containing block. This wrapper was `static`, and
+      Tailwind's `sr-only` is `position: absolute` — so the "Open" label in
+      the last header cell escaped the scroll box, laid out at the table's
+      full width, and made the *document* scroll sideways. Measured at
+      390 px: `window.scrollX` reached 320 on a page whose body was 390 wide,
+      with the table itself correctly clipped the whole time. The symptom is
+      a page that drifts under your thumb and snaps back, and nothing in the
+      table is responsible for it.
+    -->
+    <div class="relative overflow-x-auto rounded-lg border border-line">
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="border-b border-line text-left">

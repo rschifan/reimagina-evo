@@ -42,7 +42,7 @@ A working installation serves four things:
 | Surface | Address | Purpose |
 |---|---|---|
 | API | `http://localhost:8001` | Features, indicators, downloads, job control; OpenAPI at `/docs` |
-| Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`) |
+| Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`). Press `⌘K` for the command palette, `?` for the shortcut list |
 | Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin (the default) |
 | Vector tiles, in-process | `http://localhost:8001/tiles` | The same tiles from the API itself, behind the same URL contract. §6.2 says when to use which |
 | Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |
@@ -330,6 +330,41 @@ over HTTP and decodes them. Martin is an external binary and has no
 equivalent coverage here, which is the other reason both exist:
 `docs/architecture/TILE_SERVING.md` has the full argument.
 
+### 6.3 Using the map
+
+The map page is driven by the keyboard as well as the mouse, and the
+shortest route to everything it can do is the command palette:
+
+| Key | |
+|---|---|
+| `⌘K` / `Ctrl-K` | Command palette — every AOI, indicator, layer, draw mode and page |
+| `?` | The shortcut list |
+| `\` | Show or hide the panel |
+| `f` | Fit the map to the active AOI |
+| `r` / `p` / `c` | Draw a rectangle, polygon or circle selection |
+| `esc` | Clear the selection |
+
+The palette is also the only surface that *lists* what the application does,
+which matters because the draw tools are icons and the rest is three menus
+in a long panel.
+
+**Reading the legend.** The colour ramp answers "what does this colour
+mean". Below it, the distribution strip answers "how many are like this" —
+the grey bars are the indicator's values across the AOI, the dashed rule is
+the median, and the lighter band is the span the colour ramp resolves
+(outside it the choropleth saturates, so two very different values share a
+colour). Hovering a feature marks its bin and reports its rank, e.g.
+*613 m · higher than 91% of features*.
+
+The distribution is computed by the server over the same scoped population
+as the percentiles, not from what the map has drawn. That is deliberate: a
+shape derived from rendered tiles changes as tiles load, and a reader cannot
+tell which shape was the real one.
+
+**Below 860 px** the panel becomes a drawer and starts closed, so the map
+gets the whole viewport. The toggle is top-left, and `esc` or a tap outside
+closes it.
+
 ## 7. Loading data
 
 ### 7.1 Without credentials — a generated territory
@@ -597,10 +632,11 @@ is reported with its actual result.
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
 | 6 | `pytest tests/unit tests/contract` | 655 passed |
-| 7 | `pytest tests/integration` | 341 passed, 1 skipped |
+| 7 | `pytest tests/integration` | 349 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance tests/e2e` | 1,013 passed, 14 skipped |
-| 10 | `cd apps/web && npm test` | 73 passed |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,021 passed, 2 skipped |
+| 10 | `cd apps/web && npm test` | 134 passed |
+| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 24 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
 PostGIS 3.4 and pgRouting 3.6.1; the schema is identical across both.

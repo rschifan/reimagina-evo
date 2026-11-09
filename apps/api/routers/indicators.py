@@ -280,6 +280,30 @@ class IndicatorValueStats(BaseModel):
     p50: float | None = None
     p95: float | None = None
     max: float | None = None
+    histogram: ValueHistogram | None = None
+
+
+class ValueHistogram(BaseModel):
+    """Equal-width bin counts over an indicator's observed value range.
+
+    Returned only when ``bins`` is requested, and ``None`` when there is
+    nothing to bin.
+
+    **Over the full range, not the ramp's p05–p95.** The colour ramp clips
+    outliers so one extreme value cannot flatten the scale; a histogram that
+    clipped the same way would hide the very thing it exists to show. The
+    client draws the ramp's breaks on top, so the two together say "here is
+    the whole distribution, and here is the part the colours resolve".
+    """
+
+    bins: int
+    lo: float
+    hi: float
+    #: ``(hi - lo) / bins``. Zero when every value is identical, which is the
+    #: single-bin degenerate case rather than an error.
+    width: float
+    #: One count per bin, left to right. Sums to the response's ``count``.
+    counts: list[int]
 
 
 @router.get("/{slug}/stats", response_model=IndicatorValueStats)
@@ -293,6 +317,19 @@ def get_values_stats(
             "Optional AOI scope. When provided, percentiles are computed "
             "from features overlapping that AOI only — so multi-site UIs "
             "get a colour ramp tuned to the picked city's distribution."
+        ),
+    ),
+    bins: int = Query(
+        default=0,
+        ge=0,
+        le=200,
+        description=(
+            "When > 0, also return a `histogram` of equal-width bin counts "
+            "over the full observed value range, computed from the same "
+            "scoped population as the percentiles. The legend uses it to "
+            "show distribution shape, which min/max/median cannot: two "
+            "territories with identical summary statistics can have "
+            "completely different distributions."
         ),
     ),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -309,6 +346,7 @@ def get_values_stats(
             scenario_id=scenario_id_str,
             feature_type=feature_type,
             aoi_id=aoi_id_str,
+            bins=bins,
         )
     )
     return IndicatorValueStats(

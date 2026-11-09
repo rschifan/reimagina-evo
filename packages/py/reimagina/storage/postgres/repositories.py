@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import psycopg2.extras
@@ -2660,6 +2661,7 @@ class PostgresIndicatorResultRepository:
         scenario_id: str | None = None,
         feature_type: str | None = None,
         aoi_id: str | None = None,
+        bins: int = 0,
     ) -> dict:
         # Aliased so the optional aoi_id EXISTS subquery can reference
         # the row's feature_id column without column-name shadowing.
@@ -2684,6 +2686,7 @@ class PostgresIndicatorResultRepository:
                 "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
             )
             params.append(aoi_id)
+        where = " AND ".join(clauses)
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
@@ -2695,18 +2698,85 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
                   MAX(ir.value_numeric)                                          AS max
                 FROM curated_geo.indicator_result ir
-                WHERE {" AND ".join(clauses)}
+                WHERE {where}
                 """,
                 params,
             )
             count, vmin, p05, p50, p95, vmax = cur.fetchone()
-        return {
+        stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
             "p05": float(p05) if p05 is not None else None,
             "p50": float(p50) if p50 is not None else None,
             "p95": float(p95) if p95 is not None else None,
             "max": float(vmax) if vmax is not None else None,
+        }
+        if bins > 0:
+            stats["histogram"] = self._value_histogram(
+                where=where, params=params, bins=bins, stats=stats
+            )
+        return stats
+
+    def _value_histogram(
+        self, *, where: str, params: list, bins: int, stats: dict
+    ) -> dict | None:
+        """Counts per equal-width bin over the same population as ``stats``.
+
+        **Over the full observed range, not the ramp's p05–p95.** The ramp
+        clips outliers so one extreme value cannot flatten the colour scale;
+        the histogram's job is the opposite — to show that the outlier is
+        there. The client draws the ramp's breaks *on top* of this, so the
+        two together say "here is the whole distribution, and here is the
+        part the colours resolve".
+
+        Returns ``None`` when there is nothing to bin. Two degenerate cases
+        are handled rather than left to Postgres:
+
+        - **No rows.** ``width_bucket`` would have no bounds to work with.
+        - **Every value identical** (``min == max``), which includes the very
+          common single-feature case. ``width_bucket`` requires
+          ``lo < hi`` and raises otherwise, so this returns one full bin
+          instead — which is also the honest picture.
+        """
+        count = stats["count"]
+        lo = stats["min"]
+        hi = stats["max"]
+        if not count or lo is None or hi is None:
+            return None
+        if hi <= lo:
+            return {"bins": 1, "lo": lo, "hi": hi, "width": 0.0, "counts": [count]}
+
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT bucket, COUNT(*)::bigint
+                FROM (
+                  SELECT
+                    -- `width_bucket` puts a value equal to `hi` in bucket
+                    -- n+1, which is an overflow bucket rather than a bin.
+                    -- `LEAST` folds it back into the last real bin, so the
+                    -- maximum lands inside the histogram instead of beside
+                    -- it. Without this the tallest-value bar is always
+                    -- missing exactly the maximum.
+                    LEAST(
+                      width_bucket(ir.value_numeric, %s, %s, %s), %s
+                    ) AS bucket
+                  FROM curated_geo.indicator_result ir
+                  WHERE {where}
+                ) b
+                GROUP BY bucket
+                """,
+                [lo, hi, bins, bins, *params],
+            )
+            found = {int(bucket): int(n) for bucket, n in cur.fetchall()}
+
+        counts = [found.get(i, 0) for i in range(1, bins + 1)]
+        return {
+            "bins": bins,
+            "lo": lo,
+            "hi": hi,
+            "width": (hi - lo) / bins,
+            "counts": counts,
         }
 
 

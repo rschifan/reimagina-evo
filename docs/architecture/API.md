@@ -25,6 +25,7 @@ domain packages don't import app code") holds.
 | GET | `/indicators` | Every indicator in `indicator_catalog`. |
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). |
+| GET | `/indicators/{slug}/stats` | Count and percentiles over the scoped population. `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. |
 | GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
 | GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. |
 | GET | `/indicators/{slug}/values.parquet` | GeoParquet byte payload (CRS=4326). |

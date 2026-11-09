@@ -42,7 +42,14 @@ function run(overrides: Partial<RunRow> = {}): RunRow {
 describe("progressOf", () => {
   it("is 0% for a run with no units rather than NaN", () => {
     const p = progressOf(run({ units_total: 0, units_terminal: 0 }));
-    expect(p).toEqual({ done: 0, failed: 0, total: 0, pct: 0 });
+    expect(p.pct).toBe(0);
+    expect(p.total).toBe(0);
+    expect(p.segments).toEqual({
+      succeeded: 0,
+      failed: 0,
+      running: 0,
+      pending: 0,
+    });
   });
 
   it("counts failures alongside the completed total", () => {
@@ -51,6 +58,102 @@ describe("progressOf", () => {
     );
     expect(p.pct).toBe(75);
     expect(p.failed).toBe(1);
+  });
+
+  // ⚠ The regression. `<progress value={units_terminal} max={units_total}>`
+  // drew a full **green** bar for a run whose only unit failed, beside a red
+  // `failed` badge — observed on 25 of 27 runs in the dashboard, every one a
+  // failure. The bar is the largest, most saturated element in the row, and
+  // green means success in every convention a dashboard inherits.
+  it("gives a wholly-failed run no green at all", () => {
+    const p = progressOf(
+      run({
+        status: "failed",
+        units_total: 1,
+        units_terminal: 1,
+        units_succeeded: 0,
+        units_failed: 1,
+        units_running: 0,
+      }),
+    );
+    expect(p.segments.succeeded).toBe(0);
+    expect(p.segments.failed).toBe(100);
+    expect(p.segments.pending).toBe(0);
+  });
+
+  it("splits a partial run by outcome rather than by completion", () => {
+    const p = progressOf(
+      run({
+        status: "partial",
+        units_total: 4,
+        units_terminal: 4,
+        units_succeeded: 3,
+        units_failed: 1,
+        units_running: 0,
+      }),
+    );
+    expect(p.segments.succeeded).toBe(75);
+    expect(p.segments.failed).toBe(25);
+    expect(p.segments.pending).toBe(0);
+  });
+
+  it("shows work still to come as track rather than as progress", () => {
+    const p = progressOf(
+      run({
+        units_total: 4,
+        units_terminal: 1,
+        units_succeeded: 1,
+        units_failed: 0,
+        units_running: 1,
+      }),
+    );
+    expect(p.segments.succeeded).toBe(25);
+    expect(p.segments.running).toBe(25);
+    expect(p.segments.pending).toBe(50);
+  });
+
+  it("never overflows the track when the counters disagree", () => {
+    // A unit can be observed as both terminal and running across two
+    // queries mid-transition. A bar that overflows its own track is a
+    // worse failure than one that is briefly a percent short.
+    const p = progressOf(
+      run({
+        units_total: 2,
+        units_terminal: 2,
+        units_succeeded: 2,
+        units_failed: 0,
+        units_running: 2,
+      }),
+    );
+    const { succeeded, failed, running, pending } = p.segments;
+    expect(succeeded + failed + running + pending).toBeLessThanOrEqual(100);
+    expect(running).toBeGreaterThanOrEqual(0);
+  });
+
+  it("describes the whole bar in one line for assistive technology", () => {
+    const p = progressOf(
+      run({
+        units_total: 4,
+        units_terminal: 3,
+        units_succeeded: 2,
+        units_failed: 1,
+        units_running: 1,
+      }),
+    );
+    expect(p.label).toBe("4 units: 2 succeeded, 1 failed, 1 running");
+  });
+
+  it("says so when nothing has started", () => {
+    const p = progressOf(
+      run({
+        units_total: 3,
+        units_terminal: 0,
+        units_succeeded: 0,
+        units_failed: 0,
+        units_running: 0,
+      }),
+    );
+    expect(p.label).toBe("3 units: 3 pending");
   });
 });
 
