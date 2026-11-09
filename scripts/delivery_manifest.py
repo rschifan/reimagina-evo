@@ -223,6 +223,29 @@ def _manifest(rows: list[tuple[str, str, int, str]], date: str) -> str:
     return "\n".join(lines)
 
 
+#: Rows whose value comes from git rather than from the artefacts.
+#:
+#: ⚠ These are why `--check` cannot compare the manifest byte for byte.
+#: Committing the manifest moves HEAD, so the commit it records is stale the
+#: instant it is committed — a check that compared the whole file could never
+#: pass on a committed manifest, which would make it useless rather than
+#: strict. What `--check` is for is "do the recorded hashes still describe
+#: these files"; the git rows are provenance for a reader, not a claim that
+#: can rot into a wrong hash.
+_GIT_ROWS = (
+    "| **Tag** |",
+    "| **Generated from commit** |",
+    "| **Branch** |",
+    "| **Working tree at generation** |",
+)
+
+
+def _without_git_rows(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.startswith(_GIT_ROWS)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -237,10 +260,16 @@ def main(argv: list[str] | None = None) -> int:
     manifest = _manifest(rows, _delivery_date())
 
     if args.check:
+        # SHA256SUMS compares exactly — it carries nothing but hashes and
+        # paths. The manifest compares with its git rows removed; see
+        # `_GIT_ROWS` for why a byte-for-byte check there could never pass.
         stale = [
             path.relative_to(ROOT)
-            for path, want in ((SUMS, sums), (MANIFEST, manifest))
-            if not path.is_file() or path.read_text() != want
+            for path, want, normalise in (
+                (SUMS, sums, str),
+                (MANIFEST, manifest, _without_git_rows),
+            )
+            if not path.is_file() or normalise(path.read_text()) != normalise(want)
         ]
         if stale:
             print(
