@@ -45,10 +45,25 @@ def run_dbos_worker() -> None:
     import os
     import threading
 
+    from reimagina.logging_setup import configure_logging
     from reimagina.orchestration import dbos_app
     from reimagina.orchestration.executor_health import interval_seconds
     from reimagina.orchestration.reclaim import stale_after_seconds, sweep
 
+    # ⚠ Without this the worker emits nothing of its own. DBOS configures its
+    # own `dbos` logger with a handler, so a worker log *looks* configured —
+    # every line in it is a DBOS line — while `reimagina.*` and this module go
+    # to a root logger with no handler and the default WARNING level.
+    #
+    # That is worse here than almost anywhere else. The sweep acts on work
+    # nobody is watching, by design, and reports what it reclaimed through
+    # `logger.info`. Silent, an operator has no way to tell a fleet that
+    # reclaims a dead peer's runs from one that never sweeps at all — and the
+    # startup line naming the interval, which is the only confirmation the
+    # feature is switched on, disappears too.
+    #
+    # The CLI has called this since it was written. The worker never did.
+    configure_logging()
     logger = logging.getLogger(__name__)
 
     # Distinguishes this process from the API on the same host, so each
