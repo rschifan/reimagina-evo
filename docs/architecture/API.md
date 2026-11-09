@@ -32,6 +32,8 @@ domain packages don't import app code") holds.
 | GET | `/aois/{aoi_id}/summaries` | Cached `aoi_indicator_summary` rows. 422 on malformed UUID. |
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features`. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with snapshot registry; frontend-ready. |
+| GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |
+| GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. |
 | POST | `/jobs` | Submit a run. Scope it with `changed_attributes`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with the run id, or `status:"noop"` and a **null** run id when the dirty set was empty. |
 | GET | `/jobs` | Run list for the dashboard: rows with unit counts, `total`, unfiltered `status_counts`, executor health and `server_now`, in one response. Repeatable `status=`, `limit=1..200`, `offset`. |
 | GET | `/jobs/{run_id}` | Run status through the orchestrator port. Unchanged. |
@@ -108,8 +110,11 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host. |
 | `REIMAGINA_API_PORT` | `8000` | uvicorn bind port. |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level. |
-| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for Martin live MVT. Must be reachable by the end user's browser in deployed environments. |
+| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for live MVT. Must be reachable by the end user's browser in deployed environments. **This is the whole switch between tile servers:** `http://localhost:3000` for Martin, `http://localhost:8001/tiles` for the API's own route. |
 | `REIMAGINA_TILE_SNAPSHOT_BASE_URL` | `http://localhost:3001` | Static host serving PMTiles snapshot artifacts. |
+| `REIMAGINA_TILE_MAX_AGE_S` | `60` | `Cache-Control: max-age` on API-served tiles. |
+| `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S` | `300` | `stale-while-revalidate` on API-served tiles — what lets a map pan instead of blink. |
+| `REIMAGINA_TILE_TIMEOUT_MS` | `5000` | Per-request `statement_timeout` for an API-served tile, so a pathological tile fails its own request rather than holding a pooled connection. |
 
 ---
 

@@ -59,6 +59,11 @@ Rules:
 - `observation` stores measured/derived facts about features
 - `explore` is for humans, not application dependencies
 - live MVT is the primary tile path; PMTiles are snapshot exports for stable reference layers only
+- live MVT has two servers behind one contract: Martin (default) and the API's own
+  `/tiles/{function}/{z}/{x}/{y}`. The contract is the SQL function signature
+  `(z, x, y, query_params json) RETURNS bytea`, and choosing a server is one variable,
+  `REIMAGINA_TILE_LIVE_BASE_URL`. `reimagina.tiles.functions.TILE_FUNCTIONS` is the one
+  list of servable functions; adding a tile function means adding it there
 - if a layer must be live, filtered, scenario-aware, or fast-changing, it cannot move to PMTiles
 
 ## Inspection workflow

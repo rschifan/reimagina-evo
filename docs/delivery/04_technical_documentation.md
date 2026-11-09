@@ -43,7 +43,8 @@ A working installation serves four things:
 |---|---|---|
 | API | `http://localhost:8001` | Features, indicators, downloads, job control; OpenAPI at `/docs` |
 | Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`) |
-| Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin |
+| Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin (the default) |
+| Vector tiles, in-process | `http://localhost:8001/tiles` | The same tiles from the API itself, behind the same URL contract. §6.2 says when to use which |
 | Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |
 | Database, pooled | `localhost:5432` | Path A: the **connection pooler**, holding one database only. The API reads through it. Path B: PostgreSQL itself |
 | Database, direct | `localhost:5433` | Path A only: PostgreSQL behind the pooler. Migrations, bootstrap, the test suites and the ops plane all connect here, not to `5432` — §4.1 says why |
@@ -262,6 +263,73 @@ engine is down, and steps 10 and 11 of the acceptance run use it — so a green
 acceptance run before step 12 says nothing about the orchestrator. That is
 why step 12 exists.
 
+### 6.2 Verifying live vector tiles, with or without Martin
+
+Live vector tiles are a Postgres function plus an HTTP wrapper, and the
+wrapper is interchangeable. The contract is the **function signature** —
+every tile function takes `(z, x, y, query_params json)` and returns
+`bytea` — which is Martin's function-source convention, so anything
+implementing it is a drop-in.
+
+| Server | Address | What it is |
+|---|---|---|
+| **Martin** | `:3000` | `ghcr.io/maplibre/martin`, connecting to PostgreSQL directly. The default |
+| **The API** | `:8001/tiles` | `apps/api/routers/mvt.py`, same functions, same process as the rest of the API |
+
+Choosing between them is one environment variable:
+
+```bash
+REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000   # Martin (default)
+REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles              # the API, same-origin
+```
+
+Nothing else changes: not `infra/tiles/layers.json`, not `/tile-sources`, not
+the frontend.
+
+⚠ Use the **relative** form for the API. An absolute URL such as
+`http://localhost:8001/tiles` makes every tile request cross-origin from the
+web application, so it depends on the API's CORS allowlist — which defaults
+to `http://localhost:5173` and rejects a browser that opened the page as
+`http://127.0.0.1:5173`. The symptom is a map that draws nothing, with no
+console error naming the cause. `/api/tiles` is served through the same proxy
+the rest of the API uses, so the question does not arise. A contract test asserts both forms resolve to the same URL
+shape, because that property is the only thing that makes two
+implementations safe to keep.
+
+**Which to use.** Martin in production: a Rust tile server with its own
+connection pool is the better machine when many clients pan at once.
+Measured here, `serving_geo.get_tile` answers a populated z16 tile in
+**~1.5 ms**, so at the scale of a single reviewer or a demo neither Postgres
+nor the API is the constraint, and running one fewer service is worth more
+than the headroom.
+
+**Verify a tile without a browser:**
+
+```bash
+# A tile with features: 200, and a vector-tile content type
+curl -sD- -o /tmp/tile.mvt   "http://localhost:8001/tiles/get_tile/16/11748/26478" | head -5
+
+# Decode it — no dependencies, the decoder is in this repository
+python scripts/mvt_inspect.py /tmp/tile.mvt
+
+# A tile outside the loaded territory: 204 No Content, empty by design
+curl -s -o /dev/null -w '%{http_code}
+'   "http://localhost:8001/tiles/get_tile/14/0/0"
+
+# TileJSON, for a client that prefers discovery
+curl -s "http://localhost:8001/tiles/get_tile" | python -m json.tool
+```
+
+`scripts/mvt_inspect.py` prints the layer name, the spec version, the extent,
+and a breakdown by geometry type and `type_slug` — so "the tile has features"
+is a statement about decoded content rather than about a byte count.
+
+This path is covered end-to-end by
+`tests/integration/test_mvt_route_serves_tiles.py`, which fetches real tiles
+over HTTP and decodes them. Martin is an external binary and has no
+equivalent coverage here, which is the other reason both exist:
+`docs/architecture/TILE_SERVING.md` has the full argument.
+
 ## 7. Loading data
 
 ### 7.1 Without credentials — a generated territory
@@ -434,6 +502,18 @@ Martin's service definition interpolates `DATABASE_URL_DIRECT`, so
 container is created. In Path A it must name port **5433**, PostgreSQL
 behind the pooler, not 5432, which is the pooler itself.
 
+### 9.9bis The map has no tiles and Martin is not running
+
+Nothing is broken; the deployment simply has no tile server at `:3000`. Live
+vector tiles have two servers behind one contract, and the API can serve them
+itself:
+
+```bash
+REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:8001/tiles python -m apps.api
+```
+
+That is the whole change. §6.2 explains the choice.
+
 ### 9.8 Known verification caveat
 
 The containers themselves were never started in the environment used to verify
@@ -516,10 +596,10 @@ is reported with its actual result.
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 606 passed |
-| 7 | `pytest tests/integration` | 327 passed, 1 skipped |
+| 6 | `pytest tests/unit tests/contract` | 655 passed |
+| 7 | `pytest tests/integration` | 341 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance tests/e2e` | 950 passed, 14 skipped |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance tests/e2e` | 1,013 passed, 14 skipped |
 | 10 | `cd apps/web && npm test` | 73 passed |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins

@@ -7,7 +7,7 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 9 November 2026 |
 | **Tag** | `schedule-a-rc1` |
-| **Generated from commit** | `e16cbc33f14912cc6f4cdc0e0296746e9fdfa17a` |
+| **Generated from commit** | `fb584429b1a83bca8f7888eaba5f0116d868c8bf` |
 | **Branch** | `delivery/schedule-a` |
 | **Working tree at generation** | MODIFIED — not a clean delivery |
 
@@ -24,8 +24,8 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 | Work 1 — source | `docs/delivery/01_architecture_map.md` | 25,594 | `93ab7973f9f957d9b3be091052005c86d64dc24309bda770121b8306cd351494` |
 | Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 673,559 | `b95dfe513d6d016222577d50bba28786dd121c16bd10d7233b458da45e90b2a3` |
 | Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 70,521 | `ea5f33522632657bc54fa41a4816173b8a47cb294c4b343f3a10f909d4867851` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 233,801 | `ab39b3f0c09c633004949ce67d11ebca0d4699a259ade2913c1f7388c519d816` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 24,632 | `f127117c49f750b17ebe2565b6b54644d2a8c36640bc5758eef8e71564841fc6` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 251,957 | `3d1e065746c3b8fd9066c837c410d29d2f7c82543b96f892727a43ac455ad025` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 28,285 | `082913e26774bfa774ce0f667657c50c714c03794d7ea8888491b5471b44645d` |
 | Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 238,754 | `71488712cd065e07326682276fa5d5f81134b25f7ee0837365684ef98b10483b` |
 | Annex — source | `docs/delivery/05_capability_proof.md` | 36,426 | `72778614a72781069a99d87b5e95b350c91f3af15e6bac3dfc7069e9e69b028d` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |

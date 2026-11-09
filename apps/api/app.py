@@ -27,7 +27,7 @@ from titiler.core.factory import TilerFactory
 from . import deps, errors
 from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
-from .routers import aois, features, health, indicators, jobs, metrics, tiles
+from .routers import aois, features, health, indicators, jobs, metrics, mvt, tiles
 
 
 def _cors_origins_from_env() -> list[str]:
@@ -136,6 +136,13 @@ def create_app(
     app.include_router(features.router)
     app.include_router(metrics.router)
     app.include_router(tiles.router)
+    # Live vector tiles from this process, behind the same URL contract
+    # Martin serves. Mounted unconditionally and *not* the default: which of
+    # the two a client is sent to is `REIMAGINA_TILE_LIVE_BASE_URL`, resolved
+    # by `tiles.sources`, so this route existing costs nothing until a
+    # deployment points at it. See `apps/api/routers/mvt.py`, and
+    # `docs/superpowers/specs/API_SERVED_MVT.md` for why both exist.
+    app.include_router(mvt.router)
     app.include_router(jobs.router)
     # Raster tiles: mount titiler's standard COG endpoints under /cog so
     # the API + tile server share a process, a dep tree, and an origin.

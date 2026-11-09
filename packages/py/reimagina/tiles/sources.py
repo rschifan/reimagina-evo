@@ -14,6 +14,7 @@ from urllib.parse import quote, urlparse
 import psycopg2
 
 from reimagina.storage import backend_for_connection
+from reimagina.tiles.functions import DEFAULT_TILE_FUNCTION, TILE_FUNCTIONS
 
 from .defaults import (
     tile_live_base_url,
@@ -28,13 +29,11 @@ from .manifest import load_tile_layers
 logger = logging.getLogger(__name__)
 
 
-_KNOWN_MARTIN_FUNCTION_TAILS = frozenset(
-    {
-        "get_tile",
-        "indicator_overlay_tile",
-        "aggregation_overlay_tile",
-    }
-)
+#: Kept as an alias rather than a second list. The names live in
+#: ``tiles.functions``, which the API's own MVT route reads as its allowlist:
+#: a function this resolver advertises but that route refuses to serve is a
+#: 404 in a map, and two frozensets in two modules is how that happens.
+_KNOWN_MARTIN_FUNCTION_TAILS = TILE_FUNCTIONS
 
 
 def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:
@@ -61,14 +60,14 @@ def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str,
         try:
             base, tail = trimmed.rsplit("/", 1)
         except ValueError:
-            return trimmed, "get_tile"
+            return trimmed, DEFAULT_TILE_FUNCTION
         if tail in _KNOWN_MARTIN_FUNCTION_TAILS:
             return base, tail
-        return trimmed, "get_tile"
+        return trimmed, DEFAULT_TILE_FUNCTION
 
     path = parsed.path or ""
     if not path:
-        return live_tilejson_base_url.rstrip("/"), "get_tile"
+        return live_tilejson_base_url.rstrip("/"), DEFAULT_TILE_FUNCTION
 
     head, _, tail = path.rpartition("/")
     if tail in _KNOWN_MARTIN_FUNCTION_TAILS:
@@ -76,7 +75,7 @@ def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str,
         return new_base.rstrip("/"), tail
     # Anything else (`/martin`, `/api/v1/`, custom path prefix) is
     # part of the base URL; default to `get_tile` for the function.
-    return live_tilejson_base_url.rstrip("/"), "get_tile"
+    return live_tilejson_base_url.rstrip("/"), DEFAULT_TILE_FUNCTION
 
 
 def resolve_tile_sources(

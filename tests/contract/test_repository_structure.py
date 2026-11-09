@@ -511,3 +511,105 @@ def test_ci_requires_the_database_it_attaches_rather_than_skipping():
         'REIMAGINA_REQUIRE_DB: "1", so an unreachable database would make '
         f"them skip their way to a green result: {missing}"
     )
+
+
+def test_the_api_and_martin_resolve_to_the_same_live_tile_url_shape():
+    """Switching tile servers must be one environment variable, or nothing.
+
+    This is the pass/fail criterion the spec for the API-served MVT route set
+    for itself: *if switching between Martin and the API is anything more
+    than changing one environment variable, this is not worth building.* A
+    second tile implementation the frontend, the manifest or the resolver has
+    to know about is two code paths to keep in step, and the one that is not
+    in production rots.
+
+    So the assertion is not that both work — it is that both produce the
+    **same URL shape** through the same resolver, differing only in origin.
+    `tiles.sources._martin_base_and_default_function` treats a trailing path
+    segment as a function name only when it is a known one, which is what
+    makes `…:8001/tiles` resolve as a base rather than as a function called
+    "tiles". That behaviour predates this route and is load-bearing for it,
+    so it is pinned here rather than left as luck.
+    """
+    from reimagina.tiles.sources import _martin_base_and_default_function
+
+    martin_base, martin_fn = _martin_base_and_default_function("http://localhost:3000")
+    api_base, api_fn = _martin_base_and_default_function("http://localhost:8001/tiles")
+
+    assert martin_fn == api_fn == "get_tile", (
+        "the two deployments disagree about the default tile function, so the "
+        "same manifest would resolve to different layers"
+    )
+    assert martin_base == "http://localhost:3000"
+    assert api_base == "http://localhost:8001/tiles", (
+        "'/tiles' was consumed as a function name, so every API-served tile "
+        "URL would be missing its path prefix and 404"
+    )
+
+    # The shape the resolver builds from each, which is what the frontend
+    # fetches. Identical but for the origin.
+    def _template(base: str, function: str) -> str:
+        return f"{base}/{function}/{{z}}/{{x}}/{{y}}"
+
+    assert _template(martin_base, martin_fn) == (
+        "http://localhost:3000/get_tile/{z}/{x}/{y}"
+    )
+    assert _template(api_base, api_fn) == (
+        "http://localhost:8001/tiles/get_tile/{z}/{x}/{y}"
+    )
+
+
+def test_the_tile_function_registry_is_the_only_list_of_servable_functions():
+    """One list, or the two servers drift.
+
+    `tiles.sources` decides whether a URL's last segment is a function name;
+    `apps.api.routers.mvt` decides whether it will call one. A function the
+    resolver advertises but the route refuses is a 404 in a map; a function
+    the route serves but the resolver never names is dead code. Two
+    frozensets in two modules is how that happens, so there is one, and this
+    asserts neither consumer has quietly grown its own.
+    """
+    from reimagina.tiles import functions as tile_functions
+    from reimagina.tiles import sources
+
+    assert sources._KNOWN_MARTIN_FUNCTION_TAILS is tile_functions.TILE_FUNCTIONS, (
+        "tiles.sources has its own copy of the servable-function list again"
+    )
+
+    mvt = (ROOT / "apps" / "api" / "routers" / "mvt.py").read_text()
+    assert "TILE_FUNCTIONS" in mvt, "the MVT route no longer reads the registry"
+    for name in tile_functions.TILE_FUNCTIONS:
+        assert f'"{name}"' not in mvt, (
+            f"{name!r} is hard-coded in the MVT route as well as being in the "
+            "registry, so the allowlist now has two sources of truth"
+        )
+
+
+def test_a_relative_tile_base_url_resolves_same_origin():
+    """The form that needs no CORS, and the one the docs recommend for dev.
+
+    Tiles served by the API are cross-origin from the web dev server
+    (`:5173` to `:8001`), so they depend on the API's CORS allowlist — which
+    names `http://localhost:5173` and therefore rejects a browser that
+    reached the page as `http://127.0.0.1:5173`. Measured: 53 tile requests,
+    53 `net::ERR_FAILED`, and a map that renders nothing with no console
+    error to explain it.
+
+    The web app already proxies `/api` to the API, so a **relative** base
+    makes tiles same-origin and the whole question disappears. Verified in a
+    real browser from an origin deliberately absent from the allowlist: 38
+    tile responses, 200s and 204s, map drawn.
+
+    This pins the resolver behaviour that makes it work — a base with no
+    scheme falls to the rsplit branch, and `tiles` is not a known function
+    tail, so the whole string stays the base.
+    """
+    from reimagina.tiles.sources import _martin_base_and_default_function
+
+    base, function = _martin_base_and_default_function("/api/tiles")
+    assert base == "/api/tiles", (
+        "'tiles' was taken for a function name, so every tile URL would lose "
+        "its proxy prefix and 404 against the dev server"
+    )
+    assert function == "get_tile"
+    assert f"{base}/{function}/{{z}}/{{x}}/{{y}}" == ("/api/tiles/get_tile/{z}/{x}/{y}")
