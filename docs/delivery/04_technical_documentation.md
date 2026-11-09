@@ -348,6 +348,19 @@ The palette is also the only surface that *lists* what the application does,
 which matters because the draw tools are icons and the rest is three menus
 in a long panel.
 
+**Spatial context.** There is no external basemap, on purpose — no tile
+provider to depend on and no third-party licence to carry. Orientation comes
+from the platform's own street network: the routing graph in
+`curated_geo.road_edge` is published as `global:road` features and served
+through the same tile path as the blocks, appearing from zoom 12. The
+`Streets` layer is on by default.
+
+The map credits whatever data it is showing, bottom-right. That line is
+derived from the licence recorded against each loaded source, not written
+into the frontend — so a real OpenStreetMap network is credited as ODbL
+requires, and a generated territory credits the generator instead of
+claiming OSM data it does not have.
+
 **Reading the legend.** The colour ramp answers "what does this colour
 mean". Below it, the distribution strip answers "how many are like this" —
 the grey bars are the indicator's values across the AOI, the dashed rule is
@@ -632,11 +645,11 @@ is reported with its actual result.
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
 | 6 | `pytest tests/unit tests/contract` | 655 passed |
-| 7 | `pytest tests/integration` | 349 passed, 1 skipped |
+| 7 | `pytest tests/integration` | 366 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,021 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 134 passed |
-| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 24 passed, in a real browser against both servers |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,038 passed, 2 skipped |
+| 10 | `cd apps/web && npm test` | 141 passed |
+| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 27 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
 PostGIS 3.4 and pgRouting 3.6.1; the schema is identical across both.

@@ -7,7 +7,10 @@
  * until `choropleth.ts` configures it — that separation keeps the input-
  * layer scaffold independent of indicator styling.
  */
-import type { Map as MapLibreMap } from "maplibre-gl";
+import type {
+  DataDrivenPropertyValueSpecification,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 
 import type { TileSource } from "./api";
 import { fmtNumber } from "./format";
@@ -29,9 +32,20 @@ export interface InputLayerSpec {
   fillColor: string;
   fillOpacity: number;
   lineColor: string;
-  lineWidth: number;
+  /** A number, or any MapLibre expression that resolves to one. */
+  lineWidth: DataDrivenPropertyValueSpecification<number>;
   visible: boolean;
   minzoom?: number;
+  /**
+   * ``line`` skips the fill layer, the tooltip and the hover highlight.
+   *
+   * A fill on a LineString renders nothing, so the fill layer would be a
+   * dead hit-target that silently swallows the hover the line layer should
+   * have caught. And context is not data: a street with no name and no
+   * class has nothing worth a tooltip, and making it hoverable would put it
+   * in competition with the blocks drawn on top of it.
+   */
+  geometry?: "polygon" | "line";
 }
 
 // Ordered smallest-grain first so the sidebar reads bottom-up in
@@ -47,6 +61,55 @@ export interface InputLayerSpec {
 // for any AOI that lacks a dense building layer (e.g. Mexicali, where
 // no Overture buildings are ingested).
 export const INPUT_LAYERS: InputLayerSpec[] = [
+  {
+    // ⚠ First in the array, which is what puts it at the bottom of the map.
+    // `installInputLayers` adds layers in order, so anything listed later
+    // draws over it — and context that draws over the analysis units is not
+    // context. It is also the one entry outside the grain hierarchy the
+    // rest of this list is ordered by.
+    //
+    // Streets exist as features at all because `data/roads.py` projects
+    // `curated_geo.road_edge` into `curated_geo.feature`. Before that the
+    // map had no spatial reference of any kind: a block was a rectangle in
+    // black, with nothing to say which neighbourhood it was in or which way
+    // a street runs.
+    layerId: "baseline_live:road",
+    sourceName: "baseline_roads",
+    sourceLayerName: "features",
+    typeSlug: "road",
+    label: "Streets",
+    geometry: "line",
+    // Unused for a line layer; kept so the spec stays one shape.
+    fillColor: "#000000",
+    fillOpacity: 0,
+    // Dimmer than every analysis layer on purpose. A street grid competing
+    // with the blocks for attention stops being a reference and becomes
+    // another thing to read.
+    lineColor: "#3f4a5f",
+    // Hairline at the zoom streets first appear, thickening as the view
+    // closes in — the behaviour every basemap has, and the reason a street
+    // layer reads as ground rather than as content.
+    lineWidth: [
+      "interpolate",
+      ["linear"],
+      ["zoom"],
+      12, 0.5,
+      14, 1.0,
+      16, 1.8,
+      18, 3.0,
+    ],
+    // On by default, alone among the optional layers. Orientation is the
+    // problem this solves, and a context layer nobody switches on provides
+    // none.
+    visible: true,
+    // ⚠ 12 matches `serving_geo.get_tile`'s role gate exactly: roads carry
+    // `role = 'infrastructure'`, which the function serves only from z12
+    // (`WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')`). Measured
+    // against the running database — a z11 road tile is 0 bytes and a z12
+    // one is 2,714. A lower floor here buys requests that can only come
+    // back empty, which on a map is indistinguishable from missing data.
+    minzoom: 12,
+  },
   {
     layerId: "baseline_live:building",
     sourceName: "baseline_buildings",
@@ -227,18 +290,21 @@ export function installInputLayers(
     // invisible-but-renderable fill is the standard workaround.
     const fillLayerId = `${layer.sourceName}__fill`;
     const lineLayerId = `${layer.sourceName}__line`;
+    const isLine = layer.geometry === "line";
 
-    map.addLayer({
-      id: fillLayerId,
-      type: "fill",
-      source: layer.sourceName,
-      "source-layer": layer.sourceLayerName,
-      layout: { visibility: layer.visible ? "visible" : "none" },
-      paint: {
-        "fill-color": layer.fillColor,
-        "fill-opacity": layer.fillOpacity,
-      },
-    });
+    if (!isLine) {
+      map.addLayer({
+        id: fillLayerId,
+        type: "fill",
+        source: layer.sourceName,
+        "source-layer": layer.sourceLayerName,
+        layout: { visibility: layer.visible ? "visible" : "none" },
+        paint: {
+          "fill-color": layer.fillColor,
+          "fill-opacity": layer.fillOpacity,
+        },
+      });
+    }
     map.addLayer({
       id: lineLayerId,
       type: "line",
@@ -255,7 +321,7 @@ export function installInputLayers(
     // the polygon interior, not the thin stroke. Same property bag
     // either way — the format function reads MVT props, doesn't care
     // which layer caught the hit.
-    if (tooltips) {
+    if (tooltips && !isLine) {
       tooltips.register(mvtProvider({
         id: `baseline::${layer.layerId}`,
         layerId: fillLayerId,
@@ -268,13 +334,19 @@ export function installInputLayers(
     // fill alpha to ~0.20 on hover so the user gets an unmistakable
     // "this feature is selected" highlight matching what every other
     // industry GIS tool does (Felt, Mapbox Studio, kepler.gl).
-    enableHoverHighlight(map, {
-      fillLayerId,
-      lineLayerId,
-      defaultFillOpacity: layer.fillOpacity,
-      defaultOutlineColor: layer.lineColor,
-      defaultLineWidth: layer.lineWidth,
-    });
+    //
+    // Skipped entirely for a context layer: a street has no name and no
+    // class to show, and a hoverable one would compete with the blocks
+    // drawn above it for the same pointer.
+    if (!isLine) {
+      enableHoverHighlight(map, {
+        fillLayerId,
+        lineLayerId,
+        defaultFillOpacity: layer.fillOpacity,
+        defaultOutlineColor: layer.lineColor,
+        defaultLineWidth: typeof layer.lineWidth === "number" ? layer.lineWidth : 0,
+      });
+    }
   }
 }
 

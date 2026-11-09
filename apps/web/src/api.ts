@@ -129,6 +129,25 @@ export function getIndicatorStats(
   );
 }
 
+/** A credit line the licence of some loaded source requires. */
+export interface AttributionRow {
+  provider: string;
+  license: string | null;
+  text: string;
+}
+
+/**
+ * Credit lines for the data actually loaded.
+ *
+ * Fetched rather than hardcoded: the street layer is OpenStreetMap in a
+ * real pilot and a generated grid in a demo, so a frontend that always
+ * printed "© OpenStreetMap contributors" would make a false provenance
+ * claim on every synthetic territory.
+ */
+export function listAttributions(): Promise<AttributionRow[]> {
+  return jsonRequest<AttributionRow[]>("/tile-sources/attribution");
+}
+
 export function listTileSources(): Promise<TileSource[]> {
   return jsonRequest<TileSource[]>("/tile-sources");
 }

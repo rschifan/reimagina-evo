@@ -36,6 +36,7 @@ import {
 import {
   getIndicatorStats,
   isAbortError,
+  listAttributions,
   listAois,
   listIndicators,
   listTileSources,
@@ -247,6 +248,37 @@ async function main(): Promise<void> {
     "top-right",
   );
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+
+  // ⚠ A licence obligation, not a nicety.
+  //
+  // OpenStreetMap is ODbL and displaying it without credit is a breach, and
+  // the reason this map has no external basemap in the first place is
+  // licence hygiene. Publishing OSM-derived streets without the credit
+  // would spend exactly what that decision was protecting.
+  //
+  // The text comes from the API, which derives it from the licence recorded
+  // against each source that actually has features. Hardcoding it here
+  // would credit OpenStreetMap on a synthetic territory — a false
+  // provenance claim in a product whose argument is that its provenance is
+  // checkable — and crediting a registered-but-unloaded source would claim
+  // the map shows data it does not.
+  void listAttributions()
+    .then((rows) => {
+      if (rows.length === 0) return;
+      map.addControl(
+        new maplibregl.AttributionControl({
+          customAttribution: rows.map((row) => row.text),
+          compact: false,
+        }),
+        "bottom-right",
+      );
+    })
+    .catch((err) => {
+      // Loud, because silence here is a licence breach rather than a
+      // missing nicety: a map that drew OSM geometry and failed to credit
+      // it must say so somewhere a developer will see.
+      console.error("could not resolve data attribution", err);
+    });
 
   // Collapsing the panel changes the canvas size, and MapLibre only learns
   // that when told. Without the resize the map keeps its old width and the

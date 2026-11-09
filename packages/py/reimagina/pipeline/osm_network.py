@@ -55,6 +55,7 @@ is not performed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import psycopg2
@@ -206,16 +207,49 @@ def load_graph(conn, nodes, edges, *, network_type: str = WALK) -> LoadResult:
     )
 
 
-def bootstrap_network(conn, *, aoi_id: str, network_type: str = WALK) -> dict[str, Any]:
-    """Fetch the AOI's OSM network and load it. Minutes, not seconds."""
+def bootstrap_network(
+    conn,
+    *,
+    aoi_id: str,
+    network_type: str = WALK,
+    publish_features: bool = True,
+) -> dict[str, Any]:
+    """Fetch the AOI's OSM network, load it, and publish it as features.
+
+    ``publish_features`` exists for a caller that wants only the routing
+    tables — a graph reload where the drawable layer is being rebuilt
+    separately. It defaults to on, because a network loaded and not
+    published is the state this repository was already in: routable and
+    invisible.
+
+    The publish is what finally gives the network provenance.
+    ``load_graph`` deliberately opens no ``ingestion_run``, which this
+    module's docstring calls out as a gap; writing features cannot skip one,
+    because ``feature_before_write`` rejects a row whose source disagrees
+    with its run. So the OSM network gets a ``data_source_catalog`` row with
+    its ODbL licence recorded, as a side effect of becoming drawable.
+    """
     polygon = aoi_polygon(conn, aoi_id)
     nodes, edges = fetch_walk_graph(polygon, network_type=network_type)
     result = load_graph(conn, nodes, edges, network_type=network_type)
-    conn.commit()
-    return {
+    summary: dict[str, Any] = {
         "aoi_id": aoi_id,
         "network_type": result.network_type,
         "nodes": result.nodes_written,
         "edges": result.edges_written,
         "total_length_km": round(result.total_length_m / 1000, 1),
     }
+    if publish_features:
+        # Imported here rather than at module scope: `data.roads` reaches
+        # `data.feature`, which imports the storage backend, and this module
+        # is imported by the CLI at startup.
+        from reimagina.data.roads import publish_from_network
+
+        published = publish_from_network(
+            conn,
+            version=f"{network_type}-{date.today().isoformat()}",
+            code_version="osm_network.bootstrap_network",
+        )
+        summary["road_features"] = published.features_written
+    conn.commit()
+    return summary

@@ -65,6 +65,11 @@ Rules:
   `REIMAGINA_TILE_LIVE_BASE_URL`. `reimagina.tiles.functions.TILE_FUNCTIONS` is the one
   list of servable functions; adding a tile function means adding it there
 - if a layer must be live, filtered, scenario-aware, or fast-changing, it cannot move to PMTiles
+- the map has no external basemap, on purpose: spatial context is the platform's own
+  street network, projected from `curated_geo.road_edge` into `curated_geo.feature` as
+  `global:road` by `reimagina.data.roads`. Attribution is derived from
+  `data_source_catalog.license` and served by `/tile-sources/attribution` — never
+  hardcoded in the frontend, which would credit OpenStreetMap on synthetic data
 
 ## Inspection workflow
 

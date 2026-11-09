@@ -119,6 +119,49 @@ the resolver's `tilejson_url` as well as its `tiles_url_template`.
 
 Full rationale: `docs/superpowers/specs/API_SERVED_MVT.md`.
 
+## Street context, without an external basemap
+
+The map has no basemap, deliberately — `main.ts`: "the prototype avoids
+external tile dependencies and licensing drift". Spatial reference comes
+instead from the platform's own street network.
+
+`curated_geo.road_edge` holds the routing graph the accessibility
+indicators walk. `reimagina.data.roads.publish_road_features` projects it
+into `curated_geo.feature` as `global:road`, and from there everything
+already existed:
+
+- `global:road` is in `feature_type_catalog` (`geometry_family: line`,
+  `role: infrastructure`) and has been since the first seed
+- `serving_geo.roads` is `feature_v WHERE type_slug = 'road'`
+- `get_tile?type_slug=road` serves them through the same path as every
+  other baseline layer
+
+**No migration, no new tile function.** The only thing that was missing was
+the step connecting the graph to the feature table.
+
+**Roads appear from z12**, and not by a client setting: they carry
+`role = 'infrastructure'`, which the role gate below serves only from z12.
+Measured on the running database — a z11 road tile is 0 bytes, a z12 one is
+2,714. The frontend's `minzoom: 12` matches, and a unit test pins the pair,
+because a lower client floor only buys requests that come back empty and on
+a map empty is indistinguishable from missing.
+
+⚠ **The density risk is open, not closed.** At z12 a tile covers ~10 km, and
+that is the zoom where the *building* layer measured 2.59 MB per tile (which
+is why `r038` floors buildings at z14). A walking network is denser than a
+road centreline network. This ships on the role gate with 40 synthetic edges
+measured, not a city — if a real deployment finds z12 road tiles too heavy,
+the remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
+`get_tile`, chosen from a measurement. The procedure is in `r038`'s
+docstring.
+
+**Attribution is derived, not declared.** `GET /tile-sources/attribution`
+returns a credit line per source that actually has features, built from
+`data_source_catalog.license`. OpenStreetMap gets the wording ODbL
+prescribes; a synthetic territory credits the synthetic source and makes no
+OSM claim. Hardcoding the credit in the frontend would be a false provenance
+statement on every demo.
+
 ### `serving_geo.get_tile(z, x, y, query_params json)`
 
 The baseline feature channel. Martin publishes it at

@@ -182,3 +182,55 @@ class TestInteraction:
         width, taking 82 % of a 390 px viewport."""
         assert probe["interaction"]["drawerStartsClosed"] is True
         assert probe["interaction"]["drawerOpens"] is True
+
+
+class TestStreetContext:
+    """The map's only spatial reference.
+
+    Before this the territory floated in black: no coastline, no grid, no
+    label, nothing to say which neighbourhood a block was in or which way a
+    street runs. The fix adds no external basemap — it publishes the routing
+    graph the platform already loads as `global:road` features, through the
+    tile path the other baseline layers already use.
+    """
+
+    def test_the_street_layer_is_offered_and_on(self, probe) -> None:
+        """On by default, alone among the optional layers: orientation is
+        the problem it solves, and a context layer nobody switches on
+        provides none."""
+        labels = probe["interaction"]["streetToggle"]
+        assert any("street" in label.lower() for label in labels), labels
+        assert labels[0].lower().startswith("street"), (
+            "streets are not first, so they draw over the analysis layers "
+            f"instead of beneath them: {labels}"
+        )
+
+    def test_street_tiles_come_back_with_linework(self, probe) -> None:
+        """⚠ The failure this catches is silent.
+
+        `get_tile` scopes by AOI through an EXISTS against `aoi_feature`, so
+        roads published *after* the membership pass get no row there and
+        every street tile returns `204 No Content` — with the features
+        present in `curated_geo.feature` and `serving_geo.roads` reporting
+        all of them. The map simply draws no streets, which is
+        indistinguishable from the layer being broken.
+        """
+        tiles = probe["interaction"]["roadTiles"]
+        assert tiles["other"] == [], f"street tiles errored: {tiles['other']}"
+        assert tiles["ok"] > 0, (
+            "every street tile was empty — the features exist but are not "
+            f"reaching the map: {tiles}"
+        )
+
+    def test_the_map_credits_its_data(self, probe) -> None:
+        """Attribution is a licence obligation. OpenStreetMap is ODbL, and
+        the reason this map has no external basemap is licence hygiene — so
+        drawing OSM-derived geometry without the credit would spend exactly
+        what that decision was protecting.
+
+        The text is derived from `data_source_catalog`, so a synthetic
+        territory credits the synthetic source and does **not** claim
+        OpenStreetMap.
+        """
+        attribution = probe["interaction"]["attribution"]
+        assert attribution, "the map shows data and credits nobody"

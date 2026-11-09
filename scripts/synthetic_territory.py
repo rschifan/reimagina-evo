@@ -363,6 +363,7 @@ def seed(
     from reimagina.data import catalog as cat
     from reimagina.data.aoi import compute_aoi_features, create_aoi
     from reimagina.data.feature import load_features
+    from reimagina.data.roads import publish_from_network
     from reimagina.pipeline.osm_network import load_graph
     from reimagina.storage import backend_for_connection, connect
 
@@ -493,10 +494,6 @@ def seed(
             description="Envelope of the generated territory.",
         )
         conn.commit()
-        members = compute_aoi_features(conn, aoi_id)
-        conn.commit()
-        print(f"  aoi       {members:>5} member features  ({aoi_id})")
-        counts["aoi_feature"] = members
 
         # The pedestrian graph, through the same loader the OSM ingest uses.
         # Without it the accessibility family refuses to compute — by design,
@@ -509,6 +506,41 @@ def seed(
         )
         counts["road_node"] = net.nodes_written
         counts["road_edge"] = net.edges_written
+
+        # The same edges again, as drawable features. Without this the map
+        # has no street context at all and a block is a rectangle in black —
+        # `serving_geo.roads` and the `global:road` feature type have both
+        # existed from the start with nothing ever writing to them.
+        #
+        # Published under *this* source, not the OSM one: these streets are
+        # generated, and a synthetic grid filed under "OpenStreetMap street
+        # network" with an ODbL licence would be a false provenance claim in
+        # the one table that exists to make such claims checkable.
+        roads = publish_from_network(
+            conn,
+            version=version,
+            source_id=source_id,
+            code_version="synthetic_territory.seed",
+        )
+        conn.commit()
+        print(f"  roads     {roads.features_written:>5} road features")
+        counts["road_feature"] = roads.features_written
+
+        # ⚠ Membership last, after *every* feature exists.
+        #
+        # It ran before the roads were published, and the roads then had no
+        # row in `aoi_feature`. Nothing failed: `get_tile` scopes by AOI
+        # through an EXISTS against that table, so every street tile came
+        # back `204 No Content` and the map drew no streets at all — with
+        # 40 road features sitting in `curated_geo.feature` and
+        # `serving_geo.roads` reporting all 40.
+        #
+        # The symptom is indistinguishable from "the layer is broken", and
+        # the cause is an ordering nobody would look at.
+        members = compute_aoi_features(conn, aoi_id)
+        conn.commit()
+        print(f"  aoi       {members:>5} member features  ({aoi_id})")
+        counts["aoi_feature"] = members
     return counts, aoi_id
 
 

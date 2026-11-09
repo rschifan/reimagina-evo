@@ -46,6 +46,16 @@ const PAGES = [
   // lives and where loading successfully proves nothing.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const tab = await ctx.newPage();
+  // Street tiles, counted by outcome. 200 is a tile with linework in it;
+  // 204 is a legitimately empty one (outside the loaded territory, which is
+  // most tiles). Anything else is a broken layer.
+  const roadTiles = { ok: 0, empty: 0, other: [] };
+  tab.on('response', (r) => {
+    if (!r.url().includes('type_slug=road')) return;
+    if (r.status() === 200) roadTiles.ok += 1;
+    else if (r.status() === 204) roadTiles.empty += 1;
+    else roadTiles.other.push(r.status());
+  });
   await tab.goto(WEB + '/', { waitUntil: 'networkidle', timeout: 60000 });
   await tab.waitForTimeout(3000);
 
@@ -89,6 +99,15 @@ const PAGES = [
   interaction.shortcutSheetOpens = (await visible('.sheet')) === true;
   interaction.shortcutRows = await tab.$$eval('.sheet__row', (els) => els.length);
   await tab.keyboard.press('Escape');
+
+  // Streets: the map's only spatial reference, and the thing that makes a
+  // block something other than a rectangle in black.
+  interaction.streetToggle = await tab.$$eval('#layer-toggles label',
+    (els) => els.map((e) => e.textContent.trim())).catch(() => []);
+  interaction.roadTiles = roadTiles;
+  interaction.attribution = await tab
+    .$eval('.maplibregl-ctrl-attrib-inner', (e) => e.textContent)
+    .catch(() => null);
 
   interaction.legendHasDistribution = (await tab.$('.legend .dist')) !== null;
   interaction.distributionBars = await tab.$$eval('.legend .dist__bar',

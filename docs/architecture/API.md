@@ -33,6 +33,7 @@ domain packages don't import app code") holds.
 | GET | `/aois/{aoi_id}/summaries` | Cached `aoi_indicator_summary` rows. 422 on malformed UUID. |
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features`. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with snapshot registry; frontend-ready. |
+| GET | `/tile-sources/attribution` | Credit lines for every source that actually has features, from `data_source_catalog.license`. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
 | GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |
 | GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. |
 | POST | `/jobs` | Submit a run. Scope it with `changed_attributes`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with the run id, or `status:"noop"` and a **null** run id when the dirty set was empty. |
