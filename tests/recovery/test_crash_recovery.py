@@ -27,6 +27,21 @@ compute window, and it deliberately kills processes:
 Measured on the 86,225-block CDMX database: killed with two units running and
 none succeeded; a second process reclaimed the workflow, all three units
 finished, and the digest matched the value every other execution path produces.
+
+⚠ **This suite races a real process against a real kill, and the race is
+one-sided.** The kill fires on observed state — a unit `running`, fewer than
+three succeeded — but the run can still reach a terminal state in the gap
+between that read and the signal landing. When it does, the run's own
+finalizer reclaims the plan, and an assertion written for "the plan survived
+the crash" sees an empty table and reports a loss that never happened. That
+case now skips with the reason rather than failing, and every post-crash
+assertion carries `_crash_context` so the next unexplained result explains
+itself instead of needing to be reproduced.
+
+Observed once in ten consecutive runs on a loaded container, with the
+assertion text lost before it could be read; nine runs since have been clean.
+The skip is the hypothesis, not a confirmed diagnosis — the context block is
+what will confirm or refute it.
 """
 
 from __future__ import annotations
@@ -77,6 +92,30 @@ def _query(sql: str, *args):
     with psycopg2.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(sql, args)
         return cur.fetchall() if cur.description else []
+
+
+def _crash_context(run_id: str) -> str:
+    """Everything needed to explain a post-crash assertion, in one string.
+
+    Added after a single unexplained failure in ten runs of this suite. The
+    assertions below compare one number against another and say so; none of
+    them says *what the run was doing when the kill landed*, which is the only
+    thing that distinguishes a real regression from a crash that arrived after
+    the run had already finished. Reproducing a race by re-running it is a bad
+    use of time when the next occurrence can simply explain itself.
+    """
+    run = _query(
+        "SELECT status, submitted_at, completed_at "
+        "FROM jobs_runtime.orchestration_run WHERE id = %s::uuid",
+        run_id,
+    )
+    units = _query(
+        "SELECT indicator_slug, status, started_at, completed_at "
+        "FROM jobs_runtime.job_unit WHERE run_id = %s::uuid ORDER BY 1",
+        run_id,
+    )
+    plans = _query("SELECT plan_id::text, created_at FROM jobs_runtime.run_plan")
+    return f"\n  run    {run}\n  units  {units}\n  plans  {plans}"
 
 
 @pytest.fixture
@@ -147,7 +186,24 @@ def test_a_killed_executor_resumes_the_same_feature_set(clean_run_state):
         "FROM jobs_runtime.run_plan WHERE plan_id = %s::uuid ORDER BY 1",
         plan_id,
     )
-    assert len(surviving) == 3, f"the plan did not survive the crash: {surviving}"
+    if not surviving:
+        # The plan is deleted by the run's own finalizer, which fires only on a
+        # terminal run. An empty plan therefore means the run finished between
+        # the poll that saw a unit running and the kill landing — the test's
+        # premise, not its subject, so there is nothing here to assert about.
+        status = _query(
+            "SELECT status FROM jobs_runtime.orchestration_run WHERE id = %s::uuid",
+            run_id,
+        )
+        if status and status[0][0] in {"succeeded", "partial", "failed", "cancelled"}:
+            pytest.skip(
+                "the run reached a terminal state before the kill landed, so "
+                "the plan was reclaimed by its finalizer rather than lost"
+                + _crash_context(run_id)
+            )
+    assert len(surviving) == 3, (
+        f"the plan did not survive the crash: {surviving}" + _crash_context(run_id)
+    )
     before = {slug: n for slug, n in surviving}
 
     recovered = subprocess.run(
@@ -163,7 +219,9 @@ def test_a_killed_executor_resumes_the_same_feature_set(clean_run_state):
         if "=" in line and not line.startswith(" ")
     )
 
-    assert out.get("STATUS") == "succeeded", recovered.stdout[-2000:]
+    assert out.get("STATUS") == "succeeded", recovered.stdout[-2000:] + _crash_context(
+        run_id
+    )
     assert "queued" not in out.get("UNITS", ""), out.get("UNITS")
     assert "running" not in out.get("UNITS", ""), out.get("UNITS")
     # Reclaimed once terminal — a recovered run must not leak its plan either.
@@ -309,7 +367,9 @@ def test_a_peer_reclaims_a_dead_executors_run(clean_run_state):
     assert out.get("SWEPT_THE_DEAD_ONE") == "True", swept.stdout[-2000:]
     assert out.get("ERRORS") == "[]", out.get("ERRORS")
     assert int(out.get("RECOVERED", "0")) >= 1, swept.stdout[-2000:]
-    assert out.get("STATUS") == "succeeded", swept.stdout[-2000:]
+    assert out.get("STATUS") == "succeeded", swept.stdout[-2000:] + _crash_context(
+        run_id
+    )
     assert "queued" not in out.get("UNITS", ""), out.get("UNITS")
     assert "running" not in out.get("UNITS", ""), out.get("UNITS")
     # Reclaimed, then forgotten: otherwise the same corpse is swept forever.
