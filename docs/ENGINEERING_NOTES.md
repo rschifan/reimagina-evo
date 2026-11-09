@@ -83,6 +83,7 @@ exists. Not a prototype blocker.
 ```python
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # if FastAPI
+
 Psycopg2Instrumentor().instrument()
 ```
 Add `trace_id` to `jobs_runtime.details` JSON so DB failures link back to the 

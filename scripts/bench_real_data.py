@@ -310,10 +310,7 @@ def main(argv: list[str]) -> int:
     features = block_ids(conn, args.scope or None)
     if not features:
         parser.error("no block features found — is this a populated database?")
-    print(
-        f"scope: {len(features)} blocks, {len(EDGES)} indicators, "
-        f"slots={args.slots}"
-    )
+    print(f"scope: {len(features)} blocks, {len(EDGES)} indicators, slots={args.slots}")
     print(f"  triggered by: {', '.join(sorted(CHANGED_ATTRIBUTES))}")
 
     doc: dict = {

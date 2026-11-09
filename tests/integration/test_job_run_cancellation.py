@@ -268,6 +268,6 @@ def test_the_run_envelope_can_be_written_twice(conn):
 
     rows = runstore.list_units(conn, run_id)
     assert len(rows) == 1, "the re-run duplicated the unit"
-    assert (
-        rows[0]["status"] == "succeeded"
-    ), "the re-run reset a finished unit to queued — it would recompute"
+    assert rows[0]["status"] == "succeeded", (
+        "the re-run reset a finished unit to queued — it would recompute"
+    )

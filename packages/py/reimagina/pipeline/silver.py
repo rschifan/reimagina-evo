@@ -5,37 +5,24 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
-from pyproj import Transformer
-from shapely.ops import transform as shapely_transform
 from shapely.validation import make_valid
 
 from reimagina.paths import data_dir
 
 SILVER_DIR = data_dir() / "silver"
 
-
-def _reproject_to_4326(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Reproject to EPSG:4326.
-
-    pyproj 3.7.x's vectorised transform path raises a NumPy ndim>0 scalar
-    conversion DeprecationWarning when it receives a length-1 array, which
-    geopandas hands it for single-geometry GeoDataFrames. Per-geometry
-    shapely.ops.transform uses the scalar pyproj API and hits no such
-    deprecation. We dispatch on len(gdf) == 1 so real-world loads stay on
-    the fast vectorised path. See https://github.com/pyproj4/pyproj/issues
-    for upstream progress; drop this branch once pyproj ships the fix.
-    """
-    if len(gdf) == 1:
-        transformer = Transformer.from_crs(gdf.crs, "EPSG:4326", always_xy=True)
-        reprojected = gdf.copy()
-        reprojected["geometry"] = reprojected["geometry"].apply(
-            lambda g: shapely_transform(transformer.transform, g)
-            if g is not None
-            else g
-        )
-        reprojected.set_crs("EPSG:4326", inplace=True, allow_override=True)
-        return reprojected
-    return gdf.to_crs(epsg=4326)
+# ⚠ There used to be a `_reproject_to_4326` here that special-cased a
+# single-geometry frame, because pyproj 3.7.x's vectorised transform raised a
+# NumPy "ndim>0 scalar conversion" DeprecationWarning on the length-1 array
+# geopandas hands it, and the per-geometry `shapely.ops.transform` path did
+# not. pyproj 3.8 fixed it — verified by reprojecting a length-1 point and a
+# length-1 polygon frame under `-W error::DeprecationWarning` — so the branch
+# is gone and `clean_vector` always takes the fast vectorised path.
+#
+# Removing it also removed the last call to `shapely.ops.transform`, which
+# shapely 2.2 deprecates in favour of `shapely.transform`. The workaround
+# would therefore have had to be rewritten to keep working; it is better
+# deleted. `pyproj>=3.8` in pyproject.toml is what keeps it deleted.
 
 
 def clean_vector(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -50,7 +37,7 @@ def clean_vector(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if gdf.crs is None:
         raise ValueError("GeoDataFrame has no CRS set — cannot clean")
     if gdf.crs.to_epsg() != 4326:
-        gdf = _reproject_to_4326(gdf)
+        gdf = gdf.to_crs(epsg=4326)
 
     gdf = gdf.copy()
     gdf["geometry"] = gdf["geometry"].apply(

@@ -146,3 +146,55 @@ def test_geoparquet_preserves_computed_at_as_string_or_datetime():
     # Serialised form is ISO-8601 string — downstream tools (QGIS) parse this.
     assert isinstance(gdf.iloc[0]["computed_at"], str)
     assert "2026-04-01" in gdf.iloc[0]["computed_at"]
+
+
+def test_geoparquet_declares_a_covering_bbox():
+    """The export must be GeoParquet 1.1 with a covering bbox, not plain 1.0.
+
+    The covering is what lets a reader skip row groups that cannot intersect
+    its query instead of decoding every geometry — the same mechanism
+    `pipeline/overture.py` relies on when reading the Overture cloud release.
+    Writing without it made this project a consumer of cloud-native geospatial
+    and not a producer of it.
+
+    Asserted rather than trusted because the geometry of the failure is
+    invisible: a file written at 1.0, or at 1.1 without the `covering` key,
+    opens perfectly in QGIS and geopandas. It is simply slower to query at
+    scale, and nothing says so.
+    """
+    import pyarrow.parquet as pq
+
+    blob = indicator_rows_to_geoparquet(
+        [
+            _sample_row(
+                feature_id=f"blk-{i}",
+                geometry=shapely.geometry.box(i, 0, i + 1, 1),
+            )
+            for i in range(3)
+        ]
+    )
+    schema = pq.read_schema(io.BytesIO(blob))
+    geo = json.loads(schema.metadata[b"geo"])
+
+    assert geo["version"] == "1.1.0", geo["version"]
+    covering = geo["columns"][geo["primary_column"]].get("covering")
+    assert covering, "no covering declared; a reader cannot find the bbox struct"
+    assert set(covering["bbox"]) == {"xmin", "ymin", "xmax", "ymax"}
+    # And the struct it names is actually present, not merely promised.
+    assert "bbox" in schema.names
+
+
+def test_geoparquet_still_declares_its_crs():
+    """A covering bbox must not cost the CRS.
+
+    Both live in the same `geo` metadata blob, and a file without the CRS
+    opens in QGIS as unprojected coordinates near null island rather than
+    failing — the kind of wrong that is noticed last.
+    """
+    import pyarrow.parquet as pq
+
+    blob = indicator_rows_to_geoparquet([_sample_row(), _sample_row()])
+    geo = json.loads(pq.read_schema(io.BytesIO(blob)).metadata[b"geo"])
+    column = geo["columns"][geo["primary_column"]]
+    assert column["crs"]["id"] == {"authority": "EPSG", "code": 4326}
+    assert column["encoding"] == "WKB"

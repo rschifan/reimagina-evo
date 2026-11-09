@@ -398,6 +398,7 @@ import h3
 import psycopg2
 from shapely.geometry import shape, mapping
 
+
 def register_h3_grid_membership(conn, grid_id: str, resolution: int):
     """
     For each polygon feature in the DB, enumerate the H3 cells it covers
@@ -420,26 +421,33 @@ def register_h3_grid_membership(conn, grid_id: str, resolution: int):
         cells = h3.polyfill_geojson(mapping(geom), resolution)
         for cell_id in cells:
             # Approximate coverage: cell area that intersects feature / cell area
-            cell_poly = shape({"type": "Polygon", "coordinates": [
-                h3.h3_to_geo_boundary(cell_id, geo_json=True)
-            ]})
+            cell_poly = shape(
+                {
+                    "type": "Polygon",
+                    "coordinates": [h3.h3_to_geo_boundary(cell_id, geo_json=True)],
+                }
+            )
             coverage = geom.intersection(cell_poly).area / cell_poly.area
             rows.append((str(feature_id), grid_id, cell_id, coverage))
 
     with conn.cursor() as cur:
-        cur.executemany("""
+        cur.executemany(
+            """
             INSERT INTO feature_cell_membership (feature_id, grid_id, cell_id, coverage)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT DO NOTHING
-        """, rows)
+        """,
+            rows,
+        )
     conn.commit()
 ```
 
 **Population of `aoi_cell_membership` for H3 (Python):**
 
 ```python
-def register_h3_aoi_membership(conn, aoi_id: str, grid_id: str,
-                                aoi_geojson: dict, resolution: int):
+def register_h3_aoi_membership(
+    conn, aoi_id: str, grid_id: str, aoi_geojson: dict, resolution: int
+):
     """
     Enumerate all H3 cells within an AOI polygon and store membership.
     Run once per AOI per grid. Never re-run at query time.
@@ -448,11 +456,14 @@ def register_h3_aoi_membership(conn, aoi_id: str, grid_id: str,
     rows = [(aoi_id, grid_id, cell_id) for cell_id in cells]
 
     with conn.cursor() as cur:
-        cur.executemany("""
+        cur.executemany(
+            """
             INSERT INTO aoi_cell_membership (aoi_id, grid_id, cell_id)
             VALUES (%s, %s, %s)
             ON CONFLICT DO NOTHING
-        """, rows)
+        """,
+            rows,
+        )
     conn.commit()
     print(f"Registered {len(rows)} cells for AOI {aoi_id} at resolution {resolution}")
 ```
@@ -473,7 +484,7 @@ lat, lng = h3.h3_to_geo(cell_id)
 boundary = h3.h3_to_geo_boundary(cell_id)
 
 # Get parent cell (one resolution coarser)
-parent = h3.h3_to_parent(cell_id, 8)   # → "882830829bfffff" parent at res 8
+parent = h3.h3_to_parent(cell_id, 8)  # → "882830829bfffff" parent at res 8
 
 # Get children (one resolution finer)
 children = h3.h3_to_children(cell_id, 10)
@@ -577,6 +588,7 @@ VALUES (
 ```python
 import rasterio
 
+
 def get_grid_params_from_raster(raster_path: str, aoi_bounds: tuple) -> dict:
     """
     Extract geotransform parameters from a GeoTIFF for registration.
@@ -586,33 +598,31 @@ def get_grid_params_from_raster(raster_path: str, aoi_bounds: tuple) -> dict:
         transform = src.transform
         # GDAL geotransform: (origin_x, pixel_size_x, 0, origin_y, 0, -pixel_size_y)
         # rasterio Affine: (pixel_size_x, 0, origin_x, 0, -pixel_size_y, origin_y)
-        pixel_size_x = transform.a       # positive, eastward
+        pixel_size_x = transform.a  # positive, eastward
         pixel_size_y = abs(transform.e)  # stored as negative in raster convention
 
         # Compute the row/col window for the AOI
         west, south, east, north = aoi_bounds
-        window = rasterio.windows.from_bounds(
-            west, south, east, north, transform
-        )
+        window = rasterio.windows.from_bounds(west, south, east, north, transform)
         row_off = int(window.row_off)
         col_off = int(window.col_off)
-        n_rows  = int(window.height)
-        n_cols  = int(window.width)
+        n_rows = int(window.height)
+        n_cols = int(window.width)
 
         # Origin of the AOI sub-grid (top-left corner)
         origin_x = transform.c + col_off * pixel_size_x
         origin_y = transform.f - row_off * pixel_size_y
 
         return {
-            "origin_x":    origin_x,
-            "origin_y":    origin_y,
+            "origin_x": origin_x,
+            "origin_y": origin_y,
             "pixel_size_x": pixel_size_x,
             "pixel_size_y": pixel_size_y,
-            "n_rows":      n_rows,
-            "n_cols":      n_cols,
-            "crs":         str(src.crs),
-            "col_offset":  col_off,   # offset into the global raster (for reading)
-            "row_offset":  row_off
+            "n_rows": n_rows,
+            "n_cols": n_cols,
+            "crs": str(src.crs),
+            "col_offset": col_off,  # offset into the global raster (for reading)
+            "row_offset": row_off,
         }
 ```
 
@@ -642,8 +652,10 @@ def cell_id_to_bbox(grid: dict, cell_id: str) -> tuple:
     y_min = y_max - grid["pixel_size_y"]
     return (x_min, y_min, x_max, y_max)
 
+
 def cell_id_to_shapely(grid: dict, cell_id: str):
     from shapely.geometry import box
+
     return box(*cell_id_to_bbox(grid, cell_id))
 ```
 
@@ -667,22 +679,24 @@ def cell_id_to_global_pixel(grid: dict, cell_id: str) -> tuple:
 import rasterio
 import geopandas as gpd
 from shapely.geometry import box
-from exactextract import exact_extract   # pip install exactextract
+from exactextract import exact_extract  # pip install exactextract
 
-def register_fishnet_membership(conn, grid_id: str, grid_params: dict,
-                                 features_gdf: gpd.GeoDataFrame):
+
+def register_fishnet_membership(
+    conn, grid_id: str, grid_params: dict, features_gdf: gpd.GeoDataFrame
+):
     """
     For each polygon feature, find which fishnet cells it overlaps
     and compute the coverage fraction.
     Uses exactextract for accurate fractional coverage computation.
     """
     rows = []
-    origin_x   = grid_params["origin_x"]
-    origin_y   = grid_params["origin_y"]
-    px         = grid_params["pixel_size_x"]
-    py         = grid_params["pixel_size_y"]
-    n_rows     = grid_params["n_rows"]
-    n_cols     = grid_params["n_cols"]
+    origin_x = grid_params["origin_x"]
+    origin_y = grid_params["origin_y"]
+    px = grid_params["pixel_size_x"]
+    py = grid_params["pixel_size_y"]
+    n_rows = grid_params["n_rows"]
+    n_cols = grid_params["n_cols"]
 
     for _, feature in features_gdf.iterrows():
         geom = feature.geometry
@@ -702,7 +716,7 @@ def register_fishnet_membership(conn, grid_id: str, grid_params: dict,
                     origin_x + c * px,
                     origin_y - (r + 1) * py,
                     origin_x + (c + 1) * px,
-                    origin_y - r * py
+                    origin_y - r * py,
                 )
                 intersection = geom.intersection(cell_box)
                 if intersection.is_empty:
@@ -713,11 +727,14 @@ def register_fishnet_membership(conn, grid_id: str, grid_params: dict,
                     rows.append((str(feature["id"]), grid_id, cell_id, coverage))
 
     with conn.cursor() as cur:
-        cur.executemany("""
+        cur.executemany(
+            """
             INSERT INTO feature_cell_membership (feature_id, grid_id, cell_id, coverage)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT DO NOTHING
-        """, rows)
+        """,
+            rows,
+        )
     conn.commit()
     print(f"Registered {len(rows)} feature-cell overlaps for grid {grid_id}")
 ```
@@ -727,8 +744,10 @@ def register_fishnet_membership(conn, grid_id: str, grid_params: dict,
 ```python
 from shapely.geometry import box, shape
 
-def register_fishnet_aoi_membership(conn, aoi_id: str, grid_id: str,
-                                     grid_params: dict, aoi_geojson: dict):
+
+def register_fishnet_aoi_membership(
+    conn, aoi_id: str, grid_id: str, grid_params: dict, aoi_geojson: dict
+):
     """
     Enumerate all fishnet cells within an AOI polygon.
     Uses bounding box pre-filter then exact intersection test.
@@ -736,16 +755,16 @@ def register_fishnet_aoi_membership(conn, aoi_id: str, grid_id: str,
     aoi_geom = shape(aoi_geojson)
     origin_x = grid_params["origin_x"]
     origin_y = grid_params["origin_y"]
-    px       = grid_params["pixel_size_x"]
-    py       = grid_params["pixel_size_y"]
-    n_rows   = grid_params["n_rows"]
-    n_cols   = grid_params["n_cols"]
+    px = grid_params["pixel_size_x"]
+    py = grid_params["pixel_size_y"]
+    n_rows = grid_params["n_rows"]
+    n_cols = grid_params["n_cols"]
 
-    bounds   = aoi_geom.bounds
-    col_min  = max(0, int((bounds[0] - origin_x) / px))
-    col_max  = min(n_cols - 1, int((bounds[2] - origin_x) / px))
-    row_min  = max(0, int((origin_y - bounds[3]) / py))
-    row_max  = min(n_rows - 1, int((origin_y - bounds[1]) / py))
+    bounds = aoi_geom.bounds
+    col_min = max(0, int((bounds[0] - origin_x) / px))
+    col_max = min(n_cols - 1, int((bounds[2] - origin_x) / px))
+    row_min = max(0, int((origin_y - bounds[3]) / py))
+    row_max = min(n_rows - 1, int((origin_y - bounds[1]) / py))
 
     rows = []
     for r in range(row_min, row_max + 1):
@@ -754,17 +773,20 @@ def register_fishnet_aoi_membership(conn, aoi_id: str, grid_id: str,
                 origin_x + c * px,
                 origin_y - (r + 1) * py,
                 origin_x + (c + 1) * px,
-                origin_y - r * py
+                origin_y - r * py,
             )
             if aoi_geom.intersects(cell_box):
                 rows.append((aoi_id, grid_id, f"{r}:{c}"))
 
     with conn.cursor() as cur:
-        cur.executemany("""
+        cur.executemany(
+            """
             INSERT INTO aoi_cell_membership (aoi_id, grid_id, cell_id)
             VALUES (%s, %s, %s)
             ON CONFLICT DO NOTHING
-        """, rows)
+        """,
+            rows,
+        )
     conn.commit()
     print(f"Registered {len(rows)} cells in AOI membership for grid {grid_id}")
 ```
@@ -1057,8 +1079,9 @@ WHERE is_baseline = true
 A scenario never modifies baseline data. It produces new output rows tagged with `scenario_id`.
 
 ```python
-def run_scenario(scenario_id: str, model_name: str, parameters: dict,
-                 baseline_run_id: str) -> str:
+def run_scenario(
+    scenario_id: str, model_name: str, parameters: dict, baseline_run_id: str
+) -> str:
     """
     Execute a model under a scenario, writing results as new rows.
     Returns the model_run ID.
@@ -1067,7 +1090,7 @@ def run_scenario(scenario_id: str, model_name: str, parameters: dict,
         model_name=model_name,
         scenario_id=scenario_id,
         parameters=parameters,
-        input_run_ids=[baseline_run_id]
+        input_run_ids=[baseline_run_id],
     )
 
     # Resolve scenario state: read baseline, apply overrides in memory
@@ -1181,6 +1204,7 @@ AOI filtering on rasters is done at the file level using GDAL window reads or HT
 import rasterio
 from rasterio.mask import mask
 from shapely.geometry import mapping
+
 
 def read_raster_in_aoi(storage_uri: str, aoi_geom) -> tuple:
     """Read raster values within AOI using COG range requests."""

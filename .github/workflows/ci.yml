@@ -21,11 +21,12 @@ permissions:
   contents: read
 
 env:
-  # The interpreter every uv command uses. `requires-python` is `>=3.11`, so
+  # The interpreter every uv command uses. `requires-python` is `>=3.12`, so
   # without this uv is free to pick — or download — any version satisfying it,
   # and the Python the suite ran on would be a resolution detail rather than a
-  # decision. Note the floor is 3.11 while this is 3.12: nothing tests 3.11
-  # today, so the declared range is wider than the gated one.
+  # decision. The floor and this now agree: the declared range used to be
+  # wider than the gated one (floor 3.11, nothing testing it), and raising the
+  # floor to 3.12 both closed that gap and let the resolver reach pyproj 3.8.
   UV_PYTHON: "3.12"
   # Makes every `uv run` assert the lockfile too, not just the explicit
   # `uv sync` step — `uv run` performs an implicit sync, and this keeps it from

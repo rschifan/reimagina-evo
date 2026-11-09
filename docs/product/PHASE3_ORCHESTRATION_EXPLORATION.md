@@ -379,7 +379,7 @@ units = compute_dirty_set(
     changed_attributes={"land_use", "tree_canopy"},
     edited_features={"b1", "b2", "b3"},
     registry=SHIPPED_INDICATORS,
-    expand=feature_expander,            # identity · neighbours · rollup_parents
+    expand=feature_expander,  # identity · neighbours · rollup_parents
 )
 # units — DirtyUnit(indicator, features), already topo-ordered:
 #   1. green_coverage      {b1,b2,b3}         seeded: reads land_use + tree_canopy
@@ -391,8 +391,11 @@ units = compute_dirty_set(
 
 # component 8 — coordinator: run in dependency order, isolate per-unit failure
 report = run_dirty_set(
-    conn, units, registry=SHIPPED_INDICATORS,
-    runners=default_runners(), scenario_id="linear_park",
+    conn,
+    units,
+    registry=SHIPPED_INDICATORS,
+    runners=default_runners(),
+    scenario_id="linear_park",
 )
 # per unit: reuse-cache hit (11)? skip. else compute → validate (10)
 #           → result store: put current value (9) → lineage.emit (12)
@@ -453,14 +456,18 @@ Partitions = scenarios, so each scenario is an independent slice.
 @asset(partitions_def=scenarios, automation_condition=AutomationCondition.eager())
 def green_coverage(ctx): ...
 @asset(partitions_def=scenarios, automation_condition=AutomationCondition.eager())
-def walkability(ctx): ...                                  # reads green/land-use
-@asset(partitions_def=scenarios, deps=[walkability, "transit", green_coverage],
-       automation_condition=AutomationCondition.eager())
+def walkability(ctx): ...  # reads green/land-use
+@asset(
+    partitions_def=scenarios,
+    deps=[walkability, "transit", green_coverage],
+    automation_condition=AutomationCondition.eager(),
+)
 def liveability_index(ctx): ...
 @asset(partitions_def=scenarios, deps=[liveability_index])
-def liveability_rollup(ctx): ...                           # block → AGEB
+def liveability_rollup(ctx): ...  # block → AGEB
 @asset_check(asset=walkability)
-def in_range(v): return AssetCheckResult(passed=0 <= v <= 1)
+def in_range(v):
+    return AssetCheckResult(passed=0 <= v <= 1)
 ```
 
 Same five indicators, same edit (`S = linear_park`). Editing `S`'s inputs

@@ -23,6 +23,12 @@ import geopandas as gpd
 import shapely.wkb
 
 
+#: The GeoParquet metadata version written by the indicator export.
+#:
+#: 1.1 is what the covering-bbox struct requires; 1.0 has no place to declare
+#: it, so a reader would see an ordinary extra column and skip no row groups.
+GEOPARQUET_SCHEMA_VERSION = "1.1.0"
+
 CSV_COLUMNS: tuple[str, ...] = (
     "feature_id",
     "type_slug",
@@ -127,6 +133,21 @@ def indicator_rows_to_geoparquet(rows: Iterable[dict]) -> bytes:
     without further reprojection. Returns an empty (valid) GeoParquet when
     `rows` is empty. Malformed WKB raises MalformedGeometryError (see
     indicator_rows_to_geojson for rationale).
+
+    **Written as GeoParquet 1.1 with a covering bbox.** The bbox covering is
+    the 1.1 feature that stores each row's bounding box as a Parquet struct
+    and names it in the file metadata, so a reader can skip row groups that
+    cannot intersect its query instead of decoding every geometry. That is
+    the same mechanism this project already *relies on* when reading Overture
+    — `pipeline/overture.py` filters the cloud release on its `bbox` struct
+    columns for predicate pushdown — and writing without it made the platform
+    a consumer of cloud-native geospatial and not a producer of it.
+
+    ⚠ `schema_version` is set explicitly rather than left to default. The
+    default follows whatever geopandas considers current, so the version this
+    writes would change under a dependency bump — silently, in a file format
+    that downstream readers validate against. Pinning it means the output
+    moves when this line moves.
     """
     records = []
     geometries = []
@@ -147,7 +168,12 @@ def indicator_rows_to_geoparquet(rows: Iterable[dict]) -> bytes:
 
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
     buffer = io.BytesIO()
-    gdf.to_parquet(buffer, compression="snappy")
+    gdf.to_parquet(
+        buffer,
+        compression="snappy",
+        schema_version=GEOPARQUET_SCHEMA_VERSION,
+        write_covering_bbox=True,
+    )
     return buffer.getvalue()
 
 

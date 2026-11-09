@@ -72,10 +72,18 @@ The queue engine's own modules — the task definitions, the queue app, the LIST
 `packages/py/reimagina/orchestration/port.py` — four methods, plain dataclasses, no engine types.
 
 ```python
-class Orchestrator(Protocol):                                    # port.py:106
-    def submit_run(self, conn, *, changed_attributes, edited_features,
-                   scenario_id=None, aoi_id=None, code_version="dev",
-                   indicators=None) -> RunHandle: ...
+class Orchestrator(Protocol):  # port.py:106
+    def submit_run(
+        self,
+        conn,
+        *,
+        changed_attributes,
+        edited_features,
+        scenario_id=None,
+        aoi_id=None,
+        code_version="dev",
+        indicators=None,
+    ) -> RunHandle: ...
     def get_run(self, conn, run_id: str) -> RunStatus | None: ...
     def cancel_run(self, conn, run_id: str) -> bool: ...
     def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]: ...

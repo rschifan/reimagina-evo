@@ -274,31 +274,40 @@ The worker also cleans up geometry quirks (`ST_MakeValid`) — the frontend's dr
 
 ```python
 def generate(scenario_id, generation_id):
-    parent_id = get_parent(scenario_id)   # NULL for root scenarios
+    parent_id = get_parent(scenario_id)  # NULL for root scenarios
 
     # Inherit parent's resolved state, stamping this generation's id
     # on every inherited row so provenance is recoverable.
-    sql("""INSERT INTO element_state
+    sql(
+        """INSERT INTO element_state
              (scenario_id, element_id, geometry, attributes,
               indicators, generation_id, computed_at)
            SELECT :sid, element_id, geometry, attributes,
                   indicators, :gen_id, now()
            FROM element_state WHERE scenario_id = :parent""",
-        dict(sid=scenario_id, parent=parent_id, gen_id=generation_id))
+        dict(sid=scenario_id, parent=parent_id, gen_id=generation_id),
+    )
 
     # Replay this scenario's interventions in sequence_num order.
     for iv in interventions_for(scenario_id):
-        if iv.operation == 'add':
-            sql("""INSERT INTO element_state
+        if iv.operation == "add":
+            sql(
+                """INSERT INTO element_state
                      (scenario_id, element_id, geometry, attributes,
                       indicators, generation_id)
                    VALUES (%(s)s, %(e)s,
                      ST_MakeValid(ST_GeomFromGeoJSON(%(d)s->'geometry')),
                      %(d)s::jsonb - 'geometry', '{}'::jsonb, %(g)s)""",
-                dict(s=scenario_id, e=iv.element_id,
-                     d=iv.attribute_delta, g=generation_id))
-        elif iv.operation == 'modify':
-            sql("""UPDATE element_state SET
+                dict(
+                    s=scenario_id,
+                    e=iv.element_id,
+                    d=iv.attribute_delta,
+                    g=generation_id,
+                ),
+            )
+        elif iv.operation == "modify":
+            sql(
+                """UPDATE element_state SET
                      geometry = COALESCE(
                        ST_MakeValid(ST_GeomFromGeoJSON(%(d)s->'geometry')),
                        geometry),
@@ -306,12 +315,19 @@ def generate(scenario_id, generation_id):
                      generation_id = %(g)s,
                      computed_at = now()
                    WHERE scenario_id=%(s)s AND element_id=%(e)s""",
-                dict(d=iv.attribute_delta, s=scenario_id,
-                     e=iv.element_id, g=generation_id))
-        elif iv.operation == 'delete':
-            sql("""DELETE FROM element_state
+                dict(
+                    d=iv.attribute_delta,
+                    s=scenario_id,
+                    e=iv.element_id,
+                    g=generation_id,
+                ),
+            )
+        elif iv.operation == "delete":
+            sql(
+                """DELETE FROM element_state
                    WHERE scenario_id=%s AND element_id=%s""",
-                (scenario_id, iv.element_id))
+                (scenario_id, iv.element_id),
+            )
 ```
 
 ### Stage 3 — Recompute AoI overlap for this scenario
@@ -326,7 +342,8 @@ def generate(scenario_id, generation_id):
 # overlap. Identifying "untouched" Elements: element_id is NOT in the
 # scenario's intervention log (excluding the parent's interventions —
 # those are already baked into the inherited element_state).
-sql("""
+sql(
+    """
     INSERT INTO element_aoi_state
         (scenario_id, element_id, aoi_id, overlap_area, overlap_ratio)
     SELECT %(s)s, b.element_id, b.aoi_id, b.overlap_area, b.overlap_ratio
@@ -336,11 +353,14 @@ sql("""
     WHERE b.element_id NOT IN (
       SELECT element_id FROM intervention WHERE scenario_id = %(s)s
     )
-""", dict(s=scenario_id))
+""",
+    dict(s=scenario_id),
+)
 
 # Slow path: recompute for the rest — added Elements (no baseline row
 # exists at all) plus modified Elements (the baseline row is stale).
-sql("""
+sql(
+    """
     INSERT INTO element_aoi_state
         (scenario_id, element_id, aoi_id, overlap_area, overlap_ratio)
     SELECT %(s)s, es.element_id, a.id,
@@ -355,7 +375,9 @@ sql("""
       AND es.element_id IN (
         SELECT element_id FROM intervention WHERE scenario_id = %(s)s
       )
-""", dict(s=scenario_id))
+""",
+    dict(s=scenario_id),
+)
 ```
 
 ### Stage 4 — Compute per-Element indicators
@@ -366,7 +388,8 @@ sql("""
 def compute_building_density(scenario_id, conn):
     # ::geography cast critical: ST_Area on a 4326 geometry returns
     # degrees², not m². Silent indicator bug if forgotten.
-    conn.execute("""
+    conn.execute(
+        """
         UPDATE element_state es_block SET
           indicators = es_block.indicators
             || jsonb_build_object('building_density',
@@ -383,7 +406,9 @@ def compute_building_density(scenario_id, conn):
         WHERE es_block.element_id = e.id
           AND es_block.scenario_id = %(s)s
           AND e.type_slug = 'block'
-    """, dict(s=scenario_id))
+    """,
+        dict(s=scenario_id),
+    )
 ```
 
 ### Stage 5 — Aggregate for the compare panel

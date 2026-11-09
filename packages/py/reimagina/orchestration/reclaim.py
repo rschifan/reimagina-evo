@@ -180,8 +180,7 @@ def sweep(*, dry_run: bool = False) -> ReclaimReport:
                 continue
             recovered += len(handles)
             logger.info(
-                "reclaimed %d workflow(s) from executor %r (last beat older "
-                "than %gs)",
+                "reclaimed %d workflow(s) from executor %r (last beat older than %gs)",
                 len(handles),
                 executor,
                 threshold,

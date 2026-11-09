@@ -250,9 +250,9 @@ def test_a_valueless_scenario_row_falls_through_to_the_baseline(blocks, conn):
     _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
 
     values = _values(conn, slug, SCENARIO)
-    assert set(values) == {
-        str(b) for b in blocks
-    }, "a valueless scenario row must not remove the feature from the read"
+    assert set(values) == {str(b) for b in blocks}, (
+        "a valueless scenario row must not remove the feature from the read"
+    )
     assert values[str(blocks[0])] == 3.0, "it falls through to the baseline"
 
 
@@ -324,9 +324,9 @@ def test_a_composite_under_a_scenario_writes_rows(blocks, conn):
     result = compute_composite(
         conn, spec=URBAN_FORM_BLOCK_COMPOSITE, scenario_id=SCENARIO, code_version="test"
     )
-    assert result.rows_written == len(
-        blocks
-    ), "the composite must cover every feature, not only the recomputed one"
+    assert result.rows_written == len(blocks), (
+        "the composite must cover every feature, not only the recomputed one"
+    )
 
     values = _values(conn, URBAN_FORM_BLOCK_COMPOSITE.slug, SCENARIO)
     # 0.5·norm(compactness) + 0.5·norm(density), bounds 0-1 and 0-500.

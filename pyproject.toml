@@ -6,18 +6,33 @@ build-backend = "hatchling.build"
 name = "reimagina"
 version = "0.1.0"
 description = "Reimagina urban planning scenario modelling platform — prototype"
-requires-python = ">=3.11"
+# 3.12, not 3.11. pyproj 3.8 requires >=3.12, and the declared floor had
+# been wider than the gated one for a year — CI pins UV_PYTHON to 3.12 and
+# nothing has ever tested 3.11. Narrowing it makes the declaration true
+# rather than aspirational, and lets the resolver reach current pyproj.
+requires-python = ">=3.12"
+# ⚠ Floors are the oldest versions CI has actually run, not the oldest that
+# might work. They had drifted years behind the lockfile — `geopandas>=0.14`
+# and `pyarrow>=15.0` against a lock resolving 1.2 and 26 — which matters for
+# exactly one reader: someone who installs this without `uv.lock`, as a
+# reviewer or a downstream package would. They would get software this project
+# has never been tested against, and the floor is the only thing that tells
+# them so.
+#
+# `fiona` was removed rather than raised. Nothing imports it; geopandas 1.x
+# requires `pyogrio>=0.8` and defaults to it for vector IO, so fiona was a
+# second GDAL wheel installed beside rasterio's for no caller. Verified by
+# round-tripping GeoJSON, GeoPackage and FlatGeobuf through `engine="pyogrio"`.
 dependencies = [
     "psycopg2-binary>=2.9",
-    "geopandas>=0.14",
-    "shapely>=2.0",
-    "alembic>=1.13",
-    "sqlalchemy>=2.0",
+    "geopandas>=1.2",
+    "shapely>=2.2",
+    "alembic>=1.20",
+    "sqlalchemy>=2.1",
     "python-dotenv>=1.0",
-    "pyproj>=3.6",
-    "fiona>=1.9",
-    "pandas>=2.0",
-    "pyarrow>=15.0",
+    "pyproj>=3.8",
+    "pandas>=3.0",
+    "pyarrow>=21.0",
     # OSM road-network ingest for the accessibility indicators. Fetches an
     # already-noded graph (u/v node ids + length in metres) for an arbitrary
     # polygon, which loads straight into r037's pgRouting tables without a
@@ -26,16 +41,16 @@ dependencies = [
     # it. Adds exactly two packages: osmnx and networkx.
     "osmnx>=2.0",
     # CLI framework — replaces the hand-rolled argparse parser in apps/cli.
-    "typer>=0.12",
+    "typer>=0.28",
     # Read-side API stack. FastAPI is sync-compatible with the psycopg2
     # storage layer through the default thread-pool dispatch.
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "pydantic>=2.6",
+    "fastapi>=0.160",
+    "uvicorn[standard]>=0.54",
+    "pydantic>=2.14",
     # Raster ingest pipeline — single-band GDAL-openable inputs + COG writes.
     # rasterio bundles its own GDAL wheel; coexists with fiona's GDAL in
     # practice (verified on the R1 pre-flight clean-venv smoke test).
-    "rasterio>=1.3",
+    "rasterio>=1.5",
     # Zonal-stats worker (R3). exactextract is the area-weighted
     # aggregator (used by QGIS' Zonal Statistics, recommended in WorldPop
     # docs) — produces correct sums for sub-pixel polygons by giving
@@ -44,12 +59,12 @@ dependencies = [
     # policy silently drops manzanas smaller than the WorldPop pixel.
     # rasterstats is not declared: nothing imports it, and it still resolves
     # transitively for whatever does.
-    "exactextract>=0.2",
+    "exactextract>=0.3",
     # Raster tile serving (R4). titiler.core ships the FastAPI router
     # we mount under /cog in apps/api so the API + tile server share a
     # process. Staying on core (no titiler.mosaic / titiler.application)
     # keeps the dep footprint tight.
-    "titiler.core>=0.22",
+    "titiler.core>=2.4",
     # Orchestration compute-graph layer (Phase 3, component 4/11/12a). Hamilton
     # expresses indicator compute as a dataflow: the resolver + data-version
     # reuse cache (.with_cache) + OpenLineage lineage all come from this one
@@ -61,7 +76,7 @@ dependencies = [
     # Pandera bounds schema shared by the storage write path and the Hamilton
     # @check_output. Declared directly (imported in indicators/validation.py)
     # rather than leaning on the sf-hamilton[pandera] transitive.
-    "pandera>=0.20",
+    "pandera>=0.35",
     # Durable execution as a library (MIT). Checkpoints land in our own
     # Postgres under the `dbos` schema, so there is no standing service and no
     # second database; we keep the wave scheduler and borrow only durability.
@@ -105,8 +120,8 @@ dev = [
     # formatted. It used to be pinned only in the workflow, with the Makefile
     # calling bare `ruff` on the assumption it was "commonly installed globally"
     # — which made agreement a coincidence rather than a property.
-    "mypy==2.3.1",
-    "ruff==0.6.9",
+    "mypy==2.4.1",
+    "ruff==0.17.4",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -116,8 +131,31 @@ packages = ["packages/py/reimagina"]
 # Ruff only infers target-version from project.requires-python when this file
 # is the *discovered* config, which requires a [tool.ruff] table to exist at
 # all. Without it ruff falls back to its py38 default and flags 3.10+ builtins
-# (e.g. F821 on `anext`). Set explicitly so the two never drift.
-target-version = "py311"
+# (e.g. F821 on `anext`). Set explicitly so the two never drift — and kept in
+# step with `requires-python` by hand, which is what the contract test below
+# the linters exists to catch.
+target-version = "py312"
+
+[tool.ruff.lint]
+# ⚠ Pinned explicitly, and the pin is the point of this table.
+#
+# Ruff's *default* rule set widened between 0.6 and 0.17 — the same file that
+# raised 2 findings under 0.6.9 raises 5 under 0.17.4 with no configuration at
+# all. So upgrading the tool silently changes the policy it enforces, and a
+# version bump would have arrived as 365 findings across the repository.
+#
+# These four are what this project has actually been gating on since it
+# started: pycodestyle's import and statement errors, its runtime errors, and
+# all of pyflakes. Upgrading the linter and widening the rule set are separate
+# decisions, and this table is what keeps them separate.
+#
+# Widening is worth doing and is deliberately *not* done here. Measured on
+# 0.17.4 against this tree: 150 I001 (import order), 47 UP045
+# (`Optional[X]` -> `X | None`), 42 RUF100 (noqa directives that no longer
+# suppress anything), 36 B008, 33 E402, 17 BLE001. 275 of the 365 are
+# auto-fixable. That is a mechanical diff across most files, and it belongs in
+# its own commit rather than inside a dependency upgrade.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

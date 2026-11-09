@@ -38,14 +38,14 @@ def upgrade() -> None:
     op.execute("ALTER TABLE app_core.project ENABLE ROW LEVEL SECURITY")
     op.execute(f"""
         CREATE POLICY tenant_isolation ON app_core.project
-            USING ({_PERMISSIVE_CONDITION.format(col='id')})
+            USING ({_PERMISSIVE_CONDITION.format(col="id")})
     """)
 
     # ── curated_geo.area_of_interest ─────────────────────────────────────────
     op.execute("ALTER TABLE curated_geo.area_of_interest ENABLE ROW LEVEL SECURITY")
     op.execute(f"""
         CREATE POLICY tenant_isolation ON curated_geo.area_of_interest
-            USING ({_PERMISSIVE_CONDITION.format(col='project_id')})
+            USING ({_PERMISSIVE_CONDITION.format(col="project_id")})
     """)
 
 

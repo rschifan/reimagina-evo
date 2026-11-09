@@ -67,9 +67,9 @@ def test_every_composite_input_declares_bounds_to_normalise_against():
             continue
         for dep_slug, _ in spec.depends_on:
             dep = _BY_SLUG[dep_slug]
-            assert (
-                dep.valid_min is not None and dep.valid_max is not None
-            ), f"{spec.slug} depends on {dep_slug}, which declares no bounds"
+            assert dep.valid_min is not None and dep.valid_max is not None, (
+                f"{spec.slug} depends on {dep_slug}, which declares no bounds"
+            )
             assert dep.valid_max > dep.valid_min, dep_slug
 
 
