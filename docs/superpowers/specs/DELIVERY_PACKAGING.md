@@ -4,7 +4,8 @@ Make the handover meet the contract's own definition of a delivery: an
 electronic repository identified by **date, version, commit or tag, and
 SHA-256 hash**.
 
-**Status:** proposed. Implementation follows approval of this document.
+**Status:** implemented. Kept as the design record, with one thing the
+implementation found appended at the end.
 
 **Scope:** `scripts/render_delivery_pdfs.py`, one new script, one new
 contract test, the four delivery documents' front matter, and an annotated
@@ -154,3 +155,29 @@ message names the Works and the commit.
    changes, and a contract test runs it.
 4. The four documents declare one consistent date, and the PDFs' embedded
    metadata matches it.
+
+---
+
+## Found during implementation
+
+**The renderer rendered the manifest.** `render_delivery_pdfs.py` globbed
+`docs/delivery/*.md`, which was correct until this change put `MANIFEST.md`
+in that directory — it then produced a `MANIFEST.pdf` nobody asked for,
+carrying the 1970 fallback timestamp because the manifest has no YAML front
+matter to take a date from.
+
+Two things about how it surfaced are worth keeping:
+
+- It was found by **rendering a clean checkout in a different directory**,
+  which was in this spec only as a reproducibility check. It paid for itself
+  twice: it proved no paths are embedded in the output, and it was the only
+  run where the stray file was visible, because the working tree's last
+  render predated the manifest existing.
+- The fallback timestamp is **deliberately not a plausible date**. A sensible
+  default would have produced a correct-looking PDF with a silently wrong
+  date; 1970 made the defect obvious at a glance.
+
+The fix is a prefix convention — `[0-9][0-9]_*.md`, the numbered Schedule A
+documents — rather than an exclusion list, so the next generated file added
+to that directory is excluded by default instead of by someone remembering to
+exclude it.

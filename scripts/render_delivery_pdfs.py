@@ -32,6 +32,19 @@ ROOT = Path(__file__).resolve().parents[1]
 DELIVERY = ROOT / "docs" / "delivery"
 BUILD = DELIVERY / "pdf"
 
+#: The numbered Schedule A documents, and only those.
+#:
+#: This was `*.md`, which was right until `MANIFEST.md` landed in the same
+#: directory — the renderer then produced a `MANIFEST.pdf` nobody asked for,
+#: carrying the 1970 fallback timestamp because the manifest has no YAML
+#: front matter to take a date from. Found by rendering a clean checkout
+#: rather than by reading the code, and the fallback is why it was obvious:
+#: a plausible-looking date would have shipped unnoticed.
+#:
+#: A prefix convention rather than an exclusion list, so a generated file
+#: added here later is excluded by default instead of by remembering to.
+WORK_GLOB = "[0-9][0-9]_*.md"
+
 PRINT_CSS = """
 @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
 html { font-size: 10.5pt; }
@@ -307,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     sources = (
         [DELIVERY / n for n in args.names]
         if args.names
-        else sorted(DELIVERY.glob("*.md"))
+        else sorted(DELIVERY.glob(WORK_GLOB))
     )
     missing = [s for s in sources if not s.is_file()]
     if missing:
