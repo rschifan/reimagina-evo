@@ -476,3 +476,38 @@ def test_the_delivery_manifest_matches_the_artefacts_it_names():
     assert len(absent) < len(recorded), (
         f"none of the manifest's artefacts exist, so nothing was verified: {absent}"
     )
+
+
+def test_ci_requires_the_database_it_attaches_rather_than_skipping():
+    """A job with a Postgres service must not pass by skipping past it.
+
+    pytest exits 0 when every test skips, so a run whose database never came
+    up reports green having executed nothing — and "322 skipped, 6 passed"
+    reads as success in every summary anyone looks at. The counts are the only
+    place it shows.
+
+    This is the same failure that kept `pytest (conformance)` green and empty
+    for months on a missing `DATABASE_URL_DIRECT`. That was fixed by supplying
+    the variable; this asserts the *class* is closed, by requiring the job
+    that attaches a Postgres service to say so, so `conftest.migrated_db`
+    fails instead of skipping when it cannot connect.
+    """
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    jobs = _ci_jobs(ci)
+    db_jobs = {
+        name: body
+        for name, body in jobs.items()
+        if "TEST_DATABASE_URL" in body and "services:" in body
+    }
+    assert db_jobs, "no CI job attaches a database; this test is watching nothing"
+
+    missing = [
+        name
+        for name, body in db_jobs.items()
+        if 'REIMAGINA_REQUIRE_DB: "1"' not in body
+    ]
+    assert not missing, (
+        "these CI jobs attach a Postgres service but do not set "
+        'REIMAGINA_REQUIRE_DB: "1", so an unreachable database would make '
+        f"them skip their way to a green result: {missing}"
+    )

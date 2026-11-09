@@ -71,6 +71,27 @@ def migrated_db(db_url: str) -> str:  # type: ignore[return]
         probe = psycopg2.connect(db_url)
         probe.close()
     except psycopg2.OperationalError as exc:
+        # ⚠ Skipping is right on a developer's machine and a lie in CI.
+        #
+        # pytest exits 0 when every test skips, so a job whose Postgres never
+        # came up — or whose DSN is wrong — reports green having run nothing.
+        # That is not hypothetical here: this repository's CI was green for
+        # months while `pytest (conformance)` skipped its entire suite for a
+        # missing `DATABASE_URL_DIRECT`, and the counts are the only place it
+        # showed. 322 skipped and 6 passed looks identical to 328 passed in
+        # every summary anyone actually reads.
+        #
+        # So a caller that *declares* a database — CI, which attaches a
+        # Postgres service precisely so these run — sets REIMAGINA_REQUIRE_DB
+        # and gets a failure instead. A developer without Postgres still gets
+        # a skip, which is the behaviour that keeps the fast suites usable.
+        if os.environ.get("REIMAGINA_REQUIRE_DB") == "1":
+            pytest.fail(
+                "REIMAGINA_REQUIRE_DB=1 but the test database is unreachable, "
+                "so this run would have skipped its way to a green result: "
+                f"{exc}",
+                pytrace=False,
+            )
         pytest.skip(f"PostgreSQL test database unavailable: {exc}")
 
     cfg = Config("alembic.ini")

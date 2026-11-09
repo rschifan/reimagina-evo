@@ -38,7 +38,7 @@ only rewriting history takes it back out.
 - `packages/py/reimagina/`: shared backend namespace
 - `infra/db/`: migrations and seeds
 - `docs/architecture/`: architecture source of truth
-- `tests/`: `unit`, `integration`, `contract`, `conformance`, future `e2e`
+- `tests/`: `unit`, `integration`, `contract`, `conformance`, `e2e`
 - `tests/performance`: benchmark smoke checks and perf harness coverage
 
 ## Core architecture
@@ -146,6 +146,7 @@ Testing is non-optional.
 | `tests/contract` | architectural boundaries and repo guardrails |
 | `tests/conformance` | the `Orchestrator` port contract, per implementation |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
+| `tests/e2e` | the web app in a real browser — the only suite that opens a page |
 | `docs/architecture/TESTING.md` | DB contract target |
 
 Rules:

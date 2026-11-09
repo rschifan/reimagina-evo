@@ -154,6 +154,18 @@ jobs:
       # and never pooled: LISTEN/NOTIFY backs the progress streams and cannot
       # cross PgBouncer in transaction mode.
       DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      # This job attaches a Postgres service precisely so the DB-backed suites
+      # run, so a run in which they skip has not passed — it has reported
+      # green having executed nothing. pytest exits 0 on an all-skipped
+      # session, and "322 skipped, 6 passed" reads as success in every summary
+      # anyone looks at. With this set, conftest fails instead of skipping
+      # when the database is unreachable.
+      #
+      # Not hypothetical: this workflow was green for months while
+      # `pytest (conformance)` skipped its whole suite for a missing
+      # DATABASE_URL_DIRECT. The variable above fixed that instance; this one
+      # makes the class of it visible.
+      REIMAGINA_REQUIRE_DB: "1"
     steps:
       - uses: actions/checkout@v7
 
