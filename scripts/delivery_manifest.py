@@ -141,9 +141,17 @@ def _sums(rows: list[tuple[str, str, int, str]]) -> str:
     return "".join(f"{digest}  {relative}\n" for relative, digest, _, _ in rows)
 
 
-def _manifest(rows: list[tuple[str, str, int, str]], date: str) -> str:
+def _manifest(
+    rows: list[tuple[str, str, int, str]], date: str, tag: str | None = None
+) -> str:
     commit = _git("rev-parse", "HEAD")
-    tag = _git("describe", "--tags", "--exact-match") or "(untagged)"
+    # Discovered when the tag already exists, stated when it does not.
+    # The tag has to name the commit whose tree contains this file, so it
+    # cannot exist when the file is generated — the ordering is: state the
+    # name here, commit, then tag that commit. Without `--tag` the manifest
+    # would permanently read "(untagged)", which is the one field a
+    # recipient is most likely to need.
+    tag = tag or _git("describe", "--tags", "--exact-match") or "(untagged)"
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     dirty = bool(_git("status", "--porcelain"))
 
@@ -253,11 +261,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero if either generated file is out of date.",
     )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        metavar="NAME",
+        help=(
+            "The tag this delivery will carry. Needed because the tag must "
+            "point at the commit containing this manifest, so it cannot "
+            "exist yet when the manifest is written."
+        ),
+    )
     args = parser.parse_args(argv)
 
     rows = _rows()
     sums = _sums(rows)
-    manifest = _manifest(rows, _delivery_date())
+    manifest = _manifest(rows, _delivery_date(), args.tag)
 
     if args.check:
         # SHA256SUMS compares exactly — it carries nothing but hashes and

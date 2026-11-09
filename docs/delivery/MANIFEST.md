@@ -6,10 +6,10 @@ by its date, version, commit or tag, and SHA-256 hash.
 | | |
 |---|---|
 | **Date** | 9 November 2026 |
-| **Tag** | `(untagged)` |
-| **Generated from commit** | `109fab19b3ae0c7856b95ac0d3c2065332d53fc4` |
+| **Tag** | `schedule-a-rc1` |
+| **Generated from commit** | `31860a8c41add771891eab9fc24c026bd928a07b` |
 | **Branch** | `delivery/schedule-a` |
-| **Working tree at generation** | clean |
+| **Working tree at generation** | MODIFIED — not a clean delivery |
 
 ⚠ The tag is the authoritative identifier. The commit above is the one
 this file was generated *from*, which is necessarily the commit before
