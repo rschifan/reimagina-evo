@@ -18,6 +18,7 @@ date: "8 November 2026"
 |---|---|---|---|
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
+| 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
 
 ### About this document
 
@@ -209,6 +210,44 @@ The three hand-run suites are `performance` (benchmark budgets and
 explain-plan shape), `workloads` (how an ops plane schedules, over synthetic
 DAG topologies) and `recovery` (crash recovery across a real process kill;
 opt-in through `REIMAGINA_RECOVERY_TEST=1`).
+
+### 6.1 Verifying the orchestration module
+
+Schedule A names the orchestration module as a deliverable, and it is the
+component whose behaviour is least visible from the outside — a run that
+succeeds looks the same whether or not it would have survived the worker
+being killed. These are the checks that distinguish the two, in increasing
+order of what they cost you.
+
+| Check | Command | What a pass means |
+|---|---|---|
+| The port contract | `make test-conformance` | 17 behaviours — submit, retrieve, cancel, subscribe, partial failure — hold against **both** shipped implementations. A new engine that cannot satisfy them is rejected by a test rather than by an argument |
+| It runs through the queue | `scripts/acceptance_run.sh`, step 12 | A separate `python -m apps.worker` process announced itself, dequeued a run, and drained it. Step 12b prints each unit's start offset: units at the same offset ran concurrently, a later one waited for a dependency |
+| A resubmission is not a second run | `scripts/acceptance_run.sh`, step 12c | The same request submitted twice returned one run id, the second flagged `deduplicated` |
+| It survives its executor dying | `make test-recovery` | A process `SIGKILL`ed mid-compute was resumed — by itself on restart, and by a *different* executor through the liveness sweep |
+
+⚠ **`make test-recovery` needs a database with at least 20,000 blocks and
+skips below that.** The territory in §7.1 has sixteen, so running it against
+that database skips both tests — and a skip is one character away from a pass
+in pytest's output. The skip message names the remedy; it is:
+
+```bash
+DATABASE_URL=$TEST_DATABASE_URL python scripts/synthetic_territory.py \
+    --blocks 150 --ageb-side 10          # 22,500 blocks, ~40 s, no credentials
+REIMAGINA_RECOVERY_TEST=1 make test-recovery
+```
+
+The size is not arbitrary. The suite kills a worker *while a unit is
+running*, so the run has to take long enough for the kill to land inside it.
+On a sixteen-block territory every unit finishes in milliseconds and the
+crash arrives after the work is already done, which would prove the opposite
+of what the test claims.
+
+**What none of these cover.** `evaluate-scenario --sync` runs the coordinator
+in-process with no ops plane at all. It is the path that still works when the
+engine is down, and steps 10 and 11 of the acceptance run use it — so a green
+acceptance run before step 12 says nothing about the orchestrator. That is
+why step 12 exists.
 
 ## 7. Loading data
 

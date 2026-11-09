@@ -19,6 +19,7 @@ date: "8 November 2026"
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-09 | Rossano Schifanella | Current dependency set; GeoParquet 1.1; cross-executor recovery |
 | 0.3 | 2026-11-09 | Rossano Schifanella | Run-level deduplication (§13.1) |
+| 0.4 | 2026-11-09 | Rossano Schifanella | The acceptance run now exercises the ops plane |
 
 ### Why this document exists
 
@@ -45,8 +46,14 @@ scripts/acceptance_run.sh
 ```
 
 It drops the configured database, migrates it from empty, generates a
-territory, and runs every analysis stage over it. Any failure stops the run.
-Section 2 is its output.
+territory, and runs every analysis stage over it — including step 12, which
+starts a worker process and drains a run through the durable queue. Any
+failure stops the run. Section 2 is its output.
+
+One capability is deliberately outside it: surviving the executor being
+killed. That needs a territory large enough for a unit to still be running
+when the kill lands, which the sixteen-block default is not. Work 4 §6.1 has
+the two commands, and §13.2 below is what they produced.
 
 A contract test (`tests/contract/test_repository_structure.py`) asserts the
 script computes every indicator in `SHIPPED_INDICATORS`, so a capability
@@ -137,6 +144,33 @@ A's "builds and runs" criterion needs, and before this annex it was not met:
 without a road network the three accessibility indicators refuse outright and
 the livability score writes zero rows, so a fresh install could exercise seven
 of eleven indicators at most.
+
+**The orchestration module is inside this run, not beside it.** Step 12
+starts `python -m apps.worker` as a separate process, waits for it to announce
+itself through the liveness table, queues a run with `evaluate-scenario
+--detach`, and prints the shape the worker ran it in:
+
+```
+  worker announced itself: role=worker, beat age 0:00:00.214008
+  run 987024c2-2ef8-42a9-ab90-61b3844315fe
+  status succeeded, 3 units
+    succeeded    +0.00s ran  1.23s  urban_form_block_building_density
+    succeeded    +0.00s ran  1.22s  urban_form_block_compactness
+    succeeded    +1.42s ran  1.25s  urban_form_block_composite
+  submit 1 -> 6e5239b8-3126-4530-b407-d2a6061817a3  deduplicated=False
+  submit 2 -> 6e5239b8-3126-4530-b407-d2a6061817a3  deduplicated=True
+```
+
+Two units start at the same offset and run concurrently; the composite starts
+1.42 s in, after both of its inputs finished. The two submissions that follow
+are the same request, and they return one run.
+
+This step was added because the evidence had a hole in exactly the place it
+could least afford one. Steps 10 and 11 run the scenario through
+`evaluate-scenario --sync`, which is the in-process coordinator and needs no
+ops plane at all — it is the path that still works when the engine is down.
+Everything before step 12 therefore proved the platform *without* exercising
+the orchestration module Schedule A names.
 
 **Provenance is not optional.** All **67 of 67** generated features carry a
 non-null `source_id`, `ingestion_run_id` and `dataset_version`. They were
@@ -769,7 +803,7 @@ Stated so that the absence is not mistaken for a claim.
 | Martin, the vector tile HTTP server | The container registry rate-limits anonymous pulls in this environment. Martin's job is to publish `serving_geo.*(z,x,y,query_params) RETURNS bytea` over HTTP; the functions themselves were exercised in SQL and their bytes decoded (§10), which is the part that could be wrong. The HTTP hop is configuration. |
 | PMTiles snapshot export | `admin_reference` reports `not available` above — correct, nothing has been exported. PMTiles are for stable reference layers; every layer here is live. |
 | API authentication | There is none. It is risk **T1** in Work 1's register and must be closed before any deployment reachable beyond localhost. |
-| Scale | The capability transcripts above are a sixteen-block territory. The crash-recovery and sweep proofs ran on a generated 22,500-block, 67,500-building one, seeded in 38 seconds. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works. |
+| Scale | The capability transcripts above are a sixteen-block territory. The crash-recovery and sweep proofs ran on a generated 22,500-block, 67,500-building one, seeded in 35 seconds — `python scripts/synthetic_territory.py --blocks 150 --ageb-side 10`, no credentials. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works. |
 | The real Mexicali data | Needs data-lake credentials. §2's territory is generated, and §5 says where that shows. |
 | GeoArrow encoding | The export is GeoParquet 1.1 with a covering bbox (§12), but geometries are WKB. 1.1's native GeoArrow encoding avoids a decode step on read; geopandas still labels it experimental, so WKB is the interoperable choice today. |
 | TypeScript 7 | The web app stays on 5.9. 7.0 is the native compiler port and needs both TS 7 and TS 6 installed plus a `--tsgo` flag, which `svelte-check` is not set up for. Everything else in the web stack is current and `npm audit` is clean. |

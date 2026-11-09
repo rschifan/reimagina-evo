@@ -49,7 +49,12 @@ step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 # them. A file is the only channel a heredoc has back to its caller.
 SCENARIO_ID_FILE="$(mktemp "${TMPDIR:-/tmp}/reimagina-acceptance-scenario.XXXXXX")"
 export SCENARIO_ID_FILE
-trap 'rm -f "$SCENARIO_ID_FILE"' EXIT
+WORKER_PID=""
+cleanup() {
+  [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
+  rm -f "$SCENARIO_ID_FILE"
+}
+trap cleanup EXIT
 
 # The database name is the last path segment of the DSN, minus any query string.
 DB_NAME="${DATABASE_URL##*/}"
@@ -95,6 +100,7 @@ SEED_OUT="$($PY scripts/synthetic_territory.py --raster-out "$RASTER")"
 echo "$SEED_OUT"
 AOI_ID="$(sed -n 's/^ *AOI_ID=//p' <<<"$SEED_OUT")"
 [[ -n "$AOI_ID" ]] || { echo "could not read AOI_ID from the seed output" >&2; exit 1; }
+export AOI_ID
 
 step "5. Declaring and computing feature overlaps"
 $CLI overlap declare-pair \
@@ -264,7 +270,135 @@ with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
           f"{cur.fetchone()[0]} — the partial unique indexes hold")
 PYEOF
 
-step "12. Live vector tiles, decoded from the bytes the client would get"
+step "12. The ops plane: a worker drains a queued run"
+# Step 10 ran the scenario through `--sync`, which is the in-process
+# coordinator and deliberately needs no ops plane — it is the path that still
+# works when the engine is down. That means everything above this line proves
+# the platform *without* exercising the orchestration module Schedule A names.
+# This step is the other half: submit through the durable queue and let a
+# separate worker process drain it.
+WORKER_LOG="${TMPDIR:-/tmp}/reimagina-acceptance-worker.log"
+REIMAGINA_EXECUTOR_ID=acceptance-worker $PY -m apps.worker > "$WORKER_LOG" 2>&1 &
+WORKER_PID=$!
+
+# Waited for through the product's own liveness surface rather than by
+# sleeping or grepping the log: the row appearing is itself the heartbeat
+# feature working, and a fixed sleep would be a race on a loaded machine.
+$PY - <<'PYEOF'
+import os
+import sys
+import time
+
+import psycopg2
+
+deadline = time.time() + 120
+while time.time() < deadline:
+    with psycopg2.connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT role, now() - heartbeat_at FROM "
+            "jobs_runtime.ops_executor_heartbeat WHERE executor_id = %s",
+            ("acceptance-worker",),
+        )
+        row = cur.fetchone()
+    if row:
+        print(f"  worker announced itself: role={row[0]}, beat age {row[1]}")
+        sys.exit(0)
+    time.sleep(1)
+print("  the worker never published liveness", file=sys.stderr)
+sys.exit(1)
+PYEOF
+
+QUEUED="$($CLI evaluate-scenario \
+  --changed-attribute geometry --aoi-id "$AOI_ID" --code-version acceptance --detach)"
+echo "$QUEUED"
+QUEUED_RUN="$($PY -c 'import json,sys; print(json.load(sys.stdin)["run_id"])' <<<"$QUEUED")"
+
+step "12b. The run the worker picked up, and the shape it ran in"
+QUEUED_RUN="$QUEUED_RUN" $PY - <<'PYEOF'
+import os
+import sys
+import time
+
+import psycopg2
+
+run_id = os.environ["QUEUED_RUN"]
+terminal = {"succeeded", "partial", "failed", "cancelled"}
+deadline = time.time() + 300
+status = None
+while time.time() < deadline:
+    with psycopg2.connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM jobs_runtime.orchestration_run WHERE id = %s::uuid",
+            (run_id,),
+        )
+        row = cur.fetchone()
+        if row and row[0] in terminal:
+            status = row[0]
+            cur.execute(
+                "SELECT indicator_slug, status, started_at, completed_at "
+                "FROM jobs_runtime.job_unit WHERE run_id = %s::uuid "
+                "ORDER BY started_at NULLS LAST, indicator_slug",
+                (run_id,),
+            )
+            units = cur.fetchall()
+            break
+    time.sleep(1)
+else:
+    print(f"  run {run_id} never reached a terminal state", file=sys.stderr)
+    sys.exit(1)
+
+print(f"  run {run_id}")
+print(f"  status {status}, {len(units)} units")
+first = min((u[2] for u in units if u[2]), default=None)
+for slug, unit_status, started, completed in units:
+    offset = f"+{(started - first).total_seconds():.2f}s" if started and first else "  —"
+    took = f"{(completed - started).total_seconds():.2f}s" if started and completed else "—"
+    print(f"    {unit_status:<10} {offset:>8} ran {took:>6}  {slug}")
+print(
+    "  units starting at the same offset ran concurrently; a later offset is a "
+    "unit waiting for a dependency"
+)
+if status != "succeeded":
+    sys.exit(1)
+PYEOF
+
+step "12c. Resubmitting outstanding work returns the run already doing it"
+# Two submissions in a row. The first is new work; the second names work that
+# is still outstanding, so it is answered with that run rather than a second
+# one writing the same rows a moment later.
+$PY - <<'PYEOF'
+import os
+import sys
+
+sys.path.insert(0, "packages/py")
+os.environ["REIMAGINA_DBOS_EXECUTION_MODE"] = "client"
+from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator  # noqa: E402
+from reimagina.storage import connect  # noqa: E402
+
+request = {
+    "changed_attributes": {"num_levels"},
+    "edited_features": set(),
+    "aoi_id": os.environ["AOI_ID"],
+    "code_version": "acceptance-dedup",
+}
+orchestrator = DBOSOrchestrator(execution_mode="client")
+with connect(os.environ["DATABASE_URL"]) as conn:
+    conn.autocommit = True
+    first = orchestrator.submit_run(conn, **request)
+    second = orchestrator.submit_run(conn, **request)
+print(f"  submit 1 -> {first.run_id}  deduplicated={first.deduplicated}")
+print(f"  submit 2 -> {second.run_id}  deduplicated={second.deduplicated}")
+if not (second.run_id == first.run_id and second.deduplicated):
+    print("  the resubmission started a second run", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+
+kill "$WORKER_PID" 2>/dev/null || true
+wait "$WORKER_PID" 2>/dev/null || true
+WORKER_PID=""
+echo "  worker stopped"
+
+step "13. Live vector tiles, decoded from the bytes the client would get"
 $PY - <<'PYEOF'
 import os
 import pathlib
@@ -304,7 +438,7 @@ with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
             print(f"    {line}")
 PYEOF
 
-step "13. Engineer-facing inspection surface"
+step "14. Engineer-facing inspection surface"
 for view in layers sources feature-stats serving-stats executor-health; do
   echo "  explore $view"
   $CLI explore "$view" > /dev/null

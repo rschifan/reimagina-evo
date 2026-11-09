@@ -94,6 +94,27 @@ def _query(sql: str, *args):
         return cur.fetchall() if cur.description else []
 
 
+def _too_small(blocks: int) -> str:
+    """Why this skipped, and the one command that fixes it.
+
+    ⚠ A skip is an `s` in pytest's default output, one character away from a
+    pass and easy to read as one. That matters more here than anywhere else in
+    the repository: durability is the orchestrator's headline property, and
+    the territory the documentation tells a reviewer to build has 16 blocks —
+    three orders of magnitude below what this needs. Without the remedy in the
+    message, the most likely outcome of someone trying to verify crash
+    recovery is a green run that checked nothing.
+    """
+    return (
+        f"{blocks} blocks is too few to crash mid-compute; this suite needs "
+        f"{MIN_BLOCKS:,}, because a run that finishes before the kill lands "
+        "proves nothing. Build a territory that is big enough with:\n"
+        "    DATABASE_URL=$TEST_DATABASE_URL python scripts/synthetic_territory.py "
+        "--blocks 150 --ageb-side 10\n"
+        "which seeds 22,500 blocks in about 40 seconds and needs no credentials."
+    )
+
+
 def _crash_context(run_id: str) -> str:
     """Everything needed to explain a post-crash assertion, in one string.
 
@@ -133,10 +154,7 @@ def test_a_killed_executor_resumes_the_same_feature_set(clean_run_state):
         "WHERE t.type_slug = 'block' AND f.geometry IS NOT NULL"
     )[0][0]
     if blocks < MIN_BLOCKS:
-        pytest.skip(
-            f"{blocks} blocks is too few to crash mid-compute; "
-            f"need {MIN_BLOCKS}. A run that finishes first proves nothing."
-        )
+        pytest.skip(_too_small(blocks))
 
     submitter = subprocess.Popen(
         [sys.executable, str(HERE / "_submit_and_block.py")],
@@ -271,9 +289,7 @@ def test_a_peer_reclaims_a_dead_executors_run(clean_run_state):
         "WHERE t.type_slug = 'block' AND f.geometry IS NOT NULL"
     )[0][0]
     if blocks < MIN_BLOCKS:
-        pytest.skip(
-            f"{blocks} blocks is too few to crash mid-compute; need {MIN_BLOCKS}."
-        )
+        pytest.skip(_too_small(blocks))
     _query(
         "DELETE FROM jobs_runtime.ops_executor_heartbeat WHERE executor_id = ANY(%s)",
         [DEAD_EXECUTOR, SWEEPER_EXECUTOR],

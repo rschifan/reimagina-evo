@@ -65,6 +65,10 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
 	$(PYTEST) tests/conformance -q --no-header -rA
 
+.PHONY: test-recovery
+test-recovery: ## Kill a running executor and prove it resumes (needs >=20k blocks).
+	REIMAGINA_RECOVERY_TEST=1 $(PYTEST) tests/recovery -q --no-header -rs
+
 .PHONY: test-workloads
 test-workloads: ## Measure how this ops plane schedules (see tests/workloads/README.md).
 	REIMAGINA_BENCH=1 $(PYTEST) tests/workloads -q --no-header -rA
