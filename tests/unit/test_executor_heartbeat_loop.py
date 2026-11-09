@@ -16,9 +16,10 @@ pass against a version where they had come apart.
 
 ⚠ These used to drive ``apps.worker.app.run_dbos_worker``, which owned the
 loop. It moved to ``executor_health`` when liveness became every executor's
-job rather than the worker's — the API launches an executor too, and an
-executor that does not announce itself cannot be swept. The properties
-asserted here did not change; only the unit that owns them did.
+job rather than the worker's — ``dev`` mode launches and executes in the
+submitting process, and an executor that does not announce itself cannot be
+swept. The properties asserted here did not change; only the unit that owns
+them did.
 """
 
 from __future__ import annotations
@@ -96,9 +97,11 @@ def test_launching_an_executor_starts_its_liveness(monkeypatch):
     """Liveness belongs to `launch`, not to the worker entrypoint.
 
     Any process that launches registers the queues with a worker concurrency
-    and can therefore dequeue and execute units — the API included. If only
-    the worker announced itself, an API process that died mid-unit would
-    strand that run forever.
+    and can therefore dequeue and execute units. ``dev`` mode is the case
+    that makes this more than symmetry: the CLI's ``evaluate-scenario`` and
+    the integration suite execute in the submitting process under their own
+    executor id, so if only the worker announced itself, a CLI run killed
+    mid-unit would strand that run forever.
     """
     started: list[threading.Event] = []
 

@@ -7,9 +7,13 @@ never coming back. ``orchestration.reclaim`` is what reads it.
 
 Every process that calls ``dbos_app.launch()`` publishes here, not only the
 worker. That is not symmetry for its own sake: ``launch()`` registers the
-queues with a worker concurrency, so any process that launches can dequeue and
-execute units — the API included. An executor that can own work and does not
-announce itself is one whose abandoned work can never be reclaimed.
+queues with a worker concurrency, so any process that gets that far can
+dequeue and execute units. The worker is the obvious one; ``dev`` mode is the
+easy one to forget, and it is how the CLI's ``evaluate-scenario`` and the
+integration suite execute — in the submitting process, under its own executor
+id. A ``client`` never launches at all, which is the API's default. An
+executor that can own work and does not announce itself is one whose
+abandoned work can never be reclaimed.
 """
 
 from __future__ import annotations

@@ -355,10 +355,16 @@ def _start_liveness() -> None:
     """Publish this executor's liveness for as long as the process lives.
 
     Here rather than in the worker entrypoint, because the queues registered
-    just above carry a worker concurrency: **any** process that launches can
-    dequeue and execute units, the API included. An executor that can own work
-    and never announces itself is one whose work can never be reclaimed if it
-    dies — ``orchestration.reclaim`` can only sweep an executor it can see.
+    just above carry a worker concurrency: **any** process that reaches this
+    line can dequeue and execute units, and the worker is not the only one
+    that does. ``dev`` mode launches and executes in the submitting process,
+    which is how the CLI's default ``evaluate-scenario`` and the integration
+    suite run, and a web process set to ``dev`` or ``executor`` launches too.
+    (A ``client`` never gets here: it enqueues through ``DBOSClient`` and
+    launches nothing, which is the API's default.) An executor that can own
+    work and never announces itself is one whose work can never be reclaimed
+    if it dies — ``orchestration.reclaim`` can only sweep an executor it can
+    see.
 
     Imported here, not at module scope: ``executor_health`` imports this
     module for the dsn and the executor id, so a top-level import would be a
