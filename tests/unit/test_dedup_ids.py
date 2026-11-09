@@ -153,6 +153,22 @@ def test_a_unit_without_a_fingerprint_disables_deduplication():
     assert _id(conn=conn) is None
 
 
+def test_a_null_fingerprint_disables_deduplication_too():
+    """⚠ A NULL version is as unusable as a missing row, and more dangerous.
+
+    ``expected_version`` is ``md5(string_agg(...))``, which is NULL when every
+    component of a node is NULL. The row then *exists*, so a check that only
+    counted rows let it through, and the id folded in a literal ``None``.
+
+    That is a false dedup waiting to happen: two genuinely different input
+    states hash alike, and the second submit is handed the run computing the
+    values the operator just replaced — the one failure this whole module is
+    built to prevent, arriving through the code that was meant to prevent it.
+    """
+    conn = _Conn(versions={(indicator_asset_key("b"), ""): None})
+    assert _id(conn=conn) is None
+
+
 def test_an_empty_plan_has_no_id():
     assert _id(unit_slugs=[]) is None
 

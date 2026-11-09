@@ -64,9 +64,7 @@ attribution.
 | `coverage` | 7.17.2 | Apache-2.0 | server-side |
 | `croniter` | 6.2.4 | MIT | server-side |
 | `dbos` | 3.4.0 | MIT License | server-side |
-| `exactextract` | 0.3.0 | Apache License
-                            Version 2.0, January 2004
-        ... | server-side |
+| `exactextract` | 0.3.0 | Apache License Version 2.0, January 2004 http://www.apache.org/licenses/ TERM... | server-side |
 | `fastapi` | 0.162.2 | MIT | server-side |
 | `geojson-pydantic` | 2.2.0 | MIT License | server-side |
 | `geopandas` | 1.2.0 | BSD-3-Clause | server-side |

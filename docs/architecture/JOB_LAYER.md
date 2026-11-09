@@ -491,9 +491,30 @@ from the database's point of view the work is still in progress.
 publishing liveness and calls DBOS recovery for each, which re-enqueues their
 pending workflows onto itself. `reclaim.sweep` is one pass;
 `apps/worker/app.py` runs it on a loop every `REIMAGINA_RECLAIM_SWEEP_S`
-seconds. A reclaimed executor's heartbeat row is deleted, so the same corpse
-is not swept forever and does not sit permanently in
-`explore.ops_executor_health_v` as noise an operator learns to ignore.
+seconds. A reclaimed executor's heartbeat row is deleted **once it has nothing
+left open**, so the same corpse is not swept forever and does not sit
+permanently in `explore.ops_executor_health_v` as noise an operator learns to
+ignore.
+
+⚠ **"Once it has nothing left open" is the whole condition, because recovering
+zero workflows is not evidence that there were none.** Recovery asks
+`get_pending_workflows(executor_id, app_version)`, which filters on
+`application_version = <the sweeper's own version>`. A sweeper on a different
+version than the executor that died recovers nothing from it, every time,
+however much work is stranded — and that is the *normal* state during the
+blue-green deploy this version pinning exists to support, which deliberately
+leaves old-version `PENDING` workflows lying around.
+
+Deleting the row on that result destroyed the last pointer to the stranded
+work: the workflows stay `PENDING` forever, no later sweep looks at that id
+again, and `ops_executor_health_v` stops showing there was ever a worker
+there. A permanent leak produced by the cleanup step, with no symptom
+anywhere. So `reclaim.forget_executor` reads
+`dbos.workflow_status` for `PENDING`/`ENQUEUED` rows first and declines to
+forget an executor that still has any; the sweep reports those ids in
+`ReclaimReport.stranded_executors` and the worker logs them at WARNING.
+Draining one means starting a process pinned to the stranded
+`REIMAGINA_APP_VERSION` — see `docs/architecture/OPS_PLANE_RUNBOOK.md`.
 
 **Why it waited for DBOS 3.** Spike 1 measured the mechanism working on 2.28
 — `_recover_pending_workflows(["exec-A"])` from B returned two handles, drove
@@ -527,6 +548,10 @@ Three properties follow, and each is enforced rather than documented:
 - **An executor with no heartbeat row is never swept.** Absence is not
   evidence of death. The one process that can be in that state is running code
   old enough not to publish liveness, which is when guessing is worst.
+- **An executor is forgotten only when it is empty.** The liveness row is the
+  last pointer to stranded work, so dropping it is gated on
+  `dbos.workflow_status` holding nothing `PENDING` or `ENQUEUED` for that id —
+  not on how many workflows this sweep happened to recover.
 
 `tests/recovery/test_crash_recovery.py::test_a_peer_reclaims_a_dead_executors_run`
 is the end-to-end proof, with a real `SIGKILL` and two distinct executor ids.

@@ -22,7 +22,10 @@ from __future__ import annotations
 import logging
 import threading
 
+import pytest
+
 from apps.worker import app as worker_app
+from reimagina.orchestration import reclaim
 
 
 def _run_worker(monkeypatch, *, until: threading.Event, env: dict[str, str]):
@@ -104,16 +107,15 @@ def test_the_sweep_loop_actually_fires(monkeypatch, caplog):
     swept = threading.Event()
     calls: list[int] = []
 
-    class _Report:
-        dead_executors = ("ghost",)
-        workflows_recovered = 0
-        errors = ()
-        acted = True
-
+    # The real dataclass, not a stand-in with the fields this test happens to
+    # read. A hand-rolled stub went stale the moment `ReclaimReport` grew a
+    # field the worker logs, and the symptom was an AttributeError raised on a
+    # daemon thread — which pytest reports as a warning, so the suite stayed
+    # green while the loop under test died on its first pass.
     def _fake_sweep():
         calls.append(1)
         swept.set()
-        return _Report()
+        return reclaim.ReclaimReport(dead_executors=("ghost",), workflows_recovered=0)
 
     monkeypatch.setattr("reimagina.orchestration.reclaim.sweep", _fake_sweep)
 
@@ -134,3 +136,98 @@ def test_the_sweep_loop_actually_fires(monkeypatch, caplog):
         "a sweep that acted did not say so, which is the whole failure this "
         "file exists for"
     )
+
+
+def test_a_stranded_executor_is_reported_on_the_sweep_line(monkeypatch, caplog):
+    """Keeping a liveness row is a decision, so it has to be audible.
+
+    ``reclaim.forget_executor`` declines to forget an executor that still has
+    unfinished workflows — almost always because recovery filters on
+    ``application_version`` and this process is on a different one. Silent,
+    the fleet logs look like a healthy sweep while work leaks.
+    """
+    swept = threading.Event()
+
+    def _fake_sweep():
+        swept.set()
+        return reclaim.ReclaimReport(
+            dead_executors=("ghost",),
+            workflows_recovered=0,
+            stranded_executors=("ghost",),
+        )
+
+    monkeypatch.setattr("reimagina.orchestration.reclaim.sweep", _fake_sweep)
+    with caplog.at_level(logging.WARNING, logger="apps.worker.app"):
+        _run_worker(
+            monkeypatch,
+            until=swept,
+            env={
+                "REIMAGINA_EXECUTOR_STALE_S": "300",
+                "REIMAGINA_RECLAIM_SWEEP_S": "0.05",
+            },
+        )
+    assert any("left ghost unreclaimed" in r.message for r in caplog.records), (
+        f"a strand was not reported: {[r.message for r in caplog.records]}"
+    )
+
+
+class TestSweepInterval:
+    """``REIMAGINA_RECLAIM_SWEEP_S`` is rejected, not coerced, when unusable.
+
+    Every unusable value fails as something else. ``0`` or a negative number
+    makes ``Event.wait(timeout)`` return immediately, so the loop becomes a
+    busy spin — a full sweep, connecting and querying, as fast as Postgres
+    will answer, forever, on a daemon thread nobody watches. The symptom is a
+    worker that looks idle while holding a connection permanently busy. A
+    non-numeric value raised a bare ``ValueError`` from ``float()`` at
+    startup, naming neither the variable nor the value.
+    """
+
+    def test_the_default_is_half_the_threshold_floored_at_a_minute(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("REIMAGINA_RECLAIM_SWEEP_S", raising=False)
+        assert worker_app._sweep_interval(600.0) == 300.0
+        assert worker_app._sweep_interval(300.0) == 150.0
+        assert worker_app._sweep_interval(60.0) == 60.0  # the floor, not 30
+
+    def test_an_explicit_value_wins(self, monkeypatch) -> None:
+        monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", "12.5")
+        assert worker_app._sweep_interval(300.0) == 12.5
+
+    def test_an_empty_value_falls_back_to_the_default(self, monkeypatch) -> None:
+        """An unset variable in a `.env` file reads as empty, not absent."""
+        monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", "")
+        assert worker_app._sweep_interval(300.0) == 150.0
+
+    @pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "soon", "30s"])
+    def test_an_unusable_value_is_refused_by_name(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", value)
+        with pytest.raises(RuntimeError, match="REIMAGINA_RECLAIM_SWEEP_S"):
+            worker_app._sweep_interval(300.0)
+
+
+def test_disabling_the_sweep_skips_its_configuration_entirely(monkeypatch, caplog):
+    """`REIMAGINA_RECLAIM_ENABLED=0` must get a worker up, not argue with it.
+
+    The threshold and the sweep period are the sweep's own configuration, and
+    they were validated before the flag was read — so a worker explicitly
+    told not to sweep still refused to boot on a bad
+    `REIMAGINA_EXECUTOR_STALE_S`. That is the one setting the operator has
+    just stopped using, and turning the sweep off is the documented way out of
+    a reclaim misconfiguration.
+    """
+    done = threading.Event()
+    done.set()
+    with caplog.at_level(logging.WARNING, logger="apps.worker.app"):
+        _run_worker(
+            monkeypatch,
+            until=done,
+            env={
+                "REIMAGINA_RECLAIM_ENABLED": "0",
+                # Both would raise if they were still read.
+                "REIMAGINA_EXECUTOR_STALE_S": "1",
+                "REIMAGINA_RECLAIM_SWEEP_S": "not-a-number",
+            },
+        )
+    assert any("stay in progress forever" in r.message for r in caplog.records)

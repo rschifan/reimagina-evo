@@ -130,10 +130,25 @@ for slug in \
 do
   # Captured and printed together, on one line: the CLI's own stderr would
   # otherwise land between the slug and its result and make the log unreadable.
-  written="$($CLI indicators compute --slug "$slug" --aoi-id "$AOI_ID" \
-    | tr -d '\n' | grep -oE '"rows_written": [0-9]+' || true)"
-  printf '  %-40s %s\n' "$slug" "${written:-NO ROWS WRITTEN}"
-  [[ -n "$written" ]] || { echo "  ^ that indicator wrote nothing" >&2; exit 1; }
+  #
+  # ⚠ The count is parsed out and compared, not merely matched. The check here
+  # was `grep -oE '"rows_written": [0-9]+'` with a non-empty test, and
+  # `"rows_written": 0` is a non-empty match — so an indicator that computed
+  # nothing at all passed the step whose entire purpose is to prove it
+  # computed something. An empty AOI, a missing upstream input or a predicate
+  # that excludes every block all produce exactly that, and all three would
+  # have reported a green acceptance run.
+  rows="$($CLI indicators compute --slug "$slug" --aoi-id "$AOI_ID" \
+    | tr -d '\n' | grep -oE '"rows_written": *[0-9]+' | grep -oE '[0-9]+$' || true)"
+  printf '  %-40s %s\n' "$slug" "rows_written=${rows:-NONE REPORTED}"
+  if [[ -z "$rows" ]]; then
+    echo "  ^ that indicator reported no rows_written at all" >&2
+    exit 1
+  fi
+  if (( rows == 0 )); then
+    echo "  ^ that indicator wrote 0 rows — nothing was computed" >&2
+    exit 1
+  fi
 done
 
 step "7. Ingesting a raster: bronze -> silver COG -> registry"
@@ -388,9 +403,43 @@ with connect(os.environ["DATABASE_URL"]) as conn:
     second = orchestrator.submit_run(conn, **request)
 print(f"  submit 1 -> {first.run_id}  deduplicated={first.deduplicated}")
 print(f"  submit 2 -> {second.run_id}  deduplicated={second.deduplicated}")
-if not (second.run_id == first.run_id and second.deduplicated):
-    print("  the resubmission started a second run", file=sys.stderr)
-    sys.exit(1)
+
+if second.run_id == first.run_id and second.deduplicated:
+    print("  the second submit was folded into the first run")
+    sys.exit(0)
+
+# ⚠ Not a failure yet. Deduplication is scoped to work that is still
+# outstanding: the key is cleared when a run reaches a terminal state, so that
+# asking for the same recompute *after* it finished starts a fresh one rather
+# than handing back a stale answer. That is the contract, and it means two
+# distinct run ids are the correct result whenever run 1 completed between the
+# two submits.
+#
+# A worker is running by this point (step 12 started one) and the synthetic
+# territory computes in well under a second, so that race is real and this
+# assertion fails on a system behaving exactly as designed. Ask the database
+# which of the two happened instead of assuming.
+with connect(os.environ["DATABASE_URL"]) as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM jobs_runtime.orchestration_run WHERE run_id = %s::uuid",
+            (first.run_id,),
+        )
+        row = cur.fetchone()
+status = row[0] if row else None
+print(f"  run 1 status at the time of submit 2: {status}")
+if status in {"succeeded", "failed", "cancelled"}:
+    print(
+        "  run 1 had already finished, so the key was released and submit 2 "
+        "correctly started new work — deduplication covers outstanding runs, "
+        "not completed ones"
+    )
+    sys.exit(0)
+print(
+    f"  run 1 was still {status!r} and the resubmission started a second run",
+    file=sys.stderr,
+)
+sys.exit(1)
 PYEOF
 
 kill "$WORKER_PID" 2>/dev/null || true

@@ -57,9 +57,9 @@ def test_raising_the_beat_interval_alone_is_refused(monkeypatch):
 
 
 class _Cursor:
-    def __init__(self, rows, recorder):
-        self._rows = rows
-        self._recorder = recorder
+    def __init__(self, conn):
+        self._conn = conn
+        self._rows: list = []
 
     def __enter__(self):
         return self
@@ -68,19 +68,37 @@ class _Cursor:
         return False
 
     def execute(self, sql, params=None):
-        self._recorder.append((" ".join(sql.split()), params))
+        self._conn.statements.append((" ".join(sql.split()), params))
+        self._rows = self._conn._next_rows()
 
     def fetchall(self):
         return self._rows
 
 
 class _Conn:
-    def __init__(self, rows=()):
-        self.rows = list(rows)
+    """A psycopg2 connection stub that records SQL and replays result sets.
+
+    ``rows`` answers every query with the same rows. ``results`` answers each
+    query in turn, which is what the two-statement read-then-delete in
+    ``forget_executor`` needs: a stub that returned its rows to both would
+    make the guard look like it had found unfinished work when all it found
+    was the fixture.
+    """
+
+    def __init__(self, rows=None, results=None):
+        if rows is not None and results is not None:
+            raise ValueError("pass rows or results, not both")
+        self._fixed = None if rows is None else list(rows)
+        self._queue = None if results is None else [list(r) for r in results]
         self.statements: list[tuple] = []
 
+    def _next_rows(self) -> list:
+        if self._queue is not None:
+            return self._queue.pop(0) if self._queue else []
+        return list(self._fixed or [])
+
     def cursor(self):
-        return _Cursor(self.rows, self.statements)
+        return _Cursor(self)
 
     def commit(self):
         pass
@@ -122,8 +140,53 @@ def test_an_executor_with_no_heartbeat_row_is_not_swept():
 def test_a_reclaimed_executor_is_forgotten():
     """Otherwise the same dead executor is re-swept on every pass, forever,
     and shows in `explore.ops_executor_health_v` as permanent noise."""
-    conn = _Conn()
-    reclaim.forget_executor(conn, "vm:worker-9")
+    conn = _Conn(results=[[]])  # nothing unfinished
+    assert reclaim.forget_executor(conn, "vm:worker-9") is True
+    checked, deleted = conn.statements
+    assert "FROM dbos.workflow_status" in checked[0]
+    assert deleted[0].startswith("DELETE FROM jobs_runtime.ops_executor_heartbeat")
+    assert deleted[1] == ("vm:worker-9",)
+
+
+def test_an_executor_with_unfinished_work_keeps_its_row():
+    """⚠ Recovering zero workflows is not evidence that there were none.
+
+    ``DBOS._recover_pending_workflows`` asks
+    ``get_pending_workflows(executor_id, app_version)``, and that query filters
+    on ``application_version = <this process's version>``. A sweeper on a
+    different version than the executor that died — the blue-green case the
+    version pinning in ``dbos_app.config`` exists to support — recovers
+    nothing, every time, however much work is stranded.
+
+    Deleting the liveness row on that result destroyed the last pointer to it:
+    the workflows stay PENDING forever, no later sweep looks at that id again,
+    and ``ops_executor_health_v`` stops showing there was ever a worker there.
+    A permanent leak created by the cleanup step, with no symptom anywhere.
+    """
+    conn = _Conn(results=[[("wf-1", "v-old"), ("wf-2", "v-old")]])
+    assert reclaim.forget_executor(conn, "vm:worker-9") is False
+    assert len(conn.statements) == 1, "the row must not be deleted"
+    assert "DELETE" not in conn.statements[0][0]
+
+
+def test_the_unfinished_check_covers_enqueued_as_well_as_pending():
+    """A workflow waiting for a dequeue is as unreclaimed as one in flight.
+
+    Checking only PENDING would forget an executor whose stranded work had
+    not yet been picked up — the easiest case to recover and the one most
+    likely to exist right after a death.
+    """
+    conn = _Conn(results=[[]])
+    reclaim.unfinished_workflows(conn, "vm:worker-9")
     sql, params = conn.statements[0]
-    assert sql.startswith("DELETE FROM jobs_runtime.ops_executor_heartbeat")
-    assert params == ("vm:worker-9",)
+    assert "status IN (%s, %s)" in sql
+    assert params[1:] == ("PENDING", "ENQUEUED")
+
+
+def test_the_report_names_what_it_could_not_reclaim():
+    """A strand has to be visible, or the fleet looks healthy while leaking."""
+    report = reclaim.ReclaimReport(
+        dead_executors=("vm:worker-9",), stranded_executors=("vm:worker-9",)
+    )
+    assert report.acted
+    assert report.stranded_executors == ("vm:worker-9",)

@@ -75,6 +75,10 @@ class ReclaimReport:
 
     dead_executors: tuple[str, ...] = ()
     workflows_recovered: int = 0
+    #: Dead executors whose liveness row was deliberately *kept*, because they
+    #: still have unfinished workflows this process could not recover — almost
+    #: always a version mismatch. See ``forget_executor``.
+    stranded_executors: tuple[str, ...] = ()
     skipped_reason: str | None = None
     errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -126,22 +130,65 @@ def dead_executors(
         return [row[0] for row in cur.fetchall()]
 
 
-def forget_executor(conn, executor_id: str) -> None:
-    """Drop a reclaimed executor's liveness row.
+#: Workflow states that still belong to the executor that recorded them.
+#: ``PENDING`` is in flight; ``ENQUEUED`` is waiting for a dequeue. Both are
+#: work that no terminal state covers.
+_UNFINISHED = ("PENDING", "ENQUEUED")
 
-    Without this the same dead executor is re-swept on every pass forever.
-    Recovery itself is cheap when there is nothing to recover — DBOS returns
-    an empty handle list — but the row would also keep showing in
-    ``explore.ops_executor_health_v`` as a permanently dead worker, which is
-    noise an operator has to learn to ignore. Removing it is safe: the row is
-    liveness, not history; the run's own provenance lives in
-    ``jobs_runtime.orchestration_run``.
+
+def unfinished_workflows(conn, executor_id: str) -> list[tuple[str, str]]:
+    """``(workflow_uuid, application_version)`` still open against an executor.
+
+    Read from ``dbos.workflow_status`` directly rather than through DBOS,
+    because DBOS's own reader is the thing we are checking. See
+    ``forget_executor``.
     """
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT workflow_uuid, COALESCE(application_version, '')
+            FROM dbos.workflow_status
+            WHERE executor_id = %s
+              AND status IN ({", ".join(["%s"] * len(_UNFINISHED))})
+            """,  # noqa: S608 — interpolation is a fixed literal tuple, not input
+            (executor_id, *_UNFINISHED),
+        )
+        return [(row[0], row[1]) for row in cur.fetchall()]
+
+
+def forget_executor(conn, executor_id: str) -> bool:
+    """Drop a reclaimed executor's liveness row, but only once it is empty.
+
+    Without this the same dead executor is re-swept on every pass forever, and
+    its row keeps showing in ``explore.ops_executor_health_v`` as a
+    permanently dead worker — noise an operator has to learn to ignore.
+    Removing it is otherwise safe: the row is liveness, not history; the run's
+    own provenance lives in ``jobs_runtime.orchestration_run``.
+
+    ⚠ **Recovering zero workflows is not evidence that there were none.**
+    ``DBOS._recover_pending_workflows`` asks
+    ``get_pending_workflows(executor_id, app_version)``, and that query filters
+    on ``application_version = <this process's version>``. A sweeper running a
+    different version than the executor that died — precisely the blue-green
+    case the version pinning in ``dbos_app.config`` exists to support —
+    recovers nothing, every time, no matter how much work is stranded.
+
+    Deleting the row on that result destroyed the last pointer to it: the
+    workflows stay PENDING forever, the sweep never looks at that id again,
+    and ``ops_executor_health_v`` stops showing there was ever a worker there.
+    A silent, permanent leak produced by the cleanup step.
+
+    So the row is dropped only when the executor genuinely has nothing left
+    open. Returns whether it was dropped, so the caller can say why not.
+    """
+    if unfinished_workflows(conn, executor_id):
+        return False
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM jobs_runtime.ops_executor_heartbeat WHERE executor_id = %s",
             (executor_id,),
         )
+    return True
 
 
 def sweep(*, dry_run: bool = False) -> ReclaimReport:
@@ -160,6 +207,7 @@ def sweep(*, dry_run: bool = False) -> ReclaimReport:
     me = _executor_id()
     recovered = 0
     errors: list[str] = []
+    stranded: list[str] = []
 
     with contextlib.closing(psycopg2.connect(dbos_dsn())) as conn:
         dead = dead_executors(conn, stale_after=threshold, exclude=me)
@@ -185,11 +233,32 @@ def sweep(*, dry_run: bool = False) -> ReclaimReport:
                 executor,
                 threshold,
             )
-            forget_executor(conn, executor)
+            left = unfinished_workflows(conn, executor)
+            if left:
+                # The row stays. `forget_executor` enforces this too — it is
+                # the safe primitive — but the detail for the log has to be
+                # read anyway, so read it once and decide here.
+                versions = sorted({v for _, v in left if v})
+                stranded.append(executor)
+                logger.warning(
+                    "executor %r still has %d unfinished workflow(s) after "
+                    "recovery%s; keeping its liveness row so the next sweep "
+                    "retries. Recovery only reclaims workflows whose "
+                    "application_version matches this process (%s), so this is "
+                    "what a cross-version strand looks like: drain it with a "
+                    "process pinned to the stranded version.",
+                    executor,
+                    len(left),
+                    f" (versions {', '.join(versions)})" if versions else "",
+                    os.environ.get("REIMAGINA_APP_VERSION", "unpinned"),
+                )
+            else:
+                forget_executor(conn, executor)
             conn.commit()
 
     return ReclaimReport(
         dead_executors=tuple(dead),
         workflows_recovered=recovered,
+        stranded_executors=tuple(stranded),
         errors=tuple(errors),
     )

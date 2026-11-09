@@ -166,6 +166,18 @@ jobs:
       # DATABASE_URL_DIRECT. The variable above fixed that instance; this one
       # makes the class of it visible.
       REIMAGINA_REQUIRE_DB: "1"
+      #
+      # ⚠ One blind spot this layout keeps, recorded rather than papered over.
+      # All three DSNs above name the same database, and each suite below runs
+      # as its own process. A developer's `.env` has them distinct (as
+      # `.env.example` prescribes) and `pytest tests/` runs them in one
+      # process, so state cached across suites against a *stale DSN* cannot
+      # fail here and does fail for a reader. It did:
+      # `dbos_orchestrator._client()` cached one client on first use, and
+      # three conformance tests failed under `pytest tests/` while passing
+      # alone. The cover for that class is
+      # `tests/unit/test_dbos_client_cache.py`, which asserts the caching
+      # directly instead of hoping a pipeline shape exposes it.
     steps:
       - uses: actions/checkout@v7
 

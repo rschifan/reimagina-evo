@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
+from typing import Any
 from uuid import uuid4
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
@@ -40,7 +41,7 @@ from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
 
-_CLIENT = None
+_CLIENTS: dict[str, Any] = {}
 _CLIENT_LOCK = threading.Lock()
 _PROGRESS_SLOTS = threading.BoundedSemaphore(
     int(os.environ.get("REIMAGINA_PROGRESS_SUBSCRIBERS", "32"))
@@ -49,7 +50,7 @@ _PROGRESS_BUFFER = 128
 
 
 def _client():
-    """One shared DBOS client for this process.
+    """One shared DBOS client per system-database DSN, for this process.
 
     ``DBOSClient`` is not a handle — constructing one builds a SQLAlchemy engine
     with its own five-connection pool and opens a connection eagerly to check
@@ -59,22 +60,48 @@ def _client():
     Shared rather than context-managed because it is stateless for reads and
     lives as long as the process does. Never ``destroy()``ed for the same
     reason: there is no scope to tie it to.
+
+    ⚠ **Keyed by DSN, not a single global.** It was one global, built on first
+    use and never revisited, so the *first* value of ``DATABASE_URL_DIRECT``
+    this process ever saw was the database every later call read — whatever the
+    environment said by then.
+
+    Nothing raised. `get_run` consults the engine as its existence oracle, so a
+    client pinned to the wrong database answers "that run does not exist" for a
+    run that plainly does; `cancel_run` returns False for a live run, and
+    `subscribe_progress` yields `unknown` and closes. Three different wrong
+    answers, all of them confident, none of them an error.
+
+    It surfaced as cross-suite interference: `tests/integration/test_api_routes`
+    reaches a jobs route, which builds the client against `.env`'s
+    `reimagina_app`; `tests/conformance` then points `DATABASE_URL_DIRECT` at
+    `reimagina_test`, enqueues there, and asks a client still bound to
+    `reimagina_app`. Three conformance tests fail in `pytest tests/` and pass
+    when that directory is run alone — the shape of bug that gets written off
+    as flakiness. In production the DSN does not change, which is exactly why
+    this could sit here: latent, and indistinguishable from a real not-found.
+
+    A dict rather than rebuilding on change, so a process that legitimately
+    talks to two system databases keeps one pooled client for each instead of
+    thrashing them — the original reason for caching at all.
     """
-    global _CLIENT
-    if _CLIENT is None:
-        with _CLIENT_LOCK:
-            if _CLIENT is None:
-                from dbos import DBOSClient
+    from reimagina.orchestration import dbos_app
 
-                from reimagina.orchestration import dbos_app
+    dsn = dbos_app.dbos_dsn()
+    existing = _CLIENTS.get(dsn)
+    if existing is not None:
+        return existing
+    with _CLIENT_LOCK:
+        existing = _CLIENTS.get(dsn)
+        if existing is None:
+            from dbos import DBOSClient
 
-                # use_listen_notify: without it read_stream degrades to polling
-                # once a second, which is the latency the SSE endpoint exists to
-                # avoid.
-                _CLIENT = DBOSClient(
-                    system_database_url=dbos_app.dbos_dsn(), use_listen_notify=True
-                )
-    return _CLIENT
+            # use_listen_notify: without it read_stream degrades to polling
+            # once a second, which is the latency the SSE endpoint exists to
+            # avoid.
+            existing = DBOSClient(system_database_url=dsn, use_listen_notify=True)
+            _CLIENTS[dsn] = existing
+    return existing
 
 
 # DBOS's workflow-status enum mapped onto ours, for the window before the run

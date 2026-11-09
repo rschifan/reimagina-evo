@@ -47,6 +47,42 @@ def _reachable(url: str) -> bool:
         return False
 
 
+def _playwright_resolves() -> str | None:
+    """``None`` if ``require('playwright')`` works, else why to skip.
+
+    ⚠ `shutil.which("node")` proves node exists, not that the driver can
+    import its one dependency — and those are different machines. Without
+    this, a tree with node but no Playwright ran the driver anyway, which
+    exited non-zero with a `MODULE_NOT_FOUND` stack trace, and the suite
+    failed with "the browser probe exited 1" plus a wall of JavaScript.
+
+    That is the wrong report twice over. The suite is opt-in precisely
+    because its prerequisites are not this project's dependencies, so a
+    missing one is a skip with an install line, not a failure. And a real
+    regression — a page that stopped rendering — produces the same message, so
+    the one failure this suite exists to deliver became indistinguishable from
+    an unprepared checkout.
+
+    `require.resolve` rather than `require`: resolution is the thing in doubt,
+    and it does not pay the cost of loading the module.
+    """
+    probe = subprocess.run(
+        ["node", "-e", "require.resolve('playwright')"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if probe.returncode == 0:
+        return None
+    return (
+        "the 'playwright' node module does not resolve, so the browser probe "
+        "cannot run. Install it where the driver can see it:\n"
+        "    cd apps/web && npm install --no-save playwright\n"
+        "Chromium itself is already present in the session image; no "
+        "'playwright install' is needed."
+    )
+
+
 @pytest.fixture(scope="session")
 def servers() -> dict[str, str]:
     if os.environ.get("REIMAGINA_E2E") != "1":
@@ -56,6 +92,9 @@ def servers() -> dict[str, str]:
         )
     if not shutil.which("node"):
         pytest.skip("node is not on PATH, so Playwright cannot be driven")
+    resolved = _playwright_resolves()
+    if resolved is not None:
+        pytest.skip(resolved)
     missing = [
         name for name, url in (("API", API), ("web", WEB)) if not _reachable(url)
     ]

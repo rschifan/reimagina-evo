@@ -67,6 +67,12 @@ database requires a connection to a different one — so it needs a role that
 may create databases and extensions. `.env.example` sets all three for both
 paths; if you change the password, change it there too.
 
+In Path A only one of the five DSNs goes through the pooler, and that is
+deliberate rather than an oversight: `localhost:5432` is PgBouncer in
+transaction mode holding a single database, so migrations, bootstrap, the test
+suites and the ops plane all connect to PostgreSQL itself on `localhost:5433`.
+`.env.example` says why against each line.
+
 If you prefer host-installed Postgres over the compose stack, switch to
 "Path B" inside `.env.example`, run `createdb reimagina_app reimagina_test`
 yourself, and skip step 2. Path B's DSNs name no user, so they assume your own

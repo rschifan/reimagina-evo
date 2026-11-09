@@ -45,8 +45,8 @@ A working installation serves four things:
 | Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`) |
 | Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin |
 | Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |
-| Database | `localhost:5432` | Path A: the **connection pooler**. Path B: PostgreSQL itself |
-| Database, direct | `localhost:5433` | Path A only: PostgreSQL behind the pooler. This is what `DATABASE_URL_DIRECT` must point at |
+| Database, pooled | `localhost:5432` | Path A: the **connection pooler**, holding one database only. The API reads through it. Path B: PostgreSQL itself |
+| Database, direct | `localhost:5433` | Path A only: PostgreSQL behind the pooler. Migrations, bootstrap, the test suites and the ops plane all connect here, not to `5432` — §4.1 says why |
 
 An installation without access to the source data lake still runs: you can
 install, migrate, start every process, run the test suites and build the web
@@ -146,13 +146,26 @@ repository root. `.env.example` is the template; it is never read at runtime.
 
 Four DSNs, deliberately distinct so that one tool never takes another's pool.
 
-| Variable | Read by | Notes |
-|---|---|---|
-| `DATABASE_URL` | Migrations, loaders, workers, tests | The default DSN for the storage layer |
-| `REIMAGINA_APP_DSN` | The API only | Point at the pooler in production; migrations stay direct |
-| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY`, Martin | **Must bypass the pooler.** See §9.2 |
-| `TEST_DATABASE_URL` | The integration and conformance suites | Must end in `_test`; the fixture drops schemas on teardown |
-| `DATABASE_URL_ADMIN` | `make migrate` only | The database connected to in order to *create* the other two. Needs a role that may create databases and extensions |
+| Variable | Read by | Port in Path A | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | Migrations, loaders, CLI, workers | `5433` | The default DSN for the storage layer. Carries DDL and `CREATE EXTENSION` |
+| `REIMAGINA_APP_DSN` | The API only | `5432` | The one pooled DSN, and the one the pooler is for: short read-only handlers, `SET LOCAL` only |
+| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY`, Martin | `5433` | **Must bypass the pooler.** See §9.2 |
+| `TEST_DATABASE_URL` | The integration and conformance suites | `5433` | Must end in `_test`; the fixture creates and drops schemas |
+| `DATABASE_URL_ADMIN` | `make migrate` only | `5433` | The database connected to in order to *create* the other two. Needs a role that may create databases and extensions |
+
+Only one of the five is pooled, and that is not an oversight. In Path A,
+`localhost:5432` is PgBouncer in **transaction** pool mode, configured with a
+single database (`POSTGRES_DB`). Two consequences follow, and `.env.example`
+is written around both:
+
+1. **A name PgBouncer does not hold does not connect.** `postgres` and
+   `reimagina_test` are not in its database list, so `DATABASE_URL_ADMIN` and
+   `TEST_DATABASE_URL` pointed at `5432` fail before they reach PostgreSQL.
+2. **A session handed back between statements loses session state.**
+   `CREATE DATABASE` cannot run inside a transaction block, `LISTEN`/`NOTIFY`
+   is session-scoped, and a migration lock has to outlive its statement. None
+   of those survive transaction pooling.
 
 ### 4.2 Ops plane
 
@@ -366,6 +379,22 @@ falls back to a local SQLite file — the process works, and its checkpoints are
 private and unrecoverable. The code raises rather than allow this, so the
 symptom is a loud error naming the variable.
 
+⚠ **Changing `DATABASE_URL_DIRECT` after the process has started does not
+move it.** The ops plane builds a pooled DBOS client the first time it needs
+one and keeps it for the life of the process. That client is keyed by DSN, so
+pointing the variable somewhere else and re-running a command in the same
+process gets a client for the new database — but a long-lived process that
+already launched against the old one keeps its executor and its queues there.
+Restart it.
+
+This was worse until recently: the client was a single global built on first
+use, so the *first* DSN a process ever saw became the database every later
+query read. Nothing raised. `get_run` uses the engine as its existence oracle,
+so a client bound to the wrong database reported a live run as absent, `cancel`
+returned false for a run that was running, and a progress subscription yielded
+`unknown` and closed — three confident wrong answers and no error. It is fixed
+and covered by `tests/unit/test_dbos_client_cache.py`.
+
 ### 9.3 A restarted worker reclaims nothing, or two processes fight over work
 
 `REIMAGINA_EXECUTOR_ID` identifies a process to crash recovery, which reclaims
@@ -449,6 +478,31 @@ configuration where it is not. Reclaiming a dead executor late costs latency;
 reclaiming a live one re-enqueues work it is still executing and runs that
 indicator twice.
 
+**If the worker log says it left an executor unreclaimed**, the sweep found
+work it is not allowed to take:
+
+```
+reclaim sweep left vm:worker-3 unreclaimed — work remains open against
+them that this application version cannot recover
+```
+
+Recovery is scoped by `application_version` as well as by `executor_id`, so a
+worker pinned to a different `REIMAGINA_APP_VERSION` than the dead executor
+recovers nothing from it. This is the expected state mid-deploy. The sweep
+keeps that executor's liveness row rather than tidying it away, because the
+row is the last pointer to the stranded work. Find the version and start a
+process pinned to it:
+
+```sql
+SELECT executor_id, application_version, status, count(*)
+FROM dbos.workflow_status
+WHERE status IN ('PENDING', 'ENQUEUED')
+GROUP BY 1, 2, 3 ORDER BY 1, 2;
+```
+
+Or cancel the runs and resubmit — writes are replace-in-place, so a
+resubmission is safe.
+
 ## 10. Appendix — a verified clean install
 
 The sequence below was executed in a fresh clone, in this order, and each step
@@ -462,10 +516,24 @@ is reported with its actual result.
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 507 passed |
-| 7 | `pytest tests/integration` | 322 passed, 1 skipped |
+| 6 | `pytest tests/unit tests/contract` | 606 passed |
+| 7 | `pytest tests/integration` | 327 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `cd apps/web && npm test` | 73 passed |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance tests/e2e` | 950 passed, 14 skipped |
+| 10 | `cd apps/web && npm test` | 73 passed |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
 PostGIS 3.4 and pgRouting 3.6.1; the schema is identical across both.
+
+Step 9 is the whole tree in one process, and it is listed separately because
+it is a different assertion from steps 6–8 run in sequence. CI runs each suite
+as its own process, so nothing there exercises state cached across suites — and
+a reader's first instinct is `pytest`, not four invocations. One such leak
+existed and is fixed (`dbos_orchestrator._client()` cached a client against
+the first DSN the process saw; see §9.2). The skips are the browser suite,
+which needs servers running, and two fixtures that need upstream data.
+
+The database-backed suites are run with `REIMAGINA_REQUIRE_DB=1`. Without it
+`pytest` exits 0 when every database test *skips*, and "322 skipped, 6 passed"
+reads as success in every summary anyone looks at. With it, an unreachable
+database fails instead of skipping.

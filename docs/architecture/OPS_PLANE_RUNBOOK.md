@@ -90,19 +90,76 @@ Inspect `explore.ops_executor_health_v` before declaring an executor dead. It
 records the worker's direct-Postgres heartbeat and its age without requiring a
 control-plane service. If an `executor_id` there belongs to no live process,
 its runs are stuck.
-**There is no automatic recovery across executors on this branch** — a process
-reclaims only its own id, at startup. Options, in order of preference:
+Two recoveries exist, and they are not the same mechanism.
 
-1. Start a process with that exact `REIMAGINA_EXECUTOR_ID`. It reclaims its own
-   work at launch. This is why a stable id matters.
-2. Cancel the runs (`POST /jobs/{id}/cancel` semantics via the port) and
-   resubmit. Safe: writes are replace-in-place.
+**Its own, at startup.** `DBOS.launch()` reclaims the workflows recorded
+against *this* `executor_id`, and only this one. That covers a restart and
+needs nothing from an operator — which is why a **stable** id matters.
 
-Do **not** reach for `DBOS._recover_pending_workflows` to sweep another
-executor's work. It is a private method, and on 2.28.0 recovery is not
-idempotent — if the "dead" executor is actually alive, that is a double
-execution. The sweep is deliberately unbuilt until the pinned DBOS version has
-an idempotent cross-executor recovery guarantee verified in this repository.
+**Someone else's, by sweep.** `orchestration/reclaim.py` runs in every worker
+(`python -m apps.worker`) and periodically asks which executors have stopped
+publishing liveness, then asks DBOS to recover their pending workflows onto
+itself. An executor whose host was destroyed or whose replica was scaled away
+is reclaimed without intervention.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REIMAGINA_RECLAIM_ENABLED` | `1` | `0` turns the sweep off. A worker then logs a warning saying a dead executor's runs will stay in progress forever |
+| `REIMAGINA_EXECUTOR_STALE_S` | `300` | How stale a heartbeat must be before its executor is presumed dead. Refused if it is under 4x `REIMAGINA_EXECUTOR_HEARTBEAT_S` |
+| `REIMAGINA_RECLAIM_SWEEP_S` | `max(stale/2, 60)` | How often to sweep. Refused if not positive and finite |
+
+⚠ **Why the liveness gate is a correctness requirement, not a courtesy.**
+DBOS 3's `_recovery._recover_workflow` re-enqueues rather than executing
+directly, so every recovered workflow starts through the queue's atomic
+`ENQUEUED`→`PENDING` dequeue, which admits exactly one runner. That makes two
+sweepers racing on the same dead executor safe. It does **not** make sweeping
+a *live* executor safe: re-enqueuing a workflow its original runner is still
+executing admits a second one alongside it. The idempotency guarantee is about
+duplicate recovery *requests*, not about recovering work that was never
+abandoned. Hence the deliberately wide threshold — a late heartbeat is cheap,
+a wrongly-declared death is not — and hence the refusal to configure one
+narrower than four beats.
+
+An executor with **no** heartbeat row at all is never swept. Absence is not
+evidence of death, and the one process that can be in that state is running
+code old enough not to publish liveness, which is exactly when guessing is
+worst.
+
+⚠ **A sweep cannot cross an application version.** Recovery asks
+`get_pending_workflows(executor_id, app_version)`, and that query filters on
+`application_version = <the sweeper's own version>`. A worker pinned to a
+different `REIMAGINA_APP_VERSION` than the executor that died recovers
+**zero** workflows from it, every time, however much work is stranded — and
+this is the normal state during a blue-green deploy, which deliberately leaves
+old-version `PENDING` workflows lying around.
+
+The sweep detects this rather than papering over it: an executor that still
+has unfinished workflows after recovery keeps its liveness row, and the worker
+logs
+
+```
+reclaim sweep left <id> unreclaimed — work remains open against them
+that this application version cannot recover
+```
+
+To drain it, start a process pinned to the stranded version
+(`REIMAGINA_APP_VERSION=<that version>`); its own startup recovery, or its
+sweep, will reclaim the work. Find the version with:
+
+```sql
+SELECT executor_id, application_version, status, count(*)
+FROM dbos.workflow_status
+WHERE status IN ('PENDING', 'ENQUEUED')
+GROUP BY 1, 2, 3 ORDER BY 1, 2;
+```
+
+If you would rather not, cancel the runs (`POST /jobs/{id}/cancel` semantics
+via the port) and resubmit. Safe: writes are replace-in-place.
+
+Do **not** call `DBOS._recover_pending_workflows` by hand against an executor
+you have not checked against `explore.ops_executor_health_v`. It is a private
+method, and if the "dead" executor is actually alive, that is a duplicate
+execution of a unit. Use the sweep, which holds the gate.
 
 ## A unit that will not stop
 
@@ -168,8 +225,10 @@ the process count if throughput matters more than one run's latency.
 
 Stated plainly so nobody discovers it at 3am:
 
-- **No cross-executor recovery.** Heartbeats support diagnosis only; reclaiming
-  another executor's work remains unsafe until idempotent recovery is verified.
+- **Cross-version strands need a human.** The sweep reclaims a dead
+  executor's work only within its own application version, reports what it
+  could not take, and keeps the evidence — but draining a stranded version
+  still means starting a process pinned to it. See above.
 - **No metrics.** No counters, no histograms, nothing to alert on. Diagnosis is
   the SQL above.
 - **Never load-tested**, never run multi-process beyond a two-process spike,

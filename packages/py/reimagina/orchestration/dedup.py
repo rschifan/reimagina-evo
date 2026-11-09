@@ -31,7 +31,8 @@ version, and restoring it moves it back, because the version is content
 addressed rather than a counter.
 
 **It fails open.** A planned unit with no expected version — an asset graph
-not yet backfilled, an indicator registered without one — means input changes
+not yet backfilled, an indicator registered without one, a node whose
+components are all NULL so the hash itself is NULL — means input changes
 cannot be detected, so no id is produced and nothing is deduplicated. A
 redundant run costs CPU; a wrongly suppressed one costs an answer the operator
 asked for and did not get.
@@ -69,7 +70,20 @@ def _expected_versions(conn: Any, keys: Sequence[tuple[str, str]]) -> dict | Non
             """,
             (tuple(keys),),
         )
-        found = {(key, part): version for key, part, version in cur.fetchall()}
+        found = {
+            (key, part): version
+            for key, part, version in cur.fetchall()
+            # ⚠ A NULL version is as unusable as a missing row, and more
+            # dangerous. `expected_version` is `md5(string_agg(...))`, which is
+            # NULL when every component of a node is NULL — so the row exists,
+            # the length check below passes, and the id folds in a literal
+            # `None`. Two genuinely different input states would then hash
+            # alike and the second submit would be handed the first run: a
+            # false dedup, which is the one failure this module's fail-open
+            # design exists to prevent. Dropping it here turns that into the
+            # fail-open path instead.
+            if version is not None
+        }
     if len(found) != len(set(keys)):
         return None
     return found

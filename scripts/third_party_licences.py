@@ -67,8 +67,15 @@ WEAK_COPYLEFT = re.compile(
     re.I,
 )
 STRONG_COPYLEFT = re.compile(
-    r"\bAGPL|\bGPL-|\bGPLv|GNU General Public|\bSSPL|Open Software License"
-    r"|\bOSL-|\bCPAL|\bEUPL",
+    # ⚠ `\bGPL\b` matters as much as the versioned forms. A bare "GPL" with no
+    # version is what a licence *file* yields when the manifest declared
+    # nothing, and without this alternative it fell through every bucket to
+    # `undeclared` — so Article 4.1's "Strong copyleft: 0" could be true of the
+    # table and false of the tree. `\b` does not fire inside "LGPL" (both
+    # characters are word characters), and weak copyleft is tested first
+    # regardless, so this cannot capture an LGPL package.
+    r"\bAGPL|\bGPL-|\bGPLv|\bGPL\b|GNU General Public|\bSSPL"
+    r"|Open Software License|\bOSL-|\bCPAL|\bEUPL",
     re.I,
 )
 PERMISSIVE = re.compile(
@@ -120,15 +127,103 @@ class Entry:
         return "browser bundle" if self.production else "build/test only"
 
 
+#: Markers looked for in a licence file, **most specific first**, each paired
+#: with the identifier to report.
+#:
+#: ⚠ Every pattern here is anchored on a word boundary or a whole phrase, and
+#: that is the entire point of this table replacing a substring scan.
+#:
+#: The scan this replaces was `if name.lower() in head.lower()` over
+#: `("MIT", "Apache", ...)`. It read a verbatim GPL-3.0 `LICENSE` file as
+#: **MIT, permissive** — because the GPL preamble says "Everyone is
+#: per​mitted to copy and distribute verbatim copies", and "permitted"
+#: contains "mit". The strongest copyleft licence in the inventory was
+#: reported as the most permissive one, in the document that exists to state
+#: exactly that, with no symptom anywhere. `COPYING` in a GNU project is
+#: overwhelmingly the likeliest file to hit it.
+#:
+#: Order is load-bearing a second time: "GNU Lesser General Public" must be
+#: tested before "GNU General Public", which is a substring of nothing but is
+#: matched by the same text.
+_FILE_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"GNU Affero General Public", re.I), "AGPL"),
+    (re.compile(r"GNU Lesser General Public", re.I), "LGPL"),
+    (re.compile(r"GNU General Public", re.I), "GNU General Public License"),
+    (re.compile(r"Mozilla Public License", re.I), "MPL"),
+    (re.compile(r"Eclipse Public License", re.I), "EPL-"),
+    (re.compile(r"Common Development and Distribution", re.I), "CDDL"),
+    (re.compile(r"Apache License", re.I), "Apache"),
+    (re.compile(r"\bAGPL\b", re.I), "AGPL"),
+    (re.compile(r"\bLGPL\b", re.I), "LGPL"),
+    (re.compile(r"\bGPL\b|\bGPLv[0-9]", re.I), "GPL"),
+    (re.compile(r"\bMPL\b", re.I), "MPL"),
+    (re.compile(r"\bMIT License\b", re.I), "MIT"),
+    (
+        re.compile(r"Permission is hereby granted, free of charge", re.I),
+        "MIT",
+    ),
+    (re.compile(r"\bISC License\b", re.I), "ISC"),
+    (re.compile(r"\bBSD\b", re.I), "BSD"),
+    (re.compile(r"\bISC\b", re.I), "ISC"),
+    (re.compile(r"\bMIT\b", re.I), "MIT"),
+)
+
+
+def _one_line(raw: str, limit: int = 77) -> str:
+    """Collapse a licence string to one short line fit for a table cell.
+
+    ⚠ ``License:`` in Python core metadata is a free-text field, and a handful
+    of distributions put the **entire licence text** in it. ``exactextract``
+    0.3.0 is one: its value is the whole Apache-2.0 document, newlines
+    included.
+
+    The truncation this replaces was ``raw[:77] + "..."``, which is correct on
+    length and silent on newlines — so those 77 characters still contained two
+    line breaks, and a single table row became three. Two of them rendered as
+    stray body text in the middle of the inventory, and the package's own row
+    lost its Category and Distribution columns. A reader checking that
+    `exactextract` is Apache-licensed found a mangled table instead.
+
+    Whitespace first, then truncate: collapsing afterwards would count the
+    newlines against the budget and throw away real text.
+    """
+    collapsed = " ".join(raw.split())
+    if len(collapsed) <= limit + 3:
+        return collapsed
+    return collapsed[:limit].rstrip() + "..."
+
+
+def _cell(value: str) -> str:
+    """Escape a value for a GitHub-flavoured markdown table cell.
+
+    An unescaped ``|`` in an SPDX expression (``MIT | Apache-2.0`` is legal
+    prose, and some manifests write it) would open a column that is not there
+    and silently shift every later column by one.
+    """
+    return _one_line(value, limit=120).replace("|", "\\|")
+
+
 def _licence_from_file(directory: Path) -> tuple[str, str]:
-    """Read a licence out of a LICENSE file when the manifest declares none."""
+    """Read a licence out of a LICENSE file when the manifest declares none.
+
+    Reads 4000 characters rather than 400: the GNU family puts its own name on
+    the first line, but an Apache-2.0 `LICENSE` reaches "Apache License" in
+    the first few bytes while a project that merely *refers* to its licence in
+    prose may not get there for a paragraph. Reading more cannot now cause a
+    misread, because the markers are anchored.
+
+    Returns ``("", "")`` when there is no licence file, and
+    ``("see <file>", "file")`` when there is one this cannot identify — never a
+    guess. An unidentified licence lands in ``undeclared``, which the summary
+    reports as needing a human.
+    """
     for pattern in ("LICENSE*", "LICENCE*", "COPYING*"):
         for path in sorted(directory.glob(pattern)):
             if not path.is_file():
                 continue
-            head = path.read_text(encoding="utf-8", errors="replace")[:400]
-            for name in ("MIT", "Apache", "BSD", "ISC", "MPL", "LGPL", "GPL"):
-                if name.lower() in head.lower():
+            head = path.read_text(encoding="utf-8", errors="replace")[:4000]
+            for marker, name in _FILE_MARKERS:
+                if marker.search(head):
                     return f"{name} (per {path.name}; not declared in manifest)", "file"
             return f"see {path.name}", "file"
     return "", ""
@@ -154,8 +249,7 @@ def python_entries() -> list[Entry]:
             declared = "; ".join(str(c).split("::")[-1].strip() for c in classifiers)
             source = "classifier"
         elif meta["License"]:
-            raw = str(meta["License"]).strip()
-            declared = raw if len(raw) < 80 else raw[:77] + "..."
+            declared = _one_line(str(meta["License"]))
         entries.append(
             Entry(
                 "python",
@@ -244,7 +338,7 @@ def npm_entries() -> list[Entry]:
 def _table(entries: list[Entry]) -> list[str]:
     lines = ["| Package | Version | Licence | Distribution |", "|---|---|---|---|"]
     for e in sorted(entries, key=lambda x: x.name.lower()):
-        licence = e.licence or "**undeclared**"
+        licence = _cell(e.licence) if e.licence else "**undeclared**"
         lines.append(f"| `{e.name}` | {e.version} | {licence} | {e.distribution} |")
     return lines
 
@@ -298,7 +392,8 @@ def render(entries: list[Entry]) -> str:
         ]
         for e in sorted(flagged, key=lambda x: (x.bucket, x.name.lower())):
             out.append(
-                f"| `{e.name}` | {e.version} | {e.licence or '**undeclared**'} "
+                f"| `{e.name}` | {e.version} "
+                f"| {_cell(e.licence) if e.licence else '**undeclared**'} "
                 f"| {e.bucket} | {e.distribution} |"
             )
         notes = [n for n in (MANUAL_NOTES.get(e.name) for e in flagged) if n]
