@@ -272,13 +272,53 @@ BUILDINGS=data/overture_buildings_mexicali.parquet
 # metadata, and a zero-row one has nothing to load.
 buildings_usable() {
   [[ -f "$BUILDINGS" ]] || return 1
-  $PY - "$BUILDINGS" <<'PYEOF' 2>/dev/null
+  $PY - "$BUILDINGS" "$MEXICALI_BBOX" <<'PYEOF' 2>/dev/null
 import sys
 import pyarrow.parquet as pq
 
-# Footer only — no row data is read, so this costs milliseconds on 50 MB.
-rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows
-raise SystemExit(0 if rows > 0 else 1)
+# Footer and the bbox column's statistics only — no row data, so this costs
+# milliseconds even on a 722 MB file.
+#
+# ⚠ Row count alone is not enough, and that is not hypothetical: a perfectly
+# valid 722 MB extract of MEXICO CITY passed a rows>0 check, loaded, was
+# clipped to nothing against the Mexicali AOI, and surfaced four steps later
+# as "the global:building feature layer is empty". Checking the extent is what
+# distinguishes "a readable parquet" from "this city's parquet".
+path, bbox = sys.argv[1], sys.argv[2]
+want = [float(v) for v in bbox.split(",")]
+md = pq.ParquetFile(path).metadata
+if md.num_rows <= 0:
+    raise SystemExit(1)
+
+names = pq.ParquetFile(path).schema_arrow.names
+if "bbox" not in names:
+    # No bbox struct to check against; accept on row count alone rather than
+    # reject a file we cannot judge.
+    raise SystemExit(0)
+
+# Overture stores bbox as a struct; its leaf columns appear as bbox.xmin etc.
+leaves = {md.row_group(0).column(i).path_in_schema: i
+          for i in range(md.row_group(0).num_columns)}
+try:
+    xmin = min(md.row_group(g).column(leaves["bbox.xmin"]).statistics.min
+               for g in range(md.num_row_groups))
+    xmax = max(md.row_group(g).column(leaves["bbox.xmax"]).statistics.max
+               for g in range(md.num_row_groups))
+    ymin = min(md.row_group(g).column(leaves["bbox.ymin"]).statistics.min
+               for g in range(md.num_row_groups))
+    ymax = max(md.row_group(g).column(leaves["bbox.ymax"]).statistics.max
+               for g in range(md.num_row_groups))
+except (KeyError, AttributeError, TypeError):
+    raise SystemExit(0)
+
+# Reject only a clear disjoint — a narrower extract of the right city is fine.
+overlaps = (xmax >= want[0] and xmin <= want[2]
+            and ymax >= want[1] and ymin <= want[3])
+if not overlaps:
+    print(f"extent {xmin:.3f},{ymin:.3f},{xmax:.3f},{ymax:.3f} "
+          f"does not overlap {bbox}", file=sys.stderr)
+    raise SystemExit(1)
+raise SystemExit(0)
 PYEOF
 }
 
@@ -288,7 +328,7 @@ import sys, pyarrow.parquet as pq
 print(f"{pq.ParquetFile(sys.argv[1]).metadata.num_rows:,} rows")' "$BUILDINGS"))"
 else
   if [[ -f "$BUILDINGS" ]]; then
-    note "⚠ $BUILDINGS exists but is unreadable or empty — re-extracting"
+    note "⚠ $BUILDINGS is unreadable, empty, or covers the wrong extent — re-extracting"
     rm -f "$BUILDINGS"
   fi
   # ⚠ --low-memory, and it is the right default *here* even though the CLI's
@@ -299,7 +339,13 @@ else
   # nothing until it is completely finished. Seven minutes of visible progress
   # beats forty seconds that might be forty minutes.
   note "~387k rows in MEXICALI_BBOX, one S3 file at a time: ~663 MB, ~8 min"
-  $CLI overture extract --output-path "$BUILDINGS" --low-memory
+  # ⚠ --bbox is passed explicitly and MUST be. `overture extract`'s own
+  # default is MEXICO_CITY_BBOX, 1,600 km away. Omitting it extracted several
+  # million Mexico City buildings (a 722 MB file), `overture load --aoi-id`
+  # then clipped every single one against the Mexicali polygon, and the run
+  # reached step 10 with zero buildings and no error anywhere — the clip had
+  # done precisely what it exists to do.
+  $CLI overture extract --output-path "$BUILDINGS" --bbox "$MEXICALI_BBOX" --low-memory
 fi
 $CLI overture load \
   --raw-path "$BUILDINGS" \

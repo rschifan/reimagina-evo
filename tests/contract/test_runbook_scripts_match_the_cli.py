@@ -286,3 +286,34 @@ def test_the_scripts_mexicali_bbox_matches_the_python_constant():
         f"reimagina.pipeline.overture.MEXICALI_BBOX {MEXICALI_BBOX}; the OSM "
         f"fetch and the Overture extract would cover different ground"
     )
+
+
+def test_the_mexicali_runbook_passes_an_explicit_bbox_to_overture_extract():
+    """⚠ `overture extract`'s own default bbox is MEXICO CITY.
+
+    Omitting `--bbox` does not mean "this script's city". It means Mexico
+    City, 1,600 km away — and the consequence is silent: several million CDMX
+    buildings extracted, loaded, then clipped to nothing against the Mexicali
+    AOI, surfacing four steps later as "the global:building feature layer is
+    empty".
+
+    That happened. This test is the guard that was missing: the sibling test
+    above compares the script's `--clip-bbox` against MEXICALI_BBOX and
+    checked only the OSM step, not the Overture one.
+    """
+    text = (REPO_ROOT / "scripts/mexicali_run.sh").read_text()
+    extracts = [
+        tokens for tokens in _invocations(text) if tokens[:2] == ["overture", "extract"]
+    ]
+    assert extracts, "the Mexicali runbook no longer extracts Overture buildings"
+    for tokens in extracts:
+        assert "--bbox" in tokens, (
+            f"`overture extract` invoked without --bbox ({tokens}); its default "
+            f"is MEXICO_CITY_BBOX, so this would extract the wrong city"
+        )
+        value = tokens[tokens.index("--bbox") + 1]
+        assert value == "$MEXICALI_BBOX", (
+            f"--bbox is {value!r}; it must be the script's MEXICALI_BBOX "
+            f"variable, which another test pins to the Python constant — a "
+            f"literal here could drift from the OSM clip box"
+        )

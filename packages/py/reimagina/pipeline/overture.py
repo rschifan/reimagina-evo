@@ -471,12 +471,13 @@ def bootstrap_overture_buildings_subset(
         code_version=code_version,
     )
 
-    clip_result: dict[str, int | str] = {}
+    clip_result: dict[str, int | str | float | None] = {}
     if aoi_id is not None:
         clip_result = _clip_buildings_to_aoi(
             conn,
             ingestion_run_id=str(load_result["ingestion_run_id"]),
             aoi_id=aoi_id,
+            loaded=int(load_result.get("records_written") or 0),
         )
         conn.commit()
 
@@ -518,13 +519,38 @@ def load_overture_buildings_subset(
     )
 
 
+class ExtractAoiMismatch(RuntimeError):
+    """The extract's bbox and the AOI do not overlap, so the clip removed all of it."""
+
+
 def _clip_buildings_to_aoi(
-    conn, *, ingestion_run_id: str, aoi_id: str
-) -> dict[str, int | str]:
+    conn, *, ingestion_run_id: str, aoi_id: str, loaded: int | None = None
+) -> dict[str, int | str | float | None]:
     """Drop rows from this ingestion run whose centroid falls outside the
     AOI polygon. Bbox-based S3 extraction always returns a superset of
     the AOI; this guarantees ``aoi_feature`` recompute won't surface
-    bbox-only orphans later."""
+    bbox-only orphans later.
+
+    ⚠ **Clipping away everything is a mismatch, not a clip, and it raises.**
+
+    The clip exists because the bbox is a *superset* of the AOI. If it removes
+    100 % of what was just loaded, the bbox and the AOI are disjoint and the
+    extract is of somewhere else — and the previous behaviour was to report
+    the deletion as a successful clip and carry on with an empty layer.
+
+    That is not theoretical. `scripts/mexicali_run.sh` omitted `--bbox`, so
+    `overture extract` used its own default — MEXICO_CITY_BBOX, 1,600 km
+    away. Several million Mexico City buildings were extracted, loaded, and
+    clipped to nothing against the Mexicali AOI. No error. The run continued
+    for four more steps and surfaced as
+    "urban_form_block_building_density needs the global:building feature
+    layer, which is empty" — a message about blocks, pointing at the wrong
+    thing entirely.
+
+    Refusing here puts the failure where the cause is. It costs nothing
+    legitimate: a load whose every row falls outside its own AOI has no
+    correct interpretation.
+    """
     cur = conn.cursor()
     cur.execute(
         """
@@ -536,7 +562,23 @@ def _clip_buildings_to_aoi(
         """,
         (ingestion_run_id, aoi_id),
     )
-    return {"clipped_outside_aoi": cur.rowcount, "clipped_to_aoi_id": aoi_id}
+    clipped = cur.rowcount or 0
+    if loaded and clipped >= loaded:
+        raise ExtractAoiMismatch(
+            f"the clip removed all {clipped:,} of the {loaded:,} features just "
+            f"loaded, so the extract's bbox does not overlap AOI {aoi_id}. The "
+            f"usual cause is an extract taken with the wrong --bbox: "
+            f"`overture extract` defaults to MEXICO_CITY_BBOX, so omitting "
+            f"--bbox for any other city silently extracts Mexico City. Check "
+            f"the bbox the parquet was built with, then re-extract."
+        )
+    return {
+        "clipped_outside_aoi": clipped,
+        "clipped_to_aoi_id": aoi_id,
+        # Recorded because a high-but-not-total clip is normal for a bbox that
+        # crosses a border, and a reader needs to tell that from a near-miss.
+        "clipped_fraction": (round(clipped / loaded, 4) if loaded else None),
+    }
 
 
 def validate_overture_buildings_layer(conn) -> dict[str, Any]:
