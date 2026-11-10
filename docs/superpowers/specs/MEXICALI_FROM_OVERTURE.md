@@ -211,11 +211,31 @@ worth recording as evidence that it did.
 
 ## What this does not give you
 
-**No indicator can run on Mexicali from this data.** Every shipped
-indicator is block-grain, and the analysis units are INEGI manzanas,
-which are not reachable here. `urban_form_block_compactness` and
-`urban_form_block_building_density` both need a block layer that this
-spec does not produce and cannot.
+> **⚠ Superseded by the delivery machine, and the spec was wrong in the
+> interesting direction.** This section said no indicator could run. That
+> held for *this environment*, where INEGI is refused at CONNECT — and the
+> inference I drew from it, that the data was unavailable, did not. The lake
+> mirror was on the author's workstation the whole time: 17 GB including the
+> ~3 GB Marco Geoestadístico. Run there, INEGI contributed 68,984 blocks and
+> 1,824 AGEBs, and `urban_form_block_compactness`,
+> `urban_form_block_building_density` and `urban_form_block_composite` each
+> computed 19,058 rows on real census blocks, with 313,827 of these Overture
+> buildings attributed to them. See Appendix A of
+> `docs/delivery/05_capability_proof.md`.
+>
+> The lesson worth keeping: "this environment cannot reach it" is a fact
+> about the environment. I wrote it down as a fact about the data, and the
+> spec's scope was narrower than it needed to be for a day because of it.
+>
+> What survives unchanged is the part that was actually load-bearing — an
+> Overture-derived AOI needs no INEGI mirror, which is what makes this route
+> work on a machine that has none.
+
+**No indicator can run on Mexicali from this data alone.** Every shipped
+indicator is block-grain, and the analysis units are INEGI manzanas, which
+are not reachable *from this environment*. `urban_form_block_compactness` and
+`urban_form_block_building_density` both need a block layer that this spec
+does not produce.
 
 What it does give is the pipeline exercised end to end against real,
 licensed, city-scale third-party data — 387,273 candidate features rather

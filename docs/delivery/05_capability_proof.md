@@ -21,6 +21,7 @@ date: "10 November 2026"
 | 0.3 | 2026-11-09 | Rossano Schifanella | Run-level deduplication (§13.1) |
 | 0.4 | 2026-11-09 | Rossano Schifanella | The acceptance run now exercises the ops plane |
 | 0.5 | 2026-11-10 | Rossano Schifanella | Tiles over HTTP from the API (§10.3); street context without a basemap (§10.4); corrected API operation count and environment of record |
+| 0.6 | 2026-11-10 | Rossano Schifanella | Appendix A — the real Mexicali pilot, run on the author's machine and marked not reviewer-reproducible |
 
 ### Why this document exists
 
@@ -30,9 +31,14 @@ technically competent reader to install and run the system". Both criteria are
 about behaviour, and neither can be settled by reading a design document.
 
 So this annex records what the system was observed doing. Every number, table
-and transcript below was produced on one machine, in one sitting, against a
-database that did not exist when the sitting began. Nothing is quoted from a
-previous run, a test fixture, or a specification.
+and transcript in **§1 to §17** was produced on one machine, in one sitting,
+against a database that did not exist when the sitting began. Nothing there is
+quoted from a previous run, a test fixture, or a specification.
+
+**Appendix A is different and says so.** It records a run against the real
+Mexicali data, which needs the Azure lake mirror and therefore cannot be
+reproduced by a reviewer. It is kept separate precisely so the paragraph above
+stays true of everything else.
 
 It is an annex, not a fifth Work. It adds no contractual obligation and
 replaces no part of Works 1 to 4.
@@ -893,7 +899,7 @@ Stated so that the absence is not mistaken for a claim.
 | PMTiles snapshot export | `admin_reference` reports `not available` above — correct, nothing has been exported. PMTiles are for stable reference layers; every layer here is live. |
 | API authentication | There is none. It is risk **T1** in Work 1's register and must be closed before any deployment reachable beyond localhost. |
 | Scale | The capability transcripts above are a sixteen-block territory. The crash-recovery and sweep proofs ran on a generated 22,500-block, 67,500-building one, seeded in 35 seconds — `python scripts/synthetic_territory.py --blocks 150 --ageb-side 10`, no credentials. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works. |
-| The real Mexicali data | Needs data-lake credentials. §2's territory is generated, and §5 says where that shows. |
+| The real Mexicali data, *by a reviewer* | Still needs data-lake credentials, so nothing in §1–§17 uses it and §5 says where the generated grid shows. It has now been run by the author — see **Appendix A**, which is labelled as not reviewer-reproducible for exactly this reason. |
 | GeoArrow encoding | The export is GeoParquet 1.1 with a covering bbox (§12), but geometries are WKB. 1.1's native GeoArrow encoding avoids a decode step on read; geopandas still labels it experimental, so WKB is the interoperable choice today. |
 | TypeScript 7 | The web app stays on 5.9. 7.0 is the native compiler port and needs both TS 7 and TS 6 installed plus a `--tsgo` flag, which `svelte-check` is not set up for. Everything else in the web stack is current and `npm audit` is clean. |
 | `resolution_m` on raster ingest | Came back `null` for the EPSG:4326 raster — the resolution is in degrees and the field wants metres. Cosmetic in the registry, but it is a null where a number belongs. |
@@ -916,3 +922,108 @@ Stated so that the absence is not mistaken for a claim.
 | Raster ingest | `packages/py/reimagina/pipeline/raster.py` |
 | Raster URL guard | `apps/api/cog_security.py` |
 | Exports | `apps/api/exports.py` |
+
+---
+
+## Appendix A. The real Mexicali pilot
+
+### What this appendix is, and why it is separate
+
+Everything in §1 to §17 runs on a generated territory and can be reproduced by
+anyone with Postgres and this repository. This appendix cannot. It records the
+system running against the **real** data for Mexicali, which requires the
+Azure data-lake mirror described in `docs/AZURE_DATA_INVENTORY.md` —
+approximately 17 GB pulled from a private container with Storage Explorer, and
+not something a reviewer has credentials for.
+
+It is therefore evidence of a different kind, and it is fenced off so that the
+reproducibility claim made earlier in this document is not weakened by
+association. Three honest qualifications:
+
+1. **Different machine, different sitting.** The numbers below were produced
+   on the author's workstation, not in the environment of record in §1.
+2. **Not reviewer-reproducible.** The procedure is
+   `scripts/mexicali_run.sh`, committed and documented, but it fails at step 0
+   without the mirror — by design, naming each missing path.
+3. **A pilot, not an analysis.** These are the pipeline's outputs on real
+   inputs. Interpreting them as findings about Mexicali's urban form is a
+   separate exercise requiring a planner, and nothing here does it.
+
+### Procedure
+
+```bash
+export DATABASE_URL=postgresql://localhost/reimagina_demo
+scripts/mexicali_run.sh
+```
+
+One command, from a clone with the lake mirror on disk. It drops and recreates
+the target database, so it starts from nothing in the same sense §2 does.
+
+### Measured
+
+Baja California (INEGI `CVE_ENT=02`), AOI = Mexicali municipality
+(`CVE_MUN=002`), Overture release `2026-10-21.0`, 10 November 2026.
+
+| Stage | Source | Result |
+|---|---|---|
+| Canonical geometry | INEGI Marco Geoestadístico 2024 | **68,984** blocks, **1,824** AGEBs, 7 municipalities, 1 state |
+| Census attributes | INEGI Censo 2020, manzana grain | loaded as `observation` rows, keyed `censo_2020_*` |
+| Amenities | IMIP / DENUE Mexicali | **1,493** establishments |
+| Buildings | Overture Maps `theme=buildings` | **387,273** extracted and loaded; **313,827** attributed to blocks inside the AOI |
+| Street network | OpenStreetMap, pedestrian graph | **38,625** nodes, **117,858** edges, **12,695.2 km**, published as **117,858** `global:road` features |
+| AOI membership | `aoi compute-features` | **364,779** members before the network load |
+| Overlaps | `overlap compute-all` | building→block **321,324**, block→AGEB **16,101** |
+
+Indicators, each on the blocks inside the AOI:
+
+| Indicator | Rows | Notes |
+|---|---|---|
+| `urban_form_block_compactness` | **19,058** | geometry only |
+| `urban_form_block_building_density` | **19,058** | 313,827 buildings attributed |
+| `urban_form_block_composite` | **19,058** | weighted from the two above |
+
+### What the run establishes that §1–§17 cannot
+
+- **Scale on real geometry.** §16 records the synthetic scale proof at 22,500
+  generated blocks. These are 68,984 INEGI manzanas with their real,
+  irregular, occasionally self-intersecting boundaries, and 387,273 building
+  footprints from a third party.
+- **The road tile cost question, partly.** §16 lists it as unproved because
+  the measurement there is 40 synthetic edges. A real walking network for one
+  city is 117,858 edges over 12,695 km. The tile *size* at z12 on this network
+  is still unmeasured and the open risk in
+  `docs/superpowers/specs/STREET_CONTEXT.md` stands.
+- **`--clip-bbox` earning its existence.** The AOI is the full municipality,
+  9,971 km² reaching the Sea of Cortez at San Felipe and almost entirely
+  desert. The fetch covered **0.1409** of it. An unclipped request is a
+  multi-gigabyte Overpass query whose result is ~99 % empty, and a truncated
+  response is indistinguishable from a city with no streets.
+
+### What it does not establish
+
+- **The accessibility family.** `accessibility_block_{school,health,park}_network_m`
+  require both the network and the amenity layer, and both are now present,
+  but their run on this data is not recorded here.
+- **The edificability family.** `edificability_block_*` read `num_levels`,
+  `unit_size` and `people_per_household` — scenario inputs that no INEGI or
+  Overture layer carries. `scripts/mexicali_run.sh` attempts them and reports
+  them unavailable rather than inventing the attributes, and
+  `urban_form_block_planned_floors` is unavailable for the same reason
+  (`floors`).
+- **Anything about Mexicali.** See qualification 3 above.
+
+### Defects this run found that the test suite did not
+
+Recorded because it is the argument for running against real data at all.
+Every one was invisible to a suite of 1,108 passing tests, and every one is
+fixed with a regression guard.
+
+| Defect | Why the suite could not see it |
+|---|---|
+| `OVERTURE_DEFAULT_RELEASE` pinned a release Overture had deleted, so every extract failed | Tests assert the glob's *shape*, not that S3 serves it — deliberately, since a test that fails when Overture rotates a release fails for an unrelated reason |
+| `curated_geo.road_edge` had no CLI loader, and the accessibility guard told users to call a Python function | Nothing asserted that an error message's remedy was runnable |
+| `bootstrap-db` seeded assets before feature types, failing on any database where `r003`'s seed had not landed | Works on a database migrated from scratch, which is every test database |
+| `scripts/mexicali_run.sh` omitted `--bbox`, so the extract took `MEXICO_CITY_BBOX` and the AOI clip deleted all of it | Shell and the CLI meet only when someone runs the script |
+| Two source modules were excluded by a `.gitignore` pattern matching at every depth, so the repository carried tests for code it did not contain | Local tests pass by construction — the file is present locally |
+| The Overture extract peaked at 4.4 GB on one city bbox, which swaps rather than OOMs on a laptop | No test measures resident memory |
+
