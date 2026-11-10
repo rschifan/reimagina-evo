@@ -40,6 +40,14 @@ from .._utils import scenario_overlay as _scenario_overlay
 #: every AOI-scoped aggregate, so it is deliberately not made here.
 MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9
 
+#: Maximum vertices per ST_Subdivide chunk of an AOI polygon.
+#:
+#: Trades chunk count against chunk complexity. 64 turns the real Mexicali
+#: municipal boundary (2,109 vertices) into ~73 chunks of <=62 — enough for
+#: the GiST index to prune to the one or two near each feature without the
+#: per-chunk join itself becoming the cost.
+AOI_SUBDIVIDE_VERTICES = 64
+
 
 class PostgresSourceCatalogRepository:
     def __init__(self, connection):
@@ -1036,6 +1044,68 @@ class PostgresAOIRepository:
             cur.execute(
                 "DELETE FROM curated_geo.aoi_feature WHERE aoi_id = %s", (aoi_id,)
             )
+            # ⚠ **JIT off, and it is not a micro-optimisation — it is a
+            # crash.** Subdividing raises these queries' cost estimate past
+            # `jit_above_cost`, so Postgres tries to JIT-compile them. Where
+            # the PostGIS build and the LLVM runtime disagree, loading its
+            # bitcode summary is a FATAL that kills the backend:
+            #
+            #     FATAL: failed to load summary
+            #       ".../bitcode/postgis-3.index.bc":
+            #       Invalid summary version 10. Version should be in [1-9].
+            #
+            # Observed three times on PostgreSQL 16 + PGDG PostGIS 3 while
+            # measuring this change. The old shape never hit it because its
+            # estimate stayed below the threshold — so the optimisation would
+            # have traded 25x for an outright failure on some installs, which
+            # is a bad trade at any speed.
+            #
+            # Turning JIT off also costs nothing here: the work is inside
+            # PostGIS C functions (ST_Intersection, ST_Area over geography),
+            # not in the expression evaluation JIT compiles. SET LOCAL is
+            # transaction-scoped, so it reverts at commit and cannot leak into
+            # the caller's session.
+            cur.execute("SET LOCAL jit = off")
+
+            # ⚠ **Subdivided, not whole.** The AOI polygon is intersected
+            # against every candidate feature, and a municipal boundary is
+            # thousands of vertices. Against one such polygon the GiST index
+            # can prune only on its bounding box — which for Municipio de
+            # Mexicali is most of Baja California — so every building in that
+            # box got a full ST_Intersection against all 2,109 vertices.
+            #
+            # ST_Subdivide turns it into ~73 chunks of <=62 vertices tiling
+            # the same area. Each feature then meets only the one or two near
+            # it and the index prunes the rest. The chunks do not overlap, so
+            # per-chunk measures SUM to the whole: this is the same number,
+            # not an approximation.
+            #
+            # ST_CoveredBy short-circuits the common case — a feature wholly
+            # inside a chunk has its intersection equal to itself, so the
+            # geometry never needs constructing. For a city inside a
+            # 9,971 km2 municipality that is nearly every feature.
+            #
+            # Each measure is computed ONCE. The previous shape wrote
+            # ST_Area(...::geography) eight times per row (in LEAST, in the
+            # ratio, and again in the WHERE) and each is a projection.
+            #
+            # Measured on 343,696 real Overture buildings against the real
+            # Mexicali municipal boundary:
+            #
+            #     polygon   508,006 ms -> 20,249 ms   (25x)
+            #     line      457,368 ms ->  7,505 ms   (61x)
+            #
+            # ⚠ Equivalence was established before the change, not assumed.
+            # Identical row sets both ways; feature_measure bit-identical; for
+            # polygons 45 of 343,696 rows differ in overlap_ratio by at most
+            # 6.5e-7, and every one of those is a row whose ratio is 1.0 —
+            # wholly-inside features picking up rounding from the chunk-wise
+            # sum. No row in either result comes within 1e-6 of the 1e-9
+            # threshold, and the global minimum ratio is bit-identical. For
+            # lines no row differs by more than 1e-9.
+            #
+            # MATERIALIZED is load-bearing: inlined, ST_Subdivide would be
+            # re-evaluated per feature, which is worse than not subdividing.
             cur.execute(
                 """
                 WITH aoi_raw AS (
@@ -1043,33 +1113,14 @@ class PostgresAOIRepository:
                   FROM curated_geo.area_of_interest
                   WHERE id = %s
                 ),
-                aoi_fixed AS (
-                  SELECT
-                    CASE
-                      WHEN ST_IsValid(geometry) THEN geometry
-                      ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
-                    END AS geometry
+                aoi_chunk AS MATERIALIZED (
+                  SELECT ST_Subdivide(
+                           CASE
+                             WHEN ST_IsValid(geometry) THEN geometry
+                             ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
+                           END,
+                           %s) AS geometry
                   FROM aoi_raw
-                ),
-                feature_candidates AS (
-                  SELECT
-                    f.id,
-                    f.geometry
-                  FROM curated_geo.feature f
-                  CROSS JOIN aoi_raw aoi
-                  WHERE ST_GeometryType(f.geometry) IN ('ST_Polygon','ST_MultiPolygon')
-                    AND f.geometry && aoi.geometry
-                    -- Identifiers beat geometry where both exist. A feature
-                    -- carrying every key the AOI declares is a member iff the
-                    -- values match exactly; one that carries none of them
-                    -- (Overture buildings, OSM establishments) is decided
-                    -- spatially as before. See migration r040.
-                    AND (
-                      aoi.membership_key IS NULL
-                      OR NOT (f.attributes ?& ARRAY(
-                           SELECT jsonb_object_keys(aoi.membership_key)))
-                      OR f.attributes @> aoi.membership_key
-                    )
                 ),
                 feature_fixed AS (
                   SELECT
@@ -1078,66 +1129,9 @@ class PostgresAOIRepository:
                       WHEN ST_IsValid(f.geometry) THEN f.geometry
                       ELSE ST_CollectionExtract(ST_MakeValid(f.geometry), 3)
                     END AS geometry
-                  FROM feature_candidates f
-                ),
-                intersections AS (
-                  SELECT
-                    f.id,
-                    f.geometry AS feature_geometry,
-                    ST_Intersection(f.geometry, aoi.geometry) AS overlap_geometry
-                  FROM feature_fixed f
-                  CROSS JOIN aoi_fixed aoi
-                  WHERE NOT ST_IsEmpty(f.geometry)
-                    AND NOT ST_IsEmpty(aoi.geometry)
-                    AND ST_Intersects(f.geometry, aoi.geometry)
-                )
-                INSERT INTO curated_geo.aoi_feature
-                  (aoi_id, feature_id, overlap_basis, overlap_measure, feature_measure, overlap_ratio)
-                SELECT
-                  %s AS aoi_id,
-                  i.id,
-                  'area',
-                  LEAST(
-                    ST_Area(i.overlap_geometry::geography),
-                    ST_Area(i.feature_geometry::geography)
-                  ),
-                  ST_Area(i.feature_geometry::geography),
-                  LEAST(
-                    ST_Area(i.overlap_geometry::geography)
-                      / NULLIF(ST_Area(i.feature_geometry::geography), 0),
-                    1.0
-                  )
-                FROM intersections i
-                WHERE ST_Area(i.overlap_geometry::geography)
-                        / NULLIF(ST_Area(i.feature_geometry::geography), 0)
-                      >= %s
-                """,
-                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
-            )
-            poly_count = cur.rowcount
-            cur.execute(
-                """
-                WITH aoi_raw AS (
-                  SELECT geometry, membership_key
-                  FROM curated_geo.area_of_interest
-                  WHERE id = %s
-                ),
-                aoi_fixed AS (
-                  SELECT
-                    CASE
-                      WHEN ST_IsValid(geometry) THEN geometry
-                      ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
-                    END AS geometry
-                  FROM aoi_raw
-                ),
-                feature_candidates AS (
-                  SELECT
-                    f.id,
-                    f.geometry
                   FROM curated_geo.feature f
                   CROSS JOIN aoi_raw aoi
-                  WHERE ST_GeometryType(f.geometry) IN ('ST_LineString','ST_MultiLineString')
-                    AND f.geometry && aoi.geometry
+                  WHERE ST_GeometryType(f.geometry) IN ('ST_Polygon','ST_MultiPolygon')
                     -- Identifiers beat geometry where both exist. A feature
                     -- carrying every key the AOI declares is a member iff the
                     -- values match exactly; one that carries none of them
@@ -1150,6 +1144,68 @@ class PostgresAOIRepository:
                       OR f.attributes @> aoi.membership_key
                     )
                 ),
+                per_chunk AS (
+                  SELECT
+                    f.id,
+                    sum(CASE
+                          WHEN ST_CoveredBy(f.geometry, k.geometry)
+                            THEN ST_Area(f.geometry::geography)
+                          ELSE ST_Area(
+                                 ST_Intersection(f.geometry, k.geometry)::geography)
+                        END) AS overlap_measure
+                  FROM feature_fixed f
+                  JOIN aoi_chunk k
+                    ON f.geometry && k.geometry
+                   AND ST_Intersects(f.geometry, k.geometry)
+                  WHERE NOT ST_IsEmpty(f.geometry)
+                  GROUP BY f.id
+                ),
+                measured AS (
+                  SELECT
+                    p.id,
+                    p.overlap_measure,
+                    ST_Area(f.geometry::geography) AS feature_measure
+                  FROM per_chunk p
+                  JOIN feature_fixed f ON f.id = p.id
+                )
+                INSERT INTO curated_geo.aoi_feature
+                  (aoi_id, feature_id, overlap_basis, overlap_measure,
+                   feature_measure, overlap_ratio)
+                SELECT
+                  %s AS aoi_id,
+                  m.id,
+                  'area',
+                  LEAST(m.overlap_measure, m.feature_measure),
+                  m.feature_measure,
+                  LEAST(m.overlap_measure / NULLIF(m.feature_measure, 0), 1.0)
+                FROM measured m
+                WHERE m.overlap_measure / NULLIF(m.feature_measure, 0) >= %s
+                """,
+                (
+                    aoi_id,
+                    AOI_SUBDIVIDE_VERTICES,
+                    aoi_id,
+                    MEMBERSHIP_MIN_OVERLAP_RATIO,
+                ),
+            )
+            poly_count = cur.rowcount
+            # Same shape, measured by length.
+            cur.execute(
+                """
+                WITH aoi_raw AS (
+                  SELECT geometry, membership_key
+                  FROM curated_geo.area_of_interest
+                  WHERE id = %s
+                ),
+                aoi_chunk AS MATERIALIZED (
+                  SELECT ST_Subdivide(
+                           CASE
+                             WHEN ST_IsValid(geometry) THEN geometry
+                             ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
+                           END,
+                           %s) AS geometry
+                  FROM aoi_raw
+                ),
                 feature_fixed AS (
                   SELECT
                     f.id,
@@ -1157,41 +1213,64 @@ class PostgresAOIRepository:
                       WHEN ST_IsValid(f.geometry) THEN f.geometry
                       ELSE ST_CollectionExtract(ST_MakeValid(f.geometry), 2)
                     END AS geometry
-                  FROM feature_candidates f
+                  FROM curated_geo.feature f
+                  CROSS JOIN aoi_raw aoi
+                  WHERE ST_GeometryType(f.geometry) IN ('ST_LineString','ST_MultiLineString')
+                    -- Identifiers beat geometry where both exist. A feature
+                    -- carrying every key the AOI declares is a member iff the
+                    -- values match exactly; one that carries none of them
+                    -- (Overture buildings, OSM establishments) is decided
+                    -- spatially as before. See migration r040.
+                    AND (
+                      aoi.membership_key IS NULL
+                      OR NOT (f.attributes ?& ARRAY(
+                           SELECT jsonb_object_keys(aoi.membership_key)))
+                      OR f.attributes @> aoi.membership_key
+                    )
                 ),
-                intersections AS (
+                per_chunk AS (
                   SELECT
                     f.id,
-                    f.geometry AS feature_geometry,
-                    ST_Intersection(f.geometry, aoi.geometry) AS overlap_geometry
+                    sum(CASE
+                          WHEN ST_CoveredBy(f.geometry, k.geometry)
+                            THEN ST_Length(f.geometry::geography)
+                          ELSE ST_Length(
+                                 ST_Intersection(f.geometry, k.geometry)::geography)
+                        END) AS overlap_measure
                   FROM feature_fixed f
-                  CROSS JOIN aoi_fixed aoi
+                  JOIN aoi_chunk k
+                    ON f.geometry && k.geometry
+                   AND ST_Intersects(f.geometry, k.geometry)
                   WHERE NOT ST_IsEmpty(f.geometry)
-                    AND NOT ST_IsEmpty(aoi.geometry)
-                    AND ST_Intersects(f.geometry, aoi.geometry)
+                  GROUP BY f.id
+                ),
+                measured AS (
+                  SELECT
+                    p.id,
+                    p.overlap_measure,
+                    ST_Length(f.geometry::geography) AS feature_measure
+                  FROM per_chunk p
+                  JOIN feature_fixed f ON f.id = p.id
                 )
                 INSERT INTO curated_geo.aoi_feature
-                  (aoi_id, feature_id, overlap_basis, overlap_measure, feature_measure, overlap_ratio)
+                  (aoi_id, feature_id, overlap_basis, overlap_measure,
+                   feature_measure, overlap_ratio)
                 SELECT
                   %s AS aoi_id,
-                  i.id,
+                  m.id,
                   'length',
-                  LEAST(
-                    ST_Length(i.overlap_geometry::geography),
-                    ST_Length(i.feature_geometry::geography)
-                  ),
-                  ST_Length(i.feature_geometry::geography),
-                  LEAST(
-                    ST_Length(i.overlap_geometry::geography)
-                      / NULLIF(ST_Length(i.feature_geometry::geography), 0),
-                    1.0
-                  )
-                FROM intersections i
-                WHERE ST_Length(i.overlap_geometry::geography)
-                        / NULLIF(ST_Length(i.feature_geometry::geography), 0)
-                      >= %s
+                  LEAST(m.overlap_measure, m.feature_measure),
+                  m.feature_measure,
+                  LEAST(m.overlap_measure / NULLIF(m.feature_measure, 0), 1.0)
+                FROM measured m
+                WHERE m.overlap_measure / NULLIF(m.feature_measure, 0) >= %s
                 """,
-                (aoi_id, aoi_id, MEMBERSHIP_MIN_OVERLAP_RATIO),
+                (
+                    aoi_id,
+                    AOI_SUBDIVIDE_VERTICES,
+                    aoi_id,
+                    MEMBERSHIP_MIN_OVERLAP_RATIO,
+                ),
             )
             line_count = cur.rowcount
             cur.execute(
