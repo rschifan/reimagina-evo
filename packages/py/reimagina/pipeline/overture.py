@@ -69,6 +69,14 @@ OVERTURE_S3_REGION = "us-west-2"
 # Verified against S3 on 2026-11-10, when the release listing held exactly
 # 2026-09-23.0, 2026-09-23.1 and 2026-10-21.0.
 OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-10-21.0")
+#: Rows per batch when streaming an extract out of S3.
+#:
+#: Trades peak memory against per-batch overhead. 50k Overture building rows
+#: is a few hundred MB resident rather than the 4.4 GB the whole Mexicali
+#: bbox took when materialised at once, and large enough that row-group
+#: boundaries still dominate the read.
+_EXTRACT_BATCH_ROWS = 50_000
+
 OVERTURE_BUILDINGS_FILENAME = "overture_buildings_mexico_city.parquet"
 #: Legacy Mexico City Silver name. No longer a default — `silver_filename_for`
 #: derives the name from the Bronze artifact so the two cannot disagree about
@@ -157,6 +165,7 @@ def _extract_remote_overture_subset(
     source_glob: str,
     output_path: Path,
     bbox: tuple[float, float, float, float],
+    low_memory: bool = False,
 ) -> None:
     """Read the pinned Overture S3 GeoParquet release and write the bbox
     subset locally. Filters on the GeoParquet ``bbox`` struct columns so
@@ -185,10 +194,78 @@ def _extract_remote_overture_subset(
         & (pc.field("bbox", "ymax") >= min_lat)
         & (pc.field("bbox", "ymin") <= max_lat)
     )
-    # ponytail: materialises the whole metro subset in memory — fine for a
-    # city bbox; switch to dataset.to_batches() + ParquetWriter if a larger
-    # AOI OOMs.
-    pq.write_table(dataset.to_table(filter=flt), str(output_path))
+
+    if low_memory:
+        _write_subset_per_file(dataset, flt, output_path, s3, source_glob)
+    else:
+        # Materialises the bbox subset in one table. Fast, and the memory cost
+        # is NOT the rows — see `low_memory` in
+        # :func:`extract_overture_buildings_subset` for the measurement that
+        # says where it actually goes.
+        pq.write_table(dataset.to_table(filter=flt), str(output_path))
+
+
+def _write_subset_per_file(
+    dataset, flt, output_path: Path, filesystem, source_glob: str
+):
+    """Scan one file at a time so parquet metadata stays bounded.
+
+    ⚠ **The expensive thing is metadata, not data.** Measured on the Mexicali
+    bbox against release 2026-10-21.0 (512 files, 387,273 matching rows)::
+
+        baseline interpreter               109 MB
+        after pads.dataset()               132 MB   (1 s)
+        after count_rows(filter)         4,170 MB   (139 s)  <-- here
+        after draining 387,273 rows      4,578 MB   (4 s)
+
+    Nearly all of it is spent evaluating the bbox predicate against row-group
+    statistics across every file, before a single row is returned. Draining the
+    rows afterwards costs ~400 MB.
+
+    That rules out the two obvious fixes, both of which were tried and
+    measured: writing in batches instead of one table (4,457 -> 4,304 MB) and
+    capping `fragment_readahead`/`batch_readahead` (4,285 MB at 1/2). Neither
+    touches metadata.
+
+    Opening each file as its own single-file dataset and dropping it does. Peak
+    held **flat at 663 MB** across all 512 files — bounded rather than
+    proportional, which is the property that matters for an AOI larger than
+    one city.
+
+    The cost is wall time: 454 s against 40 s, because each file's footer is a
+    separate round trip and most of them match nothing. On this release all
+    387,273 rows came from the first 128 files; the remaining 384 were read for
+    their statistics and discarded.
+    """
+    written = 0
+    writer: pq.ParquetWriter | None = None
+    try:
+        for path in dataset.files:
+            one = pads.dataset(path, filesystem=filesystem, format="parquet")
+            for batch in one.to_batches(filter=flt, batch_size=_EXTRACT_BATCH_ROWS):
+                if batch.num_rows == 0:
+                    # Survived statistics pruning, but no row passes the
+                    # predicate. Skipping keeps a schema-only batch from
+                    # opening the writer with nothing in it.
+                    continue
+                if writer is None:
+                    # Schema taken from the first real batch, not the dataset:
+                    # they differ when the release carries columns no row in
+                    # this bbox populates.
+                    writer = pq.ParquetWriter(str(output_path), batch.schema)
+                writer.write_batch(batch)
+                written += batch.num_rows
+            # Explicit, because the metadata this holds is the whole point.
+            del one
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if writer is None:
+        # No rows anywhere. Write an empty file with the dataset's schema
+        # rather than none: the caller stages this path into Bronze, and a
+        # missing file fails with "no such file" instead of "the bbox is empty".
+        pq.write_table(dataset.schema.empty_table(), str(output_path))
 
 
 def _extract_local_overture_subset(
@@ -212,6 +289,7 @@ def extract_overture_buildings_subset(
     source_glob: str | None = None,
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
     release: str = OVERTURE_DEFAULT_RELEASE,
+    low_memory: bool = False,
 ) -> Path:
     """Extract an Overture buildings subset to local GeoParquet.
 
@@ -225,12 +303,40 @@ def extract_overture_buildings_subset(
     AOI (e.g. Mexicali). ``release`` selects the Overture S3 release
     folder; the default tracks the most recently verified snapshot
     (see :data:`OVERTURE_DEFAULT_RELEASE`).
+
+    ``low_memory`` trades wall time for a bounded memory ceiling. Measured on
+    the Mexicali bbox, release 2026-10-21.0, 512 files, 387,273 matching rows:
+
+    ===========  ==========  =========
+    path         peak RSS    elapsed
+    ===========  ==========  =========
+    default      4,457 MB    40 s
+    low_memory     663 MB    454 s
+    ===========  ==========  =========
+
+    ⚠ The default's 4.4 GB is not the rows — those cost ~400 MB. It is parquet
+    metadata, read while evaluating the bbox predicate against row-group
+    statistics across all 512 files. See :func:`_write_subset_per_file` for
+    the attribution and for the two cheaper fixes that were tried and did not
+    work.
+
+    Default stays off: 4.4 GB is affordable on a server and 454 s is not free.
+    Turn it on where memory is the binding constraint — a laptop also running
+    Postgres, where the failure is not a clean OOM but swapping, which
+    presents as a hung process. ``scripts/mexicali_run.sh`` passes it for
+    exactly that reason.
+
+    The ceiling is flat rather than proportional (663 MB held across all 512
+    files), so ``low_memory`` is also the only path that is known to survive an
+    AOI materially larger than one city.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_glob = source_glob or overture_theme_type_glob(release=release)
     if str(effective_glob).startswith("s3://"):
-        _extract_remote_overture_subset(effective_glob, output_path, bbox)
+        _extract_remote_overture_subset(
+            effective_glob, output_path, bbox, low_memory=low_memory
+        )
     else:
         _extract_local_overture_subset(effective_glob, output_path, bbox)
     return output_path

@@ -54,21 +54,27 @@ def extract_mexico_city_buildings(
     output_path: str | Path,
     release: str = OVERTURE_DEFAULT_RELEASE,
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
+    low_memory: bool = False,
 ) -> dict[str, Any]:
     """Extract an Overture buildings subset to local GeoParquet.
 
     ``release`` and ``bbox`` are required to support multi-AOI ingest:
     the CLI passes the AOI's bbox so each city pulls only its own
     footprint from S3.
+
+    ``low_memory`` caps peak memory at the cost of wall time — 663 MB / 454 s
+    against 4,457 MB / 40 s on the Mexicali bbox. Echoed in the payload so a
+    recorded run says which path produced the file.
     """
     extracted_path = extract_overture_buildings_subset(
-        output_path=output_path, release=release, bbox=bbox
+        output_path=output_path, release=release, bbox=bbox, low_memory=low_memory
     )
     return {
         "output_path": str(extracted_path),
         "format": "GeoParquet",
         "release": release,
         "bbox": ",".join(str(v) for v in bbox),
+        "low_memory": low_memory,
     }
 
 

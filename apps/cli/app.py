@@ -317,12 +317,22 @@ def overture_extract(
         "--bbox",
         help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexico City)",
     ),
+    low_memory: bool = typer.Option(
+        False,
+        "--low-memory",
+        help="Scan one S3 file at a time instead of the whole release. Peak "
+        "memory 663 MB instead of 4.4 GB, wall time 454 s instead of 40 s "
+        "(measured, Mexicali bbox, 387k rows). ⚠ Use it on a laptop also "
+        "running Postgres: there the 4.4 GB does not OOM cleanly, it swaps, "
+        "and swapping presents as a hung process",
+    ),
 ) -> int:
     return _print(
         extract_mexico_city_buildings(
             output_path=output_path,
             release=release,
             bbox=parse_bbox(bbox),
+            low_memory=low_memory,
         )
     )
 

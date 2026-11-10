@@ -264,8 +264,15 @@ BUILDINGS=data/overture_buildings_mexicali.parquet
 if [[ -f "$BUILDINGS" ]]; then
   note "reusing $BUILDINGS"
 else
-  note "~387k rows in the default MEXICALI_BBOX; peak RSS measured at 4.4 GB"
-  $CLI overture extract --output-path "$BUILDINGS"
+  # ⚠ --low-memory, and it is the right default *here* even though the CLI's
+  # own default is off. Measured on this bbox: 663 MB / 454 s against
+  # 4,457 MB / 40 s. The 4.4 GB is parquet metadata, not rows, and on a
+  # laptop also running Postgres it does not fail cleanly — it swaps, which
+  # presents as a hung process with no output, because the fast path writes
+  # nothing until it is completely finished. Seven minutes of visible progress
+  # beats forty seconds that might be forty minutes.
+  note "~387k rows in MEXICALI_BBOX, one S3 file at a time: ~663 MB, ~8 min"
+  $CLI overture extract --output-path "$BUILDINGS" --low-memory
 fi
 $CLI overture load \
   --raw-path "$BUILDINGS" \
@@ -354,9 +361,32 @@ ATTEMPTED=(
   livability_block_score
 )
 
+# ⚠ stderr is kept, not discarded, and that is a correction.
+#
+# This was `2>/dev/null`, so an indicator that *failed* reported
+# "NONE REPORTED" with its reason thrown away — in the one step whose purpose
+# is to say what went wrong. On the first real Mexicali run that is exactly
+# what happened: a required indicator died and the message that would have
+# explained it had already been discarded.
+#
+# stderr now goes to a file and is printed when, and only when, the parse
+# finds no row count. Printing it unconditionally would bury a green run in
+# progress chatter.
+INDICATOR_ERR="$(mktemp "${TMPDIR:-/tmp}/reimagina-indicator-err.XXXXXX")"
 rows_for() {
-  $CLI indicators compute --slug "$1" --aoi-id "$AOI_ID" 2>/dev/null \
+  : >"$INDICATOR_ERR"
+  $CLI indicators compute --slug "$1" --aoi-id "$AOI_ID" 2>"$INDICATOR_ERR" \
     | tr -d '\n' | grep -oE '"rows_written": *[0-9]+' | grep -oE '[0-9]+$' || true
+}
+
+show_indicator_error() {
+  if [[ -s "$INDICATOR_ERR" ]]; then
+    echo "  ---- stderr from $1 ----" >&2
+    # Tail rather than the whole traceback: the exception and its message are
+    # the last lines, and the frames above are mostly typer and click.
+    tail -25 "$INDICATOR_ERR" | sed 's/^/  /' >&2
+    echo "  ---- end stderr ----" >&2
+  fi
 }
 
 for slug in "${REQUIRED[@]}"; do
@@ -367,6 +397,7 @@ for slug in "${REQUIRED[@]}"; do
   # nothing — the one thing this step exists to catch.
   if [[ -z "$rows" ]]; then
     echo "  ^ required indicator reported no rows_written at all" >&2
+    show_indicator_error "$slug"
     exit 1
   fi
   if (( rows == 0 )); then
@@ -381,7 +412,11 @@ for slug in "${ATTEMPTED[@]}"; do
   if [[ -n "$rows" && "$rows" -gt 0 ]]; then
     printf '  %-44s %s\n' "$slug" "rows_written=$rows"
   else
-    printf '  %-44s %s\n' "$slug" "unavailable — inputs absent on real data"
+    # One line of reason, not a traceback: an ATTEMPTED indicator failing is
+    # expected, but "unavailable" with no cause is unreadable when it is
+    # unexpected. The last stderr line is the exception message.
+    why="$(tail -1 "$INDICATOR_ERR" 2>/dev/null | cut -c1-100)"
+    printf '  %-44s %s\n' "$slug" "unavailable — ${why:-inputs absent on real data}"
     SKIPPED+=("$slug")
   fi
 done
