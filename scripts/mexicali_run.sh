@@ -25,11 +25,19 @@
 #   scripts/mexicali_run.sh --keep          # reuse the existing database
 #   scripts/mexicali_run.sh --skip-network  # no Overpass; skips accessibility
 #
-# Set DATABASE_URL to a database of its own. Do NOT point it at the database
-# the acceptance run uses: the synthetic territory sits at real Mexicali
-# coordinates (-115.469, 32.624), so loading the real municipal AOI on top of
-# it puts the acceptance fixture inside it and the capability proof stops being
-# reproducible from nothing.
+# DATABASE_URL comes from .env. DATABASE_URL_ADMIN is derived from it when
+# unset (same server, `postgres` database); set it explicitly on a managed
+# server where the connecting role may not create databases.
+#
+# ⚠ Reusing one database is fine *without* --keep, because step 1a drops and
+# recreates it: the synthetic acceptance territory cannot survive into a real
+# run. With --keep it can, and that matters — the synthetic territory sits at
+# real Mexicali coordinates (-115.469, 32.624) and carries no CVE_ENT, so the
+# r040 membership clause decides it spatially and its 16 invented blocks join
+# the real municipal AOI. They would then be averaged into compactness and
+# building density alongside the real INEGI ones, with nothing erroring.
+# `scripts/acceptance_run.sh` rebuilds its own territory from nothing, so
+# wiping it here loses nothing reproducible.
 
 set -euo pipefail
 
@@ -56,8 +64,24 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-: "${DATABASE_URL:?set DATABASE_URL — give Mexicali a database of its own}"
-: "${DATABASE_URL_ADMIN:?set DATABASE_URL_ADMIN — a DSN that may CREATE DATABASE}"
+: "${DATABASE_URL:?set DATABASE_URL (see .env.example)}"
+
+# DATABASE_URL_ADMIN is a DSN that may CREATE DATABASE, needed because step 1a
+# drops and recreates the target and cannot do that while connected to it.
+#
+# Derived rather than required. `.env` carries DATABASE_URL and
+# DATABASE_URL_DIRECT but not this one, so the script refused to start over a
+# variable whose value is mechanical: the same server, the `postgres`
+# maintenance database. Asking for it bought nothing and cost a failed run.
+#
+# Overridable, because the derivation assumes the connecting role may create
+# databases on that server — true for a local Homebrew Postgres, not
+# necessarily for a managed one.
+if [[ -z "${DATABASE_URL_ADMIN:-}" ]]; then
+  DATABASE_URL_ADMIN="${DATABASE_URL%/*}/postgres"
+  export DATABASE_URL_ADMIN
+  printf 'DATABASE_URL_ADMIN not set; using %s\n' "$DATABASE_URL_ADMIN"
+fi
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
