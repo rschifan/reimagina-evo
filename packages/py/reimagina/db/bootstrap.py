@@ -57,13 +57,34 @@ def bootstrap_local_platform(
     # The asset registry is seeded from code for the same reason, and from *here*
     # rather than from a migration body: r006/r015/r016/r019/r020 each insert
     # their own explore.layer_catalog rows and that drifted far enough to need
-    # scripts/repair_layer_catalog.sql. Assets are seeded after feature types
-    # exist, since a feature-backed asset resolves its feature_type_id.
+    # scripts/repair_layer_catalog.sql.
+    #
+    # ⚠ **Feature types are seeded here too, and that is a fix, not a
+    # belt-and-braces.** A feature-backed asset resolves its `feature_type_id`,
+    # and `seed_assets` raises `asset 'mex.state' references unknown feature
+    # type 'MEX:state' — run `feat seed-types` first` when it cannot. The
+    # comment here used to say assets are seeded "after feature types exist"
+    # while nothing in this function made them exist: it worked only because
+    # r003 happens to seed the same fifteen rows as a migration side-effect.
+    #
+    # On any database where that side-effect did not land — one created before
+    # r003 carried the seed, or one whose catalog was cleared — `bootstrap-db`
+    # failed outright, and its advice was impossible to follow: `feat
+    # seed-types` is the step *after* `bootstrap-db` in every runbook, so the
+    # user was told to do the thing they could not reach. Observed on a real
+    # machine, not hypothesised.
+    #
+    # Seeding explicitly makes the dependency true rather than coincidental.
+    # Idempotent (ON CONFLICT DO NOTHING), and it does not make the later
+    # `feat seed-types` redundant — that stays the command for re-seeding
+    # after a catalog change.
     from reimagina.assets.registry import seed_assets
+    from reimagina.data.feature import seed_feature_types
     from reimagina.db import connect
     from reimagina.indicators.catalog import seed_catalog
 
     with connect(app_dsn) as conn:
+        seed_feature_types(conn)
         seed_catalog(conn)
         seed_assets(conn)
         conn.commit()
