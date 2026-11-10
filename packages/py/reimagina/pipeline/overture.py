@@ -587,13 +587,38 @@ def _clip_buildings_to_aoi(
     cur = conn.cursor()
     cur.execute(
         """
+        WITH aoi_fixed AS (
+          -- ST_MakeValid, for consistency with `compute_overlaps`, which has
+          -- repaired the AOI geometry this way since r004. This clip did not,
+          -- and it is a DELETE — the one place an inconsistency costs data
+          -- rather than a wrong answer. INEGI polygons are routinely
+          -- self-intersecting, so the repair is not hypothetical.
+          --
+          -- ⚠ Hardening, NOT a diagnosis. The obvious theory — that an
+          -- invalid AOI makes ST_Intersects reject everything — was tested
+          -- and does not hold: a self-intersecting bowtie has ST_Area 0 yet
+          -- ST_Intersects still returns true for a point on its surface.
+          -- GEOS is more robust here than it looks. So this closes a real
+          -- asymmetry between two code paths over the same geometry; it is
+          -- not the explanation for any particular empty clip.
+          --
+          -- CollectionExtract(..., 3) keeps the polygonal parts: MakeValid on
+          -- a self-intersecting polygon can return a collection with stray
+          -- lines or points, and those would make the clip reject more than
+          -- it should.
+          SELECT CASE
+                   WHEN ST_IsValid(geometry) THEN geometry
+                   ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
+                 END AS geometry
+          FROM curated_geo.area_of_interest
+          WHERE id = %s
+        )
         DELETE FROM curated_geo.feature f
-        USING curated_geo.area_of_interest aoi
+        USING aoi_fixed aoi
         WHERE f.ingestion_run_id = %s
-          AND aoi.id = %s
           AND NOT ST_Intersects(f.geometry, aoi.geometry)
         """,
-        (ingestion_run_id, aoi_id),
+        (aoi_id, ingestion_run_id),
     )
     clipped = cur.rowcount or 0
     if loaded and clipped >= loaded:
