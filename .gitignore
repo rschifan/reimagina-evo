@@ -28,9 +28,20 @@ htmlcov/
 .pyre/
 
 # ── Local data ───────────────────────────────────────────────────────────────
-# Anything under data/ is local cache or bootstrap output — never tracked.
+# Anything under the repo-root data/ is local cache or bootstrap output —
+# never tracked.
+#
+# ⚠ The leading slash matters and was missing. A bare `data/` is matched at
+# EVERY depth, so it also ignored `packages/py/reimagina/data/` — the Python
+# package. The files already there stayed tracked (gitignore does not untrack),
+# which hid the problem completely: `data/feature.py`, `data/aoi.py` and the
+# rest kept working, while two NEW modules in the same package,
+# `data/roads.py` and `data/attribution.py`, were silently skipped by
+# `git add -A` and shipped to nobody. A fresh clone raised
+# `ModuleNotFoundError: No module named 'reimagina.data.roads'` the first time
+# anyone ran `network bootstrap`.
 # Bootstrap procedure to re-fetch is documented in docs/BOOTSTRAP.md.
-data/
+/data/
 
 # ── Environment / secrets ────────────────────────────────────────────────────
 .env
