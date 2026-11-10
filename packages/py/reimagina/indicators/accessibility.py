@@ -145,7 +145,7 @@ def _network_rows(conn, *, type_id, aoi_id, feature_ids, categories):
             cur.fetchone()[0],
             indicator_slug="accessibility (network family)",
             needs="curated_geo.road_edge — the graph to route over",
-            loader="`reimagina.pipeline.osm_network.bootstrap_network`",
+            loader="`python -m apps.cli.app network bootstrap --aoi-id <uuid>`",
         )
 
     aoi_join, feature_filter = _scope(aoi_id, feature_ids)
@@ -259,7 +259,7 @@ def _reader_for(spec: IndicatorSpec, rows_fn):
                 cur.fetchone()[0],
                 indicator_slug=spec.slug,
                 needs="the establishment (POI) layer",
-                loader="`apps.cli.app points bootstrap`",
+                loader="`python -m apps.cli.app points bootstrap`",
             )
         return rows_fn(
             conn,

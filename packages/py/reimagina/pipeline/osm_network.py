@@ -207,14 +207,51 @@ def load_graph(conn, nodes, edges, *, network_type: str = WALK) -> LoadResult:
     )
 
 
+def clip_polygon(polygon, bbox: tuple[float, float, float, float]):
+    """Intersect ``polygon`` with ``bbox`` (xmin, ymin, xmax, ymax, EPSG:4326).
+
+    ⚠ **Why a fetch boundary is not the same as an AOI.** An AOI is an
+    administrative unit, and some are mostly empty. Municipio de Mexicali is
+    9,971 km² reaching the Sea of Cortez at San Felipe, almost all of it desert
+    with no pedestrian network in it. Asking Overpass for a walking graph over
+    that polygon is a request measured in minutes and gigabytes, for a result
+    that is ~99 % empty — and a failed or truncated fetch is indistinguishable
+    from a city with no streets.
+
+    Clipping narrows what is *fetched* without touching what the AOI *is*, so
+    membership, overlaps and every indicator still scope to the real municipal
+    boundary. Blocks outside the clip simply have no network near them, which
+    the accessibility family already reports honestly as the cutoff rather
+    than as a missing value.
+
+    Raises if the intersection is empty: that means the bbox and the AOI do not
+    overlap at all, which is a mistake worth stopping for rather than fetching
+    nothing and loading an empty graph.
+    """
+    from shapely.geometry import box
+
+    clipped = polygon.intersection(box(*bbox))
+    if clipped.is_empty:
+        raise ValueError(
+            f"the clip bbox {bbox} does not intersect the AOI polygon, so "
+            f"there is nothing to fetch — check the bbox's ordering "
+            f"(xmin, ymin, xmax, ymax) and that it covers the right city"
+        )
+    return clipped
+
+
 def bootstrap_network(
     conn,
     *,
     aoi_id: str,
     network_type: str = WALK,
     publish_features: bool = True,
+    clip_bbox: tuple[float, float, float, float] | None = None,
 ) -> dict[str, Any]:
     """Fetch the AOI's OSM network, load it, and publish it as features.
+
+    ``clip_bbox`` narrows the fetch boundary without narrowing the AOI — see
+    :func:`clip_polygon` for why a municipio-sized AOI needs it.
 
     ``publish_features`` exists for a caller that wants only the routing
     tables — a graph reload where the drawable layer is being rebuilt
@@ -230,6 +267,9 @@ def bootstrap_network(
     its ODbL licence recorded, as a side effect of becoming drawable.
     """
     polygon = aoi_polygon(conn, aoi_id)
+    aoi_area = polygon.area
+    if clip_bbox is not None:
+        polygon = clip_polygon(polygon, clip_bbox)
     nodes, edges = fetch_walk_graph(polygon, network_type=network_type)
     result = load_graph(conn, nodes, edges, network_type=network_type)
     summary: dict[str, Any] = {
@@ -238,6 +278,13 @@ def bootstrap_network(
         "nodes": result.nodes_written,
         "edges": result.edges_written,
         "total_length_km": round(result.total_length_m / 1000, 1),
+        # Recorded because it changes what the numbers mean: a graph fetched
+        # over part of an AOI is not the AOI's network, and a later reader
+        # comparing two runs needs to know which one they are looking at.
+        "clip_bbox": list(clip_bbox) if clip_bbox else None,
+        "fetched_fraction_of_aoi": (
+            round(polygon.area / aoi_area, 4) if aoi_area else None
+        ),
     }
     if publish_features:
         # Imported here rather than at module scope: `data.roads` reaches

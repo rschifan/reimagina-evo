@@ -82,6 +82,17 @@ Rules:
   `membership_key=None`, which is what makes membership geometric — the case r040's
   own SQL comment names. Never declare a `membership_key` an AOI's features cannot
   carry: it excludes all of them
+- `curated_geo.road_edge` has exactly two loaders: `scripts/synthetic_territory.py`
+  (generated) and `python -m apps.cli.app network bootstrap --aoi-id <uuid>` (real
+  OSM, via osmnx and Overpass). The latter also publishes the edges as
+  `global:road`, which is what gives the map street context. ⚠ Loading **replaces
+  the whole network** — it is not scoped to the AOI, which only bounds the fetch.
+  Use `--clip-bbox` where the AOI is mostly empty: a municipio-sized walk graph is
+  a multi-gigabyte Overpass request whose result is ~99% desert
+- an indicator's `require_nonempty(loader=...)` hint must be a runnable command,
+  not a Python path. A user reading it has just had an indicator refuse to run;
+  telling them to call a function is telling them to write code.
+  `tests/contract/test_runbook_scripts_match_the_cli.py` enforces it
 - `OVERTURE_DEFAULT_RELEASE` is a pin with a shelf life of weeks — Overture deletes
   superseded releases and three pins have already rotted. It stays a pin because the
   value is written to `dataset_version`; `available_overture_releases()` is how you
@@ -143,7 +154,22 @@ python -m apps.cli.app indicators aoi-summary \
 
 # A territory to run all of the above against, without the data lake
 python scripts/synthetic_territory.py
+
+# Real OSM street network for an AOI: loads road_node/road_edge AND publishes
+# global:road features. --clip-bbox bounds the fetch, not the AOI.
+python -m apps.cli.app network bootstrap --aoi-id <uuid> \
+    --clip-bbox -115.70,32.40,-115.20,32.80
 ```
+
+Two end-to-end runbooks, and they trade off against each other:
+
+| Script | Needs | Gives |
+|---|---|---|
+| `scripts/acceptance_run.sh` | nothing but Postgres | a synthetic territory, all 11 indicators, reproducible anywhere — the Schedule A acceptance criterion |
+| `scripts/mexicali_run.sh` | the Azure lake mirror on disk + network | the real Mexicali pilot: INEGI blocks/AGEBs, 2020 census, IMIP amenities, Overture buildings, OSM streets |
+
+`mexicali_run.sh` fails fast if the mirror is absent, naming each missing
+path — `data/` is gitignored, so a fresh clone never has it.
 
 Web read-side (API + map frontend):
 

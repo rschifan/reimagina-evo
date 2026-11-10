@@ -128,6 +128,21 @@ uv run python -m apps.cli.app overture load \
 the bbox but outside the AOI polygon are dropped before any further
 pipeline work touches them.
 
+**The whole sequence as one command.** Everything in this document for
+Mexicali — schema, INEGI geometry, census, amenities, Overture buildings, the
+OSM network, membership, overlaps, indicators — is `scripts/mexicali_run.sh`.
+It checks the mirror first and names each missing path, keeps the step order
+that matters (membership *after* every load, or every tile returns 204), and
+treats the Overpass fetch as non-fatal so a rate-limit does not discard the
+INEGI load. Use the steps below to run a part of it, or to understand what it
+does.
+
+```sh
+export DATABASE_URL=postgresql://localhost/reimagina_mexicali
+export DATABASE_URL_ADMIN=postgresql://localhost/postgres
+scripts/mexicali_run.sh
+```
+
 **Where `<MEXICALI_AOI_UUID>` comes from without the lake mirror.** Every
 other AOI constructor is INEGI-derived (`cdmx aoi-from-alcaldia` needs a
 `MEX:municipality` feature loaded from Marco Geoestadistico). Overture's

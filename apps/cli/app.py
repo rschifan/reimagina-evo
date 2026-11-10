@@ -67,6 +67,8 @@ from .overture import (  # noqa: E402
     parse_bbox,
     validate_mexico_city_buildings,
 )
+from .network import bootstrap_osm_network  # noqa: E402
+from reimagina.pipeline.osm_network import WALK  # noqa: E402
 from reimagina.pipeline.overture import (  # noqa: E402
     DIVISION_SUBTYPE_COUNTY,
     MEXICALI_BBOX,
@@ -916,6 +918,69 @@ def cdmx_aoi_from_state(
     )
     _print(payload)
     return 0 if payload.get("status") == "ok" else 2
+
+
+# ── network ──────────────────────────────────────────────────────────────
+network_app = typer.Typer(
+    name="network",
+    help="Routing network: fetch an AOI's OSM graph, load it, publish it as roads",
+)
+app.add_typer(network_app, name="network")
+
+
+@network_app.command(
+    "bootstrap",
+    help=(
+        "Fetch the AOI's OSM pedestrian graph, load road_node/road_edge, "
+        "and publish the edges as global:road features"
+    ),
+)
+def network_bootstrap(
+    aoi_id: str = typer.Option(
+        ...,
+        "--aoi-id",
+        help="AOI whose polygon bounds the OSM fetch. ⚠ Not a scope: loading "
+        "replaces the whole network, so a second AOI discards the first's graph",
+    ),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    network_type: str = typer.Option(
+        WALK,
+        "--network-type",
+        help="osmnx network type. 'walk' is the pedestrian graph the "
+        "accessibility indicators are defined against; both costs are set to "
+        "length, making the graph undirected, which is correct for walking "
+        "and wrong for driving",
+    ),
+    publish_features: bool = typer.Option(
+        True,
+        "--publish-features/--no-publish-features",
+        help="Also project road_edge into global:road features. On by "
+        "default: a network loaded and not published is routable and "
+        "invisible, which is the state this repository was already in",
+    ),
+    clip_bbox: Optional[str] = typer.Option(
+        None,
+        "--clip-bbox",
+        help="Narrow the FETCH boundary to xmin,ymin,xmax,ymax without "
+        "narrowing the AOI. ⚠ Needed for a mostly-empty AOI: Municipio de "
+        "Mexicali is 9,971 km2 of largely desert, and asking Overpass for a "
+        "walking graph over all of it costs minutes and gigabytes for a "
+        "result that is ~99% empty. Membership and indicators still scope to "
+        "the full municipal boundary",
+    ),
+) -> int:
+    # Needs network access to Overpass. Where that is blocked, the graph
+    # cannot be fetched at all and the accessibility family stays unavailable;
+    # there is no offline substitute that would not be invented data.
+    return _print(
+        bootstrap_osm_network(
+            dsn=dsn,
+            aoi_id=aoi_id,
+            network_type=network_type,
+            publish_features=publish_features,
+            clip_bbox=parse_bbox(clip_bbox) if clip_bbox else None,
+        )
+    )
 
 
 # ── inegi-marco ──────────────────────────────────────────────────────────
