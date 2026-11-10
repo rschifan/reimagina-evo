@@ -511,6 +511,7 @@ def bootstrap_overture_buildings_subset(
             ingestion_run_id=str(load_result["ingestion_run_id"]),
             aoi_id=aoi_id,
             loaded=int(load_result.get("records_written") or 0),
+            source_id=source_id,
         )
         conn.commit()
 
@@ -557,19 +558,39 @@ class ExtractAoiMismatch(RuntimeError):
 
 
 def _clip_buildings_to_aoi(
-    conn, *, ingestion_run_id: str, aoi_id: str, loaded: int | None = None
+    conn,
+    *,
+    ingestion_run_id: str,
+    aoi_id: str,
+    loaded: int | None = None,
+    source_id: str | None = None,
 ) -> dict[str, int | str | float | None]:
     """Drop rows from this ingestion run whose centroid falls outside the
     AOI polygon. Bbox-based S3 extraction always returns a superset of
     the AOI; this guarantees ``aoi_feature`` recompute won't surface
     bbox-only orphans later.
 
-    ⚠ **Clipping away everything is a mismatch, not a clip, and it raises.**
+    ⚠ **Leaving the AOI empty is a mismatch, and it raises.**
 
-    The clip exists because the bbox is a *superset* of the AOI. If it removes
-    100 % of what was just loaded, the bbox and the AOI are disjoint and the
-    extract is of somewhere else — and the previous behaviour was to report
-    the deletion as a successful clip and carry on with an empty layer.
+    The clip exists because the bbox is a *superset* of the AOI. If, once it
+    has run, this source has no features left inside the AOI at all, the bbox
+    and the AOI are disjoint and the extract is of somewhere else — and the
+    original behaviour was to report the deletion as a successful clip and
+    carry on with an empty layer.
+
+    ⚠ The first version of this guard tested the wrong thing: "the clip
+    removed 100 % of what this run loaded". That is a false positive on a
+    re-run, and it fired on one. A second `overture load` of the same file
+    upserts — the rows that survived the first clip are skipped
+    ``ON CONFLICT``, and the rows the first clip *deleted* are re-inserted. So
+    run two loads exactly the rows that will be clipped again, and clipping
+    100 % of them is correct idempotent behaviour. Measured: 387,273 loaded,
+    43,566 re-inserted on the second pass, 343,707 already present and
+    untouched.
+
+    The invariant that actually distinguishes the two is about the AOI, not
+    about the run: *after clipping, does this source have anything inside the
+    AOI?* A re-run leaves 343,707 there; a Mexico City extract leaves nothing.
 
     That is not theoretical. `scripts/mexicali_run.sh` omitted `--bbox`, so
     `overture extract` used its own default — MEXICO_CITY_BBOX, 1,600 km
@@ -621,21 +642,48 @@ def _clip_buildings_to_aoi(
         (aoi_id, ingestion_run_id),
     )
     clipped = cur.rowcount or 0
-    if loaded and clipped >= loaded:
-        raise ExtractAoiMismatch(
-            f"the clip removed all {clipped:,} of the {loaded:,} features just "
-            f"loaded, so the extract's bbox does not overlap AOI {aoi_id}. The "
-            f"usual cause is an extract taken with the wrong --bbox: "
-            f"`overture extract` defaults to MEXICO_CITY_BBOX, so omitting "
-            f"--bbox for any other city silently extracts Mexico City. Check "
-            f"the bbox the parquet was built with, then re-extract."
+
+    remaining: int | None = None
+    if loaded and source_id is not None:
+        # Scoped to source_id rather than ingestion_run_id, because a re-run's
+        # surviving rows belong to the *earlier* run. Counting this run alone
+        # is what made the first version of this guard a false positive.
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM curated_geo.feature f
+            JOIN curated_geo.area_of_interest aoi ON aoi.id = %s
+            WHERE f.source_id = %s
+              AND f.type_slug = 'building'
+              AND ST_Intersects(
+                    f.geometry,
+                    CASE
+                      WHEN ST_IsValid(aoi.geometry) THEN aoi.geometry
+                      ELSE ST_CollectionExtract(ST_MakeValid(aoi.geometry), 3)
+                    END)
+            """,
+            (aoi_id, source_id),
         )
+        remaining = int(cur.fetchone()[0])
+        if remaining == 0:
+            raise ExtractAoiMismatch(
+                f"after clipping {clipped:,} features, this source has none "
+                f"left inside AOI {aoi_id} — so the extract's bbox does not "
+                f"overlap it. The usual cause is an extract taken with the "
+                f"wrong --bbox: `overture extract` defaults to "
+                f"MEXICO_CITY_BBOX, so omitting --bbox for any other city "
+                f"silently extracts Mexico City. Check the bbox the parquet "
+                f"was built with, then re-extract."
+            )
     return {
         "clipped_outside_aoi": clipped,
         "clipped_to_aoi_id": aoi_id,
         # Recorded because a high-but-not-total clip is normal for a bbox that
         # crosses a border, and a reader needs to tell that from a near-miss.
         "clipped_fraction": (round(clipped / loaded, 4) if loaded else None),
+        # The number the guard actually judges. Also the one that tells a
+        # re-run (unchanged) from a first load (grew).
+        "remaining_in_aoi": remaining,
     }
 
 

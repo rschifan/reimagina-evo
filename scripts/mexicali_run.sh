@@ -24,6 +24,7 @@
 #   scripts/mexicali_run.sh                 # drops and rebuilds $DATABASE_URL
 #   scripts/mexicali_run.sh --keep          # reuse the existing database
 #   scripts/mexicali_run.sh --skip-network  # no Overpass; skips accessibility
+#   scripts/mexicali_run.sh --low-memory    # slow, bounded-memory extract
 #
 # DATABASE_URL comes from .env. DATABASE_URL_ADMIN is derived from it when
 # unset (same server, `postgres` database); set it explicitly on a managed
@@ -43,10 +44,12 @@ set -euo pipefail
 
 KEEP=0
 SKIP_NETWORK=0
+LOW_MEMORY=0
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --skip-network) SKIP_NETWORK=1 ;;
+    --low-memory) LOW_MEMORY=1 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -338,14 +341,27 @@ else
   # presents as a hung process with no output, because the fast path writes
   # nothing until it is completely finished. Seven minutes of visible progress
   # beats forty seconds that might be forty minutes.
-  note "~387k rows in MEXICALI_BBOX, one S3 file at a time: ~663 MB, ~8 min"
+  note "~387k rows in MEXICALI_BBOX"
   # ⚠ --bbox is passed explicitly and MUST be. `overture extract`'s own
   # default is MEXICO_CITY_BBOX, 1,600 km away. Omitting it extracted several
   # million Mexico City buildings (a 722 MB file), `overture load --aoi-id`
   # then clipped every single one against the Mexicali polygon, and the run
   # reached step 10 with zero buildings and no error anywhere — the clip had
   # done precisely what it exists to do.
-  $CLI overture extract --output-path "$BUILDINGS" --bbox "$MEXICALI_BBOX" --low-memory
+  #
+  # Memory/speed is the operator's call, not this script's. Measured on this
+  # bbox: default 4,457 MB / 40 s, --low-memory 663 MB / 454 s. This passed
+  # --low-memory unconditionally, which imposed an 11x slowdown on every
+  # machine to protect one whose RAM had been guessed at rather than measured.
+  # Default is now fast; --low-memory is there for a machine where 4.4 GB
+  # alongside Postgres swaps.
+  if (( LOW_MEMORY )); then
+    note "bounded-memory extract: ~663 MB, ~8 min"
+    $CLI overture extract --output-path "$BUILDINGS" --bbox "$MEXICALI_BBOX" --low-memory
+  else
+    note "fast extract: ~4.4 GB peak, ~40 s. Pass --low-memory if that is too much"
+    $CLI overture extract --output-path "$BUILDINGS" --bbox "$MEXICALI_BBOX"
+  fi
 fi
 $CLI overture load \
   --raw-path "$BUILDINGS" \
