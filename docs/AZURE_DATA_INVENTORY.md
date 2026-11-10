@@ -30,7 +30,7 @@ lineage; the pipeline reads from the local Bronze copy.
 | Category | Path | Size | Format | Coverage |
 |---|---|---|---|---|
 | **Geometric layers (national)** | `inegi/marco_geostadistico/2024/` | ~3 GB | Hive parquet by `CVE_ENT`, geometry as BLOB (WKB) | All 32 Mexican states |
-| **Census attributes (2010)** | `inegi/censo/manzanas_2010.parquet/` | ~1.6 GB | Hive parquet by `entidad/mun`, **199 columns** (pobtot, age cohorts, education, housing) | All Mexico, block grain |
+| **Census attributes** | `inegi/censo/` — `manzanas_2020.parquet` (582 MB), `manzanas_2010.parquet` (472 MB), `localidades_2020.parquet` (476 MB), `localidades_2010.parquet` (336 MB) | 1.87 GB total | Hive parquet by `entidad/mun`, ~200 columns (pobtot, age cohorts, education, housing) | All Mexico; manzana (block) and localidad grain |
 | **National business registry** | `denue/denue_estimaciones_mx_2023.parquet/` | 360 MB | Hive parquet by `cve_ent`, 43 columns (business name, NAICS, employee band, address) | All Mexico, point-level |
 | **Mexicali amenities** | `exe/002_mexicali/equipamientos.geoparquet` + `por_estado/02_baja_california/002_mexicali/imip/equipamiento/*.geoparquet` (14 categories) + `equipamiento_combined.fgb` | 2.8 MB | GeoParquet + FlatGeobuf, points, EPSG:4326 | Mexicali |
 | **CDMX-Tlalpan amenities** | `sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet` (1785 pts) + `inegi/denue/amenities/exe_amenities_denue*.geoparquet` (1493 pts) | 76 KB | GeoParquet, points, EPSG:4326 | CDMX-Tlalpan |
@@ -43,9 +43,19 @@ lineage; the pipeline reads from the local Bronze copy.
 - **`inegi/marco_geostadistico/2024/manzanas_urbanas.parquet`**:
   `CVEGEO, CVE_LOC, CVE_AGEB, CVE_MZA, AMBITO, TIPOMZA, geometry, CVE_ENT, CVE_MUN`
   — geometry stored as BLOB (WKB), partitioned by `CVE_ENT`.
-- **`inegi/censo/manzanas_2010.parquet`**: 199 columns. Joins to
-  `manzanas_urbanas` via the implicit `(entidad, mun, loc, ageb, mza)`
-  composite or via a derived CVEGEO. Confirm the join key during ingest.
+- **`inegi/censo/manzanas_2020.parquet`**: the vintage the pipeline reads
+  (`inegi_censo.DEFAULT_SOURCE_ROOT`). Joins to `manzanas_urbanas` via the
+  implicit `(entidad, mun, loc, ageb, mza)` composite or via a derived
+  CVEGEO.
+- **`inegi/censo/manzanas_2010.parquet`**: the earlier vintage, kept for
+  comparison. ⚠ Not a drop-in `--source-root` substitute: its headline column
+  set differs (no `p_18ymas`), so pointing the 2020 reader at it fails on a
+  missing column rather than returning older numbers.
+- **`inegi/censo/localidades_{2010,2020}.parquet`** (812 MB together):
+  **nothing in the repository reads these.** Localidad is a coarser grain than
+  manzana and there is no `MEX:locality` feature type, so there is no anchor
+  to attach the observations to. Listed here because an undocumented 812 MB on
+  disk otherwise looks like it is being used.
 - **All amenity geoparquets** share the same column set:
   `id, category, capacity, geometry, fuente, fecha, entidad` — clean
   to merge into one canonical `amenity_point` feature type.
@@ -127,7 +137,7 @@ Now that features exist, layer attributes on top.
 
 | # | Step | Source | Pipeline target |
 |---|---|---|---|
-| 2.1 | Ingest INEGI 2010 census per-block attributes as `observation` rows. Start with the headline columns (`pobtot, pobmas, pobfem, p_15ymas, vivtot, vivpar_hab`); add the rest later if useful. | `inegi/censo/manzanas_2010.parquet` | `pipeline.tabular` (new shape, mirrors raster zonal-stats) |
+| 2.1 | ✅ **Done** — `pipeline.inegi_censo` ingests per-block census attributes as `observation` rows, keyed `censo_2020_<column>`. Shipped against the **2020** vintage, not 2010 as originally planned. | `inegi/censo/manzanas_2020.parquet` | `python -m apps.cli.app inegi-censo bootstrap --cve-ent <NN>` |
 | 2.2 | Roll up census observations to AGEB and municipality grains via `aggregation_recipe` (sum). | (derived) | existing `jobs/observation_rollup.py` |
 | 2.3 | Ingest `mun_2020.fgb` as a single `observation` snapshot for `attribute_key='pobtot_2020', feature_type='municipality'`. Side-by-side with 2010 — different snapshot, different vintage. | `population_grids/mun_2020.fgb` | `pipeline.silver.read_vector` |
 | 2.4 | Ingest the canonical amenity layer per pilot city: Mexicali → `exe/002_mexicali/equipamientos.geoparquet`; Tlalpan → `sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet`. As `feature` of new type `amenity_point`. | (above) | new `pipeline.points.py` (similar to vector loader, no overlap computation needed) |
