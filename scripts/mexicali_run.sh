@@ -261,9 +261,36 @@ fi
 # INEGI's, so only the buildings are fetched.
 step "6. Extracting and loading Overture buildings"
 BUILDINGS=data/overture_buildings_mexicali.parquet
-if [[ -f "$BUILDINGS" ]]; then
-  note "reusing $BUILDINGS"
+
+# ⚠ Validated, not merely present. Reuse keyed on `-f` alone was wrong in a
+# way that fails downstream rather than here: an extract interrupted mid-write
+# leaves a truncated parquet, the next --keep run reports "reusing" it, the
+# load writes however many rows survived, and the first thing to complain is
+# `urban_form_block_building_density` — four steps later, about blocks.
+#
+# Reading the footer is enough to catch it: a truncated parquet has no valid
+# metadata, and a zero-row one has nothing to load.
+buildings_usable() {
+  [[ -f "$BUILDINGS" ]] || return 1
+  $PY - "$BUILDINGS" <<'PYEOF' 2>/dev/null
+import sys
+import pyarrow.parquet as pq
+
+# Footer only — no row data is read, so this costs milliseconds on 50 MB.
+rows = pq.ParquetFile(sys.argv[1]).metadata.num_rows
+raise SystemExit(0 if rows > 0 else 1)
+PYEOF
+}
+
+if buildings_usable; then
+  note "reusing $BUILDINGS ($($PY -c '
+import sys, pyarrow.parquet as pq
+print(f"{pq.ParquetFile(sys.argv[1]).metadata.num_rows:,} rows")' "$BUILDINGS"))"
 else
+  if [[ -f "$BUILDINGS" ]]; then
+    note "⚠ $BUILDINGS exists but is unreadable or empty — re-extracting"
+    rm -f "$BUILDINGS"
+  fi
   # ⚠ --low-memory, and it is the right default *here* even though the CLI's
   # own default is off. Measured on this bbox: 663 MB / 454 s against
   # 4,457 MB / 40 s. The 4.4 GB is parquet metadata, not rows, and on a
