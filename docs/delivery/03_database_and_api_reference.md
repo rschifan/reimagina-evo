@@ -2,7 +2,7 @@
 title: "Database and API reference"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"
 author: "Rossano Schifanella"
-date: "9 November 2026"
+date: "10 November 2026"
 ---
 
 ## Document control
@@ -1059,9 +1059,9 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 Taken from the application's own OpenAPI document (`reimagina API` 0.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-The API exposes **48 operations** in total. **29** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+The API exposes **51 operations** in total. **32** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 
-### Project endpoints (29)
+### Project endpoints (32)
 
 #### `aois`
 
@@ -1084,7 +1084,7 @@ The API exposes **48 operations** in total. **29** are written for this project;
 | `GET` | `/indicators/{slug}` | Get Indicator | `slug` | no |
 | `GET` | `/indicators/{slug}/dependencies` | Get Indicator Dependencies | `slug` | no |
 | `GET` | `/indicators/{slug}/lineage` | Get Indicator Lineage | `slug` | no |
-| `GET` | `/indicators/{slug}/stats` | Get Values Stats | `slug`, `scenario_id`, `feature_type`, `aoi_id` | no |
+| `GET` | `/indicators/{slug}/stats` | Get Values Stats | `slug`, `scenario_id`, `feature_type`, `aoi_id`, `bins` | no |
 | `GET` | `/indicators/{slug}/values` | List Values | `slug`, `scenario_id`, `limit` | no |
 | `GET` | `/indicators/{slug}/values.csv` | Download Values Csv | `slug`, `scenario_id`, `feature_type`, `limit` | no |
 | `GET` | `/indicators/{slug}/values.geojson` | Download Values Geojson | `slug`, `scenario_id`, `feature_type`, `limit` | no |
@@ -1126,6 +1126,14 @@ The API exposes **48 operations** in total. **29** are written for this project;
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
 | `GET` | `/tile-sources` | List Tile Sources | `live_tilejson_base_url`, `snapshot_base_url`, `raster_base_url` | no |
+| `GET` | `/tile-sources/attribution` | List Attributions | — | no |
+
+#### `vector-tiles`
+
+| Method | Path | Summary | Parameters | Request body |
+|---|---|---|---|---|
+| `GET` | `/tiles/{function}` | TileJSON for a live MVT tile function | `function` | no |
+| `GET` | `/tiles/{function}/{z}/{x}/{y}` | Live MVT tile | `function`, `z`, `x`, `y`, `accept-encoding`, `if-none-match` | no |
 
 ### Mounted raster endpoints (19)
 
@@ -1145,9 +1153,9 @@ Provided by titiler. Access is restricted by `apps/api/cog_security.py` to `file
 | `GET` | `/cog/preview.{format}` | Preview | `format`, `url`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `max_size`, `height`, `width`, `dst_crs`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/preview/{width}x{height}.{format}` | Preview | `format`, `height`, `width`, `url`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `max_size`, `dst_crs`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/statistics` | Statistics | `url`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `max_size`, `height`, `width`, `algorithm`, `algorithm_params`, `categorical`, `c`, `p`, `histogram_bins`, `histogram_range` | no |
-| `POST` | `/cog/statistics` | Geojson Statistics | `url`, `coord_crs`, `dst_crs`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `max_size`, `height`, `width`, `algorithm`, `algorithm_params`, `categorical`, `c`, `p`, `histogram_bins`, `histogram_range` | yes |
+| `POST` | `/cog/statistics` | Geojson Statistics | `url`, `coord_crs`, `dst_crs`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `max_size`, `height`, `width`, `algorithm`, `algorithm_params`, `cover_scale`, `categorical`, `c`, `p`, `histogram_bins`, `histogram_range` | yes |
 | `GET` | `/cog/tiles` | Retrieve a list of available raster tilesets for the specified dataset. | `f`, `url`, `crs` | no |
-| `GET` | `/cog/tiles/{tileMatrixSetId}` | Retrieve the raster tileset metadata for the specified dataset and tiling scheme (tile matrix set). | `tileMatrixSetId`, `f`, `url` | no |
+| `GET` | `/cog/tiles/{tileMatrixSetId}` | Retrieve the raster tileset metadata for the specified dataset and tiling scheme (tile matrix set). | `tileMatrixSetId`, `minzoom`, `maxzoom`, `f`, `url` | no |
 | `GET` | `/cog/tiles/{tileMatrixSetId}/{z}/{x}/{y}` | Tile | `z`, `x`, `y`, `tileMatrixSetId`, `format`, `tilesize`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/tiles/{tileMatrixSetId}/{z}/{x}/{y}.{format}` | Tile | `z`, `x`, `y`, `tileMatrixSetId`, `format`, `tilesize`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |
 | `GET` | `/cog/{tileMatrixSetId}/map.html` | Map Viewer | `tileMatrixSetId`, `tile_format`, `tilesize`, `minzoom`, `maxzoom`, `url`, `buffer`, `padding`, `bidx`, `expression`, `nodata`, `unscale`, `resampling`, `reproject`, `algorithm`, `algorithm_params`, `colormap_name`, `colormap`, `rescale`, `color_formula`, `return_mask` | no |

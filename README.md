@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Urban planning scenario modelling platform. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (Martin) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL read surface.
+Urban planning scenario modelling platform. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (Martin, or the API itself behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL read surface.
 
 > **Status:** functional prototype — API and schema contracts are not yet stable. See [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) for the current state of the system.
 

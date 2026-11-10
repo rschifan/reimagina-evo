@@ -2,7 +2,7 @@
 title: "Capability proof"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — annex to Schedule A"
 author: "Rossano Schifanella"
-date: "9 November 2026"
+date: "10 November 2026"
 ---
 
 ## Document control
@@ -20,6 +20,7 @@ date: "9 November 2026"
 | 0.2 | 2026-11-09 | Rossano Schifanella | Current dependency set; GeoParquet 1.1; cross-executor recovery |
 | 0.3 | 2026-11-09 | Rossano Schifanella | Run-level deduplication (§13.1) |
 | 0.4 | 2026-11-09 | Rossano Schifanella | The acceptance run now exercises the ops plane |
+| 0.5 | 2026-11-10 | Rossano Schifanella | Tiles over HTTP from the API (§10.3); street context without a basemap (§10.4); corrected API operation count and environment of record |
 
 ### Why this document exists
 
@@ -78,7 +79,7 @@ see §5.
 |---|---|
 | PostgreSQL | 16.15 (x86_64-pc-linux-gnu) |
 | PostGIS · pgRouting | 3.7.0 · 4.0.2 |
-| Python | 3.13.18 (floor 3.12) |
+| Python | 3.12.3 (declared floor 3.12, which CI also pins) |
 | GeoPandas · Shapely · pyproj | 1.2.0 · 2.2.0 · 3.8.0 |
 | rasterio · pyogrio · PyArrow | 1.5.2 · 0.13.0 · 26.0.1 |
 | titiler.core · rio-tiler | 2.4.0 · 9.4.13 |
@@ -477,6 +478,92 @@ The widened form looks equivalent and double-counts: where the scenario does
 have a row, both it and the baseline row match, and the tile would carry the
 same feature twice.
 
+### 10.3 The same tiles over HTTP, from the API
+
+Everything above is the SQL layer. The HTTP layer that publishes it is
+Martin — an external binary this environment could not pull (§16) — so the
+tile path was proven at both ends with an unexercised process between them.
+
+The API now implements the same contract. The tile functions all take
+`(z, x, y, query_params json)` and return `bytea`, which is Martin's
+function-source convention, so `/tiles/{function}/{z}/{x}/{y}` is the
+identical URL shape rather than a second one. Choosing between them is one
+environment variable:
+
+```bash
+REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000   # Martin (default)
+REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles              # the API, same-origin
+```
+
+Nothing else moves — not `infra/tiles/layers.json`, not `/tile-sources`, not
+the frontend. A contract test asserts both forms resolve to the same URL
+shape, because that property is the only thing that makes two
+implementations safe to keep.
+
+What it answers, measured against the running system:
+
+```
+GET /tiles/get_tile/16/11748/26478          200  application/vnd.mapbox-vector-tile  4,101 B
+  → decoded: layer 'features', spec v2, extent 4096, 42 features
+GET /tiles/get_tile/14/0/0                  204  (a valid tile with nothing in it)
+GET /tiles/get_tile/30/1/1                  422  (addresses no tile that can exist)
+GET /tiles/lo_get/16/11748/26478            404  (not a servable tile function)
+If-None-Match on a current tile             304  (no body)
+```
+
+`204` rather than `200` with an empty body is not a style choice: `ST_AsMVT`
+over an empty set returns **zero-length bytes, not NULL**, so a route testing
+for NULL would answer `200` forever and a client would cache emptiness as
+content. The function name is an allowlist, never a parameter — Postgres has
+plenty of `bytea`-returning functions and `lo_get` is one.
+
+Martin remains the recommended production path: `get_tile` answers a
+populated z16 tile in ~1.5 ms here, so neither Postgres nor the API is the
+constraint at this scale, and at city scale a dedicated tile server with its
+own pool is the better machine. The point is that it is now an optimisation
+rather than a dependency, and that the live tile path is covered end to end
+by this repository's own suites.
+
+### 10.4 Street context, with no external basemap
+
+The map had no spatial reference of any kind: a block was a rectangle in
+black, with nothing to say which neighbourhood it was in or which way a
+street runs. An external basemap would have fixed it and cost a runtime
+dependency on someone else's service plus a licence the recipient never
+agreed to — which is the opposite of what Article 4.1 asks this delivery to
+be able to state.
+
+It needed no external anything. `curated_geo.road_edge` already held the
+routing network the accessibility indicators walk; `global:road` was already
+in the feature-type catalogue; `serving_geo.roads` already existed as a view
+over it and returned zero rows; and `get_tile` already served
+`role = 'infrastructure'`. The only missing step was the one that connects
+the graph to the feature table, and it is a projection rather than an ingest:
+**no migration, no new tile function, no change to `serving_geo`.**
+
+Measured on the generated territory (40 edges, 5.21 km), over the tile that
+contains it:
+
+| z | road tile | why |
+|---|---|---|
+| 11 | **0 B** | below the role gate — `infrastructure` is not served under z12 |
+| 12 | 2,714 B | 40 edges |
+| 14 | 1,864 B | 27 edges in the smaller tile |
+| 16 | 1,670 B | 24 edges |
+
+The frontend's `minzoom` is 12 to match, pinned by a unit test: a client
+floor below what the server serves buys requests that can only come back
+empty, and on a map empty is indistinguishable from missing data.
+
+**Attribution is derived, not declared.** OpenStreetMap is ODbL and
+displaying it uncredited is a breach — but crediting it on a *generated*
+territory would be a false provenance claim. `GET /tile-sources/attribution`
+reads the licence recorded against each source that actually has features, so
+the proof territory credits `reimagina-synthetic` and makes no OSM claim,
+while a real network is credited as its licence prescribes. Sources that are
+registered but never loaded are excluded, because crediting one would say the
+map shows data it does not.
+
 ---
 
 ## 11. Raster: COG, zonal statistics, and a rollup that conserves
@@ -772,8 +859,9 @@ derivation makes a new layer appear. The `not available` rows are equally
 informative: the registry distinguishes "implemented but nothing published
 yet" from "absent", so an empty map can be diagnosed from one endpoint.
 
-The project API surface is 29 operations; a further 19 come from the mounted
-raster tile server, for 48 in total. Work 3 documents them.
+The project API surface is 32 operations; a further 19 come from the mounted
+raster tile server, for 51 in total. Work 3 documents them, generated from the
+application's own OpenAPI document rather than written alongside it.
 
 ---
 
@@ -800,7 +888,8 @@ Stated so that the absence is not mistaken for a claim.
 
 | Not exercised | Why, and what stands in for it |
 |---|---|
-| Martin, the vector tile HTTP server | The container registry rate-limits anonymous pulls in this environment. Martin's job is to publish `serving_geo.*(z,x,y,query_params) RETURNS bytea` over HTTP; the functions themselves were exercised in SQL and their bytes decoded (§10), which is the part that could be wrong. The HTTP hop is configuration. |
+| Martin, the vector tile HTTP server | The container registry rate-limits anonymous pulls in this environment, so the binary itself never ran. The HTTP hop it performs is no longer unexercised, however: the API implements the same contract at `/tiles/{function}/{z}/{x}/{y}` and that path is covered end to end, including a browser rendering from it (§10.3). What remains unproved is Martin specifically — its own pool, its own TileJSON, its own cache headers. |
+| Road tile cost at city scale | Streets are served from z12 by the role gate (§10.4). At that zoom the *building* layer measured 2.59 MB per tile, which is why `r038` floors buildings at z14, and a walking network is denser than a road centreline network. The measurement here is 40 synthetic edges, ~68 bytes each — not a city. If a deployment finds z12 road tiles heavy, the remedy is `r038`'s: a `type_slug` zoom floor chosen from a measurement. Extrapolating from 40 edges is the mistake `r038` documents making about buildings. |
 | PMTiles snapshot export | `admin_reference` reports `not available` above — correct, nothing has been exported. PMTiles are for stable reference layers; every layer here is live. |
 | API authentication | There is none. It is risk **T1** in Work 1's register and must be closed before any deployment reachable beyond localhost. |
 | Scale | The capability transcripts above are a sixteen-block territory. The crash-recovery and sweep proofs ran on a generated 22,500-block, 67,500-building one, seeded in 35 seconds — `python scripts/synthetic_territory.py --blocks 150 --ageb-side 10`, no credentials. `docs/architecture/PERFORMANCE.md` owns the benchmark workloads and budgets; this annex is about whether each capability works. |

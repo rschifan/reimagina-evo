@@ -2,7 +2,7 @@
 title: "Software and systems architecture map"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 1"
 author: "Rossano Schifanella"
-date: "9 November 2026"
+date: "10 November 2026"
 ---
 
 ## Document control
@@ -20,6 +20,7 @@ date: "9 November 2026"
 | 0.2 | 2026-11-08 | Rossano Schifanella | Indicator count corrected to eleven, measured against the running system |
 | 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented (§5.4, Figure 5); current dependency set |
 | 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
+| 0.5 | 2026-11-10 | Rossano Schifanella | Constraint C6 (no third-party runtime service); the tile server is interchangeable (§5.1); street context in place of a basemap (§3.3) |
 
 ### About this document
 
@@ -91,6 +92,7 @@ In priority order. These are the goals the architecture is shaped around;
 | C3 | Network distance requires pgRouting | pgRouting is a hard dependency, and it is not a *trusted* Postgres extension, so installation needs a superuser |
 | C4 | One coordinate reference system throughout | Every geometry column is SRID 4326, enforced by the column type |
 | C5 | The platform is delivered as source, to be run by the recipient | Installation must be reproducible from the repository by a competent reader |
+| C6 | No third-party service may be required at runtime | Rules out a hosted basemap: it would add a dependency the recipient did not agree to and a licence Article 4.1 would have to carry. Spatial context is drawn from the platform's own street network instead (§3.3) |
 
 ## 3. Context and Scope
 
@@ -118,8 +120,15 @@ source.
 |---|---|---|---|
 | Azure data lake | Inbound | HTTPS | Source datasets: INEGI marco geoestadístico 2024, INEGI censo 2020, SIGCDMX/EXE amenities, Overture, WorldPop |
 | Web client | Outbound | JSON over HTTPS | Features, indicators, AOI summaries, downloads, job control |
-| Vector tiles | Outbound | MVT over HTTPS | Live map rendering |
+| Vector tiles | Outbound | MVT over HTTPS | Live map rendering. Served by Martin or, behind the same URL contract, by the API itself — see §5.1 |
 | Raster tiles | Outbound | HTTPS | Cloud-Optimized GeoTIFF tiles, served in-process by the API |
+
+There is no external basemap, and that is a constraint rather than an
+omission (§2): it would add a runtime dependency on a third-party service and
+a licence the Assignee never agreed to. Spatial context comes from the
+platform's own street network instead — the routing graph is published as
+`global:road` features and served through the same tile path as every other
+layer.
 
 ## 4. Solution Strategy
 
@@ -146,6 +155,18 @@ server reads the same serving views the API reads, so a map and a table can
 never disagree about what the city contains. And the worker talks to the
 database directly rather than through the pooler, because its progress
 streams use `LISTEN`/`NOTIFY`, which cannot cross a transaction-mode pooler.
+
+**The tile server is interchangeable.** The contract is the SQL function
+signature — every tile function takes `(z, x, y, query_params json)` and
+returns `bytea`, which is Martin's function-source convention — so anything
+implementing it is a drop-in. Martin is the default and the recommended
+production path; the API implements the same contract at
+`/tiles/{function}/{z}/{x}/{y}`, and choosing between them is one
+environment variable (`REIMAGINA_TILE_LIVE_BASE_URL`) with nothing else
+moving. The figure shows the default. The reason for having both is that
+Martin is an external binary: with only Martin, the live tile path has an
+unexercised process in the middle of it, which for a delivery whose Work 2
+is accepted on "the code builds and runs" is the weakest link in it.
 
 ### 5.2 Level 2 — Components of the recomputation worker
 

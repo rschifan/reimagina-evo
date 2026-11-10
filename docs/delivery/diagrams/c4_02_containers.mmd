@@ -4,10 +4,10 @@ flowchart LR
 
   subgraph sys["Reimagina [Software System]"]
     web["Web application<br/>[Container: TypeScript, Vite,<br/>MapLibre GL]<br/>Map, indicator catalogue<br/>and run dashboard"]
-    api["API application<br/>[Container: Python, FastAPI,<br/>titiler]<br/>Serves features, indicators,<br/>downloads and job control"]
+    api["API application<br/>[Container: Python, FastAPI,<br/>titiler]<br/>Features, indicators, downloads,<br/>job control, raster and<br/>vector tiles"]
     worker["Recomputation worker<br/>[Container: Python, DBOS]<br/>Executes indicator runs<br/>durably and resumably"]
     cli["Operator CLI<br/>[Container: Python, Typer]<br/>Ingestion, publishing<br/>and inspection"]
-    martin["Vector tile server<br/>[Container: Martin 0.14]<br/>Serves live MVT tiles<br/>from the serving views"]
+    martin["Vector tile server<br/>[Container: Martin 0.14]<br/>Default live-MVT publisher.<br/>Interchangeable with the API,<br/>which serves the same contract"]
     db[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]<br/>Curated, serving, explore<br/>and job-runtime schemas")]
   end
 
@@ -16,7 +16,8 @@ flowchart LR
   planner -->|"Loads the map<br/>application [HTTPS]"| web
   operator -->|"Runs commands with"| cli
   web -->|"Reads indicators and<br/>features [JSON/HTTPS]"| api
-  web -->|"Requests tiles<br/>[MVT/HTTPS]"| martin
+  web -->|"Requests tiles [MVT/HTTPS]<br/>— one of the two, by config"| martin
+  web -.->|"Requests tiles [MVT/HTTPS]<br/>— same URL contract"| api
   api -->|"Reads serving views,<br/>submits runs [SQL]"| db
   worker -->|"Reads plan, writes results<br/>[SQL, LISTEN/NOTIFY]"| db
   martin -->|"Queries geometry [SQL]"| db
