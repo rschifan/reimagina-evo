@@ -1,4 +1,4 @@
-"""CLI helpers for the first Overture Mexico City source."""
+"""CLI helpers for Overture sources: Mexico City buildings, and divisions as AOIs."""
 
 from __future__ import annotations
 
@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import apps.cli.cdmx as cdmx_cli
 from apps.cli.indicators import submit_after_ingest
+from reimagina.data import aoi as aoi_mod
 from reimagina.db import connect
+import reimagina.pipeline.overture_divisions as divisions
+from reimagina.storage import backend_for_connection
 from reimagina.pipeline.overture import (
+    DIVISION_SUBTYPE_COUNTY,
     MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_MEXICO_CITY,
     OVERTURE_BUILDINGS_NOTES,
@@ -145,3 +150,107 @@ def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
 def as_json(data: dict[str, Any]) -> str:
     """Serialize CLI output consistently for humans and scripts."""
     return json.dumps(data, indent=2, sort_keys=True, default=str)
+
+
+# ─── Divisions → AOI ───────────────────────────────────────────────────────
+#
+# A second AOI constructor, beside `cdmx.aoi_from_alcaldia` and
+# `cdmx.aoi_from_state`. Both of those are INEGI-derived and need the Marco
+# Geoestadístico mirror on disk; this one needs only the Overture release the
+# buildings already come from, which is why it exists.
+
+
+def list_overture_divisions(
+    *,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+) -> dict[str, Any]:
+    """List the administrative divisions Overture holds inside a bbox."""
+    candidates = divisions.list_divisions(bbox=bbox, release=release)
+    return {
+        "release": release,
+        "bbox": ",".join(str(v) for v in bbox),
+        "count": len(candidates),
+        "divisions": [c.as_dict() for c in candidates],
+    }
+
+
+def aoi_from_overture_division(
+    *,
+    dsn: str,
+    aoi_name: str,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+    subtype: str | None = DIVISION_SUBTYPE_COUNTY,
+    country: str | None = None,
+    name: str | None = None,
+    project_name: str = "Overture Pilot Cities",
+) -> dict[str, Any]:
+    """Create an AOI whose geometry is an Overture division polygon.
+
+    Mirrors ``cdmx.aoi_from_alcaldia``'s shape — same ``_ensure_dev_project``
+    pattern, same ``create_aoi`` call, same ``{"status": ...}`` payload a
+    caller can branch on — and differs in exactly one way that matters:
+
+    ⚠ ``membership_key=None``, because an Overture boundary carries no INEGI
+    code to declare. r040 made AOI membership identifier-based *where
+    identifiers exist*, and the membership SQL already handles their absence
+    by falling back to geometry in all three branches (polygon, line, point).
+    The comment above that clause names this case: "one that carries none of
+    them (Overture buildings, OSM establishments) is decided spatially as
+    before." Passing a key here would be worse than useless — it would
+    exclude every feature that lacks it.
+
+    A name that does not match is reported with the bbox's actual contents
+    rather than raised, because ``names.primary`` is upstream data that can be
+    retitled between releases.
+    """
+    match, candidates = divisions.find_division(
+        bbox=bbox, release=release, subtype=subtype, country=country, name=name
+    )
+    if match is None:
+        return {
+            "dsn": dsn,
+            "status": "no_matching_division",
+            "release": release,
+            "criteria": {"subtype": subtype, "country": country, "name": name},
+            "candidates": [c.as_dict() for c in candidates],
+            "message": (
+                "No division in the bbox matches those criteria. The "
+                "`candidates` list is what this release actually holds — "
+                "Overture's names.primary is upstream data and can change "
+                "between releases."
+            ),
+        }
+
+    with connect(dsn) as conn:
+        backend = backend_for_connection(conn)
+        project_id = cdmx_cli._ensure_dev_project(backend, project_name)
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name=aoi_name,
+            geometry_wkt=match.geometry_wkt,
+            description=(
+                f"AOI derived from Overture {divisions.DIVISIONS_THEME}/"
+                f"{divisions.DIVISIONS_AREA_TYPE} id={match.overture_id} "
+                f"({match.name}) in release {match.release}. "
+                f"Licence: {divisions.OVERTURE_LICENSE}."
+            ),
+            # See the ⚠ in this function's docstring.
+            membership_key=None,
+        )
+        conn.commit()
+
+    return {
+        "dsn": dsn,
+        "status": "ok",
+        "aoi_id": aoi_id,
+        "project_id": project_id,
+        "release": match.release,
+        "overture_id": match.overture_id,
+        "division_name": match.name,
+        "subtype": match.candidate.subtype,
+        "country": match.candidate.country,
+        "name": aoi_name,
+    }

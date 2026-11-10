@@ -12,6 +12,7 @@ from .overture import (
     load_overture_buildings_subset,
     overture_theme_type_glob,
     register_overture_buildings_source,
+    silver_filename_for,
     stage_overture_buildings_subset,
     validate_overture_buildings_layer,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "load_overture_buildings_subset",
     "overture_theme_type_glob",
     "register_overture_buildings_source",
+    "silver_filename_for",
     "stage_overture_buildings_subset",
     "validate_overture_buildings_layer",
     "clean_vector",

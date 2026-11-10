@@ -70,6 +70,22 @@ Rules:
   `global:road` by `reimagina.data.roads`. Attribution is derived from
   `data_source_catalog.license` and served by `/tile-sources/attribution` — never
   hardcoded in the frontend, which would credit OpenStreetMap on synthetic data
+- an AOI is the precondition for anything being *visible*, not a convenience:
+  `get_tile` scopes every request by AOI through an `EXISTS` against
+  `curated_geo.aoi_feature`, so a feature in no AOI is correctly typed, present in
+  `serving_geo`, and returns `204` on every tile with no error in the path
+- there are two kinds of AOI constructor, and they differ in one field.
+  INEGI-derived ones (`cdmx aoi-from-alcaldia`, `aoi-from-state`) declare a
+  `membership_key` and need the Marco Geoestadístico mirror on disk. The
+  Overture-derived one (`overture aoi-from-division`,
+  `reimagina.pipeline.overture_divisions`) needs only the S3 release and passes
+  `membership_key=None`, which is what makes membership geometric — the case r040's
+  own SQL comment names. Never declare a `membership_key` an AOI's features cannot
+  carry: it excludes all of them
+- `OVERTURE_DEFAULT_RELEASE` is a pin with a shelf life of weeks — Overture deletes
+  superseded releases and three pins have already rotted. It stays a pin because the
+  value is written to `dataset_version`; `available_overture_releases()` is how you
+  find what to bump it to
 
 ## Inspection workflow
 

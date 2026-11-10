@@ -58,14 +58,19 @@ from .explore import (  # noqa: E402
     list_sources,
 )
 from .overture import (  # noqa: E402
+    aoi_from_overture_division,
     as_json,
     extract_mexico_city_buildings,
+    list_overture_divisions,
     load_mexico_city_buildings,
     mexico_city_buildings_example,
     parse_bbox,
     validate_mexico_city_buildings,
 )
 from reimagina.pipeline.overture import (  # noqa: E402
+    DIVISION_SUBTYPE_COUNTY,
+    MEXICALI_BBOX,
+    MEXICALI_DIVISION_NAME,
     MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_SOURCE_NAME,
     OVERTURE_DEFAULT_RELEASE,
@@ -378,6 +383,80 @@ def overture_load(
             recompute_attributes=tuple(recompute_attributes),
         )
     )
+
+
+@overture_app.command(
+    "divisions",
+    help="List the administrative divisions Overture holds inside a bbox",
+)
+def overture_divisions(
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE,
+        "--release",
+        help="Overture S3 release version",
+    ),
+) -> int:
+    # The command that makes `aoi-from-division --name` checkable instead of
+    # guessable: Overture's names.primary is upstream data.
+    return _print(list_overture_divisions(bbox=parse_bbox(bbox), release=release))
+
+
+@overture_app.command(
+    "aoi-from-division",
+    help=(
+        "Create an AOI from an Overture division polygon — the AOI "
+        "constructor that needs no INEGI mirror on disk."
+    ),
+)
+def overture_aoi_from_division(
+    aoi_name: str = typer.Option(..., "--aoi-name", help="Name for the new AOI"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE, "--release", help="Overture S3 release version"
+    ),
+    subtype: str = typer.Option(
+        DIVISION_SUBTYPE_COUNTY,
+        "--subtype",
+        help="Overture division subtype, e.g. county (a Mexican municipio), "
+        "region, locality",
+    ),
+    country: Optional[str] = typer.Option(
+        None,
+        "--country",
+        help="ISO-3166 alpha-2. ⚠ Supply it for any border-crossing bbox: "
+        "the Mexicali box holds both 'MX Municipio de Mexicali' and "
+        "'US Imperial County', and both are subtype=county",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help=f"Overture names.primary, e.g. {MEXICALI_DIVISION_NAME!r}. "
+        "Run `overture divisions` to see what a release actually calls things",
+    ),
+    project_name: str = typer.Option("Overture Pilot Cities", "--project-name"),
+) -> int:
+    payload = aoi_from_overture_division(
+        dsn=dsn,
+        aoi_name=aoi_name,
+        bbox=parse_bbox(bbox),
+        release=release,
+        subtype=subtype,
+        country=country,
+        name=name,
+        project_name=project_name,
+    )
+    _print(payload)
+    return 0 if payload.get("status") == "ok" else 2
 
 
 @overture_app.command(

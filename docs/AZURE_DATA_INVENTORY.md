@@ -9,6 +9,22 @@ The data lake is **read-only upstream**. Once a dataset is ingested,
 its `data_source_catalog.storage_uri` keeps the original Azure URL for
 lineage; the pipeline reads from the local Bronze copy.
 
+> ⚠ **`data/` is gitignored** — "anything under `data/` is local cache or
+> bootstrap output, never tracked". So no clone carries this mirror, and a
+> machine that has not run Storage Explorer against the container has none of
+> it. `data verify-sources` reports every path as `missing`, which is the
+> expected state of a fresh checkout and not a fault.
+>
+> **The lake is no longer the only route to Mexicali.** Overture Maps serves
+> the municipal boundary (`divisions/division_area`, `MX county Municipio de
+> Mexicali`) and 343,696 buildings inside the urban bbox, from public
+> anonymous S3, with no credential and no mirror on disk. See
+> `docs/BOOTSTRAP.md` §5 and `docs/superpowers/specs/MEXICALI_FROM_OVERTURE.md`.
+> What Overture does **not** replace is INEGI: there are no manzanas or AGEBs
+> in it, so the block-grain indicators still need this mirror. The Overture
+> route gives a real map of a real city; it does not give a Mexicali
+> indicator.
+
 ## 1. Inventory at a glance
 
 | Category | Path | Size | Format | Coverage |

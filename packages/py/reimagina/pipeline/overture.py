@@ -20,6 +20,29 @@ from .loader import load_vector_source
 
 
 MEXICO_CITY_BBOX = (-99.597, 18.992, -98.606, 19.921)
+
+#: Mexicali urban core and its US-side surroundings, EPSG:4326.
+#:
+#: ⚠ **This bbox crosses the international border on purpose.** Calexico and
+#: El Centro (California) fall inside it, so a share of the buildings it
+#: returns are American. That is not a bug to fix by shrinking the box: the
+#: extract is deliberately a superset of the AOI, and
+#: :func:`_clip_buildings_to_aoi` deletes post-load whatever falls outside the
+#: Mexican municipal polygon, so "bbox-but-not-polygon orphans never persist".
+#: Shrinking it to hug the border would instead risk clipping Mexicali itself.
+#:
+#: A constant rather than a command-line argument because a bbox typed by hand
+#: is a number no reviewer can check and no run can reproduce.
+MEXICALI_BBOX = (-115.70, 32.40, -115.20, 32.80)
+
+#: ``names.primary`` of the Mexicali municipal boundary in Overture's
+#: ``divisions`` theme, as of release 2026-10-21.0. Upstream data, so it can
+#: be retitled between releases — which is why `overture divisions` exists to
+#: print what a release actually calls things.
+MEXICALI_DIVISION_NAME = "Municipio de Mexicali"
+
+#: Overture's subtype for a Mexican *municipio* / US county.
+DIVISION_SUBTYPE_COUNTY = "county"
 OVERTURE_PROVIDER = "Overture Maps Foundation"
 OVERTURE_LICENSE = "ODbL-1.0 / Overture terms"
 OVERTURE_BUILDINGS_SOURCE_NAME = "Overture Buildings - Mexico City BBox"
@@ -31,9 +54,10 @@ OVERTURE_S3_REGION = "us-west-2"
 #
 # ⚠ **Overture keeps only the most recent release on S3.** Older ones are
 # deleted, so any pin here has a shelf life measured in weeks and *will* stop
-# resolving — this is the second time it has: 2026-02-18.0 was never published,
-# and 2026-04-15.0 was published and then rotated away, after which every
-# extract failed with a bare `FileNotFoundError` naming a path.
+# resolving — this is the **third** time it has: 2026-02-18.0 was never
+# published, 2026-04-15.0 was published and then rotated away, and 2026-07-22.0
+# went the same way, after which every extract failed with a bare
+# `FileNotFoundError` naming a path.
 #
 # Kept as a pin anyway, because the value is recorded as `dataset_version` on
 # the source and on every row's provenance, and a moving default would make two
@@ -41,8 +65,14 @@ OVERTURE_S3_REGION = "us-west-2"
 # instead: `available_overture_releases()` turns the failure into a message that
 # names what S3 actually has, so bumping this is a ten-second fix rather than an
 # investigation. Override per-run with REIMAGINA_OVERTURE_RELEASE.
-OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-07-22.0")
+#
+# Verified against S3 on 2026-11-10, when the release listing held exactly
+# 2026-09-23.0, 2026-09-23.1 and 2026-10-21.0.
+OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-10-21.0")
 OVERTURE_BUILDINGS_FILENAME = "overture_buildings_mexico_city.parquet"
+#: Legacy Mexico City Silver name. No longer a default — `silver_filename_for`
+#: derives the name from the Bronze artifact so the two cannot disagree about
+#: which city they hold. Kept because it is referenced by the CDMX fixtures.
 OVERTURE_BUILDINGS_SILVER_FILENAME = "overture_buildings_mexico_city_silver.parquet"
 OVERTURE_BUILDINGS_NOTES = (
     "First example source: Overture Mexico City buildings subset clipped to the "
@@ -260,17 +290,39 @@ def ensure_overture_buildings_source(
     )
 
 
+def silver_filename_for(bronze_path: str | Path) -> str:
+    """Derive the Silver filename from the Bronze artifact's own name.
+
+    ⚠ The default used to be the module constant, which is named for Mexico
+    City. Bronze takes its name from the raw file, so a Mexicali load landed
+    ``overture_buildings_mexicali.parquet`` in Bronze and then wrote
+    ``overture_buildings_mexico_city_silver.parquet`` beside it — two stages
+    of one ingest disagreeing about which city they held, in the layer whose
+    whole job is traceability. The paths are recorded in the load result and
+    in ``data_source_catalog.storage_uri``, so the wrong name propagates into
+    provenance.
+
+    Deriving it means the two names can no longer drift, for any AOI.
+    """
+    return f"{Path(bronze_path).stem}_silver.parquet"
+
+
 def stage_overture_buildings_subset(
     raw_path: str | Path,
     *,
     source_id: str,
-    bronze_filename: str = OVERTURE_BUILDINGS_FILENAME,
-    silver_filename: str = OVERTURE_BUILDINGS_SILVER_FILENAME,
+    silver_filename: str | None = None,
 ) -> tuple[Path, Path]:
-    """Land a raw GeoParquet subset to Bronze and write a cleaned Silver GeoParquet."""
+    """Land a raw GeoParquet subset to Bronze and write a cleaned Silver GeoParquet.
+
+    ``silver_filename`` defaults to :func:`silver_filename_for` of the Bronze
+    artifact rather than to a constant; pass one only to override.
+    """
     bronze_path = bronze.land_file(raw_path, source_id)
     gdf = silver.read_vector(bronze_path)
-    silver_path = silver.save_silver_vector(gdf, source_id, silver_filename)
+    silver_path = silver.save_silver_vector(
+        gdf, source_id, silver_filename or silver_filename_for(bronze_path)
+    )
     return bronze_path, silver_path
 
 

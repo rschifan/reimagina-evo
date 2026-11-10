@@ -96,11 +96,12 @@ plus a polygon clip on load. Bbox values come from `aoi list` (fields
 # The `=` form still works, so existing scripts need no change.
 #
 # --release is omitted deliberately. Overture keeps only its most recent
-# release and deletes the rest, so any pin written here has a shelf life of
-# weeks — two already rotted (2026-02-18.0 was never published, 2026-04-15.0
-# was published then removed). The default lives in one place,
-# OVERTURE_DEFAULT_RELEASE, and a stale one now fails with a message naming
-# what S3 actually has rather than a bare FileNotFoundError.
+# releases and deletes the rest, so any pin written here has a shelf life of
+# weeks — three already rotted (2026-02-18.0 was never published, 2026-04-15.0
+# and 2026-07-22.0 were published then removed). The default lives in one
+# place, OVERTURE_DEFAULT_RELEASE (2026-10-21.0 as of 2026-11-10), and a
+# stale one fails with a message naming what S3 actually has rather than a
+# bare FileNotFoundError.
 uv run python -m apps.cli.app overture extract \
   --bbox=-99.36,19.05,-98.94,19.59 \
   --output-path data/overture_buildings_cdmx.parquet
@@ -109,20 +110,61 @@ uv run python -m apps.cli.app overture load \
   --source-name "Overture Buildings - CDMX (all)" \
   --aoi-id <CDMX_AOI_UUID>
 
-# Mexicali — bbox roughly -115.88,31.36,-114.65,32.72
+# Mexicali — the default --bbox is MEXICALI_BBOX, the urban core.
+#
+# ⚠ Not the whole municipio. Municipio de Mexicali is 9,971 km2 and reaches
+# the Sea of Cortez at San Felipe; MEXICALI_BBOX is the ~0.5x0.4 degree
+# urban box, which is what holds the city. Pass --bbox explicitly for the
+# full municipal extent, and expect the extract to cost accordingly.
 uv run python -m apps.cli.app overture extract \
-  --bbox=-115.88,31.36,-114.65,32.72 \
   --output-path data/overture_buildings_mexicali.parquet
 uv run python -m apps.cli.app overture load \
   --raw-path data/overture_buildings_mexicali.parquet \
-  --source-name "Overture Buildings - Mexicali" \
+  --source-name "Overture Buildings - Mexicali BBox" \
   --aoi-id <MEXICALI_AOI_UUID>
 ```
 
 `--aoi-id` triggers a post-load `ST_Intersects` clip — buildings inside
 the bbox but outside the AOI polygon are dropped before any further
-pipeline work touches them. Each extract is 5–10 min (S3 throughput);
-each load is 10–20 min (heap + GIST index updates).
+pipeline work touches them.
+
+**Where `<MEXICALI_AOI_UUID>` comes from without the lake mirror.** Every
+other AOI constructor is INEGI-derived (`cdmx aoi-from-alcaldia` needs a
+`MEX:municipality` feature loaded from Marco Geoestadistico). Overture's
+`divisions` theme carries the same boundaries, in the release the buildings
+already come from:
+
+```sh
+# What this release actually calls things, so --name is checkable
+uv run python -m apps.cli.app overture divisions
+
+uv run python -m apps.cli.app overture aoi-from-division \
+  --aoi-name "Mexicali (Overture municipal boundary)" \
+  --subtype county --country MX --name "Municipio de Mexicali"
+```
+
+⚠ **Always pass `--country` for a border-crossing bbox.** The Mexicali box
+holds both `MX Municipio de Mexicali` and `US Imperial County`, and both are
+`subtype=county`. Selecting the wrong one produces a valid polygon, a
+successful load and a map of the wrong country, with no error anywhere.
+
+Measured on this bbox against release 2026-10-21.0 (2026-11-10):
+
+| step | result |
+|---|---|
+| `overture divisions` | 16 divisions, 2 countries |
+| `overture aoi-from-division` | valid MultiPolygon, 2,109 points, 9,971 km2 |
+| `overture extract` | 387,273 rows, 51.2 MB, 40 s, **peak RSS 4.4 GB** |
+| `overture load` | 387,273 written, **43,577 clipped** outside the Mexican boundary |
+| loaded buildings | **343,696**, extent capped at the border (ymax 32.676, from a bbox ymax of 32.80) |
+
+⚠ The 4.4 GB peak is the open risk `_extract_remote_overture_subset`
+already documents — it materialises the whole bbox subset in memory
+(`pq.write_table(dataset.to_table(...))`), about 11.5 KB of RAM per row. One
+urban bbox fits in a 15 GB container with room to spare; the full municipio,
+or a metro the size of CDMX, may not. The remedy is written beside the code:
+`dataset.to_batches()` + `ParquetWriter`. Measure before assuming you need
+it.
 
 ## 5b. WorldPop population raster — per AOI (optional)
 
@@ -256,6 +298,15 @@ When Overture publishes a new release (monthly), update one constant:
 ```python
 # packages/py/reimagina/pipeline/overture.py
 OVERTURE_DEFAULT_RELEASE = "2026-MM-DD.0"
+```
+
+To find out what you can pin to, ask S3 rather than guessing — this is
+also what the `FileNotFoundError` message prints for you when a pin has
+rotted:
+
+```sh
+uv run python -c "from reimagina.pipeline.overture import \
+available_overture_releases as r; print(r())"
 ```
 
 Then `make verify-sources` will probe the new release. The previously
