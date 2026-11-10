@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,17 @@ from reimagina.storage import backend_for_connection
 from . import bronze, silver
 from .loader import load_vector_source
 
+
+logger = logging.getLogger(__name__)
+
+#: How often the per-file extract reports progress, in files.
+#:
+#: ⚠ There to stop a working command from looking like a hung one. The
+#: low-memory path takes ~8 minutes over 512 files and printed nothing at all,
+#: which is indistinguishable from the swapping it exists to avoid. 32 gives
+#: ~16 lines over a release — enough to see movement, not enough to bury the
+#: result.
+_PROGRESS_EVERY_FILES = 32
 
 MEXICO_CITY_BBOX = (-99.597, 18.992, -98.606, 19.921)
 
@@ -205,6 +217,22 @@ def _extract_remote_overture_subset(
         pq.write_table(dataset.to_table(filter=flt), str(output_path))
 
 
+def _progress(message: str) -> None:
+    """Report long-running progress.
+
+    Just the logger. `reimagina.logging_setup.configure_logging` — which
+    `apps/cli/app.py` calls — already sends `reimagina.*` records to stderr
+    precisely so "stdout stays the machine-readable JSON result channel".
+
+    The first version of this also wrote to stderr directly, on the reasoning
+    that progress should not depend on the caller configuring logging. That
+    printed every line twice under the CLI, which is the only caller that
+    matters here. Using the convention the repository already has is both
+    quieter and less code.
+    """
+    logger.info(message)
+
+
 def _write_subset_per_file(
     dataset, flt, output_path: Path, filesystem, source_glob: str
 ):
@@ -239,8 +267,11 @@ def _write_subset_per_file(
     """
     written = 0
     writer: pq.ParquetWriter | None = None
+    files = list(dataset.files)
+    total = len(files)
+    _progress(f"extract: scanning {total} files one at a time (bounded memory)")
     try:
-        for path in dataset.files:
+        for index, path in enumerate(files, start=1):
             one = pads.dataset(path, filesystem=filesystem, format="parquet")
             for batch in one.to_batches(filter=flt, batch_size=_EXTRACT_BATCH_ROWS):
                 if batch.num_rows == 0:
@@ -257,6 +288,8 @@ def _write_subset_per_file(
                 written += batch.num_rows
             # Explicit, because the metadata this holds is the whole point.
             del one
+            if index % _PROGRESS_EVERY_FILES == 0 or index == total:
+                _progress(f"extract:   {index}/{total} files, {written:,} rows")
     finally:
         if writer is not None:
             writer.close()
