@@ -98,42 +98,82 @@ PROJECT_NAME="Mexicali Pilot"
 # same box as its own default, so the two layers cover the same ground.
 MEXICALI_BBOX="-115.70,32.40,-115.20,32.80"
 
-# Set if step 7's Overpass fetch fails; reported at the end so a degraded run
-# cannot be mistaken for a complete one.
+# Set when an optional step fails; all reported at the end, so a degraded run
+# cannot be mistaken for a complete one. Every one of these feeds only
+# ATTEMPTED indicators — nothing REQUIRED depends on them, which is what makes
+# continuing honest rather than lenient.
 NETWORK_FAILED=0
+CENSUS_FAILED=0
+AMENITIES_FAILED=0
 
 # ── 0. Preflight ─────────────────────────────────────────────────────────────
 #
 # Named individually. "the mirror is missing" sends someone to re-download 17 GB
 # when one 52 KB file is absent.
 step "0. Checking the lake mirror and the toolchain"
+#
+# Split into required and optional, because they are not the same kind of
+# missing. Without marco there are no analysis units and *no* indicator can
+# run, so the script should not start. Without the census or the amenities,
+# only ATTEMPTED indicators lose inputs — and those are reported unavailable
+# rather than failing. Treating all three as fatal would refuse to build a
+# real pilot over a 52 KB file.
 MISSING=0
-check_path() {
+check_required() {
   if [[ -e "$1" ]]; then
-    note "ok       $1"
+    note "ok        $1"
   else
-    note "MISSING  $1  ($2)"
+    note "MISSING   $1"
+    note "          $2"
     MISSING=1
   fi
 }
-check_path data/sources/azure/inegi/marco_geostadistico/2024 \
-  "INEGI blocks and AGEBs — without these there are no analysis units and no indicator can run"
-check_path data/sources/azure/inegi/censo \
-  "2020 census — without it the edificability family has no population"
-check_path data/sources/azure/exe/002_mexicali/equipamientos.geoparquet \
-  "IMIP amenities — without them the accessibility family has no destinations"
+check_optional() {
+  if [[ -e "$1" ]]; then
+    note "ok        $1"
+  else
+    note "absent    $1"
+    note "          $2"
+  fi
+}
+check_required data/sources/azure/inegi/marco_geostadistico/2024 \
+  "INEGI blocks and AGEBs — no analysis units, so no indicator can run at all"
+check_optional data/sources/azure/inegi/censo/manzanas_2020.parquet \
+  "2020 census — the edificability family loses its population input"
+check_optional data/sources/azure/exe/002_mexicali/equipamientos.geoparquet \
+  "IMIP amenities — the accessibility family loses its destinations"
+
+# ⚠ The vintage the pipeline reads and the vintage that was downloaded are not
+# the same thing. `inegi_censo.DEFAULT_SOURCE_ROOT` points at
+# manzanas_2020.parquet; docs/AZURE_DATA_INVENTORY.md records
+# manzanas_2010.parquet being pulled from the container. Say which is actually
+# here, because the alternative is discovering it at step 4 — and 2010 has a
+# different headline column set (no p_18ymas), so it is not a --source-root
+# swap.
+if [[ -d data/sources/azure/inegi/censo ]]; then
+  note "censo vintages on disk: $(ls data/sources/azure/inegi/censo 2>/dev/null | tr '\n' ' ')"
+fi
+
 if (( MISSING )); then
   cat >&2 <<'EOF'
 
-One or more lake paths are absent. `data/` is gitignored, so a fresh clone
-never has them; they come from the Azure container recorded in
-docs/AZURE_DATA_INVENTORY.md, pulled with Storage Explorer.
+The INEGI Marco Geoestadístico mirror is absent, and it is the one input with
+no substitute: it holds the manzanas and AGEBs that every shipped indicator is
+computed on. The entries marked "absent" above are optional and would only
+cost you ATTEMPTED indicators.
 
-What still works without the mirror: scripts/acceptance_run.sh (fully
-synthetic), and the Overture half of this script — `overture divisions`,
-`overture aoi-from-division`, `overture extract`, `overture load` — which
-gives a real boundary and real buildings but no census blocks, and therefore
-no indicator.
+`data/` is gitignored, so a fresh clone never has the mirror; it comes from the
+Azure container recorded in docs/AZURE_DATA_INVENTORY.md, pulled with Storage
+Explorer.
+
+Without it, two things still work:
+
+  scripts/acceptance_run.sh
+      fully synthetic, no network, all 11 indicators
+
+  overture divisions / aoi-from-division / extract / load
+      a real municipal boundary and ~343k real buildings on the map, with
+      real provenance — but no census blocks, so no indicator
 EOF
   exit 1
 fi
@@ -198,10 +238,20 @@ note "AOI_ID=$AOI_ID"
 
 # ── 4. Attributes and points ─────────────────────────────────────────────────
 step "4. Loading the 2020 census as block observations"
-$CLI inegi-censo bootstrap --cve-ent "$CVE_ENT"
+# Non-fatal for the same reason as step 7: it feeds only ATTEMPTED indicators,
+# and aborting here would discard step 2's ~3 GB INEGI load. The likely
+# failure is a vintage mismatch — see step 0's note.
+if ! $CLI inegi-censo bootstrap --cve-ent "$CVE_ENT"; then
+  CENSUS_FAILED=1
+  note "the census load failed — continuing; the edificability family will report unavailable"
+fi
 
 step "5. Loading Mexicali amenities (IMIP / DENUE)"
-$CLI points bootstrap --layers mexicali_amenities
+# Non-fatal: destinations for the accessibility family only.
+if ! $CLI points bootstrap --layers mexicali_amenities; then
+  AMENITIES_FAILED=1
+  note "the amenity load failed — continuing; the accessibility family will report unavailable"
+fi
 
 # ── 6. Buildings, from Overture ──────────────────────────────────────────────
 #
@@ -344,10 +394,12 @@ $CLI explore sources
 
 step "Done"
 note "AOI_ID=$AOI_ID"
-if (( NETWORK_FAILED )); then
-  note "⚠ INCOMPLETE: the OSM network fetch failed, so curated_geo.road_edge is"
-  note "  empty — the map has no street context and the accessibility family"
-  note "  could not run. Everything else above is real."
+if (( NETWORK_FAILED || CENSUS_FAILED || AMENITIES_FAILED )); then
+  note "⚠ INCOMPLETE — some optional inputs did not load:"
+  (( NETWORK_FAILED ))   && note "  - OSM network: road_edge is empty, so the map has no street context"
+  (( CENSUS_FAILED ))    && note "  - 2020 census: no population observations"
+  (( AMENITIES_FAILED )) && note "  - IMIP amenities: no accessibility destinations"
+  note "  Everything the REQUIRED indicators reported above is real."
 fi
 if (( ${#SKIPPED[@]} )); then
   note "unavailable on real data (${#SKIPPED[@]}): ${SKIPPED[*]}"
