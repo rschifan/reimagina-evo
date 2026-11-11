@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from reimagina.db.bootstrap import REQUIRED_RELATIONS, bootstrap_local_platform
+from reimagina.storage.postgres.bootstrap import bootstrap_postgres
 
 # Deliberately pooled-looking: production points `REIMAGINA_APP_DSN` at
 # pgbouncer, so this is the shape the app DSN really has when the two tests
@@ -129,3 +132,88 @@ def test_bootstrap_provisions_over_the_direct_dsn_when_given_one(monkeypatch):
     _bootstrap(direct_dsn=DIRECT_DSN)
 
     assert recorder.provisioned == [DIRECT_DSN]
+
+
+def test_alembic_runs_over_the_direct_dsn_too(monkeypatch):
+    """Both DDL steps in one bootstrap must take the same route.
+
+    `.env.example` names Alembic *first* among the things `DATABASE_URL_DIRECT`
+    exists for. Migrating the app database over the pooled DSN while the
+    ops-plane schema went direct left one function answering "which DSN carries
+    DDL" two different ways, fourteen lines apart — the next person adding a
+    step there had no rule to follow.
+
+    (Alembic itself survives a transaction-mode pooler: every migration here
+    deliberately avoids `CONCURRENTLY` so it runs inside one transaction, and a
+    pooler pins a backend for a transaction's duration. This is consistency,
+    not a repair.)
+    """
+    migrated: list[str] = []
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.ensure_postgres_database",
+        lambda admin_dsn, target_dsn: False,
+    )
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.run_postgres_migrations",
+        lambda dsn: migrated.append(dsn),
+    )
+
+    bootstrap_postgres(
+        app_dsn=POOLED_APP_DSN,
+        test_dsn="postgresql://localhost/reimagina_test",
+        admin_dsn="postgresql://localhost/postgres",
+        direct_dsn=DIRECT_DSN,
+    )
+
+    assert migrated[0] == DIRECT_DSN, "the app database migrates over the direct route"
+
+
+def test_bootstrap_postgres_reports_the_app_dsn_not_the_migration_route(monkeypatch):
+    """The direct DSN is a route, not the application's identity.
+
+    Callers print this dict; `make migrate` should still name the DSN the app
+    will use, not the one the migration happened to travel over.
+    """
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.ensure_postgres_database",
+        lambda admin_dsn, target_dsn: False,
+    )
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.run_postgres_migrations",
+        lambda dsn: None,
+    )
+
+    result = bootstrap_postgres(
+        app_dsn=POOLED_APP_DSN,
+        test_dsn="postgresql://localhost/reimagina_test",
+        admin_dsn="postgresql://localhost/postgres",
+        direct_dsn=DIRECT_DSN,
+    )
+
+    assert result["app"]["dsn"] == POOLED_APP_DSN
+
+
+def test_a_direct_dsn_naming_another_database_is_refused(monkeypatch):
+    """A route to the same database may change host and port — not the name.
+
+    Pooled and direct differ by port, so host/port cannot be compared. The
+    database name can be, for free and without connecting, and getting it wrong
+    is the failure this whole flag exists to prevent: Alembic migrating one
+    database while the ops-plane schema lands in another.
+    """
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.ensure_postgres_database",
+        lambda admin_dsn, target_dsn: False,
+    )
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.run_postgres_migrations",
+        lambda dsn: None,
+    )
+
+    with pytest.raises(ValueError, match="different database"):
+        bootstrap_postgres(
+            app_dsn=POOLED_APP_DSN,
+            test_dsn="postgresql://localhost/reimagina_test",
+            admin_dsn="postgresql://localhost/postgres",
+            direct_dsn="postgresql://direct:5432/some_other_db",
+        )

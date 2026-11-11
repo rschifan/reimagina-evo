@@ -433,6 +433,8 @@ Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the
 
 Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which `POST /jobs` answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped.
 
+**Both DDL steps in a bootstrap take the direct route.** `bootstrap-db` carries a `--direct-dsn` (defaulting to `$DATABASE_URL_DIRECT`, then to `--app-dsn`), and Alembic and the ops-plane schema both travel over it. Alembic would survive a pooler — every migration here avoids `CONCURRENTLY` so it runs inside one transaction, and a transaction-mode pooler pins a backend for a transaction's duration — so routing it direct is consistency rather than repair. The ops-plane schema is the one that genuinely needs it: its session advisory lock does not survive transaction pooling. The flag beats the environment variable, and a direct DSN naming a different database is refused, since a direct DSN is another route to the same database and only host and port may differ.
+
 ### The worker
 
 `python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. The worker also writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`.

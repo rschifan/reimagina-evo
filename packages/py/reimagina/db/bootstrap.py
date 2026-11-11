@@ -48,7 +48,17 @@ def bootstrap_local_platform(
 ) -> dict[str, dict[str, str | bool]]:
     backend_name_for_dsn(app_dsn)  # validate scheme
     backend_name_for_dsn(test_dsn)
-    result = bootstrap_postgres(app_dsn=app_dsn, test_dsn=test_dsn, admin_dsn=admin_dsn)
+    if direct_dsn is not None:
+        backend_name_for_dsn(direct_dsn)
+    # Both DDL steps below take `direct_dsn` when there is one — Alembic here,
+    # the ops-plane schema at the end. One route for everything this function
+    # migrates.
+    result = bootstrap_postgres(
+        app_dsn=app_dsn,
+        test_dsn=test_dsn,
+        admin_dsn=admin_dsn,
+        direct_dsn=direct_dsn,
+    )
 
     # Seed the indicator catalog so a freshly-bootstrapped DB has it without a
     # manual `indicators seed-catalog` step. The impact engine reads the Python

@@ -39,10 +39,18 @@ this is a 503 and not a 500.
 # Is it provisioned?
 psql "$DATABASE_URL_DIRECT" -c "SELECT to_regclass('dbos.workflow_status')"
 # NULL  -> not provisioned
-python -m apps.cli.app bootstrap-db --app-dsn "$DATABASE_URL_DIRECT"
+python -m apps.cli.app bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"
 ```
 
 Idempotent, so it is safe to run against a database that already has it.
+
+Pass the *application's* DSN; every DDL step inside — Alembic and the
+ops-plane schema both — takes `--direct-dsn`, which defaults to
+`$DATABASE_URL_DIRECT` and falls back to `--app-dsn` when neither is set. The
+flag beats the variable, so a stale `DATABASE_URL_DIRECT` in the shell cannot
+quietly redirect the migration. A direct DSN naming a *different* database is
+refused rather than used: it is another route to the same one, so only host
+and port may differ.
 
 ## Configuration that will bite you
 
