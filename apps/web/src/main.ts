@@ -268,7 +268,28 @@ async function main(): Promise<void> {
       map.addControl(
         new maplibregl.AttributionControl({
           customAttribution: rows.map((row) => row.text),
-          compact: false,
+          // ⚠ `compact: true`, and the text is NOT shortened to achieve it.
+          //
+          // Expanded, four real sources render as one 200-character line
+          // spanning the whole viewport:
+          //
+          //   © OpenStreetMap contributors | IMIP Mexicali (Datos abiertos
+          //   del IMIP) | Overture Maps Foundation (ODbL-1.0 / Overture
+          //   terms) | INEGI (Libre uso — Términos de Uso de la Información
+          //   del INEGI)
+          //
+          // The obvious fix is to trim each credit, and that is the wrong
+          // one: the wording comes from `data_source_catalog.license` via
+          // `attribution.py`, whose own comment warns that an entry claiming
+          // "this exact wording is what the licence asks for" is worse than
+          // the honest fallback when it is wrong. Editing four providers'
+          // credit lines for layout is a licence judgement, and not one to
+          // make for a line break.
+          //
+          // Compact keeps every word and moves it behind the standard
+          // MapLibre (i) control — the same affordance every multi-source
+          // map uses, one click away and always visible.
+          compact: true,
         }),
         "bottom-right",
       );

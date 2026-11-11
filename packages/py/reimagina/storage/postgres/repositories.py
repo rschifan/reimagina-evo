@@ -1323,6 +1323,34 @@ class PostgresAOIRepository:
                     JOIN curated_geo.feature f ON f.id = af.feature_id
                     WHERE f.type_slug = 'block'
                     GROUP BY af.aoi_id
+                ),
+                -- ⚠ The same statistics over any member, for an AOI that has
+                -- no blocks.
+                --
+                -- Blocks stay preferred: they are the analysis grain, evenly
+                -- spread over the populated area, so their envelope is the
+                -- urban core. This is the fallback for an AOI that was never
+                -- going to have them — `overture aoi-from-division` builds a
+                -- boundary with no INEGI mirror on disk, so the city arrives
+                -- as buildings and nothing else.
+                --
+                -- Without it such an AOI reports no features bbox at all and
+                -- the map frames the whole municipality: 9,971 km2 reaching
+                -- the Sea of Cortez, almost entirely desert, with the city a
+                -- few pixels in one corner. Which is precisely the failure
+                -- the block envelope exists to prevent, reached by a route
+                -- that did not exist when it was written.
+                member_stats AS (
+                    SELECT
+                        af.aoi_id,
+                        ST_Centroid(ST_Collect(ST_Centroid(f.geometry))) AS centroid,
+                        ST_Extent(f.geometry) AS extent_box
+                    FROM curated_geo.aoi_feature af
+                    JOIN curated_geo.feature f ON f.id = af.feature_id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM block_stats b WHERE b.aoi_id = af.aoi_id
+                    )
+                    GROUP BY af.aoi_id
                 )
                 SELECT aoi.id::text, aoi.project_id::text, aoi.name, aoi.description,
                        -- AOI polygon bbox in EPSG:4326.
@@ -1334,9 +1362,9 @@ class PostgresAOIRepository:
                        -- block centroids inside the AOI. Falls back to
                        -- ST_PointOnSurface(geometry) when the AOI has
                        -- no overlapping blocks yet (fresh ingest).
-                       COALESCE(ST_X(bs.centroid),
+                       COALESCE(ST_X(bs.centroid), ST_X(ms.centroid),
                                 ST_X(ST_PointOnSurface(aoi.geometry))) AS centroid_lon,
-                       COALESCE(ST_Y(bs.centroid),
+                       COALESCE(ST_Y(bs.centroid), ST_Y(ms.centroid),
                                 ST_Y(ST_PointOnSurface(aoi.geometry))) AS centroid_lat,
                        -- Features bbox = envelope of all blocks loaded
                        -- inside this AOI. Distinct from the polygon
@@ -1345,12 +1373,13 @@ class PostgresAOIRepository:
                        -- so the polygon bbox would frame mostly empty
                        -- land. NULL when no blocks are loaded yet —
                        -- frontend falls back to the polygon bbox.
-                       ST_XMin(bs.extent_box) AS feat_min_lon,
-                       ST_YMin(bs.extent_box) AS feat_min_lat,
-                       ST_XMax(bs.extent_box) AS feat_max_lon,
-                       ST_YMax(bs.extent_box) AS feat_max_lat
+                       COALESCE(ST_XMin(bs.extent_box), ST_XMin(ms.extent_box)) AS feat_min_lon,
+                       COALESCE(ST_YMin(bs.extent_box), ST_YMin(ms.extent_box)) AS feat_min_lat,
+                       COALESCE(ST_XMax(bs.extent_box), ST_XMax(ms.extent_box)) AS feat_max_lon,
+                       COALESCE(ST_YMax(bs.extent_box), ST_YMax(ms.extent_box)) AS feat_max_lat
                 FROM curated_geo.area_of_interest aoi
                 LEFT JOIN block_stats bs ON bs.aoi_id = aoi.id
+                LEFT JOIN member_stats ms ON ms.aoi_id = aoi.id
                 ORDER BY aoi.name
                 """
             )
