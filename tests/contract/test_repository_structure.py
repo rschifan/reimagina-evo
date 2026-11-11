@@ -236,3 +236,37 @@ def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
         "Makefile recipes invoke a lockfile-managed tool without `uv run`, so "
         f"they resolve against PATH instead of the project: {offenders}"
     )
+
+
+def test_every_ci_job_that_runs_the_orchestrator_sets_a_direct_dsn():
+    """A suite that reaches the real orchestrator needs ``DATABASE_URL_DIRECT``.
+
+    ``reimagina.orchestration.dbos_app.dbos_dsn`` raises when it is unset,
+    deliberately, because DBOS otherwise falls back to a private SQLite file —
+    a process that looks healthy and checkpoints nowhere recoverable. The guard
+    is right; a CI job that exercises the orchestrator without the variable is
+    not.
+
+    This is asserted because omitting it was not loud. ``tests/integration``
+    went red on a single end-to-end 404 whose own subject is route matching, and
+    ``pytest (conformance)`` — a later step in the same job — was reported
+    ``skipped`` rather than failed, so the port-contract suite stopped running
+    on main for months without anything saying so.
+    """
+    ci = CI_WORKFLOW.read_text()
+
+    # Split into job blocks on two-space-indented keys, the one indent level
+    # jobs live at. Parsing YAML would be heavier and this file deliberately
+    # treats the workflow as text (see the note above CI_WORKFLOW).
+    blocks = re.split(r"\n  (?=[a-z][a-z0-9-]*:)", ci)
+    suites_needing_it = ("tests/integration", "tests/conformance", "tests/recovery")
+
+    for block in blocks:
+        runs = [s for s in suites_needing_it if f"pytest {s}" in block]
+        if not runs:
+            continue
+        assert "DATABASE_URL_DIRECT:" in block, (
+            f"the CI job running {runs} constructs the real orchestrator, which "
+            "requires DATABASE_URL_DIRECT; without it dbos_dsn() raises and the "
+            "job fails on a test whose subject is something else entirely"
+        )

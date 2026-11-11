@@ -183,12 +183,21 @@ def bootstrap_db(
     app_dsn: str = typer.Option(DEFAULT_APP_DSN, "--app-dsn"),
     test_dsn: str = typer.Option(DEFAULT_TEST_DSN, "--test-dsn"),
     admin_dsn: str = typer.Option(DEFAULT_ADMIN_DSN, "--admin-dsn"),
+    direct_dsn: Optional[str] = typer.Option(
+        None,
+        "--direct-dsn",
+        envvar="DATABASE_URL_DIRECT",
+        help="Direct-port DSN for the ops-plane schema migration, which must "
+        "not cross pgbouncer. Defaults to $DATABASE_URL_DIRECT, then to "
+        "--app-dsn.",
+    ),
 ) -> int:
     return _print(
         bootstrap_local_platform(
             app_dsn=app_dsn,
             test_dsn=test_dsn,
             admin_dsn=admin_dsn,
+            direct_dsn=direct_dsn,
         )
     )
 

@@ -264,10 +264,17 @@ def stage_overture_buildings_subset(
     raw_path: str | Path,
     *,
     source_id: str,
-    bronze_filename: str = OVERTURE_BUILDINGS_FILENAME,
     silver_filename: str = OVERTURE_BUILDINGS_SILVER_FILENAME,
 ) -> tuple[Path, Path]:
-    """Land a raw GeoParquet subset to Bronze and write a cleaned Silver GeoParquet."""
+    """Land a raw GeoParquet subset to Bronze and write a cleaned Silver GeoParquet.
+
+    There is no ``bronze_filename``: ``bronze.land_file`` keeps the raw file's
+    own name, because a Bronze file is a verbatim immutable copy and renaming it
+    would cost the only link back to what arrived. This signature used to accept
+    one and ignore it, so a caller that passed it got a silently different path
+    than it asked for. Callers that need the landed name read it off the
+    returned path.
+    """
     bronze_path = bronze.land_file(raw_path, source_id)
     gdf = silver.read_vector(bronze_path)
     silver_path = silver.save_silver_vector(gdf, source_id, silver_filename)

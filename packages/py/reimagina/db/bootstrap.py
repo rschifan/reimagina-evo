@@ -44,10 +44,21 @@ def bootstrap_local_platform(
     app_dsn: str = DEFAULT_APP_DSN,
     test_dsn: str = DEFAULT_TEST_DSN,
     admin_dsn: str = DEFAULT_ADMIN_DSN,
+    direct_dsn: str | None = None,
 ) -> dict[str, dict[str, str | bool]]:
     backend_name_for_dsn(app_dsn)  # validate scheme
     backend_name_for_dsn(test_dsn)
-    result = bootstrap_postgres(app_dsn=app_dsn, test_dsn=test_dsn, admin_dsn=admin_dsn)
+    if direct_dsn is not None:
+        backend_name_for_dsn(direct_dsn)
+    # Both DDL steps below take `direct_dsn` when there is one — Alembic here,
+    # the ops-plane schema at the end. One route for everything this function
+    # migrates.
+    result = bootstrap_postgres(
+        app_dsn=app_dsn,
+        test_dsn=test_dsn,
+        admin_dsn=admin_dsn,
+        direct_dsn=direct_dsn,
+    )
 
     # Seed the indicator catalog so a freshly-bootstrapped DB has it without a
     # manual `indicators seed-catalog` step. The impact engine reads the Python
@@ -67,6 +78,37 @@ def bootstrap_local_platform(
         seed_catalog(conn)
         seed_assets(conn)
         conn.commit()
+
+    # The ops plane's own schema, for the same reason as the two seeds above: a
+    # bootstrapped database should be one the system can actually be used
+    # against. DBOS creates its schema inside `launch()`, which only a worker
+    # calls — so without this the API, which submits as a `DBOSClient` and by
+    # design never migrates, answered every `POST /jobs` with a 500 until a
+    # worker had run at least once. The dashboard offered a Run button from the
+    # moment the catalog above was seeded, so the gap was reachable long before
+    # anything could serve it.
+    #
+    # Imported here rather than at module scope: `dbos_app` pulls the engine's
+    # client library in at import time, and bootstrap must stay importable for
+    # callers that never touch the ops plane.
+    from reimagina.orchestration import dbos_app
+
+    # `direct_dsn` when the caller named one: this is a schema migration, and
+    # `ensure_system_database` explains at length why one must not cross a
+    # transaction-mode pooler. Falling back to `app_dsn` keeps the common local
+    # install working, where there is one DSN and it is already direct.
+    #
+    # ⚠ The parameter wins over the environment, and the resolution happens in
+    # the CLI rather than here — `reimagina.db` reads no environment variables,
+    # and `--direct-dsn` beating `$DATABASE_URL_DIRECT` is the precedence
+    # `raster_zonal_stats` and the two CLI commands that already take this flag
+    # all use. The reverse silently overrode the caller: the runbook tells an
+    # operator to pass `--app-dsn "$DATABASE_URL_DIRECT"`, and an env var left
+    # pointing at some other database — which the benchmark scripts document
+    # exporting — would have sent the ops-plane schema there instead, with
+    # `_assert_domain_database` none the wiser because that database is
+    # migrated too.
+    dbos_app.ensure_system_database(direct_dsn or app_dsn)
     return result
 
 

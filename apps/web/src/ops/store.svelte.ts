@@ -412,13 +412,30 @@ async function _action(
   }
 }
 
-/** Prefer FastAPI's `detail` over the status line `ApiError` carries. */
-async function describeApiError(err: unknown): Promise<string> {
+/** Prefer the API's own words over the status line `ApiError` carries.
+ *
+ * Two shapes, because the API deliberately has two. A route that rejects a
+ * request answers FastAPI's `{detail}` — "every indicator in that run
+ * succeeded", "run … is already succeeded" — and that sentence is the whole
+ * message. Anything unhandled goes through `apps.api.errors`, which answers
+ * `{error: {code, message, request_id}}` and withholds the internal text on
+ * purpose; there the request id *is* the actionable part, because it is what
+ * ties this toast to the traceback in the server log. Showing only
+ * "500 Internal Server Error on /jobs" throws that away and leaves an
+ * operator with nothing to search for.
+ */
+export async function describeApiError(err: unknown): Promise<string> {
   const response = (err as { response?: Response })?.response;
   if (response) {
     try {
       const body = await response.json();
       if (typeof body?.detail === "string") return body.detail;
+      const envelope = body?.error;
+      if (typeof envelope?.message === "string") {
+        return typeof envelope.request_id === "string"
+          ? `${envelope.message} (request ${envelope.request_id})`
+          : envelope.message;
+      }
     } catch {
       // Fall through to the message below.
     }

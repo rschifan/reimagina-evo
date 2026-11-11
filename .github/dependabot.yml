@@ -1,6 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # ⚠ "uv", not "pip". Both read `pyproject.toml`, but only the uv ecosystem
+  # also re-locks `uv.lock` — and CI installs with `uv sync --locked`, which
+  # fails outright on a lock left stale by a pyproject edit (asserted by
+  # tests/contract: test_ci_installs_python_dependencies_from_the_lockfile).
+  # Under "pip" every Python bump opened a PR that could never go green:
+  #   error: The lockfile at `uv.lock` needs to be updated, but `--locked` was
+  #   provided.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
