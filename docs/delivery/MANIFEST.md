@@ -7,9 +7,9 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 11 November 2026 |
 | **Tag** | `schedule-a-rc2` |
-| **Generated from commit** | `c786a6de83d88d24c1633371c121caca7cfc2254` |
+| **Generated from commit** | `ab4225dd9f5554a66d6fc310a89070d4d0c6e6e0` |
 | **Branch** | `delivery/schedule-a` |
-| **Working tree at generation** | clean |
+| **Working tree at generation** | MODIFIED — not a clean delivery |
 
 ⚠ The tag is the authoritative identifier. The commit above is the one
 this file was generated *from*, which is necessarily the commit before
@@ -32,7 +32,18 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 
 ## Verifying this
 
-From the root of a checkout of the tag above:
+⚠ **The four PDFs are not in the repository.** They are generated, and
+`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the tag
+contains the Markdown sources that produce them and not the PDFs
+themselves. `sha256sum -c` on a bare checkout therefore reports four
+`FAILED open or read` lines, and that is the expected result, not a
+corrupt delivery. Use whichever of the two procedures below matches
+what you have.
+
+### If you have the delivered PDFs
+
+Put them in a checkout of the tag at the paths the table above gives
+(`docs/delivery/pdf/`), then:
 
 ```bash
 sha256sum -c docs/delivery/SHA256SUMS
@@ -41,20 +52,23 @@ sha256sum -c docs/delivery/SHA256SUMS
 Every line must read `OK`. `SHA256SUMS` carries the same hashes in the
 format that command expects, so nothing has to be compared by eye.
 
-### Rebuilding the documents instead of trusting them
+### If you have only the tag
 
-The PDFs are byte-reproducible. Rendering them from the same sources
-produces the same bytes, because the only non-determinism in the
-pipeline — the two timestamps the PDF engine embeds — is pinned to the
-date each document declares.
+Rebuild them. The PDFs are byte-reproducible: rendering them from the
+same sources produces the same bytes, because the only non-determinism
+in the pipeline — the two timestamps the PDF engine embeds — is pinned
+to the date each document declares.
 
 ```bash
 python scripts/render_delivery_pdfs.py
 sha256sum -c docs/delivery/SHA256SUMS
 ```
 
-That is a stronger check than the first one: it needs no trust in the
-delivered files at all, only in the sources the tag identifies.
+All nine lines then read `OK`. This is the stronger of the two checks:
+it needs no trust in the delivered files at all, only in the sources
+the tag identifies. It needs `pandoc` and the Chromium that
+`scripts/render_delivery_pdfs.py` drives; the script names what is
+missing if it cannot find them.
 
 ### What a hash does and does not establish
 
