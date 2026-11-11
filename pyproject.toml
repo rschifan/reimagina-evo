@@ -93,8 +93,8 @@ dev = [
     # formatted. It used to be pinned only in the workflow, with the Makefile
     # calling bare `ruff` on the assumption it was "commonly installed globally"
     # — which made agreement a coincidence rather than a property.
-    "mypy==2.3.1",
-    "ruff==0.6.9",
+    "mypy==2.4.0",
+    "ruff==0.16.10",
 ]
 
 [tool.hatch.build.targets.wheel]
