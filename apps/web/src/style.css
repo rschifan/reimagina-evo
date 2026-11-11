@@ -56,10 +56,25 @@ body {
  * The collapse control. Pinned to the sidebar's edge and moved by the same
  * custom property, so it rides the panel instead of being animated
  * separately and arriving late.
+ *
+ * ⚠ **Vertically centred, and that is a bug fix, not a preference.**
+ *
+ * It used to sit at `top: 12px`, which is exactly where `.selection-toolbar`
+ * sits — that toolbar is `top: 12px; left: 12px` inside the map, and the map
+ * begins at `--sidebar-w`, so the two resolved to the same point. The toggle
+ * has the higher z-index (8 against 6), so it covered the toolbar's first
+ * button and "Draw circle" could not be clicked at all. Four draw tools, three
+ * reachable, and nothing about the result looked broken enough to question.
+ *
+ * Centring also fixes what the overlap was really telling us: a panel control
+ * stacked onto the map's tool column reads as a fourth drawing tool. On the
+ * panel's edge, halfway down, it reads as what it is — the handle that opens
+ * and closes the panel, the same affordance every split layout uses.
  */
 .sidebar-toggle {
   position: absolute;
-  top: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   left: calc(var(--sidebar-w) + 12px);
   z-index: 8;
   width: 28px;
@@ -150,8 +165,10 @@ body {
     z-index: 9;
   }
 
-  /* Room for the toggle to sit over the drawer without covering the first
-     panel's heading. */
+  /* ⚠ No longer needed for the toggle, which is vertically centred and so
+     never over the first heading — but kept, because at this width the
+     drawer slides out *under* the toggle and the padding is what stops the
+     panel's content starting beneath MapLibre's own top-left controls. */
   .sidebar {
     padding-top: 52px;
   }

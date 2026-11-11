@@ -146,6 +146,27 @@ API_PORT ?= 8001
 # It fails loudly rather than defaulting: the API's own fallback DSN points at a
 # database called `reimagina`, and silently serving an empty or wrong database
 # looks like a broken frontend, not a missing variable.
+#
+# ⚠ Tiles are pointed at the API, not at Martin, and without this `make dev`
+# produces a blank map.
+#
+# `tile_live_base_url()` defaults to `http://localhost:3000/get_tile` — Martin —
+# because Martin is the recommended production path. But `make dev` starts two
+# processes and Martin is not one of them, so every tile request went to a
+# server nobody had started and the map drew nothing. The console reads
+# `AJAXError: Failed to fetch (0) http://localhost:3000/get_tile/...`, which is
+# easy to mistake for a data problem.
+#
+# `/api/tiles` is relative on purpose. The absolute form
+# `http://localhost:8001/tiles` is cross-origin from Vite's 5173 and fails CORS
+# — measured earlier at 53 requests, 53 `net::ERR_FAILED`, with no console
+# error object to find them by. Relative goes through Vite's `/api` proxy,
+# which strips the prefix, so the API's MVT router sees
+# `/tiles/get_tile/{z}/{x}/{y}` — Martin's own contract, which is why that
+# router exists.
+#
+# Assigned with `:=` so an explicit value still wins, and Martin goes back with
+# `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000/get_tile make dev`.
 dev: ## Start the API and the web dev server together. Ctrl-C stops both.
 	@if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
 	  set -a; . ./.env; set +a; \
@@ -156,7 +177,10 @@ dev: ## Start the API and the web dev server together. Ctrl-C stops both.
 	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
 	  exit 1; \
 	fi; \
+	: $${REIMAGINA_TILE_LIVE_BASE_URL:=/api/tiles}; \
+	export REIMAGINA_TILE_LIVE_BASE_URL; \
 	echo "DSN  → $$REIMAGINA_APP_DSN"; \
+	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"; \
 	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:5173  (proxies /api to the API)"; \
 	echo; \
