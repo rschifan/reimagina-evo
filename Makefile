@@ -106,10 +106,20 @@ stack-down: ## Tear down the local Docker stack (preserves volumes).
 
 # The API port is a variable because 8000 is not available on every machine —
 # another project owns it here, which is why `vite.config.ts` deliberately
-# proxies to 8001 instead. Override for a one-off: `make dev API_PORT=8123`.
-# The Vite proxy target still points at 8001, so a different port here means
-# hitting the API directly rather than through the web app.
+# proxies to 8001 instead. Override either for a one-off:
+#   make dev API_PORT=8123 WEB_PORT=5199
+# `dev` exports the chosen API port to Vite as REIMAGINA_API_URL, so the proxy
+# follows it. It did not use to: the target was pinned at 8001, and overriding
+# API_PORT meant the web app silently proxied to whatever else was on 8001 —
+# or to nothing — while appearing to work.
 API_PORT ?= 8001
+# Vite's port, passed through to `vite.config.ts` so this and the banner
+# cannot disagree with where the server actually listens.
+WEB_PORT ?= 5173
+
+.PHONY: check-ports
+check-ports: ## Fail early if the dev ports are taken, naming what holds them.
+	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API $(WEB_PORT):Web
 
 .PHONY: dev
 # ⚠ Deliberately NO `set -m` here, which is the opposite of the obvious fix.
@@ -128,22 +138,24 @@ API_PORT ?= 8001
 #
 # The trap that remains is for the other exit: if one server dies on its own,
 # `wait` returns and it tears the survivor down rather than leaving it running.
-dev: ## Start the API and the web dev server together. Ctrl-C stops both.
+dev: check-ports ## Start the API and the web dev server together. Ctrl-C stops both.
 	@echo "API  → http://127.0.0.1:$(API_PORT)"; \
-	echo "Web  → http://localhost:5173  (proxies /api to the API)"; \
+	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
 	echo; \
 	trap 'kill $$api $$web 2>/dev/null' EXIT; \
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT) & api=$$!; \
-	( cd apps/web && npm run dev ) & web=$$!; \
+	( cd apps/web && VITE_PORT=$(WEB_PORT) REIMAGINA_API_URL=http://127.0.0.1:$(API_PORT) npm run dev ) & web=$$!; \
 	wait
 
 .PHONY: dev-api
 dev-api: ## Start the FastAPI read-side API with reload.
+	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
 
 .PHONY: dev-web
 dev-web: ## Start the Vite dev server for the web app.
-	cd apps/web && npm run dev
+	@$(PYTHON) scripts/preflight_ports.py $(WEB_PORT):Web
+	cd apps/web && VITE_PORT=$(WEB_PORT) npm run dev
 
 # ─── Git / PR workflow ───────────────────────────────────────────────────────
 # Usage: `make branch NAME=fix/indicator-formatting`
