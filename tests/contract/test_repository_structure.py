@@ -272,3 +272,33 @@ def test_every_ci_job_that_runs_the_orchestrator_sets_a_direct_dsn():
             "requires DATABASE_URL_DIRECT; without it dbos_dsn() raises and the "
             "job fails on a test whose subject is something else entirely"
         )
+
+
+def test_apt_steps_cannot_fail_the_build():
+    """A package-mirror outage must not read as a verdict on this code.
+
+    On 2026-11-11 the GitHub runners could not resolve `security.ubuntu.com`.
+    `apt-get` retried for 1h40m and failed, and because the system-dependency
+    step precedes `uv sync`, `pytest` never ran in either job that has one —
+    two of the four. The suite was green locally throughout.
+
+    The step is a documented *fallback*: fiona and rasterio ship cp312
+    manylinux wheels carrying their own GDAL, so it is not normally used at
+    all. Anything that cannot fail the build should not be able to fail the
+    build, so every apt step carries `continue-on-error` and a timeout.
+    """
+    ci = CI_WORKFLOW.read_text()
+    blocks = re.split(r"\n      - name: ", ci)
+    apt_steps = [b for b in blocks if "apt-get install" in b]
+
+    assert apt_steps, "expected at least one apt step; update this test if they went"
+    for step in apt_steps:
+        name = step.splitlines()[0]
+        assert "continue-on-error: true" in step, (
+            f"apt step {name!r} can fail the build; a mirror outage would stop "
+            "pytest from running at all"
+        )
+        assert "timeout-minutes:" in step, (
+            f"apt step {name!r} has no timeout; apt retried for 1h40m before "
+            "giving up once already"
+        )
