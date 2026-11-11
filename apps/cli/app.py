@@ -180,8 +180,18 @@ def status() -> int:
     help="Create local app/test DBs if needed and migrate both to head",
 )
 def bootstrap_db(
-    app_dsn: str = typer.Option(DEFAULT_APP_DSN, "--app-dsn"),
-    test_dsn: str = typer.Option(DEFAULT_TEST_DSN, "--test-dsn"),
+    # ⚠ Every DSN reads the variable `.env.example` documents it by, and the
+    # flag beats the variable. They used to be hardcoded constants while
+    # `--direct-dsn` alone read the environment — so `make migrate`, which
+    # passes no flags at all, bootstrapped `postgresql://localhost/reimagina`
+    # while taking its direct DSN from `.env`. With a `.env` naming any other
+    # database that is two answers to one question, and since the two must
+    # agree it failed outright. `migrate`'s own help has always said it runs
+    # "on the configured DATABASE_URL"; now it does.
+    app_dsn: str = typer.Option(DEFAULT_APP_DSN, "--app-dsn", envvar="DATABASE_URL"),
+    test_dsn: str = typer.Option(
+        DEFAULT_TEST_DSN, "--test-dsn", envvar="TEST_DATABASE_URL"
+    ),
     admin_dsn: str = typer.Option(DEFAULT_ADMIN_DSN, "--admin-dsn"),
     direct_dsn: Optional[str] = typer.Option(
         None,
@@ -192,12 +202,21 @@ def bootstrap_db(
         "--app-dsn.",
     ),
 ) -> int:
+    # An empty string is "unset", not "a DSN that happens to be blank". Shells
+    # expand an undefined variable to nothing, so the documented
+    # `--app-dsn "$DATABASE_URL"` silently passes `""` whenever `.env` has not
+    # been exported into the shell — and the failure surfaced deep in a
+    # helper as `ValueError: DSN has no database name: ''`, which names
+    # neither the flag nor the variable that was empty.
+    app_dsn = app_dsn or DEFAULT_APP_DSN
+    test_dsn = test_dsn or DEFAULT_TEST_DSN
+    admin_dsn = admin_dsn or DEFAULT_ADMIN_DSN
     return _print(
         bootstrap_local_platform(
             app_dsn=app_dsn,
             test_dsn=test_dsn,
             admin_dsn=admin_dsn,
-            direct_dsn=direct_dsn,
+            direct_dsn=direct_dsn or None,
         )
     )
 

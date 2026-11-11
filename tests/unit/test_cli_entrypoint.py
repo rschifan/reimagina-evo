@@ -792,3 +792,79 @@ def test_cli_assets_stale_delegates(monkeypatch, capsys):
 
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out)["count"] == 0
+
+
+def test_bootstrap_db_takes_every_dsn_from_the_documented_variable(monkeypatch, capsys):
+    """`make migrate` passes no flags, so the environment has to supply them.
+
+    It bootstrapped a hardcoded `postgresql://localhost/reimagina` while
+    reading `DATABASE_URL_DIRECT` from the environment — one DSN from a
+    constant, another from `.env`, in the same invocation. With a `.env`
+    naming any other database that mixture is incoherent, and since the two
+    must agree it now fails outright:
+
+        ValueError: the direct DSN names a different database than the app DSN
+        ('reimagina_demo' != 'reimagina')
+
+    The guard was right; the asymmetry was the defect. `.env.example` assigns
+    the roles — `DATABASE_URL` for "Alembic migrations", `TEST_DATABASE_URL`
+    for "pytest integration suite target" — and the Makefile has always
+    claimed `migrate` runs "on the configured DATABASE_URL" while passing it
+    nothing. All four now read the variable that documents them.
+    """
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/reimagina_demo")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://localhost/demo_test")
+    monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql://localhost/reimagina_demo")
+
+    assert main(["bootstrap-db"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["app_dsn"] == "postgresql://localhost/reimagina_demo"
+    assert payload["test_dsn"] == "postgresql://localhost/demo_test"
+    assert payload["direct_dsn"] == "postgresql://localhost/reimagina_demo"
+
+
+def test_an_explicit_dsn_flag_still_beats_the_environment(monkeypatch, capsys):
+    """Same precedence as `--direct-dsn`: the flag the operator typed wins."""
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/from_env")
+
+    assert main(["bootstrap-db", "--app-dsn", "postgresql://localhost/typed"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["app_dsn"] == "postgresql://localhost/typed"
+
+
+def test_an_empty_dsn_flag_is_unset_not_a_blank_dsn(monkeypatch, capsys):
+    """`--app-dsn "$DATABASE_URL"` with the variable unexported passes "".
+
+    A shell expands an undefined variable to nothing, so the documented
+    invocation silently hands the CLI an empty string. That used to reach a
+    helper and raise `ValueError: DSN has no database name: ''` — a message
+    naming neither the flag nor the variable that was empty, several frames
+    from the thing the operator typed.
+    """
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+    # Every DSN variable cleared, not just the one under test. These options
+    # read the environment now, so a test that leaves any of them set asserts
+    # against whatever the shell happened to export — and CI exports
+    # DATABASE_URL_DIRECT for the integration job, which is how this first
+    # failed: green on its own, red in the full run.
+    for name in ("DATABASE_URL", "TEST_DATABASE_URL", "DATABASE_URL_DIRECT"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert main(["bootstrap-db", "--app-dsn", ""]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["app_dsn"] == "postgresql://localhost/reimagina"
+    assert payload["direct_dsn"] is None
