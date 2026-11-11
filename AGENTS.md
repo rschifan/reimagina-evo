@@ -174,9 +174,13 @@ path — `data/` is gitignored, so a fresh clone never has it.
 Web read-side (API + map frontend):
 
 ```bash
-# Start both from two terminals
-REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
-cd apps/web && npm install && npm run dev
+# One command for both. Reads REIMAGINA_APP_DSN, falling back to .env's
+# DATABASE_URL; Ctrl-C stops both.
+make dev
+
+# Or separately, if you want them in their own terminals
+make dev-api        # FastAPI on :8001 — the port vite.config.ts proxies to
+make dev-web        # Vite on :5173
 # Map at /, indicator catalog at /catalog.html, run dashboard at /ops.html.
 # The dashboard needs a worker to show anything running:
 #   DATABASE_URL_DIRECT=... python -m apps.worker

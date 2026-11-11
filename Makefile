@@ -136,8 +136,28 @@ API_PORT ?= 8001
 #
 # The trap that remains is for the other exit: if one server dies on its own,
 # `wait` returns and it tears the survivor down rather than leaving it running.
+#
+# ⚠ The DSN is read from `.env`'s DATABASE_URL when REIMAGINA_APP_DSN is unset.
+# The API reads REIMAGINA_APP_DSN (apps/api/deps.py) and `.env` carries
+# DATABASE_URL, so a machine with a perfectly good `.env` still had to pass the
+# DSN by hand — while `scripts/acceptance_run.sh` and `scripts/mexicali_run.sh`
+# both source `.env` and need no argument. One command should mean one command.
+#
+# It fails loudly rather than defaulting: the API's own fallback DSN points at a
+# database called `reimagina`, and silently serving an empty or wrong database
+# looks like a broken frontend, not a missing variable.
 dev: ## Start the API and the web dev server together. Ctrl-C stops both.
-	@echo "API  → http://127.0.0.1:$(API_PORT)"; \
+	@if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
+	  set -a; . ./.env; set +a; \
+	  REIMAGINA_APP_DSN="$$DATABASE_URL"; export REIMAGINA_APP_DSN; \
+	fi; \
+	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
+	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
+	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
+	  exit 1; \
+	fi; \
+	echo "DSN  → $$REIMAGINA_APP_DSN"; \
+	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:5173  (proxies /api to the API)"; \
 	echo; \
 	trap 'kill $$api $$web 2>/dev/null' EXIT; \

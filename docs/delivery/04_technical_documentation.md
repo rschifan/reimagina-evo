@@ -20,7 +20,8 @@ date: "11 November 2026"
 | 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
 | 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
-| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
+| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
+| 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
 
 ### About this document
 
@@ -186,7 +187,25 @@ is written around both:
 
 ## 5. Running the platform
 
-Three processes, each in its own terminal.
+The read side is one command:
+
+```bash
+make dev
+```
+
+It starts the API on `:8001` and the web app on `:5173`, and Ctrl-C stops
+both. It reads `REIMAGINA_APP_DSN`, falling back to `DATABASE_URL` from
+`.env`, and refuses to start rather than silently serving the API's own
+default database — an empty database looks like a broken frontend, not a
+missing variable.
+
+The split is a development artefact, not architecture: Vite serves the
+frontend itself because it does hot module replacement and TypeScript and
+Svelte transforms that the API cannot. A deployment runs `make build-web`
+and serves the static output behind one reverse proxy that maps `/api`, which
+is the mapping `vite.config.ts` performs in development.
+
+To run them in separate terminals, or to add the worker:
 
 ```bash
 make dev-api      # FastAPI on :8001
