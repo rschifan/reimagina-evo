@@ -492,9 +492,9 @@ ACCESSIBILITY_LABELS: dict[str, tuple[str, str]] = {
     "park": (
         "park or recreation site",
         "public recreational parks, plazas, playgrounds and sports facilities, "
-        "and private sports and fitness clubs — on the Mexicali pilot 632 of "
-        "1,001 destinations are commercial gyms and fitness studios, so this "
-        "is not a measure of public open space alone",
+        "and private sports and fitness clubs — on the Mexicali pilot 570 of "
+        "1,001 destinations are commercial gyms and fitness studios and only "
+        "178 are public open space, so this is not a measure of green space",
     ),
     "culture": (
         "cultural or entertainment venue",

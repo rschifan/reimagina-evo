@@ -23,6 +23,7 @@ date: "11 November 2026"
 | 0.5 | 2026-11-10 | Rossano Schifanella | Tiles over HTTP from the API (§10.3); street context without a basemap (§10.4); corrected API operation count and environment of record |
 | 0.6 | 2026-11-10 | Rossano Schifanella | Appendix A — the real Mexicali pilot, run on the author's machine and marked not reviewer-reproducible |
 | 0.7 | 2026-11-11 | Rossano Schifanella | Appendix A completed: the network accessibility family, with destination counts and the share of blocks at the cutoff |
+| 0.8 | 2026-11-11 | Rossano Schifanella | Park and cultural destinations ingested from Overture places (§A.1), so park accessibility is no longer an absence; twelfth indicator added for cultural venues |
 
 ### Why this document exists
 
@@ -134,7 +135,7 @@ The acceptance run's first four steps:
  "curated_geo.ingestion_run": true, "serving_geo.feature_v": true}}
 
 === 3. Seeding the feature-type and indicator catalogs
-15 feature types, 11 indicators
+15 feature types, 12 indicators
 
 === 4. Generating a territory
   ageb          4 features
@@ -149,9 +150,9 @@ The acceptance run's first four steps:
 **What it proves.** A reviewer with no access to the data lake can reach a
 populated, queryable system in under a minute. That is the condition Schedule
 A's "builds and runs" criterion needs, and before this annex it was not met:
-without a road network the three accessibility indicators refuse outright and
+without a road network the four accessibility indicators refuse outright and
 the livability score writes zero rows, so a fresh install could exercise seven
-of eleven indicators at most.
+of twelve indicators at most.
 
 **The orchestration module is inside this run, not beside it.** Step 12
 starts `python -m apps.worker` as a separate process, waits for it to announce
@@ -344,7 +345,7 @@ The two-attribute row returns five, not six, because `livability_block_score`
 appears in both sets and is counted once.
 
 **What it proves.** The claim in Work 1 §6.1 — that an edit to `floors` marks
-one indicator in eleven rather than all eleven — is measured here, on the
+one indicator in twelve rather than all twelve — is measured here, on the
 running system, together with the transitive closure that makes the mechanism
 non-trivial.
 
@@ -373,17 +374,17 @@ Four blocks given six additional floors, then recomputed:
   SYN0302          2.0       2.0       =
   SYN0303          3.0       3.0       =
   blocks the scenario changed: 4 of 16
-  current indicator_result rows: 176 baseline, 16 scenario — coexisting, not replaced
+  current indicator_result rows: 192 baseline, 16 scenario — coexisting, not replaced
   most current rows for any one (feature, indicator, scenario): 1
 ```
 
 Three properties, each observed rather than argued:
 
-- **The baseline is untouched.** 176 baseline rows (11 indicators × 16 blocks)
+- **The baseline is untouched.** 192 baseline rows (12 indicators × 16 blocks)
   remain current alongside the scenario's 16. No row was overwritten, and zero
   blocks had their base `attributes` written to.
 - **Only the dirty indicator was recomputed.** The scenario edited `floors`,
-  so it holds rows for `planned_floors` and nothing else — 16, not 176.
+  so it holds rows for `planned_floors` and nothing else — 16, not 192.
 - **One current row per tuple.** The partial unique indexes
   (`ir_one_current_base`, `ir_one_current_scenario`) hold at a maximum of 1.
 
@@ -997,13 +998,13 @@ to:
 | `Farmacia` | 595 | health |
 | `Hospital` | 51 | health |
 | `Guarderia` | 79 | **school** |
-| `Cine` | 10 | — |
+| `Cine` | 10 | **culture** (added after this run — see §A.1) |
 
 | Indicator | Blocks at the 1,500 m cutoff | What the number is |
 |---|---|---|
 | health | 5,957 of 19,058 (31.3 %) | a measurement, over 1,404 destinations |
 | school | 11,358 of 19,058 (59.6 %) | a measurement over **79 nurseries**. The mapping also lists `Educacion_preescolar`, `Educacion_primaria`, `Educacion_secundaria`, `Educacion_media_superior` and `Educacion_superior`; this file contains none of them, so this is nursery accessibility, not school accessibility |
-| park | 19,058 of 19,058 (**100 %**) | **not a measurement.** No category in the file is park-like, so every block correctly reports the cutoff and the surface is uniform by construction |
+| park | 19,058 of 19,058 (**100 %**) | **not a measurement on this run.** No category in the file is park-like, so every block correctly reports the cutoff and the surface is uniform by construction. §A.1 is the fix; it had not been applied when this run was taken |
 
 The park row is the behaviour `accessibility.py` documents — an absent
 category reports the cutoff — and it is also the failure its own comment
@@ -1012,6 +1013,13 @@ run now emits a warning naming the categories that are present when a
 category matches nothing, so the uniform surface is visible rather than
 inferred. No value changed; a 100 %-at-cutoff surface is reported, not
 suppressed.
+
+It was in fact missed in exactly that way. The uniform layer was not noticed
+in this run's own output; it was noticed when the map was opened and an entire
+municipality came out one flat colour, and the first reading of that was that
+the map was broken. The legend was no help — it explained the flat surface as
+*"ramp: catalog bounds (no data yet)"*, which is false, because 19,058 rows
+existed. That wording is corrected, and §A.1 removes the cause.
 
 `livability_block_score` returned `features_considered: 0, rows_written: 0`.
 Its heaviest weight (0.4) is `edificability_block_density`, which has no rows
@@ -1037,9 +1045,12 @@ a missing input.
 
 ### What it does not establish
 
-- **Park accessibility.** The indicator ran and wrote 19,058 rows, and every
-  one is the cutoff. There are no park destinations in this amenity layer, so
-  nothing about park access in Mexicali is established.
+- **Park accessibility, as measured by this run.** The indicator ran and wrote
+  19,058 rows, and every one is the cutoff. There were no park destinations in
+  the amenity layer, so this run establishes nothing about park access in
+  Mexicali. §A.1 supplies the destinations and is itself measured; what is not
+  yet measured is the indicator recomputed over them, because that needs the
+  lake mirror and is not reviewer-reproducible.
 - **School accessibility, as its name suggests.** 79 nurseries are the only
   matching destinations. The number is real; its scope is much narrower than
   "school".
@@ -1067,4 +1078,141 @@ fixed with a regression guard.
 | The Overture extract peaked at 4.4 GB on one city bbox, which swaps rather than OOMs on a laptop | No test measures resident memory |
 | AOI membership intersected the whole 2,109-vertex boundary per feature, recomputing each measure eight times — 8m56s for one city | A sixteen-block fixture is instant either way; `ST_Subdivide` plus an `ST_CoveredBy` short-circuit made it 13x faster with identical membership |
 | An accessibility category matching no destination produced a uniform cutoff surface indistinguishable from a measurement | The fixture seeds a park and asks for a school, which is the *one-category-absent* case; nothing covered a category absent from the entire layer |
+| The legend explained a flat 19,058-row layer as *"ramp: catalog bounds (no data yet)"* — the one case where the wording matters most, and it named the opposite cause | `rampDomainFromStats` folded "nothing computed" and "every value identical" into one boolean, which is right about the ramp and wrong about the reader; the function had no test of any kind |
+| The livability composite's weights summed to 1.0 only because the accessibility family happened to have three members | The edges were built by iterating the family at a literal `weight=0.2`, so the invariant held by coincidence; adding a fourth category took the sum to 1.2 on an indicator declared `valid_max=1.0` |
 
+
+## A.1 Park and cultural destinations, from Overture places
+
+**Status: the extract is measured here; the recomputed indicator is not.**
+Everything below was run against Overture's S3 release on 11 November 2026.
+What is *not* here is `accessibility_block_park_network_m` recomputed over
+these destinations, because that needs the lake mirror from Appendix A's
+qualification 3 and is not reviewer-reproducible. The appendix does not claim
+a number it has not taken.
+
+### Why this exists
+
+Appendix A's park row reports 19,058 of 19,058 blocks at the 1,500 m cutoff,
+because the IMIP amenity layer has no park-like category. The destinations are
+available in the *same* S3 release as the Overture buildings already ingested,
+under the same licence — no new credential, no new mirror, no change to the
+environment's network allowlist.
+
+```bash
+python -m apps.cli.app overture places \
+    --bbox -115.70,32.40,-115.20,32.80 \
+    --country MX --aoi-id <uuid>
+```
+
+### What the release holds, and what is counted
+
+| Stage | Rows | |
+|---|---|---|
+| Places in the Mexicali bbox | 43,037 | the whole theme, 221 distinct categories |
+| Matching the category allowlist | 1,303 | 30 categories across park and culture |
+| After `--country MX` | 1,147 | 156 dropped as US-side |
+| After the name rules | **1,119** | 28 dropped — 1,001 park, 118 culture |
+
+The 4,727 restaurants in that bbox are the reason the ingest filters rather
+than loading the theme wholesale: rows no indicator reads would still inflate
+the `global:establishment` layer a planner inspects and the tiles that serve
+it.
+
+### The two filters, and why each is not optional
+
+**Country.** The bbox is wide enough to hold the municipio, so it also holds
+Calexico, El Centro and Heber. 156 of the 1,303 matches are in the United
+States, 36 of them parks. The pedestrian network crosses the border too, at
+the ports of entry, so without the filter a block in northern Mexicali is
+reported a few hundred metres from a park in California that no resident walks
+to. The field is fully populated and splits exactly at the border — the
+Mexican rows top out at 32.6702 N and the US rows start at 32.6649 N.
+
+**Name.** Overture assigns `park` partly from the name, which in a
+Spanish-speaking industrial city collects things that are the opposite of
+recreational open space:
+
+| Dropped | Rows | Why |
+|---|---|---|
+| `Parque Industrial …` | 16 | industrial estates — and they cluster in exactly the districts whose park access is the question, so each one reports an industrial zone as well served |
+| `jardín de eventos`, `salón de eventos` | 11 | private ticketed wedding venues, tagged variously `park`, `amusement_park` and `swimming_pool` |
+| `Funeraria y Parque Memorial` | 1 | a funeral home |
+
+Every `Parque Acuático`, `Parque Infantil` and aquatic centre survives the
+rules; `tests/unit/test_amenity_categories.py` pins both halves, because an
+exclusion rule that quietly eats real parks is worse than no rule.
+
+⚠ **The exclusions are the reviewable part of this section.** Selecting park
+categories by keyword is actively dangerous on this theme. A substring match
+on `park`/`garden`/`sport` — the obvious first implementation, and the one
+that was written first — pulls in 907 `hardware_home_and_garden_store`, plus
+`rv_park` and `mobile_home_park` (housing), `parking_lot`,
+`sporting_goods_store` and `sports_bar`. Nine hundred shops against 178 actual
+parks would have produced a *varied* accessibility surface, confident and
+wrong by construction: the same defect as the flat layer, and harder to see.
+The allowlist is therefore explicit, the 34 rejected near-misses are recorded
+with a reason each in `reimagina.data.amenities`, and
+`python -m apps.cli.app overture place-categories` prints both.
+
+### What the park indicator will and will not mean
+
+| Destinations | Rows |
+|---|---|
+| Commercial fitness — `gym`, `sport_or_fitness_facility`, `fitness_studio` | 570 |
+| Other sports and recreation — clubs, fields, stadiums, pools, courts | 253 |
+| Public open space — parks (151), plazas, playgrounds, gardens, skate parks | 178 |
+
+⚠ **570 of the 1,001 are commercial gyms, and only 178 are public open
+space.** They are counted because the
+indicator's declared scope has always included private clubs — the IMIP
+vocabulary it was written against lists
+`Clubs_deportivos_y_acondicionamiento_fisico` beside `Parques_recreativos`,
+and the catalog description says so. But a reader who takes
+"distance to park or recreation site" as a measure of public green space will
+be wrong about this layer by a factor of five, so the catalog description now
+states the split.
+Restricting it to public open space alone is a defensible *different*
+indicator, not a correction to this one.
+
+### The twelfth indicator
+
+`Cine` — 10 cinemas — matched no category at all, so those points were
+ingested as establishments nothing read. They now feed
+`accessibility_block_culture_network_m`, alongside 118 Overture venues
+(cinemas, theatres, museums, galleries, libraries, cultural centres,
+arcades). Folding them into `park` to make that layer non-flat would have
+manufactured a finding out of 10 points.
+
+`music_venue` (132) and `historic_site` (200) are excluded: upstream the first
+is dominated by bars with live music, and the second by markers and plaques
+rather than places a resident travels to. Including either would have doubled
+the culture count with the wrong thing.
+
+The indicator is **not** part of `livability_block_score`. Livability here is
+access to everyday basics — a school, a clinic, somewhere green — and a cinema
+is not one of those; and the composite's values are already recorded in §13,
+so redefining what it measures is a decision rather than a consequence of
+adding a category. `tests/unit/test_composite_normalization.py` pins the
+exclusion so it cannot be undone by accident.
+
+### Verified on the synthetic territory
+
+The reviewer-reproducible half. `scripts/acceptance_run.sh` seeds one amenity
+per category, so the twelfth indicator is exercised by the run that needs
+nothing but Postgres:
+
+| Indicator | Rows | min | avg | max | distinct | at cutoff |
+|---|---|---|---|---|---|---|
+| `accessibility_block_culture_network_m` | 16 | 222.2 | 450.3 | 743.2 | 6 | **0** |
+| `accessibility_block_health_network_m` | 16 | 222.2 | 385.1 | 612.8 | 5 | 0 |
+| `accessibility_block_park_network_m` | 16 | 92.1 | 385.2 | 613.1 | 7 | 0 |
+| `accessibility_block_school_network_m` | 16 | 222.2 | 385.1 | 743.2 | 6 | 0 |
+
+The last two columns are the check that distinguishes a wired-up indicator
+from a flat one, and they are now a contract test rather than an observation:
+`tests/contract/test_synthetic_territory_covers_every_category.py` fails if a
+category is added to the catalog without a destination in the generator.
+Without it, the acceptance run would reproduce the Mexicali failure in the one
+artifact meant to prove the opposite — a full set of rows, no error, and a
+choropleth that measures nothing.

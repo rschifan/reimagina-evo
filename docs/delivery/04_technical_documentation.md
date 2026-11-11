@@ -412,9 +412,9 @@ scripts/acceptance_run.sh
 
 The script drops the database named in `DATABASE_URL`, migrates it from
 empty, generates a small territory on Mexicali coordinates — AGEBs containing
-blocks containing buildings, a pedestrian street graph, three amenities, an
+blocks containing buildings, a pedestrian street graph, four amenities, an
 area of interest and a single-band population raster — and then runs every
-analysis stage over it: feature overlaps, all eleven indicators including the
+analysis stage over it: feature overlaps, all twelve indicators including the
 pgRouting network family, raster ingest through COG staging, zonal
 statistics, an observation rollup, a scenario, and the live tile functions.
 Any failure stops the run.

@@ -284,9 +284,9 @@ transcripts are in the capability-proof annex.
 
 The step that carries the most weight is the third. Because the asset graph
 records which indicators read which *attribute*, an edit to `floors` marks
-only the indicators that read `floors`. On the delivered catalogue of eleven
+only the indicators that read `floors`. On the delivered catalogue of twelve
 indicators that is exactly one, measured against the running system; recomputing
-all eleven would be correct and eleven times the work. Two hops are resolved the
+all twelve would be correct and twelve times the work. Two hops are resolved the
 same way: an edit to `num_levels` marks four, because two of them read it only
 through a composite.
 

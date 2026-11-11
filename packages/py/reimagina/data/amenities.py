@@ -39,16 +39,23 @@ import unicodedata
 
 #: Public open space and sports/recreation facilities.
 #
-# Scope note, because the composition matters more than the total: of the 1,164
-# matches in the Mexicali bbox, 632 are commercial fitness —
-# ``gym`` (335), ``sport_or_fitness_facility`` (231), ``fitness_studio`` (66).
-# Only 309 are public open space. They are all here because the indicator's
-# declared scope has always included private clubs: the IMIP vocabulary it was
-# written against lists ``Clubs_deportivos_y_acondicionamiento_fisico``
-# alongside ``Parques_recreativos``, and ACCESSIBILITY_LABELS['park'] says so.
+# Scope note, because the composition matters more than the total. Of the 1,001
+# park destinations actually loaded for Mexicali — after the country and name
+# filters, which is the number that reaches the indicator:
+#
+#   commercial fitness    570   gym 304, sport_or_fitness_facility 205, studio 61
+#   other sport / rec     253   clubs, fields, stadiums, pools, courts
+#   public open space      178   park 151, plazas, playgrounds, gardens
+#
+# They are all here because the indicator's declared scope has always included
+# private clubs: the IMIP vocabulary it was written against lists
+# ``Clubs_deportivos_y_acondicionamiento_fisico`` alongside
+# ``Parques_recreativos``, and ACCESSIBILITY_LABELS['park'] says so. But a
+# reader who takes "distance to park" as public green space will be wrong about
+# this layer by a factor of five, so the catalog description states the split.
 # Narrowing to public open space alone is a defensible *different* indicator —
-# it is not a correction to this one — and would mean dropping the six
-# fitness/club entries below.
+# it is not a correction to this one — and would mean dropping the fitness and
+# club entries below.
 OVERTURE_PARK_CATEGORIES: tuple[str, ...] = (
     # Public open space.
     "park",

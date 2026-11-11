@@ -89,6 +89,16 @@ Rules:
   the whole network** — it is not scoped to the AOI, which only bounds the fetch.
   Use `--clip-bbox` where the AOI is mostly empty: a municipio-sized walk graph is
   a multi-gigabyte Overpass request whose result is ~99% desert
+- an accessibility category with no destination in the data does **not** fail:
+  `pgr_drivingDistance` given a NULL start array returns zero rows, so every
+  block reports the 1,500 m cutoff and the choropleth comes out one flat colour
+  that reads as a real, uniformly bad surface. The park indicator shipped that
+  way on the real Mexicali pilot for all 19,058 blocks. Two things hold the line
+  now: `reimagina.data.amenities` is the single vocabulary of what counts as
+  which amenity (and, as importantly, what is deliberately excluded and why),
+  and `tests/contract/test_synthetic_territory_covers_every_category.py` refuses
+  a category with no destination in the synthetic territory — otherwise
+  `acceptance_run.sh` reproduces the failure in the artifact meant to disprove it
 - an indicator's `require_nonempty(loader=...)` hint must be a runnable command,
   not a Python path. A user reading it has just had an indicator refuse to run;
   telling them to call a function is telling them to write code.
@@ -159,14 +169,25 @@ python scripts/synthetic_territory.py
 # global:road features. --clip-bbox bounds the fetch, not the AOI.
 python -m apps.cli.app network bootstrap --aoi-id <uuid> \
     --clip-bbox -115.70,32.40,-115.20,32.80
+
+# Park, recreation and cultural destinations, from Overture places.
+# ⚠ --country is not optional on a border-crossing bbox: 156 of the Mexicali
+# box's 1,303 places are in the US, 36 of them parks.
+python -m apps.cli.app overture places \
+    --bbox -115.70,32.40,-115.20,32.80 --country MX --aoi-id <uuid>
+
+# What the places ingest counts as park or culture, and what it refuses.
+# The exclusions are the reviewable part: a keyword match on this theme pulls
+# in 907 hardware shops for `garden`.
+python -m apps.cli.app overture place-categories
 ```
 
 Two end-to-end runbooks, and they trade off against each other:
 
 | Script | Needs | Gives |
 |---|---|---|
-| `scripts/acceptance_run.sh` | nothing but Postgres | a synthetic territory, all 11 indicators, reproducible anywhere — the Schedule A acceptance criterion |
-| `scripts/mexicali_run.sh` | the Azure lake mirror on disk + network | the real Mexicali pilot: INEGI blocks/AGEBs, 2020 census, IMIP amenities, Overture buildings, OSM streets |
+| `scripts/acceptance_run.sh` | nothing but Postgres | a synthetic territory, all 12 indicators, reproducible anywhere — the Schedule A acceptance criterion |
+| `scripts/mexicali_run.sh` | the Azure lake mirror on disk + network | the real Mexicali pilot: INEGI blocks/AGEBs, 2020 census, IMIP amenities, Overture buildings and places, OSM streets |
 
 `mexicali_run.sh` fails fast if the mirror is absent, naming each missing
 path — `data/` is gitignored, so a fresh clone never has it.
