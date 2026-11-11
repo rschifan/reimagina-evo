@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from reimagina.storage import (
     DEFAULT_DEV_DSN,
     DEFAULT_POSTGRES_ADMIN_DSN,
@@ -46,6 +44,7 @@ def bootstrap_local_platform(
     app_dsn: str = DEFAULT_APP_DSN,
     test_dsn: str = DEFAULT_TEST_DSN,
     admin_dsn: str = DEFAULT_ADMIN_DSN,
+    direct_dsn: str | None = None,
 ) -> dict[str, dict[str, str | bool]]:
     backend_name_for_dsn(app_dsn)  # validate scheme
     backend_name_for_dsn(test_dsn)
@@ -84,25 +83,22 @@ def bootstrap_local_platform(
     # callers that never touch the ops plane.
     from reimagina.orchestration import dbos_app
 
-    # ⚠ The **direct** DSN when there is one, never `app_dsn` by preference.
-    # This is a schema migration, and `.env.example` is explicit about where
-    # those go: `REIMAGINA_APP_DSN` is the pooled one ("Production points it at
-    # pgbouncer; migrations stay direct"), while `DATABASE_URL_DIRECT` is the
-    # one for "Alembic, LISTEN/NOTIFY" — both descriptions of exactly this
-    # call. `run_migrations` serialises concurrent deploys with a *session*
-    # advisory lock taken on an AUTOCOMMIT connection; through a
-    # transaction-mode pooler each statement can land on a different backend,
-    # so the lock would neither cover the DDL that follows it nor be released
-    # by the backend holding it. It also installs the LISTEN/NOTIFY triggers
-    # the progress stream reads, which is the other thing a pooler cannot
-    # carry.
+    # `direct_dsn` when the caller named one: this is a schema migration, and
+    # `ensure_system_database` explains at length why one must not cross a
+    # transaction-mode pooler. Falling back to `app_dsn` keeps the common local
+    # install working, where there is one DSN and it is already direct.
     #
-    # Falls back to `app_dsn` rather than insisting, because `dbos_dsn()`
-    # raises when `DATABASE_URL_DIRECT` is unset and the common local case —
-    # `make migrate` against a direct localhost DSN with no such variable —
-    # must keep working. Where only one DSN exists it is already the direct
-    # one, so the fallback is the same connection by another name.
-    dbos_app.ensure_system_database(os.environ.get("DATABASE_URL_DIRECT") or app_dsn)
+    # ⚠ The parameter wins over the environment, and the resolution happens in
+    # the CLI rather than here — `reimagina.db` reads no environment variables,
+    # and `--direct-dsn` beating `$DATABASE_URL_DIRECT` is the precedence
+    # `raster_zonal_stats` and the two CLI commands that already take this flag
+    # all use. The reverse silently overrode the caller: the runbook tells an
+    # operator to pass `--app-dsn "$DATABASE_URL_DIRECT"`, and an env var left
+    # pointing at some other database — which the benchmark scripts document
+    # exporting — would have sent the ops-plane schema there instead, with
+    # `_assert_domain_database` none the wiser because that database is
+    # migrated too.
+    dbos_app.ensure_system_database(direct_dsn or app_dsn)
     return result
 
 

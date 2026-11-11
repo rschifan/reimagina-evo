@@ -291,6 +291,15 @@ def ensure_system_database(dsn: str | None = None) -> None:
     an advisory lock and short-circuits when the recorded version is the
     latest, so concurrent callers and repeat deploys are both fine.
 
+    ⚠ Wants the **direct** DSN. The migration takes a *session* advisory lock
+    on an AUTOCOMMIT connection to serialise concurrent deploys, and installs
+    the LISTEN/NOTIFY triggers the progress stream reads — neither of which
+    survives a transaction-mode pooler, where consecutive statements can land
+    on different backends, so the lock covers none of the DDL that follows it
+    and is never released by the backend holding it. This is the same reason
+    `dbos_dsn` refuses anything else, and `.env.example` says the same of
+    Alembic.
+
     ⚠ Deliberately **not** implemented by launching DBOS and immediately
     destroying it. ``launch()`` also starts the queue dequeuer and the
     startup-recovery thread, and recovery reclaims workflows recorded against

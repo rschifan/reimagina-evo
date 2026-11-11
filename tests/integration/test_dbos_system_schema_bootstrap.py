@@ -15,6 +15,7 @@ submit itself cannot work. Bootstrap owns this now.
 
 from __future__ import annotations
 
+from contextlib import closing
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
@@ -35,6 +36,21 @@ def _regclass(dsn: str, relation: str):
 
 def _with_database(dsn: str, name: str) -> str:
     return urlunparse(urlparse(dsn)._replace(path=f"/{name}"))
+
+
+def _run(dsn: str, *statements: str) -> None:
+    """Execute DDL on ``dsn``, autocommitting, and close the socket after.
+
+    Autocommit because ``CREATE``/``DROP DATABASE`` cannot run inside a
+    transaction. ``closing`` because psycopg2's own context manager scopes the
+    *transaction* and leaves the socket open — the distinction this repo spells
+    out wherever it opens a short-lived connection.
+    """
+    with closing(psycopg2.connect(dsn)) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for statement in statements:
+                cur.execute(statement)
 
 
 @pytest.fixture
@@ -58,35 +74,21 @@ def unprovisioned_db(migrated_db: str):
     """
     admin = _with_database(migrated_db, "postgres")
     name = f"reimagina_dbosprov_{uuid4().hex[:12]}"
-
-    conn = psycopg2.connect(admin)
-    conn.autocommit = True  # CREATE/DROP DATABASE cannot run in a transaction
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f'CREATE DATABASE "{name}"')
-    finally:
-        conn.close()
-
     dsn = _with_database(migrated_db, name)
-    scratch = psycopg2.connect(dsn)
-    try:
-        with scratch, scratch.cursor() as cur:
-            cur.execute("CREATE SCHEMA jobs_runtime")
-            cur.execute("CREATE TABLE jobs_runtime.job_run (id uuid PRIMARY KEY)")
-    finally:
-        scratch.close()
 
+    # Three connections, and only three: the database cannot be created from
+    # inside itself, and the schema cannot be created from outside it.
+    _run(admin, f'CREATE DATABASE "{name}"')
     try:
+        _run(
+            dsn,
+            "CREATE SCHEMA jobs_runtime",
+            "CREATE TABLE jobs_runtime.job_run (id uuid PRIMARY KEY)",
+        )
         yield dsn
     finally:
-        conn = psycopg2.connect(admin)
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                # FORCE because a failed assertion can leave DBOS's pool open.
-                cur.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-        finally:
-            conn.close()
+        # FORCE because a failed assertion can leave DBOS's pool open.
+        _run(admin, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
 def test_ensure_system_database_creates_the_schema_a_client_cannot(
