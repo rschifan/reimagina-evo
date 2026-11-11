@@ -167,11 +167,21 @@ API_PORT ?= 8001
 #
 # Assigned with `:=` so an explicit value still wins, and Martin goes back with
 # `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000/get_tile make dev`.
+#
+# ⚠ The value is captured BEFORE `.env` is sourced and restored after, so
+# only the invoking environment can override it. Without that, a `.env`
+# carrying `REIMAGINA_TILE_LIVE_BASE_URL` wins over the default and `make dev`
+# quietly points the map at Martin again — the exact failure this block
+# exists to prevent, reintroduced by the line two above it. `.env` is for
+# machine configuration like the DSN; which tile server a *development* run
+# talks to is this target's business, and it starts only one of them.
 dev: ## Start the API and the web dev server together. Ctrl-C stops both.
-	@if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
+	@_tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
+	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
 	  set -a; . ./.env; set +a; \
 	  REIMAGINA_APP_DSN="$$DATABASE_URL"; export REIMAGINA_APP_DSN; \
 	fi; \
+	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
 	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
 	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
