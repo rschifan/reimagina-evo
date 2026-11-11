@@ -22,6 +22,36 @@ Checkpoints live in the **same database** as the domain data, under the `dbos`
 schema. There is no second database to back up, and a `pg_dump -n curated_geo -n
 jobs_runtime` is still coherent on its own.
 
+### Every submit answers 503 and names `bootstrap-db`
+
+The ops plane's schema is missing from that database. `bootstrap-db` — what
+`make migrate` runs — provisions it; **Alembic alone does not**, because DBOS
+owns the `dbos` schema and the API submits as a `DBOSClient`, which never runs
+migrations. Starting a worker once also creates it, as a side effect of
+`launch()`.
+
+Symptom to recognise: the read side is entirely healthy — the dashboard lists
+indicators, the run list renders, health is green — and only `POST /jobs`
+fails. Nothing is wrong with the request or with shipped code, which is why
+this is a 503 and not a 500.
+
+```bash
+# Is it provisioned?
+psql "$DATABASE_URL_DIRECT" -c "SELECT to_regclass('dbos.workflow_status')"
+# NULL  -> not provisioned
+python -m apps.cli.app bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"
+```
+
+Idempotent, so it is safe to run against a database that already has it.
+
+Pass the *application's* DSN; every DDL step inside — Alembic and the
+ops-plane schema both — takes `--direct-dsn`, which defaults to
+`$DATABASE_URL_DIRECT` and falls back to `--app-dsn` when neither is set. The
+flag beats the variable, so a stale `DATABASE_URL_DIRECT` in the shell cannot
+quietly redirect the migration. A direct DSN naming a *different* database is
+refused rather than used: it is another route to the same one, so only host
+and port may differ.
+
 ## Configuration that will bite you
 
 | variable | unset behaviour | why it matters |

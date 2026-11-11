@@ -159,7 +159,22 @@ def create_app(
     # the console when the cursor is outside the active raster.
     # titiler's DEFAULT_STATUS_CODES omits PointOutsideBounds — pin it
     # to 404 explicitly.
-    add_exception_handlers(app, {**DEFAULT_STATUS_CODES, PointOutsideBounds: 404})
+    #
+    # ⚠ `Exception` is filtered out, and that is the whole point of building
+    # the map by hand. DEFAULT_STATUS_CODES contains `Exception: 500`, and
+    # `add_exception_handler` is a dict assignment — so passing the map
+    # unaltered silently *replaced* `errors.unhandled_error_handler`,
+    # registered above, for every route in the app. titiler's catch-all
+    # answers `{"detail": str(exc)}`, which echoed the exception's own text to
+    # the client: full SQL, bound parameters, and whatever else a driver puts
+    # in a message. It also dropped the request id the envelope carries, so
+    # the one response an operator most needs to correlate was the one that
+    # could not be. The raster-specific entries are kept — they are why this
+    # is called at all.
+    raster_status_codes = {
+        exc: code for exc, code in DEFAULT_STATUS_CODES.items() if exc is not Exception
+    }
+    add_exception_handlers(app, {**raster_status_codes, PointOutsideBounds: 404})
     return app
 
 
