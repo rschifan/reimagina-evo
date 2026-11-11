@@ -29,9 +29,9 @@ def _reproject_to_4326(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         transformer = Transformer.from_crs(gdf.crs, "EPSG:4326", always_xy=True)
         reprojected = gdf.copy()
         reprojected["geometry"] = reprojected["geometry"].apply(
-            lambda g: shapely_transform(transformer.transform, g)
-            if g is not None
-            else g
+            lambda g: (
+                shapely_transform(transformer.transform, g) if g is not None else g
+            )
         )
         reprojected.set_crs("EPSG:4326", inplace=True, allow_override=True)
         return reprojected

@@ -28,9 +28,9 @@ def test_layer_specs_share_common_attributes_schema():
     downstream queries can rely on a uniform JSONB shape."""
     expected = {"category", "capacity", "fuente", "fecha", "entidad"}
     for spec in LAYER_SPECS.values():
-        assert (
-            set(spec.attributes_cols) == expected
-        ), f"spec {spec.key!r} has divergent attributes_cols"
+        assert set(spec.attributes_cols) == expected, (
+            f"spec {spec.key!r} has divergent attributes_cols"
+        )
 
 
 def test_layer_specs_use_stable_record_id_column():

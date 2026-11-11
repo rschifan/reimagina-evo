@@ -440,7 +440,7 @@ class PostgresFeatureRepository:
                 f"""
                 SELECT id::text, ST_AsText(geometry)
                 FROM curated_geo.feature
-                WHERE {' AND '.join(predicates)}
+                WHERE {" AND ".join(predicates)}
                   AND type_slug = %s
                 LIMIT 1
                 """,
@@ -2642,7 +2642,7 @@ class PostgresIndicatorResultRepository:
                        ir.computed_at            AS computed_at
                 FROM curated_geo.indicator_result ir
                 JOIN curated_geo.feature f ON f.id = ir.feature_id
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY ir.feature_id
                 LIMIT %s
                 """,
@@ -2695,7 +2695,7 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
                   MAX(ir.value_numeric)                                          AS max
                 FROM curated_geo.indicator_result ir
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 """,
                 params,
             )

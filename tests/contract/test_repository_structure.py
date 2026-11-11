@@ -100,14 +100,16 @@ def test_backends_implement_every_protocol_method(
     getter = getattr(backend, repo_getter)
     annotations = getattr(getter, "__annotations__", {})
     return_cls = annotations.get("return")
-    assert (
-        return_cls is not None
-    ), f"{backend_cls}.{repo_getter} is missing a return annotation"
+    assert return_cls is not None, (
+        f"{backend_cls}.{repo_getter} is missing a return annotation"
+    )
     if isinstance(return_cls, str):
         return_cls = eval(return_cls, backend_mod.__dict__)
 
     missing = _protocol_methods(protocol_cls) - _protocol_methods(return_cls)
-    assert not missing, f"{return_cls.__name__} missing Protocol methods from {protocol_name}: {sorted(missing)}"
+    assert not missing, (
+        f"{return_cls.__name__} missing Protocol methods from {protocol_name}: {sorted(missing)}"
+    )
 
 
 def test_explore_module_is_not_used_by_domain_logic_outside_cli():
@@ -123,9 +125,9 @@ def test_explore_module_is_not_used_by_domain_logic_outside_cli():
         if path in allowed_paths:
             continue
         content = path.read_text()
-        assert not disallowed_import.search(
-            content
-        ), f"Unexpected explore dependency in {path}"
+        assert not disallowed_import.search(content), (
+            f"Unexpected explore dependency in {path}"
+        )
 
 
 # ── Dependency pinning ───────────────────────────────────────────────────────
@@ -173,9 +175,9 @@ def test_ci_installs_python_dependencies_from_the_lockfile():
         for line in ci.splitlines()
         if not (stripped := line.strip()).startswith("#") and "pip install" in stripped
     ]
-    assert (
-        not offenders
-    ), f"CI installs Python dependencies outside the lockfile: {offenders}"
+    assert not offenders, (
+        f"CI installs Python dependencies outside the lockfile: {offenders}"
+    )
 
 
 def test_the_linters_ci_gates_on_are_locked():

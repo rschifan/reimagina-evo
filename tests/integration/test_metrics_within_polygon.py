@@ -273,16 +273,16 @@ def test_within_polygon_rejects_nan_coordinates(client, two_aois_two_blocks):
     """
     fixture = two_aois_two_blocks
     raw_body = (
-        '{'
+        "{"
         f'  "aoi_id": "{fixture["aoi_cdmx"]}",'
         '   "polygon": {'
         '     "type": "Polygon",'
         '     "coordinates": [[[NaN, 19.428], [-99.135, 19.428],'
-        '                      [-99.135, 19.435], [-99.142, 19.435],'
-        '                      [NaN, 19.428]]]'
-        '   },'
+        "                      [-99.135, 19.435], [-99.142, 19.435],"
+        "                      [NaN, 19.428]]]"
+        "   },"
         '   "type_slugs": ["block"]'
-        '}'
+        "}"
     )
     response = client.post(
         "/metrics/within-polygon",
