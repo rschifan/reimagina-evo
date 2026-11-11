@@ -2,7 +2,7 @@
 title: "Technical documentation"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 4"
 author: "Rossano Schifanella"
-date: "10 November 2026"
+date: "11 November 2026"
 ---
 
 ## Document control
@@ -20,6 +20,7 @@ date: "10 November 2026"
 | 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
 | 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
+| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
 
 ### About this document
 

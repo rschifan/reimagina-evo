@@ -5,9 +5,9 @@ by its date, version, commit or tag, and SHA-256 hash.
 
 | | |
 |---|---|
-| **Date** | 10 November 2026 |
+| **Date** | 11 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `9ae42c48d645484883f3c717d13ec7ab496734dd` |
+| **Generated from commit** | `13c758fb2e9fc7c85a9009c8169f4e60dc8d5815` |
 | **Branch** | `delivery/schedule-a` |
 | **Working tree at generation** | MODIFIED — not a clean delivery |
 
@@ -20,14 +20,14 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 
 | Schedule A | File | Bytes | SHA-256 |
 |---|---|---:|---|
-| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 580,490 | `2afe0509b0d0acaeda3b6d8db51e562b81459e599dc0596ccdeb7679d1be9041` |
-| Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,299 | `55df28ffaad0d532c1ab492d12d342f19a2289cca50e79f4cad48984eb6274d1` |
-| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 680,549 | `c7ec98106e7f77fa565f684edf800a9d527372ad2fa6dbd94bb9dd2928480c28` |
-| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 70,957 | `17cf9a60b9ba7eabef379993c25277916ca8af56cf6e6ef5b8ae0e841562d677` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 263,977 | `c3737a196bb03a97123bd4abf6e40915e0f66ac095a5ef44e2057eca8947db38` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 30,909 | `f51f3fd41af1267b4fb4ef9e2e50ca892a1a3e934c3ade37a45e4d2255bc7661` |
-| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 301,002 | `4027ecebe7cc1b99835c4cd705cc316082b7b53058b9091a4792fd64ec9725b4` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 48,256 | `66c0a908beb80a76a03249b2812513c2825474453658d015ea1f2d3d80368ddc` |
+| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 580,706 | `f8fad6551e2e298f2f59914ef75bc8e8a4ecc7463ed60cb9c89333a314ddaec3` |
+| Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,446 | `bd0e3e8c0c85605ae17558f5578ae8ccc65fddc7e10a33c0ceca2709d7e3a8f4` |
+| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 680,550 | `e146f4677c67a08751c10c6961ee338dbb946f55492fc569833c6d79898cb5b6` |
+| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 70,957 | `e167093eb4ec5f380c90e1253cae5d238f7755089d881b691f536c3411d199ed` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 264,234 | `745ab281997659ac2758f1fce626bd5bab85732289c8baada0197a4e962e69ff` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 31,056 | `4700b3e66735ac18399a1eb8aa5672cee01851a498d083026f0347d76a7e05d7` |
+| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 311,026 | `d712f88f1ffdb6b6f326dc8447bd3a97e6e114c100895d4d1c66008207c5e55c` |
+| Annex — source | `docs/delivery/05_capability_proof.md` | 51,175 | `17899058bc4bed6b576c862d187db5060d4511d81ede28adc7d23fde87f297c8` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
 
 ## Verifying this

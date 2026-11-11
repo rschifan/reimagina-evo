@@ -2,7 +2,7 @@
 title: "Capability proof"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — annex to Schedule A"
 author: "Rossano Schifanella"
-date: "10 November 2026"
+date: "11 November 2026"
 ---
 
 ## Document control
@@ -22,6 +22,7 @@ date: "10 November 2026"
 | 0.4 | 2026-11-09 | Rossano Schifanella | The acceptance run now exercises the ops plane |
 | 0.5 | 2026-11-10 | Rossano Schifanella | Tiles over HTTP from the API (§10.3); street context without a basemap (§10.4); corrected API operation count and environment of record |
 | 0.6 | 2026-11-10 | Rossano Schifanella | Appendix A — the real Mexicali pilot, run on the author's machine and marked not reviewer-reproducible |
+| 0.7 | 2026-11-11 | Rossano Schifanella | Appendix A completed: the network accessibility family, with destination counts and the share of blocks at the cutoff |
 
 ### Why this document exists
 
@@ -974,13 +975,48 @@ Baja California (INEGI `CVE_ENT=02`), AOI = Mexicali municipality
 | AOI membership | `aoi compute-features` | **364,779** members before the network load |
 | Overlaps | `overlap compute-all` | building→block **321,324**, block→AGEB **16,101** |
 
-Indicators, each on the blocks inside the AOI:
+Indicators, each on the 19,058 blocks inside the AOI:
 
-| Indicator | Rows | Notes |
+| Indicator | Rows | min | avg | max |
+|---|---|---|---|---|
+| `urban_form_block_compactness` | 19,058 | 0.0 | 0.6 | 0.9 |
+| `urban_form_block_building_density` | 19,058 | 0.0 | 20.3 | 153.8 |
+| `urban_form_block_composite` | 19,058 | 0.0 | 0.3 | 0.5 |
+| `accessibility_block_health_network_m` | 19,058 | 27.2 | 857.5 | 1500.0 |
+| `accessibility_block_school_network_m` | 19,058 | 27.5 | 1244.5 | 1500.0 |
+| `accessibility_block_park_network_m` | 19,058 | 1500.0 | 1500.0 | 1500.0 |
+
+⚠ **Three of those need reading with their destination counts, not as
+accessibility findings.** The amenity layer for Mexicali holds 1,493 points in
+five categories, and that is the whole of what the network family had to route
+to:
+
+| Source category | Points | Matched by |
 |---|---|---|
-| `urban_form_block_compactness` | **19,058** | geometry only |
-| `urban_form_block_building_density` | **19,058** | 313,827 buildings attributed |
-| `urban_form_block_composite` | **19,058** | weighted from the two above |
+| `Consultorio medico` | 758 | health |
+| `Farmacia` | 595 | health |
+| `Hospital` | 51 | health |
+| `Guarderia` | 79 | **school** |
+| `Cine` | 10 | — |
+
+| Indicator | Blocks at the 1,500 m cutoff | What the number is |
+|---|---|---|
+| health | 5,957 of 19,058 (31.3 %) | a measurement, over 1,404 destinations |
+| school | 11,358 of 19,058 (59.6 %) | a measurement over **79 nurseries**. The mapping also lists `Educacion_preescolar`, `Educacion_primaria`, `Educacion_secundaria`, `Educacion_media_superior` and `Educacion_superior`; this file contains none of them, so this is nursery accessibility, not school accessibility |
+| park | 19,058 of 19,058 (**100 %**) | **not a measurement.** No category in the file is park-like, so every block correctly reports the cutoff and the surface is uniform by construction |
+
+The park row is the behaviour `accessibility.py` documents — an absent
+category reports the cutoff — and it is also the failure its own comment
+warns about: *"1500 m looks like a measurement in a way 0.0 does not."* The
+run now emits a warning naming the categories that are present when a
+category matches nothing, so the uniform surface is visible rather than
+inferred. No value changed; a 100 %-at-cutoff surface is reported, not
+suppressed.
+
+`livability_block_score` returned `features_considered: 0, rows_written: 0`.
+Its heaviest weight (0.4) is `edificability_block_density`, which has no rows
+here for the reason below. It wrote nothing rather than composing a score from
+a missing input.
 
 ### What the run establishes that §1–§17 cannot
 
@@ -1001,9 +1037,12 @@ Indicators, each on the blocks inside the AOI:
 
 ### What it does not establish
 
-- **The accessibility family.** `accessibility_block_{school,health,park}_network_m`
-  require both the network and the amenity layer, and both are now present,
-  but their run on this data is not recorded here.
+- **Park accessibility.** The indicator ran and wrote 19,058 rows, and every
+  one is the cutoff. There are no park destinations in this amenity layer, so
+  nothing about park access in Mexicali is established.
+- **School accessibility, as its name suggests.** 79 nurseries are the only
+  matching destinations. The number is real; its scope is much narrower than
+  "school".
 - **The edificability family.** `edificability_block_*` read `num_levels`,
   `unit_size` and `people_per_household` — scenario inputs that no INEGI or
   Overture layer carries. `scripts/mexicali_run.sh` attempts them and reports
@@ -1026,4 +1065,6 @@ fixed with a regression guard.
 | `scripts/mexicali_run.sh` omitted `--bbox`, so the extract took `MEXICO_CITY_BBOX` and the AOI clip deleted all of it | Shell and the CLI meet only when someone runs the script |
 | Two source modules were excluded by a `.gitignore` pattern matching at every depth, so the repository carried tests for code it did not contain | Local tests pass by construction — the file is present locally |
 | The Overture extract peaked at 4.4 GB on one city bbox, which swaps rather than OOMs on a laptop | No test measures resident memory |
+| AOI membership intersected the whole 2,109-vertex boundary per feature, recomputing each measure eight times — 8m56s for one city | A sixteen-block fixture is instant either way; `ST_Subdivide` plus an `ST_CoveredBy` short-circuit made it 13x faster with identical membership |
+| An accessibility category matching no destination produced a uniform cutoff surface indistinguishable from a measurement | The fixture seeds a park and asks for a school, which is the *one-category-absent* case; nothing covered a category absent from the entire layer |
 

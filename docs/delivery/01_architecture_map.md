@@ -2,7 +2,7 @@
 title: "Software and systems architecture map"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 1"
 author: "Rossano Schifanella"
-date: "10 November 2026"
+date: "11 November 2026"
 ---
 
 ## Document control
@@ -21,6 +21,7 @@ date: "10 November 2026"
 | 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented (§5.4, Figure 5); current dependency set |
 | 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
 | 0.5 | 2026-11-10 | Rossano Schifanella | Constraint C6 (no third-party runtime service); the tile server is interchangeable (§5.1); street context in place of a basemap (§3.3) |
+| 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
 
 ### About this document
 

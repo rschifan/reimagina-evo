@@ -2,7 +2,7 @@
 title: "Database and API reference"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"
 author: "Rossano Schifanella"
-date: "10 November 2026"
+date: "11 November 2026"
 ---
 
 ## Document control

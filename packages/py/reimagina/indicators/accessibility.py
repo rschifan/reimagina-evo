@@ -45,6 +45,8 @@ behind a plausible-looking choropleth.
 
 from __future__ import annotations
 
+import logging
+
 
 from reimagina.data.feature import get_type_id
 from reimagina.indicators._compute import (
@@ -80,6 +82,9 @@ _AOI_JOIN = """
         JOIN curated_geo.area_of_interest aoi
           ON aoi.id = %(aoi_id)s::uuid AND ST_Intersects(f.geometry, aoi.geometry)
 """
+
+logger = logging.getLogger(__name__)
+
 
 # Amenities of one category. `attributes->>'category'` rather than `name`:
 # points.py writes the source category to both, but attributes is the
@@ -261,6 +266,7 @@ def _reader_for(spec: IndicatorSpec, rows_fn):
                 needs="the establishment (POI) layer",
                 loader="`python -m apps.cli.app points bootstrap`",
             )
+            _warn_if_category_absent(cur, spec.slug, categories)
         return rows_fn(
             conn,
             type_id=get_type_id(conn, "MEX", "block"),
@@ -279,6 +285,64 @@ def _bind(spec: IndicatorSpec, rows_fn):
         node="accessibility_result_frame",
         input_key="accessibility_rows",
         default_family="accessibility",
+    )
+
+
+def _warn_if_category_absent(cur, slug: str, categories: tuple[str, ...]) -> None:
+    """Say so when a category matches nothing, because the result will not.
+
+    ⚠ The guard above deliberately stops at the *layer*, and that decision
+    stands: a category genuinely absent near a block should report the cutoff,
+    which is what `test_no_amenity_of_that_category_reports_the_cutoff` pins.
+
+    But the comment defending it also describes what happens when the category
+    matches **nothing at all** — "every block reports the cutoff and the
+    result reads as a real, uniformly bad accessibility surface ... harder to
+    spot because 1500 m looks like a measurement in a way 0.0 does not." That
+    is exactly what the first real-data run produced:
+    `accessibility_block_park_network_m` returned 1500.0 for all 19,058
+    Mexicali blocks, because the IMIP amenity file carries no park-like
+    category at all.
+
+    So this changes no value and refuses nothing — it makes the degenerate
+    case *visible*. It also prints the categories that are present, which is
+    the one thing needed to tell "nothing nearby" from "the source labels it
+    differently": Mexicali's file has `Cine`, `Consultorio medico`,
+    `Farmacia`, `Guarderia`, `Hospital` and nothing else, so `park` is an
+    absence and `school` matches only nurseries.
+    """
+    cur.execute(
+        """
+        SELECT count(*)
+        FROM curated_geo.feature
+        WHERE type_slug = 'establishment'
+          AND attributes->>'category' = ANY(%s)
+        """,
+        (list(categories),),
+    )
+    matched = int(cur.fetchone()[0])
+    if matched:
+        return
+
+    cur.execute(
+        """
+        SELECT DISTINCT attributes->>'category'
+        FROM curated_geo.feature
+        WHERE type_slug = 'establishment'
+          AND attributes->>'category' IS NOT NULL
+        ORDER BY 1
+        """
+    )
+    present = [row[0] for row in cur.fetchall()]
+    logger.warning(
+        "%s: no establishment matches %s, so every block will report the "
+        "cutoff. That is a uniform surface, not a measurement. Categories "
+        "present in the layer: %s. If one of those is this category under "
+        "another name, add it to ACCESSIBILITY_CATEGORIES in "
+        "reimagina.indicators.catalog.",
+        slug,
+        list(categories),
+        present or ["(none)"],
     )
 
 
