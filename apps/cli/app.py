@@ -59,6 +59,8 @@ from .explore import (  # noqa: E402
 )
 from .overture import (  # noqa: E402
     aoi_from_overture_division,
+    load_overture_places,
+    overture_place_categories,
     as_json,
     extract_mexico_city_buildings,
     list_overture_divisions,
@@ -393,6 +395,62 @@ def overture_load(
             aoi_id=aoi_id,
             recompute=recompute,
             recompute_attributes=tuple(recompute_attributes),
+        )
+    )
+
+
+@overture_app.command(
+    "place-categories",
+    help="Show which Overture place categories count as park or culture, "
+    "and which are deliberately excluded",
+)
+def overture_place_categories_cmd() -> int:
+    # The exclusions are the reviewable part. An accessibility indicator is
+    # only as trustworthy as its destination list, and a keyword match on this
+    # theme pulls in 907 hardware shops for `garden`.
+    return _print(overture_place_categories())
+
+
+@overture_app.command(
+    "places",
+    help=(
+        "Load park, recreation and cultural destinations from Overture places "
+        "— what makes the park and culture accessibility indicators measurable"
+    ),
+)
+def overture_places(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE, "--release", help="Overture S3 release version"
+    ),
+    country: Optional[str] = typer.Option(
+        None,
+        "--country",
+        help="ISO-3166 alpha-2. ⚠ Supply it for any border-crossing bbox: the "
+        "Mexicali box also covers Calexico and Heber, and 156 of its 1,303 "
+        "places are in the US — including 36 parks no resident walks to",
+    ),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Report the inside/outside split against this AOI. Not a clip: a "
+        "park just outside the boundary is one the adjacent blocks walk to",
+    ),
+    output_path: str = typer.Option("data/overture_places.parquet", "--output-path"),
+) -> int:
+    return _print(
+        load_overture_places(
+            dsn=dsn,
+            bbox=parse_bbox(bbox),
+            release=release,
+            country=country,
+            aoi_id=aoi_id,
+            output_path=output_path,
         )
     )
 

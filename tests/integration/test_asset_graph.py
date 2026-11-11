@@ -17,7 +17,7 @@ from reimagina.assets.registry import (
     scenario_override_assets,
     seed_assets,
 )
-from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.indicators.catalog import ACCESSIBILITY_NETWORK, SHIPPED_INDICATORS
 from reimagina.assets.version import components, expected_versions
 
 
@@ -473,17 +473,20 @@ def test_changing_the_road_network_names_exactly_the_network_indicators(seeded_g
     untouched by a road edit because they consume POIs, not the network.
 
     `livability_block_score` is in the set because it is a weighted consumer of
-    all three network indicators — a road edit reaches it transitively, which is
+    most of the network family — a road edit reaches it transitively, which is
     the propagation this graph exists to compute. Its straight-line siblings
     still stay out.
+
+    The expected set is derived from the catalog rather than listed. Listing it
+    meant every new accessibility category failed this test for the wrong
+    reason: the graph was right, the literal was stale. What the test is for is
+    the *discrimination* below — that a road edit does not reach the
+    edificability or urban-form families — and that survives the family growing.
     """
     downstream = _lineage(seeded_graph, "downstream", "global.road_network")
     assert downstream == {
-        "indicator.accessibility_block_school_network_m",
-        "indicator.accessibility_block_health_network_m",
-        "indicator.accessibility_block_park_network_m",
-        "indicator.livability_block_score",
-    }
+        f"indicator.{spec.slug}" for spec in ACCESSIBILITY_NETWORK
+    } | {"indicator.livability_block_score"}
     # The discrimination that matters: a road edit must not reach the
     # edificability or urban-form families, which read attributes and geometry
     # rather than the network.

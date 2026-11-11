@@ -12,7 +12,7 @@ import pytest
 
 from reimagina.assets.publish import publish_version
 from reimagina.assets.registry import seed_assets
-from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.indicators.catalog import ACCESSIBILITY_NETWORK, SHIPPED_INDICATORS
 from reimagina.orchestration.plan import plan_run
 
 
@@ -134,21 +134,23 @@ def test_compactness_survives_a_building_reload(graph, conn):
 def test_a_road_reload_recomputes_only_the_network_family(graph, conn):
     """A road edit reaches the network family and what consumes it — nothing else.
 
-    `livability_block_score` is planned too: it is a weighted consumer of all
-    three network indicators, so a stale input makes it stale. That is the
+    `livability_block_score` is planned too: it is a weighted consumer of most
+    of the network family, so a stale input makes it stale. That is the
     attribute -> run -> indicator chain, propagated rather than declared. The
     straight-line family is the control and stays out, because it reads POIs.
+
+    Derived from the catalog, not listed: a listed set makes every new
+    accessibility category fail here for the wrong reason, while the assertion
+    that carries the meaning — nothing from the other two families is planned —
+    holds whatever the family grows to.
     """
     _materialize_everything(conn)
     publish_version(conn, asset_key="global.road_network", version="graph-2")
 
     slugs = set(_slugs(_plan(conn)))
 
-    assert slugs == {
-        "accessibility_block_school_network_m",
-        "accessibility_block_health_network_m",
-        "accessibility_block_park_network_m",
-        "livability_block_score",
+    assert slugs == {spec.slug for spec in ACCESSIBILITY_NETWORK} | {
+        "livability_block_score"
     }
     assert not any(s.startswith(("edificability_", "urban_form_")) for s in slugs)
 

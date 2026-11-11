@@ -6,7 +6,7 @@
 # code — "the code builds and runs following the included README". It starts
 # from a database that does not exist, migrates it, generates a territory,
 # and then runs every analysis stage over that territory: overlaps, all
-# eleven indicators including the pgRouting network family, a raster through
+# twelve indicators including the pgRouting network family, a raster through
 # COG staging and zonal statistics, an observation rollup, and a scenario.
 #
 # It needs no credentials to the data lake and no network access. The only
@@ -126,6 +126,7 @@ for slug in \
   accessibility_block_school_network_m \
   accessibility_block_health_network_m \
   accessibility_block_park_network_m \
+  accessibility_block_culture_network_m \
   livability_block_score
 do
   # Captured and printed together, on one line: the CLI's own stderr would

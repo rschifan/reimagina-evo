@@ -10,6 +10,9 @@ from __future__ import annotations
 import pytest
 
 from reimagina.indicators.catalog import (
+    ACCESSIBILITY_CATEGORIES,
+    ACCESSIBILITY_NETWORK,
+    LIVABILITY_ACCESSIBILITY_CATEGORIES,
     SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_COMPOSITE,
 )
@@ -85,12 +88,17 @@ def _orient(slug: str, value: float) -> float:
 
 
 def test_distance_indicators_declare_lower_is_better():
-    """The six that motivate the field. A distance is lower-is-better whatever
-    the implementation does, so this cannot drift from the compute."""
+    """Every accessibility distance, whatever the family grows to.
+
+    A distance is lower-is-better whatever the implementation does, so this
+    cannot drift from the compute. Derived from the category map rather than
+    listed, because the listed version said "school, health, park" and had to
+    be edited to add `culture` — an edit that proves nothing, since the test
+    and the code were changed together.
+    """
     lower = {s.slug for s in SHIPPED_INDICATORS if not s.higher_is_better}
-    assert lower == {
-        f"accessibility_block_{c}_network_m" for c in ("school", "health", "park")
-    }
+    assert lower == {s.slug for s in ACCESSIBILITY_NETWORK}
+    assert len(lower) == len(ACCESSIBILITY_CATEGORIES)
 
 
 def test_a_nearer_amenity_scores_higher():
@@ -144,3 +152,33 @@ def test_the_shipped_score_mixes_both_directions():
     distances = [slug for slug, _ in score.depends_on if slug.endswith("_m")]
     assert distances and all(s.endswith("_network_m") for s in distances), distances
     assert sum(w or 0.0 for _, w in score.depends_on) == pytest.approx(1.0)
+
+
+def test_the_score_weights_survive_a_new_accessibility_category():
+    """The weights must not depend on how many categories the family has.
+
+    They used to: the edges were built by iterating the whole family at a
+    literal `weight=0.2`, which summed to 1.0 only because there were three.
+    Adding `culture` took it to 1.2 on an indicator declared `valid_max=1.0`.
+    This asserts the shape that cannot fail that way — the accessibility edges
+    are exactly the declared subset, and they share whatever density leaves.
+    """
+    score = _BY_SLUG["livability_block_score"]
+    edges = dict(score.depends_on)
+    expected = {
+        f"accessibility_block_{c}_network_m"
+        for c in LIVABILITY_ACCESSIBILITY_CATEGORIES
+    }
+    accessibility = {k for k in edges if "accessibility_block_" in k}
+    assert accessibility == expected
+
+    density = edges["edificability_block_density"]
+    assert sum(edges[k] for k in accessibility) == pytest.approx(1.0 - density)
+
+
+def test_culture_is_not_in_the_livability_score():
+    """A deliberate exclusion, so it needs a test that fails if someone adds it
+    by accident — folding it in silently redefines a delivered composite."""
+    assert "culture" not in LIVABILITY_ACCESSIBILITY_CATEGORIES
+    score = _BY_SLUG["livability_block_score"]
+    assert not any("culture" in slug for slug, _ in score.depends_on)

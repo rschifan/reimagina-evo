@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reimagina.assets.keys import AssetEdge, indicator_asset_key
+from reimagina.data import amenities as amen
 from reimagina.storage import backend_for_connection
 
 
@@ -397,6 +398,23 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 #: rendering path in every consumer.
 ACCESSIBILITY_CUTOFF_M = 1500.0
 
+
+def _merge(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    """Concatenate category tuples, dropping repeats but keeping first order.
+
+    The source-vocabulary entries and the Overture entries collide on the bare
+    English keys (``park`` is both a synthetic fixture value and a real Overture
+    category), and a duplicate would reach SQL as a repeated element of the
+    ``= ANY(...)`` array. Harmless, but it makes the catalog read as though the
+    mapping were assembled carelessly.
+    """
+    seen: dict[str, None] = {}
+    for group in groups:
+        for value in group:
+            seen.setdefault(value, None)
+    return tuple(seen)
+
+
 #: Amenity categories the demo reports, and the source `category` values each
 #: matches. The bare English keys serve synthetic test fixtures; the rest are
 #: the values actually present in the SIGCDMX Tlalpan layer, read off the
@@ -431,12 +449,22 @@ ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
         "Hospital",
         "Hospital_general",
     ),
-    "park": (
-        "park",
-        "Parques_recreativos",
-        "Clubs_deportivos_y_acondicionamiento_fisico",
-        "Otros_servicios_recreativos",
+    "park": _merge(
+        (
+            "park",
+            "Parques_recreativos",
+            "Clubs_deportivos_y_acondicionamiento_fisico",
+            "Otros_servicios_recreativos",
+        ),
+        amen.OVERTURE_PARK_CATEGORIES,
     ),
+    # ⚠ The IMIP half of this is ``Cine`` alone — 10 cinemas. The category
+    # exists because those 10 points were being ingested as establishments that
+    # no indicator read, and because folding them into ``park`` to make that
+    # layer non-flat would have manufactured a finding: a cinema is not open
+    # space. On the Mexicali pilot it is Overture that makes the category
+    # viable, at 118 destinations.
+    "culture": _merge(("culture", "Cine"), amen.OVERTURE_CULTURE_CATEGORIES),
 }
 
 
@@ -463,8 +491,16 @@ ACCESSIBILITY_LABELS: dict[str, tuple[str, str]] = {
     ),
     "park": (
         "park or recreation site",
-        "public recreational parks, other recreational services, and private "
-        "sports and fitness clubs",
+        "public recreational parks, plazas, playgrounds and sports facilities, "
+        "and private sports and fitness clubs — on the Mexicali pilot 632 of "
+        "1,001 destinations are commercial gyms and fitness studios, so this "
+        "is not a measure of public open space alone",
+    ),
+    "culture": (
+        "cultural or entertainment venue",
+        "cinemas, theatres, museums, galleries, libraries, cultural centres "
+        "and arcades — it excludes music venues, which upstream are mostly "
+        "bars, and historic markers, which are not places to go",
     ),
 }
 
@@ -526,6 +562,18 @@ ACCESSIBILITY_NETWORK: tuple[IndicatorSpec, ...] = tuple(
     _accessibility_spec(category) for category in ACCESSIBILITY_CATEGORIES
 )
 
+#: slug -> the ACCESSIBILITY_CATEGORIES key it was generated from.
+#
+# The inverse of the comprehension that built the family. Exists so a consumer
+# can select categories by name instead of by string-matching the slug, which
+# is how `LIVABILITY_ACCESSIBILITY_CATEGORIES` stays readable.
+ACCESSIBILITY_SPEC_CATEGORY_KEY: dict[str, str] = {
+    spec.slug: category
+    for category, spec in zip(
+        ACCESSIBILITY_CATEGORIES, ACCESSIBILITY_NETWORK, strict=True
+    )
+}
+
 #: slug -> the source `category` values it matches.
 #
 # Read off the spec tuple rather than rebuilding it: both are comprehensions
@@ -568,6 +616,38 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # folds them in as `1 - normalised`. Without that a block far from every school,
 # clinic and park would score *well* — `indicator_dependency` enforces
 # `weight >= 0` (r016:93), so it cannot be expressed as a negative weight.
+#: The accessibility categories :data:`LIVABILITY_BLOCK_SCORE` consumes.
+#
+# ⚠ Named explicitly, and **not** "every category in ACCESSIBILITY_NETWORK".
+# The edges used to be built by iterating the whole family at a hardcoded
+# ``weight=0.2``, which summed to 1.0 only because the family happened to have
+# three members. Adding ``culture`` took the sum to 1.2 on an indicator declared
+# ``valid_max=1.0`` — caught by ``test_the_shipped_score_mixes_both_directions``,
+# which is the only reason it is not a shipped bug.
+#
+# ``culture`` is deliberately absent. Livability here is access to everyday
+# basics — a school, a clinic, somewhere green — and a cinema is not one of
+# those. The practical argument is stronger: the composite's values are
+# recorded in the delivery, so quietly redefining what it measures would
+# invalidate numbers already signed off, for an indicator whose Mexicali
+# evidence is 118 destinations. Adding it is a deliberate change to a delivered
+# definition, not a consequence of adding a category.
+LIVABILITY_ACCESSIBILITY_CATEGORIES: tuple[str, ...] = ("school", "health", "park")
+
+#: Density takes 0.4; the accessibility inputs share the remaining 0.6.
+#
+# Derived rather than written as 0.2 so the weights sum to 1.0 whatever
+# :data:`LIVABILITY_ACCESSIBILITY_CATEGORIES` holds. The literal is what broke.
+_LIVABILITY_DENSITY_WEIGHT = 0.4
+# Rounded because the bare division yields 0.19999999999999998, and this value
+# is persisted to `indicator_catalog.inputs`. The stored weight should read 0.2
+# where 0.2 is meant; the noise would otherwise show up in every diff of the
+# seeded catalog and in the asset graph.
+_LIVABILITY_ACCESSIBILITY_WEIGHT = round(
+    (1.0 - _LIVABILITY_DENSITY_WEIGHT) / len(LIVABILITY_ACCESSIBILITY_CATEGORIES), 10
+)
+
+
 LIVABILITY_BLOCK_SCORE = IndicatorSpec(
     slug="livability_block_score",
     name="Livability Score",
@@ -591,15 +671,17 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(
         AssetEdge(
             indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
             relation="derived_from",
-            weight=0.4,
+            weight=_LIVABILITY_DENSITY_WEIGHT,
         ),
         *(
             AssetEdge(
                 indicator_asset_key(spec.slug),
                 relation="derived_from",
-                weight=0.2,
+                weight=_LIVABILITY_ACCESSIBILITY_WEIGHT,
             )
             for spec in ACCESSIBILITY_NETWORK
+            if ACCESSIBILITY_SPEC_CATEGORY_KEY[spec.slug]
+            in LIVABILITY_ACCESSIBILITY_CATEGORIES
         ),
     ),
     applies_to=("block",),

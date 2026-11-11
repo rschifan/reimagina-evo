@@ -108,6 +108,7 @@ MEXICALI_BBOX="-115.70,32.40,-115.20,32.80"
 NETWORK_FAILED=0
 CENSUS_FAILED=0
 AMENITIES_FAILED=0
+PLACES_FAILED=0
 
 # ── 0. Preflight ─────────────────────────────────────────────────────────────
 #
@@ -254,6 +255,30 @@ step "5. Loading Mexicali amenities (IMIP / DENUE)"
 if ! $CLI points bootstrap --layers mexicali_amenities; then
   AMENITIES_FAILED=1
   note "the amenity load failed — continuing; the accessibility family will report unavailable"
+fi
+
+# ── 5b. Park, recreation and cultural destinations, from Overture ────────────
+#
+# ⚠ Without this step the park indicator is not a measurement. The IMIP layer
+# above carries exactly five categories — Consultorio medico, Farmacia,
+# Hospital, Guarderia, Cine — of which three are health, one is school, and
+# NONE is park-like. The multi-source Dijkstra then has no start vertices, so
+# every one of the ~19,000 blocks reports the 1,500 m cutoff, and the map draws
+# a uniform choropleth that reads as a real and uniformly bad park-access
+# surface. The absence looks exactly like a finding.
+#
+# --country MX is not optional. The Mexicali bbox reaches across the border
+# into Calexico, El Centro and Heber: 156 of its 1,303 places are in the US,
+# 36 of them parks. Without the filter a block in northern Mexicali is reported
+# a few hundred metres from a park in California.
+step "5b. Loading park and cultural destinations (Overture places)"
+if ! $CLI overture places \
+  --bbox "$MEXICALI_BBOX" \
+  --country MX \
+  --aoi-id "$AOI_ID" \
+  --output-path data/overture_places_mexicali.parquet; then
+  PLACES_FAILED=1
+  note "the places load failed — continuing; park and culture accessibility will report the cutoff everywhere"
 fi
 
 # ── 6. Buildings, from Overture ──────────────────────────────────────────────
@@ -447,6 +472,7 @@ ATTEMPTED=(
   accessibility_block_school_network_m
   accessibility_block_health_network_m
   accessibility_block_park_network_m
+  accessibility_block_culture_network_m
   livability_block_score
 )
 
@@ -518,11 +544,14 @@ $CLI explore sources
 
 step "Done"
 note "AOI_ID=$AOI_ID"
-if (( NETWORK_FAILED || CENSUS_FAILED || AMENITIES_FAILED )); then
+if (( NETWORK_FAILED || CENSUS_FAILED || AMENITIES_FAILED || PLACES_FAILED )); then
   note "⚠ INCOMPLETE — some optional inputs did not load:"
   (( NETWORK_FAILED ))   && note "  - OSM network: road_edge is empty, so the map has no street context"
   (( CENSUS_FAILED ))    && note "  - 2020 census: no population observations"
-  (( AMENITIES_FAILED )) && note "  - IMIP amenities: no accessibility destinations"
+  (( AMENITIES_FAILED )) && note "  - IMIP amenities: no school or health destinations"
+  # Spelled out, because this one fails by looking like a result: the
+  # indicators still write a row per block, all of them the 1,500 m cutoff.
+  (( PLACES_FAILED ))    && note "  - Overture places: no park or cultural destinations, so those two indicators report 1500 m everywhere — that is the cutoff, not a distance"
   note "  Everything the REQUIRED indicators reported above is real."
 fi
 if (( ${#SKIPPED[@]} )); then

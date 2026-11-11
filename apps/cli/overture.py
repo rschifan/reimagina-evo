@@ -11,7 +11,9 @@ import apps.cli.cdmx as cdmx_cli
 from apps.cli.indicators import submit_after_ingest
 from reimagina.data import aoi as aoi_mod
 from reimagina.db import connect
+from reimagina.data import amenities as amen
 import reimagina.pipeline.overture_divisions as divisions
+import reimagina.pipeline.overture_places as places
 from reimagina.storage import backend_for_connection
 from reimagina.pipeline.overture import (
     DIVISION_SUBTYPE_COUNTY,
@@ -259,4 +261,66 @@ def aoi_from_overture_division(
         "subtype": match.candidate.subtype,
         "country": match.candidate.country,
         "name": aoi_name,
+    }
+
+
+# ─── Places → amenity destinations ─────────────────────────────────────────
+#
+# The ingest that makes the accessibility park and culture indicators
+# measurable. Before it, the Mexicali pilot's only amenity layer was IMIP's,
+# which holds no park-like category, so `accessibility_block_park_network_m`
+# reported the 1,500 m cutoff for all 19,058 blocks and the map drew that as a
+# flat choropleth.
+
+
+def load_overture_places(
+    *,
+    dsn: str,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+    country: str | None = None,
+    aoi_id: str | None = None,
+    output_path: str | Path = "data/overture_places.parquet",
+    orchestrator_run_id: str | None = None,
+    code_version: str = "dev",
+) -> dict[str, Any]:
+    """Ingest park, recreation and cultural places for a bbox.
+
+    ``country`` filters by ISO code and should be supplied for any
+    border-crossing bbox — see
+    :func:`reimagina.pipeline.overture_places.extract_places_subset` for the
+    Calexico case it prevents.
+
+    ``aoi_id`` is reported against, not clipped to: a park just outside the
+    municipal boundary is one the adjacent blocks walk to, and removing it
+    would bias every edge block's distance upward.
+    """
+    with connect(dsn) as conn:
+        return places.bootstrap_places(
+            conn,
+            bbox=bbox,
+            release=release,
+            country=country,
+            aoi_id=aoi_id,
+            output_path=output_path,
+            orchestrator_run_id=orchestrator_run_id or str(uuid4()),
+            code_version=code_version,
+        )
+
+
+def overture_place_categories() -> dict[str, Any]:
+    """What the ingest counts, what it skips, and why.
+
+    Printed rather than left to the source, because the exclusions are the part
+    a reviewer needs to see: an indicator built on a category list is only as
+    trustworthy as the list, and "the code knows" is not a reviewable answer.
+    """
+    return {
+        "counted": {
+            key: list(values)
+            for key, values in amen.OVERTURE_AMENITY_CATEGORIES.items()
+        },
+        "total_counted": len(amen.overture_categories_to_load()),
+        "excluded_categories": amen.OVERTURE_EXCLUDED_LOOKALIKES,
+        "excluded_name_patterns": amen.PLACE_NAME_EXCLUSIONS,
     }

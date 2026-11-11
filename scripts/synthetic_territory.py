@@ -240,12 +240,20 @@ def build_network(blocks_per_side: int):
 
 
 def build_amenities(blocks_per_side: int):
-    """Return an establishment GeoDataFrame: one school, health post and park.
+    """Return an establishment GeoDataFrame: one per accessibility category.
 
-    Placed on three different intersections, deliberately not symmetrically,
+    Placed on four different intersections, deliberately not symmetrically,
     so network distance varies across the grid instead of coming out the same
     everywhere — a uniform answer cannot tell a working Dijkstra from a broken
     one.
+
+    ⚠ **One amenity per category in ACCESSIBILITY_CATEGORIES, and the count
+    must track it.** A category with no amenity here does not fail: every block
+    reports the 1,500 m cutoff, the choropleth comes out one flat colour, and
+    the acceptance run passes while shipping a layer that measures nothing. That
+    is exactly what the real Mexicali pilot did for `park` before Overture
+    places were ingested, and it went unnoticed because 1500 m reads as a
+    measurement. `test_synthetic_territory_covers_every_category` pins it.
     """
     import geopandas as gpd
     from shapely.geometry import Point
@@ -269,6 +277,7 @@ def build_amenities(blocks_per_side: int):
         ("school", "Synthetic school", 1, 1),
         ("health", "Synthetic health post", inner, max(1, last // 2)),
         ("park", "Synthetic park", max(1, last // 2), inner),
+        ("culture", "Synthetic cinema", inner, inner),
     ]
     return gpd.GeoDataFrame(
         [
