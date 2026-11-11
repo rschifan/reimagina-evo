@@ -66,19 +66,8 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
     assert seeded.get("assets_called") is True
 
 
-def test_bootstrap_provisions_the_ops_plane_system_schema(monkeypatch):
-    """`make migrate` must leave a database the API can actually submit to.
-
-    The API submits through `DBOSClient`, which never runs DBOS's schema
-    migrations — only a worker's `launch()` creates them. Without this step a
-    freshly-bootstrapped database answers every `POST /jobs` with a 500 until
-    someone starts a worker, which is both an undocumented ordering dependency
-    and the first thing a new installation hits.
-
-    Asserted on the *app* DSN specifically: the test database is provisioned by
-    the suites that launch DBOS themselves, but nothing else ever provisions
-    the one the API serves.
-    """
+def _provisioning_stubs(monkeypatch) -> list[str]:
+    """Stub bootstrap's collaborators; return the DSNs provisioning is asked for."""
     monkeypatch.setattr(
         "reimagina.db.bootstrap.bootstrap_postgres",
         lambda **kwargs: {
@@ -106,11 +95,51 @@ def test_bootstrap_provisions_the_ops_plane_system_schema(monkeypatch):
         "reimagina.orchestration.dbos_app.ensure_system_database",
         lambda dsn: provisioned.append(dsn),
     )
+    return provisioned
 
+
+def _bootstrap() -> None:
     bootstrap_local_platform(
-        app_dsn="postgresql://localhost/reimagina",
+        app_dsn="postgresql://pooler/reimagina",
         test_dsn="postgresql://localhost/reimagina_test",
         admin_dsn="postgresql://localhost/postgres",
     )
 
-    assert "postgresql://localhost/reimagina" in provisioned
+
+def test_bootstrap_provisions_the_ops_plane_system_schema(monkeypatch):
+    """`make migrate` must leave a database the API can actually submit to.
+
+    The API submits through `DBOSClient`, which never runs DBOS's schema
+    migrations — only a worker's `launch()` creates them. Without this step a
+    freshly-bootstrapped database answers every `POST /jobs` with a 500 until
+    someone starts a worker, which is both an undocumented ordering dependency
+    and the first thing a new installation hits.
+
+    With no `DATABASE_URL_DIRECT` there is only one DSN to use, and it is
+    already a direct one — the local `make migrate` case.
+    """
+    provisioned = _provisioning_stubs(monkeypatch)
+    monkeypatch.delenv("DATABASE_URL_DIRECT", raising=False)
+
+    _bootstrap()
+
+    assert provisioned == ["postgresql://pooler/reimagina"]
+
+
+def test_bootstrap_provisions_over_the_direct_dsn_when_there_is_one(monkeypatch):
+    """A schema migration must not be sent through the pooled DSN.
+
+    `.env.example` assigns the roles: `REIMAGINA_APP_DSN` is the one production
+    "points at pgbouncer", `DATABASE_URL_DIRECT` the one for "Alembic,
+    LISTEN/NOTIFY". This call is both of those things — DBOS serialises
+    concurrent deploys with a *session* advisory lock on an AUTOCOMMIT
+    connection, which transaction-mode pooling can scatter across backends so
+    that it guards nothing and is never released, and the same migration
+    installs the LISTEN/NOTIFY triggers the progress stream reads.
+    """
+    provisioned = _provisioning_stubs(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql://direct:5432/reimagina")
+
+    _bootstrap()
+
+    assert provisioned == ["postgresql://direct:5432/reimagina"]

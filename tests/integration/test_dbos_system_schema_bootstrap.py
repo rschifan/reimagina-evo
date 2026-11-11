@@ -16,6 +16,7 @@ submit itself cannot work. Bootstrap owns this now.
 from __future__ import annotations
 
 from urllib.parse import urlparse, urlunparse
+from uuid import uuid4
 
 import psycopg2
 import pytest
@@ -32,37 +33,85 @@ def _regclass(dsn: str, relation: str):
         return cur.fetchone()[0]
 
 
-def _drop_dbos_schema(dsn: str) -> None:
-    with psycopg2.connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute("DROP SCHEMA IF EXISTS dbos CASCADE")
+def _with_database(dsn: str, name: str) -> str:
+    return urlunparse(urlparse(dsn)._replace(path=f"/{name}"))
 
 
-def test_ensure_system_database_creates_the_schema_a_client_cannot(migrated_db: str):
-    """Dropped first, and the absence asserted, so this cannot pass vacuously.
+@pytest.fixture
+def unprovisioned_db(migrated_db: str):
+    """A database of this test's own, holding only what the guard inspects.
 
-    Everything else in this suite that reaches the orchestrator either launches
-    DBOS or provisions through bootstrap, so by the time this runs the schema
-    is usually already there — and an assertion that it exists would then hold
-    whether or not `ensure_system_database` did anything at all. Restoring it
-    is the function under test, which is why the restore is the assertion and
-    not a `finally`: if it does not work, this fails here rather than leaking a
-    broken database into whatever runs next.
+    ⚠ Not ``migrated_db`` with the schema dropped first, which is how this
+    started. That fixture is session-scoped, so dropping ``dbos`` out of it
+    reaches every other test in the run: today nothing sorting earlier has
+    workflow state to lose, but that is an accident of module names rather
+    than a property anyone maintains, and a randomised order or one new
+    enqueueing test turns it into another test failing for a reason several
+    files away. Worse, the restore *was* the function under test — so a lock
+    timeout or a dropped connection left the schema missing for everything
+    that followed, converting one failure into a cascade.
+
+    A fresh database cannot have been provisioned by anything, which is the
+    non-vacuity the drop was reaching for, and nothing else can observe it.
+    ``_assert_domain_database`` looks at exactly one relation, so creating
+    that one is enough to get past the guard without running Alembic.
     """
-    _drop_dbos_schema(migrated_db)
+    admin = _with_database(migrated_db, "postgres")
+    name = f"reimagina_dbosprov_{uuid4().hex[:12]}"
+
+    conn = psycopg2.connect(admin)
+    conn.autocommit = True  # CREATE/DROP DATABASE cannot run in a transaction
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        conn.close()
+
+    dsn = _with_database(migrated_db, name)
+    scratch = psycopg2.connect(dsn)
+    try:
+        with scratch, scratch.cursor() as cur:
+            cur.execute("CREATE SCHEMA jobs_runtime")
+            cur.execute("CREATE TABLE jobs_runtime.job_run (id uuid PRIMARY KEY)")
+    finally:
+        scratch.close()
+
+    try:
+        yield dsn
+    finally:
+        conn = psycopg2.connect(admin)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                # FORCE because a failed assertion can leave DBOS's pool open.
+                cur.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        finally:
+            conn.close()
+
+
+def test_ensure_system_database_creates_the_schema_a_client_cannot(
+    unprovisioned_db: str,
+):
+    """Against a database nothing has provisioned, so it cannot pass vacuously."""
     assert (
-        _regclass(migrated_db, "dbos.workflow_status") is None
+        _regclass(unprovisioned_db, "dbos.workflow_status") is None
     ), "precondition: the schema must be absent for this test to mean anything"
 
-    ensure_system_database(migrated_db)
+    ensure_system_database(unprovisioned_db)
 
-    assert _regclass(migrated_db, "dbos.workflow_status") is not None
+    assert _regclass(unprovisioned_db, "dbos.workflow_status") is not None
 
 
-def test_ensure_system_database_is_idempotent(migrated_db: str):
-    """Bootstrap is re-run on every deploy, and `make migrate` is routine."""
-    ensure_system_database(migrated_db)
-    ensure_system_database(migrated_db)
-    assert _regclass(migrated_db, "dbos.workflow_status") is not None
+def test_ensure_system_database_is_idempotent(unprovisioned_db: str):
+    """Bootstrap is re-run on every deploy, and `make migrate` is routine.
+
+    From nothing, so the second call is the one under test: the first does the
+    real migration and the second must find the recorded version current and
+    return rather than repeat it.
+    """
+    ensure_system_database(unprovisioned_db)
+    ensure_system_database(unprovisioned_db)
+    assert _regclass(unprovisioned_db, "dbos.workflow_status") is not None
 
 
 def test_ensure_system_database_refuses_a_database_that_is_not_ours(migrated_db: str):
@@ -76,7 +125,7 @@ def test_ensure_system_database_refuses_a_database_that_is_not_ours(migrated_db:
     reimagina's" and not "the host refused us" — which is what a DSN typo
     inside the right cluster actually looks like.
     """
-    not_ours = urlunparse(urlparse(migrated_db)._replace(path="/postgres"))
+    not_ours = _with_database(migrated_db, "postgres")
     with pytest.raises(RuntimeError, match="not a migrated reimagina database"):
         ensure_system_database(not_ours)
 
