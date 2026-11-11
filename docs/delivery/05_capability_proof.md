@@ -25,6 +25,7 @@ date: "11 November 2026"
 | 0.7 | 2026-11-11 | Rossano Schifanella | Appendix A completed: the network accessibility family, with destination counts and the share of blocks at the cutoff |
 | 0.8 | 2026-11-11 | Rossano Schifanella | Park and cultural destinations ingested from Overture places (§A.1), so park accessibility is no longer an absence; twelfth indicator added for cultural venues |
 | 0.9 | 2026-11-11 | Rossano Schifanella | §A.1 — the park indicator recomputed over the ingested destinations: 27.9 % of blocks at the cutoff, replacing 100 % |
+| 0.10 | 2026-11-11 | Rossano Schifanella | §A.1 — the culture indicator computed on real data (60.8 % at the cutoff) and the seven-of-twelve real-data coverage picture |
 
 ### Why this document exists
 
@@ -1197,15 +1198,16 @@ so redefining what it measures is a decision rather than a consequence of
 adding a category. `tests/unit/test_composite_normalization.py` pins the
 exclusion so it cannot be undone by accident.
 
-### The park indicator, recomputed
+### The accessibility family, recomputed
 
-This is the number that replaces Appendix A's `1500.0 | 1500.0 | 1500.0`:
+This is the table that replaces Appendix A's `1500.0 | 1500.0 | 1500.0`:
 
 | Indicator | Rows | min | avg | max | At the 1,500 m cutoff |
 |---|---|---|---|---|---|
 | `accessibility_block_park_network_m` | 19,058 | **19.4** | **813.0** | 1500.0 | **5,326 (27.9 %)** |
 | `accessibility_block_health_network_m` | 19,058 | 27.2 | 857.5 | 1500.0 | 5,957 (31.3 %) |
 | `accessibility_block_school_network_m` | 19,058 | 27.5 | 1244.5 | 1500.0 | 11,359 (59.6 %) |
+| `accessibility_block_culture_network_m` | 19,058 | **50.5** | **1248.5** | 1500.0 | **11,589 (60.8 %)** |
 
 Park accessibility is now a measurement. 27.9 % of blocks have no park or
 recreation site within 1,500 m on the pedestrian network — a finding, where
@@ -1219,6 +1221,15 @@ merits, park comes out better served than schools (59.6 %) and close to health
 570 of the 1,001 destinations are commercial gyms, so this is not a statement
 about public green space.
 
+⚠ **Culture is a real measurement on a thin base, and should be read as
+one.** 118 destinations across a 9,971 km² municipality, concentrated in the
+city centre, give 60.8 % of blocks no cultural venue within 1,500 m on foot —
+the worst-served of the four, just behind schools. The number is not
+suspect; the question it answers is narrow. Unlike the old park figure it
+*does* vary with distance rather than reporting one value, which is the
+difference between a measurement over few destinations and no measurement at
+all.
+
 The 1,119 places loaded match the extract measured above, category for
 category: `gym` 304, `sport_or_fitness_facility` 205, `park` 151,
 `sport_or_recreation_club` 78, `sports_and_recreation` 62, `fitness_studio` 61,
@@ -1231,6 +1242,33 @@ queries differ: Appendix A counted `= 1500.0` and this one counts `>= 1499.9`,
 which catches a block sitting fractionally below the cap. Recorded rather than
 quietly reconciled, because an unexplained discrepancy between two tables in
 the same annex is worse than a one-block footnote.
+
+### What the pilot database holds after this, and what it still does not
+
+Seven of the twelve indicators have rows on real Mexicali data:
+
+| Has rows | Does not |
+|---|---|
+| the four accessibility network indicators | `urban_form_block_planned_floors` |
+| `urban_form_block_compactness` | `edificability_block_housing_units` |
+| `urban_form_block_building_density` | `edificability_block_population` |
+| `urban_form_block_composite` | `edificability_block_density` |
+| | `livability_block_score` |
+
+`livability_block_score` still writes nothing, and adding park and culture
+destinations was never going to change that — it was checked rather than
+assumed. Its heaviest input is `edificability_block_density` at weight 0.4,
+and the edificability family reads `num_levels`, `unit_size` and
+`people_per_household`: scenario inputs no INEGI or Overture layer carries.
+The composite writes nothing rather than scoring from a missing input, which
+is the behaviour Appendix A already records.
+
+So the ratio is unchanged at seven of twelve, but the *membership* is not.
+Before this ingest the seven were three urban-form plus health and school
+accessibility and two that reported the cutoff everywhere; now all four
+accessibility indicators are measurements. The limit that remains is an
+attribute-availability limit, not a destination one, and closing it means a
+scenario supplying `num_levels` — not another data source.
 
 ### Verified on the synthetic territory
 

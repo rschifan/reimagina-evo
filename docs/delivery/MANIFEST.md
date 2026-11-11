@@ -7,7 +7,7 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 11 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `f10ac8cfe035a53bdb91d306decbd7cfcaa7e909` |
+| **Generated from commit** | `67a94d59eedbca25acfc878a0fabbd433b682fae` |
 | **Branch** | `delivery/schedule-a` |
 | **Working tree at generation** | MODIFIED — not a clean delivery |
 
@@ -26,8 +26,8 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 | Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 70,957 | `e167093eb4ec5f380c90e1253cae5d238f7755089d881b691f536c3411d199ed` |
 | Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 267,352 | `8047573688c50276a7314ac2d335ace5aa11581968e277f93754618e4980ff82` |
 | Work 4 — source | `docs/delivery/04_technical_documentation.md` | 31,908 | `2fca7600309ffa8f75065ffe8fa226d54d10b6290f1113a587a5b781c5824892` |
-| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 364,288 | `0e9e1e875a7ae97ad5d3da900456f597a5ae9b891e2a62abfcae10c2099a8de7` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 62,050 | `2623446e1fc8474bef9a19169564e5ff6061b8c5e5b8a68210096aa81fec8d41` |
+| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 374,078 | `8774738de0e2b006629079038a8fc4014d340cce1a2299fdfcb74e6ed859c296` |
+| Annex — source | `docs/delivery/05_capability_proof.md` | 64,288 | `a279c1c305107e03b2cb78aa8815bb078b4b73d14bbfcdb90f6310962323a957` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
 
 ## Verifying this
