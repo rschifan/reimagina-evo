@@ -718,7 +718,7 @@ def _logical_name_for_recipe(
         input_prefix = recipe.get("input_attribute_key_prefix")
         if input_prefix:
             return f"{input_prefix} → {target} ({method})"
-    return f"rollup → {target} " f"({recipe.get('input_feature_type_slug')} · {method})"
+    return f"rollup → {target} ({recipe.get('input_feature_type_slug')} · {method})"
 
 
 def _description_for_recipe(recipe: dict[str, object]) -> str:

@@ -23,9 +23,9 @@ def test_every_declared_mode_builds_an_orchestrator(mode):
     """MODES is the advertised vocabulary; each entry must actually resolve."""
     orchestrator = get_orchestrator(mode)
     for method in ("submit_run", "get_run", "cancel_run", "subscribe_progress"):
-        assert callable(
-            getattr(orchestrator, method)
-        ), f"{mode!r} orchestrator is missing {method}"
+        assert callable(getattr(orchestrator, method)), (
+            f"{mode!r} orchestrator is missing {method}"
+        )
 
 
 def test_unknown_mode_raises_and_names_the_known_ones():

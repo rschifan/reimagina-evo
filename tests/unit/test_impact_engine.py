@@ -149,9 +149,9 @@ def test_independent_units_come_out_in_a_stable_order():
     order = [u.indicator for u in compute_dirty_set({"geometry"}, {"f1"}, registry)]
 
     independent = order[:-1]
-    assert independent == sorted(
-        independent
-    ), "independent units must come out sorted, not in set-iteration order"
+    assert independent == sorted(independent), (
+        "independent units must come out sorted, not in set-iteration order"
+    )
     assert order[-1] == "roll_up"  # the dependent still comes last
 
 

@@ -253,9 +253,9 @@ def test_indicator_tile_returns_both_features_when_aoi_omitted(conn):
             (slug,),
         )
         all_count = cur.fetchone()[0]
-    assert (
-        all_count == 2
-    ), "without aoi_id the function must see both features in the indicator"
+    assert all_count == 2, (
+        "without aoi_id the function must see both features in the indicator"
+    )
     # Sanity check the tile path itself still produces some bytes for at
     # least one of the two — proves the function compiles and runs.
     tile = _render_indicator_tile(conn, indicator_slug=slug, aoi_id=None)
@@ -287,9 +287,9 @@ def test_indicator_tile_filters_by_aoi_id(conn):
                 (slug, aoi_id),
             )
             ids = cur.fetchone()[0]
-            assert ids == [
-                expected_feature
-            ], f"aoi_id={aoi_id} should scope to {expected_feature!r} only, got {ids!r}"
+            assert ids == [expected_feature], (
+                f"aoi_id={aoi_id} should scope to {expected_feature!r} only, got {ids!r}"
+            )
 
 
 def test_indicator_tile_unknown_aoi_id_returns_empty(conn):
@@ -430,9 +430,9 @@ def test_aggregation_tile_filters_by_aoi_id(conn):
                 (key, aoi_id),
             )
             ids = cur.fetchone()[0]
-            assert ids == [
-                expected
-            ], f"aoi_id={aoi_id} should scope to {expected!r} only, got {ids!r}"
+            assert ids == [expected], (
+                f"aoi_id={aoi_id} should scope to {expected!r} only, got {ids!r}"
+            )
 
 
 def test_aggregation_tile_function_runs_with_aoi_id_param(conn):

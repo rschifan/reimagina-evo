@@ -303,9 +303,9 @@ def test_raster_recipe_dispatches_to_zonal_stats_worker(
 
         rows = _current_observations_for_prefix(conn, prefix)
         keys = {k for _, k, _, _ in rows}
-        assert keys == {
-            f"{prefix}_sum"
-        }, f"method='sum' should produce exactly '<prefix>_sum'; got {keys!r}"
+        assert keys == {f"{prefix}_sum"}, (
+            f"method='sum' should produce exactly '<prefix>_sum'; got {keys!r}"
+        )
     finally:
         _cleanup(
             conn,
