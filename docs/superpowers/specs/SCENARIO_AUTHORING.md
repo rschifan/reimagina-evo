@@ -1,104 +1,109 @@
-# Design: scenario authoring, so a proposal can be made and measured
+# Design: scenarios — change an input, recompute what it touches, compare
 
-Give a scenario an identity and a way in. Today a scenario is a bare uuid
-that can only be created by running Python, and the proposal it represents
-exists nowhere — only the per-block rows it happened to write.
+A scenario is a hypothetical change to the environment. Anything the
+indicator catalog declares as an input can change; the indicators that read
+it recompute; and the result is readable against the baseline it departs
+from.
 
-**Status:** design, reviewed twice. Written before the code.
+**Status:** design, third framing. Written before the code.
 
 ---
 
-## Intent, and why now
+## Intent
 
-The contract is *Conceptualización y diseño de una centralidad urbana en
-Mexicali* — the design of an urban centrality. The platform can describe the
-city as it is. It cannot yet express a proposal about how it might be, which
-is the thing the engagement is actually for.
+The contract is the design of an urban centrality. The platform describes the
+city as it is; a scenario is how it describes a city that does not exist yet.
 
-The gap has become concrete. On real Mexicali data, **five of twelve
-indicators write zero rows**: the three `edificability_block_*`,
-`urban_form_block_planned_floors`, and `livability_block_score`, which
-consumes the first group. They all fail for one reason — they read
-`num_levels`, `unit_size`, `people_per_household` and `floors`, and nothing
-supplies them.
+The question a scenario answers has a shape: *what would happen to these
+numbers if this changed?* Close a street. Add a park. Allow six storeys in
+this district. Each is a change to something the catalog already reads, and
+each has a set of indicators it should move and a larger set it should leave
+alone.
 
-That is not a data gap to be closed by ingesting more. It was tested:
-Overture's buildings for Mexicali carry `num_floors` on **1,152 of 387,273**
-footprints (0.30%) and `height` on 4.74%, median 3.77 m. Deriving block-level
-storey counts from that would be inventing 99.7% of the answer. These are
-*policy* parameters — how many levels may be built — and no survey carries
-them because they are a choice, not an observation.
+**The half you would expect to be hard is already built.** The asset graph
+records which indicators read which input, and `evaluate-scenario` derives the
+dirty set from a change and recomputes exactly those. What is missing is the
+ability to *express* the change.
 
-A scenario is where that choice legitimately lives.
+---
+
+## What a scenario can change
+
+The catalog declares ten inputs. Six are indicator-to-indicator edges the
+graph propagates through on its own. Four are data:
+
+| Input | Read by | A scenario changes it by |
+|---|---|---|
+| `mex.block` (self) | 10 of 12 | overriding `num_levels`, `unit_size`, `people_per_household`, `floors` |
+| `global.road_network` | 4 | adding or removing streets |
+| `global.poi` | 4 | adding or removing amenities |
+| `global.building` | 1 | adding or removing footprints |
+
+Today a scenario can do the first and only the first. This design adds the
+other three through **one** mechanism, because roads, amenities and buildings
+are all `curated_geo.feature` rows.
+
+So there are exactly two mechanisms:
+
+1. **Attribute override** on an existing feature — `scenario_override`
+   exists, and `effective_numeric` already resolves
+   `override ⊕ observation ⊕ base`.
+2. **Feature-set override** — a scenario adds or removes a feature. New.
 
 ---
 
 ## Goals
 
-- A scenario can be **named, listed and found again** tomorrow.
-- A proposal is stored as **a rule over an area** — not as the four thousand
-  per-block rows it produces.
-- A proposal **re-applies after a re-ingest**: feature ids change, the
-  geometric rule does not.
-- Someone can **draw an area, set the values, and see the indicators
-  recompute** against the proposal.
-- The five currently-empty indicators produce real values under a scenario.
-- **Every failure says why.** A blank map after drawing an area must name its
-  cause, not look like the bug this feature exists to fix.
+- A scenario is **named, listed, found again**.
+- A scenario can change **any declared input**, not a hardcoded list.
+- A proposal is stored as **a rule**, so it survives a re-ingest.
+- **Before and after are comparable** — per block and in summary.
+- **Every failure says why.** A blank map after drawing must name its cause.
+- One authoring surface, **not an editor per layer**.
 
-## Non-goals
+## Non-goals, and these are what make it feasible
 
-- **Scenario comparison**, **versioning/branching**, **a zoning model**,
-  **export/import**, **changing what the indicators compute**.
-- **Permissions beyond what exists.** This work does not build the deferred
-  project-context enforcement; see the RLS constraint.
+- **No GIS editor.** Add and remove only — no moving, reshaping or splitting
+  an existing feature.
+- **No edge splitting.** An added street connects two *existing* nodes. A
+  street crossing another mid-span does not create a junction.
+- **No added analysis units.** A scenario adds inputs, never blocks or AGEBs.
+  See "Why added features are inputs only".
+- **No per-layer semantics.** The attribute form is generated from what the
+  catalog declares; a layer with nothing declared gets geometry alone.
+- **No topology validation** beyond "the geometry is valid".
+- **No scenario versioning, branching, or export/import.**
+- **No runtime tenant isolation** — the RLS pattern is matched, not fixed.
 
-## Anti-goals — what would make this a failure even if it worked
+## Anti-goals — failure even if it works
 
 - **A scenario you cannot find again.**
-- **Silent defaults.** A value nobody chose, applied because it was handy,
-  manufactures a finding — the failure the park indicator already shipped.
-- **Silent anything.** A write that reports success and persists nothing, an
-  edit whose removal leaves its effect on the map, a scope that widens because
-  something else was deleted. Three of these were in the first draft.
-- **Losing the rule.**
+- **Silent anything.** A write that reports success and persists nothing; an
+  edit whose removal leaves its effect on the map; a scope that widens because
+  something else was deleted; a change that recomputes and moves no number
+  because it changed nothing real. Earlier drafts contained all four.
+- **Silent defaults.** A value nobody chose.
 - **Touching the baseline.**
 
 ---
 
 ## Constraints the builder must respect
 
+Each verified against the code.
+
 | | |
 |---|---|
-| **API writes need their own connection** | ⚠ `apps/api/deps.py:109-138` — `get_db_conn()` calls `connection.rollback()` on the **success** path, not only on error. Every write in this design must use its own committed connection, the pattern `jobs.py:629-631` documents: *"the pooled one rolls back on teardown, which would make this look like it worked and change nothing."* |
-| **The deferral is recorded, and r016 promised the reverse** | `r016:7-10` says `app_core.scenario` "lands with Layer 3 and the FK is added together with the scenario table", and that `indicator_result` gets a CASCADE then. This design adds the table and **does not** add those FKs; r016's forward promise therefore becomes partly unmet and must be recorded, not left standing. |
-| **RLS is cosmetic here** | Nothing in the application sets `app.current_project_id` — only tests. `r011` is permissive when unset, owners bypass RLS, and `ENGINEERING_NOTES.md:112-120` lists what is missing. The new table matches the pattern and inherits its limits. |
-| **Bulk writes only** | `apply_overrides` publishes once per attribute; per-edit publishing is quadratic (~50M row reads for 10,000 blocks). |
-| **Per-attribute versions** | `publish_scenario_version` versions `scenario.override.<attr>@scenario=S` separately (r045), which is what makes selective recompute exact. |
-| **The anti-join rule has a scope** | r043's anti-join is required for reads that **emit rows** — five call sites (`repositories.py:2102, 2677, 2699, 2733, 2782`) plus `indicator_overlay_tile`. ⚠ It is *not* required inside an `EXISTS` probe, where double-counting is structurally impossible. See `GET /indicators`. |
-| **`valid_max` is enforced by a RAISE** | `r016:303-312` raises when a result exceeds the catalog bound. It does not clamp. See "The ceiling on levels". |
-| **Supersession is scoped to rows written** | `repositories.py:2617-2652` — `bulk_write_numeric_results` returns early on empty input and only marks stale the features it is writing. A feature that drops out of a recompute keeps its old `current` row. |
+| **API writes need their own connection** | ⚠ `apps/api/deps.py:109-138` rolls back on the **success** path. `jobs.py:629-631`: *"the pooled one rolls back on teardown, which would make this look like it worked and change nothing."* No write here uses `Depends(get_db_conn)`. |
+| **`indicator_result.feature_id` FKs to `curated_geo.feature`** | `ON DELETE CASCADE`. Anything receiving results must be a baseline feature. This is what bounds added features to inputs. |
+| **`aoi_feature` has no FK on `feature_id`** | A plain column with an index, so scenario-owned features *could* be written there. They must not be: it is baseline membership. |
+| **Supersession is scoped to rows written** | `repositories.py:2617-2652` returns early on empty input and marks stale only the features being written. A feature dropping out of a recompute keeps its old `current` row. |
+| **The anti-join rule has a scope** | r043's anti-join is required for reads that **emit rows** — five call sites plus `indicator_overlay_tile`. Not required inside an `EXISTS`, where double-counting cannot occur. |
+| **`valid_max` raises, it does not clamp** | `r016:303-312`. See "The ceiling on levels". |
+| **`network_version` is a dirty marker, not a lever** | Written by `seed_demo_attributes.py` and bumped by hand; nothing in the ingest produces it. Overriding it recomputes accessibility *against the identical network* and returns identical numbers. It must not appear in the authoring surface. |
+| **RLS is cosmetic here** | Nothing sets `app.current_project_id` outside tests; owners bypass RLS; `ENGINEERING_NOTES.md:112-120` lists what is missing. |
+| **Bulk writes only** | `apply_overrides` publishes once per attribute; per-edit is quadratic. |
+| **An AOI is the precondition for visibility** | `get_tile` scopes by `aoi_feature`; a feature in no AOI returns 204 everywhere. |
 | **Migration head is r047** | The new migration is r048. |
-
----
-
-## Approaches considered
-
-**A — Identity only.** One table; the scenario *is* its override rows. Nothing
-records the rule, and a re-ingest orphans every row.
-
-**B — The scenario is a rule.** Two tables; overrides become derived.
-
-**C — No new tables.** An endpoint that writes overrides and returns a uuid.
-Scenarios stay unnameable.
-
-**Chosen: B**, by Rossano.
-
-⚠ **A correction to the argument originally made for it.** B was first
-justified as surviving a data reload. That was wrong: `mexicali_run.sh` runs
-`DROP DATABASE`, which takes the new tables too. The claim is narrowed to what
-is true — **a rule re-applies after a re-ingest**, because it selects by
-geometry rather than feature id, and because it says what was intended.
 
 ---
 
@@ -119,11 +124,10 @@ CREATE TABLE app_core.scenario (
 );
 ```
 
-`project_id` derives from the AOI (`area_of_interest.project_id` is NOT NULL),
-required explicitly otherwise. RLS: `tenant_isolation` on `project_id`,
-matching the other two tables.
+`project_id` derives from the AOI. RLS: `tenant_isolation` on `project_id`,
+matching the other two tables and inheriting their limits.
 
-### `curated_geo.scenario_edit`
+### `curated_geo.scenario_edit` — the attribute rule
 
 ```sql
 CREATE TABLE curated_geo.scenario_edit (
@@ -136,230 +140,320 @@ CREATE TABLE curated_geo.scenario_edit (
   value_numeric double precision NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX scenario_edit_scenario_idx ON curated_geo.scenario_edit (scenario_id);
-CREATE INDEX scenario_edit_geometry_gist ON curated_geo.scenario_edit USING gist (geometry);
 ```
 
-Three corrections from the first draft, each from a verified defect:
+`type_id` not a `'block'` string: a feature type is `(context, type_slug)`
+everywhere, and the FK makes a typo impossible. The geometry CHECK matches
+`area_of_interest` (`r004:23-24`) — a TerraDraw polygon can self-intersect,
+and `ST_Covers` against an invalid one either raises or answers wrongly. No
+`value_text`: every authorable attribute is numeric and `effective_numeric`
+reads `value_numeric` only, so a text edit would be storable and unreadable.
 
-- **`type_id`, not a `feature_type` string.** A feature type is
-  `(context, type_slug)` everywhere — `get_type_id(conn, "MEX", "block")` — so
-  storing `'block'` alone drops the dimension that separates `MEX:block` from
-  `global:road`. An FK also makes a typo impossible.
-- **The geometry CHECK**, matching `area_of_interest` (`r004:23-24`). A
-  TerraDraw polygon can self-intersect; an invalid polygon makes `ST_Covers`
-  either raise a GEOS exception that aborts the whole materialise or answer
-  wrongly. Writes repair with `ST_MakeValid` + `ST_CollectionExtract(…, 3)`,
-  the pattern `test_aoi_geometry_repair_is_consistent.py` exists to enforce.
-- **No `value_text`.** All four authorable attributes are numeric and
-  `effective_numeric` reads `value_numeric` exclusively, so a text edit would
-  be storable and silently unreadable. A text policy attribute is a schema
-  change when one exists.
+### `curated_geo.scenario_feature` — the feature-set rule
 
-`attribute_key` gets no DB constraint: the authorable set is derived in Python
-from what the indicators declare. It is validated at the write path, and the
-contract test below is what keeps that honest.
+```sql
+CREATE TABLE curated_geo.scenario_feature (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scenario_id  uuid NOT NULL REFERENCES app_core.scenario(id) ON DELETE CASCADE,
+  op           text NOT NULL CHECK (op IN ('add','remove')),
+  type_id      uuid NOT NULL REFERENCES curated_geo.feature_type_catalog(id),
+  -- op='add': the new feature's own geometry and attributes
+  geometry     geometry(Geometry, 4326),
+  name         text,
+  attributes   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  -- op='remove': the area whose features of this type are removed
+  removal_area geometry(Geometry, 4326),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  CHECK ((op = 'add'    AND geometry IS NOT NULL AND removal_area IS NULL)
+      OR (op = 'remove' AND removal_area IS NOT NULL AND geometry IS NULL))
+);
+```
 
-### Which blocks a drawn area catches
+**Removal is a rule, not a list of ids**, for the same reason the attribute
+edit is: it re-applies after a re-ingest, where feature ids are regenerated
+but the drawn area still means the same thing.
 
-**`ST_Covers(edit.geometry, f.geometry_centroid)`** — the rule the platform
-already uses, not a new one.
+#### Why added features are inputs only
 
-`count_features_within_polygon` (`repositories.py:1775-1800`) answers exactly
-this question for the selection panel, on the centroid, with `ST_Covers` and
-not `ST_Contains` so a centroid on a shared block edge is not silently
-dropped; and `selection-filter.ts` mirrors it client-side *specifically so the
-two cannot disagree*. Its own comment calls it "the same one humans intuit as
-'did the circle catch this?'".
+An added feature never receives an `indicator_result` row, so it never needs
+to satisfy that table's FK to `curated_geo.feature`. That is the whole reason
+this can be a separate table.
 
-⚠ The first draft specified `ST_CoveredBy` on full geometry and justified it
-by citing `compute_overlaps`. That citation was wrong — there `ST_CoveredBy`
-is a cost short-circuit inside a `sum(CASE …)`, and the membership gate is
-`ST_Intersects`, so straddlers are *included*. Using it here would have made
-the sidebar report "N blocks selected" while the scenario edited a strictly
-smaller set, with nothing showing which.
+It also means **a scenario cannot add a block.** Adding an analysis unit would
+require a real `curated_geo.feature` row, AOI membership, and a tile path —
+three things that would each have to be made scenario-aware. A scenario adds
+the things blocks are *measured against*: amenities, streets, buildings.
+
+#### Why a separate table rather than a `scenario_id` column on `feature`
+
+Both work. The separate table **fails safe**.
+
+With a nullable `scenario_id` on `curated_geo.feature`, every baseline read in
+the codebase must remember to filter it out, and one that forgets silently
+leaks a hypothetical feature into the real city — the exact failure r043's
+anti-join exists to prevent, reintroduced at a lower layer. With a separate
+table, a read that forgets the union simply does not see the addition: the
+scenario under-reports, which is visible and harmless.
+
+### How a read becomes scenario-aware
+
+```
+baseline features  −  removed by this scenario  +  added by this scenario
+```
+
+Concretely, at each of the ~8 indicator read sites:
+
+```sql
+-- was: FROM curated_geo.feature f WHERE f.type_slug = 'establishment'
+WITH scoped AS (
+    SELECT f.id, f.geometry, f.attributes
+    FROM curated_geo.feature f
+    WHERE f.type_slug = 'establishment'
+      AND NOT EXISTS (
+            SELECT 1 FROM curated_geo.scenario_feature sf
+            WHERE sf.scenario_id = %(scenario_id)s AND sf.op = 'remove'
+              AND sf.type_id = f.type_id
+              AND ST_Covers(sf.removal_area, f.geometry_centroid))
+    UNION ALL
+    SELECT sf.id, sf.geometry, sf.attributes
+    FROM curated_geo.scenario_feature sf
+    WHERE sf.scenario_id = %(scenario_id)s AND sf.op = 'add'
+      AND sf.type_id = %(type_id)s
+)
+```
+
+With `scenario_id IS NULL` the two extra clauses collapse to nothing and the
+baseline query is unchanged — which is what keeps one code path for both.
+
+### What a drawn area catches
+
+**`ST_Covers(area, f.geometry_centroid)`** — the rule the platform already
+uses. `count_features_within_polygon` (`repositories.py:1775-1800`) answers
+this question for the selection panel on the centroid, with `ST_Covers` rather
+than `ST_Contains` so a centroid on a shared edge is not silently dropped, and
+`selection-filter.ts` mirrors it client-side *specifically so the two cannot
+disagree*.
+
+⚠ An earlier draft specified `ST_CoveredBy` on full geometry and cited
+`compute_overlaps` as precedent. That citation was wrong — there
+`ST_CoveredBy` is a cost short-circuit and the membership gate is
+`ST_Intersects`. Using it would have made the sidebar report "N blocks
+selected" while the scenario edited a smaller set.
+
+### Roads, the one layer needing more
+
+The accessibility indicators route over `curated_geo.road_edge`, not over
+`global:road` features, so a road change must reach the graph.
+
+`_EDGES_SQL` (`accessibility.py:65`) becomes a function of scenario:
+
+```sql
+SELECT id, source, target, cost, reverse_cost FROM curated_geo.road_edge
+WHERE NOT EXISTS (… scenario removals covering this edge …)
+UNION ALL
+SELECT … FROM curated_geo.scenario_road_edge WHERE scenario_id = %s
+```
+
+`scenario_road_edge` is **materialised, not authored** — derived from the
+`scenario_feature` rows of road type. An added street's endpoints snap to the
+nearest existing `road_node` with `ORDER BY rn.geometry <-> p LIMIT 1`, the
+pattern `accessibility.py:168-180` already uses for amenities and block
+centroids, and `cost` is its geodesic length.
+
+⚠ **An added street connects existing nodes and nothing else.** It does not
+split an edge it crosses. Two added streets that cross do not meet. This is
+the single largest simplification in the design and the one most likely to
+surprise someone, so the UI says it where the street is drawn.
+
+### Comparison
+
+A first-class goal, and cheap: baseline and scenario results already coexist
+in `indicator_result` — that is r043's entire design — and
+`acceptance_run.sh:242-269` already computes a per-feature delta with a LEFT
+JOIN and reports "blocks the scenario changed: N of M".
+
+- `GET /scenarios/{id}/comparison?indicator_slug=…` returns per-feature
+  `{baseline, scenario, delta}` plus a summary: features changed, mean delta,
+  and the direction that counts as better, which the catalog already declares
+  as `higher_is_better`.
+- The map gains a **delta mode**: a diverging ramp over `scenario − baseline`
+  instead of the value. ⚠ Diverging, centred on zero, and a different palette
+  from the sequential value ramp — a delta rendered in the value ramp reads as
+  a value.
+- Blocks the scenario did not touch show as "unchanged", not as absent.
 
 ### The ceiling on levels
 
 `edificability_block_density` reduces to `10000 × num_levels / unit_size` —
-block area cancels, as the catalog's own comment says — and its
-`valid_max=2000` is enforced by a trigger that **raises**. So
-**`levels ≤ unit_size / 5`** is a hard ceiling. Six levels at 60 m² is fine;
-thirteen is not, and seven at 30 m² studios is not. Because area cancels, a
-violation fails for every block at once, aborts the unit, and takes
-`livability_block_score` with it.
-
-The authoring surface **validates against the bound read from the catalog**,
-not a hardcoded number, and refuses before writing with a message naming both
-values. A unit test pins that the bound is derived.
+block area cancels, as the catalog's own comment says — with `valid_max=2000`
+enforced by a trigger that **raises**. So **`levels ≤ unit_size / 5`**, and a
+violation fails for every block at once and takes the livability composite
+with it. The authoring surface validates against the bound read from the
+catalog and refuses before writing, naming both numbers.
 
 ### Materialisation
 
 `materialize_scenario(conn, *, scenario_id)`:
 
 1. **Refuse if the scenario has no AOI.** `aoi_id` is `ON DELETE SET NULL`, so
-   deleting an AOI would otherwise silently convert an AOI-scoped rule into an
-   unscoped one over every block in the database — a scope change with no edit
-   and no notice, which the anti-goals forbid.
-2. For each edit, select features by `type_id` whose `geometry_centroid` is
-   covered by the edit geometry, scoped to the AOI through `aoi_feature`.
-3. Collect `(feature_id, attribute_key, value)`; **later edits win**.
-4. Compute the set of features that **lose** an override relative to the
-   current rows, delete those rows, and remember the ids.
-5. Apply the rest in **one** `apply_overrides` call.
+   a deleted AOI would otherwise silently convert a scoped rule into one over
+   every feature in the database.
+2. Attribute edits → features by `type_id` whose centroid the area covers,
+   scoped to the AOI; later edits win.
+3. Compute which features **lose** an override, delete those rows, keep the ids.
+4. Apply the rest in **one** `apply_overrides` call.
+5. Rebuild `scenario_road_edge` from the road-type `scenario_feature` rows.
 6. `publish_scenario_version(conn, scenario_id)` with **no `attributes`
-   argument**, which reconciles retirements — an attribute whose last override
-   row went away in step 4 otherwise keeps a current version forever and its
-   indicator never goes stale.
-7. ⚠ **Supersede the results the removed overrides produced.** For the ids
-   from step 4, mark this scenario's `status='current'` `indicator_result`
-   rows `'stale'` for the indicators that read the removed attributes.
+   argument** — reconciles retirements, which a targeted publish does not.
+7. ⚠ **Supersede the results the removed overrides produced.** Mark this
+   scenario's `current` rows `'stale'` for the step-3 ids and the indicators
+   reading the removed attributes.
 
-Step 7 is not optional and was missing from the first draft. Supersession in
-`bulk_write_numeric_results` is scoped to the features *being written* and
-returns early on empty input, so a block that loses its override is skipped by
-`edificability.py:104`, never appears in the written rows, and keeps its old
-`current` row — which `indicator_overlay_tile` goes on painting. Remove every
-edit and the choropleth would survive untouched. Step 4 removed the invisible
-half of that ghost; step 7 removes the half anyone can see.
+Step 7 is not optional: supersession in `bulk_write_numeric_results` is scoped
+to the features being written and returns early on empty input, so a block
+that loses its override is skipped by the compute, never written, and keeps
+its old `current` row for the tile to paint. Without it, removing every edit
+leaves the choropleth untouched.
 
-`'stale'` is used rather than a new status value: the CHECK allows only
-`current`, `stale`, `failed`, and `stale` is already the platform's marker for
-"a newer write replaced this".
+`'stale'` rather than a new status value: the CHECK allows only `current`,
+`stale`, `failed`, and `stale` is already the platform's supersession marker.
 
-Materialisation is **idempotent**, and **reports per edit how many features it
-matched**. Zero is returned to the caller and surfaced in the UI rather than
-logged, because a tight circle that contains no block whole is a plausible
-outcome whose only other symptom is a blank map.
+Materialisation is **idempotent** and **reports per rule how many features it
+matched**. Zero is returned and surfaced, not logged.
 
 ### The asset graph
 
-`scenario.override.<attr>` is registered as a `kind="source"` leaf whose
-recorded version *is* its state (`registry.py:224-239`). This design makes
-overrides derived, so without a change, editing a rule and forgetting to
-materialise leaves the graph reporting every downstream indicator fresh —
-reintroducing exactly the silent staleness this document exists against.
+Overrides are registered as a `kind="source"` leaf whose version is its state
+(`registry.py:224-239`). Making them derived without telling the graph would
+leave "edited but not materialised" reporting fresh — the silent staleness
+this document exists against.
 
-r048 therefore adds `'scenario_edit'` to the `backing_kind` CHECK
-(`r041:132-137`, a closed list) and registers the edits as the source upstream
-of the overrides. *(The first draft planned neither, and described the
-migration as "two tables, RLS policy, indexes".)*
+r048 adds `'scenario_edit'` and `'scenario_feature'` to the `backing_kind`
+CHECK (`r041:132-137`, a closed list) and registers both as sources upstream
+of the overrides and of the layers they modify. The layer edges matter: an
+added park must make `global.poi` stale *for that scenario* so the four
+accessibility indicators replan.
 
 ### Deleting a scenario
 
-One transaction, in this order:
+One transaction: delete overrides → `publish_scenario_version` with no
+attributes → mark results `'stale'` → delete `asset_materialization` rows →
+delete the scenario row, cascading edits, features and road edges.
 
-1. Delete this scenario's override rows.
-2. `publish_scenario_version(conn, scenario_id)` with no `attributes` — retires
-   every version it held.
-3. Mark its `indicator_result` rows `'stale'`.
-4. Delete its `asset_materialization` rows. Without this the deleted
-   scenario's partition stays a live node in `asset_component_v`
-   (`r041:405-417` filters on nothing), reports stale forever, and
-   `assets stale` accumulates one entry per deleted scenario naming something
-   that no longer exists.
-5. Delete the scenario row; the edits cascade with it, and the name becomes
-   reusable.
+The fourth step is not cosmetic: `asset_component_v` (`r041:405-417`) filters
+materialisation rows on nothing, so a deleted scenario's partition stays a
+live node reporting stale forever and `assets stale` accumulates one entry per
+deleted scenario naming something that no longer exists.
 
-*(The first draft listed the edit deletion first and attributed it to a
-cascade that fires last, and never mentioned `asset_materialization`.)*
+### The authoring surface — one form, not an editor
 
-`jobs_runtime.job_run` rows stay as run history.
+| Step | Control |
+|---|---|
+| Where | the existing draw tools (`selection.ts`) |
+| What layer | the feature types the catalog declares as inputs |
+| What change | *set an attribute* · *add one here* · *remove those here* |
+| Values | fields **generated from the catalog** — `AUTHORABLE_ATTRIBUTES` for the chosen type |
 
-### The attribute allowlist
+Nothing is layer-specific. A new indicator declaring a new input gives its
+layer a form for free. `network_version` and `poi_version` never appear — they
+are dirty markers, and overriding one recomputes the identical answer.
 
-`AUTHORABLE_ATTRIBUTES` lives **beside `overridable_attributes()` in
-`assets/registry.py`**, derived from it minus a named exclusion set —
-`geometry` (not a number) and `poi_version` / `network_version` (hand-bumped
-counters). Not in `indicators/catalog.py`: `registry.py` defers its
-`SHIPPED_INDICATORS` import to function scope in three places to keep that
-dependency one-way, and putting the constant on the other side inverts it.
+**Added features are drawn, so the client already has their geometry.** They
+render as a local layer, needing no scenario tile path and no `aoi_feature`
+rows. This is what keeps added features out of the baseline's membership and
+tile machinery entirely.
 
-The contract test asserts it is a subset of the derived set and that the
-exclusions are exactly those three.
+### Transactions
 
-### Transactions, for every write
-
-Each write endpoint and CLI command opens its **own connection and commits**,
-following `jobs.py`. None uses `Depends(get_db_conn)`. A contract test asserts
-no handler in `routers/scenarios.py` depends on the pooled connection — the
-failure it prevents is a 200 response with nothing written.
+Every write opens its own connection and commits, following `jobs.py`. A
+contract test asserts no handler in `routers/scenarios.py` depends on the
+pooled connection — the failure it prevents is a 200 with nothing written.
 
 ### CLI
 
 ```bash
 scenario create --name "Centralidad norte" --aoi-id <uuid>
-scenario list
-scenario show --scenario-id <uuid>     # edits, overrides, last materialised
-scenario add-edit --scenario-id <uuid> --geojson area.geojson \
-    --levels 6 --unit-size 60 --people-per-household 3.6
-scenario materialize --scenario-id <uuid>    # reports matched counts per edit
+scenario list / show --scenario-id <uuid>
+scenario set-attribute --scenario-id <uuid> --geojson area.geojson \
+    --type MEX:block --levels 6 --unit-size 60 --people-per-household 3.6
+scenario add-feature --scenario-id <uuid> --type global:establishment \
+    --geojson park.geojson --attribute category=park
+scenario remove-features --scenario-id <uuid> --type global:road \
+    --geojson area.geojson
+scenario materialize --scenario-id <uuid>
 evaluate-scenario --scenario-id <uuid> --aoi-id <uuid>
+scenario compare --scenario-id <uuid> --slug accessibility_block_park_network_m
 ```
 
-`--levels` writes both `floors` and `num_levels`: they are the same quantity
-under two names (`seed_demo_attributes.py:23-40`), and two independent fields
-would leave `planned_floors` on the baseline while edificability moved, so one
-proposal would make the map contradict itself. The number written to both keys
-is the number the user typed, which is why this is not the silent default the
-anti-goals forbid.
-
-A scenario sets **all three** policy inputs, because `edificability.py:101-107`
-skips any feature missing any of them.
+`--levels` writes both `floors` and `num_levels`: the same quantity under two
+names (`seed_demo_attributes.py:23-40`), and two fields would leave
+`planned_floors` on the baseline while edificability moved.
 
 ### API
 
 `GET`/`POST /scenarios`, `GET`/`DELETE /scenarios/{id}`,
-`POST`/`DELETE /scenarios/{id}/edits`, `POST /scenarios/{id}/materialize`.
-New `apps/api/routers/scenarios.py`; writes per "Transactions" above.
+`POST`/`DELETE /scenarios/{id}/edits`, `.../features`,
+`POST /scenarios/{id}/materialize`, `GET /scenarios/{id}/comparison`.
 
-**`GET /indicators` grows `scenario_id`.** `list_indicators` filters to
-`scenario_id IS NULL` on the stated grounds that a what-if value is not a
-reason to offer an indicator on the baseline map. Right for the baseline and
-fatal here — the five revived indicators have rows *only* under the scenario,
-so the picker would never offer them.
+**`GET /indicators` grows `scenario_id`**, because the five revived indicators
+have rows only under a scenario and the picker would never offer them. ⚠ Use
+`scenario_id = X OR scenario_id IS NULL` inside the probe: it is an `EXISTS`,
+emits no rows, so the anti-join is unnecessary and would buy a correlated
+`NOT EXISTS` per catalog row for nothing. `listIndicators` (`api.ts:104`) takes
+only `aoiId` and must carry it too. `activateIndicator`
+(`choropleth.ts:163-181`) must pass `scenario_id` into the tile URL beside
+`aoi_id` at `:180`.
 
-⚠ Use `scenario_id = X OR scenario_id IS NULL` inside the probe. It is an
-`EXISTS`, which emits no rows, so the double-counting the anti-join prevents
-cannot occur; the anti-join would buy a correlated `NOT EXISTS` per catalog
-row for nothing. *(The first draft prescribed "an r043-style overlay" and cited
-a constraint that does not apply here.)* `SCENARIOS_LAYER.md`'s baseline-only
-note must be amended.
+---
 
-### Frontend
+## The demo this is built to support
 
-- `selection.ts`'s `Feature<Polygon>` becomes the edit geometry unchanged.
-- A scenario picker listing the active AOI's scenarios plus `(baseline)`.
-- One form: levels, unit size, people per household — validated against the
-  density ceiling before submit.
-- **`activateIndicator` (`choropleth.ts:163-181`) must pass `scenario_id`**
-  into the tile URL beside `aoi_id` at `:180`. *(The first draft named
-  `renderIndicator`, which does not build the URL.)*
-- **`listIndicators` (`api.ts:104`) takes only `aoiId`** and must carry
-  `scenario_id` too, or the new parameter cannot be sent.
+Each is one drawn shape and one form:
+
+| Change | Moves | Leaves alone |
+|---|---|---|
+| Add a park | the four accessibility indicators | urban form, edificability |
+| Close a street | accessibility, through the routing graph | everything else |
+| Connect two neighbourhoods | accessibility | everything else |
+| Allow six storeys here | the five currently-empty indicators | accessibility |
+
+The last row is the reason this started: those five write nothing on real
+Mexicali data because `num_levels`, `unit_size` and `people_per_household` are
+policy choices no survey carries — Overture has `num_floors` on 0.30% of
+Mexicali's 387,273 buildings, so deriving them would invent 99.7% of the
+answer.
+
+The first row is the one worth showing, because it closes a loop: park
+accessibility was a flat 1,500 m everywhere until destinations were ingested,
+and a scenario that adds one more park makes it move again.
 
 ---
 
 ## What this does not give you
 
-- **A scenario does not survive `DROP DATABASE`.** Export/import is not built.
-- **No comparison view**, **no capacity model beyond the existing formula**,
-  **no runtime tenant isolation**, **no author**.
-- **Values only inside the drawn area, for the five revived indicators.**
-  Outside it a block has no override, so edificability skips it, so there is
-  no scenario row and no baseline row to fall back to. That is correct — those
-  blocks have no proposal — but the map will show a painted patch in a blank
-  AOI, and the UI should say so rather than let it read as a rendering fault.
+- **No survival of `DROP DATABASE`** — `mexicali_run.sh` drops the database on
+  every run without `--keep`, taking the scenario tables with it. The rule
+  re-applies after a *re-ingest*, which is a smaller claim than an earlier
+  draft made.
+- **No added blocks**, no reshaping, no edge splitting, no crossing junctions.
+- **Values only where the proposal reaches**, for the five revived indicators:
+  outside the drawn area a block has no override, so there is no scenario row
+  and no baseline row to fall back to. Correct, but the UI must say so rather
+  than let a painted patch in a blank AOI read as a rendering fault.
+- **No runtime tenant isolation**, **no author**, **no comparison between two
+  scenarios** — only against the baseline.
 
 ## The risk I am not closing
 
-**Materialisation cost at city scale is unmeasured.** A rule over 19,058
-blocks writes up to one override row per block *per attribute* — four of them
-— and `publish_scenario_version` digests every row for an attribute. The
-analogous membership pass measured nine minutes before `ST_Subdivide` brought
-it to forty seconds, so the shape and the remedy are both known. Measure a
-full-district edit before assuming the interaction can be synchronous; if it
-cannot, submit it through the job layer rather than inventing a second path.
+**Cost at city scale is unmeasured, now in two places.** A rule over 19,058
+blocks writes up to one override row per block per attribute, and
+`publish_scenario_version` digests every row for an attribute; and the
+scenario-aware edge query adds a `NOT EXISTS` and a `UNION ALL` inside the
+graph every `pgr_drivingDistance` walks. The membership work measured an
+analogous polygon pass at nine minutes before `ST_Subdivide` brought it to
+forty seconds, so the shape and the remedy are known. Measure a full-district
+edit and a scenario accessibility run before assuming either can be
+synchronous; if not, use the job layer rather than a second path.
 
 ---
 
@@ -367,78 +461,74 @@ cannot, submit it through the job layer rather than inventing a second path.
 
 | Layer | What |
 |---|---|
-| `tests/unit` | later edits win; one `--levels` writes both keys; the density ceiling is derived from the catalog and refuses `levels > unit_size/5` |
-| `tests/integration` | materialise is idempotent; a removed edit retires its version **and** supersedes its results; `ST_Covers` on centroid matches `count_features_within_polygon` for the same polygon; materialise refuses without an AOI; delete removes overrides, versions, results and materialisation rows; an invalid polygon is repaired, not raised on |
-| `tests/contract` | `AUTHORABLE_ATTRIBUTES` is the derived set minus exactly three; no `scenarios.py` handler depends on `get_db_conn` |
-| `tests/e2e` | draw, set three values, recompute, and see the five indicators appear in the picker and paint inside the drawn area |
+| `tests/unit` | later edits win; `--levels` writes both keys; the density ceiling is derived from the catalog; an added street's endpoints snap to existing nodes |
+| `tests/integration` | the overlay resolves `baseline − removed + added`; with `scenario_id IS NULL` the query is byte-identical to the baseline one; a removed edit retires its version **and** supersedes its results; `ST_Covers` on centroid matches `count_features_within_polygon`; materialise refuses without an AOI; delete removes overrides, versions, results and materialisation rows; an invalid polygon is repaired |
+| `tests/contract` | `AUTHORABLE_ATTRIBUTES` is the derived set minus geometry and the two version markers; no `scenarios.py` handler depends on `get_db_conn`; no scenario-owned feature is ever written to `curated_geo.feature` or `aoi_feature` |
+| `tests/e2e` | add a park, recompute, and see park accessibility improve in delta mode |
 
 ⚠ **The proof test needs its own fixture.** "The five indicators produce rows
-under a scenario on the synthetic territory" passes *today*, before any of this
-exists, because `synthetic_territory.py:116-119` seeds all four attributes on
-every block. The test must build attribute-free blocks with
-`tests/integration/_helpers.insert_feature`, assert the five write nothing,
-apply a scenario, and assert they then write values.
+under a scenario on the synthetic territory" passes *today*, because
+`synthetic_territory.py:116-119` seeds all four attributes on every block. The
+test must build attribute-free blocks with `_helpers.insert_feature`, assert
+the five write nothing, apply a scenario, and assert they then write values.
 
-⚠ **The e2e assertion is "appear", not "change".** For the five target
-indicators the baseline has no rows, so they go absent → present; every
-indicator that *has* a baseline is unaffected by these attributes. Nothing
-"changes" in the sense the first draft's wording implied.
+⚠ **The accessibility proof must assert a number moved.** A scenario that
+recomputes and returns identical values is the `network_version` trap. The
+test adds a park inside a block's catchment and asserts that block's distance
+*decreased*.
 
 ## Maintenance checklist
 
-1. Migration r048 — two tables, RLS policy, indexes, **and the `backing_kind`
-   CHECK change**
+1. Migration r048 — three tables, RLS, indexes, the `backing_kind` CHECK
 2. `serving_geo` unchanged
 3. `explore` gains a scenario view
-4. CLI listing commands read from `explore`
+4. CLI listing reads from `explore`
 5. Tests per the table above
-6. Docs: `AGENTS.md`; `SCENARIOS_LAYER.md` (partial FK reversal, baseline-only
+6. Docs: `AGENTS.md`; `SCENARIOS_LAYER.md` (the FK reversal, the baseline-only
    picker, "results stay readable"); `TERMINOLOGY.md` ("every `scenario_id`
    column is a plain uuid" is no longer true); `ENGINEERING_NOTES.md:108-110`
    ("a scenario→project association that does not exist" — it now does);
-   **`docs/delivery/03_database_and_api_reference.md`**, which is generated,
-   hashed in `SHA256SUMS`, and guarded by
-   `test_repository_structure.py:427-478` — regenerate it *and* the manifest
-7. **`scripts/acceptance_run.sh:185-223`** mints its scenario from `uuid5` with
-   no `app_core.scenario` row, which stays legal and would make
-   `explore.scenario_v` report zero scenarios immediately after the Schedule A
-   proof run creates one. Move it onto the new CLI, which also exercises the
-   new path in the acceptance artifact.
+   **`docs/delivery/03_database_and_api_reference.md`**, generated, hashed and
+   guarded by `test_repository_structure.py:427-478` — regenerate it and the
+   manifest
+7. **`acceptance_run.sh:185-223`** mints a scenario from `uuid5` with no
+   `app_core.scenario` row, which would make `explore.scenario_v` report zero
+   scenarios right after the Schedule A run creates one. Move it onto the new
+   CLI.
 
 ## Left to the builder
 
 - Request and response shapes.
-- Whether `materialize` runs synchronously or through the job layer — decide
-  from the measurement the risk section calls for.
-- Sidebar layout.
-- Whether `explore.scenario_v` exposes edit counts, override counts, or both.
+- Whether `materialize` and the scenario accessibility run are synchronous or
+  go through the job layer — decide from the measurement above.
+- Sidebar layout and the delta ramp's palette.
+- Whether `explore.scenario_v` exposes edit counts, feature counts, or both.
 
 ---
 
 ## What the reviews changed
 
-Recorded because the first draft read as finished and was not. A builder
-review found eight gaps; an adversarial review then found fifteen more, four of
-which I verified against the code myself before accepting any of them.
+The first draft read as finished and was not. A builder review found eight
+gaps; an adversarial review found fifteen more, four verified against the code
+before any was accepted. Then the framing itself turned out to be wrong.
 
-**Would have shipped silent failures:**
+**Framing.** Drafts one and two designed *block attribute authoring*. The
+actual concept is *override any declared input* — which is a different schema,
+because the editable set is derived from the asset graph rather than
+hardcoded, and because adding and removing features is half of it. Comparison
+was a declared non-goal in both drafts and is half the point. Both errors came
+from inferring the purpose instead of asking for a concrete case.
 
-- Every write endpoint would have returned success and persisted nothing —
-  `get_db_conn` rolls back on the success path, a trap the repo documents three
-  times.
-- Removing an edit would have removed the override and left the result on the
-  map, because supersession is scoped to the rows being written.
-- Deleting an AOI would have silently widened a scoped rule to the whole
-  database.
-- Forgetting to materialise would have left the asset graph reporting
-  everything fresh.
+**Would have shipped silent failures.** Every write persisting nothing;
+removing an edit leaving its result on the map; deleting an AOI widening a
+rule to the whole database; forgetting to materialise reporting everything
+fresh.
 
-**Would have failed at runtime:** levels above `unit_size / 5` raise a plpgsql
-exception that aborts every block at once, because `valid_max` is enforced and
-area cancels out of the density formula.
+**Would have failed at runtime.** Levels above `unit_size / 5` raise a plpgsql
+exception that aborts every block at once.
 
-**Was factually wrong in the first draft:** the `ST_CoveredBy` justification
-(the cited precedent says the opposite); "every indicator endpoint already
-takes `scenario_id`"; `renderIndicator` as the tile-URL site; "six readers"
-(five, plus the tile); an RLS test that cannot pass because the test role owns
-the tables; a proof test that passed before the feature existed.
+**Was factually wrong.** The `ST_CoveredBy` justification cited a precedent
+that says the opposite; "every indicator endpoint already takes `scenario_id`";
+`renderIndicator` as the tile-URL site; "six readers" (five, plus the tile); an
+RLS test that cannot pass because the test role owns the tables; a proof test
+that passed before the feature existed.
