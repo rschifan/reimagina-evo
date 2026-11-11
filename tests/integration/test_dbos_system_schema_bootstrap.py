@@ -95,9 +95,9 @@ def test_ensure_system_database_creates_the_schema_a_client_cannot(
     unprovisioned_db: str,
 ):
     """Against a database nothing has provisioned, so it cannot pass vacuously."""
-    assert (
-        _regclass(unprovisioned_db, "dbos.workflow_status") is None
-    ), "precondition: the schema must be absent for this test to mean anything"
+    assert _regclass(unprovisioned_db, "dbos.workflow_status") is None, (
+        "precondition: the schema must be absent for this test to mean anything"
+    )
 
     ensure_system_database(unprovisioned_db)
 
@@ -131,6 +131,6 @@ def test_ensure_system_database_refuses_a_database_that_is_not_ours(migrated_db:
     with pytest.raises(RuntimeError, match="not a migrated reimagina database"):
         ensure_system_database(not_ours)
 
-    assert (
-        _regclass(not_ours, "dbos.workflow_status") is None
-    ), "the guard must run before DBOS touches the database at all"
+    assert _regclass(not_ours, "dbos.workflow_status") is None, (
+        "the guard must run before DBOS touches the database at all"
+    )
