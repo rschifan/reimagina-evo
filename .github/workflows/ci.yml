@@ -71,7 +71,26 @@ jobs:
         with:
           enable-cache: true
 
-      - name: System dependencies (GDAL for fiona/rasterio wheels fallback)
+      # ⚠ Best-effort, and that is the whole point. This is a *fallback* for
+      # the case where fiona/rasterio have no wheel for the interpreter — its
+      # original name said so. They do have one: both ship cp312 manylinux
+      # x86_64 wheels carrying their own GDAL (28 bundled shared objects), so
+      # on UV_PYTHON 3.12 nothing here is ever loaded.
+      #
+      # Left fatal, it took the whole suite down. On 2026-11-11 the runners
+      # could not resolve `security.ubuntu.com`; apt retried for 1h40m and
+      # then failed, and because this is step 4 of 6, `pytest` never ran in
+      # either job that has it — two of the four. A mirror outage three
+      # networks away is not a verdict on this repository's code.
+      #
+      # So it may fail, and the job carries on to the wheels that were going
+      # to be used anyway. If a future dependency genuinely has no wheel, the
+      # install step here will have run and succeeded whenever apt is healthy;
+      # if apt is also down that day, `uv sync` fails loudly on the build
+      # instead, which names the real problem.
+      - name: System dependencies (optional GDAL fallback; wheels bundle their own)
+        continue-on-error: true
+        timeout-minutes: 3
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgdal-dev
@@ -162,7 +181,13 @@ jobs:
         with:
           enable-cache: true
 
-      - name: System dependencies
+      # Best-effort for the same reason as the unit job's copy above — see the
+      # comment there. `postgresql-client` rides along and is not used either:
+      # the suite talks to Postgres through psycopg2, and `psql` appears in
+      # this repository only in a README line a human might type.
+      - name: System dependencies (optional; wheels bundle their own GDAL)
+        continue-on-error: true
+        timeout-minutes: 3
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgdal-dev postgresql-client
