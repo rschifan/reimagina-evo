@@ -293,6 +293,27 @@ async function main(): Promise<void> {
         }),
         "bottom-right",
       );
+      // ⚠ `compact: true` is not enough on its own, and the reason is in
+      // MapLibre's `_updateCompact`:
+      //
+      //     this._container.classList.add(
+      //       'maplibregl-compact', 'maplibregl-compact-show')
+      //
+      // It adds BOTH classes, so a compact control renders *expanded* on
+      // load and only collapses once the user first interacts with the map.
+      // Until then four real sources are still a 200-character bar across
+      // the viewport — which is exactly what `compact: true` was added to
+      // stop, so without this the fix does nothing for anyone who has not
+      // panned yet.
+      //
+      // Removing `-show` is stable: `_updateCompact` only re-adds it when
+      // `maplibregl-compact` is absent, and that class stays. Done on the
+      // next frame so the control's own first pass has already run.
+      requestAnimationFrame(() => {
+        document
+          .querySelectorAll(".maplibregl-ctrl-attrib.maplibregl-compact-show")
+          .forEach((el) => el.classList.remove("maplibregl-compact-show"));
+      });
     })
     .catch((err) => {
       // Loud, because silence here is a licence breach rather than a
