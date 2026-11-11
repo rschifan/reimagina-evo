@@ -52,11 +52,28 @@ export interface ChoroplethConfig {
 }
 
 
+/**
+ * Why the ramp spans what it spans.
+ *
+ * `uniform` is separate from `empty` because the two look identical in the
+ * ramp — neither can be derived from the data, so both fall back to catalog
+ * bounds — and are opposites in the legend. A layer where every block reports
+ * the same number is not a layer with no data; it is usually a layer whose
+ * destinations are missing, so every block reported the same cutoff. Saying
+ * "no data yet" there sends the reader looking for a compute that already ran.
+ */
+export type RampBasis = "percentile" | "min-max" | "uniform" | "empty";
+
+
 export interface RampDomain {
   min: number;
   max: number;
   /** Observed median — shown in the legend when present. */
   p50: number | null;
+  /** How many features the stats covered; 0 when there are none. */
+  count: number;
+  /** Where `min`/`max` came from, and what to tell the reader. */
+  basis: RampBasis;
   /** Whether the domain came from observed stats (true) or catalog (false). */
   fromStats: boolean;
 }
@@ -95,19 +112,38 @@ export function rampDomainFromStats(
   stats: IndicatorValueStats | null,
   indicator: IndicatorSummary,
 ): RampDomain {
+  const count = stats?.count ?? 0;
   // Prefer observed p05→p95 so outliers don't dominate the ramp.
-  if (stats && stats.count > 0 && stats.p05 !== null && stats.p95 !== null && stats.p95 > stats.p05) {
-    return { min: stats.p05, max: stats.p95, p50: stats.p50, fromStats: true };
+  if (stats && count > 0 && stats.p05 !== null && stats.p95 !== null && stats.p95 > stats.p05) {
+    return {
+      min: stats.p05,
+      max: stats.p95,
+      p50: stats.p50,
+      count,
+      basis: "percentile",
+      fromStats: true,
+    };
   }
   // Flat distribution (p05 == p95) — widen to min/max so we still see something.
-  if (stats && stats.count > 0 && stats.min !== null && stats.max !== null && stats.max > stats.min) {
-    return { min: stats.min, max: stats.max, p50: stats.p50, fromStats: true };
+  if (stats && count > 0 && stats.min !== null && stats.max !== null && stats.max > stats.min) {
+    return {
+      min: stats.min,
+      max: stats.max,
+      p50: stats.p50,
+      count,
+      basis: "min-max",
+      fromStats: true,
+    };
   }
-  // No data — fall back to catalog safety bounds.
+  // Nothing to derive a span from: either no rows at all, or rows that all
+  // carry the same value. Both fall back to catalog safety bounds, and the
+  // legend must not confuse the second for the first.
   return {
     min: indicator.valid_min ?? 0,
     max: indicator.valid_max ?? 1,
-    p50: null,
+    p50: count > 0 ? (stats?.p50 ?? stats?.min ?? null) : null,
+    count,
+    basis: count > 0 ? "uniform" : "empty",
     fromStats: false,
   };
 }
@@ -322,6 +358,30 @@ export function setValueHoverListener(
 }
 
 
+/**
+ * The legend's one-line account of where the colour scale came from.
+ *
+ * Exported so it can be asserted directly: the `uniform` wording is the whole
+ * point of `RampBasis`, and it is the line a reader checks when a layer comes
+ * out one flat colour.
+ */
+export function rampScopeText(domain: RampDomain): string {
+  switch (domain.basis) {
+    case "percentile":
+      return "ramp: observed p05\u2013p95";
+    case "min-max":
+      return "ramp: observed min\u2013max (p05 = p95)";
+    case "uniform":
+      return (
+        `ramp: catalog bounds \u2014 all ${fmtNumber(domain.count)} values ` +
+        `identical (${formatNumber(domain.p50 ?? domain.min)})`
+      );
+    case "empty":
+      return "ramp: catalog bounds (no data yet)";
+  }
+}
+
+
 export function renderLegend(
   container: HTMLElement,
   indicator: IndicatorSummary,
@@ -333,9 +393,7 @@ export function renderLegend(
     domain.fromStats && domain.p50 !== null
       ? `<div class="p50">median · ${formatNumber(domain.p50)}</div>`
       : "";
-  const scopeRow = domain.fromStats
-    ? `<div class="scope">ramp: observed p05–p95</div>`
-    : `<div class="scope">ramp: catalog bounds (no data yet)</div>`;
+  const scopeRow = `<div class="scope">${rampScopeText(domain)}</div>`;
   // The distribution, and a slot the hover handler rewrites in place.
   //
   // Kept as a sibling of the gradient rather than replacing it: the gradient
