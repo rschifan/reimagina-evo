@@ -71,9 +71,9 @@ def test_every_accessibility_category_declares_a_label_and_scope():
         ACCESSIBILITY_LABELS,
     )
 
-    assert set(ACCESSIBILITY_LABELS) == set(
-        ACCESSIBILITY_CATEGORIES
-    ), "every accessibility category needs a (label, scope) entry"
+    assert set(ACCESSIBILITY_LABELS) == set(ACCESSIBILITY_CATEGORIES), (
+        "every accessibility category needs a (label, scope) entry"
+    )
     for category, (label, scope) in ACCESSIBILITY_LABELS.items():
         assert label and scope, f"{category} has an empty label or scope"
 

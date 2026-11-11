@@ -93,8 +93,8 @@ dev = [
     # formatted. It used to be pinned only in the workflow, with the Makefile
     # calling bare `ruff` on the assumption it was "commonly installed globally"
     # — which made agreement a coincidence rather than a property.
-    "mypy==2.3.1",
-    "ruff==0.6.9",
+    "mypy==2.4.0",
+    "ruff==0.16.10",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -106,6 +106,35 @@ packages = ["packages/py/reimagina"]
 # all. Without it ruff falls back to its py38 default and flags 3.10+ builtins
 # (e.g. F821 on `anext`). Set explicitly so the two never drift.
 target-version = "py311"
+
+[tool.ruff.lint]
+# The rule set this project gates on, stated rather than inherited.
+#
+# ⚠ These four ARE ruff's historical default — this changes nothing about what
+# is enforced today. They are written down because the default itself is not
+# stable across releases: ruff 0.6 enabled roughly sixty rules here, 0.16
+# enables 413, so upgrading the linter silently moved the goalposts and
+# reported 354 violations in code nobody had touched. Most were not defects —
+# `B008` fires on every FastAPI `Depends()` in the codebase, which is the
+# framework's documented idiom.
+#
+# Adopting more rules is a decision worth making deliberately, in a change that
+# does nothing else and can be reviewed on its merits. Inheriting them from
+# whatever a dependency bump happens to ship is not that decision. Same
+# reasoning as `target-version` above: pin what we depend on, so the two never
+# drift.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+# ⚠ Markdown is excluded, and that is a choice rather than an oversight.
+# Ruff 0.16 formats Python inside fenced code blocks, which it did not used to
+# — so the upgrade wanted to rewrite illustrative snippets across six
+# documents, `docs/legacy/` included. Those samples are written for a reader
+# mid-paragraph: they wrap where the prose needs them to and elide what is not
+# being discussed. Reflowing them to match source-file conventions makes them
+# worse as prose and produces diff noise in files no interpreter ever loads.
+# Python files are formatted as before.
+exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

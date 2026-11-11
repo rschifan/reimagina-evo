@@ -111,8 +111,7 @@ MEXICALI_AMENITIES = PointsLayerSpec(
     license="Datos abiertos del IMIP",
     version="2025-05",
     notes=(
-        "DENUE-derived amenities for Mexicali (Baja California). "
-        "1.5k point features."
+        "DENUE-derived amenities for Mexicali (Baja California). 1.5k point features."
     ),
 )
 

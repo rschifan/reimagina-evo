@@ -100,9 +100,9 @@ def test_tile_decodes_with_expected_properties(conn):
         )
         tile_bytes = bytes(cur.fetchone()[0])
 
-    assert (
-        len(tile_bytes) > 0
-    ), "tile must not be empty when indicator + feature are in bbox"
+    assert len(tile_bytes) > 0, (
+        "tile must not be empty when indicator + feature are in bbox"
+    )
 
     decoded = mapbox_vector_tile.decode(tile_bytes)
     assert "indicator_overlay" in decoded, f"unexpected layers: {list(decoded)}"
@@ -188,9 +188,9 @@ def test_tile_filters_by_scenario_id(conn):
         base_tile = bytes(cur.fetchone()[0])
     base = mapbox_vector_tile.decode(base_tile)["indicator_overlay"]["features"]
     assert len(base) == 1
-    assert (
-        abs(base[0]["properties"]["value_numeric"] - 0.42) > 1e-6
-    ), "base tile must not include scenario-scoped rows"
+    assert abs(base[0]["properties"]["value_numeric"] - 0.42) > 1e-6, (
+        "base tile must not include scenario-scoped rows"
+    )
 
     # Scenario-scoped tile: feature present with value 0.42.
     with conn.cursor() as cur:
