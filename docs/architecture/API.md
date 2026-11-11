@@ -85,6 +85,30 @@ Every error response echoes `X-Request-Id` in both the header and the
 body so server logs + user-visible incidents can be correlated without
 leaking stack traces.
 
+⚠ This held only as long as `apps.api.errors.unhandled_error_handler` is the
+handler Starlette actually reaches for `Exception`. titiler's
+`DEFAULT_STATUS_CODES` contains an `Exception: 500` entry, and registering it
+replaced ours for every route — after which unhandled errors answered
+`{"detail": str(exc)}` with no request id, echoing back whatever the exception
+carried. `create_app` now filters that one entry out and keeps the
+raster-specific ones; `tests/unit/test_api_error_envelope.py` holds the line.
+
+### Refusals that name their own remedy (`detail`)
+
+A route that rejects a well-formed request answers FastAPI's `{"detail": "…"}`
+with a sentence meant to be shown to the operator, **not** the envelope above —
+there is nothing internal in it to withhold:
+
+| Status | Where | Means |
+|---|---|---|
+| 409 | `POST /jobs/{id}/cancel`, `/rerun` | the run is already terminal, or has nothing to retry |
+| 422 | `POST /jobs`, `/jobs/preview` | an indicator slug no registry entry matches |
+| 503 | `POST /jobs` | the ops plane's schema is missing from this database — `OpsPlaneNotProvisioned`, naming `bootstrap-db`. A deployment state, not a fault in the request, which is why it is not a 500 |
+
+The Ops dashboard renders `detail` when present and falls back to the
+envelope's `message` plus its `request_id`, so both shapes reach the operator
+as words rather than as a status line.
+
 ### Validation errors (422)
 
 FastAPI's standard shape:

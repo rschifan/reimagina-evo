@@ -41,6 +41,34 @@ RUN_TERMINAL_STATES = frozenset({"succeeded", "partial", "failed", "cancelled"})
 """Run statuses that close a progress stream."""
 
 
+class OpsPlaneNotProvisioned(RuntimeError):
+    """The engine's own storage has never been created in this database.
+
+    A deployment state rather than a fault in the request, and the distinction
+    is the reason this has a name: every read in the API works, every submit
+    fails, and the raw engine error is a SQL exception that reads like a bug in
+    shipped code. It is not — it means a step was skipped.
+
+    In the port because it is not peculiar to one engine: any ops-plane keeping
+    durable state somewhere has a "that somewhere does not exist yet" state,
+    and a caller that wants to answer 503-and-say-what-to-do needs to recognise
+    it without naming the engine. Carries no engine types, like everything here.
+    """
+
+    def __init__(self, detail: str | None = None) -> None:
+        super().__init__(
+            detail
+            or (
+                "the ops plane's storage is missing from this database — no run "
+                "can be submitted until it exists. Provision it with "
+                "`python -m apps.cli.app bootstrap-db` (what `make migrate` "
+                "runs), or start a worker once, which creates it on launch. "
+                "Migrating with Alembic alone does not: the engine owns this "
+                "schema and the API submits as a client, which never migrates."
+            )
+        )
+
+
 def overall_status(statuses: Iterable[str]) -> str:
     """Roll unit statuses into a run status.
 

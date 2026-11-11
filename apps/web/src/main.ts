@@ -13,7 +13,11 @@
  *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
  *     selected.
  */
-import maplibregl from "maplibre-gl";
+// ⚠ Namespace import, not a default one. maplibre-gl 6 dropped its default
+// export, so `import maplibregl from "maplibre-gl"` stops compiling (TS1192).
+// Every other module here imports only *types* from the package, so this one
+// line was the whole breaking change on the 5 → 6 upgrade.
+import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mount } from "svelte";
 

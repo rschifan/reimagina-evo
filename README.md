@@ -76,8 +76,14 @@ pytest tests/integration               # requires Postgres+PostGIS
 pytest tests/conformance               # requires Postgres+PostGIS
 ```
 
-CI gates all three. `tests/performance` is a hand-run harness and is gated
-nowhere.
+CI gates all three. Three further suites are hand-run and gated nowhere, each
+for its own reason:
+
+| Suite | Why it is not gated |
+|---|---|
+| `tests/performance` | benchmark harness; budgets live in `docs/architecture/PERFORMANCE.md` |
+| `tests/workloads` | measures *how* an ops plane schedules, and records what two planes may differ on — `make test-workloads`, see [`tests/workloads/README.md`](tests/workloads/README.md) |
+| `tests/recovery` | kills real processes with SIGKILL and needs a migrated DB with enough features to make a compute window; opt in with `REIMAGINA_RECOVERY_TEST=1` |
 
 ⚠ A bare `pytest` collects every suite, including `tests/integration` — whose
 session fixture ends by dropping every managed schema from `TEST_DATABASE_URL`.

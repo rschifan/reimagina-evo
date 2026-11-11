@@ -10,7 +10,13 @@
     type ImpactPreview,
     type IndicatorSummary,
   } from "./api";
-  import { aoiOptions, launchRun, loadAois, ops } from "./store.svelte";
+  import {
+    aoiOptions,
+    describeApiError,
+    launchRun,
+    loadAois,
+    ops,
+  } from "./store.svelte";
 
   let { refreshNow, onClose }: { refreshNow: () => void; onClose: () => void } =
     $props();
@@ -116,7 +122,13 @@
       onClose();
     } catch (err) {
       failed = true;
-      message = err instanceof Error ? err.message : String(err);
+      // `describeApiError`, not `err.message`. The latter is the status line
+      // `ApiError` builds — "500 Internal Server Error on /jobs" — which names
+      // the route and says nothing about the cause, while the body the API
+      // sent carries either its own sentence or a request id to search the
+      // logs by. Launching was the only action here still discarding that;
+      // cancel, rerun and delete have always read it.
+      message = await describeApiError(err);
     }
   }
 

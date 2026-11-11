@@ -144,6 +144,17 @@ jobs:
       # The app pool (deps.api_dsn) reads REIMAGINA_APP_DSN; test_api_routes
       # exercises a live app against it. Point it at the same migrated DB.
       REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      # ⚠ Required, not optional. `dbos_dsn()` raises rather than let DBOS fall
+      # back to SQLite, so any test that reaches the real orchestrator — e.g.
+      # test_api_routes' end-to-end 404 through the live app — fails without
+      # this. Omitting it cost a red integration job and, because `pytest
+      # (conformance)` is a later step in the same job, silently skipped the
+      # port-contract suite on every run.
+      #
+      # Same DSN as above: there is no pgbouncer in CI, so the pooled and
+      # direct DSNs coincide here. They must NOT be collapsed in deployments,
+      # where this one has to bypass the pooler for LISTEN/NOTIFY.
+      DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
     steps:
       - uses: actions/checkout@v7
 
