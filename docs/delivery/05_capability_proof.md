@@ -24,6 +24,7 @@ date: "11 November 2026"
 | 0.6 | 2026-11-10 | Rossano Schifanella | Appendix A — the real Mexicali pilot, run on the author's machine and marked not reviewer-reproducible |
 | 0.7 | 2026-11-11 | Rossano Schifanella | Appendix A completed: the network accessibility family, with destination counts and the share of blocks at the cutoff |
 | 0.8 | 2026-11-11 | Rossano Schifanella | Park and cultural destinations ingested from Overture places (§A.1), so park accessibility is no longer an absence; twelfth indicator added for cultural venues |
+| 0.9 | 2026-11-11 | Rossano Schifanella | §A.1 — the park indicator recomputed over the ingested destinations: 27.9 % of blocks at the cutoff, replacing 100 % |
 
 ### Why this document exists
 
@@ -1045,12 +1046,13 @@ a missing input.
 
 ### What it does not establish
 
-- **Park accessibility, as measured by this run.** The indicator ran and wrote
-  19,058 rows, and every one is the cutoff. There were no park destinations in
-  the amenity layer, so this run establishes nothing about park access in
-  Mexicali. §A.1 supplies the destinations and is itself measured; what is not
-  yet measured is the indicator recomputed over them, because that needs the
-  lake mirror and is not reviewer-reproducible.
+- **Park accessibility — *as measured by this run*, and no longer.** The
+  indicator ran here and wrote 19,058 rows, every one the cutoff, because the
+  amenity layer held no park destinations. §A.1 supplies them and reports the
+  recompute: 19.4 m to 1500.0 m with 27.9 % of blocks at the cap. The table
+  above is left as it was run rather than restated, because it is the record of
+  what the pilot produced on 11 November and the point of the annex is what the
+  pilot produced.
 - **School accessibility, as its name suggests.** 79 nurseries are the only
   matching destinations. The number is real; its scope is much narrower than
   "school".
@@ -1084,12 +1086,11 @@ fixed with a regression guard.
 
 ## A.1 Park and cultural destinations, from Overture places
 
-**Status: the extract is measured here; the recomputed indicator is not.**
-Everything below was run against Overture's S3 release on 11 November 2026.
-What is *not* here is `accessibility_block_park_network_m` recomputed over
-these destinations, because that needs the lake mirror from Appendix A's
-qualification 3 and is not reviewer-reproducible. The appendix does not claim
-a number it has not taken.
+**Status: measured, on the same machine and the same database as Appendix A.**
+The extract was run against Overture's S3 release on 11 November 2026 and the
+park indicator was then recomputed over its destinations. Like the rest of
+Appendix A this is *not* reviewer-reproducible — it needs the lake mirror named
+in qualification 3 — so the synthetic half is reported separately at the end.
 
 ### Why this exists
 
@@ -1195,6 +1196,41 @@ is not one of those; and the composite's values are already recorded in §13,
 so redefining what it measures is a decision rather than a consequence of
 adding a category. `tests/unit/test_composite_normalization.py` pins the
 exclusion so it cannot be undone by accident.
+
+### The park indicator, recomputed
+
+This is the number that replaces Appendix A's `1500.0 | 1500.0 | 1500.0`:
+
+| Indicator | Rows | min | avg | max | At the 1,500 m cutoff |
+|---|---|---|---|---|---|
+| `accessibility_block_park_network_m` | 19,058 | **19.4** | **813.0** | 1500.0 | **5,326 (27.9 %)** |
+| `accessibility_block_health_network_m` | 19,058 | 27.2 | 857.5 | 1500.0 | 5,957 (31.3 %) |
+| `accessibility_block_school_network_m` | 19,058 | 27.5 | 1244.5 | 1500.0 | 11,359 (59.6 %) |
+
+Park accessibility is now a measurement. 27.9 % of blocks have no park or
+recreation site within 1,500 m on the pedestrian network — a finding, where
+100 % was an artifact of an empty destination set.
+
+⚠ **27.9 % is not a good result that replaced a bad one.** It is a real result
+that replaced a non-result. The earlier figure was not "Mexicali has poor park
+access"; it was "this question was never asked of the data". Read on its own
+merits, park comes out better served than schools (59.6 %) and close to health
+(31.3 %) — and the composition table above is the necessary qualification:
+570 of the 1,001 destinations are commercial gyms, so this is not a statement
+about public green space.
+
+The 1,119 places loaded match the extract measured above, category for
+category: `gym` 304, `sport_or_fitness_facility` 205, `park` 151,
+`sport_or_recreation_club` 78, `sports_and_recreation` 62, `fitness_studio` 61,
+down to a single `aquarium`, `golf_course`, `performing_arts_venue`,
+`skate_park` and `skating_rink`.
+
+ℹ **The school count moved by one block** — 11,358 in Appendix A, 11,359 here —
+and the data did not change; the school indicator was not recomputed. The two
+queries differ: Appendix A counted `= 1500.0` and this one counts `>= 1499.9`,
+which catches a block sitting fractionally below the cap. Recorded rather than
+quietly reconciled, because an unexplained discrepancy between two tables in
+the same annex is worse than a one-block footnote.
 
 ### Verified on the synthetic territory
 
