@@ -87,7 +87,7 @@ check: lint test build-web test-web ## Lint + the DB-free suites + web. Run befo
 # ─── Bootstrap (data ingest entrypoints) ─────────────────────────────────────
 
 .PHONY: migrate
-migrate: ## Run all DB migrations on the configured DATABASE_URL.
+migrate: ## Run all DB migrations on $DATABASE_URL (see .env), creating the DBs if needed.
 	$(PYTHON) -m apps.cli.app bootstrap-db
 
 .PHONY: verify-sources
