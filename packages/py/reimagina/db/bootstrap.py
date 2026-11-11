@@ -67,6 +67,22 @@ def bootstrap_local_platform(
         seed_catalog(conn)
         seed_assets(conn)
         conn.commit()
+
+    # The ops plane's own schema, for the same reason as the two seeds above: a
+    # bootstrapped database should be one the system can actually be used
+    # against. DBOS creates its schema inside `launch()`, which only a worker
+    # calls — so without this the API, which submits as a `DBOSClient` and by
+    # design never migrates, answered every `POST /jobs` with a 500 until a
+    # worker had run at least once. The dashboard offered a Run button from the
+    # moment the catalog above was seeded, so the gap was reachable long before
+    # anything could serve it.
+    #
+    # Imported here rather than at module scope: `dbos_app` pulls the engine's
+    # client library in at import time, and bootstrap must stay importable for
+    # callers that never touch the ops plane.
+    from reimagina.orchestration import dbos_app
+
+    dbos_app.ensure_system_database(app_dsn)
     return result
 
 

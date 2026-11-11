@@ -44,6 +44,13 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
         "reimagina.assets.registry.seed_assets",
         lambda conn: seeded.setdefault("assets_called", True),
     )
+    # Bootstrap also provisions the ops plane's system schema, which is a real
+    # connection to a real server. Stubbed for the same reason as the seeds:
+    # this test is about the order of the steps, not about any of them working.
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_app.ensure_system_database",
+        lambda dsn: seeded.setdefault("ops_plane_called", True),
+    )
 
     result = bootstrap_local_platform(
         app_dsn="postgresql://localhost/reimagina",
@@ -57,3 +64,53 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
     # The asset registry is seeded from code rather than from a migration body,
     # so bootstrap is the only thing that guarantees a fresh DB has it.
     assert seeded.get("assets_called") is True
+
+
+def test_bootstrap_provisions_the_ops_plane_system_schema(monkeypatch):
+    """`make migrate` must leave a database the API can actually submit to.
+
+    The API submits through `DBOSClient`, which never runs DBOS's schema
+    migrations — only a worker's `launch()` creates them. Without this step a
+    freshly-bootstrapped database answers every `POST /jobs` with a 500 until
+    someone starts a worker, which is both an undocumented ordering dependency
+    and the first thing a new installation hits.
+
+    Asserted on the *app* DSN specifically: the test database is provisioned by
+    the suites that launch DBOS themselves, but nothing else ever provisions
+    the one the API serves.
+    """
+    monkeypatch.setattr(
+        "reimagina.db.bootstrap.bootstrap_postgres",
+        lambda **kwargs: {
+            "app": {"created": True, "dsn": kwargs["app_dsn"], "migrated": True},
+            "test": {"created": True, "dsn": kwargs["test_dsn"], "migrated": True},
+        },
+    )
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr("reimagina.db.connect", lambda dsn: _FakeConn())
+    monkeypatch.setattr("reimagina.indicators.catalog.seed_catalog", lambda conn: None)
+    monkeypatch.setattr("reimagina.assets.registry.seed_assets", lambda conn: None)
+
+    provisioned: list[str] = []
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_app.ensure_system_database",
+        lambda dsn: provisioned.append(dsn),
+    )
+
+    bootstrap_local_platform(
+        app_dsn="postgresql://localhost/reimagina",
+        test_dsn="postgresql://localhost/reimagina_test",
+        admin_dsn="postgresql://localhost/postgres",
+    )
+
+    assert "postgresql://localhost/reimagina" in provisioned

@@ -265,6 +265,82 @@ def config() -> DBOSConfig:
     return cfg
 
 
+def ensure_system_database(dsn: str | None = None) -> None:
+    """Install DBOS's system schema. Idempotent, and launches no executor.
+
+    **Why this is not something `launch()` already covers.** It is, for a
+    worker — and only for a worker. ``DBOS.launch()`` creates the ``dbos``
+    schema as a side effect of starting an executor, so the schema exists from
+    the first moment a worker runs and never before. Every other process in
+    this system submits through ``DBOSClient``, whose own docstring states the
+    precondition plainly: "Unlike DBOS itself, the client never runs schema
+    migrations: the system database must already have been created by a DBOS
+    application."
+
+    Nothing in the deploy path satisfied that. `make migrate` ran Alembic,
+    seeded the indicator catalog and the asset registry, and stopped — so a
+    freshly-installed system served an Ops dashboard listing all eleven
+    indicators whose Run button answered 500, ``relation
+    "dbos.workflow_status" does not exist``, until somebody happened to start
+    a worker. The ordering dependency was real, undocumented, and invisible
+    until the first submit.
+
+    So the schema becomes a bootstrap artifact like any other, created by the
+    same command that creates the rest of the database. A worker launching
+    later finds it already current and skips the work; `run_migrations` takes
+    an advisory lock and short-circuits when the recorded version is the
+    latest, so concurrent callers and repeat deploys are both fine.
+
+    ⚠ Deliberately **not** implemented by launching DBOS and immediately
+    destroying it. ``launch()`` also starts the queue dequeuer and the
+    startup-recovery thread, and recovery reclaims workflows recorded against
+    this executor id — so a bootstrap command would begin *executing PostGIS
+    workloads*, in the deploy process, as a side effect of creating a schema.
+    Provisioning and executing have to stay separable, which is the same
+    distinction `execution_mode()` draws.
+
+    ⚠ ``SystemDatabase`` is DBOS-internal. It is reached directly because the
+    public surface offers no provision-without-executing entry point, and the
+    dependency is pinned (``dbos>=2.28,<3``) for unrelated reasons that happen
+    to bound this one too. `tests/integration/test_dbos_system_schema_bootstrap`
+    asserts the schema really appears, so an upstream move breaks a test rather
+    than quietly reverting us to a 500 on first submit.
+    """
+    from dbos._serialization import DefaultSerializer
+    from dbos._sys_db import SystemDatabase
+
+    dsn = dsn or dbos_dsn()
+    # The same guard `launch()` applies, for the same reason and more sharply
+    # here: pointed at a database that does not exist, DBOS creates one and
+    # installs this very schema into it. A bootstrap command is exactly where
+    # a DSN typo gets typed, and "created the ops plane somewhere else and
+    # said OK" is the one outcome that must not be possible.
+    _assert_domain_database(dsn)
+    system_db = SystemDatabase.create(
+        system_database_url=dsn,
+        engine_kwargs={
+            "connect_args": {"application_name": "reimagina_bootstrap"},
+            "pool_size": 2,
+            "max_overflow": 0,
+            "pool_timeout": 30,
+            "pool_pre_ping": True,
+        },
+        engine=None,
+        schema="dbos",
+        serializer=DefaultSerializer(),
+        executor_id=None,
+        # Must match what `config()` leaves DBOS defaulting to: the migration
+        # installs the LISTEN/NOTIFY triggers the progress stream reads, and a
+        # system database created without them degrades the SSE endpoint to
+        # once-a-second polling — the exact latency it exists to avoid.
+        use_listen_notify=True,
+    )
+    try:
+        system_db.run_migrations()
+    finally:
+        system_db.destroy()
+
+
 _runs_queue: Queue | None = None
 _units_queue: Queue | None = None
 _LAUNCH_LOCK = threading.Lock()

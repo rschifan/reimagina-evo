@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from apps.api.app import create_app
 from apps.api.deps import get_db_conn
 from reimagina.orchestration.port import (
+    OpsPlaneNotProvisioned,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -660,3 +661,30 @@ def test_clearing_history_reports_how_many_went(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 4}
     assert reader.cleared == 1
+
+
+def test_an_unprovisioned_ops_plane_is_503_and_names_the_remedy(monkeypatch):
+    """A missing ops-plane schema is a deployment state, not a bug in a request.
+
+    `DBOSClient` never migrates — only a worker's `launch()` creates the `dbos`
+    schema — so a database migrated by Alembic alone accepts every read in this
+    API and rejects every submit. `make migrate` provisions it now, but a
+    deployment that runs `alembic upgrade head` directly still lands here, and
+    "500, see the logs" sends an operator looking for a code defect that does
+    not exist. 503 says the right thing: the service is not ready, the client
+    did nothing wrong, and retrying after the remedy will work.
+    """
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            raise OpsPlaneNotProvisioned()
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    with TestClient(create_app(initialise_pool=False)) as client:
+        resp = client.post("/jobs", json={"indicators": ["x"]})
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert "bootstrap-db" in detail, "the error must name the command that fixes it"

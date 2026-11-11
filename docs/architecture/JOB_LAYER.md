@@ -427,6 +427,12 @@ That default is measured, not guessed: on the real catalog, 2 slots gives 3614 m
 
 Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:109`, `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:173-179`).
 
+**That schema is a bootstrap artifact, not a side effect of a worker starting.** It used to be the latter, and the consequence was a reachable 500. `DBOSClient` — what the API submits through in `client` mode — never runs DBOS's schema migrations; its docstring states the precondition outright, that the system database must already have been created by a DBOS application. Only `launch()` creates it, and only a worker launches. So a database migrated by Alembic alone served the whole read side correctly, listed every seeded indicator in the Ops dashboard, and answered every `POST /jobs` with `UndefinedTable: relation "dbos.workflow_status" does not exist` — next to a banner that said a worker was needed but not that submitting could not work without one.
+
+`bootstrap_local_platform` now calls `dbos_app.ensure_system_database()`, so `make migrate` provisions it alongside the indicator catalog and the asset registry (`db/bootstrap.py`). It provisions without launching: `launch()` would also start the dequeuer and startup recovery, so a bootstrap command would begin *executing* work as a side effect of creating a schema. Idempotent, advisory-locked, and guarded by the same `_assert_domain_database` check as `launch()` — pointed at a database that does not exist, DBOS creates one, and a bootstrap command is exactly where a DSN typo gets typed.
+
+Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which `POST /jobs` answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped.
+
 ### The worker
 
 `python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. The worker also writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`.

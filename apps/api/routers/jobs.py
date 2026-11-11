@@ -171,6 +171,7 @@ def _submit_response(run_id: str, status: str) -> SubmitRunResponse:
 def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     from reimagina.db import connect
     from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.orchestration.port import OpsPlaneNotProvisioned
     from reimagina.provenance import code_version
 
     orchestrator = get_orchestrator()
@@ -198,15 +199,25 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     # `dbos_app._pg` and `jobs._lifecycle.record_failed_job_run`; the inner
     # context keeps the commit-on-success the enqueue depends on.
     with contextlib.closing(connect(api_dsn())) as conn, conn:
-        handle = orchestrator.submit_run(
-            conn,
-            changed_attributes=body.changed_attributes or [],
-            edited_features=body.edited_features or [],
-            scenario_id=body.scenario_id,
-            aoi_id=body.aoi_id,
-            code_version=code_version(),
-            indicators=indicators,
-        )
+        try:
+            handle = orchestrator.submit_run(
+                conn,
+                changed_attributes=body.changed_attributes or [],
+                edited_features=body.edited_features or [],
+                scenario_id=body.scenario_id,
+                aoi_id=body.aoi_id,
+                code_version=code_version(),
+                indicators=indicators,
+            )
+        except OpsPlaneNotProvisioned as exc:
+            # 503, not 500: the request is well-formed and the code is sound —
+            # the ops plane's storage has not been created in this database. A
+            # 500 would say "a bug, look at the logs"; this says "not ready
+            # yet", which is both true and retryable once the remedy named in
+            # the message has been applied. The detail is echoed deliberately:
+            # it is our own sentence, naming a command, with nothing internal
+            # in it.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         # "noop" when the run had nothing to recompute; else the queued run_id.
         status = handle.status.status if handle.status else "queued"
         if body.wait and handle.status is None:
