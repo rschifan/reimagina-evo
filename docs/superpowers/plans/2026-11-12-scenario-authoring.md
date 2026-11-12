@@ -260,8 +260,11 @@ def test_a_density_breach_names_the_block_the_bound_and_the_value():
 
 
 def test_the_housing_units_bound_depends_on_the_block_s_own_area():
+    # pph=2, not the 3.6 default: at 12 storeys on BIG the population bound
+    # (750,000) breaches too — 277,390 units x 3.6 = 998,604 — so the default
+    # would make this assert two breaches while claiming to isolate one.
     assert check_ceilings([_block(levels=6, area=BIG)]) == []
-    breaches = check_ceilings([_block(levels=12, area=BIG)])
+    breaches = check_ceilings([_block(levels=12, pph=2, area=BIG)])
     assert {b.indicator_slug for b in breaches} == {"edificability_block_housing_units"}
 
 
