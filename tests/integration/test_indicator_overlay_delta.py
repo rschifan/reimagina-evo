@@ -216,6 +216,18 @@ def _features(tile: bytes) -> list[dict]:
     )
 
 
+class DuplicateFeature(AssertionError):
+    """One tile carried the same ``feature_id`` twice.
+
+    A named subclass rather than a bare ``assert`` so that an ``xfail`` can
+    name *this* failure and nothing else. An ``xfail`` that accepts any
+    exception is a canary that has stopped singing: a broken fixture, a SQL
+    error or a rewritten helper would keep the marker green-by-expectation and
+    the signal would be silently dead. ``AssertionError`` stays the base class
+    so every other caller behaves exactly as before.
+    """
+
+
 def _props(tile: bytes) -> dict[str, dict]:
     """``feature_id`` to properties, refusing a feature drawn twice.
 
@@ -228,10 +240,11 @@ def _props(tile: bytes) -> dict[str, dict]:
     for feature in features:
         properties = feature["properties"]
         feature_id = properties["feature_id"]
-        assert feature_id not in by_id, (
-            f"{feature_id} appears twice in one tile: "
-            f"{by_id.get(feature_id)} and {properties}"
-        )
+        if feature_id in by_id:
+            raise DuplicateFeature(
+                f"{feature_id} appears twice in one tile: "
+                f"{by_id[feature_id]} and {properties}"
+            )
         by_id[feature_id] = properties
     assert len(by_id) == len(features)
     return by_id
@@ -400,7 +413,28 @@ def test_the_delta_flag_is_read_exactly_as_postgres_reads_a_boolean(upzoned, con
     Getting those wrong fails silently in the worst direction: ``?delta=true ``
     serves the value tile to a client that asked for a difference, under a
     property it is not reading.
+
+    ⚠ The *oracle* needs PostgreSQL 16 — the same constraint that kept
+    ``pg_input_is_valid`` out of the migration, which is why this is a skip and
+    not a smaller test. ``pg_input_is_valid`` is the only way to ask Postgres
+    "is this a boolean?" without a cast that raises, and a cast that raises
+    aborts the transaction this fixture lives in. On an older server the
+    vocabulary is therefore unchecked here, and the explicit list in the
+    migration is what keeps the tile working at all: do not "simplify" the
+    migration to use ``pg_input_is_valid`` on the strength of this test
+    passing, or the function stops installing on the stack this skip exists
+    for.
     """
+    with conn.cursor() as cur:
+        cur.execute("SHOW server_version_num")
+        version = int(cur.fetchone()[0])
+    if version < 160000:
+        pytest.skip(
+            f"pg_input_is_valid needs PostgreSQL 16; this server is "
+            f"{version}. The migration deliberately does not use it either — "
+            f"see this test's docstring before changing the SQL."
+        )
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -586,27 +620,39 @@ def test_a_valueless_scenario_row_does_not_shadow_the_baseline(upzoned, conn):
 
 @pytest.mark.xfail(
     strict=True,
+    raises=DuplicateFeature,
     reason=(
         "Known defect in r043's VALUE branch, not in r049's delta branch, and "
-        "deliberately not fixed on this branch: with a numeric baseline and a "
-        "valueless current scenario row, both arms of the anti-join match the "
-        "same feature -- `ir.scenario_id = <scenario>` has no value test on "
-        "`ir` itself, while the anti-join's probe ignores a valueless scenario "
-        "row precisely so it cannot shadow the baseline. ST_AsMVT emits both, "
-        "so the block is drawn twice and `choropleth.ts` paints whichever the "
-        "renderer draws last. Queued as task_524840cb, 'Fix the value tile "
-        "drawing a block twice'. When that lands this turns XPASS, which is "
-        "the signal to delete this marker and keep the assertions."
+        "deliberately not fixed here: with a numeric baseline and a valueless "
+        "current scenario row, both arms of the anti-join match the same "
+        "feature -- `ir.scenario_id = <scenario>` has no value test on `ir` "
+        "itself, while the anti-join's probe ignores a valueless scenario row "
+        "precisely so it cannot shadow the baseline. ST_AsMVT emits both, so "
+        "the block is drawn twice and the frontend's fill-color expression "
+        "paints whichever the renderer drew last. The fix is a migration that "
+        "excludes a valueless scenario row from the scenario arm, so the "
+        "feature survives once at its baseline value, matching the six Python "
+        "read paths and the comparison endpoint. When that lands this turns "
+        "XPASS, which is the signal to delete this marker and keep the "
+        "assertions."
     ),
 )
 def test_the_value_tile_draws_a_shadowed_block_once(upzoned, conn):
     """The same fixture as the test above, asked of the *value* tile.
 
-    Worth stating why this test exists at all rather than living in a report:
-    the fixture one function up builds exactly the state that triggers the
-    defect and then queries only the delta tile, so the suite sat beside the
-    bug without touching it. Querying the value tile in that state is the
-    whole difference, and ``_props`` fails on the duplicate ``feature_id``.
+    Worth stating why this test exists at all rather than living in a note
+    somewhere: the fixture one function up builds exactly the state that
+    triggers the defect and then queries only the delta tile, so the suite sat
+    beside the bug without touching it. Querying the value tile in that state
+    is the whole difference.
+
+    ``raises=DuplicateFeature`` is what makes the marker specific. Without it
+    the expectation is "this test fails somehow", and a broken fixture, a SQL
+    error or a rewritten helper would be indistinguishable from the defect —
+    the marker would stay XFAIL while reporting nothing. With it, only
+    ``_props`` refusing a repeated ``feature_id`` counts as the expected
+    failure; anything else is a real failure, including the day the two
+    assertions below start being reached and fail on their own terms.
     """
     _write_valueless(
         conn,
