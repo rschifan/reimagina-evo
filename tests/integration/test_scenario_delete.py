@@ -40,6 +40,7 @@ from reimagina.scenarios.authoring import (
     materialize_scenario,
 )
 from tests.integration._helpers import (
+    discard,
     insert_feature as _insert_feature,
     insert_project,
     register_source as _register_source,
@@ -398,24 +399,6 @@ def test_a_duplicate_name_is_still_refused_while_the_scenario_lives(conn):
 # ── Concurrency ─────────────────────────────────────────────────────────────
 
 
-def _discard(conn, sql: str, *params) -> None:
-    """One cleanup statement, guarded and committed on its own.
-
-    Cleanup as a single transaction is cleanup that stops at its first
-    failure: everything after it stays unrun and the rows this test
-    *committed* live on in the session's shared database. Each statement
-    therefore stands alone, and a failure is warned about rather than
-    swallowed — silence here looks exactly like success.
-    """
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-        conn.commit()
-    except Exception as exc:  # noqa: BLE001 - warned about, never fatal
-        conn.rollback()
-        warnings.warn(f"cleanup failed ({sql.split()[2]}): {exc}", stacklevel=2)
-
-
 def test_a_concurrent_materialisation_cannot_outlive_the_delete(
     migrated_db, monkeypatch
 ):
@@ -498,42 +481,42 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
         setup.rollback()
         if territory is not None:
             if sid is not None:
-                _discard(
+                discard(
                     setup,
                     "DELETE FROM curated_geo.scenario_override WHERE scenario_id = %s",
                     sid,
                 )
                 # Not reachable by cascade from anything this test deletes:
                 # asset_version hangs off curated_geo.asset, not the scenario.
-                _discard(
+                discard(
                     setup,
                     "DELETE FROM curated_geo.asset_version WHERE partition_key = %s",
                     partition_key({"scenario": sid}),
                 )
-                _discard(
+                discard(
                     setup,
                     "DELETE FROM curated_geo.asset_materialization "
                     "WHERE partition_key = %s",
                     partition_key({"scenario": sid}),
                 )
             # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
-            _discard(
+            discard(
                 setup,
                 "DELETE FROM app_core.project WHERE id = %s",
                 territory.project_id,
             )
-            _discard(
+            discard(
                 setup,
                 "DELETE FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
                 territory.blocks,
             )
-            _discard(
+            discard(
                 setup,
                 "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
                 "(SELECT id FROM curated_geo.data_source_catalog WHERE name = %s)",
                 territory.source_name,
             )
-            _discard(
+            discard(
                 setup,
                 "DELETE FROM curated_geo.data_source_catalog WHERE name = %s",
                 territory.source_name,
