@@ -97,14 +97,17 @@ def test_scenario_tables_exist_with_their_constraints(conn):
     assert _policy_named(conn, "app_core", "scenario", "tenant_isolation")
     # curated_geo.scenario_edit
     assert _has_unique(conn, "curated_geo.scenario_edit", ["scenario_id", "ordinal"])
-    assert _has_fk(conn, "curated_geo.scenario_edit", "type_id",
-                   "curated_geo.feature_type_catalog")
+    assert _has_fk(
+        conn, "curated_geo.scenario_edit", "type_id", "curated_geo.feature_type_catalog"
+    )
     assert _column_not_null(conn, "curated_geo.scenario_edit", "value_numeric")
     assert not _column_exists(conn, "curated_geo.scenario_edit", "value_text")
+
 
 def test_scenario_edit_rejects_a_non_polygon_geometry(conn):
     with pytest.raises(psycopg2.errors.CheckViolation):
         _insert_edit(conn, geometry_wkt="LINESTRING(0 0, 1 1)")
+
 
 def test_explore_exposes_scenarios_with_their_counts(conn):
     row = _one(conn, "SELECT * FROM explore.scenario_v WHERE id = %s", sid)
@@ -229,16 +232,24 @@ the block, so each block must be checked with its own values and its own area.
 - [ ] **Step 1: Write the failing test**
 
 ```python
-SMALL = 5_944          # median Tlalpan manzana
-BIG   = 138_695 * 60 / 6   # the area the catalog's measured 138,695-unit block has
+SMALL = 5_944  # median Tlalpan manzana
+BIG = 138_695 * 60 / 6  # the area the catalog's measured 138,695-unit block has
+
 
 def _block(fid="b1", *, levels, unit_size=60, pph=3.6, area=SMALL):
-    return BlockInputs(feature_id=fid, levels=levels, unit_size=unit_size,
-                       people_per_household=pph, area_m2=area)
+    return BlockInputs(
+        feature_id=fid,
+        levels=levels,
+        unit_size=unit_size,
+        people_per_household=pph,
+        area_m2=area,
+    )
+
 
 def test_a_block_within_every_bound_produces_no_breach():
     assert check_ceilings([_block(levels=6)]) == []
-    assert max_levels_for(60.0) == pytest.approx(12.0)   # 10000*L/60 <= 2000
+    assert max_levels_for(60.0) == pytest.approx(12.0)  # 10000*L/60 <= 2000
+
 
 def test_a_density_breach_names_the_block_the_bound_and_the_value():
     [breach] = check_ceilings([_block("b1", levels=13)])
@@ -247,34 +258,46 @@ def test_a_density_breach_names_the_block_the_bound_and_the_value():
     assert breach.bound == 2000.0
     assert breach.would_be == pytest.approx(10000 * 13 / 60)
 
+
 def test_the_housing_units_bound_depends_on_the_block_s_own_area():
     assert check_ceilings([_block(levels=6, area=BIG)]) == []
     breaches = check_ceilings([_block(levels=12, area=BIG)])
     assert {b.indicator_slug for b in breaches} == {"edificability_block_housing_units"}
 
+
 def test_the_population_bound_also_scales_with_household_size():
-    assert any(b.indicator_slug == "edificability_block_population"
-               for b in check_ceilings([_block(levels=6, pph=40, area=BIG)]))
+    assert any(
+        b.indicator_slug == "edificability_block_population"
+        for b in check_ceilings([_block(levels=6, pph=40, area=BIG)])
+    )
+
 
 # The finding this signature exists for: one triple for the whole scenario
 # would clear the taller district or refuse the shorter one.
 def test_blocks_are_judged_separately_not_blended():
-    breaches = check_ceilings([
-        _block("small_ok", levels=6, area=SMALL),
-        _block("big_breach", levels=12, area=BIG),
-    ])
+    breaches = check_ceilings(
+        [
+            _block("small_ok", levels=6, area=SMALL),
+            _block("big_breach", levels=12, area=BIG),
+        ]
+    )
     assert {b.feature_id for b in breaches} == {"big_breach"}
+
 
 def test_every_breaching_block_is_reported_not_just_the_first():
     breaches = check_ceilings([_block("b1", levels=13), _block("b2", levels=13)])
     assert {b.feature_id for b in breaches} == {"b1", "b2"}
 
+
 def test_the_bounds_are_read_from_the_catalog_at_call_time(monkeypatch):
     # Patchable only because _bound_for looks the slug up per call. If the
     # bound were captured at import, max_levels_for would not move and this
     # would fail for a reason unrelated to the behaviour being pinned.
-    monkeypatch.setattr(ceilings, "_bound_for",
-                        lambda slug: 1000.0 if slug.endswith("_density") else 1e12)
+    monkeypatch.setattr(
+        ceilings,
+        "_bound_for",
+        lambda slug: 1000.0 if slug.endswith("_density") else 1e12,
+    )
     assert max_levels_for(60.0) == pytest.approx(6.0)
 ```
 
@@ -400,10 +423,12 @@ def test_an_edit_overrides_the_blocks_its_area_covers(conn):
     assert _override_value(conn, sid, inside_block, "num_levels") == 6
     assert _override_value(conn, sid, outside_block, "num_levels") is None
 
+
 def test_a_later_ordinal_wins_over_an_earlier_one(conn):
     # Two overlapping areas, same attribute, values 6 then 8.
     materialize_scenario(conn, scenario_id=sid)
     assert _override_value(conn, sid, overlapped_block, "num_levels") == 8
+
 
 def test_materialising_twice_changes_nothing_and_publishes_nothing(conn):
     first = materialize_scenario(conn, scenario_id=sid)
@@ -411,6 +436,7 @@ def test_materialising_twice_changes_nothing_and_publishes_nothing(conn):
     second = materialize_scenario(conn, scenario_id=sid)
     assert second.overrides_written == first.overrides_written
     assert _current_version(conn, sid, "num_levels") == version_before
+
 
 def test_removing_an_edit_removes_its_overrides_and_supersedes_its_results(conn):
     # ⚠ The fixture sets ALL THREE policy attributes over the same 4 blocks —
@@ -424,9 +450,10 @@ def test_removing_an_edit_removes_its_overrides_and_supersedes_its_results(conn)
 
     remove_edit(conn, edit_id=levels_eid)
     result = materialize_scenario(conn, scenario_id=sid)
-    assert result.overrides_removed == 4          # 4 blocks x 1 attribute
+    assert result.overrides_removed == 4  # 4 blocks x 1 attribute
     assert result.results_superseded == 4
     assert _current_results(conn, sid, "edificability_block_density") == []
+
 
 def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
     materialize_scenario(conn, scenario_id=sid)
@@ -434,10 +461,12 @@ def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
     materialize_scenario(conn, scenario_id=sid)
     assert _current_version(conn, sid, "num_levels") is None
 
+
 def test_it_refuses_when_the_scenario_has_no_aoi(conn):
     _set_aoi_null(conn, sid)
     with pytest.raises(ScenarioHasNoAOI):
         materialize_scenario(conn, scenario_id=sid)
+
 
 # Review Focus 1
 def test_an_area_catching_no_blocks_reports_zero_and_writes_nothing(conn):
@@ -445,11 +474,13 @@ def test_an_area_catching_no_blocks_reports_zero_and_writes_nothing(conn):
     assert result.matched_per_edit[eid] == 0
     assert result.overrides_written == 0
 
+
 # Review Focus 2
 def test_blocks_outside_the_aoi_are_excluded_and_the_count_says_so(conn):
     # The drawn area covers 6 blocks; 2 lie outside the scenario's AOI.
     result = materialize_scenario(conn, scenario_id=sid)
     assert result.matched_per_edit[eid] == 4
+
 
 # Review Focus 5
 def test_a_ceiling_breach_refuses_the_whole_run(conn):
@@ -459,13 +490,16 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
     assert exc.value.breaches[0].feature_id in _blocks_in(conn, area)
     assert _override_count(conn, sid_with_13_levels) == 0
 
+
 def test_one_district_breaching_does_not_refuse_on_a_blend(conn):
     # Two edits: 6 levels over small blocks, 13 over large ones. The breach is
     # real and must be attributed to the large district's blocks, not averaged
     # away or blamed on the whole selection.
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid_two_districts)
-    assert {b.feature_id for b in exc.value.breaches} == set(_blocks_in(conn, tall_area))
+    assert {b.feature_id for b in exc.value.breaches} == set(
+        _blocks_in(conn, tall_area)
+    )
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -508,11 +542,13 @@ def test_delete_removes_overrides_versions_results_and_materialisations(conn):
     assert _current_version(conn, sid, "num_levels") is None
     assert _materialization_rows(conn, sid) == []
     assert get_scenario(conn, sid) is None
-    assert _edit_count(conn, sid) == 0          # cascaded
+    assert _edit_count(conn, sid) == 0  # cascaded
+
 
 def test_the_name_is_reusable_after_delete(conn):
     delete_scenario(conn, scenario_id=sid)
     create_scenario(conn, project_id=p, name="Centralidad norte")
+
 
 def test_a_deleted_scenario_leaves_no_stale_asset_entry(conn):
     delete_scenario(conn, scenario_id=sid)
@@ -563,6 +599,7 @@ def test_a_changed_block_reports_its_delta(conn):
     assert row["state"] == "changed"
     assert row["delta"] == pytest.approx(row["scenario"] - row["baseline"])
 
+
 def test_a_block_the_scenario_never_touched_is_unchanged_with_a_zero_delta(conn):
     # It has a baseline row and NO scenario row. Its effective value is the
     # baseline, so the honest answer is "unchanged", not NULL and not "new".
@@ -571,6 +608,7 @@ def test_a_block_the_scenario_never_touched_is_unchanged_with_a_zero_delta(conn)
     assert row["delta"] == 0.0
     assert row["scenario"] == row["baseline"]
 
+
 def test_most_of_the_aoi_is_unchanged_for_an_indicator_with_a_baseline(conn):
     # The guard against classifying on the raw scenario column: if that were
     # done, every block outside the drawn area would come back NULL.
@@ -578,15 +616,21 @@ def test_most_of_the_aoi_is_unchanged_for_an_indicator_with_a_baseline(conn):
     assert summary["unchanged"] > summary["changed"]
     assert summary["new"] == 0
 
+
 # The five indicators this exists for have no baseline at all.
 def test_an_indicator_with_no_baseline_reports_new_not_a_delta(conn):
-    row = _row_for(compare(conn, scenario_id=sid,
-                           indicator_slug="edificability_block_density"), block)
+    row = _row_for(
+        compare(conn, scenario_id=sid, indicator_slug="edificability_block_density"),
+        block,
+    )
     assert row["state"] == "new"
     assert row["baseline"] is None and row["delta"] is None
 
+
 def test_the_summary_carries_the_catalog_direction(conn):
-    result = compare(conn, scenario_id=sid, indicator_slug="edificability_block_density")
+    result = compare(
+        conn, scenario_id=sid, indicator_slug="edificability_block_density"
+    )
     assert result.summary["higher_is_better"] is True
     assert result.summary["new"] == result.summary["new"]  # counted, not inferred
 ```
@@ -663,17 +707,24 @@ def test_set_attribute_prechecks_the_density_ceiling(capsys):
 def test_no_handler_uses_the_pooled_connection():
     # The pool rolls back on success; a write through it returns 200 and persists nothing.
     import apps.api.routers.scenarios as mod
+
     for route in mod.router.routes:
         assert "get_db_conn" not in _dependency_names(route)
+
 
 def test_creating_a_scenario_persists_it(client):
     sid = client.post("/scenarios", json={...}).json()["id"]
     assert client.get(f"/scenarios/{sid}").status_code == 200
 
+
 # Review Focus 4
 def test_a_duplicate_name_is_409_not_500(client):
     client.post("/scenarios", json={"name": "N", "project_id": p})
-    assert client.post("/scenarios", json={"name": "N", "project_id": p}).status_code == 409
+    assert (
+        client.post("/scenarios", json={"name": "N", "project_id": p}).status_code
+        == 409
+    )
+
 
 def test_recompute_reports_what_it_matched(client):
     body = client.post(f"/scenarios/{sid}/recompute").json()
@@ -705,6 +756,7 @@ def test_recompute_reports_what_it_matched(client):
 def test_an_indicator_with_only_scenario_rows_is_offered_under_that_scenario(conn):
     assert slug not in _slugs(list_indicators(with_values_for_aoi=aoi))
     assert slug in _slugs(list_indicators(with_values_for_aoi=aoi, scenario_id=sid))
+
 
 def test_the_baseline_picker_is_unchanged(conn):
     assert _slugs(list_indicators(with_values_for_aoi=aoi)) == baseline_slugs
