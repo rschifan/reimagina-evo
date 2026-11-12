@@ -27,7 +27,17 @@ from titiler.core.factory import TilerFactory
 from . import deps, errors
 from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
-from .routers import aois, features, health, indicators, jobs, metrics, mvt, tiles
+from .routers import (
+    aois,
+    features,
+    health,
+    indicators,
+    jobs,
+    metrics,
+    mvt,
+    scenarios,
+    tiles,
+)
 
 
 def _cors_origins_from_env() -> list[str]:
@@ -144,6 +154,10 @@ def create_app(
     # `docs/superpowers/specs/API_SERVED_MVT.md` for why both exist.
     app.include_router(mvt.router)
     app.include_router(jobs.router)
+    # Scenario authoring. Every handler here opens its own committed
+    # connection rather than taking `Depends(get_db_conn)`, which rolls
+    # back on the success path — see `routers/scenarios.py`.
+    app.include_router(scenarios.router)
     # Raster tiles: mount titiler's standard COG endpoints under /cog so
     # the API + tile server share a process, a dep tree, and an origin.
     # Splitting titiler into a sidecar (separate uvicorn or Docker) is
