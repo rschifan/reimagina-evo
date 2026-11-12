@@ -64,7 +64,10 @@ materialisation is committed, so the same mapping would describe the wrong half
 — an FK violation from ``submit_run`` answering 404 "no record matches the id
 in this request", about ids that were fine, after overrides were written. That
 phase has its own translation, ``_enqueue_failure``, which names the phase and
-reports what stands.
+reports what stands — for a *constraint* failure. A connection-class failure is
+re-raised untranslated, so an unreachable database answers 503 at the enqueue
+exactly as it does at the materialisation one phase earlier: two codes for one
+outage, on one route, is worse than either code alone.
 
 ``ScenarioNotFound`` and not ``LookupError``. The broad class also catches the
 ``KeyError``/``IndexError`` of a genuine defect anywhere under ``authoring``
@@ -432,15 +435,40 @@ def _enqueue_failure(
     ``submit_run`` into 404 ``unknown_reference`` — "no record matches the id
     in this request" — about ids that were fine, after work that happened.
 
-    So the two phases answer differently. 500, because the client cannot fix
-    it by changing the request: the scenario exists (the materialisation just
-    locked it) and the AOI was read from its own row, so a violated constraint
-    here is state moving underneath us or a defect. The detail names the phase
-    and carries the materialisation's counts, so a client knows what stands —
-    and a retry is safe, because materialisation is idempotent.
+    So the two phases answer differently. 500, because the client cannot fix a
+    *constraint* failure by changing the request: the scenario exists (the
+    materialisation just locked it) and the AOI was read from its own row, so a
+    violated constraint here is state moving underneath us or a defect. The
+    detail names the phase and carries the materialisation's counts, so a
+    client knows what stands — and a retry is safe, because materialisation is
+    idempotent.
+
+    ⚠ **Connection-class failures are explicitly not that**, and the first
+    version of this function swallowed them. ``psycopg2.Error`` is the parent
+    of ``OperationalError`` and ``InterfaceError``, so a database that went
+    away at the enqueue step — which used to reach
+    ``errors.database_unavailable_handler`` and answer 503, as it still does
+    one phase earlier in the same route — started answering 500 instead. One
+    route, two codes for one outage, and the 500 reads as terminal to a client
+    whose retry logic keys on 503, while this body's own text says to retry.
+    So they are re-raised, before the clause below can see them.
+
+    The re-raise rather than hoisting ``connect()`` out of this context, which
+    was the other option on offer: hoisting only moves the *connect* out of the
+    clause, and an outage that arrives mid-statement inside ``submit_run`` —
+    the same cause, a few microseconds later — would still answer 500. The
+    condition is "the database is unreachable", not "the database was
+    unreachable at this one call site", so the discrimination belongs where the
+    exception is classified.
     """
     try:
         yield
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        # Must precede the clause below: both are subclasses of psycopg2.Error.
+        # Nothing is translated — 503 is the app-wide handler's answer, and the
+        # materialisation's counts are of no use to a client that has to wait
+        # for the database before it can read anything back anyway.
+        raise
     except psycopg2.Error as exc:
         raise HTTPException(
             status_code=500,

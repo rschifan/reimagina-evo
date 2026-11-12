@@ -601,6 +601,69 @@ def test_a_failed_enqueue_does_not_describe_the_materialisation_as_refused(
     assert "violates foreign key" not in json.dumps(response.json())
 
 
+@pytest.mark.parametrize("where", ["connect", "submit_run"])
+@pytest.mark.parametrize(
+    "outage",
+    [psycopg2.OperationalError, psycopg2.InterfaceError],
+    ids=["operational", "interface"],
+)
+def test_an_unreachable_database_at_the_enqueue_is_503_not_a_refusal(
+    client, monkeypatch, where, outage
+):
+    """⚠ One outage must not get two status codes on one route.
+
+    ``psycopg2.Error`` is the parent of ``OperationalError`` and
+    ``InterfaceError``, so the first ``_enqueue_failure`` caught a database
+    that had gone away and answered 500 ``recompute_not_enqueued`` — where the
+    materialisation phase of the *same* route answers 503
+    ``database_unavailable`` through ``errors.database_unavailable_handler``.
+    Worse, the 500 body says "retry", which a client keying its retry logic on
+    503 reads as terminal.
+
+    Both call sites, because the discrimination is about the condition and not
+    about one call: hoisting ``connect()`` out of the context would have fixed
+    the ``connect`` case and left ``submit_run`` — the same outage arriving
+    mid-statement — answering 500.
+    """
+    opened: list[str] = []
+
+    def _connect(dsn=None):
+        opened.append("connect")
+        if where == "connect" and len(opened) == 2:
+            raise outage("server closed the connection unexpectedly")
+        return _FakeConn([])
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            if where == "submit_run":
+                raise outage("server closed the connection unexpectedly")
+            return _Handle()
+
+    class _Handle:
+        run_id = "run-123"
+        status = None
+        deduplicated = False
+
+    monkeypatch.setattr(mod, "connect", _connect)
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+    )
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/recompute")
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "database_unavailable"
+    # Not the enqueue refusal wearing an outage's clothes.
+    assert "recompute_not_enqueued" not in json.dumps(response.json())
+    # The materialisation really did run first, so this is the enqueue's half.
+    assert opened[0] == "connect"
+
+
 def test_the_materialisation_half_still_goes_through_the_shared_mapping(
     client, events, monkeypatch
 ):
