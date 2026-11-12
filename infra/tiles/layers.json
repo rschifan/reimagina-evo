@@ -31,7 +31,7 @@
     {
       "layer_id": "indicator_overlay",
       "logical_name": "Indicator Overlay",
-      "description": "Live MVT choropleth from serving_geo.indicator_overlay_tile. Caller must set indicator_slug; scenario_id is optional.",
+      "description": "Live MVT choropleth from serving_geo.indicator_overlay_tile. Caller must set indicator_slug; scenario_id is optional. With delta set, the same function serves the scenario's difference from the baseline instead of its values.",
       "source_mode": "live_mvt",
       "implemented": true,
       "source_relation": "serving_geo.indicator_overlay_tile",
@@ -41,7 +41,8 @@
       "query_params": {
         "indicator_slug": "REQUIRED",
         "scenario_id": "OPTIONAL",
-        "feature_type": "OPTIONAL — filter to one grain (block, ageb, …). Without it, every feature_type the indicator applies to is rendered, so multi-grain indicators stack polygons."
+        "feature_type": "OPTIONAL — filter to one grain (block, ageb, …). Without it, every feature_type the indicator applies to is rendered, so multi-grain indicators stack polygons.",
+        "delta": "OPTIONAL — boolean (1/t/true/y/yes/on). Emits delta + state (changed | unchanged | new) in place of value_numeric + quality_flag, matching GET /scenarios/{id}/comparison. Needs scenario_id: without one the tile is empty, because there is nothing to difference against. Draw it with a diverging ramp centred on zero, never the value ramp."
       }
     }
   ]

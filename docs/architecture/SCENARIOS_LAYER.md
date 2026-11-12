@@ -38,6 +38,17 @@ Six read paths carry it, plus the tile: `list_current_for_indicator`,
 `serving_geo.indicator_overlay_tile`. The predicate is
 `storage/_utils.scenario_overlay`.
 
+**The difference, on the same tile function** (r049).
+`serving_geo.indicator_overlay_tile` takes an optional `delta` parameter and
+then emits `delta` and `state` per feature instead of `value_numeric` and
+`quality_flag`. The classification is `scenarios/comparison.py`'s, not a second
+opinion: the effective value is `COALESCE(scenario, baseline)` resolved before
+anything is classified, a feature with no baseline is `new` and carries no
+delta, and both sides require a numeric value — so a map and the comparison
+endpoint cannot report different counts for the same scenario. `delta` with no
+scenario is an empty tile rather than the baseline's own values, which would
+read as "my scenario did nothing".
+
 ⚠ **An anti-join, not `scenario_id = X OR scenario_id IS NULL`.** The widened
 form looks equivalent and silently double-counts: where a scenario *has*
 recomputed a feature, both rows match, so an aggregate averages it twice and a

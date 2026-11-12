@@ -214,6 +214,10 @@ The baseline feature channel. Martin publishes it at
   empty tile when absent so a misconfigured caller never leaks the
   whole table.
 - Optional query param: `scenario_id` (uuid). Omit for base state.
+- Optional query param: `delta` (r049) — a boolean in Postgres's own
+  spelling (`1/t/true/y/yes/on`, case ignored). Anything else, `false`
+  included, is the value view, so an unrecognised input falls back to the
+  older behaviour rather than to the newer one.
 - Returns empty below `z=10`; choropleth below city scale is misleading
   (every feature collapses into one pixel). `infra/tiles/layers.json`
   reflects this with `minzoom: 10`.
@@ -221,6 +225,23 @@ The baseline feature channel. Martin publishes it at
   `quality_flag`. Frontend's `fill-color` expression reads
   `value_numeric`; `quality_flag` is used to dim `estimated` / `missing`
   rows if the UI wants to distinguish them.
+- **Two views, one function.** With `delta` set the tile emits
+  `feature_id`, `type_slug`, `delta` and `state` — and *not*
+  `value_numeric`, so a client that forgot to switch from the sequential
+  value ramp to the diverging delta ramp paints nothing rather than
+  painting a difference as a value. `state` is `changed`, `unchanged` or
+  `new`, exactly as `GET /scenarios/{id}/comparison` reports it
+  (`reimagina.scenarios.comparison`); the two surfaces are the same
+  classification, and
+  `tests/integration/test_indicator_overlay_delta.py::test_the_delta_tile_and_the_comparison_endpoint_agree`
+  is what keeps them from drifting. A `new` feature carries no `delta` at
+  all (`ST_AsMVT` omits a NULL property) because there is nothing to
+  subtract from. `delta` without a valid `scenario_id` is an empty tile:
+  serving baseline values under that property would paint every block
+  `unchanged`, which is a finding produced by a missing parameter.
+- The signature did not change, so `TILE_FUNCTIONS` and `layers.json`
+  still name one relation for this channel — but `layers.json` documents
+  the parameter, because the contract did change.
 
 ## Source classification
 
