@@ -87,7 +87,7 @@ dependencies = [
     #
     # Patches inside 2.28 still arrive. Moving off it becomes an edit here,
     # which is what the paragraph above always meant.
-    "dbos>=2.28,<2.29",
+    "dbos>=2.28,<2.32",
 ]
 
 [project.optional-dependencies]
