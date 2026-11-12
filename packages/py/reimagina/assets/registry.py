@@ -183,6 +183,20 @@ def indicator_assets() -> tuple[AssetSpec, ...]:
     )
 
 
+def _shipped() -> tuple[Any, ...]:
+    """The shipped indicator specs, imported at call time.
+
+    The import is deferred to keep the registry -> catalog dependency one-way;
+    a module-scope import would invert it. This function is also the one seam a
+    test can move: with the import buried in each caller there was nothing to
+    patch, so "the attribute set is derived from the catalog" could be asserted
+    but never shown by changing the catalog and watching the answer follow.
+    """
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    return tuple(SHIPPED_INDICATORS)
+
+
 def overridable_attributes() -> tuple[str, ...]:
     """Every attribute a what-if can edit, sorted.
 
@@ -190,9 +204,47 @@ def overridable_attributes() -> tuple[str, ...]:
     A hand-maintained list is how ``poi_version`` rotted: it named an input
     nothing produced and nothing validated, for six migrations.
     """
-    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    return tuple(sorted({key for spec in _shipped() for key in spec.reads}))
 
-    return tuple(sorted({key for spec in SHIPPED_INDICATORS for key in spec.reads}))
+
+#: The overridable attributes a scenario may *not* author, each with the reason.
+#:
+#: This is the one hand-maintained list in the authoring path, and it is a list
+#: of exclusions on purpose. What is authorable is derived by subtraction, so a
+#: new policy attribute an indicator starts reading becomes authorable without
+#: anyone remembering to add it; a new *non*-policy attribute fails safe the
+#: other way only if someone reads this and decides, which is the review point.
+NON_AUTHORABLE_REASONS: dict[str, str] = {
+    "geometry": (
+        "Geometry is not a number: an override stores a scalar, and a scenario "
+        "that reshapes a feature is a different edit with a different contract."
+    ),
+    "poi_version": (
+        "A hand-bumped dirty marker, not an input: overriding it recomputes the "
+        "indicators against identical data and returns identical numbers, which "
+        "reads as a working what-if and is not."
+    ),
+    "network_version": (
+        "A hand-bumped dirty marker, not an input: overriding it recomputes the "
+        "indicators against the identical street network and returns identical "
+        "numbers, which reads as a working what-if and is not."
+    ),
+}
+
+
+def authorable_attributes() -> tuple[str, ...]:
+    """The attributes a scenario may set, sorted: policy levers, not plumbing.
+
+    A function for the same reason ``overridable_attributes`` is one. A constant
+    is computed once at import, so no test could move the catalog under it and
+    prove the answer is derived rather than a hardcoded four-tuple.
+
+    Derived by subtraction from ``overridable_attributes`` so that a new policy
+    attribute appears here the moment an indicator reads it. The subtracted set
+    is ``NON_AUTHORABLE_REASONS``, where each exclusion says why it is not a
+    lever.
+    """
+    return tuple(a for a in overridable_attributes() if a not in NON_AUTHORABLE_REASONS)
 
 
 def scenario_override_assets() -> tuple[AssetSpec, ...]:
