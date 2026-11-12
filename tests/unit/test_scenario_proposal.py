@@ -162,6 +162,43 @@ def test_polygon_wkt_unions_several_strokes_into_one_area():
     assert "2 1" in wkt and "2 0" in wkt
 
 
+@pytest.mark.parametrize(
+    ("malformed", "original"),
+    [
+        ({"type": "Polygon"}, KeyError),
+        ({"type": "Nonsense", "coordinates": []}, Exception),
+        ({"type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 1.0]]]}, ValueError),
+        ({"coordinates": [[[0.0, 0.0]]]}, AttributeError),
+        ("POLYGON((0 0))", AttributeError),
+        ({"type": "FeatureCollection", "features": "not a list"}, AttributeError),
+    ],
+    ids=[
+        "no-coordinates",
+        "unknown-type",
+        "short-ring",
+        "no-type",
+        "a-string",
+        "bad-fc",
+    ],
+)
+def test_polygon_wkt_refuses_input_it_cannot_parse(malformed, original):
+    """Malformed GeoJSON is a refusal, not whatever shapely happened to raise.
+
+    Four exception types reach this function depending on how the input is
+    wrong, and none of them is something a surface should pass on raw: a CLI
+    user would get a traceback and an API client a 500, where every other
+    refusal here is a message. They become `InvalidGeometry`, which already
+    means this and is already in the CLI's user-error tuple.
+    """
+    with pytest.raises(InvalidGeometry) as caught:
+        polygon_wkt(malformed)
+
+    assert "could not be parsed" in str(caught.value)
+    # chained, because shapely's own complaint is the actionable half
+    assert isinstance(caught.value.__cause__, original)
+    assert str(caught.value.__cause__) in str(caught.value)
+
+
 def test_polygon_wkt_refuses_input_with_no_polygonal_part():
     with pytest.raises(InvalidGeometry) as caught:
         polygon_wkt(

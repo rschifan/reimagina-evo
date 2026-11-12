@@ -300,6 +300,47 @@ def test_a_geojson_with_no_polygon_is_refused_before_any_write(
     assert "polygon" in capsys.readouterr().err.lower()
 
 
+def test_a_geojson_that_is_not_geojson_is_a_message_not_a_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    """Well-formed JSON, malformed GeoJSON — the other half of A2's failure.
+
+    A missing file was an `OSError`; a polygon with no `coordinates` is a
+    `KeyError` out of shapely, and before `polygon_wkt` wrapped it, it left
+    this command the same way: as a traceback. `InvalidGeometry` was already
+    in `_SCENARIO_USER_ERRORS` for exactly this meaning.
+    """
+    monkeypatch.setattr(
+        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be opened")
+    )
+    path = _geojson_file(tmp_path, {"type": "Polygon"})
+
+    code = main(
+        [
+            "scenario",
+            "set-attribute",
+            "--scenario-id",
+            SCENARIO_ID,
+            "--geojson",
+            path,
+            "--levels",
+            "6",
+            "--unit-size",
+            "60",
+            "--people-per-household",
+            "3.6",
+        ]
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert path in err
+    # the useful half of shapely's complaint survives the translation
+    assert "coordinates" in err
+    assert "Traceback" not in err
+
+
 # ── the authoring-time ceiling precheck ──────────────────────────────────
 
 
@@ -428,7 +469,7 @@ def test_a_degenerate_value_is_refused(monkeypatch, tmp_path, capsys, levels):
     strict=True,
     reason="ceilings has no floors bound; delete this when it grows one",
 )
-def test_the_precheck_covers_floors(monkeypatch, tmp_path):
+def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
     """⚠ A known, deferred gap, written as the behaviour we want.
 
     `check_ceilings` bounds density, housing units and population; it does
@@ -448,6 +489,13 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path):
     unit_size=2000` assumed the density bound stays above 1250: lower it and
     the density precheck starts refusing this proposal, so the test would
     pass for the wrong reason.
+
+    And the refusal must *name* the floors indicator, not merely happen. The
+    exit code alone is not enough to tell this gap closing from the precheck
+    simply getting stricter: a hardcoded storey limit, or a precheck that
+    ignored `--unit-size`, both make this proposal exit 2 while `floors`
+    stays unbounded, and both would XPASS a test that only counted. Reading
+    stderr is what makes the canary specific to its own cause.
     """
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
     monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
@@ -461,6 +509,7 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path):
     assert max_levels_for(unit_size) > levels
 
     assert _set_attribute(tmp_path, levels=levels, unit_size=unit_size) == 2
+    assert PLANNED_FLOORS in capsys.readouterr().err
 
 
 # ── list / show read the explore contract ────────────────────────────────

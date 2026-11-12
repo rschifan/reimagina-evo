@@ -172,18 +172,38 @@ def polygon_wkt(geojson: Any) -> str:
     Takes parsed GeoJSON rather than a path. A request body and a drawn file
     differ in where the bytes come from and in nothing else, so the reading
     stays with the surface that has the bytes and the unioning lives here.
+
+    **Input that is not GeoJSON is a refusal, not a traceback.** Well-formed
+    JSON that is not well-formed GeoJSON reaches shapely as four different
+    exception types depending on how it is wrong — ``KeyError`` for a
+    geometry with no ``coordinates``, ``GeometryTypeError`` for a type
+    nobody has heard of, ``ValueError`` for a ring of two points,
+    ``AttributeError`` for a bare string where an object was expected — and
+    none of them is a refusal any surface should pass on raw. They become
+    the one exception that already means this: ``InvalidGeometry``, whose
+    docstring covers "the drawn area is not, and cannot be repaired into, a
+    polygon", and which ``add_edit`` raises for the same condition when
+    PostGIS is the one to notice it. The original error is chained, because
+    "a linearring requires at least 4 coordinates" is the useful half.
     """
+    from shapely.errors import ShapelyError
     from shapely.geometry import shape
     from shapely.ops import unary_union
 
-    kind = geojson.get("type") if isinstance(geojson, dict) else None
-    if kind == "FeatureCollection":
-        geometries = [f.get("geometry") for f in geojson.get("features", [])]
-    elif kind == "Feature":
-        geometries = [geojson.get("geometry")]
-    else:
-        geometries = [geojson]
-    parts = [shape(g) for g in geometries if g]
+    try:
+        kind = geojson.get("type") if isinstance(geojson, dict) else None
+        if kind == "FeatureCollection":
+            geometries = [f.get("geometry") for f in geojson.get("features", [])]
+        elif kind == "Feature":
+            geometries = [geojson.get("geometry")]
+        else:
+            geometries = [geojson]
+        parts = [shape(g) for g in geometries if g]
+    except (AttributeError, KeyError, TypeError, ValueError, ShapelyError) as exc:
+        raise InvalidGeometry(
+            f"the drawn area could not be parsed as GeoJSON: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     polygons = [p for p in parts if not p.is_empty and p.geom_type.endswith("Polygon")]
     if not polygons:
         raise InvalidGeometry(
