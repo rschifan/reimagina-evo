@@ -126,6 +126,9 @@ class _Territory:
         self.dsn = migrated_db
         self.source_name = f"scenarios-api-{uuid4()}"
         self.project_id = insert_project(conn, f"scenarios-api-{uuid4()}")
+        #: A second tenant, owning nothing. It exists so a test can post a
+        #: well-formed pair of ids that belong to different projects.
+        self.other_project_id = insert_project(conn, f"scenarios-api-other-{uuid4()}")
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -229,6 +232,11 @@ def territory(migrated_db: str) -> Iterator[_Territory]:
             # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
             discard(
                 conn, "DELETE FROM app_core.project WHERE id = %s", created.project_id
+            )
+            discard(
+                conn,
+                "DELETE FROM app_core.project WHERE id = %s",
+                created.other_project_id,
             )
             discard(
                 conn,
@@ -442,6 +450,61 @@ def test_an_aoi_that_does_not_exist_is_404_naming_its_field(client, territory):
 
     assert response.status_code == 404, response.text
     assert response.json()["detail"]["field"] == "aoi_id"
+
+
+def test_an_aoi_of_another_project_is_refused_over_http(client, territory, migrated_db):
+    """⚠ Two ids that are each perfectly good and must not be used together.
+
+    Both FKs would be satisfied, nothing in r048 relates the two columns, and
+    the materialisation that followed would scope itself by this AOI alone —
+    writing overrides over the *other* project's blocks. The refusal is
+    ``create_scenario``'s, so no router change was needed: ``ScenarioNotFound``
+    was already mapped to 404.
+    """
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.other_project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "Someone else's territory",
+        },
+    )
+
+    assert response.status_code == 404, response.text
+    assert territory.aoi_id in str(response.json()["detail"])
+    # And nothing was written: the claim a status code cannot make.
+    assert (
+        client.get(f"/scenarios?project_id={territory.other_project_id}").json() == []
+    )
+    reader = _reader(migrated_db)
+    try:
+        with reader.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM app_core.scenario WHERE project_id = %s",
+                (territory.other_project_id,),
+            )
+            assert cur.fetchone()[0] == 0
+    finally:
+        reader.close()
+
+
+def test_an_aoi_of_its_own_project_is_still_accepted(client, territory):
+    """The live control for the test above.
+
+    A guard that refused *every* ``aoi_id`` would pass that test and break the
+    only pair a client ever sends.
+    """
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "My own territory",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["aoi_id"] == territory.aoi_id
 
 
 def test_a_malformed_id_really_would_have_reached_postgres(territory, migrated_db):

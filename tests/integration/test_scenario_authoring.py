@@ -11,6 +11,7 @@ import pytest
 from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
+    ScenarioNotFound,
     add_edit,
     create_scenario,
     get_scenario,
@@ -94,6 +95,51 @@ def test_duplicate_name_in_one_project_raises_its_own_error(conn):
 def test_the_same_name_in_another_project_is_fine(conn):
     create_scenario(conn, project_id=insert_project(conn, "A"), name="N")
     create_scenario(conn, project_id=insert_project(conn, "B"), name="N")
+
+
+def test_a_scenario_cannot_be_bounded_by_another_projects_aoi(conn):
+    """⚠ The cross-tenant hole r048's schema leaves open.
+
+    Both FKs are satisfied by this pair — the project exists, the AOI exists —
+    and nothing in the schema relates them, so the insert would be accepted and
+    ``materialize_scenario``, which scopes selection by ``aoi_id`` alone, would
+    resolve overrides over the *other* project's features.
+
+    A cross-table claim, so it needs real tables: no contract-layer double can
+    tell a mismatched pair from an agreeing one.
+    """
+    mine = insert_project(conn, "tenant A")
+    theirs = insert_project(conn, "tenant B")
+    their_aoi = _aoi(conn, theirs)
+
+    with pytest.raises(ScenarioNotFound):
+        create_scenario(conn, project_id=mine, name="Cross-tenant", aoi_id=their_aoi)
+
+    # Refused, not merely reported: nothing was written for my project.
+    assert list_scenarios(conn, project_id=mine) == []
+    # The live control — the same AOI, under the project that owns it. Without
+    # it, a guard that refused every AOI would pass the assertion above.
+    assert create_scenario(
+        conn, project_id=theirs, name="Same tenant", aoi_id=their_aoi
+    )
+
+
+def test_an_aoi_that_exists_nowhere_is_still_the_foreign_keys_refusal(conn):
+    """The guard above must not swallow the unknown-AOI case.
+
+    ``ForeignKeyViolation`` is what the API turns into a 404 naming the field
+    it was about (read off ``diag.constraint_name``); a ``ScenarioNotFound``
+    from the guard would answer with a bare message instead and quietly
+    downgrade that. Last assertion in this test on purpose: the violation
+    aborts the transaction.
+    """
+    with pytest.raises(psycopg2.errors.ForeignKeyViolation):
+        create_scenario(
+            conn,
+            project_id=insert_project(conn),
+            name="N",
+            aoi_id="00000000-0000-0000-0000-000000000000",
+        )
 
 
 def test_edits_get_increasing_ordinals(conn):

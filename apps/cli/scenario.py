@@ -62,6 +62,7 @@ from reimagina.scenarios.authoring import (
     add_edit,
     create_scenario,
     materialize_scenario,
+    project_of_aoi,
 )
 from reimagina.scenarios.comparison import compare
 from reimagina.scenarios.proposal import (
@@ -149,6 +150,11 @@ def create(
     ``--name`` and ``--aoi-id``; deriving it there is what makes that command
     line work, and the alternative is asking the user for a uuid the database
     already knows.
+
+    Passing **both** and having them disagree is refused by ``create_scenario``
+    — the AOI must belong to the project — because the schema does not tie the
+    two columns together and a scenario bounded by another project's AOI would
+    materialise overrides over that project's blocks.
     """
     if project_id is None and aoi_id is None:
         raise ValueError(
@@ -156,7 +162,7 @@ def create(
             "to take the project from the area of interest"
         )
     with contextlib.closing(connect(dsn)) as conn:
-        resolved = project_id or _project_of_aoi(conn, aoi_id)
+        resolved = project_id or project_of_aoi(conn, aoi_id)
         scenario_id = create_scenario(
             conn,
             project_id=resolved,
@@ -172,18 +178,6 @@ def create(
         "aoi_id": aoi_id,
         "name": name,
     }
-
-
-def _project_of_aoi(conn: Any, aoi_id: str | None) -> str:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT project_id::text FROM curated_geo.area_of_interest WHERE id = %s",
-            (aoi_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        raise ScenarioNotFound(f"no area_of_interest with id {aoi_id}")
-    return str(row[0])
 
 
 def set_attribute(

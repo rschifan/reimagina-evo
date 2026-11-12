@@ -136,8 +136,14 @@ def create_scenario(
     than a driver exception a route would turn into a 500. The insert runs in a
     savepoint: a failed statement aborts the whole Postgres transaction, and the
     caller's earlier work in it should not be collateral.
+
+    An ``aoi_id`` is checked against ``project_id`` before the insert — see
+    ``_require_aoi_in_project``, which is where the tie between the two lives,
+    because the schema does not carry it.
     """
     _require_postgres(conn)
+    if aoi_id is not None:
+        _require_aoi_in_project(conn, aoi_id=aoi_id, project_id=project_id)
     with conn.cursor() as cur:
         cur.execute("SAVEPOINT create_scenario")
         try:
@@ -157,6 +163,65 @@ def create_scenario(
         scenario_id = str(cur.fetchone()[0])
         cur.execute("RELEASE SAVEPOINT create_scenario")
         return scenario_id
+
+
+def project_of_aoi(conn: Any, aoi_id: str | None) -> str:
+    """The project an area of interest belongs to.
+
+    Two callers ask this one question: ``scenario create`` derives a project
+    from ``--aoi-id`` so a person at a terminal need not look up a second
+    uuid, and ``create_scenario`` checks that a project and an AOI handed over
+    together agree. A second copy of the query would be a second place for
+    those two answers to drift.
+
+    ``None`` matches nothing and is refused exactly like an unknown id, which
+    is what lets the CLI pass its optional flag straight through.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT project_id::text FROM curated_geo.area_of_interest WHERE id = %s",
+            (aoi_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ScenarioNotFound(f"no area_of_interest with id {aoi_id}")
+    return str(row[0])
+
+
+def _require_aoi_in_project(conn: Any, *, aoi_id: str, project_id: str) -> None:
+    """⚠ The tie between a scenario's project and its AOI. It lives here only.
+
+    r048 declares ``aoi_id`` as a plain reference to
+    ``curated_geo.area_of_interest(id)`` with nothing linking it to
+    ``project_id``, so the schema accepts a scenario in project A bounded by
+    project B's AOI. ``materialize_scenario`` scopes its selection by
+    ``aoi_id`` alone, so such a scenario resolves overrides over B's features
+    — across the boundary ``tenant_isolation`` exists to keep.
+
+    This check is the whole of the fix, and a complete one, because
+    ``create_scenario`` is the only writer of the column: nothing updates it
+    (the two UPDATEs on this table set ``updated_at`` and ``materialized_at``),
+    no surface offers a PUT or a PATCH, and the FK's ``ON DELETE SET NULL`` can
+    only empty it. A CHECK cannot express the rule — it spans two tables — and
+    a trigger would be the right answer only if an untrusted writer existed.
+    RLS is inert (``docs/delivery/01_architecture_map.md``, deferred risk T6),
+    so what this closes is our own client sending a mismatched pair, which is a
+    correctness bug rather than a breached boundary.
+
+    ⚠ A new insert path must repeat this call. The schema will not.
+
+    An AOI that exists nowhere is deliberately **not** this refusal: the
+    foreign key already rejects it, and the API reads the offending field off
+    the constraint name — a better answer than this one could give.
+    """
+    try:
+        owner = project_of_aoi(conn, aoi_id)
+    except ScenarioNotFound:
+        return
+    if owner != project_id:
+        raise ScenarioNotFound(
+            f"no area_of_interest with id {aoi_id} in project {project_id}"
+        )
 
 
 def list_scenarios(

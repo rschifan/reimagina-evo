@@ -130,6 +130,19 @@ RLS: `tenant_isolation` on `project_id`, matching the other two tables.
 and otherwise passed explicitly. It cannot simply "derive from the AOI",
 because `aoi_id` is nullable — an earlier draft said it could.
 
+⚠ **The AOI must belong to that project, and only `create_scenario` says so.**
+The `aoi_id` FK above admits any AOI — nothing in the schema ties it to
+`project_id` — so a scenario in project A could otherwise be bounded by
+project B's AOI, and materialisation (which scopes by `aoi_id` alone) would
+resolve overrides over B's blocks.
+`reimagina.scenarios.authoring.create_scenario` refuses the mismatched pair
+with `ScenarioNotFound`, which is a 404 over HTTP and exit 2 on the CLI. That
+is a complete fix only because it is the column's only writer: the two
+`UPDATE`s on the table touch `updated_at` and `materialized_at`, no surface
+offers a PUT or PATCH, and `ON DELETE SET NULL` can only empty the column.
+A new insert path must repeat the check — the schema will not, and RLS is
+inert (`01_architecture_map.md`, deferred risk T6).
+
 ### `curated_geo.scenario_edit`
 
 ```sql

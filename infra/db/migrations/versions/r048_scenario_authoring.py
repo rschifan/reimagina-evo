@@ -68,6 +68,12 @@ def upgrade() -> None:
             id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
             project_id      uuid        NOT NULL
                                         REFERENCES app_core.project(id) ON DELETE CASCADE,
+            -- ⚠ Nothing here ties aoi_id to project_id: this FK admits any
+            -- AOI, another project's included, and a cross-project pair would
+            -- materialise overrides over that project's features. The tie is
+            -- enforced in reimagina.scenarios.authoring.create_scenario --
+            -- the column's only writer -- and NOT by this schema. A new
+            -- insert path has to repeat that check.
             aoi_id          uuid        REFERENCES curated_geo.area_of_interest(id)
                                         ON DELETE SET NULL,
             name            text        NOT NULL,
