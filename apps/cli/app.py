@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Optional
 
 import click
@@ -112,6 +113,22 @@ from .overlap import (  # noqa: E402
     compute_overlaps_all,
     declare_overlap_pair,
     list_overlap_pairs,
+)
+from .scenario import (  # noqa: E402
+    DEFAULT_TYPE_CONTEXT,
+    DEFAULT_TYPE_SLUG,
+    compare_to_baseline as compare_scenario_cli,
+    create as create_scenario_cli,
+    list_scenarios as list_scenarios_cli,
+    recompute as recompute_scenario_cli,
+    set_attribute as set_scenario_attribute_cli,
+    show as show_scenario_cli,
+)
+from reimagina.scenarios.authoring import (  # noqa: E402
+    CeilingExceeded,
+    DuplicateScenarioName,
+    InvalidGeometry,
+    ScenarioHasNoAOI,
 )
 from .tiles import (  # noqa: E402
     export_tile_snapshot,
@@ -1331,6 +1348,210 @@ def indicators_aoi_summary(
             aoi_id=aoi_id,
             slug=slug,
             scenario_id=scenario_id,
+        )
+    )
+
+
+# ── scenario ─────────────────────────────────────────────────────────────
+scenario_app = typer.Typer(
+    name="scenario",
+    help="Author a what-if: create it, draw rules over it, recompute, compare",
+)
+app.add_typer(scenario_app, name="scenario")
+
+#: What the scenario layer raises when the *user* got something wrong, as
+#: opposed to a defect: a name already taken, an area with no polygon, a
+#: scenario whose AOI was deleted, a value no indicator could store, an id
+#: that matches nothing. `CeilingPrecheckFailed` is a `ValueError` and is
+#: covered by the last entry. Each becomes `error: …` on stderr and exit 2,
+#: the shape `raster derivation run` already uses — never a traceback, which
+#: is what a planner would otherwise get for typing a number too large.
+_SCENARIO_USER_ERRORS = (
+    CeilingExceeded,
+    DuplicateScenarioName,
+    InvalidGeometry,
+    ScenarioHasNoAOI,
+    LookupError,
+    ValueError,
+)
+
+
+def _scenario_command(call: Callable[[], dict[str, Any]]) -> int:
+    """Print what the call returned, or report its refusal and exit 2."""
+    try:
+        return _print(call())
+    except _SCENARIO_USER_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+@scenario_app.command("create", help="Create a named what-if inside a project")
+def scenario_create(
+    name: str = typer.Option(..., "--name", help="Unique within the project."),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project-id",
+        help="Project the scenario belongs to. Taken from --aoi-id when omitted.",
+    ),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Area of interest the scenario's rules are bounded by. Optional "
+        "here, required by `scenario recompute`.",
+    ),
+    description: Optional[str] = typer.Option(None, "--description"),
+) -> int:
+    return _scenario_command(
+        lambda: create_scenario_cli(
+            dsn=dsn,
+            name=name,
+            project_id=project_id,
+            aoi_id=aoi_id,
+            description=description,
+        )
+    )
+
+
+@scenario_app.command(
+    "list", help="List scenarios with their edit and override counts (explore)"
+)
+def scenario_list(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    project_id: Optional[str] = typer.Option(None, "--project-id"),
+    aoi_id: Optional[str] = typer.Option(None, "--aoi-id"),
+) -> int:
+    return _scenario_command(
+        lambda: list_scenarios_cli(dsn=dsn, project_id=project_id, aoi_id=aoi_id)
+    )
+
+
+@scenario_app.command(
+    "show", help="Show one scenario: edit count, override count, materialised-at"
+)
+def scenario_show(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: show_scenario_cli(dsn=dsn, scenario_id=scenario_id)
+    )
+
+
+@scenario_app.command(
+    "set-attribute",
+    help="Draw an area and set the three policy inputs over it (four edits)",
+)
+def scenario_set_attribute(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    geojson: str = typer.Option(
+        ...,
+        "--geojson",
+        help="Path to the drawn area: a FeatureCollection, a Feature, or a "
+        "bare geometry. Several polygons are unioned into one area.",
+    ),
+    levels: float = typer.Option(
+        ...,
+        "--levels",
+        help="Storeys. Writes BOTH `floors` and `num_levels` — the same "
+        "quantity under the two names the indicators read.",
+    ),
+    unit_size: float = typer.Option(
+        ..., "--unit-size", help="Square metres per dwelling."
+    ),
+    people_per_household: float = typer.Option(..., "--people-per-household"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    type_context: str = typer.Option(DEFAULT_TYPE_CONTEXT, "--type-context"),
+    type_slug: str = typer.Option(
+        DEFAULT_TYPE_SLUG,
+        "--type-slug",
+        help="Feature type the rule applies to; every shipped indicator is "
+        "block-grain.",
+    ),
+) -> int:
+    return _scenario_command(
+        lambda: set_scenario_attribute_cli(
+            dsn=dsn,
+            scenario_id=scenario_id,
+            geojson=geojson,
+            levels=levels,
+            unit_size=unit_size,
+            people_per_household=people_per_household,
+            type_context=type_context,
+            type_slug=type_slug,
+        )
+    )
+
+
+@scenario_app.command(
+    "recompute",
+    help="Materialise the scenario's edits, then recompute what they changed",
+)
+def scenario_recompute(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Scope for the evaluation. Defaults to the scenario's own AOI, "
+        "which is also what bounds the materialisation.",
+    ),
+    code_version: str = typer.Option("dev", "--code-version"),
+    timeout: float = typer.Option(
+        600.0,
+        "--timeout",
+        help="Seconds to wait for the run (ignored for --detach / --sync).",
+    ),
+    detach: bool = typer.Option(
+        False,
+        "--detach",
+        help="Materialise, enqueue, and return for a `python -m apps.worker` "
+        "fleet to drain (needs DATABASE_URL_DIRECT).",
+    ),
+    sync: bool = typer.Option(
+        False, "--sync", help="Run the in-process coordinator (no queue, no worker)."
+    ),
+) -> int:
+    # Same pair, same reason, as `evaluate-scenario`: typer has no mutually
+    # exclusive group, so without this both flags are accepted and one wins
+    # silently.
+    if detach and sync:
+        raise typer.BadParameter("--detach and --sync are mutually exclusive")
+    mode = "detach" if detach else "sync" if sync else "embedded"
+    return _scenario_command(
+        lambda: recompute_scenario_cli(
+            dsn=dsn,
+            scenario_id=scenario_id,
+            aoi_id=aoi_id,
+            mode=mode,
+            code_version=code_version,
+            timeout_s=timeout,
+        )
+    )
+
+
+@scenario_app.command(
+    "compare", help="Compare one indicator under the scenario against the baseline"
+)
+def scenario_compare(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    slug: str = typer.Option(..., "--slug", help="Indicator slug to compare."),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    aoi_id: Optional[str] = typer.Option(None, "--aoi-id"),
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        help="Per-feature rows to print (0 prints every row). `row_count` and "
+        "`summary` always cover all of them.",
+    ),
+) -> int:
+    return _scenario_command(
+        lambda: compare_scenario_cli(
+            dsn=dsn,
+            scenario_id=scenario_id,
+            indicator_slug=slug,
+            aoi_id=aoi_id,
+            limit=limit,
         )
     )
 
