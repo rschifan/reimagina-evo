@@ -63,8 +63,34 @@ absence of a value, which is indistinguishable from "not computed".
 
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
-So does the indicator picker (`list_indicators(with_values_for_aoi=)`), which is
-baseline-only by design.
+
+⚠ **The indicator picker is the one read that uses the widened form, because
+it emits no rows.** `list_indicators(with_values_for_aoi=, scenario_id=)` was
+baseline-only, which hid every indicator that exists only inside a scenario —
+the whole edificability family — from the picker that a scenario was authored
+to drive. It now counts the named scenario's rows *and* the baseline's, written
+as `(ir.scenario_id = %s OR ir.scenario_id IS NULL)` inside its `EXISTS` probe
+over `indicator_catalog`.
+
+That is not an exception to the rule above; it is the rule's boundary. The
+anti-join exists because a read that *returns* rows must not match both a
+feature's scenario row and its baseline row. This predicate sits inside an
+`EXISTS`: it emits nothing and answers "is there at least one", so one matching
+row and two are the same answer and double-counting is unrepresentable. The
+anti-join would add a correlated `NOT EXISTS` per catalog row for an identical
+result — measured at 34× the planner's cost on the dev dataset for the same 12
+slugs. Both halves of the `OR` are load-bearing: baseline-only is the bug
+above, and scenario-only would drop every indicator the scenario did not
+recompute, each of which still renders through to its baseline value by the
+overlay rule.
+
+`scenario_id` is a *filter* here and not the resource being addressed, so a
+well-formed id naming no scenario is answered with the baseline set — which is
+also what would render — rather than refused. A malformed one is rejected at
+the API boundary as 422, typed `UUID`, so it never reaches the `uuid` cast.
+Pinned in `tests/integration/test_indicator_picker_scenario.py`, whose
+`test_an_indicator_is_offered_exactly_once_under_a_scenario` gives one feature
+both rows — the state a join would duplicate.
 
 ⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created — `app_core` contains only `project` (r001:27). The mechanism is `curated_geo.scenario_override`.
 
