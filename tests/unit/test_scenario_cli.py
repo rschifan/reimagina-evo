@@ -621,6 +621,58 @@ def test_create_reports_a_duplicate_name_rather_than_a_traceback(
     assert "already exists" in capsys.readouterr().err
 
 
+def test_an_aoi_of_another_project_reads_as_a_refusal_not_a_traceback(
+    monkeypatch, fake_conn, capsys
+):
+    """⚠ Two tasks' invariants meet here, and nothing else holds the join.
+
+    `create_scenario` refuses a scenario whose `--project-id` and `--aoi-id`
+    belong to different projects — the schema does not tie the two columns,
+    so a cross-project pair would materialise overrides over the other
+    project's blocks. That refusal is `ScenarioNotFound`, and whether it
+    *reaches a person* as `error: …` with exit 2 or as a traceback is this
+    file's business: it depends on `ScenarioNotFound` being in
+    `_SCENARIO_USER_ERRORS`, which Task 8 put there for its own reasons.
+
+    Narrow that tuple later and the domain's integration test stays green
+    while this command starts dumping a stack trace at a planner who typed
+    one wrong uuid. The refusal itself, and its wording, are pinned where
+    they belong — `tests/integration/test_scenario_authoring.py`; the real
+    guard cannot run here, because `_require_postgres` rejects a fake
+    connection before it is reached.
+    """
+    fake_conn([])
+    other_project = "99999999-9999-9999-9999-999999999999"
+
+    def _raise(conn, **kw):
+        raise ScenarioNotFound(
+            f"no area_of_interest with id {AOI_ID} in project {other_project}"
+        )
+
+    monkeypatch.setattr(scenario_cli, "create_scenario", _raise)
+
+    code = main(
+        [
+            "scenario",
+            "create",
+            "--name",
+            "Someone else's territory",
+            "--project-id",
+            other_project,
+            "--aoi-id",
+            AOI_ID,
+        ]
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    # Both ids, so the person can see which of the two they got wrong.
+    assert AOI_ID in err
+    assert other_project in err
+
+
 # ── recompute: materialise, commit, then evaluate ────────────────────────
 
 
