@@ -15,6 +15,10 @@ longer written at all. The second ghost is the one a user sees, because
 
 from __future__ import annotations
 
+import threading
+import warnings
+
+import psycopg2
 import pytest
 
 from reimagina.data import aoi as aoi_mod, feature as feat
@@ -22,6 +26,7 @@ from reimagina.indicators.catalog import EDIFICABILITY_BLOCK_DENSITY, seed_catal
 from reimagina.indicators.edificability import compute_block_housing_density
 from reimagina.assets.keys import partition_key, scenario_override_asset_key
 from reimagina.assets.registry import seed_assets
+from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import (
     CeilingExceeded,
     ScenarioHasNoAOI,
@@ -79,13 +84,15 @@ _AOI_WIDE = _rect(-99.2010, -99.1770)
 class _Territory:
     """What a materialisation test needs: a project, blocks, AOIs, a type."""
 
-    def __init__(self, conn, *, attributes: dict | None = None):
+    def __init__(self, conn, *, attributes: dict | None = None, suffix: str = ""):
         self.conn = conn
-        self.project_id = insert_project(conn)
+        self.project_name = f"Test Project{suffix}"
+        self.source_name = f"materialize_src{suffix}"
+        self.project_id = insert_project(conn, self.project_name)
         self.type_id = feat.get_type_id(conn, "MEX", "block")
         source_id = _register_source(
             conn,
-            name="materialize_src",
+            name=self.source_name,
             storage_type="vector",
             integration_role="canonical_entity",
         )
@@ -475,3 +482,150 @@ def test_one_district_breaching_does_not_refuse_on_a_blend(conn):
     assert {b.feature_id for b in exc.value.breaches} == set(tall)
     assert set(small).isdisjoint({b.feature_id for b in exc.value.breaches})
     assert _override_count(conn, sid) == 0
+
+
+# ── Concurrency ─────────────────────────────────────────────────────────────
+
+
+def _edit_count(conn, scenario_id) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.scenario_edit WHERE scenario_id = %s",
+            (scenario_id,),
+        )
+        return int(cur.fetchone()[0])
+
+
+def _discard(conn, sql: str, *params) -> None:
+    """One cleanup statement, guarded and committed on its own.
+
+    Cleanup as a single transaction is cleanup that stops at its first
+    failure: everything after it stays unrun and the rows this test
+    *committed* live on in the session's shared database. Each statement
+    therefore stands alone, and a failure is warned about rather than
+    swallowed — silence here looks exactly like success.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+        conn.rollback()
+        warnings.warn(f"cleanup failed ({sql.split()[2]}): {exc}", stacklevel=2)
+
+
+def test_concurrent_materialisation_does_not_revive_a_removed_edit(
+    migrated_db, monkeypatch
+):
+    """Two materialisations of one scenario must not interleave into a third state.
+
+    The run being held open (``c1``) resolves the scenario's edits, then pauses
+    between resolution and writing. ``c2`` meanwhile removes the only edit and
+    materialises that — correctly, to nothing. Without a row lock, ``c1``
+    resumes with a resolution that is now historical and writes override rows
+    back for an edit that no longer exists; worse, ``c2``'s digest query could
+    not see those uncommitted rows, so it retires the attribute's version over
+    them and the overrides end up invisible to freshness. With the lock taken
+    in step 1, ``c2`` waits at its first write instead, and the end state is
+    the one its (post-removal) resolution intended.
+
+    The pause is injected rather than waited for: the window between reading
+    the edits and writing the overrides is milliseconds wide on a six-block
+    fixture, so a sleep-and-hope test would pass whatever the code did.
+
+    The shared ``conn`` fixture only rolls back, so a second connection could
+    not see its rows. This test commits its own setup on its own connections
+    and removes it afterwards.
+    """
+    c1 = psycopg2.connect(migrated_db)
+    c2 = psycopg2.connect(migrated_db)
+    setup = psycopg2.connect(migrated_db)
+    territory = None
+    try:
+        territory = _Territory(setup, suffix="_concurrency")
+        sid = territory.scenario()
+        eid = territory.edit(sid, _AREA_0_3, "num_levels", 6)
+        setup.commit()
+
+        resolved = threading.Event()
+        removal_done = threading.Event()
+        errors: list[BaseException] = []
+        unpaused = authoring._refuse_ceiling_breaches
+
+        def pause_after_resolution(conn, **kwargs):
+            unpaused(conn, **kwargs)
+            if conn is c1:  # only the run this test holds open
+                resolved.set()
+                # Bounded: with the lock, c2 is blocked and never arrives.
+                removal_done.wait(timeout=2.0)
+
+        monkeypatch.setattr(
+            authoring, "_refuse_ceiling_breaches", pause_after_resolution
+        )
+
+        def stale_run() -> None:
+            try:
+                materialize_scenario(c1, scenario_id=sid)
+                c1.commit()
+            except BaseException as exc:  # noqa: BLE001 - asserted on below
+                errors.append(exc)
+
+        held = threading.Thread(target=stale_run)
+        held.start()
+        try:
+            assert resolved.wait(timeout=30), "the held run never reached the pause"
+            try:
+                remove_edit(c2, edit_id=eid)
+                materialize_scenario(c2, scenario_id=sid)
+                c2.commit()
+            finally:
+                removal_done.set()
+        finally:
+            held.join(timeout=30)
+
+        assert not held.is_alive()
+        assert not errors, errors
+        # The committed scenario has no edits, so it must have no overrides.
+        assert _edit_count(setup, sid) == 0
+        assert _override_count(setup, sid) == 0
+    finally:
+        for c in (c1, c2):
+            try:
+                c.rollback()
+            except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+                warnings.warn(f"rollback failed: {exc}", stacklevel=2)
+        setup.rollback()
+        if territory is not None:
+            _discard(
+                setup,
+                "DELETE FROM curated_geo.scenario_override WHERE scenario_id IN "
+                "(SELECT id FROM app_core.scenario WHERE project_id = %s)",
+                territory.project_id,
+            )
+            # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
+            _discard(
+                setup,
+                "DELETE FROM app_core.project WHERE id = %s",
+                territory.project_id,
+            )
+            _discard(
+                setup,
+                "DELETE FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
+                territory.blocks,
+            )
+            _discard(
+                setup,
+                "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
+                "(SELECT id FROM curated_geo.data_source_catalog WHERE name = %s)",
+                territory.source_name,
+            )
+            _discard(
+                setup,
+                "DELETE FROM curated_geo.data_source_catalog WHERE name = %s",
+                territory.source_name,
+            )
+        for c in (c1, c2, setup):
+            try:
+                c.close()
+            except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+                warnings.warn(f"close failed: {exc}", stacklevel=2)

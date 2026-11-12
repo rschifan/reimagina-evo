@@ -200,6 +200,40 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
         return scenario
 
 
+def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
+    """Take the scenario's row lock and return its ``aoi_id`` (possibly null).
+
+    The one serialisation point for everything that writes a scenario. Both
+    writers here need it for the same reason — each reads the scenario's
+    current state, decides from it, and writes — and both are reached from an
+    API route, where a double-submit is the ordinary case rather than the
+    exotic one:
+
+    * ``add_edit`` reads ``max(ordinal)``; two unlocked callers read the same
+      one and the second hits ``UNIQUE (scenario_id, ordinal)``.
+    * ``materialize_scenario`` reads the edits and resolves them, then deletes,
+      upserts and publishes. Two unlocked runs can interleave so that the
+      *later* resolution is overwritten by the earlier one's writes: an edit
+      removed between the two is re-materialised, and because the second run's
+      digest query cannot see the first's uncommitted override rows it retires
+      the attribute's version over them — override rows with no current
+      ``asset_version``, which is invisible to freshness, so no indicator ever
+      recomputes against them and the scenario quietly shows baseline numbers.
+
+    Taking it first, before anything is read, is what makes the whole
+    materialisation see one state; it is released when the caller commits, so a
+    caller that holds a transaction open for long serialises writers.
+    """
+    cur.execute(
+        "SELECT aoi_id FROM app_core.scenario WHERE id = %s FOR UPDATE",
+        (scenario_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise LookupError(f"scenario {scenario_id} does not exist")
+    return None if row[0] is None else str(row[0])
+
+
 def add_edit(
     conn: Any,
     *,
@@ -263,11 +297,7 @@ def add_edit(
                 "(empty, or a point or line rather than a polygon)"
             )
 
-        cur.execute(
-            "SELECT id FROM app_core.scenario WHERE id = %s FOR UPDATE", (scenario_id,)
-        )
-        if cur.fetchone() is None:
-            raise LookupError(f"scenario {scenario_id} does not exist")
+        _lock_scenario(cur, scenario_id)
         cur.execute(
             """
             INSERT INTO curated_geo.scenario_edit
@@ -332,7 +362,7 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
 
     Seven steps, in this order, in the caller's one transaction:
 
-    1. refuse without an AOI (``ScenarioHasNoAOI``);
+    1. lock the scenario row and refuse without an AOI (``ScenarioHasNoAOI``);
     2. select the features each edit's area covers, scoped to the AOI;
     3. refuse the whole run if any resolved block breaches a ceiling;
     4. delete the overrides no edit implies any more;
@@ -393,21 +423,22 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
 
 
 def _scenario_aoi(conn: Any, scenario_id: str) -> str:
-    """Step 1: the scenario's AOI, or a refusal. See ``ScenarioHasNoAOI``."""
+    """Step 1: the scenario's AOI, or a refusal. See ``ScenarioHasNoAOI``.
+
+    Reads it under the ``FOR UPDATE`` of ``_lock_scenario``, which is why this
+    is step 1 and not a convenience lookup: the lock has to be held before the
+    edits are read, or the resolution can already be stale by the time it is
+    written. See ``_lock_scenario`` for what interleaves without it.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT aoi_id FROM app_core.scenario WHERE id = %s", (scenario_id,)
-        )
-        row = cur.fetchone()
-    if row is None:
-        raise LookupError(f"scenario {scenario_id} does not exist")
-    if row[0] is None:
+        aoi_id = _lock_scenario(cur, scenario_id)
+    if aoi_id is None:
         raise ScenarioHasNoAOI(
             f"scenario {scenario_id} has no area of interest, so there is no "
             "bound on what its edits would select. Set one (or re-create the "
             "AOI it pointed at) before materialising."
         )
-    return str(row[0])
+    return aoi_id
 
 
 def _resolve_edits(
