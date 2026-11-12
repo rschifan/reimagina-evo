@@ -337,10 +337,12 @@ def recompute(
     list of the surviving edits' keys could not name.
 
     ⚠ The evaluation's own ``dsn`` key is dropped from the payload rather
-    than nested. ``_print`` masks the password of ``data["dsn"]`` and only
-    that one — it does not walk the structure — so a nested copy is printed
-    in full, which is how a password reaches a terminal and a log. It is also
-    redundant: the top level carries the same DSN, masked.
+    than nested. It first had to go because ``_print`` masked only
+    ``data["dsn"]`` and a nested copy printed the password in full; ``_print``
+    now walks the whole payload, so the drop is no longer the thing standing
+    between a password and a terminal. It stays because the key is redundant
+    — the top level carries the same DSN — and because one masked DSN per
+    payload is easier to be sure about than two.
     """
     with contextlib.closing(connect(dsn)) as conn:
         scope = aoi_id if aoi_id is not None else _scenario_aoi(conn, scenario_id)

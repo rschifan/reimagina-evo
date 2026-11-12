@@ -896,3 +896,65 @@ def test_cli_dsn_flag_beats_the_environment(monkeypatch, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["dsn"] == "postgresql://flag.example/app"
+
+
+# ── `_print` masks every DSN it is given, at any depth ───────────────────
+
+DSN_WITH_PASSWORD = "postgresql://reimagina:hunter2@127.0.0.1:5432/reimagina_app"
+
+
+def test_print_masks_a_top_level_dsn(capsys):
+    from apps.cli.app import _print
+
+    assert _print({"dsn": DSN_WITH_PASSWORD}) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dsn"] == "postgresql://reimagina:***@127.0.0.1:5432/reimagina_app"
+
+
+def test_print_masks_a_dsn_nested_inside_a_list(capsys):
+    """The case a dict-only walk is blind to, and the reason the walk exists.
+
+    `_print` serves all 48 commands. It used to mask `data["dsn"]` and only
+    that, which printed a password in full the first time a command nested
+    another helper's payload inside its own. A dict-only fix would have left
+    the other half of the trap standing: the list-of-entries shape
+    (`outcomes[]`, `units[]`, `runs[]`) that several commands already return
+    is where a nested DSN is most likely to turn up next.
+    """
+    from apps.cli.app import _print
+
+    _print(
+        {
+            "dsn": DSN_WITH_PASSWORD,
+            "evaluation": {"dsn": DSN_WITH_PASSWORD},
+            "outcomes": [
+                {"unit": "a", "runs": [{"dsn": DSN_WITH_PASSWORD}]},
+                {"unit": "b", "runs": []},
+            ],
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "hunter2" not in out
+    payload = json.loads(out)
+    # Two levels of list between the root and the password.
+    assert payload["outcomes"][0]["runs"][0]["dsn"].endswith(
+        "reimagina:***@127.0.0.1:5432/reimagina_app"
+    )
+    assert out.count("***") == 3
+
+
+def test_print_leaves_everything_that_is_not_a_dsn_alone(capsys):
+    """The mask walks the payload; it must not rewrite it."""
+    from apps.cli.app import _print
+
+    data = {
+        "count": 3,
+        "rows": [{"feature_id": "f1", "delta": None}, {"feature_id": "f2"}],
+        "nested": {"deep": {"flag": True, "name": "dsn"}},
+    }
+
+    _print(data)
+
+    assert json.loads(capsys.readouterr().out) == data

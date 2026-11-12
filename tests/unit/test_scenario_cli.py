@@ -26,6 +26,8 @@ AOI_ID = "22222222-2222-2222-2222-222222222222"
 SCENARIO_ID = "33333333-3333-3333-3333-333333333333"
 TYPE_ID = "44444444-4444-4444-4444-444444444444"
 
+PLANNED_FLOORS = "urban_form_block_planned_floors"
+
 POLYGON = {
     "type": "Polygon",
     "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]],
@@ -101,6 +103,15 @@ def _value(edits: list[dict], key: str) -> float:
     return edit["value_numeric"]
 
 
+def _floors_valid_max() -> float:
+    """`valid_max` for the indicator that reads the `floors` attribute."""
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    (spec,) = [s for s in SHIPPED_INDICATORS if s.slug == PLANNED_FLOORS]
+    assert spec.valid_max is not None
+    return float(spec.valid_max)
+
+
 def _geojson_file(tmp_path, payload=None):
     path = tmp_path / "area.geojson"
     path.write_text(json.dumps(payload if payload is not None else POLYGON))
@@ -169,6 +180,70 @@ def test_set_attribute_writes_one_edit_per_attribute(monkeypatch, tmp_path, caps
     assert {c["geometry_wkt"] for c in calls} == {"POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"}
     assert {c["type_id"] for c in calls} == {TYPE_ID}
     assert len(_out(capsys)["edits"]) == 4
+
+
+def test_set_attribute_writes_all_four_edits_in_one_transaction(monkeypatch, tmp_path):
+    """One proposal, one commit — not a commit per edit, and not none.
+
+    Four edits of a proposal that half-lands is the failure `_edits_for`
+    exists to prevent, and a commit between them is how it would happen
+    anyway: `add_edit` raising on the third would leave `floors` and
+    `num_levels` written and `unit_size` not, which is a block the
+    edificability family skips while planned floors moves. The round trip in
+    `tests/integration/test_scenario_cli.py` notices a *missing* commit; only
+    a count notices an extra one.
+    """
+    conn = _FakeConn([])
+    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
+    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn_, ctx, slug: TYPE_ID)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        scenario_cli, "add_edit", lambda conn_, **kw: (calls.append(kw), "e")[1]
+    )
+
+    assert _set_attribute(tmp_path, levels=6) == 0
+
+    assert len(calls) == 4
+    assert conn.events.count("commit") == 1
+    assert conn.events[-1] == "close"
+
+
+def test_a_geojson_path_that_is_not_there_is_a_message_not_a_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    """The likeliest mistake on this command: a mistyped `--geojson`.
+
+    `FileNotFoundError` is an `OSError`, not a `ValueError`, so before
+    `OSError` joined `_SCENARIO_USER_ERRORS` this printed a traceback —
+    against this sub-app's own rule that refusals are messages.
+    """
+    monkeypatch.setattr(
+        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be opened")
+    )
+    missing = str(tmp_path / "typo.geojson")
+
+    code = main(
+        [
+            "scenario",
+            "set-attribute",
+            "--scenario-id",
+            SCENARIO_ID,
+            "--geojson",
+            missing,
+            "--levels",
+            "6",
+            "--unit-size",
+            "60",
+            "--people-per-household",
+            "3.6",
+        ]
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert missing in err
+    assert "Traceback" not in err
 
 
 def test_set_attribute_reads_the_area_from_a_feature_collection(
@@ -322,23 +397,43 @@ def test_a_degenerate_value_is_refused(monkeypatch, tmp_path, capsys, levels):
     assert "--levels" in capsys.readouterr().err
 
 
-def test_the_precheck_does_not_cover_floors(monkeypatch, tmp_path):
-    """⚠ A known, deferred gap — recorded here rather than left to be found.
+@pytest.mark.xfail(
+    strict=True,
+    reason="ceilings has no floors bound; delete this when it grows one",
+)
+def test_the_precheck_covers_floors(monkeypatch, tmp_path):
+    """⚠ A known, deferred gap, written as the behaviour we want.
 
     `check_ceilings` bounds density, housing units and population; it does
     *not* bound `floors`, although `urban_form_block_planned_floors` declares
-    `valid_max=200`. With a large enough `--unit-size` the density ratio stays
-    under its bound, so 250 storeys passes every bound there is and the r016
-    trigger raises mid-compute instead.
+    a `valid_max`. Past that many storeys, at a unit size large enough that
+    the density ratio stays legal, a proposal passes every bound there is and
+    r016's trigger raises mid-compute instead.
 
-    When `ceilings` grows a `floors` bound this test fails, which is the
-    signal to delete it — not a regression.
+    `xfail(strict=True)` rather than an `== 0` assertion of the status quo.
+    The status quo form fails as a bare `assert 2 == 0` when the gap closes,
+    with the "delete me" instruction buried in this docstring, and it also
+    fails for precheck bugs that have nothing to do with `floors` — a canary
+    that dies of several unrelated causes tells you nothing. This way,
+    closing the gap is an XPASS that prints the reason above.
+
+    Both inputs are derived from the catalog. Hardcoding `levels=250,
+    unit_size=2000` assumed the density bound stays above 1250: lower it and
+    the density precheck starts refusing this proposal, so the test would
+    pass for the wrong reason.
     """
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
     monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
     monkeypatch.setattr(scenario_cli, "add_edit", lambda conn, **kw: "e")
 
-    assert _set_attribute(tmp_path, levels=250, unit_size=2000) == 0
+    levels = math.floor(_floors_valid_max()) + 1
+    # `max_levels_for` is linear in unit size, so this is the unit size at
+    # which the density bound allows exactly `levels` storeys; the margin
+    # puts the proposal clearly inside it, so only `floors` is in question.
+    unit_size = 1.1 * levels / max_levels_for(1.0)
+    assert max_levels_for(unit_size) > levels
+
+    assert _set_attribute(tmp_path, levels=levels, unit_size=unit_size) == 2
 
 
 # ── list / show read the explore contract ────────────────────────────────
@@ -512,11 +607,12 @@ def test_recompute_evaluates_the_scenario_in_its_own_aoi(recompute_spy, capsys):
 def test_recompute_does_not_print_a_second_unmasked_dsn(recompute_spy, capsys):
     """⚠ Found by running the command, not by reading it.
 
-    `_print` masks the password of `data["dsn"]` and does not walk the
+    `_print` masked the password of `data["dsn"]` and did not walk the
     structure, so the DSN `evaluate_scenario_cli` echoes inside its own
-    payload is printed in full — `postgresql://user:password@host/db` on
-    stdout and in whatever captures it. The nested key is dropped; the
-    masked one at the top level says the same thing.
+    payload was printed in full — `postgresql://user:password@host/db` on
+    stdout and in whatever captures it. `_print` now walks the payload
+    (`test_print_masks_a_dsn_nested_inside_a_list`), and the nested key is
+    still dropped: the masked one at the top level says the same thing.
     """
     main(
         [

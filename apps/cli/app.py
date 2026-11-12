@@ -165,11 +165,34 @@ def cli_examples() -> dict[str, dict[str, str]]:
     }
 
 
+def _mask_dsns(value: Any) -> Any:
+    """Every ``dsn`` in ``value``, masked, however deeply it is nested.
+
+    The walk is the point. Masking only a top-level ``dsn`` key is what let
+    ``scenario recompute`` print a password in full the first time it nested
+    another helper's payload inside its own, and ``_print`` serves all 48
+    commands, so the next command that nests one would repeat it.
+
+    Lists are walked as well as dicts, because a payload's DSN is at least as
+    likely to arrive inside an ``outcomes[]`` or ``units[]`` entry — the shape
+    several commands already return — as under a second-level key, and a
+    dict-only walk would step straight past it.
+    """
+    if isinstance(value, dict):
+        return {
+            key: mask_dsn(item)
+            if key == "dsn" and isinstance(item, str)
+            else _mask_dsns(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_dsns(item) for item in value]
+    return value
+
+
 def _print(data: dict[str, Any]) -> int:
-    # Never echo a DSN password into stdout/logs.
-    if isinstance(data.get("dsn"), str):
-        data = {**data, "dsn": mask_dsn(data["dsn"])}
-    print(as_json(data))
+    # Never echo a DSN password into stdout/logs, at any depth.
+    print(as_json(_mask_dsns(data)))
     return 0
 
 
@@ -1362,16 +1385,24 @@ app.add_typer(scenario_app, name="scenario")
 #: What the scenario layer raises when the *user* got something wrong, as
 #: opposed to a defect: a name already taken, an area with no polygon, a
 #: scenario whose AOI was deleted, a value no indicator could store, an id
-#: that matches nothing. `CeilingPrecheckFailed` is a `ValueError` and is
-#: covered by the last entry. Each becomes `error: …` on stderr and exit 2,
-#: the shape `raster derivation run` already uses — never a traceback, which
-#: is what a planner would otherwise get for typing a number too large.
+#: that matches nothing, a `--geojson` path that is not there.
+#: `CeilingPrecheckFailed` is a `ValueError` and is covered by that entry.
+#: Each becomes `error: …` on stderr and exit 2, the shape `raster derivation
+#: run` already uses — never a traceback, which is what a planner would
+#: otherwise get for typing a number too large.
+#:
+#: `OSError` is here rather than `exists=True` on the option because it also
+#: covers a directory, an unreadable file and a broken symlink, and because
+#: every refusal on this sub-app should read the same way; a mistyped
+#: `--geojson` path is the likeliest mistake on `set-attribute` and it used
+#: to raise a traceback.
 _SCENARIO_USER_ERRORS = (
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
     ScenarioHasNoAOI,
     LookupError,
+    OSError,
     ValueError,
 )
 
