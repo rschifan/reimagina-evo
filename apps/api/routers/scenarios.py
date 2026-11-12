@@ -59,6 +59,13 @@ a malformed id in a filter       422     the same file's other half: rejected
                                         at the boundary, before any statement
 ===============================  ======  =====================================
 
+``_refusals`` does **not** wrap the enqueue half of ``recompute``. By then the
+materialisation is committed, so the same mapping would describe the wrong half
+— an FK violation from ``submit_run`` answering 404 "no record matches the id
+in this request", about ids that were fine, after overrides were written. That
+phase has its own translation, ``_enqueue_failure``, which names the phase and
+reports what stands.
+
 ``ScenarioNotFound`` and not ``LookupError``. The broad class also catches the
 ``KeyError``/``IndexError`` of a genuine defect anywhere under ``authoring``
 or ``comparison``, and a 404 for that is a bug reported as the client's typo —
@@ -96,13 +103,14 @@ from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from reimagina.db import connect
 from reimagina.scenarios.authoring import (
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
+    MaterializeResult,
     ScenarioHasNoAOI,
     ScenarioNotFound,
     add_edit,
@@ -256,6 +264,14 @@ class RecomputeResponse(BaseModel):
     results_superseded: int = 0
     run_id: str | None = None
     run_status: str = "queued"
+    deduplicated: bool = False
+    """True when ``run_id`` names a run that was already doing this work.
+
+    Carried for the same reason ``POST /jobs`` carries it: a resubmission is
+    answered exactly like a fresh submit — 202, a run id, a status — so
+    without this a client cannot tell that its ``run_id`` names work already
+    in flight. Dropping it here while the jobs router reports it would make
+    the same orchestrator answer differ by which route asked."""
 
 
 class DeleteScenarioResponse(BaseModel):
@@ -282,7 +298,17 @@ class ComparisonSummary(BaseModel):
     design. A ``total`` here would be read as the size of the territory. If
     the gap is wanted it is a ``no_value`` key, counted deliberately, not a
     subtraction a reader cannot see.
+
+    ``extra="forbid"`` is what makes that sentence true tomorrow. The route
+    builds this with ``ComparisonSummary(**result.summary)``, and pydantic's
+    default is to *ignore* a key it does not declare — so the ``no_value``
+    the paragraph above anticipates would be dropped on the floor, silently,
+    with every test still green. Forbidding instead turns the day
+    ``comparison`` grows a key into a loud failure here, where the fix is to
+    declare the field.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     changed: int = 0
     unchanged: int = 0
@@ -393,6 +419,48 @@ def _refusals() -> Iterator[None]:
         ) from exc
 
 
+@contextlib.contextmanager
+def _enqueue_failure(
+    scenario_id: str, materialized: MaterializeResult
+) -> Iterator[None]:
+    """The *second* half of a recompute, refused without disowning the first.
+
+    ``recompute`` is two transactions and only the first is undoable. By the
+    time the enqueue runs, the overrides are written and committed, so the
+    one thing the response must not do is describe the request as having
+    failed: ``_refusals`` would turn a ``ForeignKeyViolation`` from
+    ``submit_run`` into 404 ``unknown_reference`` — "no record matches the id
+    in this request" — about ids that were fine, after work that happened.
+
+    So the two phases answer differently. 500, because the client cannot fix
+    it by changing the request: the scenario exists (the materialisation just
+    locked it) and the AOI was read from its own row, so a violated constraint
+    here is state moving underneath us or a defect. The detail names the phase
+    and carries the materialisation's counts, so a client knows what stands —
+    and a retry is safe, because materialisation is idempotent.
+    """
+    try:
+        yield
+    except psycopg2.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "recompute_not_enqueued",
+                "phase": "enqueue",
+                "message": (
+                    f"scenario {scenario_id} was materialised and committed; "
+                    "the indicator recompute was not accepted. Retry — "
+                    "materialisation is idempotent."
+                ),
+                "materialized": {
+                    "overrides_written": materialized.overrides_written,
+                    "overrides_removed": materialized.overrides_removed,
+                    "results_superseded": materialized.results_superseded,
+                },
+            },
+        ) from exc
+
+
 def _reference_field(exc: psycopg2.Error) -> str | None:
     """Which body field an FK violation was about, from the constraint's name.
 
@@ -486,8 +554,15 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
             description=body.description,
         )
         created = get_scenario(conn, scenario_id)
-        # Read in the transaction that wrote it, so this cannot be None.
-        assert created is not None
+        if created is None:
+            # Read in the transaction that wrote it, so this is unreachable —
+            # and it is a `raise`, not an `assert`, because `python -O` strips
+            # asserts and the next line would then unpack None into a 500 with
+            # a TypeError that says nothing about where it came from.
+            raise RuntimeError(
+                f"scenario {scenario_id} is not readable in the transaction "
+                "that created it"
+            )
     return ScenarioDetail(**created)
 
 
@@ -671,20 +746,37 @@ def recompute_route(scenario_id: str) -> RecomputeResponse:
         with contextlib.closing(connect(api_dsn())) as conn, conn:
             result = materialize_scenario(conn, scenario_id=resolved)
             scenario = get_scenario(conn, resolved)
-            # Materialisation holds this row's lock, so it exists.
-            assert scenario is not None
+            if scenario is None:
+                # Materialisation holds this row's lock, so this is
+                # unreachable. A `raise` rather than an `assert` because
+                # `python -O` strips asserts and the next line would then
+                # subscript None.
+                raise RuntimeError(
+                    f"scenario {resolved} vanished under the lock "
+                    "materialisation holds on it"
+                )
             aoi_id = scenario["aoi_id"]
 
+    # ⚠ Outside `_refusals`, and that is the point. The materialisation above
+    # is committed. A refusal raised from here on is about the *enqueue*, and
+    # translating it with the same mapping would describe the wrong half —
+    # a `ForeignKeyViolation` from `submit_run` would answer 404
+    # `unknown_reference`, as if the client's ids were bad and nothing had
+    # happened, after overrides had already been written.
+    with (
+        _enqueue_failure(resolved, result),
+        contextlib.closing(connect(api_dsn())) as conn,
+        conn,
+    ):
         # A second connection, because the first is gone: see above.
-        with contextlib.closing(connect(api_dsn())) as conn, conn:
-            handle = get_orchestrator().submit_run(
-                conn,
-                changed_attributes=[],
-                edited_features=[],
-                scenario_id=resolved,
-                aoi_id=aoi_id,
-                code_version=code_version(),
-            )
+        handle = get_orchestrator().submit_run(
+            conn,
+            changed_attributes=[],
+            edited_features=[],
+            scenario_id=resolved,
+            aoi_id=aoi_id,
+            code_version=code_version(),
+        )
     status = handle.status.status if handle.status else "queued"
     return RecomputeResponse(
         scenario_id=resolved,
@@ -694,6 +786,7 @@ def recompute_route(scenario_id: str) -> RecomputeResponse:
         results_superseded=result.results_superseded,
         run_id=None if status == "noop" else handle.run_id,
         run_status=status,
+        deduplicated=handle.deduplicated,
     )
 
 

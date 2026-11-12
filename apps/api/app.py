@@ -121,7 +121,11 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_origins,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/edits`.
+        # It is invisible in dev — vite proxies :5173 to :8001, so the browser
+        # sees one origin and sends no preflight — and a non-proxied
+        # deployment cannot call either route without it.
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-Id"],
         allow_credentials=False,

@@ -33,6 +33,7 @@ from uuid import uuid4
 import psycopg2
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import apps.api.routers.scenarios as mod
 from apps.api.app import create_app
@@ -283,6 +284,64 @@ def test_the_pool_detector_sees_a_pooled_dependency_where_one_exists():
     assert "get_db_conn" in found
 
 
+def test_the_pool_detector_descends_into_a_nested_dependency():
+    """⚠ The second half of the control, and the branch the first never runs.
+
+    ``aois`` declares ``Depends(get_db_conn)`` as a top-level signature
+    default, so the control above exercises only ``dependant.dependencies``.
+    Deleting ``_dependency_names``' recursive ``pending.extend`` leaves every
+    other test in this file green — and a handler whose pooled connection
+    arrives through a dependency *of* a dependency would then pass the
+    headline assertion.
+
+    The nesting is built by FastAPI itself, from a throwaway router, rather
+    than by a hand-made ``Dependant``: a stand-in for that class is a second
+    model of FastAPI's internals and can drift from them.
+    """
+    from fastapi import APIRouter, Depends
+
+    from apps.api.deps import get_db_conn
+
+    def _needs_a_connection(conn=Depends(get_db_conn)):
+        return conn
+
+    probe = APIRouter()
+
+    @probe.get("/probe")
+    def _handler(thing=Depends(_needs_a_connection)):
+        return {}
+
+    found = {name for route in probe.routes for name in _dependency_names(route)}
+
+    assert "_needs_a_connection" in found
+    # Two levels down, reachable only through the recursive branch.
+    assert "get_db_conn" in found
+
+
+@pytest.mark.parametrize(
+    "path", ["/scenarios/{id}", "/scenarios/{id}/edits"], ids=["scenario", "edit"]
+)
+def test_a_browser_may_preflight_the_two_deletes(client, path):
+    """⚠ CORS has to allow DELETE, and dev cannot tell you that it does not.
+
+    Vite proxies :5173 to :8001, so in development the browser sees one origin
+    and sends no preflight at all. A deployment serving the frontend from its
+    own origin does preflight, and with ``allow_methods`` listing only GET,
+    POST and OPTIONS the browser refuses both of these routes before the
+    request is ever made — which no test of the handlers could notice.
+    """
+    response = client.options(
+        path.format(id=SCENARIO_ID),
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "DELETE" in response.headers["access-control-allow-methods"]
+
+
 def test_the_router_is_mounted_on_the_app(client):
     """Read off the published schema: a router nobody included serves nothing."""
     paths = set(client.get("/openapi.json").json()["paths"])
@@ -433,6 +492,8 @@ def test_recompute_reports_what_it_matched(client, events, monkeypatch):
     assert body["results_superseded"] == 0
     assert body["run_id"] == "run-123"
     assert body["run_status"] == "queued"
+    # The other half of the flag: a fresh submit says so too.
+    assert body["deduplicated"] is False
 
 
 def test_a_recompute_with_nothing_to_recompute_hands_back_no_run_id(
@@ -452,6 +513,7 @@ def test_a_recompute_with_nothing_to_recompute_hands_back_no_run_id(
     class _Handle:
         run_id = "run-123"
         status = _Status()
+        deduplicated = False
 
     class _Fake:
         def submit_run(self, conn, **kwargs):
@@ -497,6 +559,107 @@ def test_recompute_reads_the_aoi_under_the_lock_materialisation_holds(
     client.post(f"/scenarios/{SCENARIO_ID}/recompute")
 
     assert order == ["materialize", "read"]
+
+
+def test_a_failed_enqueue_does_not_describe_the_materialisation_as_refused(
+    client, events, monkeypatch
+):
+    """⚠ The response has to say which half failed, and the halves differ.
+
+    ``recompute`` is two transactions and the first one commits. Wrapping the
+    enqueue in ``_refusals`` too would turn an FK violation from ``submit_run``
+    into 404 ``unknown_reference`` — "no record matches the id in this
+    request" — about ids that were fine, *after* 16 overrides were written.
+    A client reading that would re-send a request that already did its work.
+    """
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            raise psycopg2.errors.ForeignKeyViolation(
+                'insert or update on table "job_run" violates foreign key constraint'
+            )
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+    )
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/recompute")
+
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "recompute_not_enqueued"
+    assert detail["phase"] == "enqueue"
+    # What stands, so the client knows not to re-send blindly.
+    assert detail["materialized"]["overrides_written"] == 16
+    # And the refusal the narrow wrapping exists to prevent.
+    assert "unknown_reference" not in json.dumps(response.json())
+    assert "violates foreign key" not in json.dumps(response.json())
+
+
+def test_the_materialisation_half_still_goes_through_the_shared_mapping(
+    client, events, monkeypatch
+):
+    """The control for the test above: narrowing must not unwrap *both* halves.
+
+    ``CeilingExceeded`` is raised by the materialisation and is a 422. If the
+    narrowing had moved ``_refusals`` off the first transaction as well, this
+    would be a 500.
+    """
+    breach = CeilingBreach(
+        feature_id=FEATURE_ID,
+        indicator_slug="edificability_block_housing_units",
+        bound=200000.0,
+        would_be=467000.0,
+    )
+
+    def _raise(conn, **kwargs):
+        raise CeilingExceeded([breach])
+
+    _patch(monkeypatch, materialize_scenario=_raise)
+    _orchestrator(monkeypatch)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/recompute")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error"] == "ceiling_exceeded"
+
+
+def test_a_run_that_was_already_doing_this_work_says_so(client, events, monkeypatch):
+    """``deduplicated``, as ``POST /jobs`` already reports it.
+
+    A resubmission is answered exactly like a fresh submit — 202, a run id, a
+    status — so dropping the flag leaves a client unable to tell that its
+    ``run_id`` names work already in flight. Two routes reporting the same
+    orchestrator answer differently is the drift this closes.
+    """
+
+    class _Handle:
+        run_id = "run-123"
+        status = None
+        deduplicated = True
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            return _Handle()
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+    )
+
+    body = client.post(f"/scenarios/{SCENARIO_ID}/recompute").json()
+
+    assert body["deduplicated"] is True
+    assert body["run_id"] == "run-123"
 
 
 # ── the four edits of one proposal ───────────────────────────────────────
@@ -1105,6 +1268,34 @@ def test_the_comparison_reports_its_three_states_and_no_total(
     assert "total" not in json.dumps(body)
     assert "total" not in mod.ComparisonSummary.model_fields
     assert "total" not in mod.ComparisonResponse.model_fields
+
+
+def test_a_summary_key_this_router_does_not_declare_is_loud(
+    client, events, monkeypatch
+):
+    """⚠ The quiet failure the docstring above would otherwise invite.
+
+    The route builds the summary with ``ComparisonSummary(**result.summary)``
+    and pydantic *ignores* undeclared keys by default. So the ``no_value`` key
+    the no-total decision anticipates would be computed by ``comparison``,
+    dropped here, and reported by nothing — the response would still be a
+    perfectly well-formed 200. ``extra="forbid"`` makes the day that key
+    arrives a failure at this boundary, where the fix is to declare the field.
+    """
+    result = _comparison()
+    result = ComparisonResult(
+        rows=result.rows, summary={**result.summary, "no_value": 7}
+    )
+    _patch(monkeypatch, compare=lambda c, **kw: result)
+
+    response = client.get(f"/scenarios/{SCENARIO_ID}/comparison?indicator_slug={SLUG}")
+
+    # Not a 200 that quietly lost the count.
+    assert response.status_code == 500, response.text
+    with pytest.raises(ValidationError):
+        mod.ComparisonSummary(**result.summary)
+    # The control: the same summary without the key is accepted.
+    assert mod.ComparisonSummary(**_comparison().summary).changed == 1
 
 
 def test_the_comparison_truncates_rows_without_truncating_the_counts(

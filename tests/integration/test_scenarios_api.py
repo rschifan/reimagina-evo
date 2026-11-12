@@ -33,15 +33,17 @@ from fastapi.testclient import TestClient
 
 from apps.api import deps
 from apps.api.app import create_app
-from reimagina.assets.keys import partition_key
+from reimagina.assets.keys import indicator_asset_key, partition_key
 from reimagina.assets.registry import seed_assets
 from reimagina.data import aoi as aoi_mod
 from reimagina.scenarios.authoring import create_scenario, get_scenario
+from reimagina.storage import backend_for_connection
 from tests.integration._helpers import (
     discard,
     insert_feature,
     insert_project,
     register_source,
+    seed_catalog_committed,
     start_run,
 )
 
@@ -216,6 +218,13 @@ def territory(migrated_db: str) -> Iterator[_Territory]:
                     "DELETE FROM curated_geo.indicator_result WHERE scenario_id = %s",
                     scenario_id,
                 )
+                # Not reached by anything above: a result's job_run outlives
+                # the result, and the scenario it names is about to go.
+                discard(
+                    conn,
+                    "DELETE FROM jobs_runtime.job_run WHERE scenario_id = %s",
+                    scenario_id,
+                )
                 # Neither hangs off the scenario: both are keyed by the
                 # partition string, which no foreign key can follow.
                 discard(
@@ -337,6 +346,11 @@ def test_creating_a_scenario_persists_it(client, territory, migrated_db):
     scenario_id = created.json()["id"]
     assert created.json()["name"] == "Centralidad norte"
     assert created.json()["aoi_id"] == territory.aoi_id
+    # ⚠ The body carries `description`, and so must the row. Nothing else
+    # asserted it, so dropping `description=body.description` from the
+    # `create_scenario` call survived the whole suite: the field round-trips
+    # through the response model from the same read either way.
+    assert created.json()["description"] == "six storeys"
     assert created.json()["edits"] == []
     assert created.json()["override_count"] == 0
 
@@ -345,7 +359,9 @@ def test_creating_a_scenario_persists_it(client, territory, migrated_db):
     # The claim the response cannot make: another transaction can see it.
     reader = _reader(migrated_db)
     try:
-        assert get_scenario(reader, scenario_id)["name"] == "Centralidad norte"
+        persisted = get_scenario(reader, scenario_id)
+        assert persisted["name"] == "Centralidad norte"
+        assert persisted["description"] == "six storeys"
     finally:
         reader.close()
 
@@ -724,6 +740,11 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["overrides"] == 8
     assert deleted.json()["versions_retired"] == 4
+    # Nothing computed this scenario here — the orchestrator is a fake — so
+    # the other two counts are zero *for a reason*, which is a different claim
+    # from being unasserted. Pinned non-zero in the test below.
+    assert deleted.json()["results_superseded"] == 0
+    assert deleted.json()["materializations"] == 0
     assert client.get(f"/scenarios/{scenario_id}").status_code == 404
     assert client.delete(f"/scenarios/{scenario_id}").status_code == 404
 
@@ -738,6 +759,102 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
             assert cur.fetchone()[0] == 0
     finally:
         reader.close()
+
+
+def test_the_delete_counts_cover_results_and_materialisations_too(
+    client, territory, orchestrator, migrated_db
+):
+    """⚠ All four counts, each against a trace that is really there.
+
+    These four numbers are the reason ``DELETE`` answers 200 with a body
+    instead of 204 — "it is gone" is four separate claims about four tables no
+    constraint connects. Two of them were asserted only at zero, which a
+    response that dropped them entirely also satisfies.
+
+    So this seeds the two the fake orchestrator never produces: one ``current``
+    indicator result filed under this scenario, and one materialisation
+    recorded at its partition — the row ``asset_component_v`` unions into the
+    graph with no filter, which is why a deleted scenario that keeps it stays
+    a permanently stale node.
+    """
+    scenario_id = _scenario(client, territory)
+    client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
+    client.post(f"/scenarios/{scenario_id}/recompute")
+    _seed_result_and_materialization(migrated_db, territory, scenario_id)
+
+    deleted = client.delete(f"/scenarios/{scenario_id}").json()
+
+    assert deleted["overrides"] == 8
+    assert deleted["versions_retired"] == 4
+    assert deleted["results_superseded"] == 1
+    assert deleted["materializations"] == 1
+
+    # And the traces are actually gone / staled, not merely counted.
+    reader = _reader(migrated_db)
+    try:
+        with reader.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM curated_geo.indicator_result "
+                "WHERE scenario_id = %s",
+                (scenario_id,),
+            )
+            assert [row[0] for row in cur.fetchall()] == ["stale"]
+            cur.execute(
+                "SELECT count(*) FROM curated_geo.asset_materialization "
+                "WHERE partition_key = %s",
+                (partition_key({"scenario": scenario_id}),),
+            )
+            assert cur.fetchone()[0] == 0
+    finally:
+        reader.close()
+
+
+def _seed_result_and_materialization(dsn: str, territory, scenario_id: str) -> None:
+    """One ``current`` scenario result and one materialisation at its partition.
+
+    Committed on its own connection, because the DELETE under test opens its
+    own and would not see an open transaction. The ``job_run`` carries the same
+    ``scenario_id`` as the result: r016's before-write trigger refuses a
+    scenario result filed under a baseline run.
+    """
+    writer = psycopg2.connect(dsn)
+    try:
+        seed_catalog_committed(writer)
+        with writer.cursor() as cur:
+            cur.execute(
+                "INSERT INTO jobs_runtime.job_run "
+                "(model_family, status, code_version, scenario_id) "
+                "VALUES ('test', 'succeeded', 'test', %s) RETURNING id",
+                (scenario_id,),
+            )
+            job_run_id = cur.fetchone()[0]
+        # ``not_applicable`` is the honest flag, not a way past the trigger:
+        # this file's blocks carry a test-only type slug that the catalog's
+        # ``applies_to`` does not list, and r016 refuses a measured value for
+        # a type an indicator does not apply to. The deletion step counts any
+        # ``current`` row for the scenario, whatever it carries.
+        backend_for_connection(writer).indicator_result_repo().write_result(
+            feature_id=territory.blocks[0],
+            indicator_slug=_SLUG,
+            job_run_id=job_run_id,
+            value_numeric=None,
+            quality_flag="not_applicable",
+            scenario_id=scenario_id,
+        )
+        with writer.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.asset_materialization
+                       (asset_id, partition_key, version, row_count)
+                SELECT id, %s, 'v1', 1
+                  FROM curated_geo.asset WHERE asset_key = %s
+                """,
+                (partition_key({"scenario": scenario_id}), indicator_asset_key(_SLUG)),
+            )
+            assert cur.rowcount == 1, "the indicator asset is not seeded"
+        writer.commit()
+    finally:
+        writer.close()
 
 
 def test_deleting_an_id_that_never_existed_is_404(client, territory):
