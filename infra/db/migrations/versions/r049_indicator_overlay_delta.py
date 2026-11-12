@@ -74,11 +74,26 @@ against gets the same answer. Serving the baseline's own values under the
 ``delta`` property would paint every block ``unchanged`` — "my scenario did
 nothing", produced by a missing parameter.
 
-**``delta`` is read as a boolean the way Postgres reads one**
-(``1/t/true/y/yes/on``, case-insensitively). Anything else — ``false``, a
-typo, an empty string — is the value tile, so an unrecognised input falls back
-to the behaviour every client had before this migration rather than to the
-new one.
+**``delta`` is read as a boolean the way Postgres reads one** — the full
+vocabulary, which is wider than it looks: ``1``, ``t``, ``tr``, ``tru``,
+``true``, ``y``, ``ye``, ``yes`` and ``on``, in any letter case, with
+surrounding whitespace ignored. The prefixes and the trim are not pedantry.
+``?delta=true `` with a trailing space, or a hand-shortened ``?delta=tru``,
+would otherwise be *false* — and the failure is silent in the worst direction:
+a client asking for a difference is served values, under a property name it is
+not reading, on a ramp that means something else. (``o`` is excluded because
+Postgres excludes it: it is ambiguous between ``on`` and ``off``.)
+
+Spelled out here rather than delegated to ``pg_input_is_valid(…, 'boolean')``,
+which would make the claim true by construction but needs PostgreSQL 16, and
+this repository's own notes record three Postgres stacks in play. The list is
+pinned against Postgres's parser by
+``test_the_delta_flag_is_read_exactly_as_postgres_reads_a_boolean``, which asks
+the server about each spelling instead of trusting this comment.
+
+Anything else — ``false``, ``0``, a typo, an empty string — is the value tile,
+so an unrecognised input falls back to the behaviour every client had before
+this migration rather than to the new one.
 
 The two casts the delta branch needs are guarded by ``CASE`` in the ``params``
 CTE (``scenario_uuid``, ``aoi_uuid``) rather than by a regex sitting beside
@@ -105,9 +120,14 @@ _UUID_RE = (
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
-#: The words Postgres itself accepts for boolean true — the vocabulary a
-#: client writing ``?delta=...`` into a URL is most likely to assume.
-_TRUE_WORDS = "'1', 't', 'true', 'y', 'yes', 'on'"
+#: Every spelling Postgres itself accepts for boolean true, unique prefixes
+#: included. See the module docstring for why the prefixes are in the list.
+_TRUE_WORDS = "'1', 't', 'tr', 'tru', 'true', 'y', 'ye', 'yes', 'on'"
+
+#: The whitespace Postgres's boolean parser ignores around a value. Trimmed
+#: because a trailing space in a hand-typed or hand-assembled URL is the
+#: likeliest way anyone meets the boundary at all.
+_SPACE = r"E' \t\n\r\f\v'"
 
 #: Zoom-dependent simplification and tile clipping, shared by both branches so
 #: the two views cannot drift into drawing different outlines for one feature.
@@ -261,7 +281,7 @@ _DELTA_BRANCH = f"""
 #: The three columns only the delta branch reads. ``CASE`` and not an ``AND``
 #: chain — see the module docstring.
 _DELTA_PARAMS = f""",
-          lower(COALESCE(query_params->>'delta', ''))
+          lower(btrim(COALESCE(query_params->>'delta', ''), {_SPACE}))
             IN ({_TRUE_WORDS})                        AS delta_on,
           CASE
             WHEN query_params->>'scenario_id' ~ '{_UUID_RE}'

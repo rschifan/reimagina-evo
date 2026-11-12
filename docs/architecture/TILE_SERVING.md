@@ -215,12 +215,21 @@ The baseline feature channel. Martin publishes it at
   whole table.
 - Optional query param: `scenario_id` (uuid). Omit for base state.
 - Optional query param: `delta` (r049) — a boolean in Postgres's own
-  spelling (`1/t/true/y/yes/on`, case ignored). Anything else, `false`
-  included, is the value view, so an unrecognised input falls back to the
-  older behaviour rather than to the newer one.
-- Returns empty below `z=10`; choropleth below city scale is misleading
-  (every feature collapses into one pixel). `infra/tiles/layers.json`
-  reflects this with `minzoom: 10`.
+  spelling, which is the *whole* vocabulary: `1`, `t`, `tr`, `tru`,
+  `true`, `y`, `ye`, `yes`, `on`, case ignored, surrounding whitespace
+  trimmed (`o` is excluded because Postgres excludes it — ambiguous
+  between `on` and `off`). Anything else, `false` included, is the value
+  view, so an unrecognised input falls back to the older behaviour rather
+  than to the newer one. The prefixes and the trim are deliberate: a
+  hand-typed `?delta=true ` would otherwise serve values to a client
+  asking for a difference, silently.
+- Returns empty below `z=8` — r025 lowered the floor from 10 once AOI
+  filtering made a z=8 tile of one municipio ~19 k blocks rather than
+  country-scale volume, and added the `ST_Simplify(…, 0.0005)` tier for
+  z=8/9. `infra/tiles/layers.json` advertises `minzoom: 11` to clients,
+  which is a rendering choice about where a choropleth reads well, not
+  the function's floor; the two numbers are different claims and neither
+  is 10.
 - Emits per feature: `feature_id`, `type_slug`, `value_numeric`,
   `quality_flag`. Frontend's `fill-color` expression reads
   `value_numeric`; `quality_flag` is used to dim `estimated` / `missing`

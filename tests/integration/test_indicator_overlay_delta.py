@@ -349,6 +349,96 @@ def test_delta_false_is_not_a_delta_request(upzoned, conn):
         assert all("delta" not in p for p in properties.values()), raw
 
 
+#: Spellings worth asking about: the obvious ones, Postgres's unique prefixes,
+#: whitespace of the kind a hand-assembled URL carries, the false words, and
+#: strings Postgres rejects outright — ``o`` among them, since it is ambiguous
+#: between ``on`` and ``off``.
+_DELTA_SPELLINGS = [
+    "true",
+    "TRUE",
+    "True",
+    "tru",
+    "tr",
+    "t",
+    "T",
+    " true",
+    "true ",
+    " true ",
+    "\ttrue\n",
+    "yes",
+    "ye",
+    "y",
+    "on",
+    "ON",
+    "1",
+    "false",
+    "f",
+    "no",
+    "n",
+    "off",
+    "0",
+    "o",
+    "01",
+    "truex",
+    "maybe",
+    "",
+    "  ",
+]
+
+
+def test_the_delta_flag_is_read_exactly_as_postgres_reads_a_boolean(upzoned, conn):
+    """The vocabulary is pinned against the parser, not against a comment.
+
+    The migration spells the true-words out in SQL rather than calling
+    ``pg_input_is_valid(…, 'boolean')``, which would need PostgreSQL 16 on
+    every stack this repository runs on. A hand-copied list is exactly the
+    thing that drifts, so this test asks *the server* what each spelling means
+    and requires the tile to agree — including on the spellings the list is
+    easiest to get wrong: the unique prefixes (``tr``, ``tru``, ``ye``) and a
+    value with whitespace around it.
+
+    Getting those wrong fails silently in the worst direction: ``?delta=true ``
+    serves the value tile to a client that asked for a difference, under a
+    property it is not reading.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT raw,
+                   CASE WHEN pg_input_is_valid(btrim(raw), 'boolean')
+                        THEN btrim(raw)::boolean ELSE false END
+              FROM unnest(%s::text[]) AS s(raw)
+            """,
+            (_DELTA_SPELLINGS,),
+        )
+        postgres_says = dict(cur.fetchall())
+
+    # The harness itself, before it is trusted to judge the tile: both answers
+    # must be represented, and the three spellings this test exists for must be
+    # the ones Postgres says they are.
+    assert postgres_says["tru"] is True
+    assert postgres_says["true "] is True
+    assert postgres_says["o"] is False, "ambiguous between on and off"
+    assert sum(postgres_says.values()) >= 15
+    assert sum(1 for v in postgres_says.values() if not v) >= 10
+
+    for raw, is_true in postgres_says.items():
+        properties = _props(
+            _tile(
+                conn,
+                indicator_slug=_FLOORS,
+                scenario_id=upzoned.scenario_id,
+                delta=raw,
+            )
+        )
+        served_delta = all("state" in p for p in properties.values())
+        assert properties, raw
+        assert served_delta is is_true, (
+            f"{raw!r}: Postgres reads this as {is_true}, the tile served "
+            f"{'delta' if served_delta else 'values'}"
+        )
+
+
 # ── the delta tile ──────────────────────────────────────────────────────────
 
 
@@ -375,20 +465,29 @@ def test_the_delta_tile_carries_no_value_property(upzoned, conn):
     A difference drawn by the sequential value ramp reads as a value, so the
     two views are kept apart at the property level: a client that forgot to
     switch ramps paints nothing rather than painting a lie.
-    """
-    properties = _props(
-        _tile(
-            conn,
-            indicator_slug=_FLOORS,
-            scenario_id=upzoned.scenario_id,
-            delta="true",
-        )
-    )
 
+    The byte check is the mirror of the value tile's, and for the same reason:
+    a column that is NULL for every feature is invisible per feature but still
+    declares its key in the layer's dictionary, which is the whole argument for
+    building the two views as a ``CASE`` rather than as a ``UNION ALL`` over
+    one shared column list. Asserting it on both tiles is what makes that
+    argument checkable from either side.
+    """
+    tile = _tile(
+        conn,
+        indicator_slug=_FLOORS,
+        scenario_id=upzoned.scenario_id,
+        delta="true",
+    )
+    properties = _props(tile)
+
+    # Every block in this fixture has a baseline, so every feature carries a
+    # delta and the property set is exact rather than a subset.
     for feature_id, props in properties.items():
-        assert set(props) <= {"feature_id", "type_slug", "delta", "state"}, feature_id
-        assert "value_numeric" not in props, feature_id
-        assert "quality_flag" not in props, feature_id
+        assert set(props) == {"feature_id", "type_slug", "delta", "state"}, feature_id
+
+    assert b"value_numeric" not in tile
+    assert b"quality_flag" not in tile
 
 
 def test_a_recomputed_block_that_did_not_move_is_unchanged(upzoned, conn):
@@ -483,6 +582,48 @@ def test_a_valueless_scenario_row_does_not_shadow_the_baseline(upzoned, conn):
 
     assert props["state"] == UNCHANGED
     assert props["delta"] == pytest.approx(0.0)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known defect in r043's VALUE branch, not in r049's delta branch, and "
+        "deliberately not fixed on this branch: with a numeric baseline and a "
+        "valueless current scenario row, both arms of the anti-join match the "
+        "same feature -- `ir.scenario_id = <scenario>` has no value test on "
+        "`ir` itself, while the anti-join's probe ignores a valueless scenario "
+        "row precisely so it cannot shadow the baseline. ST_AsMVT emits both, "
+        "so the block is drawn twice and `choropleth.ts` paints whichever the "
+        "renderer draws last. Queued as task_524840cb, 'Fix the value tile "
+        "drawing a block twice'. When that lands this turns XPASS, which is "
+        "the signal to delete this marker and keep the assertions."
+    ),
+)
+def test_the_value_tile_draws_a_shadowed_block_once(upzoned, conn):
+    """The same fixture as the test above, asked of the *value* tile.
+
+    Worth stating why this test exists at all rather than living in a report:
+    the fixture one function up builds exactly the state that triggers the
+    defect and then queries only the delta tile, so the suite sat beside the
+    bug without touching it. Querying the value tile in that state is the
+    whole difference, and ``_props`` fails on the duplicate ``feature_id``.
+    """
+    _write_valueless(
+        conn,
+        slug=_FLOORS,
+        feature_id=upzoned.blocks[0],
+        scenario_id=upzoned.scenario_id,
+    )
+
+    properties = _props(
+        _tile(conn, indicator_slug=_FLOORS, scenario_id=upzoned.scenario_id)
+    )
+
+    assert set(properties) == set(upzoned.blocks)
+    assert properties[upzoned.blocks[0]]["value_numeric"] == pytest.approx(3.0), (
+        "a valueless scenario row falls through to the baseline, as it does on "
+        "all six Python read paths"
+    )
 
 
 def test_a_feature_valueless_on_both_sides_is_absent(upzoned, conn):
@@ -627,7 +768,19 @@ def test_a_delta_tile_below_the_zoom_floor_is_empty(upzoned, conn):
 
 
 def _delta(value) -> float | None:
-    """A delta, rounded so the two surfaces are compared and not the IEEE noise."""
+    """A delta, rounded so the two surfaces are compared and not the IEEE noise.
+
+    The rounding is belt and braces rather than a fix for a known seam:
+    ``indicator_result.value_numeric`` is ``double precision`` (r016:178), so
+    Postgres's ``-`` and ``=`` and Python's are the same operations on the same
+    bits. One qualifier, since "the same operation" is only true of finite
+    values: Postgres's float8 ``=`` holds ``NaN = NaN`` true where Python's
+    ``float('nan') == float('nan')`` is false, so a NaN value would be
+    ``unchanged`` on the tile and ``changed`` in ``compare()``. r016's catalog
+    bounds (``valid_min`` / ``valid_max``, enforced by the before-write
+    trigger) make a NaN unwritable for every bounded indicator, which is why
+    this is a qualifier on the argument and not a defect in it.
+    """
     return None if value is None else round(float(value), 9)
 
 
@@ -656,7 +809,8 @@ def _tile_states(conn, *, scenario_id, slug, aoi_id):
 
 
 @pytest.mark.parametrize("slug", [_FLOORS, _DENSITY])
-def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug):
+@pytest.mark.parametrize("aoi", ["wide", "narrow"])
+def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug, aoi):
     """The headline: one classification, two surfaces.
 
     Both fixtures are loaded at once so that each parametrisation sees an
@@ -665,6 +819,13 @@ def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug)
     ``COALESCE`` dropped, a valueless row allowed to shadow, equality called a
     change — shows up here as a per-feature disagreement rather than as a
     count that happens to match.
+
+    Both AOIs, because the two surfaces apply the AOI at different levels of
+    their queries: ``comparison._joined`` tests it once, outside the full outer
+    join, against ``COALESCE(b.feature_id, s.feature_id)``, while the tile
+    tests it against ``f.id`` after joining the comparison to ``feature``. The
+    narrow AOI is the leg where that difference could show — it excludes five
+    of the eight blocks, including one the scenario has a row for.
     """
     blocks = territory.blocks
     _write(conn, slug=_FLOORS, values=dict.fromkeys(blocks, 3.0))
@@ -684,11 +845,12 @@ def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug)
         conn, slug=_FLOORS, feature_id=blocks[4], scenario_id=territory.scenario_id
     )
 
+    aoi_id = territory.aoi_wide if aoi == "wide" else territory.aoi_narrow
     expected = _comparison_states(
         conn,
         scenario_id=territory.scenario_id,
         slug=slug,
-        aoi_id=territory.aoi_wide,
+        aoi_id=aoi_id,
     )
     assert expected, "the fixture must give this indicator something to compare"
     assert (
@@ -696,7 +858,7 @@ def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug)
             conn,
             scenario_id=territory.scenario_id,
             slug=slug,
-            aoi_id=territory.aoi_wide,
+            aoi_id=aoi_id,
         )
         == expected
     )

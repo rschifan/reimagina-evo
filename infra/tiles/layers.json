@@ -42,7 +42,7 @@
         "indicator_slug": "REQUIRED",
         "scenario_id": "OPTIONAL",
         "feature_type": "OPTIONAL — filter to one grain (block, ageb, …). Without it, every feature_type the indicator applies to is rendered, so multi-grain indicators stack polygons.",
-        "delta": "OPTIONAL — boolean (1/t/true/y/yes/on). Emits delta + state (changed | unchanged | new) in place of value_numeric + quality_flag, matching GET /scenarios/{id}/comparison. Needs scenario_id: without one the tile is empty, because there is nothing to difference against. Draw it with a diverging ramp centred on zero, never the value ramp."
+        "delta": "OPTIONAL — boolean in Postgres's spelling, whitespace trimmed, case ignored: 1, t, tr, tru, true, y, ye, yes, on (not o — ambiguous). Emits delta + state (changed | unchanged | new) in place of value_numeric + quality_flag, matching GET /scenarios/{id}/comparison. Needs scenario_id: without one the tile is empty, because there is nothing to difference against. Draw it with a diverging ramp centred on zero, never the value ramp."
       }
     }
   ]
