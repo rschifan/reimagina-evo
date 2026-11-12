@@ -166,11 +166,13 @@ def _patch(monkeypatch, **targets: Any) -> None:
         monkeypatch.setattr(mod, name, value)
 
 
-def _type_id(monkeypatch, type_id: str = TYPE_ID) -> None:
-    """Resolve a feature type without a database."""
+def _type_id(monkeypatch, type_id: str = TYPE_ID) -> list[tuple[str, str]]:
+    """Resolve a feature type without a database; record what was asked for."""
+    asked: list[tuple[str, str]] = []
 
     class _Repo:
         def get_type_id(self, context: str, slug: str) -> str:
+            asked.append((context, slug))
             return type_id
 
     class _Backend:
@@ -178,6 +180,7 @@ def _type_id(monkeypatch, type_id: str = TYPE_ID) -> None:
             return _Repo()
 
     monkeypatch.setattr(mod, "get_backend", lambda conn: _Backend())
+    return asked
 
 
 def _orchestrator(monkeypatch, events: list[str] | None = None):
@@ -429,6 +432,45 @@ def test_recompute_reports_what_it_matched(client, events, monkeypatch):
     assert body["overrides_removed"] == 0
     assert body["results_superseded"] == 0
     assert body["run_id"] == "run-123"
+    assert body["run_status"] == "queued"
+
+
+def test_a_recompute_with_nothing_to_recompute_hands_back_no_run_id(
+    client, events, monkeypatch
+):
+    """A ``noop`` submit persists no run, so its id would 404 on the poll loop.
+
+    The materialisation still happened and its counts still stand, which is
+    why this suppresses the *id* rather than the response — handing back an
+    unusable id makes a client following the documented loop fail after a
+    successful request. Same rule, same reason, as ``jobs._submit_response``.
+    """
+
+    class _Status:
+        status = "noop"
+
+    class _Handle:
+        run_id = "run-123"
+        status = _Status()
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            return _Handle()
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+    )
+
+    body = client.post(f"/scenarios/{SCENARIO_ID}/recompute").json()
+
+    assert body["run_status"] == "noop"
+    assert body["run_id"] is None
+    assert body["overrides_written"] == 16
 
 
 def test_recompute_reads_the_aoi_under_the_lock_materialisation_holds(
@@ -500,7 +542,7 @@ def test_one_proposal_writes_all_four_edits_over_one_area_in_one_transaction(
     """
     calls: list[dict] = []
     _patch(monkeypatch, add_edit=lambda c, **kw: (calls.append(kw), EDIT_ID)[1])
-    _type_id(monkeypatch)
+    asked = _type_id(monkeypatch)
 
     response = client.post(f"/scenarios/{SCENARIO_ID}/edits", json=PROPOSAL)
 
@@ -512,6 +554,26 @@ def test_one_proposal_writes_all_four_edits_over_one_area_in_one_transaction(
     assert {c["type_id"] for c in calls} == {TYPE_ID}
     assert events.count("commit") == 1
     assert len(response.json()["edits"]) == 4
+    # Block grain by default, because every shipped indicator is block-grain.
+    assert asked == [("MEX", "block")]
+    assert response.json()["feature_type"] == "MEX:block"
+
+
+def test_the_feature_type_a_rule_applies_to_comes_from_the_body(
+    client, events, monkeypatch
+):
+    """And is reported back, so a client can see which grain it just drew at."""
+    asked = _type_id(monkeypatch)
+    _patch(monkeypatch, add_edit=lambda c, **kw: EDIT_ID)
+
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/edits",
+        json={**PROPOSAL, "type_context": "MEX", "type_slug": "manzana"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert asked == [("MEX", "manzana")]
+    assert response.json()["feature_type"] == "MEX:manzana"
 
 
 def test_the_drawn_area_may_be_a_feature_collection(client, events, monkeypatch):
@@ -975,6 +1037,25 @@ def test_removing_an_edit_of_this_scenario_is_204(client, events, monkeypatch):
     assert response.status_code == 204
     assert response.content == b""
     assert removed == [{"edit_id": EDIT_ID}]
+
+
+def test_losing_the_race_to_remove_an_edit_is_404_not_204(client, events, monkeypatch):
+    """``remove_edit`` reports whether it removed anything, so it is read.
+
+    Two removers, one edit: the second passes the ownership read, deletes no
+    row, and must not answer 204 for a removal it did not perform. The check
+    and the delete are one transaction, so this is narrow — but
+    ``remove_edit`` returns a bool precisely because it can be false.
+    """
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[dict(EDIT_ROW)]),
+        remove_edit=lambda c, **kw: False,
+    )
+
+    response = client.delete(f"/scenarios/{SCENARIO_ID}/edits?edit_id={EDIT_ID}")
+
+    assert response.status_code == 404
 
 
 # ── comparison ───────────────────────────────────────────────────────────
