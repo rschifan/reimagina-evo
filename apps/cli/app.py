@@ -129,6 +129,7 @@ from reimagina.scenarios.authoring import (  # noqa: E402
     DuplicateScenarioName,
     InvalidGeometry,
     ScenarioHasNoAOI,
+    ScenarioNotFound,
 )
 from .tiles import (  # noqa: E402
     export_tile_snapshot,
@@ -1391,6 +1392,11 @@ app.add_typer(scenario_app, name="scenario")
 #: run` already uses — never a traceback, which is what a planner would
 #: otherwise get for typing a number too large.
 #:
+#: `ScenarioNotFound` and not `LookupError`: the broad class also catches the
+#: `KeyError`/`IndexError` of a genuine defect anywhere under `authoring` or
+#: `comparison`, and reporting one as `error: 'some_key'` with exit 2 turns a
+#: bug into what looks like a refusal the user caused.
+#:
 #: `OSError` is here rather than `exists=True` on the option because it also
 #: covers a directory, an unreadable file and a broken symlink, and because
 #: every refusal on this sub-app should read the same way; a mistyped
@@ -1401,7 +1407,7 @@ _SCENARIO_USER_ERRORS = (
     DuplicateScenarioName,
     InvalidGeometry,
     ScenarioHasNoAOI,
-    LookupError,
+    ScenarioNotFound,
     OSError,
     ValueError,
 )

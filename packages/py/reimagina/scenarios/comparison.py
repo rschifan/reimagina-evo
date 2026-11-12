@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.scenarios.authoring import ScenarioNotFound
 from reimagina.scenarios.overrides import _require_postgres
 
 #: The three states a feature can be in. ``changed`` and ``unchanged`` both
@@ -97,8 +98,8 @@ def compare(
     — it does not shadow the baseline, so the feature still appears, reading
     ``unchanged`` at its baseline value. See ``_joined``.
 
-    Raises ``LookupError`` for an unknown indicator slug, an unknown scenario,
-    or an unknown ``aoi_id``. The last two refusals matter more than they
+    Raises ``ScenarioNotFound`` (a ``LookupError``) for an unknown indicator
+    slug, an unknown scenario, or an unknown ``aoi_id``. The last two refusals matter more than they
     look: an id that matches nothing has no results, so every surviving row
     would read as ``unchanged`` — or there would be no rows at all — and the
     answer to "what did my what-if do?" would be a confident "nothing". It is
@@ -139,7 +140,7 @@ def _direction(indicator_slug: str) -> bool:
     for spec in SHIPPED_INDICATORS:
         if spec.slug == indicator_slug:
             return spec.higher_is_better
-    raise LookupError(f"no indicator in the catalog with slug {indicator_slug!r}")
+    raise ScenarioNotFound(f"no indicator in the catalog with slug {indicator_slug!r}")
 
 
 def _require_scenario(conn: Any, scenario_id: str) -> None:
@@ -154,7 +155,7 @@ def _require_scenario(conn: Any, scenario_id: str) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM app_core.scenario WHERE id = %s", (scenario_id,))
         if cur.fetchone() is None:
-            raise LookupError(f"no scenario with id {scenario_id}")
+            raise ScenarioNotFound(f"no scenario with id {scenario_id}")
 
 
 def _require_aoi(conn: Any, aoi_id: str) -> None:
@@ -173,7 +174,7 @@ def _require_aoi(conn: Any, aoi_id: str) -> None:
             "SELECT 1 FROM curated_geo.area_of_interest WHERE id = %s", (aoi_id,)
         )
         if cur.fetchone() is None:
-            raise LookupError(f"no area_of_interest with id {aoi_id}")
+            raise ScenarioNotFound(f"no area_of_interest with id {aoi_id}")
 
 
 def _joined(

@@ -130,6 +130,30 @@ def test_explore_module_is_not_used_by_domain_logic_outside_cli():
         )
 
 
+def test_the_shared_backend_never_imports_a_deployable_app():
+    """`packages/py/reimagina` is below `apps/`, and the arrow points one way.
+
+    Written down because the first thing that tempts anyone to turn it round
+    is a rule the CLI implemented first and the API router then needs: the
+    four edits one proposal writes, the density precheck, the refusal of a
+    non-finite value. Importing those from `apps.cli` would make the HTTP
+    surface depend on the command line, and the cheap-looking alternative —
+    the router re-deriving them — is how `floors` and `num_levels` drift
+    apart. They live in `reimagina.scenarios.proposal` instead, and this is
+    what stops the shortcut being taken the other way.
+    """
+    disallowed_import = re.compile(r"^\s*(from\s+apps[\s.]|import\s+apps[\s.])", re.M)
+    offenders = [
+        path
+        for path in (ROOT / "packages" / "py" / "reimagina").rglob("*.py")
+        if disallowed_import.search(path.read_text())
+    ]
+    assert offenders == [], (
+        "the shared backend namespace must not import a deployable app: "
+        f"{[str(p.relative_to(ROOT)) for p in offenders]}"
+    )
+
+
 # ── Dependency pinning ───────────────────────────────────────────────────────
 #
 # CI used to run `pip install -e '.[dev]'`, which re-resolved every dependency

@@ -17,6 +17,20 @@ edits; the view carries the counts, which is what inspection asks for and what
 the spec names (`SCENARIO_AUTHORING.md`: "`scenario show` reports an edit
 count and a materialised-at timestamp").
 
+**The rules of a proposal are not in this file.** ``reimagina.scenarios.proposal``
+owns them — the four edits three numbers write, the refusal of a non-positive
+or non-finite value, the density precheck, and the unioning of a drawn
+FeatureCollection into one area. They are domain policy, and the API router
+needs the same ones; a router that imported them from ``apps/cli`` would have
+the dependency backwards, and one that re-derived them would bring back the
+failure the four-edit rule exists to prevent.
+
+What stays here is dialect. The domain says ``levels``; a person at a
+terminal typed ``--levels``, and a sentence that tells them to call
+``scenario recompute`` is useful to them and meaningless to an HTTP client.
+So each refusal is caught and re-raised with the flag name and the command
+attached — see ``_require_positive`` and ``_precheck_ceilings`` below.
+
 **The ceiling precheck is partial, on purpose and not completely.**
 ``set-attribute`` refuses values that would breach the *density* bound before
 it opens a connection — that bound is a property of levels and unit size
@@ -24,9 +38,9 @@ alone, so a form can check it without choosing a block
 (``ceilings.max_levels_for``). The housing-unit and population bounds scale
 with block area and are checked per block by ``materialize_scenario``, which
 is where `scenario recompute` meets them. ⚠ ``floors`` has **no** bound in
-``ceilings`` at all, though ``urban_form_block_planned_floors`` declares
-``valid_max=200``: a tall proposal at a large unit size passes every check
-here and raises in r016's trigger mid-compute. That gap is recorded in
+``ceilings`` at all, though ``urban_form_block_planned_floors`` declares a
+``valid_max``: a tall proposal at a large unit size passes every check here
+and raises in r016's trigger mid-compute. That gap is recorded in
 ``tests/unit/test_scenario_cli.py``; it is not closed here, because the place
 to close it is ``ceilings.check_ceilings``, where all the other bounds live.
 """
@@ -35,7 +49,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -44,158 +57,77 @@ from apps.cli.indicators import evaluate_scenario_cli
 from reimagina.data.feature import get_type_id
 from reimagina.db import connect
 from reimagina.scenarios.authoring import (
+    InvalidGeometry,
+    ScenarioNotFound,
     add_edit,
     create_scenario,
     materialize_scenario,
 )
-from reimagina.scenarios.ceilings import (
-    BlockInputs,
-    CeilingBreach,
-    check_ceilings,
-    max_levels_for,
-)
 from reimagina.scenarios.comparison import compare
+from reimagina.scenarios.proposal import (
+    CeilingPrecheckFailed,
+    ProposalValueError,
+    edits_for,
+    polygon_wkt,
+    precheck_ceilings,
+    require_positive,
+)
 
 #: Every shipped indicator is block-grain (AGENTS.md), so this is the type a
 #: drawn rule applies to unless the caller says otherwise.
 DEFAULT_TYPE_CONTEXT = "MEX"
 DEFAULT_TYPE_SLUG = "block"
 
-#: The ``feature_id`` the precheck gives its one synthetic block. No feature
-#: has been selected yet — that happens at materialisation — so the string is
-#: never shown; it exists because ``BlockInputs`` requires one.
-_PROPOSAL = "(proposal)"
-
-
-class CeilingPrecheckFailed(ValueError):
-    """Values the indicators could not store, refused before anything is read.
-
-    Deliberately *not* ``authoring.CeilingExceeded``. That exception names a
-    feature per breach because materialisation has blocks in hand; this
-    refusal happens with no block chosen, and a message reading "feature
-    (proposal) would compute…" would be worse than one that names the two
-    numbers the user typed. The breaches are carried on the exception so a
-    caller that wants the structured form has it.
-    """
-
-    def __init__(
-        self, breaches: list[CeilingBreach], *, levels: float, unit_size: float
-    ) -> None:
-        self.breaches = breaches
-        worst = breaches[0]
-        allowed = math.floor(max_levels_for(unit_size))
-        super().__init__(
-            f"{levels:g} storeys at {unit_size:g} m² per dwelling computes "
-            f"{worst.would_be:.1f} for {worst.indicator_slug}, whose valid_max "
-            f"is {worst.bound:.1f}. At {unit_size:g} m² per dwelling the "
-            f"ceiling allows {allowed:d} storeys; a larger --unit-size raises "
-            f"that in proportion. The per-block bounds (housing units, "
-            f"population) depend on each block's area and are checked by "
-            f"`scenario recompute`."
-        )
-
-
-def _edits_for(
-    levels: float, unit_size: float, people_per_household: float
-) -> list[dict[str, Any]]:
-    """The four edits one proposal writes, in the order they are written.
-
-    Three numbers, four rules: ``--levels`` sets both ``floors`` and
-    ``num_levels``, which are the same quantity under two names
-    (``seed_demo_attributes.py``). Writing one and not the other is the
-    failure this function exists to prevent — ``urban_form_block_planned_floors``
-    reads ``floors`` while the edificability family reads ``num_levels``, so a
-    half-written proposal makes the map contradict itself: planned floors stay
-    at the baseline while density moves.
-
-    All three are required of the caller (not defaulted) because
-    ``edificability.py`` skips any feature missing any of the three, and a
-    scenario that silently computed nothing is the hardest failure to see.
-    """
-    return [
-        {"attribute_key": "floors", "value_numeric": float(levels)},
-        {"attribute_key": "num_levels", "value_numeric": float(levels)},
-        {"attribute_key": "unit_size", "value_numeric": float(unit_size)},
-        {
-            "attribute_key": "people_per_household",
-            "value_numeric": float(people_per_household),
-        },
-    ]
-
 
 def _require_positive(**values: float) -> None:
-    """Refuse zero, negative and non-finite inputs.
+    """``require_positive``, with the refusal spelled as a command-line flag.
 
-    ``check_ceilings`` documents that degenerate inputs "yield 0 in the
-    kernels and so cannot breach; a caller validates those separately" — this
-    is that caller. Nothing downstream would refuse them: ``value_numeric`` is
-    a plain ``double precision``, so ``--levels -3`` and ``--levels nan`` both
-    reach ``scenario_override`` and then the compute.
+    The domain names the field (``levels``); the person at the terminal typed
+    ``--levels``, and telling them to fix ``levels`` is telling them to go
+    looking for it.
     """
-    for name, value in values.items():
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(
-                f"--{name.replace('_', '-')} must be a positive number, got {value!r}"
-            )
+    try:
+        require_positive(**values)
+    except ProposalValueError as exc:
+        raise ValueError(
+            f"--{exc.field.replace('_', '-')} must be a positive number, "
+            f"got {exc.value!r}"
+        ) from exc
 
 
-def precheck_ceilings(
+def _precheck_ceilings(
     levels: float, unit_size: float, people_per_household: float
 ) -> None:
-    """Refuse a proposal the density bound already rules out.
+    """``precheck_ceilings``, with the two flags and the next command named.
 
-    One synthetic block with ``area_m2=0``: no block has been chosen yet, so
-    only the bound that is independent of area can speak, and passing a real
-    or maximum area here would describe a block that does not exist — the
-    reasoning ``ceilings`` gives for checking per block rather than per
-    selection. ``check_ceilings`` rather than a local comparison so the bound
-    comes from the catalog at call time, through the one kernel that
-    materialisation also uses.
+    The domain message states the breach and is honest about the two bounds
+    it cannot check; what it must not state is *how* to act, because that is
+    different on every surface. Here the act is lowering a flag and running a
+    command, so this is where those words go.
     """
-    breaches = check_ceilings(
-        [
-            BlockInputs(
-                feature_id=_PROPOSAL,
-                levels=levels,
-                unit_size=unit_size,
-                people_per_household=people_per_household,
-                area_m2=0.0,
-            )
-        ]
-    )
-    if breaches:
-        raise CeilingPrecheckFailed(breaches, levels=levels, unit_size=unit_size)
+    try:
+        precheck_ceilings(levels, unit_size, people_per_household)
+    except CeilingPrecheckFailed as exc:
+        raise ValueError(
+            f"{exc} Lower --levels or raise --unit-size; "
+            f"`scenario recompute` is what materialises."
+        ) from exc
 
 
 def _polygon_wkt(geojson_path: str | Path) -> str:
-    """The drawn area, as WKT, from a GeoJSON file a drawing tool wrote.
+    """Read the drawn area from disk and hand the parsed GeoJSON to the domain.
 
-    Accepts a FeatureCollection, a Feature or a bare geometry, and unions
-    several parts into one area: a selection made with two strokes is one
-    rule, not two. Validity is left to ``add_edit``, which repairs with
-    ``ST_MakeValid`` on write — the one thing refused here is input with no
-    polygonal part at all, because the error PostGIS gives for it arrives
-    after a connection and a savepoint.
+    The reading is all that is left here: a request body and a drawn file
+    differ in where the bytes come from and in nothing else, so
+    ``proposal.polygon_wkt`` owns the FeatureCollection / Feature /
+    bare-geometry unioning that Task 9 needs too, and this adds the one thing
+    it cannot know — which file the user named.
     """
-    from shapely.geometry import shape
-    from shapely.ops import unary_union
-
     raw = json.loads(Path(geojson_path).read_text())
-    kind = raw.get("type")
-    if kind == "FeatureCollection":
-        geometries = [f.get("geometry") for f in raw.get("features", [])]
-    elif kind == "Feature":
-        geometries = [raw.get("geometry")]
-    else:
-        geometries = [raw]
-    parts = [shape(g) for g in geometries if g]
-    polygons = [p for p in parts if not p.is_empty and p.geom_type.endswith("Polygon")]
-    if not polygons:
-        raise ValueError(
-            f"{geojson_path} carries no polygon: a scenario edit is an area, "
-            f"and a point or a line selects nothing"
-        )
-    return str(unary_union(polygons).wkt)
+    try:
+        return polygon_wkt(raw)
+    except InvalidGeometry as exc:
+        raise InvalidGeometry(f"{geojson_path}: {exc}") from exc
 
 
 # ── write paths ─────────────────────────────────────────────────────────
@@ -250,7 +182,7 @@ def _project_of_aoi(conn: Any, aoi_id: str | None) -> str:
         )
         row = cur.fetchone()
     if row is None:
-        raise LookupError(f"no area_of_interest with id {aoi_id}")
+        raise ScenarioNotFound(f"no area_of_interest with id {aoi_id}")
     return str(row[0])
 
 
@@ -276,13 +208,13 @@ def set_attribute(
     _require_positive(
         levels=levels, unit_size=unit_size, people_per_household=people_per_household
     )
-    precheck_ceilings(levels, unit_size, people_per_household)
+    _precheck_ceilings(levels, unit_size, people_per_household)
     geometry_wkt = _polygon_wkt(geojson)
 
     written = []
     with contextlib.closing(connect(dsn)) as conn:
         type_id = get_type_id(conn, type_context, type_slug)
-        for edit in _edits_for(levels, unit_size, people_per_household):
+        for edit in edits_for(levels, unit_size, people_per_household):
             edit_id = add_edit(
                 conn,
                 scenario_id=scenario_id,
@@ -380,7 +312,7 @@ def _scenario_aoi(conn: Any, scenario_id: str) -> str | None:
         )
         row = cur.fetchone()
     if row is None:
-        raise LookupError(f"no scenario with id {scenario_id}")
+        raise ScenarioNotFound(f"no scenario with id {scenario_id}")
     return None if row[0] is None else str(row[0])
 
 
@@ -419,7 +351,7 @@ def show(*, dsn: str, scenario_id: str) -> dict[str, Any]:
             {"scenario_id": scenario_id},
         )
     if not rows:
-        raise LookupError(f"no scenario with id {scenario_id}")
+        raise ScenarioNotFound(f"no scenario with id {scenario_id}")
     return {"dsn": dsn, "scenario": rows[0]}
 
 

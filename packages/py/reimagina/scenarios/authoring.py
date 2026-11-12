@@ -38,6 +38,23 @@ from reimagina.scenarios.overrides import (
 )
 
 
+class ScenarioNotFound(LookupError):
+    """An id or slug the scenario surface was given matches nothing.
+
+    A scenario, an area of interest, or an indicator the catalog does not
+    carry. One class rather than three because the answer is the same in
+    every case and on every surface: the thing you named is not there.
+
+    It exists so a caller can catch *this* and not ``LookupError``. The broad
+    class also catches the ``KeyError``/``IndexError`` of a genuine defect
+    anywhere under ``authoring`` or ``comparison``, and a surface that treats
+    those as user error reports a bug as a refusal the user caused —
+    ``error: 'some_key'`` with exit 2 on the CLI, a 404 from the API. It
+    subclasses ``LookupError`` so that every caller written against the old
+    contract, including ``pytest.raises(LookupError)``, keeps working.
+    """
+
+
 class DuplicateScenarioName(Exception):
     """A scenario with this name already exists in the project."""
 
@@ -237,7 +254,7 @@ def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
     )
     row = cur.fetchone()
     if row is None:
-        raise LookupError(f"scenario {scenario_id} does not exist")
+        raise ScenarioNotFound(f"scenario {scenario_id} does not exist")
     return None if row[0] is None else str(row[0])
 
 
@@ -746,7 +763,7 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     deleted, for the reason ``_lock_scenario`` gives: a materialisation
     resolved against the scenario moments ago would otherwise resume after the
     delete and write its overrides and versions back, orphaned. Taking the
-    lock is also the existence check — an unknown id raises ``LookupError``
+    lock is also the existence check — an unknown id raises ``ScenarioNotFound``
     rather than reporting four zeros for a typo.
 
     Nothing here commits; the caller owns the transaction, so a failure at any

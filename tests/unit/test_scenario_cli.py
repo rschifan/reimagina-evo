@@ -17,8 +17,11 @@ import pytest
 
 import apps.cli.scenario as scenario_cli
 from apps.cli.app import main
-from apps.cli.scenario import _edits_for
-from reimagina.scenarios.authoring import DuplicateScenarioName, MaterializeResult
+from reimagina.scenarios.authoring import (
+    DuplicateScenarioName,
+    MaterializeResult,
+    ScenarioNotFound,
+)
 from reimagina.scenarios.ceilings import DENSITY, max_levels_for
 
 PROJECT_ID = "11111111-1111-1111-1111-111111111111"
@@ -98,11 +101,6 @@ def _out(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
-def _value(edits: list[dict], key: str) -> float:
-    (edit,) = [e for e in edits if e["attribute_key"] == key]
-    return edit["value_numeric"]
-
-
 def _floors_valid_max() -> float:
     """`valid_max` for the indicator that reads the `floors` attribute."""
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
@@ -119,26 +117,10 @@ def _geojson_file(tmp_path, payload=None):
 
 
 # ── the four edits ───────────────────────────────────────────────────────
-
-
-def test_levels_writes_both_floors_and_num_levels():
-    edits = _edits_for(levels=6, unit_size=60, people_per_household=3.6)
-
-    assert {e["attribute_key"] for e in edits} == {
-        "floors",
-        "num_levels",
-        "unit_size",
-        "people_per_household",
-    }
-    assert _value(edits, "floors") == _value(edits, "num_levels") == 6
-
-
-def test_every_edit_key_is_authorable():
-    """A key the authoring layer refuses is a four-way write that half-lands."""
-    from reimagina.assets.registry import authorable_attributes
-
-    keys = {e["attribute_key"] for e in _edits_for(6, 60, 3.6)}
-    assert keys == set(authorable_attributes())
+#
+# That three numbers make four edits is `reimagina.scenarios.proposal`'s rule
+# and is tested there. What is tested here is that the CLI uses it: a command
+# that assembled its own list would pass every test in that file.
 
 
 def test_set_attribute_writes_one_edit_per_attribute(monkeypatch, tmp_path, capsys):
@@ -378,6 +360,51 @@ def test_the_precheck_boundary_is_the_catalog_bound(monkeypatch, tmp_path, unit_
 
     assert _set_attribute(tmp_path, levels=allowed, unit_size=unit_size) == 0
     assert _set_attribute(tmp_path, levels=allowed + 1, unit_size=unit_size) == 2
+
+
+def test_the_cli_says_flags_where_the_domain_says_fields(monkeypatch, tmp_path, capsys):
+    """The dialect half of the move, from the user's side.
+
+    `reimagina.scenarios.proposal` states the breach in field names and says
+    nothing about how to act, because an HTTP 400 must not describe a command
+    line (`test_scenario_proposal.py` pins that). The person who typed
+    `--levels 13` still has to be told which flag to lower and which command
+    checks the rest, so the CLI adds it — and if it stopped, the refusal
+    would send them looking for a `levels` they never typed.
+    """
+    monkeypatch.setattr(
+        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be opened")
+    )
+
+    assert _set_attribute(tmp_path, levels=13, unit_size=60) == 2
+
+    err = capsys.readouterr().err
+    assert "--levels" in err and "--unit-size" in err
+    assert "`scenario recompute`" in err
+    # and the domain's own sentence survives intact underneath
+    assert DENSITY in err
+
+
+def test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal(
+    monkeypatch, fake_conn
+):
+    """⚠ `LookupError` in the catch tuple swallowed more than it was for.
+
+    A `KeyError` from a genuine bug anywhere under `authoring` or
+    `comparison` is a `LookupError`, so it used to print `error: 'some_key'`
+    and exit 2 — a defect wearing a refusal's clothes, and in Task 9's
+    router a 404 for an internal bug. The tuple names `ScenarioNotFound`
+    now, so this must escape.
+    """
+    fake_conn([])
+
+    def _raise(conn, **kw):
+        raise KeyError("higher_is_better")
+
+    monkeypatch.setattr(scenario_cli, "compare", _raise)
+
+    with pytest.raises(KeyError):
+        main(["scenario", "compare", "--scenario-id", SCENARIO_ID, "--slug", "s"])
 
 
 @pytest.mark.parametrize("levels", ["0", "-3", "nan"])
@@ -737,7 +764,7 @@ def test_compare_refuses_an_unknown_indicator(monkeypatch, fake_conn, capsys):
     fake_conn([])
 
     def _raise(conn, **kw):
-        raise LookupError("no indicator in the catalog with slug 'nope'")
+        raise ScenarioNotFound("no indicator in the catalog with slug 'nope'")
 
     monkeypatch.setattr(scenario_cli, "compare", _raise)
 
