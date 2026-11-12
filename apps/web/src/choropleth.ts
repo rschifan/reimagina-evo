@@ -27,6 +27,7 @@ import type {
 import { distributionSvg, percentileOf } from "./distribution";
 import { escapeHtml, fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
+import { tileUrlFor } from "./scenario";
 import type { SelectionController } from "./selection";
 import { registerValueAwareLayer } from "./selection-filter";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -169,16 +170,24 @@ export function activateIndicator(
   aoiId?: string | null,
   selectionController?: SelectionController,
   grain?: string | null,
+  // The active scenario, or null/absent for the baseline city. Only the tile
+  // URL reads it; everything else about the layer is the same either way,
+  // which is the point of resolving the overlay in SQL (r043).
+  scenarioId?: string | null,
 ): void {
   removeIndicator(map);
 
-  // `{z}/{x}/{y}` in the template is literal and must survive query-
-  // string composition, so use a plain concatenation — URLSearchParams
-  // or `new URL(template)` would reject the curly-brace placeholders.
-  const params = new URLSearchParams({ indicator_slug: indicator.slug });
-  if (grain) params.set("feature_type", grain);
-  if (aoiId) params.set("aoi_id", aoiId);
-  const tileUrl = `${config.tilesUrlTemplate}?${params.toString()}`;
+  // The URL is built by `scenario.tileUrlFor` rather than here, because
+  // whether `scenario_id` is on it is a decision with a cache attached: the
+  // baseline URL has to stay byte-identical to the one that existed before
+  // scenarios, and that is asserted where the builder lives.
+  const tileUrl = tileUrlFor({
+    template: config.tilesUrlTemplate,
+    slug: indicator.slug,
+    grain,
+    aoiId,
+    scenarioId,
+  });
 
   // promoteId surfaces MVT feature_id as feature.id so setFeatureState
   // can target the right feature for hover highlighting — same

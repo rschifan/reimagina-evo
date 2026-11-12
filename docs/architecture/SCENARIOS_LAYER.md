@@ -318,7 +318,11 @@ apply_override(
 
 `apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:42-44`).
 
-No CLI command or API route writes override rows today, so nothing a user can reach authors an edit. The write surface itself exists and is exercised: `apply_override` (`overrides.py:26`), `apply_overrides` (`:62`) and `publish_scenario_version` (`:85`) are called from four integration tests — `test_scenario_whatif.py`, `test_edificability_pipeline.py`, `test_asset_publish.py` and `test_freshness_driven_recompute.py`. Everything downstream of the table — change-set derivation, the overlay, the run — is wired. What is missing is an HTTP or CLI route into it.
+Three surfaces author an edit, and none of them owns a rule. `apps/cli/scenario.py` at a terminal, `apps/api/routers/scenarios.py` over HTTP, and `apps/web/src/scenario.ts` on the map all call `reimagina.scenarios.proposal`, which is where the four edits one proposal writes, the refusal of a degenerate number and the density precheck live — so the three refuse the same things for the same reasons. A surface adds exactly two things of its own: the dialect of its refusals (`--levels` on a command line, `levels` in a request body, a highlighted input on a form) and, on the map, the one check a form can make before the round trip.
+
+**The map's precheck is a saved round trip, not a guarantee**, and `scenario.ts` says so next to the inputs. Only the density ceiling is independent of block area, so it is the only one checkable before a block is chosen; the housing-unit and population ceilings are the server's, per block, at materialisation. The bound itself is read from `GET /indicators/edificability_block_density` rather than compiled into the frontend, because `ceilings._bound_for` reads it from the same catalog — a second copy would agree until the day the catalog moved.
+
+**The map carries the scenario in one place and four reads.** `scenario_id` goes on the indicator list (without it the picker hides the five edificability indicators, which have no baseline rows at all), the overlay's tile URL, the ramp's stats and the download URLs — and nowhere else, because the overlay is resolved in SQL (r043) rather than in the client. ⚠ The baseline's tile URL is byte-identical to the one that existed before scenarios: MapLibre caches tiles by URL, so a parameter added to the baseline invalidates every cached tile of every indicator on every AOI.
 
 ---
 
