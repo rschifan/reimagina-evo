@@ -65,7 +65,7 @@ line's test is added to the task that owns the code.
 |---|---|
 | `infra/db/migrations/versions/r048_scenario_authoring.py` | the two tables, RLS, indexes |
 | `infra/db/migrations/versions/r049_indicator_overlay_delta.py` | `indicator_overlay_tile` gains `delta` |
-| `packages/py/reimagina/assets/registry.py` | `AUTHORABLE_ATTRIBUTES` beside `overridable_attributes()` |
+| `packages/py/reimagina/assets/registry.py` | `authorable_attributes()` beside `overridable_attributes()` |
 | `packages/py/reimagina/scenarios/ceilings.py` | the three `valid_max` bounds, derived |
 | `packages/py/reimagina/scenarios/authoring.py` | scenario + edit CRUD, materialisation, delete |
 | `packages/py/reimagina/scenarios/comparison.py` | baseline-vs-scenario rows and summary |
@@ -105,6 +105,10 @@ def test_scenario_tables_exist_with_their_constraints(conn):
 def test_scenario_edit_rejects_a_non_polygon_geometry(conn):
     with pytest.raises(psycopg2.errors.CheckViolation):
         _insert_edit(conn, geometry_wkt="LINESTRING(0 0, 1 1)")
+
+def test_explore_exposes_scenarios_with_their_counts(conn):
+    row = _one(conn, "SELECT * FROM explore.scenario_v WHERE id = %s", sid)
+    assert row["name"] and row["edit_count"] == 2 and row["override_count"] == 0
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -115,7 +119,11 @@ Expected: FAIL — relation `app_core.scenario` does not exist
 - [ ] **Step 3: Write the migration**
 
 `revision = "r048"`, `down_revision = "r047"`. The two `CREATE TABLE`
-statements exactly as the spec gives them, plus
+statements exactly as the spec gives them, **plus `explore.scenario_v`** —
+one row per scenario with its name, AOI, edit count, override count and
+`materialized_at`, following `explore.layer_catalog_v`'s shape. AGENTS.md
+maintenance rule 4 requires CLI listing commands to read from `explore`, and
+rule 3 requires the inspection surface to grow with the contract. Plus
 `ALTER TABLE app_core.scenario ENABLE ROW LEVEL SECURITY` and a
 `tenant_isolation` policy whose predicate mirrors
 `r011_row_level_security.py`'s on `project_id`. Indexes:
@@ -136,15 +144,20 @@ git commit -m "Add the scenario and scenario_edit tables"
 
 ---
 
-### Task 2: `AUTHORABLE_ATTRIBUTES`
+### Task 2: `authorable_attributes()`
 
 **Files:**
 - Modify: `packages/py/reimagina/assets/registry.py` (beside `overridable_attributes()` at `:186`)
 - Test: `tests/contract/test_authorable_attributes.py`
 
 **Interfaces:**
-- Produces: `AUTHORABLE_ATTRIBUTES: tuple[str, ...]` and
+- Produces: `authorable_attributes() -> tuple[str, ...]` and
   `NON_AUTHORABLE_REASONS: dict[str, str]`.
+
+A function, not a constant, mirroring `overridable_attributes()` beside it. A
+module-level constant is computed once at import, so the derivation could not
+be exercised — and a test that cannot move the inputs cannot prove the output
+is derived rather than hardcoded.
 
 Lives in `registry.py`, not `indicators/catalog.py`: `registry.py` defers its
 `SHIPPED_INDICATORS` import to function scope in three places to keep that
@@ -154,16 +167,20 @@ dependency one-way.
 
 ```python
 def test_authorable_is_the_derived_set_minus_three():
-    assert set(AUTHORABLE_ATTRIBUTES) == set(overridable_attributes()) - {
+    assert set(authorable_attributes()) == set(overridable_attributes()) - {
         "geometry", "poi_version", "network_version"}
 
 def test_every_exclusion_states_why():
     assert set(NON_AUTHORABLE_REASONS) == {"geometry", "poi_version", "network_version"}
     assert all(reason.strip() for reason in NON_AUTHORABLE_REASONS.values())
 
-def test_a_new_policy_attribute_would_appear_without_editing_a_list():
-    # The derivation, not a literal: this fails if someone hardcodes the four.
-    assert set(AUTHORABLE_ATTRIBUTES) <= set(overridable_attributes())
+def test_a_new_policy_attribute_appears_without_editing_a_list(monkeypatch):
+    # A subset assertion would pass on a hardcoded four-tuple, which is the
+    # implementation this test exists to forbid. Grow the catalog instead.
+    extra = IndicatorSpec(slug="x_block_probe", ..., 
+                          inputs=(AssetEdge("mex.block", attributes=("lot_coverage",)),))
+    monkeypatch.setattr(registry, "_shipped", lambda: (*SHIPPED_INDICATORS, extra))
+    assert "lot_coverage" in authorable_attributes()
 ```
 
 - [ ] **Step 2: Run to verify it fails** — `ImportError`
@@ -172,7 +189,7 @@ Run: `uv run pytest tests/contract/test_authorable_attributes.py -v`
 
 - [ ] **Step 3: Implement**
 
-`AUTHORABLE_ATTRIBUTES` derived by subtraction from `overridable_attributes()`,
+`authorable_attributes()` derived by subtraction from `overridable_attributes()`,
 sorted. `NON_AUTHORABLE_REASONS` carries one sentence each: `geometry` is not a
 number; `poi_version` and `network_version` are hand-bumped dirty markers whose
 override recomputes against identical inputs.
@@ -189,50 +206,76 @@ override recomputes against identical inputs.
 - Test: `tests/unit/test_scenario_ceilings.py`
 
 **Interfaces:**
-- Produces:
-  `check_ceilings(*, levels: float, unit_size: float, people_per_household: float, max_block_area_m2: float) -> list[CeilingBreach]`
+- Produces: `BlockInputs`, a frozen dataclass of
+  `(feature_id: str, levels: float, unit_size: float, people_per_household: float, area_m2: float)`.
+- Produces: `check_ceilings(blocks: Iterable[BlockInputs]) -> list[CeilingBreach]`
   where `CeilingBreach` is a frozen dataclass of
-  `(indicator_slug: str, bound: float, would_be: float)`. Empty list means all
-  three pass.
+  `(feature_id: str, indicator_slug: str, bound: float, would_be: float)`.
+  Empty list means every block passes all three.
 - Produces: `max_levels_for(unit_size: float) -> float` — the density bound
   alone, for the form's pre-check.
+- Produces: `_bound_for(slug: str) -> float` — reads `valid_max` from
+  `SHIPPED_INDICATORS` **at call time**, so the bound is patchable and cannot
+  be frozen at import.
+
+⚠ **Per block, not per scenario.** Two edits can resolve to different
+`(levels, unit_size, people_per_household)` on different blocks — one district
+at six storeys and another at twelve is an ordinary proposal. A single triple
+plus the selection's maximum area describes no real block: it would clear a
+breach in the taller district or refuse the shorter one. Only
+`edificability_block_density` is area-independent; the other two scale with
+the block, so each block must be checked with its own values and its own area.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_density_bound_is_area_independent_and_derived():
-    # 10000 * levels / unit_size <= catalog valid_max (2000)
-    assert max_levels_for(60.0) == pytest.approx(12.0)
-    assert check_ceilings(levels=6, unit_size=60, people_per_household=3.6,
-                          max_block_area_m2=5_944) == []
+SMALL = 5_944          # median Tlalpan manzana
+BIG   = 138_695 * 60 / 6   # the area the catalog's measured 138,695-unit block has
 
-def test_density_breach_names_the_indicator_and_the_bound():
-    [breach] = [b for b in check_ceilings(
-        levels=13, unit_size=60, people_per_household=3.6, max_block_area_m2=5_944)
-        if b.indicator_slug == "edificability_block_density"]
+def _block(fid="b1", *, levels, unit_size=60, pph=3.6, area=SMALL):
+    return BlockInputs(feature_id=fid, levels=levels, unit_size=unit_size,
+                       people_per_household=pph, area_m2=area)
+
+def test_a_block_within_every_bound_produces_no_breach():
+    assert check_ceilings([_block(levels=6)]) == []
+    assert max_levels_for(60.0) == pytest.approx(12.0)   # 10000*L/60 <= 2000
+
+def test_a_density_breach_names_the_block_the_bound_and_the_value():
+    [breach] = check_ceilings([_block("b1", levels=13)])
+    assert breach.feature_id == "b1"
+    assert breach.indicator_slug == "edificability_block_density"
     assert breach.bound == 2000.0
     assert breach.would_be == pytest.approx(10000 * 13 / 60)
 
-def test_housing_units_bound_depends_on_block_area():
-    # The catalog records a measured Tlalpan block at 138,695 units at 6/60.
-    big = 138_695 * 60 / 6          # the area that produces it
-    assert check_ceilings(levels=6, unit_size=60, people_per_household=3.6,
-                          max_block_area_m2=big) == []
-    breaches = check_ceilings(levels=12, unit_size=60, people_per_household=3.6,
-                              max_block_area_m2=big)
-    assert any(b.indicator_slug == "edificability_block_housing_units" for b in breaches)
+def test_the_housing_units_bound_depends_on_the_block_s_own_area():
+    assert check_ceilings([_block(levels=6, area=BIG)]) == []
+    breaches = check_ceilings([_block(levels=12, area=BIG)])
+    assert {b.indicator_slug for b in breaches} == {"edificability_block_housing_units"}
 
-def test_population_bound_also_scales_with_household_size():
-    area = 138_695 * 60 / 6
+def test_the_population_bound_also_scales_with_household_size():
     assert any(b.indicator_slug == "edificability_block_population"
-               for b in check_ceilings(levels=6, unit_size=60,
-                                       people_per_household=40,
-                                       max_block_area_m2=area))
+               for b in check_ceilings([_block(levels=6, pph=40, area=BIG)]))
 
-def test_bounds_come_from_the_catalog_not_from_literals(monkeypatch):
-    # Changing the catalog's valid_max moves the ceiling.
-    ...
-    assert max_levels_for(60.0) != 12.0
+# The finding this signature exists for: one triple for the whole scenario
+# would clear the taller district or refuse the shorter one.
+def test_blocks_are_judged_separately_not_blended():
+    breaches = check_ceilings([
+        _block("small_ok", levels=6, area=SMALL),
+        _block("big_breach", levels=12, area=BIG),
+    ])
+    assert {b.feature_id for b in breaches} == {"big_breach"}
+
+def test_every_breaching_block_is_reported_not_just_the_first():
+    breaches = check_ceilings([_block("b1", levels=13), _block("b2", levels=13)])
+    assert {b.feature_id for b in breaches} == {"b1", "b2"}
+
+def test_the_bounds_are_read_from_the_catalog_at_call_time(monkeypatch):
+    # Patchable only because _bound_for looks the slug up per call. If the
+    # bound were captured at import, max_levels_for would not move and this
+    # would fail for a reason unrelated to the behaviour being pinned.
+    monkeypatch.setattr(ceilings, "_bound_for",
+                        lambda slug: 1000.0 if slug.endswith("_density") else 1e12)
+    assert max_levels_for(60.0) == pytest.approx(6.0)
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -242,11 +285,11 @@ Expected: FAIL — module not found
 
 - [ ] **Step 3: Implement**
 
-Read `valid_max` from `SHIPPED_INDICATORS` by slug for
-`edificability_block_density`, `edificability_block_housing_units`,
-`edificability_block_population`. Formulas per the spec's table:
-`10000 × levels / unit_size`, `area × levels / unit_size`, and the second
-times `people_per_household`.
+`_bound_for(slug)` reads `valid_max` from `SHIPPED_INDICATORS` per call.
+`check_ceilings` maps over the blocks and returns one `CeilingBreach` per
+(block, breached indicator), so a caller can name every offending block rather
+than the first. Formulas per the spec's table: `10000 × levels / unit_size`,
+`area_m2 × levels / unit_size`, and the second times `people_per_household`.
 
 - [ ] **Step 4: Run to verify it passes**
 - [ ] **Step 5: Commit** — `"Derive the three ceilings a scenario can breach"`
@@ -269,7 +312,10 @@ times `people_per_household`.
   - `remove_edit(conn, *, edit_id) -> bool`
   - `DuplicateScenarioName(Exception)`, `InvalidGeometry(Exception)`
 
-`ordinal` is assigned by `add_edit` as `max(ordinal) + 1` within the scenario.
+`add_edit` assigns `ordinal` as `max(ordinal) + 1` **after taking
+`SELECT id FROM app_core.scenario WHERE id = %s FOR UPDATE`**. ⚠ Without the
+lock, two concurrent calls read the same max, both insert it, and the second
+hits `UNIQUE (scenario_id, ordinal)` — a 500 on an ordinary double-submit.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -304,6 +350,16 @@ def test_an_unrepairable_geometry_is_rejected_with_a_reason(conn):
 def test_an_unauthorable_attribute_is_refused(conn):
     with pytest.raises(ValueError, match="network_version"):
         add_edit(conn, scenario_id=sid, attribute_key="network_version", ...)
+
+def test_concurrent_add_edit_does_not_collide_on_ordinal(conn, second_conn):
+    # Two transactions racing. The row lock must serialise them; without it the
+    # second raises UniqueViolation on (scenario_id, ordinal).
+    with ThreadPoolExecutor(2) as pool:
+        ids = [f.result() for f in [
+            pool.submit(add_edit, conn, scenario_id=sid, ...),
+            pool.submit(add_edit, second_conn, scenario_id=sid, ...)]]
+    ordinals = {e["ordinal"] for e in get_scenario(conn, sid)["edits"]}
+    assert len(ordinals) == len(ids) == 2
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -311,7 +367,7 @@ def test_an_unauthorable_attribute_is_refused(conn):
 
 `add_edit` repairs with `ST_CollectionExtract(ST_MakeValid(%s::geometry), 3)`
 and raises `InvalidGeometry` when the result is empty. It validates
-`attribute_key` against `AUTHORABLE_ATTRIBUTES` from Task 2.
+`attribute_key` against `authorable_attributes()` from Task 2.
 `create_scenario` catches `psycopg2.errors.UniqueViolation` and re-raises
 `DuplicateScenarioName`.
 
@@ -357,12 +413,19 @@ def test_materialising_twice_changes_nothing_and_publishes_nothing(conn):
     assert _current_version(conn, sid, "num_levels") == version_before
 
 def test_removing_an_edit_removes_its_overrides_and_supersedes_its_results(conn):
+    # ⚠ The fixture sets ALL THREE policy attributes over the same 4 blocks —
+    # edificability.py:101-107 skips a feature missing any one of them, so a
+    # one-edit fixture computes zero rows and this test fails for the wrong
+    # reason. `levels_eid` is the num_levels edit; removing it alone drops the
+    # blocks out of the compute.
     materialize_scenario(conn, scenario_id=sid)
     _compute_indicator(conn, "edificability_block_density", scenario_id=sid)
-    remove_edit(conn, edit_id=eid)
+    assert _current_results(conn, sid, "edificability_block_density") != []
+
+    remove_edit(conn, edit_id=levels_eid)
     result = materialize_scenario(conn, scenario_id=sid)
-    assert result.overrides_removed == 4
-    assert result.results_superseded > 0
+    assert result.overrides_removed == 4          # 4 blocks x 1 attribute
+    assert result.results_superseded == 4
     assert _current_results(conn, sid, "edificability_block_density") == []
 
 def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
@@ -393,7 +456,16 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid_with_13_levels)
     assert exc.value.breaches[0].indicator_slug == "edificability_block_density"
+    assert exc.value.breaches[0].feature_id in _blocks_in(conn, area)
     assert _override_count(conn, sid_with_13_levels) == 0
+
+def test_one_district_breaching_does_not_refuse_on_a_blend(conn):
+    # Two edits: 6 levels over small blocks, 13 over large ones. The breach is
+    # real and must be attributed to the large district's blocks, not averaged
+    # away or blamed on the whole selection.
+    with pytest.raises(CeilingExceeded) as exc:
+        materialize_scenario(conn, scenario_id=sid_two_districts)
+    assert {b.feature_id for b in exc.value.breaches} == set(_blocks_in(conn, tall_area))
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -401,8 +473,10 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
 
 In order: refuse without an AOI; select by `type_id` and
 `ST_Covers(edit.geometry, f.geometry_centroid)` joined to `aoi_feature`,
-resolving collisions by `ordinal`; `check_ceilings` against the selection's
-`max(ST_Area(geometry::geography))`; delete the overrides no edit implies,
+resolving collisions by `ordinal`; `check_ceilings` over one `BlockInputs` per resolved block, carrying that
+block's own `ST_Area(geometry::geography)` and its own resolved triple — **not
+one triple and the selection's maximum area**, which describes no real block;
+delete the overrides no edit implies,
 keeping the ids; one `apply_overrides` call; `publish_scenario_version` with no
 `attributes`; then mark this scenario's `current` `indicator_result` rows
 `'stale'` for the removed ids and the indicators reading the removed
@@ -462,9 +536,24 @@ def test_a_deleted_scenario_leaves_no_stale_asset_entry(conn):
 - Produces:
   `compare(conn, *, scenario_id, indicator_slug, aoi_id=None) -> ComparisonResult`
   with `rows: list[dict]` of
-  `{feature_id, baseline, scenario, delta, state}` where `state` is
-  `"changed" | "unchanged" | "new"`, and
+  `{feature_id, baseline, scenario, delta, state}` and
   `summary: {changed, unchanged, new, mean_delta, higher_is_better}`.
+
+⚠ **`scenario` is the *effective* value, not the scenario row.** r043's rule is
+that a scenario reads its own row where it has one and the baseline otherwise,
+so resolve `scenario_effective = COALESCE(scenario_row, baseline_row)` **before**
+classifying. Four input combinations map onto three states:
+
+| baseline row | scenario row | state | delta |
+|---|---|---|---|
+| yes | yes, different | `changed` | `scenario − baseline` |
+| yes | yes, equal | `unchanged` | `0.0` |
+| yes | **none** | `unchanged` | `0.0` — the scenario did not touch this block, so its effective value *is* the baseline |
+| **none** | yes | `new` | `None` |
+
+The third row is the common case for any indicator that has a baseline: every
+block outside the drawn area. Classifying on the raw scenario column instead of
+the effective value marks the whole untouched AOI as having no value.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -474,8 +563,20 @@ def test_a_changed_block_reports_its_delta(conn):
     assert row["state"] == "changed"
     assert row["delta"] == pytest.approx(row["scenario"] - row["baseline"])
 
-def test_an_untouched_block_is_unchanged_not_absent(conn):
-    assert _row_for(..., untouched_block)["state"] == "unchanged"
+def test_a_block_the_scenario_never_touched_is_unchanged_with_a_zero_delta(conn):
+    # It has a baseline row and NO scenario row. Its effective value is the
+    # baseline, so the honest answer is "unchanged", not NULL and not "new".
+    row = _row_for(compare(conn, scenario_id=sid, indicator_slug=slug), untouched_block)
+    assert row["state"] == "unchanged"
+    assert row["delta"] == 0.0
+    assert row["scenario"] == row["baseline"]
+
+def test_most_of_the_aoi_is_unchanged_for_an_indicator_with_a_baseline(conn):
+    # The guard against classifying on the raw scenario column: if that were
+    # done, every block outside the drawn area would come back NULL.
+    summary = compare(conn, scenario_id=sid, indicator_slug=slug).summary
+    assert summary["unchanged"] > summary["changed"]
+    assert summary["new"] == 0
 
 # The five indicators this exists for have no baseline at all.
 def test_an_indicator_with_no_baseline_reports_new_not_a_delta(conn):
@@ -493,9 +594,10 @@ def test_the_summary_carries_the_catalog_direction(conn):
 - [ ] **Step 2: Run to verify it fails**
 - [ ] **Step 3: Implement**
 
-A `FULL OUTER JOIN` between the scenario's `current` rows and the baseline's,
-modelled on `acceptance_run.sh:242-269`'s LEFT JOIN but keeping scenario-only
-rows. `higher_is_better` is read from the catalog.
+A `FULL OUTER JOIN` between the scenario's `current` rows and the baseline's —
+`acceptance_run.sh:242-269`'s LEFT JOIN, widened so scenario-only rows survive.
+Then `COALESCE(scenario, baseline)` for the effective value, and classify per
+the table above. `higher_is_better` is read from the catalog.
 
 - [ ] **Step 4: Run to verify it passes**
 - [ ] **Step 5: Commit** — `"Compare a scenario against the baseline it departs from"`
@@ -512,6 +614,8 @@ rows. `higher_is_better` is read from the catalog.
 **Interfaces:**
 - Consumes: Tasks 4–7.
 - Produces: `scenario create|list|show|set-attribute|recompute|compare`.
+⚠ `list` and `show` read `explore.scenario_v`, not `list_scenarios` — AGENTS.md
+rule 4. The write paths use `authoring.py` directly.
 
 `set-attribute` takes `--levels`, `--unit-size`, `--people-per-household` and
 writes **four** edits: `--levels` produces both `floors` and `num_levels`.
@@ -633,8 +737,13 @@ would add a correlated `NOT EXISTS` per catalog row for nothing.
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_without_delta_the_tile_is_byte_identical_to_before(conn):
-    assert _tile(conn, z, x, y, {"indicator_slug": s, "scenario_id": sid}) == _tile_before
+def test_without_delta_the_tile_is_unchanged(conn):
+    # Structural, not byte-identical: the pre-r049 function no longer exists
+    # once migrations have run, so its bytes cannot be produced in-test.
+    props = _decode(_tile(conn, z, x, y, {"indicator_slug": s, "scenario_id": sid}))
+    assert set(props) == _expected_feature_ids
+    assert all(set(p) == {"feature_id", "value"} for p in props.values())
+    assert "delta" not in _any_property_name(props)
 
 def test_delta_emits_the_difference_where_both_exist(conn):
     props = _decode(_tile(conn, z, x, y, {..., "delta": "true"}))
@@ -725,8 +834,18 @@ it("renders a `new` feature distinctly from an unchanged one", () => {
 ```
 
 - [ ] **Step 2: Run to verify it fails**
-- [ ] **Step 3: Implement** — symmetric domain about zero, diverging palette per
-  the `dataviz` conventions already in `style.css`; `new` gets its own fill.
+- [ ] **Step 3a: Extract `valueRamp` first, as a pure refactor**
+
+`activateIndicator` builds its colour interpolation inline (`choropleth.ts`
+around `:194-200`); there is no `valueRamp` to compare against. Lift that
+expression unchanged into `export function valueRamp(domain: RampDomain):
+ExpressionSpec` and call it from `activateIndicator`. Run the existing web
+suite and `tests/e2e` to confirm the baseline render is byte-for-byte what it
+was — this step must change no pixels.
+
+- [ ] **Step 3b: Implement `deltaRamp`** — symmetric domain about zero,
+  diverging palette per the `dataviz` conventions already in `style.css`;
+  `new` gets its own fill.
 - [ ] **Step 4: Run to verify it passes**
 - [ ] **Step 5: Commit** — `"Show a scenario as a difference, not as a value"`
 
@@ -737,7 +856,7 @@ it("renders a `new` feature distinctly from an unchanged one", () => {
 **Files:**
 - Modify: `AGENTS.md`, `docs/architecture/SCENARIOS_LAYER.md`,
   `docs/architecture/TERMINOLOGY.md`, `docs/ENGINEERING_NOTES.md:108-110`,
-  `scripts/acceptance_run.sh:185-223`, `infra/db/migrations/` (explore view)
+  `scripts/acceptance_run.sh:185-223`
 - Test: `tests/contract/test_repository_structure.py` (existing guards)
 
 - [ ] **Step 1: Run the guards to see them fail**
@@ -764,9 +883,17 @@ association now exists. `AGENTS.md`: the new CLI commands.
 
 ```bash
 uv run python scripts/render_delivery_pdfs.py
-uv run python scripts/delivery_manifest.py --tag <next-rc>
+uv run python scripts/delivery_manifest.py        # no --tag; see below
 sha256sum -c docs/delivery/SHA256SUMS
 ```
+
+⚠ **No `--tag` here.** The Tag row is the one field Article 2.2 cannot do
+without, and `delivery_manifest.py` writes whatever string it is given — a
+literal placeholder would land in a hashed, contract-guarded document. Omitted,
+the row reads `(untagged)`, which is honest for a branch. The tag is cut in its
+own step after this branch is approved, by regenerating with
+`--tag <the name chosen then>` and committing that; the sequence already runs
+`schedule-a-rc1`…`rc3`.
 
 - [ ] **Step 5: Run the full suite**
 
@@ -819,9 +946,40 @@ as a required layer, so a plan with no performance task would have left the one
 acknowledged risk unmeasured. Task 10's step 3 originally said "overlay like
 r043"; corrected to the `OR` form, because the probe is an `EXISTS`.
 
+**What a code review caught that this self-review did not.** Ten findings,
+all fixed above. Two would have changed what gets built, and both fell in the
+same blind spot: the self-review checked that names *matched* across tasks and
+that each Review Focus line *had* a test, not that a signature could express
+what it was called on to check, nor that a test could pass.
+
+- `check_ceilings` took one `(levels, unit_size, people_per_household)` triple
+  and the selection's maximum area. Two districts at different densities
+  resolve to different triples per block, so the check described no real block
+  — it would clear a breach in the taller district, which then raises inside
+  the compute, aborting every block at once. Now one `BlockInputs` per block.
+- Comparison's three states omitted the *common* case: a baseline row with no
+  scenario row, which is every block outside the drawn area. Classifying on
+  the raw scenario column would mark the untouched majority of the AOI as
+  having no value. Now `COALESCE(scenario, baseline)` before classifying, with
+  the four input combinations written out.
+
+The rest were task-local: an `ordinal` assigned by `max()+1` against a UNIQUE
+constraint with no lock; a supersession fixture that would compute zero rows
+because edificability skips a block missing any one of three attributes; a
+test calling a `valueRamp` that does not exist; no task creating
+`explore.scenario_v` though AGENTS.md rule 4 requires the CLI to read it; an
+anti-hardcoding test that a hardcoded tuple satisfies; a test body elided to
+`...`; a byte-identity tile fixture that cannot be captured after migration;
+and a literal `<next-rc>` in the step that writes the Article 2.2 tag.
+
+Fixing the allowlist test then turned its constant into a function, because a
+constant computed at import cannot be patched — caught by re-running the type
+check below rather than by noticing at the time.
+
 **Type consistency.** `materialize_scenario` returns `MaterializeResult` in
 Tasks 5, 8 and 9; `check_ceilings` returns `list[CeilingBreach]` in Tasks 3, 5
-and 8; `compare` returns `ComparisonResult` in Tasks 7, 9 and 13;
+and 8; `compare` returns `ComparisonResult`, named in Task 7 and consumed
+by endpoint and field in Tasks 9 and 13;
 `scenario_id` is `str` throughout.
 
 **Review Focus coverage.** 1 and 2 and 5 are tested in Task 5, 3 in Task 4, 4
