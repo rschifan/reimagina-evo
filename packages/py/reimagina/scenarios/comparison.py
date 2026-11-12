@@ -90,18 +90,27 @@ def compare(
     nearest amenity, where an increase is a loss.
 
     ``aoi_id`` scopes the comparison to that AOI's members. Omitted, the
-    comparison spans every feature the indicator has a result for.
+    comparison spans every feature the indicator has a *numeric* result for,
+    on one side or the other. The qualifier is the whole of what is left out:
+    a feature carrying no numeric value on *either* side is absent from
+    ``rows`` and from the counts. A valueless scenario row is not in that set
+    — it does not shadow the baseline, so the feature still appears, reading
+    ``unchanged`` at its baseline value. See ``_joined``.
 
-    Raises ``LookupError`` for an unknown indicator slug or an unknown
-    scenario. The second refusal matters more than it looks: an id that
-    matches no scenario has no results, so every baseline row would read as
-    ``unchanged`` and the answer to "what did my what-if do?" would be a
-    confident "nothing" — the same reasoning that makes ``delete_scenario``
-    check existence rather than report four zeros for a typo.
+    Raises ``LookupError`` for an unknown indicator slug, an unknown scenario,
+    or an unknown ``aoi_id``. The last two refusals matter more than they
+    look: an id that matches nothing has no results, so every surviving row
+    would read as ``unchanged`` — or there would be no rows at all — and the
+    answer to "what did my what-if do?" would be a confident "nothing". It is
+    the same reasoning that makes ``delete_scenario`` check existence rather
+    than report four zeros for a typo, and the two ids deserve it equally: a
+    typo in either produces an answer that looks like a finding.
     """
     _require_postgres(conn)
     higher_is_better = _direction(indicator_slug)
     _require_scenario(conn, scenario_id)
+    if aoi_id is not None:
+        _require_aoi(conn, aoi_id)
 
     rows = [
         _classify(feature_id, baseline, scenario)
@@ -148,6 +157,25 @@ def _require_scenario(conn: Any, scenario_id: str) -> None:
             raise LookupError(f"no scenario with id {scenario_id}")
 
 
+def _require_aoi(conn: Any, aoi_id: str) -> None:
+    """The same refusal as ``_require_scenario``, for the other id.
+
+    An ``aoi_id`` nobody recognises makes the ``EXISTS`` in ``_joined`` match
+    nothing, so the comparison comes back with zero rows, ``mean_delta`` of
+    ``None`` and all three counts at zero — the shape of a real, honest "this
+    scenario changed nothing", produced by a typo. Refusing is the choice
+    already made for the scenario id one function up; leaving the AOI
+    unchecked would make the pair asymmetric for no reason other than that
+    the brief only named one of them.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM curated_geo.area_of_interest WHERE id = %s", (aoi_id,)
+        )
+        if cur.fetchone() is None:
+            raise LookupError(f"no area_of_interest with id {aoi_id}")
+
+
 def _joined(
     conn: Any,
     *,
@@ -169,6 +197,19 @@ def _joined(
     over values and COALESCE skips a NULL. Treating a valueless row as absent
     here keeps the two reads saying the same thing, and leaves "no row" and
     "no value" from ever having to be told apart downstream.
+
+    Be precise about what that drops, because it is narrower than "rows
+    flagged ``missing`` are dropped". A row is emitted whenever *either* side
+    carries a number. So a valueless *scenario* row over a numeric baseline
+    changes nothing visible: the baseline survives the join, the COALESCE
+    resolves to it, and the feature reads ``unchanged`` at its baseline value
+    — exactly as ``scenario_overlay`` says it should. The set that really
+    disappears is features with no numeric value on *either* side. Dropping
+    those is the load-bearing half: without the baseline-side filter such a
+    feature reaches ``_classify`` as ``(None, None)`` and comes back as a
+    ``new`` row whose ``baseline``, ``scenario`` and ``delta`` are all null —
+    a fifth combination the table above has no cell for, reported as though
+    the scenario had added something.
 
     The join is one-to-one by construction: r016's two partial unique indexes
     allow at most one ``current`` row per ``(feature, indicator)`` baseline and

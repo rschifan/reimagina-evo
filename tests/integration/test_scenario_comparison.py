@@ -142,6 +142,42 @@ def _write(conn, *, slug, values, scenario_id=None):
     )
 
 
+def _write_valueless(conn, *, slug, feature_id, scenario_id=None):
+    """One ``current`` row carrying no number.
+
+    ``write_result(value_numeric=None, quality_flag='missing')`` is a
+    supported call and ``'missing'`` is a valid flag, so this row is by
+    design, not corruption — see ``storage._utils.scenario_overlay``. It goes
+    through ``write_result`` rather than ``bulk_write_numeric_results``
+    because the bulk path takes ``list[tuple[str, float]]`` and has no way to
+    express the absent value, which is exactly why no fixture produced one.
+
+    It supersedes whatever ``current`` row the same (feature, indicator,
+    scenario) already had, so calling it over a block the fixture gave a
+    number leaves that block valueless rather than holding both.
+
+    ``missing_reason`` is not decoration: r016's before-write trigger refuses
+    ``quality_flag='missing'`` without one.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs_runtime.job_run "
+            "(model_family, status, code_version, scenario_id) "
+            "VALUES ('test', 'succeeded', 'test', %s) RETURNING id",
+            (scenario_id,),
+        )
+        job_run_id = cur.fetchone()[0]
+    backend_for_connection(conn).indicator_result_repo().write_result(
+        feature_id=feature_id,
+        indicator_slug=slug,
+        job_run_id=job_run_id,
+        value_numeric=None,
+        quality_flag="missing",
+        missing_reason="no destination in range",
+        scenario_id=scenario_id,
+    )
+
+
 def _row_for(result, feature_id: str) -> dict:
     matches = [row for row in result.rows if row["feature_id"] == feature_id]
     assert matches, f"{feature_id} is absent from the comparison"
@@ -279,6 +315,89 @@ def test_an_indicator_with_no_baseline_reports_new_not_a_delta(densified, conn):
     assert row["baseline"] is None
     assert row["delta"] is None
     assert row["scenario"] == 120.0
+
+
+# ── rows that carry no value ────────────────────────────────────────────────
+#
+# Both CTEs filter ``value_numeric IS NOT NULL``. That decision is invisible
+# to every fixture above, because ``bulk_write_numeric_results`` cannot write
+# a valueless row — so these three tests exist to pin it, and they are the
+# only ones that notice if either filter is removed.
+
+
+def test_a_valueless_scenario_row_does_not_shadow_the_baseline(upzoned, conn):
+    """The rule ``scenario_overlay`` already made, stated here too.
+
+    Block 4 has a numeric baseline and now a ``current`` scenario row with no
+    value. The scenario has not said "this is now unknown" — the overlay is a
+    COALESCE over values and COALESCE skips a NULL — so the baseline still
+    wins and the block reads ``unchanged`` at its baseline value. It is *not*
+    dropped: the set this comparison leaves out is narrower than "rows
+    flagged missing".
+    """
+    _write_valueless(
+        conn,
+        slug=_FLOORS,
+        feature_id=upzoned.blocks[4],
+        scenario_id=upzoned.scenario_id,
+    )
+
+    result = compare(conn, scenario_id=upzoned.scenario_id, indicator_slug=_FLOORS)
+
+    row = _row_for(result, upzoned.blocks[4])
+    assert row["state"] == "unchanged"
+    assert row["scenario"] == row["baseline"] == 3.0
+    assert row["delta"] == 0.0
+    assert len(result.rows) == _BLOCKS
+
+
+def test_a_valueless_scenario_row_with_no_baseline_is_not_a_new_feature(
+    densified, conn
+):
+    """Nothing on either side, so nothing to report — the scenario-side filter.
+
+    Density has no baseline at all, so block 2's valueless scenario row is
+    the whole of what is known about that block: no number anywhere. Drop the
+    ``value_numeric IS NOT NULL`` from the scenario CTE and it survives the
+    join as ``(None, None)``, which ``_classify`` reads as ``new`` and emits
+    with every value null — a block the comparison claims the scenario added,
+    at no value, with no delta.
+    """
+    _write_valueless(
+        conn,
+        slug=_DENSITY,
+        feature_id=densified.blocks[2],
+        scenario_id=densified.scenario_id,
+    )
+
+    result = compare(conn, scenario_id=densified.scenario_id, indicator_slug=_DENSITY)
+
+    assert densified.blocks[2] not in {row["feature_id"] for row in result.rows}
+    assert len(result.rows) == 2
+    assert result.summary["new"] == 2
+    assert all(row["scenario"] is not None for row in result.rows)
+
+
+def test_a_valueless_baseline_is_absent_rather_than_reported_as_new(upzoned, conn):
+    """The same, on the baseline side — and the load-bearing one.
+
+    Block 4's numeric baseline is superseded by a valueless one and the
+    scenario never touched the block, so again no number exists on either
+    side. Drop the filter from the baseline CTE and the block comes back
+    ``new`` with ``baseline``, ``scenario`` and ``delta`` all null: a row in
+    the fifth combination the four-way table has no cell for, inflating the
+    ``new`` count of a scenario that added nothing.
+    """
+    _write_valueless(conn, slug=_FLOORS, feature_id=upzoned.blocks[4])
+
+    result = compare(conn, scenario_id=upzoned.scenario_id, indicator_slug=_FLOORS)
+
+    assert upzoned.blocks[4] not in {row["feature_id"] for row in result.rows}
+    assert len(result.rows) == _BLOCKS - 1
+    assert result.summary["new"] == 0
+    assert result.summary["unchanged"] == 5
+    assert result.summary["changed"] == 2
+    assert all(row["baseline"] is not None for row in result.rows)
 
 
 # ── the summary ─────────────────────────────────────────────────────────────
@@ -452,6 +571,23 @@ def test_an_unknown_scenario_is_refused_rather_than_reported_unchanged(upzoned, 
             conn,
             scenario_id="00000000-0000-0000-0000-000000000000",
             indicator_slug=_FLOORS,
+        )
+
+
+def test_an_unknown_aoi_is_refused_rather_than_reported_empty(upzoned, conn):
+    """The same refusal as the scenario id, for the same reason.
+
+    An AOI nobody recognises matches no member, so the comparison would come
+    back with no rows, a null ``mean_delta`` and three zero counts — which is
+    what an honest "this scenario changed nothing" looks like. A typo must
+    not be able to produce it.
+    """
+    with pytest.raises(LookupError):
+        compare(
+            conn,
+            scenario_id=upzoned.scenario_id,
+            indicator_slug=_FLOORS,
+            aoi_id="00000000-0000-0000-0000-000000000000",
         )
 
 
