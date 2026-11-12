@@ -32,8 +32,20 @@ class IndicatorCatalogRepository(Protocol):
     def get_indicator(self, slug: str) -> dict[str, Any] | None: ...
 
     def list_indicators(
-        self, *, with_values_for_aoi: str | None = None
-    ) -> list[dict[str, Any]]: ...
+        self,
+        *,
+        with_values_for_aoi: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Catalog rows, optionally only those with values in an AOI.
+
+        ``scenario_id`` says which results count toward
+        ``with_values_for_aoi``: the named scenario's rows *and* the
+        baseline's, since a scenario stores only what it changed. Optional,
+        and defaulting to baseline-only, so every existing caller keeps the
+        answer it had.
+        """
+        ...
 
     def set_dependencies(
         self,

@@ -127,10 +127,22 @@ def list_indicators(
     aoi_id: UUID | None = Query(
         default=None,
         description=(
-            "Restrict to indicators that hold at least one current baseline "
+            "Restrict to indicators that hold at least one current "
             "value on a feature in this AOI. Omitted, the full catalog is "
             "returned — a registered indicator with no values yet is a real "
             "catalog entry, just not something a picker should offer."
+        ),
+    ),
+    scenario_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Which results count toward `aoi_id`: this scenario's and the "
+            "baseline's, rather than the baseline's alone. Needed because the "
+            "edificability indicators exist only inside a scenario, so "
+            "without it the picker hides exactly what a scenario was authored "
+            "to show. A well-formed id naming no scenario offers the baseline "
+            "set — the same thing that would render. No effect without "
+            "`aoi_id`, which is what narrows."
         ),
     ),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
@@ -139,7 +151,10 @@ def list_indicators(
     rows = (
         get_backend(conn)
         .indicator_catalog_repo()
-        .list_indicators(with_values_for_aoi=_as_str(aoi_id))
+        .list_indicators(
+            with_values_for_aoi=_as_str(aoi_id),
+            scenario_id=_as_str(scenario_id),
+        )
     )
     return [IndicatorSummary(**_catalog_row_to_dict(row)) for row in rows]
 
