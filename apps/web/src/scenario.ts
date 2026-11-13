@@ -71,6 +71,9 @@ const M2_PER_HECTARE = 10_000;
  *  rather than pretending the run is lost. */
 const RUN_POLL_MS = 2_000;
 const MAX_RUN_POLLS = 60;
+/** Consecutive unreadable polls tolerated before handing over to the
+ *  dashboard. One network blip must not end the follow. */
+const MAX_RUN_READ_FAILURES = 3;
 
 /**
  * What the form says about its own check, printed next to the inputs.
@@ -439,9 +442,9 @@ function capitalize(text: string): string {
 }
 
 
-/** Numbers as typed: 6 not 6.00, 3.6 not 3.60. */
+/** Numbers as typed: 6 not 6.00, 3.6 not 3.60 — which is what `String` does. */
 function fmt(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(value);
+  return String(value);
 }
 
 
@@ -879,12 +882,16 @@ export function enableScenarioPanel(
     await loadRules();
   }
 
+  function clearComparison(): void {
+    comparisonHost.hidden = true;
+    comparisonHost.replaceChildren();
+  }
+
   function setActive(scenarioId: string | null, announce = true): void {
     if (scenarioId === activeId) return;
     activeId = scenarioId;
     stopPolling();
-    comparisonHost.hidden = true;
-    comparisonHost.replaceChildren();
+    clearComparison();
     setAuthoringVisible();
     void loadRules();
     if (announce) options.onScenarioChange(activeId);
@@ -996,6 +1003,7 @@ export function enableScenarioPanel(
   function pollRun(runId: string, materialised: string): void {
     const myToken = ++pollToken;
     let attempts = 0;
+    let readFailures = 0;
     const short = runId.slice(0, 8);
     const tick = async (): Promise<void> => {
       if (myToken !== pollToken) return;
@@ -1007,9 +1015,17 @@ export function enableScenarioPanel(
         // A poll that could not be read is not a recompute that failed, and
         // must not be reported as one: the overrides stand either way.
         console.warn("could not read run", runId, err);
+        readFailures += 1;
+        if (myToken !== pollToken) return;
+        if (readFailures < MAX_RUN_READ_FAILURES && attempts < MAX_RUN_POLLS) {
+          // A single blip is not the end of the follow; try the next tick.
+          pollTimer = window.setTimeout(() => void tick(), RUN_POLL_MS);
+          return;
+        }
         say(`${materialised} Run ${short} could not be read — follow it on the run dashboard.`);
         return;
       }
+      readFailures = 0;
       if (myToken !== pollToken) return;
       if (isTerminalRunStatus(run.status)) {
         pollTimer = null;
@@ -1020,6 +1036,9 @@ export function enableScenarioPanel(
               `${failed > 0 ? ` (${failed} indicator${failed === 1 ? "" : "s"} failed)` : ""}. ` +
               "Redrawing the map on its results.",
           );
+          // The strip describes the previous run's numbers; beside fresh
+          // results it would be a stale "N changed" that reads as current.
+          clearComparison();
           // The map is rendered from the scenario id, so restating it is what
           // rebuilds the source — and a rebuilt source drops the tiles cached
           // before the run, which are the stale ones.
@@ -1050,10 +1069,15 @@ export function enableScenarioPanel(
   recomputeButton.addEventListener("click", () => {
     void (async () => {
       if (!activeId) return;
+      const scenarioAtClick = activeId;
       recomputeButton.disabled = true;
       say("Materialising the edits and queueing the recompute…");
       try {
-        const result = await recomputeScenario(activeId);
+        const result = await recomputeScenario(scenarioAtClick);
+        // The user may have switched scenario during the request. The run is
+        // the old scenario's; following it would write its status and redraw
+        // the map over the one now showing.
+        if (activeId !== scenarioAtClick) return;
         const matched = Object.values(result.matched_per_edit);
         const caught = matched.length > 0 ? Math.max(...matched) : 0;
         const materialised =
