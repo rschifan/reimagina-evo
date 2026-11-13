@@ -192,6 +192,13 @@ def ensure_layer_source(conn, spec: CDMXLayerSpec) -> str:
         version=spec.version,
     )
     if existing is not None:
+        # Move a row registered under the old convention — the local bronze
+        # path — onto lineage. Without this, returning early left it there for
+        # good: the overwrite that once kept it current is gone, so nothing
+        # would ever correct it. Overture's `ensure_…` does the same, and
+        # raster's registration upserts.
+        if existing["storage_uri"] != spec.download_url:
+            cat.update_source_storage_uri(conn, str(existing["id"]), spec.download_url)
         return str(existing["id"])
     return cat.register_source(
         conn,
@@ -199,7 +206,13 @@ def ensure_layer_source(conn, spec: CDMXLayerSpec) -> str:
         provider=spec.provider,
         storage_type="vector",
         integration_role="canonical_entity",
-        storage_uri=f"pending://cdmx/{spec.key}",
+        # Lineage: where the archive is published, known before anything is
+        # fetched. This used to be a `pending://` placeholder overwritten
+        # with the local bronze path after landing — so the catalog recorded
+        # where our copy sat and never where the data came from. The bronze
+        # copy needs no column: it lives at `data/bronze/{source_id}/` by
+        # construction, so this row's id already finds it.
+        storage_uri=spec.download_url,
         version=spec.version,
         license=spec.license,
         notes=spec.notes,
@@ -299,10 +312,6 @@ def bootstrap_layers(
         conn.commit()
 
         bronze_path, silver_path = stage_layer(spec, source_file, source_id=source_id)
-        cat.update_source_storage_uri(
-            conn, source_id, bronze.bronze_uri(source_id, bronze_path.name)
-        )
-        conn.commit()
 
         load_result = load_layer(
             conn,
