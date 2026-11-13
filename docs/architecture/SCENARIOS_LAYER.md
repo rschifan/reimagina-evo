@@ -84,15 +84,19 @@ survives per pair in all four configurations: a valued scenario row wins, a
 valueless one yields to the baseline, a valueless one with no baseline is still
 returned, and no scenario row leaves the baseline.
 
-⚠ **`serving_geo.indicator_overlay_tile` still carries the one-sided form**
-(r043's `_OVERLAY`), so a scenario tile emits two MVT features with the same
-`feature_id` — one valueless — whenever the scenario has a valueless row for a
-feature the baseline has a value for. It is a separate copy of the predicate in
-SQL rather than a call into `scenario_overlay`, and it is not fixed here on
-purpose: the in-flight `feature/scenario-authoring` branch replaces the whole
-function (r049, `CREATE OR REPLACE`) with a copy of the same one-sided
-predicate, so a fix landing before it would be silently overwritten. Fix it in
-r049, where the function's current definition lives.
+⚠ **`serving_geo.indicator_overlay_tile` carries the predicate as a separate
+copy in SQL**, not as a call into `scenario_overlay`, so it had the same
+one-sided form and emitted two MVT features with the same `feature_id` — one
+valueless — whenever a scenario had a valueless row for a feature the baseline
+has a value for. It is fixed on the scenario-authoring branch, in r049, which
+is where the function's definition now lives: a fix landing here first would
+have been silently overwritten by that migration's `CREATE OR REPLACE`. Its
+`downgrade` keeps r043's one-sided predicate, so downgrading restores the
+function r043 shipped rather than one that never existed at that revision.
+
+Until that branch merges, the function on this one is still r043's and still
+draws such a feature twice, while the Python read paths above resolve it
+correctly — the two disagree on exactly this case, in that direction.
 
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
