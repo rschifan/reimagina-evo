@@ -9,9 +9,21 @@ Design decisions that follow the get_tile (r010) precedent:
 
 - Feature source is `curated_geo.feature` joined to
   `curated_geo.indicator_result WHERE status='current'` — not
-  `serving_geo.current_indicator_v`, because the view hides indicator_id
-  and joining through it adds a second catalog lookup the planner can't
-  eliminate. One query, two tables.
+  `serving_geo.current_indicator_v`, because reading through the view
+  adds a catalog lookup this function never uses: the view inner-joins
+  `indicator_catalog` for `indicator_name` / `unit` / `value_type` /
+  `computation_kind`, and Postgres removes only *left* joins, so the
+  scan stays in the plan even when no catalog column is selected.
+  Verified at r048 — `EXPLAIN` of `SELECT feature_id, indicator_id,
+  value_numeric FROM serving_geo.current_indicator_v` still carries an
+  `Index Only Scan using indicator_catalog_pkey`. One query, two tables.
+
+  ⚠ Not because "the view hides indicator_id", as this note read until
+  r048. It does not: r016 selects `ir.indicator_id` into the view, along
+  with `value_numeric`, `value_text` and `value_json`. The claim mattered
+  because it is the reason to reach past `civ` for a column, and
+  `storage/_utils.scenario_overlay` correlates on exactly
+  `civ.indicator_id`.
 - Geometry is simplified by zoom the same way get_tile does. Below z=10
   the function returns an empty tile — choropleth at city / country zoom
   is misleading (every feature becomes a single pixel) and the manifest
