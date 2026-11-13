@@ -667,11 +667,12 @@ is reported with its actual result.
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 655 passed |
-| 7 | `pytest tests/integration` | 366 passed, 1 skipped |
+| 6 | `pytest tests/unit tests/contract` | 954 passed |
+| 7 | `pytest tests/integration` | 502 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,038 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 141 passed |
+| 8b | `pytest tests/performance` | 6 passed, 1 skipped |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,473 passed, 2 skipped |
+| 10 | `cd apps/web && npm test` | 253 passed |
 | 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 27 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
