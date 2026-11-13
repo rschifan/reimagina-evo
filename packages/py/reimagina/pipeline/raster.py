@@ -80,6 +80,7 @@ def ingest_raster_source(
     minzoom: int = 5,
     maxzoom: int = 14,
     published: bool = True,
+    origin_uri: str | None = None,
 ) -> IngestResult:
     """Register → stage → convert → publish a single-band raster source.
 
@@ -123,16 +124,20 @@ def ingest_raster_source(
 
     backend = backend_for_connection(conn)
 
-    # Step 1 — register or upsert the source. The canonical storage_uri
-    # will be the silver COG path; we set a placeholder here and
-    # overwrite below once the silver artifact is on disk.
+    # Step 1 — register or upsert the source, recording where the data came
+    # from. `data_source_catalog.storage_uri` is lineage; the local copy this
+    # function produces is recorded on `file_asset` in Step 6, which is what
+    # tiles and zonal stats read. `origin_uri` is the upstream a caller knows
+    # about (WorldPop passes its download URL). Without one, the honest origin
+    # is the file we were handed — not the silver COG we are about to make
+    # from it, which is an output rather than a source.
     source_id = cat.register_source(
         conn,
         name=source_name,
         provider=provider,
         storage_type="raster",
         integration_role="enrichment",
-        storage_uri=f"file://data/silver/<pending>/{raw_path.name}",
+        storage_uri=origin_uri or raw_path.resolve().as_uri(),
         version=version,
         license=license,
         notes=description,
@@ -172,13 +177,6 @@ def ingest_raster_source(
         # the canonical URI parsed by reimagina.tiles.defaults.
         subpath = silver_path.relative_to(_data_root())
         storage_uri = f"file://data/{subpath.as_posix()}"
-
-        # Overwrite the '<pending>' placeholder set in Step 1 now that the
-        # real silver path is known. Keeps ``data_source_catalog.storage_uri``
-        # aligned with ``file_asset.storage_uri`` — the convention every
-        # other pipeline (cdmx, overture) already follows, and the one
-        # ``explore.source_runs_v`` surfaces to operators.
-        cat.update_source_storage_uri(conn, source_id, storage_uri)
 
         # Step 6 — file_asset.
         asset_id = backend.file_asset_repo().register_file_asset(

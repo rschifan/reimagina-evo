@@ -14,14 +14,15 @@ def land_file(source_path: str | Path, source_id: str) -> Path:
 
     Bronze files are immutable after landing — never modified.
     Returns the destination path.
+
+    ⚠ The bronze copy is addressed by ``source_id``, and that is why no column
+    records it: a ``data_source_catalog`` row's own id finds its bronze files.
+    That catalog's ``storage_uri`` is lineage — where the data came from — and
+    is no longer overwritten with this path, which is what ``bronze_uri`` used
+    to exist for.
     """
     src = Path(source_path)
     dest = BRONZE_DIR / source_id / src.name
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
     return dest
-
-
-def bronze_uri(source_id: str, filename: str) -> str:
-    """Return a file:// URI for a bronze asset (used as storage_uri in data_source_catalog)."""
-    return f"file://data/bronze/{source_id}/{filename}"
