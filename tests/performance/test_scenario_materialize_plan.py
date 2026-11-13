@@ -7,11 +7,17 @@ one that resolves a drawn area to features:
 
     ST_Covers(e.geometry, f.geometry_centroid)
 
-That is only cheap because ``feature_centroid_gist`` (r027) exists. Lose the
-index, or write the predicate against ``f.geometry`` instead of the stored
-centroid, and the same statement still returns the right rows, so nothing
-functional fails; it just becomes a scan of every feature in the platform
-while the lock is held.
+The plan uses ``feature_centroid_gist`` (r027) for it. Lose that index and
+the same statement still returns the right rows, so nothing functional fails;
+the planner walks ``feature_type_id_idx`` and applies ``ST_Covers`` to every
+feature of the type while the lock is held.
+
+What this file pins is a **design** and an **index use**, not a proven
+slowdown. The design: the predicate is written against the stored centroid,
+not ``f.geometry``. The index use: the plan's access path is
+``feature_centroid_gist``. Writing the predicate against ``f.geometry`` is
+*not* shown to be slower: the planner then uses ``feature_geometry_gist`` and
+plans fine, with no scan.
 
 This is a **plan** contract, not a timing budget. ``docs/architecture/
 PERFORMANCE.md`` records the measured wall-clock figures and the machine and
@@ -31,11 +37,12 @@ from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import add_edit, create_scenario
 from tests.integration._helpers import insert_project, register_source, start_run
 
-#: Blocks in the fixture. 100 x 100 is large enough that, once the centroid
-#: index is dropped, the planner prefers a sequential scan for a selective
-#: area (see the control test below). A table of a few dozen rows would pass
-#: the plan assertions because the planner would not bother with an index at
-#: all, which would make the contract vacuous.
+#: Blocks in the fixture, all of one feature type. Without the centroid index
+#: the planner uses ``feature_type_id_idx`` and does not Seq Scan (control 2
+#: below); the ``Seq Scan`` text is reachable only by forcing
+#: ``enable_indexscan``/``enable_bitmapscan`` off (control 1). A table of a few
+#: dozen rows would pass the plan assertions because the planner would not
+#: bother with an index at all, which would make the contract vacuous.
 GRID = 100
 BLOCK_SIDE = 0.002  # degrees, ~210 m
 LON0, LAT0 = -99.30, 19.30
@@ -236,6 +243,10 @@ def test_the_index_is_what_the_plan_depends_on(conn):
     the scenario lock is held, and it does not contain the text the first
     assertion forbids. So the index-name assertion is the load-bearing one;
     the ``Seq Scan`` assertion alone would pass on this plan.
+
+    ``DROP INDEX`` takes ACCESS EXCLUSIVE on ``feature`` until the rollback.
+    Harmless while the suite is serial; whoever parallelises
+    ``tests/performance`` will see other tests block on this one.
     """
     scenario_id, aoi_id = _scenario_with_selective_edit(conn)
     sql, params = materialize_select(conn, scenario_id, aoi_id)
@@ -251,9 +262,10 @@ def test_the_index_is_what_the_plan_depends_on(conn):
 def test_the_select_is_written_against_the_stored_centroid(conn):
     """The index is on ``geometry_centroid``; the predicate must name it.
 
-    ``ST_PointOnSurface(f.geometry)`` computed inline would be the same answer
-    and a sequential scan, which the plan assertion catches only by its effect.
-    This names the cause.
+    This is the design pin: the stored centroid is what the statement uses.
+    ``f.geometry`` is not shown to be slower (the planner uses
+    ``feature_geometry_gist`` for it); the plan test catches that change only
+    through the index name. This names the cause.
     """
     scenario_id, aoi_id = _scenario_with_selective_edit(conn)
     sql, _ = materialize_select(conn, scenario_id, aoi_id)

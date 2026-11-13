@@ -209,11 +209,19 @@ statement `_resolve_edits` executes (captured as it runs, not copied) against a
 - no `Seq Scan on feature`;
 - the predicate is written against the stored `f.geometry_centroid`.
 
-This is a **plan** claim, stable across machines. The `Seq Scan` assertion
-alone is not enough: with the index dropped, the planner does not fall back to
+The fixture is all one feature type (`MEX:block`), which is part of why the
+planner chooses `feature_type_id_idx` below; reproduce it with a mixed-type
+table and the unindexed plan may differ.
+
+This is a **design pin plus an index-use pin**, stable across machines: "we use
+the stored centroid, and the plan reaches it through `feature_centroid_gist`".
+It is **not** shown that the alternative is slower. Mutating the predicate to
+`f.geometry` was tried: the planner uses `feature_geometry_gist` and plans
+fine, with no scan, and with the index-name assertions removed the plan test
+passes. The `Seq Scan` assertion alone is not enough: with the index dropped, the planner does not fall back to
 `Seq Scan on feature` on this fixture. It walks `feature_type_id_idx` and
 applies `ST_Covers` to every feature of the type, which is the same cost under
-a different name. The index-name assertion is the load-bearing one, and two
+a different name. The index-name assertion is the load-bearing one of the plan test, and two
 controls in the file show each assertion is reachable (index and bitmap scans
 forced off gives the `Seq Scan`; index dropped loses the index name).
 
@@ -286,12 +294,20 @@ evaluation. The numbers behind it:
   materialisation into a job: a job would give up the synchronous refusal
   (`CeilingExceeded`, `ScenarioHasNoAOI`), which the caller needs to see.
 
-Not measured: a network hop between application and database, concurrent
+Not measured at 90,000 blocks: the removal and the `compute_block_housing_density`
+contrast. `compute_block_housing_density` died there with "SSL connection has
+been closed unexpectedly"; the cause was not investigated. Those rows exist only
+for 20,164 blocks.
+
+Also not measured: a network hop between application and database, concurrent
 materialisations of different scenarios contending on `scenario_override`, and
 a database whose `feature` table holds the whole country rather than the
 fixture's 10-90k rows.
 
 ### Delta tile (`serving_geo.indicator_delta_tile`)
+
+These figures were measured in Task 11 and were not re-measured by this task;
+they are recorded here with their method.
 
 Measured at pilot scale: 19,881 blocks, 20,181 current results, 400 features in
 a z=14 tile. Each figure is 15 timed calls through the shipped function, min and
