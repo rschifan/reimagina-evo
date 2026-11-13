@@ -70,6 +70,7 @@ def ingest_raster(
     published: bool = True,
     code_version: str = "dev",
     orchestrator_run_id: str | None = None,
+    origin_uri: str | None = None,
 ) -> dict[str, Any]:
     """Run ingest_raster_source against the given DSN, return JSON-friendly result."""
     captured_at_dt: datetime | None = None
@@ -96,6 +97,7 @@ def ingest_raster(
             published=published,
             code_version=code_version,
             orchestrator_run_id=orchestrator_run_id,
+            origin_uri=origin_uri,
         )
     return {
         "source_id": result.source_id,
