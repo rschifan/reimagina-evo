@@ -1,11 +1,18 @@
-"""The three ceilings a scenario's attribute values can breach."""
+"""The four ceilings a scenario's attribute values can breach."""
 
 from __future__ import annotations
 
 import pytest
 
 from reimagina.scenarios import ceilings
-from reimagina.scenarios.ceilings import BlockInputs, check_ceilings, max_levels_for
+from reimagina.scenarios.ceilings import (
+    DENSITY,
+    FLOORS,
+    BlockInputs,
+    check_ceilings,
+    max_floors,
+    max_levels_for,
+)
 
 SMALL = 5_944  # median Tlalpan manzana
 BIG = 138_695 * 60 / 6  # the area the catalog's measured 138,695-unit block has
@@ -74,3 +81,49 @@ def test_the_bounds_are_read_from_the_catalog_at_call_time(monkeypatch):
         lambda slug: 1000.0 if slug.endswith("_density") else 1e12,
     )
     assert max_levels_for(60.0) == pytest.approx(6.0)
+
+
+def test_a_floors_breach_is_found_though_density_is_legal():
+    levels = int(max_floors()) + 1
+    unit_size = 1.1 * levels / max_levels_for(1.0)  # density comfortably legal
+    assert max_levels_for(unit_size) > levels  # precondition: only floors in play
+    [breach] = check_ceilings(
+        [_block("b1", levels=levels, unit_size=unit_size, area=1)]
+    )
+    assert breach.indicator_slug == FLOORS
+    assert breach.bound == max_floors()
+    assert breach.would_be == levels
+    assert (
+        check_ceilings([_block(levels=int(max_floors()), unit_size=unit_size, area=1)])
+        == []
+    )
+
+
+def test_two_breaches_on_one_block_are_both_reported():
+    # 13 storeys at 60 m2 breaches density; the floors bound is breached too
+    # once levels pass it, and the block must yield an entry for each.
+    levels = max_floors() + 1
+    breaches = check_ceilings([_block("b1", levels=levels, unit_size=60, area=1)])
+    assert [b.feature_id for b in breaches] == ["b1", "b1"]
+    assert {b.indicator_slug for b in breaches} == {FLOORS, DENSITY}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        # non-positive levels: skipped outright, floors included
+        ({"levels": 0, "unit_size": 60}, set()),
+        ({"levels": -300, "unit_size": 60}, set()),
+        # non-positive unit size skips the unit-size-dependent bounds, but
+        # floors does not depend on it, so an absurd storey count still breaches
+        ({"levels": 6, "unit_size": 0}, set()),
+        ({"levels": 250, "unit_size": 0}, {FLOORS}),
+        # zero area: units and population are 0, but density is judged with the
+        # area cancelled, as the proposal precheck relies on (documented)
+        ({"levels": 6, "unit_size": 60, "area": 0}, set()),
+        ({"levels": 13, "unit_size": 60, "area": 0}, {DENSITY}),
+    ],
+)
+def test_degenerate_inputs_breach_only_what_the_docstring_says(kwargs, expected):
+    breaches = check_ceilings([_block(**kwargs)])
+    assert {b.indicator_slug for b in breaches} == expected

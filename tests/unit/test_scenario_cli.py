@@ -433,7 +433,7 @@ def test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal(
 
     A `KeyError` from a genuine bug anywhere under `authoring` or
     `comparison` is a `LookupError`, so it used to print `error: 'some_key'`
-    and exit 2 — a defect wearing a refusal's clothes, and in Task 9's
+    and exit 2 — a defect wearing a refusal's clothes, and in the HTTP
     router a 404 for an internal bug. The tuple names `ScenarioNotFound`
     now, so this must escape.
     """
@@ -465,37 +465,24 @@ def test_a_degenerate_value_is_refused(monkeypatch, tmp_path, capsys, levels):
     assert "--levels" in capsys.readouterr().err
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="ceilings has no floors bound; delete this when it grows one",
-)
 def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
-    """⚠ A known, deferred gap, written as the behaviour we want.
+    """A tall proposal at a large unit size is refused for `floors`, by name.
 
-    `check_ceilings` bounds density, housing units and population; it does
-    *not* bound `floors`, although `urban_form_block_planned_floors` declares
-    a `valid_max`. Past that many storeys, at a unit size large enough that
-    the density ratio stays legal, a proposal passes every bound there is and
-    r016's trigger raises mid-compute instead.
-
-    `xfail(strict=True)` rather than an `== 0` assertion of the status quo.
-    The status quo form fails as a bare `assert 2 == 0` when the gap closes,
-    with the "delete me" instruction buried in this docstring, and it also
-    fails for precheck bugs that have nothing to do with `floors` — a canary
-    that dies of several unrelated causes tells you nothing. This way,
-    closing the gap is an XPASS that prints the reason above.
+    `urban_form_block_planned_floors` declares a `valid_max`, and `--levels`
+    is written to `floors` unchanged. Past that many storeys, at a unit size
+    large enough that the density ratio stays legal, the density bound says
+    nothing and r016's trigger would raise mid-compute, so the precheck has to
+    be the one to refuse.
 
     Both inputs are derived from the catalog. Hardcoding `levels=250,
     unit_size=2000` assumed the density bound stays above 1250: lower it and
     the density precheck starts refusing this proposal, so the test would
-    pass for the wrong reason.
+    pass for the wrong reason. The precondition below is what pins that, and
+    it sits outside anything that could swallow its failure.
 
-    And the refusal must *name* the floors indicator, not merely happen. The
-    exit code alone is not enough to tell this gap closing from the precheck
-    simply getting stricter: a hardcoded storey limit, or a precheck that
-    ignored `--unit-size`, both make this proposal exit 2 while `floors`
-    stays unbounded, and both would XPASS a test that only counted. Reading
-    stderr is what makes the canary specific to its own cause.
+    The refusal must *name* the floors indicator, not merely happen: a
+    hardcoded storey limit, or a precheck that ignored `--unit-size`, would
+    both exit 2 for this proposal while `floors` stayed unbounded.
     """
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
     monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
@@ -632,7 +619,7 @@ def test_an_aoi_of_another_project_reads_as_a_refusal_not_a_traceback(
     project's blocks. That refusal is `ScenarioNotFound`, and whether it
     *reaches a person* as `error: …` with exit 2 or as a traceback is this
     file's business: it depends on `ScenarioNotFound` being in
-    `_SCENARIO_USER_ERRORS`, which Task 8 put there for its own reasons.
+    `_SCENARIO_USER_ERRORS`, which exists so that user-facing refusals are caught.
 
     Narrow that tuple later and the domain's integration test stays green
     while this command starts dumping a stack trace at a planner who typed

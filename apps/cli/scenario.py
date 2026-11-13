@@ -31,18 +31,16 @@ terminal typed ``--levels``, and a sentence that tells them to call
 So each refusal is caught and re-raised with the flag name and the command
 attached — see ``_require_positive`` and ``_precheck_ceilings`` below.
 
-**The ceiling precheck is partial, on purpose and not completely.**
-``set-attribute`` refuses values that would breach the *density* bound before
-it opens a connection — that bound is a property of levels and unit size
-alone, so a form can check it without choosing a block
-(``ceilings.max_levels_for``). The housing-unit and population bounds scale
-with block area and are checked per block by ``materialize_scenario``, which
-is where `scenario recompute` meets them. ⚠ ``floors`` has **no** bound in
-``ceilings`` at all, though ``urban_form_block_planned_floors`` declares a
-``valid_max``: a tall proposal at a large unit size passes every check here
-and raises in r016's trigger mid-compute. That gap is recorded in
-``tests/unit/test_scenario_cli.py``; it is not closed here, because the place
-to close it is ``ceilings.check_ceilings``, where all the other bounds live.
+**The ceiling precheck is partial, on purpose.**
+``set-attribute`` refuses, before it opens a connection, values that would
+breach a bound independent of block area: *density* (a property of levels and
+unit size alone; ``ceilings.max_levels_for``) and *floors* (``--levels`` is
+written to ``floors`` unchanged, so it is bounded by the planned-floors
+indicator's ``valid_max`` whatever the unit size; ``ceilings.max_floors``).
+Both come from the catalog at call time. The housing-unit and population
+bounds scale with block area and are checked per block by
+``materialize_scenario``, which is where `scenario recompute` meets them. A
+proposal that passes here is not thereby safe.
 """
 
 from __future__ import annotations
@@ -110,7 +108,8 @@ def _precheck_ceilings(
         precheck_ceilings(levels, unit_size, people_per_household)
     except CeilingPrecheckFailed as exc:
         raise ValueError(
-            f"{exc} Lower --levels or raise --unit-size; "
+            f"{exc} Lower --levels (or, for the density ceiling, raise "
+            f"--unit-size); "
             f"`scenario recompute` is what materialises."
         ) from exc
 
@@ -121,7 +120,7 @@ def _polygon_wkt(geojson_path: str | Path) -> str:
     The reading is all that is left here: a request body and a drawn file
     differ in where the bytes come from and in nothing else, so
     ``proposal.polygon_wkt`` owns the FeatureCollection / Feature /
-    bare-geometry unioning that Task 9 needs too, and this adds the one thing
+    bare-geometry unioning that the HTTP router needs too, and this adds the one thing
     it cannot know — which file the user named.
     """
     raw = json.loads(Path(geojson_path).read_text())

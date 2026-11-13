@@ -20,6 +20,22 @@ def test_authorable_is_the_derived_set_minus_three() -> None:
     assert set(authorable_attributes()) == set(overridable_attributes()) - _EXCLUDED
 
 
+def test_all_four_authorable_attributes_are_pinned() -> None:
+    """The exact set, so a fifth lever (or a lost one) is a reviewed change.
+
+    The derived-set test above cannot notice a new policy attribute: it
+    recomputes the same subtraction. A new lever must be given a ceiling check
+    (or an explicit decision not to) in `reimagina.scenarios.ceilings`, and
+    this is where that question is forced.
+    """
+    assert authorable_attributes() == (
+        "floors",
+        "num_levels",
+        "people_per_household",
+        "unit_size",
+    )
+
+
 def test_authorable_is_sorted() -> None:
     assert authorable_attributes() == tuple(sorted(authorable_attributes()))
 

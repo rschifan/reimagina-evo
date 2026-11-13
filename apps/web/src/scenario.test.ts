@@ -165,6 +165,38 @@ describe("validateEdit", () => {
     ).toMatch(/density/);
   });
 
+  // Storeys are capped by the planned-floors indicator whatever the unit
+  // size: 250 storeys at 2 000 m² is only 1 250 dwellings/ha, under density.
+  it("refuses levels above the floors ceiling even when density is legal", () => {
+    const refusal = validateEdit({
+      ...ok,
+      levels: 250,
+      unitSize: 2000,
+      densityValidMax: CATALOG_DENSITY_MAX,
+      floorsValidMax: 200,
+    });
+    expect(refusal).toMatch(/floors/);
+    expect(refusal).toContain("200");
+    expect(
+      validateEdit({
+        ...ok,
+        levels: 200,
+        unitSize: 2000,
+        densityValidMax: CATALOG_DENSITY_MAX,
+        floorsValidMax: 200,
+      }),
+    ).toBeNull();
+  });
+
+  it("derives the floors ceiling from the bound given, and has no opinion without one", () => {
+    expect(
+      validateEdit({ ...ok, levels: 60, unitSize: 2000, floorsValidMax: 50 }),
+    ).toMatch(/floors/);
+    expect(
+      validateEdit({ ...ok, levels: 250, unitSize: 2000, floorsValidMax: null }),
+    ).toBeNull();
+  });
+
   it("passes the tallest proposal the ceiling allows", () => {
     expect(
       validateEdit({ ...ok, levels: 12, densityValidMax: CATALOG_DENSITY_MAX }),
@@ -173,8 +205,8 @@ describe("validateEdit", () => {
 
   // ⚠ Three unit sizes, because one cannot tell a derivation from a constant.
   // `max_levels_for(60)` is exactly 12 under the shipped catalog, so a
-  // hardcoded 12 passes every 60 m² case — the hole Task 8 found in its own
-  // mirror of this bound.
+  // hardcoded 12 passes every 60 m² case — the hole a constant-12 mirror of this
+  // bound would otherwise hide.
   it.each([
     [30, 6],
     [60, 12],

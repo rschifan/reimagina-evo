@@ -29,8 +29,10 @@ from typing import Any
 from reimagina.scenarios.authoring import InvalidGeometry
 from reimagina.scenarios.ceilings import (
     BlockInputs,
+    FLOORS,
     CeilingBreach,
     check_ceilings,
+    max_floors,
     max_levels_for,
 )
 
@@ -76,14 +78,25 @@ class CeilingPrecheckFailed(ValueError):
         self.breaches = breaches
         self.levels = levels
         self.unit_size = unit_size
-        self.allowed_levels = math.floor(max_levels_for(unit_size))
+        # Both area-independent bounds: density scales with unit size, the
+        # floors bound does not. The smaller is what a form may offer.
+        self.allowed_levels = math.floor(min(max_levels_for(unit_size), max_floors()))
         worst = breaches[0]
+        if worst.indicator_slug == FLOORS:
+            advice = (
+                f"The floors ceiling allows {self.allowed_levels:d} storeys at "
+                f"{unit_size:g} m² per dwelling, whatever the unit size."
+            )
+        else:
+            advice = (
+                f"At {unit_size:g} m² per dwelling the ceiling allows "
+                f"{self.allowed_levels:d} storeys, and the density part of it "
+                f"rises in proportion to the unit size."
+            )
         super().__init__(
             f"{levels:g} storeys at {unit_size:g} m² per dwelling computes "
             f"{worst.would_be:.1f} for {worst.indicator_slug}, whose valid_max "
-            f"is {worst.bound:.1f}. At {unit_size:g} m² per dwelling the "
-            f"ceiling allows {self.allowed_levels:d} storeys, and it rises in "
-            f"proportion to the unit size. The per-block bounds (housing "
+            f"is {worst.bound:.1f}. {advice} The per-block bounds (housing "
             f"units, population) depend on each block's area, so this check "
             f"cannot see them; materialisation checks them block by block."
         )
@@ -134,7 +147,7 @@ def require_positive(**values: float) -> None:
 def precheck_ceilings(
     levels: float, unit_size: float, people_per_household: float
 ) -> None:
-    """Refuse a proposal the density bound already rules out.
+    """Refuse a proposal the area-independent bounds already rule out.
 
     One synthetic block with ``area_m2=0``: no block has been chosen yet, so
     only the bound that is independent of area can speak, and passing a real

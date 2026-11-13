@@ -11,12 +11,11 @@
  *
  * ## What the client-side check is, and what it is not
  *
- * `validateEdit` mirrors `max_levels_for` — the density bound, which is the
- * only one of the three ceilings independent of block area and therefore the
- * only one checkable before a block is chosen. It is **a saved round trip, not
- * a guarantee**: `check_ceilings` deliberately omits `floors`, and the
- * housing-unit and population bounds scale with each block's own area, so a
- * proposal that passes here can still be refused per block at
+ * `validateEdit` mirrors the two bounds independent of block area, and
+ * therefore checkable before a block is chosen: density (`max_levels_for`)
+ * and floors (`max_floors`). It is **a saved round trip, not a guarantee**:
+ * the housing-unit and population bounds scale with each block's own area, so
+ * a proposal that passes here can still be refused per block at
  * materialisation. {@link CLIENT_PRECHECK_NOTE} is what the form says so, and
  * the 422 path is wired and exercised rather than assumed unreachable.
  *
@@ -61,6 +60,10 @@ import { enableSelection } from "./selection";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
 export const DENSITY_INDICATOR_SLUG = "edificability_block_density";
+
+/** The indicator that reads `floors`, which `--levels` writes unchanged. Its
+ *  `valid_max` caps storeys whatever the unit size. */
+export const FLOORS_INDICATOR_SLUG = "urban_form_block_planned_floors";
 
 /** `ceilings._M2_PER_HECTARE`, and the reason the bound is per hectare. */
 const M2_PER_HECTARE = 10_000;
@@ -159,6 +162,9 @@ export interface ProposalValues {
    *  absent when `/indicators/{slug}` could not be read — the check is then
    *  the server's alone. */
   densityValidMax?: number | null;
+  /** `valid_max` of {@link FLOORS_INDICATOR_SLUG} from the catalog; null or
+   *  absent on the same terms as `densityValidMax`. */
+  floorsValidMax?: number | null;
 }
 
 
@@ -192,6 +198,19 @@ export function validateEdit(values: ProposalValues): string | null {
     if (!Number.isFinite(value) || value <= 0) {
       return `${label} (${field}) must be a positive number, got ${value}.`;
     }
+  }
+  const floorsBound = values.floorsValidMax;
+  if (
+    floorsBound !== null &&
+    floorsBound !== undefined &&
+    Number.isFinite(floorsBound) &&
+    floorsBound > 0 &&
+    values.levels > floorsBound
+  ) {
+    return (
+      `${fmt(values.levels)} storeys is over the planned-floors ceiling of ` +
+      `${fmt(floorsBound)}, whatever the unit size.`
+    );
   }
   const bound = values.densityValidMax;
   // ⚠ Unknown bound = no opinion. Guessing the catalog's value would make
@@ -772,6 +791,7 @@ export function enableScenarioPanel(
   let activeId: string | null = null;
   let scenarios: ScenarioRow[] = [];
   let densityValidMax: number | null = null;
+  let floorsValidMax: number | null = null;
   let drawn: Feature<Polygon> | null = null;
   // One poll at a time, superseded by token rather than by clearing alone: a
   // tick already in flight when the next recompute starts must not report its
@@ -801,16 +821,31 @@ export function enableScenarioPanel(
       console.warn("density ceiling unavailable; the server will check it", err);
     });
 
+  /** The floors bound, from the catalog, once per page. */
+  void getIndicator(FLOORS_INDICATOR_SLUG)
+    .then((indicator) => {
+      floorsValidMax = densityBoundOf(indicator);
+      clampLevels();
+    })
+    .catch((err) => {
+      console.warn("floors ceiling unavailable; the server will check it", err);
+    });
+
   /** Keep the storeys input's own `max` on the ceiling, when it is known. */
   function clampLevels(): void {
     const unitSize = Number(unitSizeInput.value);
-    if (densityValidMax === null || !Number.isFinite(unitSize) || unitSize <= 0) {
+    const caps: number[] = [];
+    if (floorsValidMax !== null) caps.push(Math.floor(floorsValidMax));
+    if (densityValidMax !== null && Number.isFinite(unitSize) && unitSize > 0) {
+      caps.push(maxLevelsFor(unitSize, densityValidMax));
+    }
+    if (caps.length === 0) {
       levelsInput.removeAttribute("max");
       return;
     }
     // The API's 422 carries `allowed_levels` so a form can clamp instead of
     // re-deriving the bound; this is the same number, before the round trip.
-    levelsInput.max = String(maxLevelsFor(unitSize, densityValidMax));
+    levelsInput.max = String(Math.min(...caps));
   }
   unitSizeInput.addEventListener("input", clampLevels);
 
@@ -949,6 +984,7 @@ export function enableScenarioPanel(
         unitSize: Number(unitSizeInput.value),
         peoplePerHousehold: Number(pphInput.value),
         densityValidMax,
+        floorsValidMax,
       };
       const refusal = validateEdit(values);
       if (refusal) {
