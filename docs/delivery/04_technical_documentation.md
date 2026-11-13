@@ -2,7 +2,7 @@
 title: "Technical documentation"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 4"
 author: "Rossano Schifanella"
-date: "11 November 2026"
+date: "13 November 2026"
 ---
 
 ## Document control
@@ -22,6 +22,7 @@ date: "11 November 2026"
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
 | 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
+| 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date |
 
 ### About this document
 
@@ -238,7 +239,7 @@ cd apps/web && npm test                # web unit tests
 > schema from `TEST_DATABASE_URL`. Name the suites you want.
 
 For an end-to-end check that the platform *does* something rather than merely
-starts — a populated database, eleven computed indicators, tiles with features
+starts — a populated database, twelve computed indicators, tiles with features
 in them — run `scripts/acceptance_run.sh` (§7.1). It needs no credentials.
 
 The three hand-run suites are `performance` (benchmark budgets and
@@ -278,9 +279,10 @@ On a sixteen-block territory every unit finishes in milliseconds and the
 crash arrives after the work is already done, which would prove the opposite
 of what the test claims.
 
-**What none of these cover.** `evaluate-scenario --sync` runs the coordinator
-in-process with no ops plane at all. It is the path that still works when the
-engine is down, and steps 10 and 11 of the acceptance run use it — so a green
+**What none of these cover.** `scenario recompute --sync` (and
+`evaluate-scenario --sync`) runs the coordinator in-process with no ops plane
+at all. It is the path that still works when the engine is down, and steps 10
+and 11 of the acceptance run use it — so a green
 acceptance run before step 12 says nothing about the orchestrator. That is
 why step 12 exists.
 
@@ -404,7 +406,7 @@ closes it.
 ### 7.1 Without credentials — a generated territory
 
 If you have no access to the data lake, this is the path to a populated
-system. It takes about a minute and needs no network:
+system. It takes about a minute and a half and needs no network:
 
 ```bash
 scripts/acceptance_run.sh
@@ -661,7 +663,7 @@ is reported with its actual result.
 |---|---|---|
 | 1 | `cp .env.example .env` | OK |
 | 2 | `make install` | OK |
-| 3 | `make migrate` | Both databases created and migrated to `r047`; 24 tables in `curated_geo` |
+| 3 | `make migrate` | Both databases created and migrated to `r049`; 25 tables in `curated_geo` |
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |

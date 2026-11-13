@@ -2,7 +2,7 @@
 title: "Software and systems architecture map"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 1"
 author: "Rossano Schifanella"
-date: "11 November 2026"
+date: "13 November 2026"
 ---
 
 ## Document control
@@ -22,6 +22,7 @@ date: "11 November 2026"
 | 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
 | 0.5 | 2026-11-10 | Rossano Schifanella | Constraint C6 (no third-party runtime service); the tile server is interchangeable (§5.1); street context in place of a basemap (§3.3) |
 | 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
+| 0.7 | 2026-11-13 | Rossano Schifanella | T3 resolved: a scenario edit can now be authored through the API, the CLI and the map |
 
 ### About this document
 
@@ -421,7 +422,7 @@ that does not.
 |---|---|---|
 | T1 | **The API has no authentication.** It carries CORS and a request-id middleware only, so anyone who can reach the port can read all data and delete job history | Acceptable only while the deployment is private. Authentication is required before any networked deployment |
 | T2 | ~~`maplibre-gl` 5.24.0 carried a critical sanitiser-bypass advisory~~ | **Resolved.** Upgraded to 6.17.0; no critical or high advisory now reaches the shipped bundle |
-| T3 | **No user-facing way to author a scenario edit.** The storage, resolution, graph propagation and recomputation all work and are tested, but no API route or CLI command writes an override | The scenario engine is complete; the entry point into it is not |
+| T3 | ~~No user-facing way to author a scenario edit~~ | **Resolved.** A scenario is created, edited with an area and attribute values, and recomputed through the API (`/scenarios`), the CLI (`scenario create`, `set-attribute`, `recompute`) and the map. Edits are stored in `curated_geo.scenario_edit` and resolved into overrides on recompute; the baseline is never written |
 | T4 | **Geometry cannot be edited by a scenario.** Overrides carry numeric and text values only | Scenario support is attribute-level; geometric what-ifs are future work |
 | T5 | **A single database is the scaling bound.** Every indicator contends for the same PostGIS | Adequate at the delivered scale; revisit before a multi-city deployment |
 | T6 | **Row-level security is inert.** The `r011` policies are permissive while `app.current_project_id` is unset, and nothing sets it; `FORCE ROW LEVEL SECURITY` and a non-owner role were deferred | Multi-tenant isolation is not enforced today. Required before more than one project shares a database |

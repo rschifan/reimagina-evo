@@ -2,7 +2,7 @@
 title: "Capability proof"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — annex to Schedule A"
 author: "Rossano Schifanella"
-date: "11 November 2026"
+date: "13 November 2026"
 ---
 
 ## Document control
@@ -26,6 +26,7 @@ date: "11 November 2026"
 | 0.8 | 2026-11-11 | Rossano Schifanella | Park and cultural destinations ingested from Overture places (§A.1), so park accessibility is no longer an absence; twelfth indicator added for cultural venues |
 | 0.9 | 2026-11-11 | Rossano Schifanella | §A.1 — the park indicator recomputed over the ingested destinations: 27.9 % of blocks at the cutoff, replacing 100 % |
 | 0.10 | 2026-11-11 | Rossano Schifanella | §A.1 — the culture indicator computed on real data (60.8 % at the cutoff) and the seven-of-twelve real-data coverage picture |
+| 0.11 | 2026-11-13 | Rossano Schifanella | The acceptance run re-measured at `r049`: the scenario is authored through the CLI (§9), the territory carries streets (§2, §10), and the environment of record, wall time and API operation count are current |
 
 ### Why this document exists
 
@@ -95,7 +96,7 @@ see §5.
 | titiler.core · rio-tiler | 2.4.0 · 9.4.13 |
 | exactextract · OSMnx | 0.3.0 · 2.1.1 |
 | FastAPI · SQLAlchemy · DBOS | 0.162.2 · 2.1.8 · 3.4.0 |
-| Migration head | `r047` (46 revisions) |
+| Migration head | `r049` (48 revisions) |
 | Third-party dependencies declared | 259 (`docs/THIRD_PARTY_LICENSES.md`, Article 4.1) — 0 strong copyleft, 8 weak |
 
 Every one of these is the current release at the time of writing. Declared
@@ -104,16 +105,16 @@ that might work, so an install without the lockfile still gets software this
 project has been tested against.
 
 Whole-run wall time, from `DROP DATABASE` to the last inspection command:
-**58 seconds**, measured three times (56.9 s, 58.9 s, 58.3 s).
+**91 seconds**, measured three times (97.3 s, 91.1 s, 88.9 s).
 
 After migration the database holds:
 
 | Schema | Tables | Views | Materialised views | Functions |
 |---|---|---|---|---|
-| `curated_geo` | 24 | — | — | 7 |
+| `curated_geo` | 25 | — | — | 7 |
 | `serving_geo` | — | 23 | 1 | 3 |
-| `explore` | 1 | 10 | — | — |
-| `app_core` | 1 | — | — | — |
+| `explore` | 1 | 11 | — | — |
+| `app_core` | 2 | — | — | — |
 | `jobs_runtime` | 5 | — | — | — |
 
 The three-layer separation Work 1 describes is therefore present as structure,
@@ -139,18 +140,19 @@ The acceptance run's first four steps:
 === 3. Seeding the feature-type and indicator catalogs
 15 feature types, 12 indicators
 
-=== 4. Generating a territory
+=== 4. Generating a territory (AGEBs, blocks, buildings, streets, POIs, AOI)
   ageb          4 features
   block        16 features
   building     44 features
-  establishment     3 features
-  aoi          67 member features
+  establishment     4 features
   network      25 nodes, 40 edges, 5.21 km
+  roads        40 road features
+  aoi         108 member features
   raster    104x104 px @ ~5.0 m, 22531 people total
 ```
 
 **What it proves.** A reviewer with no access to the data lake can reach a
-populated, queryable system in under a minute. That is the condition Schedule
+populated, queryable system in about a minute and a half. That is the condition Schedule
 A's "builds and runs" criterion needs, and before this annex it was not met:
 without a road network the four accessibility indicators refuse outright and
 the livability score writes zero rows, so a fresh install could exercise seven
@@ -162,24 +164,25 @@ itself through the liveness table, queues a run with `evaluate-scenario
 --detach`, and prints the shape the worker ran it in:
 
 ```
-  worker announced itself: role=worker, beat age 0:00:00.214008
-  run 987024c2-2ef8-42a9-ab90-61b3844315fe
+  worker announced itself: role=worker, beat age 0:00:00.386390
+  run 58f7ab78-6c32-4f93-926e-1faa559636e8
   status succeeded, 3 units
-    succeeded    +0.00s ran  1.23s  urban_form_block_building_density
-    succeeded    +0.00s ran  1.22s  urban_form_block_compactness
-    succeeded    +1.42s ran  1.25s  urban_form_block_composite
-  submit 1 -> 6e5239b8-3126-4530-b407-d2a6061817a3  deduplicated=False
-  submit 2 -> 6e5239b8-3126-4530-b407-d2a6061817a3  deduplicated=True
+    succeeded    +0.00s ran  1.11s  urban_form_block_compactness
+    succeeded    +0.00s ran  1.00s  urban_form_block_building_density
+    succeeded    +1.32s ran  1.14s  urban_form_block_composite
+  submit 1 -> acfd80c6-21d5-43e4-9e77-a12a835c2218  deduplicated=False
+  submit 2 -> acfd80c6-21d5-43e4-9e77-a12a835c2218  deduplicated=True
 ```
 
 Two units start at the same offset and run concurrently; the composite starts
-1.42 s in, after both of its inputs finished. The two submissions that follow
+1.32 s in, after both of its inputs finished. The two submissions that follow
 are the same request, and they return one run.
 
 This step was added because the evidence had a hole in exactly the place it
-could least afford one. Steps 10 and 11 run the scenario through
-`evaluate-scenario --sync`, which is the in-process coordinator and needs no
-ops plane at all — it is the path that still works when the engine is down.
+could least afford one. Steps 10 and 11 author the scenario through the CLI and
+recompute it with `scenario recompute --sync`, which is the in-process
+coordinator and needs no ops plane at all — it is the path that still works
+when the engine is down.
 Everything before step 12 therefore proved the platform *without* exercising
 the orchestration module Schedule A names.
 
@@ -212,7 +215,7 @@ one-to-one counts are what confirms that choice was necessary.
 
 ## 4. The indicator catalogue
 
-All eleven shipped indicators, computed in dependency order, 16 rows each:
+All twelve shipped indicators, computed in dependency order, 16 rows each:
 
 ```
   urban_form_block_compactness             "rows_written": 16
@@ -225,6 +228,7 @@ All eleven shipped indicators, computed in dependency order, 16 rows each:
   accessibility_block_school_network_m     "rows_written": 16
   accessibility_block_health_network_m     "rows_written": 16
   accessibility_block_park_network_m       "rows_written": 16
+  accessibility_block_culture_network_m    "rows_written": 16
   livability_block_score                   "rows_written": 16
 ```
 
@@ -232,6 +236,7 @@ The values, read back from `curated_geo.indicator_result`:
 
 | Indicator | n | min | mean | max | unit |
 |---|---:|---:|---:|---:|---|
+| `accessibility_block_culture_network_m` | 16 | 222.22 | 450.27 | 743.23 | m |
 | `accessibility_block_health_network_m` | 16 | 222.22 | 385.07 | 612.83 | m |
 | `accessibility_block_park_network_m` | 16 | 92.12 | 385.22 | 613.13 | m |
 | `accessibility_block_school_network_m` | 16 | 222.22 | 385.07 | 743.23 | m |
@@ -355,38 +360,44 @@ non-trivial.
 
 ## 9. Scenarios: a what-if that cannot corrupt the baseline
 
-Four blocks given six additional floors, then recomputed:
+A scenario is authored the way a planner does it: `scenario create`, then
+`scenario set-attribute` with an area drawn as GeoJSON and the policy inputs
+over it (12 levels, an 80 m² unit, 3.2 people per household), then
+`scenario recompute`. The area catches four blocks; the four edits match four
+blocks each, so 16 overrides are written. Then the planned-floors indicator,
+baseline against scenario:
 
 ```
   block       baseline  scenario   delta
-  SYN0000          2.0       8.0      +6
-  SYN0001          3.0       9.0      +6
-  SYN0002          4.0      10.0      +6
-  SYN0003          5.0      11.0      +6
-  SYN0100          3.0       3.0       =
-  SYN0101          4.0       4.0       =
-  SYN0102          5.0       5.0       =
-  SYN0103          6.0       6.0       =
-  SYN0200          4.0       4.0       =
-  SYN0201          5.0       5.0       =
-  SYN0202          6.0       6.0       =
-  SYN0203          2.0       2.0       =
-  SYN0300          5.0       5.0       =
-  SYN0301          6.0       6.0       =
-  SYN0302          2.0       2.0       =
-  SYN0303          3.0       3.0       =
+  SYN0-0           2.0      12.0     +10
+  SYN0-1           3.0      12.0      +9
+  SYN0-2           4.0      12.0      +8
+  SYN0-3           5.0      12.0      +7
+  SYN1-0           3.0       3.0       =
+  SYN1-1           4.0       4.0       =
+  SYN1-2           5.0       5.0       =
+  SYN1-3           6.0       6.0       =
+  SYN2-0           4.0       4.0       =
+  SYN2-1           5.0       5.0       =
+  SYN2-2           6.0       6.0       =
+  SYN2-3           2.0       2.0       =
+  SYN3-0           5.0       5.0       =
+  SYN3-1           6.0       6.0       =
+  SYN3-2           2.0       2.0       =
+  SYN3-3           3.0       3.0       =
   blocks the scenario changed: 4 of 16
-  current indicator_result rows: 192 baseline, 16 scenario — coexisting, not replaced
-  most current rows for any one (feature, indicator, scenario): 1
+  current indicator_result rows: 192 baseline, 80 scenario — coexisting, not replaced
+  most current rows for any one (feature, indicator, scenario): 1 — the partial unique indexes hold
 ```
 
 Three properties, each observed rather than argued:
 
 - **The baseline is untouched.** 192 baseline rows (12 indicators × 16 blocks)
-  remain current alongside the scenario's 16. No row was overwritten, and zero
+  remain current alongside the scenario's 80. No row was overwritten, and zero
   blocks had their base `attributes` written to.
-- **Only the dirty indicator was recomputed.** The scenario edited `floors`,
-  so it holds rows for `planned_floors` and nothing else — 16, not 192.
+- **Only the dirty indicators were recomputed.** The scenario edited `floors`,
+  `num_levels`, `unit_size` and `people_per_household`, so it holds rows for
+  the five indicators downstream of them — 80 (5 × 16), not 192.
 - **One current row per tuple.** The partial unique indexes
   (`ir_one_current_base`, `ir_one_current_scenario`) hold at a maximum of 1.
 
@@ -407,12 +418,13 @@ values", not "a library accepted it".
 
 ```
 $ python scripts/mvt_inspect.py tile_z14.mvt
-layer 'features'  spec v2  extent 4096  54 features
-      2  POINT      type_slug=establishment role=poi
+layer 'features'  spec v2  extent 4096  82 features
+     27  LINESTRING type_slug=road role=infrastructure
+      3  POINT      type_slug=establishment role=poi
       4  POLYGON    type_slug=ageb role=analysis_unit
      12  POLYGON    type_slug=block role=analysis_unit
      36  POLYGON    type_slug=building role=context
-  properties: category, floors, id, name, num_floors, num_levels,
+  properties: category, floors, id, length_m, name, num_floors, num_levels,
               people_per_household, role, syn_pop_ageb_count,
               syn_pop_ageb_sum, syn_pop_count, syn_pop_sum, type_slug,
               unit_size
@@ -422,10 +434,10 @@ Across zooms, one tile per level over the territory's centroid:
 
 | Zoom | Bytes | Features | What appears |
 |---:|---:|---:|---|
-| 10 | 1,911 | 20 | AGEBs and blocks only, simplified |
-| 12 | 2,465 | 23 | attributes begin to ride along |
-| 14 | 4,949 | 54 | buildings and POIs appear; observations merged in |
-| 16 | 4,097 | 42 | full geometry, no simplification |
+| 10 | 1,915 | 20 | AGEBs and blocks only, simplified |
+| 12 | 5,232 | 64 | streets, POIs and AGEBs join; attributes begin to ride along |
+| 14 | 6,880 | 82 | buildings appear; observations merged in |
+| 16 | 5,820 | 67 | full geometry, no simplification |
 
 Two behaviours are visible in that table and both are deliberate. Buildings
 are withheld below z14, because 10⁵ building polygons in a city-wide tile is
@@ -439,12 +451,12 @@ observable in the delivered tile payload.
 
 | `query_params` | Bytes |
 |---|---:|
-| `{}` | 4,949 |
+| `{}` | 6,880 |
 | `{"type_slug":"block"}` | 1,600 |
 | `{"type_slug":"building"}` | 2,720 |
 | `{"type_slug":"no_such_type"}` | 0 |
-| `{"aoi_id":""}` | 4,949 |
-| `{"aoi_id":"<the seeded AOI>"}` | 4,949 |
+| `{"aoi_id":""}` | 6,880 |
+| `{"aoi_id":"<the seeded AOI>"}` | 6,880 |
 | `{"aoi_id":"not-a-uuid"}` | **0** |
 | `{"aoi_id":"' OR 1=1 --"}` | **0** |
 | `{"aoi_id":"00000000-0000-0000-0000-000000000000"}` | **0** |
@@ -462,22 +474,23 @@ client serialises an empty picker.
 ### 10.2 Scenario-aware tiles
 
 The same tile, with and without `scenario_id`, compared feature by feature on
-the value a client would colour by:
+the value a client would colour by (`urban_form_block_planned_floors`, z12, the
+tile that holds all sixteen blocks):
 
 ```
 $ python scripts/mvt_inspect.py --diff baseline.mvt scenario.mvt
 feature_id                                 left         right     delta
 ...
-801321d9-df44-4b6f-a6e8-d66936a7e2d5        2.0           8.0        +6
-b0b47fd8-5cb5-4ffa-a81d-75e9dabdcde9        4.0          10.0        +6
-d13336ca-ea30-4cbc-a9ea-3ce3dd5470cd        3.0           9.0        +6
-f7db31ac-b6a5-43f5-87e2-39bcdd15712f        5.0          11.0        +6
+2c30f06f-c1fe-4261-9b81-e8374c5386ce        5.0          12.0        +7
+3b78cc93-2b90-4161-9aec-a4da731d0029        2.0          12.0       +10
+40513d7a-e2d2-4301-8b36-44a81272e386        3.0          12.0        +9
+e55e6867-c57d-4cae-95e4-a354ff3a53ee        4.0          12.0        +8
 
 4 of 16 features differ between the two tiles
 ```
 
 And for an indicator the scenario did **not** recompute, the scenario tile is
-**byte-identical** to the baseline: 1,384 bytes either way. That is the
+**byte-identical** to the baseline: 1,336 bytes either way (`urban_form_block_compactness`, z12). That is the
 designed fallback — a scenario stores only what it changed, so a scenario tile
 falls back to the baseline row wherever it has none. Without it, every
 indicator the scenario did not touch would be a hole on the map rather than a
@@ -513,8 +526,8 @@ implementations safe to keep.
 What it answers, measured against the running system:
 
 ```
-GET /tiles/get_tile/16/11748/26478          200  application/vnd.mapbox-vector-tile  4,101 B
-  → decoded: layer 'features', spec v2, extent 4096, 42 features
+GET /tiles/get_tile/16/11748/26478          200  application/vnd.mapbox-vector-tile  5,820 B
+  → decoded: layer 'features', spec v2, extent 4096, 67 features
 GET /tiles/get_tile/14/0/0                  204  (a valid tile with nothing in it)
 GET /tiles/get_tile/30/1/1                  422  (addresses no tile that can exist)
 GET /tiles/lo_get/16/11748/26478            404  (not a servable tile function)
@@ -869,8 +882,8 @@ derivation makes a new layer appear. The `not available` rows are equally
 informative: the registry distinguishes "implemented but nothing published
 yet" from "absent", so an empty map can be diagnosed from one endpoint.
 
-The project API surface is 32 operations; a further 19 come from the mounted
-raster tile server, for 51 in total. Work 3 documents them, generated from the
+The project API surface is 40 operations; a further 19 come from the mounted
+raster tile server, for 59 in total. Work 3 documents them, generated from the
 application's own OpenAPI document rather than written alongside it.
 
 ---

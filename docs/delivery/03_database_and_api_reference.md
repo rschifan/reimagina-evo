@@ -2,7 +2,7 @@
 title: "Database and API reference"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"
 author: "Rossano Schifanella"
-date: "11 November 2026"
+date: "13 November 2026"
 ---
 
 ## Document control
@@ -22,13 +22,13 @@ date: "11 November 2026"
 
 ## Database
 
-Introspected from a database migrated to Alembic revision **`r047`**, running PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) with PostGIS 3.7.0.
+Introspected from a database migrated to Alembic revision **`r049`**, running PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) with PostGIS 3.7.0.
 
 ### `app_core`
 
 Tenancy. The project a scenario, AOI or feature belongs to.
 
-1 table(s), 0 view(s).
+2 table(s), 0 view(s).
 
 #### `app_core.project`
 
@@ -48,11 +48,36 @@ Indexes:
 
 - `project_pkey` — CREATE UNIQUE INDEX project_pkey ON app_core.project USING btree (id)
 
+#### `app_core.scenario`
+
+| Column | Type | Null | Default |
+|---|---|---|---|
+| `id` | uuid | no | gen_random_uuid() |
+| `project_id` | uuid | no | — |
+| `aoi_id` | uuid | yes | — |
+| `name` | text | no | — |
+| `description` | text | yes | — |
+| `created_at` | timestamp with time zone | no | now() |
+| `updated_at` | timestamp with time zone | no | now() |
+| `materialized_at` | timestamp with time zone | yes | — |
+
+Constraints:
+
+- `scenario_aoi_id_fkey` — FOREIGN KEY (aoi_id) REFERENCES curated_geo.area_of_interest(id) ON DELETE SET NULL
+- `scenario_project_id_fkey` — FOREIGN KEY (project_id) REFERENCES app_core.project(id) ON DELETE CASCADE
+- `scenario_pkey` — PRIMARY KEY (id)
+- `scenario_project_id_name_key` — UNIQUE (project_id, name)
+
+Indexes:
+
+- `scenario_pkey` — CREATE UNIQUE INDEX scenario_pkey ON app_core.scenario USING btree (id)
+- `scenario_project_id_name_key` — CREATE UNIQUE INDEX scenario_project_id_name_key ON app_core.scenario USING btree (project_id, name)
+
 ### `curated_geo`
 
 Source of truth. Features, their observations, overlaps, indicator results, the asset graph and scenario overrides. Everything else is derived from here.
 
-24 table(s), 0 view(s).
+25 table(s), 0 view(s).
 
 #### `curated_geo.aggregation_recipe`
 
@@ -743,6 +768,34 @@ Indexes:
 - `road_node_geom_gist` — CREATE INDEX road_node_geom_gist ON curated_geo.road_node USING gist (geometry)
 - `road_node_pkey` — CREATE UNIQUE INDEX road_node_pkey ON curated_geo.road_node USING btree (id)
 
+#### `curated_geo.scenario_edit`
+
+| Column | Type | Null | Default |
+|---|---|---|---|
+| `id` | uuid | no | gen_random_uuid() |
+| `scenario_id` | uuid | no | — |
+| `ordinal` | integer | no | — |
+| `geometry` | USER-DEFINED | no | — |
+| `type_id` | uuid | no | — |
+| `attribute_key` | text | no | — |
+| `value_numeric` | double precision | no | — |
+| `created_at` | timestamp with time zone | no | now() |
+
+Constraints:
+
+- `scenario_edit_geometry_check` — CHECK ((st_geometrytype(geometry) = ANY (ARRAY['ST_Polygon'::text, 'ST_MultiPolygon'::text])))
+- `scenario_edit_scenario_id_fkey` — FOREIGN KEY (scenario_id) REFERENCES app_core.scenario(id) ON DELETE CASCADE
+- `scenario_edit_type_id_fkey` — FOREIGN KEY (type_id) REFERENCES curated_geo.feature_type_catalog(id)
+- `scenario_edit_pkey` — PRIMARY KEY (id)
+- `scenario_edit_scenario_id_ordinal_key` — UNIQUE (scenario_id, ordinal)
+
+Indexes:
+
+- `scenario_edit_geometry_gist` — CREATE INDEX scenario_edit_geometry_gist ON curated_geo.scenario_edit USING gist (geometry)
+- `scenario_edit_pkey` — CREATE UNIQUE INDEX scenario_edit_pkey ON curated_geo.scenario_edit USING btree (id)
+- `scenario_edit_scenario_id_ordinal_key` — CREATE UNIQUE INDEX scenario_edit_scenario_id_ordinal_key ON curated_geo.scenario_edit USING btree (scenario_id, ordinal)
+- `scenario_edit_scenario_idx` — CREATE INDEX scenario_edit_scenario_idx ON curated_geo.scenario_edit USING btree (scenario_id)
+
 #### `curated_geo.scenario_override`
 
 | Column | Type | Null | Default |
@@ -852,7 +905,7 @@ The read contract for the API, the worker and the tile server. Views only — no
 
 The engineer-facing inspection contract. Views built for humans reading SQL, deliberately not depended on by application code.
 
-1 table(s), 10 view(s).
+1 table(s), 11 view(s).
 
 #### `explore.layer_catalog`
 
@@ -892,6 +945,8 @@ Indexes:
 - **`explore.ops_executor_health_v`** — `executor_id` text, `role` text, `app_version` text, `started_at` timestamp with time zone, `heartbeat_at` timestamp with time zone, `heartbeat_age` interval
 
 - **`explore.raster_layer_v`** — `layer_slug` text, `published` boolean, `aggregation_kind` text, `colormap_name` text, `rescale` text, `minzoom` integer, `maxzoom` integer, `source_name` text, `source_version` text, `format` text, `crs` text, `resolution_m` double precision, `storage_uri` text
+
+- **`explore.scenario_v`** — `id` uuid, `project_id` uuid, `name` text, `description` text, `aoi_id` uuid, `edit_count` bigint, `override_count` bigint, `materialized_at` timestamp with time zone, `created_at` timestamp with time zone, `updated_at` timestamp with time zone
 
 - **`explore.serving_stats_v`** — `stat_scope` text, `type_slug` text, `role` text, `row_count` bigint
 
@@ -1038,6 +1093,7 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 | `curated_geo.file_asset` | `asset_extent_geometry` | POLYGON | 4326 | 2 |
 | `curated_geo.road_edge` | `geometry` | LINESTRING | 4326 | 2 |
 | `curated_geo.road_node` | `geometry` | POINT | 4326 | 2 |
+| `curated_geo.scenario_edit` | `geometry` | GEOMETRY | 4326 | 2 |
 | `serving_geo.admin_v` | `geometry` | GEOMETRY | 4326 | 2 |
 | `serving_geo.analysis_units_v` | `geometry` | GEOMETRY | 4326 | 2 |
 | `serving_geo.blocks` | `geometry` | GEOMETRY | 4326 | 2 |
@@ -1059,9 +1115,9 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 Taken from the application's own OpenAPI document (`reimagina API` 0.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-The API exposes **51 operations** in total. **32** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+The API exposes **59 operations** in total. **40** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 
-### Project endpoints (32)
+### Project endpoints (40)
 
 #### `aois`
 
@@ -1080,7 +1136,7 @@ The API exposes **51 operations** in total. **32** are written for this project;
 
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
-| `GET` | `/indicators` | List Indicators | `aoi_id` | no |
+| `GET` | `/indicators` | List Indicators | `aoi_id`, `scenario_id` | no |
 | `GET` | `/indicators/{slug}` | Get Indicator | `slug` | no |
 | `GET` | `/indicators/{slug}/dependencies` | Get Indicator Dependencies | `slug` | no |
 | `GET` | `/indicators/{slug}/lineage` | Get Indicator Lineage | `slug` | no |
@@ -1120,6 +1176,19 @@ The API exposes **51 operations** in total. **32** are written for this project;
 | Method | Path | Summary | Parameters | Request body |
 |---|---|---|---|---|
 | `POST` | `/metrics/within-polygon` | Count Within Polygon | — | yes |
+
+#### `scenarios`
+
+| Method | Path | Summary | Parameters | Request body |
+|---|---|---|---|---|
+| `GET` | `/scenarios` | List Scenarios Route | `project_id`, `aoi_id` | no |
+| `POST` | `/scenarios` | Create Scenario Route | — | yes |
+| `DELETE` | `/scenarios/{scenario_id}` | Delete Scenario Route | `scenario_id` | no |
+| `GET` | `/scenarios/{scenario_id}` | Get Scenario Route | `scenario_id` | no |
+| `GET` | `/scenarios/{scenario_id}/comparison` | Comparison Route | `scenario_id`, `indicator_slug`, `aoi_id`, `limit` | no |
+| `DELETE` | `/scenarios/{scenario_id}/edits` | Remove Edit Route | `scenario_id`, `edit_id` | no |
+| `POST` | `/scenarios/{scenario_id}/edits` | Add Edits Route | `scenario_id` | yes |
+| `POST` | `/scenarios/{scenario_id}/recompute` | Recompute Route | `scenario_id` | no |
 
 #### `tiles`
 
