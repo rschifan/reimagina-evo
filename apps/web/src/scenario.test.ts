@@ -278,12 +278,13 @@ describe("validateEdit", () => {
 
 
 describe("CLIENT_PRECHECK_NOTE", () => {
-  // `check_ceilings` omits `floors` and the per-block housing-unit and
-  // population bounds need each block's area, so a passing precheck is a
+  // The per-block housing-unit and population bounds need each block's area, so a passing precheck is a
   // saved round trip and not a promise. The note is what the form says so,
   // and it is asserted because the wording is the whole of the guarantee.
   it("says the per-block bounds are the server's to check", () => {
     expect(CLIENT_PRECHECK_NOTE).toMatch(/block/i);
+    expect(CLIENT_PRECHECK_NOTE).toMatch(/storey/i);
+    expect(CLIENT_PRECHECK_NOTE).toMatch(/whatever the unit size/i);
     expect(CLIENT_PRECHECK_NOTE).toMatch(/server|checks again|recompute/i);
   });
 });

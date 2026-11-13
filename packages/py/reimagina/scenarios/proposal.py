@@ -149,7 +149,8 @@ def precheck_ceilings(
 ) -> None:
     """Refuse a proposal the area-independent bounds already rule out.
 
-    One synthetic block with ``area_m2=0``: no block has been chosen yet, so
+    One synthetic block with ``area_m2=0``, which is a sentinel here meaning
+    "no block chosen", not a measured area: no block has been chosen yet, so
     only the bound that is independent of area can speak, and passing a real
     or maximum area here would describe a block that does not exist — the
     reasoning ``ceilings`` gives for checking per block rather than per

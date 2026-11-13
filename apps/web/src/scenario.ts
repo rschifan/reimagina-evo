@@ -85,7 +85,8 @@ const MAX_RUN_READ_FAILURES = 3;
  * a planner who gets past this must not read it as "this proposal is safe".
  */
 export const CLIENT_PRECHECK_NOTE =
-  "Checked here: the density ceiling, which does not depend on block area. " +
+  "Checked here: the density ceiling, which does not depend on block area, " +
+  "and the storey ceiling, which holds whatever the unit size. " +
   "The housing-unit and population ceilings do, so the server checks those " +
   "block by block when the scenario is recomputed.";
 
