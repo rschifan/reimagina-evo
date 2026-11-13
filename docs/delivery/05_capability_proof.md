@@ -28,6 +28,10 @@ date: "13 November 2026"
 | 0.10 | 2026-11-11 | Rossano Schifanella | §A.1 — the culture indicator computed on real data (60.8 % at the cutoff) and the seven-of-twelve real-data coverage picture |
 | 0.11 | 2026-11-13 | Rossano Schifanella | The acceptance run re-measured at `r049`: the scenario is authored through the CLI (§9), the territory carries streets (§2, §10), and the environment of record, wall time and API operation count are current |
 
+### Provenance of the figures
+
+Re-measured on 13 November 2026, at migration `r049`, from a fresh run of `scripts/acceptance_run.sh`: the environment of record's migration head and revision count, the per-schema table counts, the whole-run wall time, the API operation counts (§14), and the transcripts in §2, §4, §9, §10 and §12. Not re-measured for this revision, and carried forward from earlier runs: the package versions and the third-party dependency count in §1; the crash-recovery and sweep proofs in §13 and the 22,500-block scale figures in §16, which need a generated territory of that size; and Appendix A, which requires the Azure lake mirror and network access that were not available. Each of those figures is true of the run that produced it, not necessarily of this revision.
+
 ### Why this document exists
 
 Schedule A accepts the source code when "the code builds and runs following

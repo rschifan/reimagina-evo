@@ -22,7 +22,11 @@ date: "13 November 2026"
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
 | 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
-| 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date |
+| 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
+
+### Provenance of the figures
+
+Re-measured on 13 November 2026, at migration `r049`: the install appendix in §10 (revision, table count, every test count) and the acceptance run's duration in §7.1. Carried forward from an earlier measurement and not re-measured for this revision: the "22,500 blocks, ~40 s" generation time in §6.1, and the third-party dependency inventory.
 
 ### About this document
 
@@ -683,8 +687,9 @@ it is a different assertion from steps 6–8 run in sequence. CI runs each suite
 as its own process, so nothing there exercises state cached across suites — and
 a reader's first instinct is `pytest`, not four invocations. One such leak
 existed and is fixed (`dbos_orchestrator._client()` cached a client against
-the first DSN the process saw; see §9.2). The skips are the browser suite,
-which needs servers running, and two fixtures that need upstream data.
+the first DSN the process saw; see §9.2). The two skips are one integration test that needs `ogr2ogr` with the PMTiles
+driver (GDAL 3.8 or later), and one conformance test that does not apply to the
+synchronous orchestrator, which finishes a run before `submit_run` returns.
 
 The database-backed suites are run with `REIMAGINA_REQUIRE_DB=1`. Without it
 `pytest` exits 0 when every database test *skips*, and "322 skipped, 6 passed"

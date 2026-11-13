@@ -24,6 +24,10 @@ date: "13 November 2026"
 | 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
 | 0.7 | 2026-11-13 | Rossano Schifanella | T3 resolved: a scenario edit can now be authored through the API, the CLI and the map |
 
+### Provenance of the figures
+
+This document describes the system at migration `r049` as of 13 November 2026. It carries no timings or test counts; those are in the technical documentation and the capability proof.
+
 ### About this document
 
 This document follows **arc42**, the open template for software architecture
