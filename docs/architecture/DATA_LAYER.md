@@ -350,8 +350,17 @@ CREATE TABLE curated_geo.data_source_catalog (
   -- Semantic routing class. Answers "how does this dataset participate in the city model?"
 
   storage_uri       text        NOT NULL,
-  -- Bronze file location (object storage URI). Set for all types — even vector datasets
-  -- that eventually land in PostGIS still have a Bronze file.
+  -- Lineage: where the data came from — the upstream it was fetched or cut from
+  -- (an Azure path, a publisher's download URL, an Overture release), or the file
+  -- an operator handed in when nothing upstream is known. NOT the local copy:
+  -- the Bronze copy is addressed by this row's id at data/bronze/<source_id>/,
+  -- and a processed raster's location is file_asset.storage_uri, which is what
+  -- tiles and zonal stats read. Nothing opens a file through this column.
+  --
+  -- This line used to read "Bronze file location", while
+  -- docs/AZURE_DATA_INVENTORY.md said the same column "keeps the original Azure
+  -- URL for lineage". The pipelines split along that contradiction — three wrote
+  -- an origin, three overwrote it with a local path — until it was settled here.
 
   schema_definition jsonb,
   -- JSON Schema of expected source fields. Used to validate Silver before loading.
@@ -936,7 +945,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, license, update_frequency)
 VALUES
   ('INEGI Block Polygons 2020', 'INEGI', 'vector', 'canonical_entity',
-   's3://bronze/inegi/blocks_2020.geojson', '2020', 'public', 'annual')
+   'azure://cfcetlsadls/raw/inegi/marco_geostadistico/2020/manzanas.geojson', '2020', 'public', 'annual')
 RETURNING id; -- :source_id
 ```
 
@@ -993,7 +1002,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, update_frequency)
 VALUES
   ('INEGI Census 2020 — Population by Block', 'INEGI', 'tabular', 'enrichment',
-   's3://bronze/inegi/census_block_2020.csv', '2020', 'annual')
+   'azure://cfcetlsadls/raw/inegi/censo/manzanas_2020.parquet', '2020', 'annual')
 RETURNING id;
 ```
 
@@ -1032,7 +1041,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version)
 VALUES
   ('Sentinel-2 NDVI 2024-Q1', 'ESA', 'raster', 'enrichment',
-   's3://bronze/sentinel2/ndvi_2024_q1.tif', '2024-Q1')
+   'https://dataspace.copernicus.eu/sentinel-2/l2a/ndvi_2024_q1', '2024-Q1')
 RETURNING id;
 ```
 
@@ -1080,7 +1089,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version)
 VALUES
   ('GSV Street Tree Detections — Batch 2024-03', 'GSV+ML', 'imagery', 'canonical_entity',
-   's3://bronze/gsv/tree_batch_2024_03/', '2024-03')
+   'https://maps.googleapis.com/maps/api/streetview?batch=tree_2024_03', '2024-03')
 RETURNING id;
 ```
 
@@ -1140,7 +1149,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, update_frequency)
 VALUES
   ('Cellphone Footfall by Block — Weekdays 2024-03', 'MobilityVendor', 'tabular', 'enrichment',
-   's3://bronze/mobility/footfall_block_2024_03.parquet', '2024-03', 'monthly')
+   'https://partner.example/mobility/footfall_block_2024_03.parquet', '2024-03', 'monthly')
 RETURNING id;
 ```
 

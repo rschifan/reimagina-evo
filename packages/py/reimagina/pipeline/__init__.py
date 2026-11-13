@@ -1,6 +1,6 @@
 """Bronze, silver, and curated ingestion flows."""
 
-from .bronze import bronze_uri, land_file
+from .bronze import land_file
 from .loader import load_tabular_source, load_vector_source
 from .overture import (
     MEXICO_CITY_BBOX,
@@ -24,7 +24,6 @@ from .silver import (
 )
 
 __all__ = [
-    "bronze_uri",
     "land_file",
     "load_tabular_source",
     "load_vector_source",

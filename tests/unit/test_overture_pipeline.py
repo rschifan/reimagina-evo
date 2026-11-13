@@ -129,3 +129,58 @@ def test_bootstrap_flow_seeds_feature_types_before_loading(monkeypatch, tmp_path
 
     assert calls[0] == "seed_feature_types"
     assert result["source_id"] == "source-1"
+
+
+def test_the_source_records_the_release_it_was_cut_from(tmp_path, monkeypatch):
+    """`data_source_catalog.storage_uri` is lineage, so it names the release.
+
+    It was registered as a `pending://` placeholder and then overwritten with
+    the local bronze path once the subset landed — so the catalog recorded
+    where our copy sat and nothing about where the buildings came from. The
+    bronze copy is findable without a column: it lives at
+    `data/bronze/{source_id}/` by construction.
+    """
+    seen: dict[str, object] = {}
+    overwrites: list[str] = []
+
+    class FakeConn:
+        def commit(self):
+            pass
+
+    def _ensure(conn, **kwargs):
+        seen.update(kwargs)
+        return "source-1"
+
+    monkeypatch.setattr(
+        "reimagina.pipeline.overture.feat.seed_feature_types", lambda conn: None
+    )
+    monkeypatch.setattr(
+        "reimagina.pipeline.overture.ensure_overture_buildings_source", _ensure
+    )
+    monkeypatch.setattr(
+        "reimagina.pipeline.overture.stage_overture_buildings_subset",
+        lambda raw_path, **kwargs: (
+            tmp_path / "bronze.parquet",
+            tmp_path / "silver.parquet",
+        ),
+    )
+    monkeypatch.setattr(
+        "reimagina.pipeline.overture.cat.update_source_storage_uri",
+        lambda conn, source_id, storage_uri: overwrites.append(storage_uri),
+    )
+    monkeypatch.setattr(
+        "reimagina.pipeline.overture.load_overture_buildings_subset",
+        lambda conn, **kwargs: {"records_written": 1, "ingestion_run_id": "run-1"},
+    )
+
+    bootstrap_overture_buildings_subset(
+        FakeConn(),
+        raw_path=tmp_path / "raw.parquet",
+        dataset_version="2026-10-22.0",
+        orchestrator_run_id="orch-1",
+    )
+
+    recorded = str(seen["storage_uri"])
+    assert recorded.startswith("s3://overturemaps-us-west-2/release/2026-10-22.0/")
+    assert "theme=buildings/type=building" in recorded
+    assert not overwrites, "the lineage must not be replaced with a local path"

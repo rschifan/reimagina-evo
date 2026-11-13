@@ -1205,6 +1205,12 @@ def raster_ingest(
     ),
     code_version: str = typer.Option("dev", "--code-version"),
     orchestrator_run_id: Optional[str] = typer.Option(None, "--orchestrator-run-id"),
+    origin_uri: Optional[str] = typer.Option(
+        None,
+        "--origin-uri",
+        help="Where this raster came from, recorded as the source's lineage. "
+        "`raster fetch-worldpop` prints it as `url`. Defaults to --raw-path.",
+    ),
 ) -> int:
     return _print(
         ingest_raster(
@@ -1226,6 +1232,7 @@ def raster_ingest(
             published=not unpublished,
             code_version=code_version,
             orchestrator_run_id=orchestrator_run_id,
+            origin_uri=origin_uri,
         )
     )
 

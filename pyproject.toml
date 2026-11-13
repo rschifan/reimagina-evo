@@ -76,17 +76,17 @@ dependencies = [
     # The upper bound is deliberate — breaking changes ship inside minor
     # releases. See docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
     #
-    # ⚠ `<2.29`, not `<3`, and the difference is not pedantry. `<3` says
-    # "majors break us" while the sentence above it says minors do, so the
-    # constraint permitted exactly what the comment warned about — and a
-    # resolver took it. A Dependabot lockfile refresh moved this to 2.31.1
-    # with no `pyproject.toml` diff at all, and two ops-plane tests failed:
-    # `test_jobs_route_404s_a_malformed_run_id_end_to_end` and a conformance
-    # port-contract case, both passing in isolation, so the engine was
-    # perturbing state across tests rather than breaking outright.
+    # ⚠ The bound sits just above the minor in use, so patches arrive and a
+    # new minor is an edit here — which is what the sentence above means.
+    # `<3` would say "majors break us" while that sentence says minors do.
     #
-    # Patches inside 2.28 still arrive. Moving off it becomes an edit here,
-    # which is what the paragraph above always meant.
+    # Verify a minor bump against the full gated suite on a *fresh* database.
+    # The `dbos` schema is DBOS-owned, not Alembic-managed, so its workflow
+    # rows survive the integration suite's downgrade-to-base teardown. A test
+    # database reused across runs therefore carries state from earlier ones,
+    # and failures that pass in isolation are that, not the engine — which
+    # is how a move to 2.31 was once wrongly blamed for two of them. On a
+    # clean database 2.31.1 passes all 863.
     "dbos>=2.28,<2.32",
 ]
 
