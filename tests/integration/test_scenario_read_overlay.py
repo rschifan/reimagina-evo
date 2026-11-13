@@ -369,3 +369,119 @@ def test_the_aoi_aggregate_reads_through_to_the_baseline(blocks, conn):
     )
     assert len(rows) == len(blocks), "one row per AOI member, never doubled"
     assert sorted(v for v, _, _ in rows) == [3.0, 3.0, 9.0]
+
+
+# ── the valueless scenario row, counted once ───────────────────────────────
+
+
+def test_a_valueless_scenario_row_returns_the_feature_once(blocks, conn):
+    """Falling through must not mean being returned twice.
+
+    `test_a_valueless_scenario_row_falls_through_to_the_baseline` above reads
+    through `_values`, which keys a dict on `feature_id` — so a feature matched
+    by *both* arms collapses there and the duplicate is invisible, with the
+    surviving value decided by row order.
+
+    Both arms did match it. The equality arm carried no value test, so the
+    valueless scenario row qualified; the anti-join's probe tests for a value,
+    so having ignored that same row it admitted the baseline too. One row per
+    (feature, indicator) is the property the anti-join exists to hold, so assert
+    it on the row count.
+    """
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for b in blocks:
+        _write(conn, slug=slug, feature_id=b, value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    rows = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .list_current_for_indicator(indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    returned = [r for r in rows if str(r["feature_id"]) == str(blocks[0])]
+    assert len(returned) == 1, (
+        "the feature must be returned once; the valueless scenario row matched "
+        "the equality arm and the baseline matched the anti-join, so both came "
+        f"back: {[(r['value_numeric'], r['quality_flag']) for r in returned]}"
+    )
+    assert returned[0]["value_numeric"] == 3.0, "and it is the baseline that survives"
+    assert returned[0]["quality_flag"] == "measured"
+    assert len(rows) == len(blocks), "no feature is doubled"
+
+
+def test_get_current_falls_through_a_valueless_scenario_row(blocks, conn):
+    """The read where the duplicate is not merely a duplicate.
+
+    `get_current` takes `fetchone()` of the two matching rows, so it answered
+    with whichever the planner yielded first — deterministically wrong whenever
+    that was the valueless one: `value_numeric=None, quality_flag='missing'`,
+    reported as the scenario's answer instead of falling back. That is the rule
+    in `SCENARIOS_LAYER.md` inverted — a valueless row shadowing the baseline.
+    """
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for b in blocks:
+        _write(conn, slug=slug, feature_id=b, value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    row = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .get_current(feature_id=blocks[0], indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert row is not None, "the feature must not vanish"
+    assert row["value_numeric"] == 3.0, (
+        "a valueless scenario row does not shadow the baseline, so the read "
+        f"resolves to the baseline value (got {row['value_numeric']!r} / "
+        f"{row['quality_flag']!r})"
+    )
+    assert row["quality_flag"] == "measured"
+
+
+def test_the_aoi_aggregate_counts_a_valueless_scenario_row_once(blocks, conn):
+    """The denominator the duplicate inflates.
+
+    `fetch_aoi_children` puts the overlay in a LEFT JOIN ON and the caller
+    takes a weighted mean, so a feature matched by both arms contributes its
+    `overlap_measure` twice — once with a NULL value. The companion test above
+    pins this for a *valued* scenario row, where only one arm can match; this
+    is the valueless case, where both did.
+    """
+    from tests.integration._helpers import insert_project
+
+    from reimagina.data import aoi as aoi_mod
+
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for b in blocks:
+        _write(conn, slug=slug, feature_id=b, value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    aoi_id = aoi_mod.create_aoi(
+        conn,
+        project_id=insert_project(conn, name="ovl_aoi_valueless_proj"),
+        name="ovl_aoi_valueless",
+        geometry_wkt="POLYGON((-1 -1, -1 5, 5 5, 5 -1, -1 -1))",
+    )
+    with conn.cursor() as cur:
+        for b in blocks:
+            cur.execute(
+                "INSERT INTO curated_geo.aoi_feature (aoi_id, feature_id, "
+                "overlap_basis, overlap_measure, feature_measure, overlap_ratio) "
+                "VALUES (%s, %s, 'area', 1.0, 1.0, 1.0)",
+                (aoi_id, b),
+            )
+
+    rows = (
+        backend_for_connection(conn)
+        .aoi_summary_repo()
+        .fetch_aoi_children(aoi_id=aoi_id, indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert len(rows) == len(blocks), (
+        "one row per AOI member, never doubled — a doubled member inflates the "
+        f"weighted-mean denominator: {rows}"
+    )
+    assert sorted(v for v, _, _ in rows) == [3.0, 3.0, 3.0], (
+        "every member reads at its baseline value"
+    )

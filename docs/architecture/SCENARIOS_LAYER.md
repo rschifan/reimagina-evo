@@ -38,24 +38,39 @@ Six read paths carry it, plus the tile: `list_current_for_indicator`,
 `serving_geo.indicator_overlay_tile`. The predicate is
 `storage/_utils.scenario_overlay`.
 
-⚠ **The tile and the helper no longer carry the same predicate** (r048). Both
-put the value test below in the anti-join's probe; only the tile also puts it on
-the equality arm. Without it there, a feature with a current baseline row
-carrying a number and a current *valueless* scenario row matches both halves —
-the valueless row through `scenario_id = X`, the baseline through the anti-join
-whose probe just ignored that same row — so the pair is returned twice. The tile
-is the corrected side; `scenario_overlay` still has the unguarded arm, measured
-at r048 on one block with a valueless scenario row:
+⚠ **The value test goes on both arms, in the tile and in the helper alike.**
+It was first written into the anti-join's probe only. That stops a valueless
+scenario row *suppressing* the baseline, but it does not stop it being returned
+*alongside* it: the row still qualified through `scenario_id = X`, which had no
+value test, while the baseline qualified through the anti-join whose probe had
+just ignored that same row. Both halves matched one `(feature, indicator)` —
+the one outcome the anti-join exists to rule out, reached through the arm it
+does not guard.
 
-| read path | result | |
+Fixed in the tile by r048 and in `scenario_overlay` right after. Measured
+before the second fix, on one block with a baseline of 3.0 and a valueless
+scenario row:
+
+| read path | before | |
 |---|---|---|
 | `list_current_for_indicator` | 2 rows for one feature | duplicate |
-| `get_current` | `value_numeric=None, quality_flag='missing'` | shadows the baseline, against the rule below |
+| `get_current` | `value_numeric=None, quality_flag='missing'` | **wrong** — `fetchone()` of the pair, the shadow rule inverted |
+| `fetch_aoi_children` | 4 rows for 3 AOI members | duplicate, carrying a weight |
 | `value_stats` | `count=1`, baseline value | correct, masked by its own `value_numeric IS NOT NULL` filter |
+| `serving_geo.indicator_overlay_tile` | 2 features, one `feature_id` | fixed in r048 |
 
-So the fallback holds only where a downstream NULL filter happens to drop the
-valueless row. Closing it in the helper is a change to what the aggregates and
-composites count, not just to a tile's draw order, and is not done here.
+Two readers hid it, which is why it survived: `value_stats` filters the
+valueless row out with its own `IS NOT NULL`, and a dict keyed on `feature_id`
+collapses the pair. The AOI row is the one that did arithmetic with it — the
+phantom carries an `overlap_measure`, so `aggregate_children` counted it in
+both the missing-weight and the total-weight of `classify_missing_share` and
+fabricated a missing fraction (0.25 where the truth was 0.0) from features that
+had baseline values. With enough of them that crosses `missing_threshold` and
+flips an AOI summary to `missing`.
+
+So: the two arms must be **strict complements**. Guarded at the narrowest layer
+in `tests/unit/test_scenario_overlay_predicate.py`, since two of the readers
+hide the duplicate from an integration assertion.
 
 ⚠ **An anti-join, not `scenario_id = X OR scenario_id IS NULL`.** The widened
 form looks equivalent and silently double-counts: where a scenario *has*

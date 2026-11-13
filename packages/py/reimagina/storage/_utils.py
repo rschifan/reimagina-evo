@@ -103,6 +103,23 @@ def scenario_overlay(
     and from every composite that consumes it, rather than falling back. That is
     the same class of hole this function exists to close, one layer down.
 
+    ⚠ The test is on **both** arms, which is what makes them strict
+    complements. With it only in the probe, a valueless scenario row still
+    qualified through ``scenario_id = X`` while the baseline qualified through
+    the anti-join that had just ignored that same row — so the pair came back
+    *twice*, the one outcome the anti-join exists to rule out, reached through
+    the arm it does not guard. Measured on one block with a baseline of 3.0:
+    ``list_current_for_indicator`` returned two rows, ``get_current`` answered
+    ``fetchone()`` of them (``value_numeric=None, quality_flag='missing'`` —
+    the valueless row reported as the scenario's answer, the shadow rule
+    inverted), ``fetch_aoi_children`` returned four rows for three AOI members,
+    and only ``value_stats`` was right, because its own ``IS NOT NULL`` filter
+    dropped the duplicate. The phantom row also carried a *weight*, so
+    ``aggregate_children`` counted it in both the missing-weight and the
+    total-weight of ``classify_missing_share`` and fabricated a missing
+    fraction (0.25 where the truth was 0.0) out of features that had baseline
+    values — enough, with more of them, to flip an AOI summary to ``missing``.
+
     The trade-off is deliberate: a scenario cannot express "I have recomputed
     this and the answer is now unknown" and have that beat the baseline. Doing
     that needs a distinct signal — a ``quality_flag`` the read layer honours —
@@ -133,7 +150,10 @@ def scenario_overlay(
     if scenario_id is None:
         return f"{prefix}scenario_id IS NULL", []
     return (
-        f"""({prefix}scenario_id = {placeholder}
+        f"""(({prefix}scenario_id = {placeholder}
+              AND ({prefix}value_numeric IS NOT NULL
+                OR {prefix}value_text IS NOT NULL
+                OR {prefix}value_json IS NOT NULL))
              OR ({prefix}scenario_id IS NULL AND NOT EXISTS (
                    SELECT 1 FROM curated_geo.indicator_result _ov
                     WHERE _ov.feature_id = {prefix}feature_id

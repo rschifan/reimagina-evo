@@ -54,3 +54,26 @@ def test_the_baseline_predicate_is_untouched():
     sql, params = scenario_overlay("ir", None)
     assert sql == "ir.scenario_id IS NULL"
     assert params == []
+
+
+def test_the_value_test_is_on_both_arms():
+    """The two arms must be strict complements, or they both match one row.
+
+    With the value test only in the probe, a valueless scenario row qualified
+    through `scenario_id = X` while the baseline qualified through the
+    anti-join that had just ignored that same row — so the pair was returned
+    twice, which is the one outcome the anti-join exists to rule out. The
+    equality arm therefore carries the same three-way test as the probe.
+
+    Asserted on the SQL because the duplicate is what the readers see, and two
+    of them hide it: `value_stats` filters the valueless row out with its own
+    `IS NOT NULL`, and a dict keyed on `feature_id` collapses the pair.
+    """
+    sql, params = scenario_overlay("ir", SCENARIO)
+    assert "ir.value_numeric IS NOT NULL" in sql
+    assert "ir.value_text IS NOT NULL" in sql
+    assert "ir.value_json IS NOT NULL" in sql
+    assert params == [SCENARIO, SCENARIO], (
+        "the arm's value test is a NULL check on the outer row, so it adds no "
+        "placeholder"
+    )
