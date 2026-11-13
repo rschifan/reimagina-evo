@@ -108,11 +108,12 @@ describe("tileUrlFor", () => {
     expect(url).toBe(`${TEMPLATE}?indicator_slug=a%26b%3Dc`);
   });
 
-  // r049 gave `indicator_overlay_tile` a `delta` parameter. Reading it is the
-  // next task's; a builder that quietly asked for it here would change what
-  // every tile returns (`delta` + `state` in place of `value_numeric` +
-  // `quality_flag`) and the choropleth paints `value_numeric`.
-  it("never asks for the delta tile", () => {
+  // r049 gave `indicator_overlay_tile` a `delta` parameter. A builder that
+  // asked for it unprompted would change what every tile returns (`delta` +
+  // `state` in place of `value_numeric` + `quality_flag`), and the value
+  // choropleth paints `value_numeric`. Asking is opt-in, and covered in
+  // `delta-ramp.test.ts`.
+  it("does not ask for the delta tile unless told to", () => {
     const url = tileUrlFor({
       template: TEMPLATE,
       slug: SLUG,

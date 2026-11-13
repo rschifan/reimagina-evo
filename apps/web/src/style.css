@@ -445,6 +445,30 @@ body {
   background: linear-gradient(to right, #f7fbff, #08306b);
 }
 
+/* The difference legend: what the non-ramp colours mean. Swatches are drawn
+   from the same constants the map paints with (see `choropleth.ts`), inline,
+   so this sheet cannot drift from the fill. */
+.legend .delta-key {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+}
+
+.legend .delta-key__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend .delta-key__swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
 .legend .bounds {
   display: flex;
   justify-content: space-between;

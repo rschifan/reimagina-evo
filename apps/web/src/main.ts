@@ -34,6 +34,7 @@ import {
   subscribe as subscribeToAoi,
 } from "./aoi";
 import {
+  getComparison,
   getIndicatorStats,
   isAbortError,
   listAttributions,
@@ -49,6 +50,11 @@ import {
   clearGrainToggle,
   clearLegend,
   defaultGrain,
+  deltaDomainFromComparison,
+  renderDeltaLegend,
+  renderModeToggle,
+  type DeltaDomain,
+  type ViewMode,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
@@ -112,6 +118,12 @@ interface AppState {
    *  the indicator's finest grain and is re-derived on every pick, so
    *  a coarse choice never leaks onto an indicator that lacks it. */
   activeGrain: string | null;
+  /**
+   * Whether the active scenario is drawn as values or as a difference from
+   * the baseline. Only ever `delta` while a scenario is active: the baseline
+   * city has nothing to differ from, and leaving a scenario resets it.
+   */
+  activeMode: ViewMode;
   /**
    * Places the hovered feature's value in the legend's distribution.
    *
@@ -241,6 +253,7 @@ async function main(): Promise<void> {
     activeIndicator: null,
     activeGrain: null,
     activeScenarioId: null,
+    activeMode: "value",
   };
 
   maplibregl.setWorkerUrl(maplibreWorkerUrl);
@@ -517,6 +530,8 @@ async function main(): Promise<void> {
         removeIndicator(map);
         const grainEl = document.getElementById("grain-toggle");
         if (grainEl) clearGrainToggle(grainEl);
+        const modeEl = document.getElementById("mode-toggle");
+        if (modeEl) clearGrainToggle(modeEl);
         const legendEl = document.getElementById("legend");
         if (legendEl) clearLegend(legendEl);
         const downloadsEl = document.getElementById("downloads");
@@ -532,6 +547,7 @@ async function main(): Promise<void> {
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const grainToggle = document.getElementById("grain-toggle");
     const legend = document.getElementById("legend");
+    const modeToggle = document.getElementById("mode-toggle");
     const downloads = document.getElementById("downloads");
 
     // Monotonic token bumped on every renderIndicator entry so a slow
@@ -544,8 +560,70 @@ async function main(): Promise<void> {
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
       const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
-      setStatus(`Loading ${indicator.name} stats…`);
       const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
+      // The mode toggle is per scenario, not per indicator: it is drawn on
+      // every render so it appears the moment a scenario becomes active and
+      // is gone the moment it is not.
+      if (!state.activeScenarioId) state.activeMode = "value";
+      if (modeToggle) {
+        renderModeToggle(modeToggle, state.activeScenarioId !== null, state.activeMode, (picked) => {
+          state.activeMode = picked;
+          void renderIndicator(indicator);
+        });
+      }
+
+      if (state.activeMode === "delta" && state.activeScenarioId) {
+        setStatus(`Loading ${indicator.name} difference…`);
+        let delta: DeltaDomain | null = null;
+        try {
+          delta = deltaDomainFromComparison(
+            await getComparison(state.activeScenarioId, {
+              indicator_slug: indicator.slug,
+              aoi_id: aoiId,
+            }),
+          );
+        } catch (err) {
+          console.warn("comparison fetch failed, falling back to values", err);
+        }
+        if (myToken !== renderToken) return;
+        if (delta) {
+          activateIndicator(
+            map, overlayConfig, indicator,
+            // The value domain is unused in delta mode; the baseline catalog
+            // bounds stand in so the signature stays one shape.
+            rampDomainFromStats(null, indicator),
+            tooltipController, aoiId, selectionController, grain,
+            state.activeScenarioId, delta,
+          );
+          if (grainToggle) {
+            renderGrainToggle(grainToggle, indicator, grain ?? null, (picked) => {
+              state.activeGrain = picked;
+              void renderIndicator(indicator);
+            });
+          }
+          if (legend) renderDeltaLegend(legend, indicator, delta);
+          // No value to place in a distribution: the cursor has nothing to say.
+          state.markHovered = undefined;
+          setValueHoverListener(null);
+          if (downloads) setDownloadAvailability(downloads, true);
+          setStatus(
+            `Showing the change in ${indicator.name} (${indicator.unit ?? "no unit"}): ` +
+              `${delta.changed} changed, ${delta.unchanged} unchanged, ${delta.new} new.`,
+          );
+          return;
+        }
+        // The comparison could not be read. Saying so and drawing values is
+        // better than a difference map with an invented scale.
+        state.activeMode = "value";
+        if (modeToggle) {
+          renderModeToggle(modeToggle, true, "value", (picked) => {
+            state.activeMode = picked;
+            void renderIndicator(indicator);
+          });
+        }
+      }
+
+      setStatus(`Loading ${indicator.name} stats…`);
       let stats = null;
       try {
         stats = await getIndicatorStats(indicator.slug, {
@@ -608,6 +686,7 @@ async function main(): Promise<void> {
           state.activeGrain = null;
           removeIndicator(map);
           if (grainToggle) clearGrainToggle(grainToggle);
+          if (modeToggle) clearGrainToggle(modeToggle);
           if (legend) clearLegend(legend);
           if (downloads) setDownloadAvailability(downloads, false);
           setStatus("Indicator cleared.");

@@ -31,11 +31,6 @@
  *
  * ## What is deliberately not here
  *
- * The **delta tile**. r049 gave `serving_geo.indicator_overlay_tile` a `delta`
- * parameter that swaps `value_numeric` for `delta` + `state`; reading it is
- * the next task's, and {@link tileUrlFor} must not ask for it, because the
- * choropleth paints `value_numeric` and would come out blank.
- *
  * A **total** on the comparison strip. See {@link comparisonHeadline}.
  */
 
@@ -101,6 +96,9 @@ export interface TileUrlOptions {
   aoiId?: string | null;
   /** The active scenario, or null/absent for the baseline. */
   scenarioId?: string | null;
+  /** Ask for the scenario's difference from the baseline instead of its
+   *  values. Meaningless without a scenario, and ignored then. */
+  delta?: boolean;
 }
 
 
@@ -124,6 +122,13 @@ export function tileUrlFor(options: TileUrlOptions): string {
   if (options.grain) params.set("feature_type", options.grain);
   if (options.aoiId) params.set("aoi_id", options.aoiId);
   if (options.scenarioId) params.set("scenario_id", options.scenarioId);
+  // ⚠ Only with a scenario: the tile function answers delta-without-scenario
+  // with an empty tile (serving the baseline's own values as a "difference"
+  // would paint every block unchanged), so sending it would ask for a blank
+  // map by name. Last, so the value-mode URL is a prefix of the delta one and
+  // the baseline URL stays what it always was. `true` is the canonical
+  // spelling of a vocabulary the server reads as Postgres reads a boolean.
+  if (options.scenarioId && options.delta) params.set("delta", "true");
   return `${options.template}?${params.toString()}`;
 }
 
