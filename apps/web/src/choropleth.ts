@@ -16,7 +16,11 @@
  * /indicators/{slug}/stats endpoint and fall back to the catalog
  * bounds only when stats aren't available (zero rows, etc.).
  */
-import type { MapLayerMouseEvent, Map as MapLibreMap } from "maplibre-gl";
+import type {
+  ExpressionSpecification,
+  MapLayerMouseEvent,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 
 import type {
   IndicatorSummary,
@@ -161,6 +165,26 @@ export function defaultGrain(indicator: IndicatorSummary): string | null {
 }
 
 
+/**
+ * The baseline colour expression: `value_numeric` on a light-to-dark blue ramp.
+ *
+ * Lifted out of `activateIndicator` unchanged so the delta ramp has something
+ * to be compared against.
+ */
+export function valueRamp(domain: RampDomain): ExpressionSpecification {
+  // If domain.max==min we've got a degenerate range; widen so the linear
+  // interpolation doesn't divide by zero (MapLibre silently produces NaN).
+  const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
+  return [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
+    domain.min, RAMP_START,
+    rampMax, RAMP_END,
+  ];
+}
+
+
 export function activateIndicator(
   map: MapLibreMap,
   config: ChoroplethConfig,
@@ -200,9 +224,6 @@ export function activateIndicator(
     promoteId: "feature_id",
   });
 
-  // If domain.max==min we've got a degenerate range; widen so the linear
-  // interpolation doesn't divide by zero (MapLibre silently produces NaN).
-  const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
   const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
   // Insert below the selection mask so the dim wash sits ON TOP of
@@ -221,13 +242,7 @@ export function activateIndicator(
     source: OVERLAY_SOURCE,
     "source-layer": config.sourceLayer,
     paint: {
-      "fill-color": [
-        "interpolate",
-        ["linear"],
-        ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
-        domain.min, RAMP_START,
-        rampMax, RAMP_END,
-      ],
+      "fill-color": valueRamp(domain),
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
     },
