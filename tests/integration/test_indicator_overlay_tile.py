@@ -306,3 +306,117 @@ def test_tile_filters_by_feature_type(conn):
     # "always filter by grain".
     both = _render(f'{{"indicator_slug": "{slug}"}}')
     assert {f["properties"]["type_slug"] for f in both} == {"block"}
+
+
+def test_a_valueless_scenario_row_draws_the_block_once_at_baseline(conn):
+    """A valueless *current* scenario row must not double-draw the feature.
+
+    r043 reads a scenario as an overlay: its own rows, else the baseline's.
+    Its anti-join arm deliberately ignores a scenario row that carries no
+    value, so such a row cannot suppress the baseline —
+    `SCENARIOS_LAYER.md`: "a scenario row shadows the baseline only when it
+    carries a value", the same rule `effective_numeric`'s COALESCE applies to
+    indicator *inputs*.
+
+    The scenario arm (`ir.scenario_id = <scenario>`) carried no matching value
+    test, so both halves of the predicate matched the same feature: the
+    valueless scenario row through the equality arm, and the baseline row
+    through the anti-join whose probe had just ignored it. `ST_AsMVT` then
+    emitted two features with one `feature_id`, and
+    `apps/web/src/choropleth.ts` reads `value_numeric` straight off the
+    feature — so the block painted as data or as a hole depending on which the
+    renderer drew last, in planner order.
+
+    The feature must survive exactly once, at its baseline value.
+    """
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+    from reimagina.storage import backend_for_connection
+
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="tile_valueless_scenario_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    block_id = _insert_feature(
+        conn,
+        type_id=block_type,
+        source_id=source_id,
+        ingestion_run_id=run_id,
+        dataset_version="v1",
+        source_record_ref=f"valueless-{uuid4().hex[:8]}",
+        geometry_wkt=_cuauhtemoc_style_polygon_wkt(),
+    )
+    # Baseline row: a real, measured compactness value for the block.
+    compute_block_compactness(conn, code_version="test")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT value_numeric
+            FROM curated_geo.indicator_result
+            WHERE feature_id = %s
+              AND indicator_slug = 'urban_form_block_compactness'
+              AND scenario_id IS NULL
+              AND status = 'current'
+            """,
+            (block_id,),
+        )
+        baseline_value = cur.fetchone()[0]
+    assert baseline_value is not None, (
+        "fixture must leave a baseline value to fall back to"
+    )
+
+    backend = backend_for_connection(conn)
+    job_run_id = backend.job_run_repo().start_job(
+        model_family="urban_form", code_version="test", status="running"
+    )
+    scenario_id = str(uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs_runtime.job_run SET scenario_id = %s WHERE id = %s",
+            (scenario_id, job_run_id),
+        )
+    # The triggering row: current, under the requested scenario, carrying no
+    # value at all. A supported write — "recomputed, and the answer is
+    # unknown" — which by contract does *not* shadow the baseline.
+    backend.indicator_result_repo().write_result(
+        feature_id=block_id,
+        indicator_slug="urban_form_block_compactness",
+        job_run_id=job_run_id,
+        scenario_id=scenario_id,
+        value_numeric=None,
+        quality_flag="missing",
+        missing_reason="inputs_unavailable",
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT serving_geo.indicator_overlay_tile(14, 3680, 7290, %s::json)",
+            (
+                f'{{"indicator_slug": "urban_form_block_compactness", '
+                f'"scenario_id": "{scenario_id}"}}',
+            ),
+        )
+        tile_bytes = bytes(cur.fetchone()[0])
+    features = mapbox_vector_tile.decode(tile_bytes)["indicator_overlay"]["features"]
+
+    drawn = [f for f in features if f["properties"]["feature_id"] == block_id]
+    assert len(drawn) == 1, (
+        "the block must be drawn exactly once; a valueless scenario row matched "
+        "the scenario arm while the baseline matched the anti-join, so ST_AsMVT "
+        f"emitted it twice: {[f['properties'] for f in drawn]}"
+    )
+    properties = drawn[0]["properties"]
+    assert properties["value_numeric"] == pytest.approx(float(baseline_value)), (
+        "a valueless scenario row does not shadow the baseline, so the feature "
+        "must read at its baseline value"
+    )
+    assert properties["quality_flag"] == "measured"

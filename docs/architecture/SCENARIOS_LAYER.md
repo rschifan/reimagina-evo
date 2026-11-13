@@ -38,6 +38,25 @@ Six read paths carry it, plus the tile: `list_current_for_indicator`,
 `serving_geo.indicator_overlay_tile`. The predicate is
 `storage/_utils.scenario_overlay`.
 
+⚠ **The tile and the helper no longer carry the same predicate** (r048). Both
+put the value test below in the anti-join's probe; only the tile also puts it on
+the equality arm. Without it there, a feature with a current baseline row
+carrying a number and a current *valueless* scenario row matches both halves —
+the valueless row through `scenario_id = X`, the baseline through the anti-join
+whose probe just ignored that same row — so the pair is returned twice. The tile
+is the corrected side; `scenario_overlay` still has the unguarded arm, measured
+at r048 on one block with a valueless scenario row:
+
+| read path | result | |
+|---|---|---|
+| `list_current_for_indicator` | 2 rows for one feature | duplicate |
+| `get_current` | `value_numeric=None, quality_flag='missing'` | shadows the baseline, against the rule below |
+| `value_stats` | `count=1`, baseline value | correct, masked by its own `value_numeric IS NOT NULL` filter |
+
+So the fallback holds only where a downstream NULL filter happens to drop the
+valueless row. Closing it in the helper is a change to what the aggregates and
+composites count, not just to a tile's draw order, and is not done here.
+
 ⚠ **An anti-join, not `scenario_id = X OR scenario_id IS NULL`.** The widened
 form looks equivalent and silently double-counts: where a scenario *has*
 recomputed a feature, both rows match, so an aggregate averages it twice and a
