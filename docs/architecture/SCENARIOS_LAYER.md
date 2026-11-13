@@ -73,6 +73,33 @@ answer is now unknown" and have that beat the baseline.** Doing so needs a
 distinct signal the read layer honours — a `quality_flag` it inspects — not the
 absence of a value, which is indistinguishable from "not computed".
 
+⚠ **The value test belongs on both arms of the anti-join.** Putting it on the
+probe alone — which is what r043 did, and what `scenario_overlay` still does —
+stops a valueless scenario row from *suppressing* the baseline but leaves
+`scenario_id = X` matching that row unconditionally. Both rows then qualify, so
+the one-row-per-pair property above is broken: the double-count the anti-join
+exists to prevent, in the one case the probe was taught to ignore. It is harder
+to see than the widened form, because it needs a scenario to have recorded a
+valueless row, and because every reader keyed by feature — a dict comprehension,
+`dict(row)`, `fetchone()`, `ST_AsMVT`'s client — collapses the pair to whichever
+row arrived *last*. That order follows the query plan, so it reads as an
+intermittent wrong value rather than as a duplicate.
+
+A scenario row therefore qualifies when it carries a value **or** when the
+baseline has no row for the pair. The second half is load-bearing: excluding
+valueless rows outright would drop a `missing` row for a feature the baseline
+never computed out of both arms and the feature would vanish — the hole this
+predicate closes, one configuration over. Exactly one row survives per pair in
+all four configurations: a valued scenario row wins, a valueless one yields to
+the baseline, a valueless one with no baseline is still returned, and no
+scenario row leaves the baseline.
+
+`serving_geo.indicator_overlay_tile` resolves it this way as of r049
+(`_OVERLAY`; `downgrade` still installs r043's one-sided `_OVERLAY_R043`).
+`storage._utils.scenario_overlay` — and with it the six Python read paths — is
+still one-sided here and fixed in a separate change, so until that lands the
+tile and those readers disagree on exactly this case.
+
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
 

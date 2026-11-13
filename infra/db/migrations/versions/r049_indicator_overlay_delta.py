@@ -64,8 +64,16 @@ that must not appear in a row-emitting tile query: where a scenario has
 recomputed a feature, both its row and the baseline's match, and ``ST_AsMVT``
 emits both — two features with the same ``feature_id``, one painted with the
 scenario's value and one with the baseline's, in whichever order the planner
-returned them. That is also why r043's value branch is reproduced below
-unchanged rather than rewritten around the new parameter.
+returned them.
+
+r043's value branch reached this revision with that same defect in a narrower
+form, and it is fixed here rather than carried forward: its anti-join tested
+for a value on the probe but not on the scenario arm, so a valueless
+``'missing'`` scenario row matched that arm while the probe ignored it, the
+baseline row matched the other, and the feature was drawn twice. See
+``_OVERLAY`` below. The branch is otherwise reproduced unchanged rather than
+rewritten around the new parameter, and ``downgrade`` still installs r043's
+own predicate (``_OVERLAY_R043``).
 
 **Delta without a scenario is an empty tile.** The function already answers a
 caller who forgot ``indicator_slug`` with an empty tile rather than the whole
@@ -344,9 +352,70 @@ def _body(scenario_predicate: str, *, delta: bool) -> str:
 """
 
 
-#: r043's anti-join, unchanged: a baseline row qualifies only when the
-#: scenario has no *valued* row for the same (feature, indicator).
+#: The anti-join, with the value test on *both* arms.
+#:
+#: r043 put it on the probe only, which is the defect
+#: ``test_the_value_tile_draws_a_shadowed_block_once`` was written against:
+#: ``ir.scenario_id = <scenario>`` carried no value test on ``ir`` itself, so a
+#: valueless current scenario row matched that arm while the probe ignored it —
+#: on purpose, so it could not shadow the baseline — and the baseline row
+#: matched the other. ``ST_AsMVT`` emitted both: one ``feature_id`` drawn twice,
+#: once with the baseline's number and once with no ``value_numeric`` at all,
+#: and the frontend's ``fill-color`` expression paints whichever the renderer
+#: reached last. Nothing in the tile is ordered, so which one that is follows
+#: the plan.
+#:
+#: The two arms are now complementary, so exactly one row survives per
+#: (feature, indicator) — the property the module docstring above claims for
+#: the delta branch's ``FULL OUTER JOIN``, finally true of the value branch too.
+#:
+#: A scenario row qualifies when it carries a value **or** when the baseline has
+#: no row for the pair. That second half is load-bearing: excluding valueless
+#: scenario rows outright would drop a ``'missing'`` row for a feature the
+#: baseline never computed out of both arms, and the feature would vanish from
+#: the tile — where a baseline tile draws it, with ``quality_flag='missing'``
+#: and no ``value_numeric``.
+#:
+#: ``storage._utils.scenario_overlay`` carries the same one-sided form this
+#: fixes, and is corrected separately. Until that correction lands, this tile
+#: and the six Python read paths disagree on exactly this case — the tile draws
+#: the block once at its baseline value, they return it twice.
 _OVERLAY = f"""
+            (p.scenario_id_txt IS NULL AND ir.scenario_id IS NULL)
+            OR (p.scenario_id_txt IS NOT NULL
+                AND p.scenario_id_txt ~ '{_UUID_RE}'
+                AND (
+                  (ir.scenario_id = p.scenario_id_txt::uuid
+                   AND (ir.value_numeric IS NOT NULL
+                     OR ir.value_text IS NOT NULL
+                     OR ir.value_json IS NOT NULL
+                     OR NOT EXISTS (
+                           SELECT 1
+                           FROM curated_geo.indicator_result _bl
+                           WHERE _bl.feature_id = ir.feature_id
+                             AND _bl.indicator_id = ir.indicator_id
+                             AND _bl.status = 'current'
+                             AND _bl.scenario_id IS NULL
+                         )))
+                  OR (ir.scenario_id IS NULL AND NOT EXISTS (
+                        SELECT 1
+                        FROM curated_geo.indicator_result _ov
+                        WHERE _ov.feature_id = ir.feature_id
+                          AND _ov.indicator_id = ir.indicator_id
+                          AND _ov.status = 'current'
+                          AND _ov.scenario_id = p.scenario_id_txt::uuid
+                          AND (_ov.value_numeric IS NOT NULL
+                            OR _ov.value_text IS NOT NULL
+                            OR _ov.value_json IS NOT NULL)
+                      ))
+                ))
+"""
+
+#: r043's one-sided form, kept only so ``downgrade`` restores the function
+#: r043 actually installed rather than a value branch that never existed at
+#: that revision. Reaching for this in ``upgrade`` is reinstating the
+#: double-draw.
+_OVERLAY_R043 = f"""
             (p.scenario_id_txt IS NULL AND ir.scenario_id IS NULL)
             OR (p.scenario_id_txt IS NOT NULL
                 AND p.scenario_id_txt ~ '{_UUID_RE}'
@@ -372,4 +441,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(_body(_OVERLAY, delta=False))
+    op.execute(_body(_OVERLAY_R043, delta=False))

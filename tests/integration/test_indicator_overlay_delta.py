@@ -618,25 +618,6 @@ def test_a_valueless_scenario_row_does_not_shadow_the_baseline(upzoned, conn):
     assert props["delta"] == pytest.approx(0.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=DuplicateFeature,
-    reason=(
-        "Known defect in r043's VALUE branch, not in r049's delta branch, and "
-        "deliberately not fixed here: with a numeric baseline and a valueless "
-        "current scenario row, both arms of the anti-join match the same "
-        "feature -- `ir.scenario_id = <scenario>` has no value test on `ir` "
-        "itself, while the anti-join's probe ignores a valueless scenario row "
-        "precisely so it cannot shadow the baseline. ST_AsMVT emits both, so "
-        "the block is drawn twice and the frontend's fill-color expression "
-        "paints whichever the renderer drew last. The fix is a migration that "
-        "excludes a valueless scenario row from the scenario arm, so the "
-        "feature survives once at its baseline value, matching the six Python "
-        "read paths and the comparison endpoint. When that lands this turns "
-        "XPASS, which is the signal to delete this marker and keep the "
-        "assertions."
-    ),
-)
 def test_the_value_tile_draws_a_shadowed_block_once(upzoned, conn):
     """The same fixture as the test above, asked of the *value* tile.
 
@@ -646,13 +627,13 @@ def test_the_value_tile_draws_a_shadowed_block_once(upzoned, conn):
     beside the bug without touching it. Querying the value tile in that state
     is the whole difference.
 
-    ``raises=DuplicateFeature`` is what makes the marker specific. Without it
-    the expectation is "this test fails somehow", and a broken fixture, a SQL
-    error or a rewritten helper would be indistinguishable from the defect —
-    the marker would stay XFAIL while reporting nothing. With it, only
-    ``_props`` refusing a repeated ``feature_id`` counts as the expected
-    failure; anything else is a real failure, including the day the two
-    assertions below start being reached and fail on their own terms.
+    This carried a ``strict=True`` xfail against ``DuplicateFeature`` while
+    r043's one-sided anti-join stood. r049's ``_OVERLAY`` now tests for a value
+    on the scenario arm too, so the block survives once at its baseline value
+    and the marker is gone — the assertions it guarded are unchanged.
+    ``_props`` still raises ``DuplicateFeature`` rather than collapsing a
+    repeated ``feature_id``, which is what keeps this a test of the defect and
+    not of the renderer's draw order.
     """
     _write_valueless(
         conn,
@@ -669,6 +650,42 @@ def test_the_value_tile_draws_a_shadowed_block_once(upzoned, conn):
     assert properties[upzoned.blocks[0]]["value_numeric"] == pytest.approx(3.0), (
         "a valueless scenario row falls through to the baseline, as it does on "
         "all six Python read paths"
+    )
+
+
+def test_the_value_tile_draws_a_valueless_block_with_no_baseline(densified, conn):
+    """The other side of that fix, and why the scenario arm is not simply
+    ``AND <has a value>``.
+
+    Excluding valueless scenario rows outright would drop a ``'missing'`` row
+    for a feature the baseline never computed out of *both* arms, and the
+    feature would vanish from the tile — while a baseline tile draws exactly
+    that row, carrying ``quality_flag`` and no ``value_numeric``. So the arm
+    also admits a valueless row when the baseline has none, and the feature is
+    drawn once with no number, which is what ``ST_AsMVT`` does with a NULL
+    property.
+
+    ``densified`` has no baseline anywhere, so block 2 — which has neither a
+    baseline nor a scenario value until this writes one — is the clean case.
+    """
+    _write_valueless(
+        conn,
+        slug=_DENSITY,
+        feature_id=densified.blocks[2],
+        scenario_id=densified.scenario_id,
+    )
+
+    properties = _props(
+        _tile(conn, indicator_slug=_DENSITY, scenario_id=densified.scenario_id)
+    )
+
+    assert densified.blocks[2] in properties, (
+        "a valueless scenario row with no baseline to fall back to is still "
+        "the scenario's answer for that feature, and must not vanish"
+    )
+    assert properties[densified.blocks[2]]["quality_flag"] == "missing"
+    assert "value_numeric" not in properties[densified.blocks[2]], (
+        "ST_AsMVT omits a NULL property, so absence is how no-value reaches the client"
     )
 
 
