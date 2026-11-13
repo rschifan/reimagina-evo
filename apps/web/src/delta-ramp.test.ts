@@ -1,12 +1,18 @@
+// @vitest-environment jsdom
 import { createExpression } from "@maplibre/maplibre-gl-style-spec";
 import type { ExpressionSpecification } from "maplibre-gl";
 import { describe, expect, it } from "vitest";
 
 import type { ComparisonResponse, IndicatorSummary, IndicatorValueStats } from "./api";
 import {
+  activateIndicator,
   DELTA_NEUTRAL,
   DELTA_NEW,
+  DELTA_STOPS,
   deltaDomainFromComparison,
+  deltaTooltip,
+  renderDeltaLegend,
+  renderModeToggle,
   deltaFill,
   deltaRamp,
   deltaScopeText,
@@ -408,5 +414,127 @@ describe("a layer whose values are all identical", () => {
       indicator(),
     );
     expect(d.basis).toBe("min-max");
+  });
+});
+
+
+// ── the wiring: what activateIndicator hands MapLibre ──────────────────
+//
+// The expressions above are right in isolation and could still be unplugged:
+// a fill that is never installed, or a source that never asks for the delta
+// tile, leaves every unit test green and the map blank or wrong.
+
+function fakeMap() {
+  const added = { sources: [] as Array<Record<string, unknown>>, layers: [] as Array<Record<string, unknown>> };
+  const present = new Set<string>();
+  const map = {
+    getLayer: (id: string) => (present.has(id) ? {} : undefined),
+    getSource: (id: string) => (present.has(id) ? {} : undefined),
+    addSource: (id: string, spec: Record<string, unknown>) => {
+      present.add(id);
+      added.sources.push(spec);
+    },
+    addLayer: (spec: Record<string, unknown>) => {
+      present.add(spec.id as string);
+      added.layers.push(spec);
+    },
+    removeLayer: (id: string) => present.delete(id),
+    removeSource: (id: string) => present.delete(id),
+    getCanvasContainer: () => document.createElement("div"),
+    setPaintProperty: () => undefined,
+    getPaintProperty: () => undefined,
+    setFeatureState: () => undefined,
+    removeFeatureState: () => undefined,
+    on: () => undefined,
+    off: () => undefined,
+  };
+  return { map: map as never, added };
+}
+
+const config = {
+  tilesUrlTemplate: "http://api/tiles/indicator_overlay_tile/{z}/{x}/{y}",
+  sourceLayer: "indicator_overlay",
+  minzoom: 10,
+  maxzoom: 16,
+};
+
+const deltaDomain = {
+  limit: 40,
+  changed: 3,
+  unchanged: 1,
+  new: 1,
+  basis: "percentile" as const,
+};
+
+describe("activateIndicator", () => {
+  const value = domain({ min: 0, max: 100, count: 5, basis: "percentile", fromStats: true });
+
+  it("draws the delta tile on the delta fill when a scenario is shown as a difference", () => {
+    const { map, added } = fakeMap();
+    activateIndicator(
+      map, config, indicator(), value,
+      undefined, "a-1", undefined, "block", "s-1", deltaDomain,
+    );
+    expect(String((added.sources[0].tiles as string[])[0])).toContain("&delta=true");
+    const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
+    expect(fill).toEqual(deltaFill({ min: -40, max: 40 }));
+  });
+
+  it("draws values on the value ramp otherwise, whatever a stale delta domain says", () => {
+    for (const [scenario, delta] of [["s-1", null], ["s-1", undefined], [null, deltaDomain]] as const) {
+      const { map, added } = fakeMap();
+      activateIndicator(
+        map, config, indicator(), value,
+        undefined, "a-1", undefined, "block", scenario, delta,
+      );
+      expect(String((added.sources[0].tiles as string[])[0])).not.toContain("delta");
+      const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
+      expect(fill).toEqual(valueRamp(value));
+    }
+  });
+});
+
+
+describe("what the difference view says in words", () => {
+  const ind = { name: "Housing density", unit: "units/ha" };
+
+  it("tells the three states apart in the tooltip, since colour alone cannot", () => {
+    expect(deltaTooltip({ state: "new" }, ind)?.detail).toMatch(/new in this scenario/);
+    expect(deltaTooltip({ state: "unchanged", delta: 0 }, ind)?.detail).toMatch(/no change/);
+    expect(deltaTooltip({ state: "changed", delta: 12.5 }, ind)?.detail).toMatch(/^\+12\.5.*units\/ha/);
+    expect(deltaTooltip({ state: "changed", delta: -3 }, ind)?.detail).toMatch(/^[-−]3.*units\/ha/);
+  });
+
+  it("says nothing for a feature it cannot describe", () => {
+    expect(deltaTooltip({ state: "changed" }, ind)).toBeNull();
+    expect(deltaTooltip({}, ind)).toBeNull();
+  });
+
+  it("draws the legend from the same constants as the fill, with a label for every state", () => {
+    const host = document.createElement("div");
+    renderDeltaLegend(host, indicator(), deltaDomain);
+    const html = host.innerHTML.toLowerCase();
+    for (const colour of [DELTA_NEUTRAL, DELTA_NEW, ...DELTA_STOPS]) {
+      expect(html).toContain(colour);
+    }
+    expect(host.textContent).toMatch(/new in this scenario \(1\)/);
+    expect(host.textContent).toMatch(/no change \(1\)/);
+    expect(host.textContent).toMatch(/95th percentile/);
+  });
+
+  it("offers the view switch only while a scenario is active", () => {
+    const host = document.createElement("div");
+    renderModeToggle(host, false, "value", () => undefined);
+    expect(host.hidden).toBe(true);
+    expect(host.querySelectorAll("button")).toHaveLength(0);
+
+    const picked: string[] = [];
+    renderModeToggle(host, true, "value", (m) => picked.push(m));
+    expect(host.hidden).toBe(false);
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
+    expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
+    buttons[0].click(); // already active: not a change
+    buttons[1].click();
+    expect(picked).toEqual(["delta"]);
   });
 });
