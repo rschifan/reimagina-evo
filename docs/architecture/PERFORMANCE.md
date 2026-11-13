@@ -191,6 +191,140 @@ If a regression pushes any of these numbers into a different ballpark
 instead of <0.5 s), re-run EXPLAIN and check whether the partial unique
 indexes on `indicator_result` are still selected.
 
+## Scenario authoring (r048-r049)
+
+Two costs belong to scenarios: what **materialising** a drawn edit costs (which
+is also how long the scenario's row lock is held), and what the **delta tile**
+costs to render. The first is pinned by a plan contract and recorded as
+measurements; the second is recorded as measurements only.
+
+### Materialisation: plan contract
+
+`tests/performance/test_scenario_materialize_plan.py` runs `EXPLAIN` on the
+statement `_resolve_edits` executes (captured as it runs, not copied) against a
+10,000-block fixture with a selective drawn area, and requires:
+
+- the access path is `feature_centroid_gist` with
+  `Index Cond: (geometry_centroid @ e.geometry)`;
+- no `Seq Scan on feature`;
+- the predicate is written against the stored `f.geometry_centroid`.
+
+This is a **plan** claim, stable across machines. The `Seq Scan` assertion
+alone is not enough: with the index dropped, the planner does not fall back to
+`Seq Scan on feature` on this fixture. It walks `feature_type_id_idx` and
+applies `ST_Covers` to every feature of the type, which is the same cost under
+a different name. The index-name assertion is the load-bearing one, and two
+controls in the file show each assertion is reachable (index and bitmap scans
+forced off gives the `Seq Scan`; index dropped loses the index name).
+
+A full-district edit legitimately plans a scan, since it selects most of the
+table; the contract is about the selective case, which is what an index is
+for.
+
+### Materialisation: measured cost
+
+Method: a committed synthetic territory of N x N square blocks (about 210 m
+side) in one AOI covering all of them, one `num_levels` edit drawn over the
+whole grid, `materialize_scenario` then `COMMIT`, wall clock from
+`time.perf_counter()` on the client, one fresh scenario per round. Phase times
+come from wrapping the step functions. Revision asserted to be r049 before each
+run. `apply_overrides` is the shipped one; nothing was patched.
+
+Machine: Linux 6.18 microVM, 4 vCPU, PostgreSQL 16.15, PostGIS 3.7, client and
+server on the same host over TCP localhost. Not a CI machine and not the macOS
+laptop of the Cuauhtémoc baselines above; compare ratios, not absolutes.
+Run-to-run variance on this host is 10-30%: two 5-round runs of the 20,164-block
+case gave a 3.8-4.2 s spread and a 4.3-5.7 s spread.
+
+| Scale | Rounds | Full-district first materialisation, lock to commit |
+|---|---|---|
+| 20,164 blocks (pilot scale) | 5 | min 3.79 s, median 3.99 s |
+| 20,164 blocks, second run | 3 | min 4.31 s, median 4.37 s |
+| 90,000 blocks (above CDMX's 66,789) | 3 | min 20.1 s, median 20.3 s |
+
+Roughly linear: about 0.2 ms per block.
+
+Where the 20,164-block time goes (median of the first run):
+
+| Phase | ms | Share |
+|---|---|---|
+| `_resolve_edits` (the planned SELECT) | 85 | 2% |
+| `_refuse_ceiling_breaches` | 516 | 13% |
+| `_delete_unimplied_overrides` | 81 | 2% |
+| `apply_overrides` | 3,244 | 81% |
+| `publish_scenario_version` | 14 | under 1% |
+
+The planned SELECT is not the cost. `apply_overrides` is, because it calls
+`apply_override` once per row: one round trip each, about 160 us per row on
+localhost, and more over a real network. At 90,000 blocks it was 16.2 s of
+20.3 s.
+
+Other shapes at 20,164 blocks:
+
+| Operation | Time |
+|---|---|
+| Re-materialise unchanged (everything upserted again) | min 4.1 s, median 4.3-4.5 s |
+| Remove the only edit, with 20,164 current results to supersede | 1.1 s (1.06 s of it step 7) |
+| `compute_block_housing_density` on the same scenario, for contrast | 3.0-3.3 s, one indicator |
+
+### Decision: two transactions, not one, and not the job layer
+
+`recompute` stays synchronous for materialisation and uses the job layer for
+evaluation. The numbers behind it:
+
+- **Lock scope.** A second writer on the same scenario waited 4.29 s for a
+  4.43 s materialisation. A writer on a different scenario took 4 ms. The lock
+  is per scenario row, so the blast radius is that scenario's own editors.
+- **The split is vindicated.** One indicator's compute is as long as the
+  materialisation (3.0-3.3 s against 4.0-4.4 s) and there are twelve. Holding
+  the lock across the compute would multiply the window several times for no
+  correctness gain; materialisation commits first and evaluation starts after.
+- **Acceptable at district scale, strained at city scale.** About 4 s at 20k
+  blocks is a tolerable request; about 20 s at 90k is not a request anyone
+  should wait on. If city-scale authoring becomes real, the remedy is to
+  batch the upsert in `apply_overrides` (81% of the time), not to move
+  materialisation into a job: a job would give up the synchronous refusal
+  (`CeilingExceeded`, `ScenarioHasNoAOI`), which the caller needs to see.
+
+Not measured: a network hop between application and database, concurrent
+materialisations of different scenarios contending on `scenario_override`, and
+a database whose `feature` table holds the whole country rather than the
+fixture's 10-90k rows.
+
+### Delta tile (`serving_geo.indicator_delta_tile`)
+
+Measured at pilot scale: 19,881 blocks, 20,181 current results, 400 features in
+a z=14 tile. Each figure is 15 timed calls through the shipped function, min and
+median.
+
+| Tile | Min | Median |
+|---|---|---|
+| Value view at head (r049) | 8.9 ms | 9.5 ms |
+| Value view with r048's body swapped in, same transaction, rolled back | 9.5 ms | 11.6 ms |
+| Delta view | 12.6 ms | 13.8 ms |
+
+- **No regression to the value view.** r049 adds a `CASE` mode switch and the
+  unchosen arm is evaluated lazily.
+- **Delta costs about 1.5 times a value tile.**
+- **Join form.** The shipped delta is a `FULL OUTER JOIN` of baseline and
+  scenario results. A per-feature lateral probe was built as the alternative:
+  the tiles are byte-identical (`SELECT (A) = (B)` returned true), the
+  alternative was about 1.2 times faster in wall clock, and the planner's
+  *cost* favoured the shipped form by 3.2 times. Cost and wall clock disagreed,
+  and wall clock was measured with interleaved A/B rounds, which is the one to
+  believe. The shipped form was kept because it mirrors `comparison._joined`
+  clause for clause, so parity with `GET /scenarios/{id}/comparison` is
+  structural. The price of that choice is about 1.8 ms per 400-feature tile.
+
+Known and accepted:
+
+- Delta mode refetches the whole comparison on every render in the frontend.
+  A server-side p95 would be the optimisation if it feels slow at Mexicali
+  scale.
+- The comparison endpoint takes no `feature_type`, so a multi-grain indicator
+  would scale the delta ramp across grains. Latent: every shipped indicator is
+  block-grain.
+
 ## Benchmark rules
 
 - Benchmark the **real serving contract** whenever possible.
