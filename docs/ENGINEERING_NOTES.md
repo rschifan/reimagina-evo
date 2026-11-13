@@ -106,9 +106,11 @@ Tables that will need RLS: `curated_geo.scenario_override`, `indicator_result`,
 `aoi_indicator_summary`. None of them carries a `project_id`, so the policy above 
 cannot be applied verbatim. `aoi_indicator_summary` can reach one by joining 
 `aoi_id → area_of_interest.project_id` (r004:21). `scenario_override` and 
-`indicator_result` cannot: they are keyed by `scenario_id`, which is a bare uuid 
-with no FK and no link to a project (r016:7-10). Project-scoping those two needs a 
-scenario→project association that does not exist in the schema.  
+`indicator_result` cannot directly: they are keyed by `scenario_id`, which is still a 
+bare uuid with no FK (r016:7-10). The scenario→project association now exists 
+(`app_core.scenario.project_id`, r048), so project-scoping those two is a join 
+through `app_core.scenario` — which only covers scenarios that have a row, not an 
+id written straight through `apply_override`.  
 **API middleware required:** at the start of every request transaction:
 ```python
 conn.execute("SET LOCAL app.current_project_id = %s", (project_id,))

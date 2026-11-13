@@ -45,14 +45,10 @@ fi
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 
-# The scenario uuid has to cross two Python heredocs and the shell between
-# them. A file is the only channel a heredoc has back to its caller.
-SCENARIO_ID_FILE="$(mktemp "${TMPDIR:-/tmp}/reimagina-acceptance-scenario.XXXXXX")"
-export SCENARIO_ID_FILE
 WORKER_PID=""
 cleanup() {
   [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
-  rm -f "$SCENARIO_ID_FILE"
+  rm -f "${AREA_GEOJSON:-}"
 }
 trap cleanup EXIT
 
@@ -182,52 +178,67 @@ RECIPE_ID="$($PY -c 'import json,sys; print(json.load(sys.stdin)["recipe"]["id"]
 $CLI raster derivation run --recipe-id "$RECIPE_ID"
 $CLI raster list
 
-step "10. A scenario, and the selective recompute it triggers"
+step "10. A scenario, authored through the CLI, and the selective recompute it triggers"
+# The same three commands a planner uses: create the what-if, draw an area and
+# set the policy inputs over it, recompute. Nothing here reaches past the CLI
+# into `apply_overrides`, so this run exercises the shipped authoring path
+# end to end rather than a private shortcut around it.
+#
+# The area is drawn as GeoJSON, as a person would hand it over: the envelope of
+# four blocks, grown a few metres so four collinear centroids still enclose
+# something. `set-attribute` selects by centroid, so the polygon may catch more
+# than those four; the table in step 11 reports exactly how many it did.
+AREA_GEOJSON="${TMPDIR:-/tmp}/reimagina-acceptance-area.geojson"
+export AREA_GEOJSON
 $PY - <<'PYEOF'
+import json
 import os
 import sys
-import uuid
 
 sys.path.insert(0, "packages/py")
-from reimagina.scenarios.overrides import apply_overrides  # noqa: E402
 from reimagina.storage import connect  # noqa: E402
 
-# A stable uuid5, so re-running the script edits the same scenario instead of
-# accumulating a new one on every pass.
-scenario_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "reimagina://acceptance/upzoning"))
-with connect(os.environ["DATABASE_URL"]) as conn:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, source_record_ref, (attributes->>'floors')::float "
-            "FROM curated_geo.feature WHERE type_slug = 'block' "
-            "ORDER BY source_record_ref LIMIT 4"
-        )
-        picks = cur.fetchall()
-    applied = apply_overrides(
-        conn,
-        scenario_id=scenario_id,
-        edits=[
-            {
-                "feature_id": str(fid),
-                "attribute_key": "floors",
-                "value_numeric": floors + 6,
-            }
-            for fid, _ref, floors in picks
-        ],
+with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
+    cur.execute(
+        """
+        SELECT ST_AsGeoJSON(ST_Envelope(ST_Expand(
+                 ST_Extent(geometry_centroid)::geometry, 0.0002)))
+        FROM (SELECT geometry_centroid FROM curated_geo.feature
+               WHERE type_slug = 'block'
+               ORDER BY source_record_ref LIMIT 4) b
+        """
     )
-    conn.commit()
-for _fid, ref, floors in picks:
-    print(f"  {ref}  floors {floors:g} -> {floors + 6:g}")
-print(f"  overrides applied: {applied}")
-with open(os.environ["SCENARIO_ID_FILE"], "w") as handle:
-    handle.write(scenario_id)
+    area = json.loads(cur.fetchone()[0])
+with open(os.environ["AREA_GEOJSON"], "w") as handle:
+    json.dump({"type": "Feature", "properties": {}, "geometry": area}, handle)
+print(f"  drew {os.environ['AREA_GEOJSON']}")
 PYEOF
-SCENARIO_ID="$(cat "${SCENARIO_ID_FILE}")"
-$CLI evaluate-scenario \
-  --changed-attribute floors \
+
+CREATED="$($CLI scenario create --name "Acceptance upzoning" --aoi-id "$AOI_ID")"
+echo "$CREATED"
+SCENARIO_ID="$($PY -c 'import json,sys; print(json.load(sys.stdin)["scenario_id"])' <<<"$CREATED")"
+[[ -n "$SCENARIO_ID" ]] || { echo "scenario create returned no scenario_id" >&2; exit 1; }
+export SCENARIO_ID
+
+# ⚠ The scenario must be visible through the inspection contract the moment it
+# exists. A create that committed nothing, or a view that cannot see it, reports
+# zero here while every command above looked fine.
+SHOWN="$($CLI scenario show --scenario-id "$SCENARIO_ID")"
+echo "$SHOWN"
+$PY -c 'import json,sys; s=json.load(sys.stdin)["scenario"]; sys.exit(0 if s["id"] else 1)' <<<"$SHOWN" \
+  || { echo "explore.scenario_v does not report the scenario just created" >&2; exit 1; }
+LISTED="$($CLI scenario list --aoi-id "$AOI_ID")"
+$PY -c 'import json,sys; n=json.load(sys.stdin)["count"]; print(f"  explore.scenario_v reports {n} scenario(s) in the AOI"); sys.exit(0 if n >= 1 else 1)' <<<"$LISTED" \
+  || { echo "explore.scenario_v reports zero scenarios right after create" >&2; exit 1; }
+
+$CLI scenario set-attribute \
   --scenario-id "$SCENARIO_ID" \
-  --aoi-id "$AOI_ID" \
-  --sync
+  --geojson "$AREA_GEOJSON" \
+  --levels 12 --unit-size 80 --people-per-household 3.2
+
+# `--sync` is the in-process coordinator: no queue, no worker. Step 12 is the
+# other half and submits through the durable queue.
+$CLI scenario recompute --scenario-id "$SCENARIO_ID" --sync
 
 step "11. What the scenario changed, and what it left alone"
 $PY - <<'PYEOF'
@@ -237,7 +248,7 @@ import sys
 sys.path.insert(0, "packages/py")
 from reimagina.storage import connect  # noqa: E402
 
-scenario_id = open(os.environ["SCENARIO_ID_FILE"]).read().strip()
+scenario_id = os.environ["SCENARIO_ID"]
 with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
     cur.execute(
         """

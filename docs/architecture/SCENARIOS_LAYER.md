@@ -13,12 +13,13 @@ A scenario is a named "what if" — a proposed state of the city that has not ha
 The workflow is:
 
 ```
-project  →  scenario_id  →  scenario_override rows  →  submit_run  →  indicator_result
+project  →  scenario  →  scenario_edit (drawn areas)  →  scenario_override rows  →  submit_run  →  indicator_result
 ```
 
-- **Project** — `app_core.project`, the workspace an area of interest belongs to. The only table in `app_core` (`r001_schemas_and_extensions.py:19-35`).
-- **Scenario** — a bare uuid, not a row. There is no `app_core.scenario` table; every `scenario_id` column is a plain uuid with no FK, deliberately (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`).
-- **Override** — one attribute edit, in `curated_geo.scenario_override` (r030). The override rows *are* the scenario.
+- **Project** — `app_core.project`, the workspace an area of interest and its scenarios belong to (`r001_schemas_and_extensions.py:19-35`).
+- **Scenario** — a named row in `app_core.scenario` (r048), unique by name within its project. It is the addressed resource: created, listed, shown, recomputed and deleted by id. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` are still plain uuids with no FK (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`), so what ties them to the scenario row is code, not schema — see *The scenario* below.
+- **Edit** — one drawn area carrying one attribute value, in `curated_geo.scenario_edit` (r048). This is what a person authors.
+- **Override** — one per-feature attribute edit, in `curated_geo.scenario_override` (r030). Materialising a scenario expands its edits into override rows, and those rows are what the indicators read.
 - **Run** — an execution submitted through the `Orchestrator` port. Defined in `JOB_LAYER.md`.
 - **Indicator result** — the output, in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
 
@@ -103,7 +104,7 @@ Pinned in `tests/integration/test_indicator_picker_scenario.py`, whose
 `test_an_indicator_is_offered_exactly_once_under_a_scenario` gives one feature
 both rows — the state a join would duplicate.
 
-⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created — `app_core` contains only `project` (r001:27). The mechanism is `curated_geo.scenario_override`.
+⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created. The mechanism is `curated_geo.scenario_edit` expanded into `curated_geo.scenario_override`, with `app_core.scenario` naming the whole.
 
 ---
 
@@ -124,20 +125,27 @@ CREATE TABLE IF NOT EXISTS app_core.project (
 );
 ```
 
-It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`). Nothing else in the schema depends on it today.
+It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`), and since r048 `app_core.scenario.project_id` does too.
 
 ---
 
-### The scenario id — no table
+### app_core.scenario
 
-A `scenario_id` is minted by the caller and carried on the rows that need it. `curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` all take a plain `uuid` with no foreign key.
+A named what-if inside a project (r048). `project_id` is required and `aoi_id` is not: a scenario may be created before any AOI exists, so the project cannot always be derived from the AOI. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn edits have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`.
 
-This is a recorded decision, not an oversight: `app_core.scenario` was deferred to a later layer and the FK was to be added together with the table (`r016_indicator_layer.py:7-10`). r030 matched the same convention rather than inventing a different one (`r030:5-6`). `NULL` means baseline — the city as it is today.
+### curated_geo.scenario_edit
 
-Two consequences worth stating:
+One drawn area carrying one attribute value, ordered by `ordinal` ("later edits win"; not `created_at`, because `now()` is transaction-start time). The geometry CHECK is a type check only. One proposal (levels, unit size, people per household) writes four edits. Deleting the scenario cascades them.
 
-- Nothing enforces that a `scenario_id` refers to anything. A typo'd uuid produces a valid, empty scenario.
-- There is no scenario name, status, or project link in the database. `app_core.project` and a scenario are not connected by any column.
+### The scenario id — what the schema does not tie together
+
+`curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` still take a plain `uuid` with no foreign key: r016 and r030 chose that while the entity was deferred, and r048 added the entity without adding the FKs. `NULL` means baseline — the city as it is today.
+
+Consequences worth stating:
+
+- Nothing in the schema enforces that a `scenario_id` on those four tables refers to a scenario row. A typo'd uuid produces a valid, empty scenario, and the low-level `apply_override` path (below) can still write overrides for an id that has no row.
+- ⚠ **A scenario's AOI is tied to its project by code, not by the schema.** r048 declares `aoi_id` as a plain reference to `curated_geo.area_of_interest(id)`, so the database accepts a scenario in project A bounded by project B's AOI. Materialisation scopes its selection by `aoi_id` alone, so such a scenario would write overrides over B's features. `create_scenario` is the column's only writer and refuses the pair (`_require_aoi_in_project`); a new insert path has to repeat that check.
+- Because those four tables have no FK, deleting a scenario does not cascade into them. `delete_scenario` retires the traces by hand: it removes the scenario's overrides, retires its asset versions and materialisations, and marks its `current` results `stale`. Only then does it delete the row, which cascades the edits.
 
 ---
 
@@ -298,9 +306,28 @@ A background job then populates `curated_geo.aoi_feature` with the intersection 
 
 ---
 
-### Recording a scenario edit
+### Authoring a scenario
 
-A scenario begins existing the moment its first override row is written. Mint a uuid client-side and use it.
+Create the scenario, draw an area with the three policy inputs, then recompute:
+
+```bash
+python -m apps.cli.app scenario create --name "Upzoning" --aoi-id <uuid>
+python -m apps.cli.app scenario set-attribute --scenario-id <uuid> \
+    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2
+python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
+python -m apps.cli.app scenario compare --scenario-id <uuid> \
+    --slug urban_form_block_planned_floors
+python -m apps.cli.app scenario list      # reads explore.scenario_v
+python -m apps.cli.app scenario show --scenario-id <uuid>
+```
+
+`recompute` materialises the edits into override rows (selecting blocks with `ST_Covers(area, geometry_centroid)`) and then runs the selective recompute. `scripts/acceptance_run.sh` step 10 exercises exactly this path.
+
+---
+
+### Recording a scenario edit directly
+
+The low-level path writes override rows without a scenario row. It remains for code that already holds a scenario id; the authoring path above is the one that creates a scenario others can find by name.
 
 ```python
 from uuid import uuid4
@@ -457,9 +484,9 @@ FROM curated_geo.scenario_override
 WHERE scenario_id = :source_scenario_id;
 ```
 
-The copy has no results until a run is submitted for the new id.
+The copy has no results until a run is submitted for the new id. A copied id with no `app_core.scenario` row is invisible to `explore.scenario_v`; cloning a *named* scenario means creating the row first.
 
-There is no archive operation: with no scenario row there is no status to set. Results for an unused scenario simply stop being recomputed, and stay readable for comparison.
+There is no archive operation and no status column. Deleting a scenario retires its traces (see *The scenario id* above): its overrides are removed and its results are marked `stale`, so `current_indicator_v` no longer returns them. The stale rows remain in `indicator_result` as history, but they are no longer readable as the scenario's results or for comparison.
 
 ---
 
@@ -470,6 +497,7 @@ Within this layer:
 1. `app_core.project` — r001, needed by `area_of_interest`
 2. `curated_geo.feature` — DATA_LAYER (r003); `scenario_override.feature_id` references it
 3. `curated_geo.scenario_override` — r030
+4. `app_core.scenario` and `curated_geo.scenario_edit` — r048
 
 `scenario_override` is created late (r030) rather than with `project`, because it depends on `feature` and nothing depends on it. See `JOB_LAYER.md` — *Migration order* for how the job-layer tables interleave.
 

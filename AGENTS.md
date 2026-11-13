@@ -162,6 +162,18 @@ python -m apps.cli.app indicators compute \
 python -m apps.cli.app indicators aoi-summary \
     --aoi-id <uuid> --slug urban_form_block_compactness
 
+# Scenario authoring: a named what-if inside a project. `list` and `show`
+# read explore.scenario_v; `compare` reads the comparison; the rest write.
+# --aoi-id on `create` supplies the project, and the AOI must belong to it.
+python -m apps.cli.app scenario create --name "Upzoning" --aoi-id <uuid>
+python -m apps.cli.app scenario set-attribute --scenario-id <uuid> \
+    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2
+python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
+python -m apps.cli.app scenario compare --scenario-id <uuid> \
+    --slug urban_form_block_planned_floors
+python -m apps.cli.app scenario list [--project-id <uuid>] [--aoi-id <uuid>]
+python -m apps.cli.app scenario show --scenario-id <uuid>
+
 # A territory to run all of the above against, without the data lake
 python scripts/synthetic_territory.py
 
