@@ -81,6 +81,18 @@ def _values(conn, slug, scenario_id):
         .indicator_result_repo()
         .list_current_for_indicator(indicator_slug=slug, scenario_id=scenario_id)
     )
+    # Keyed by feature, so a feature returned twice would collapse to whichever
+    # row the server happened to send last — silently, and differently from one
+    # plan to the next. That is not a hypothetical: it is how the valueless-row
+    # duplicate below stayed hidden, surfacing only as an intermittent failure
+    # of `test_a_valueless_scenario_row_falls_through_to_the_baseline` whenever
+    # the planner switched from an index scan to a seq scan. Assert the overlay's
+    # one-row-per-pair invariant here rather than let the dict paper over it.
+    seen = [str(r["feature_id"]) for r in rows]
+    assert len(seen) == len(set(seen)), (
+        f"overlay returned a feature more than once: "
+        f"{sorted(f for f in set(seen) if seen.count(f) > 1)}"
+    )
     return {str(r["feature_id"]): r["value_numeric"] for r in rows}
 
 
@@ -286,6 +298,127 @@ def test_a_valued_scenario_row_still_wins(blocks, conn):
     values = _values(conn, slug, SCENARIO)
     assert values[str(blocks[0])] == 9.0
     assert values[str(blocks[1])] == 3.0
+
+
+def test_a_valueless_scenario_row_does_not_duplicate_the_feature(blocks, conn):
+    """The invariant both the docstring and SCENARIOS_LAYER.md claim: *exactly
+    one row survives per (feature, indicator) pair*.
+
+    The value test added to the anti-join stops a valueless scenario row from
+    suppressing the baseline — but the `scenario_id = X` branch still matched
+    that row unconditionally, so both rows qualified and the pair came back
+    twice. The two branches have to be complementary, not just the anti-join
+    guarded, or this is the very double-count the anti-join exists to avoid,
+    reintroduced one case down.
+
+    Asserted on row count, not on values: a reader that keys by feature (the
+    `_values` dict here, `dict(row)` in the API) collapses the duplicate to
+    whichever row arrived last, so the defect shows up as a *flake* that tracks
+    the query plan rather than as a stable failure.
+    """
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for b in blocks:
+        _write(conn, slug=slug, feature_id=b, value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    rows = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .list_current_for_indicator(indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert len(rows) == len(blocks), (
+        "the baseline row and the valueless scenario row both qualified"
+    )
+    assert sorted(r["value_numeric"] for r in rows) == [3.0, 3.0, 3.0]
+
+
+def test_a_valueless_scenario_row_survives_with_no_baseline_to_fall_back_to(
+    blocks, conn
+):
+    """The guard on the other side of the fix.
+
+    Making the scenario branch require a value is not enough on its own: where
+    the scenario recorded `missing` and the baseline never computed the feature
+    at all, requiring a value would drop the row from both branches and the
+    feature would vanish — the same hole this module exists to close, in a rarer
+    configuration. A baseline read surfaces its own valueless rows, so a
+    scenario read must surface the scenario's.
+    """
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    rows = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .list_current_for_indicator(indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert [str(r["feature_id"]) for r in rows] == [str(blocks[0])]
+    assert rows[0]["value_numeric"] is None
+    assert rows[0]["quality_flag"] == "missing"
+
+
+def test_get_current_falls_through_a_valueless_scenario_row(blocks, conn):
+    """`get_current` takes `fetchone()`, so a duplicated pair makes it return
+    an arbitrary one of the two rows — reporting "no value" for a feature the
+    baseline has a value for, on whichever plan the server picks."""
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    _write(conn, slug=slug, feature_id=blocks[0], value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    row = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .get_current(feature_id=blocks[0], indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert row is not None
+    assert row["value_numeric"] == 3.0, "the baseline value, not the missing row"
+
+
+def test_the_aoi_aggregate_does_not_double_count_a_valueless_scenario_row(blocks, conn):
+    """Where the duplicate stops being cosmetic.
+
+    `fetch_aoi_children` puts the overlay in a `LEFT JOIN … ON`, so a feature
+    matching twice is returned twice and its `overlap_measure` weight is counted
+    twice in the weighted mean. The AOI summary comes out quietly wrong rather
+    than raising — the failure mode
+    `test_the_aoi_aggregate_reads_through_to_the_baseline` guards for a *valued*
+    scenario row, and which is just as reachable with a valueless one.
+    """
+    from tests.integration._helpers import insert_project
+
+    from reimagina.data import aoi as aoi_mod
+
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for b in blocks:
+        _write(conn, slug=slug, feature_id=b, value=3.0)
+    _write_missing(conn, slug=slug, feature_id=blocks[0], scenario_id=SCENARIO)
+
+    aoi_id = aoi_mod.create_aoi(
+        conn,
+        project_id=insert_project(conn, name="ovl_missing_aoi_proj"),
+        name="ovl_missing_aoi",
+        geometry_wkt="POLYGON((-1 -1, -1 5, 5 5, 5 -1, -1 -1))",
+    )
+    with conn.cursor() as cur:
+        for b in blocks:
+            cur.execute(
+                "INSERT INTO curated_geo.aoi_feature (aoi_id, feature_id, "
+                "overlap_basis, overlap_measure, feature_measure, overlap_ratio) "
+                "VALUES (%s, %s, 'area', 1.0, 1.0, 1.0)",
+                (aoi_id, b),
+            )
+
+    rows = (
+        backend_for_connection(conn)
+        .aoi_summary_repo()
+        .fetch_aoi_children(aoi_id=aoi_id, indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert len(rows) == len(blocks), "one row per AOI member, never doubled"
+    assert sorted(v for v, _, _ in rows) == [3.0, 3.0, 3.0]
 
 
 # ── the case this change exists for ────────────────────────────────────────

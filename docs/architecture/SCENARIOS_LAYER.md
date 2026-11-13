@@ -61,6 +61,39 @@ answer is now unknown" and have that beat the baseline.** Doing so needs a
 distinct signal the read layer honours — a `quality_flag` it inspects — not the
 absence of a value, which is indistinguishable from "not computed".
 
+⚠ **The value test belongs on both branches.** Guarding only the anti-join
+stops a valueless scenario row from *suppressing* the baseline, but leaves
+`scenario_id = X` matching that row unconditionally — so the pair qualifies
+twice and the one-row-per-pair invariant above is broken, which is the
+double-count the anti-join exists to avoid, reintroduced one case down. It is
+harder to see than the widened form, because it only bites once a scenario has
+recorded a valueless row, and because every reader that keys by feature (a dict
+comprehension, `dict(row)`, `fetchone()`) collapses the duplicate to whichever
+row the server sent *last* — so it reads as an intermittent wrong value rather
+than as a duplicate. That order follows the query plan: an index scan on
+`ir_scenario_slug_idx` returns the scenario row first and the baseline wins,
+while a seq scan (which the planner prefers once the table has statistics) puts
+it last and the read reports no value. In `fetch_aoi_children`, which puts the
+predicate in a `LEFT JOIN … ON`, the duplicate is not cosmetic: the feature's
+`overlap_measure` weight is counted twice and the AOI summary is quietly wrong.
+
+So a scenario row qualifies when it carries a value **or** when no baseline row
+exists for the pair — the second half keeping a `missing` row the baseline never
+computed from falling out of both branches and vanishing. Exactly one row
+survives per pair in all four configurations: a valued scenario row wins, a
+valueless one yields to the baseline, a valueless one with no baseline is still
+returned, and no scenario row leaves the baseline.
+
+⚠ **`serving_geo.indicator_overlay_tile` still carries the one-sided form**
+(r043's `_OVERLAY`), so a scenario tile emits two MVT features with the same
+`feature_id` — one valueless — whenever the scenario has a valueless row for a
+feature the baseline has a value for. It is a separate copy of the predicate in
+SQL rather than a call into `scenario_overlay`, and it is not fixed here on
+purpose: the in-flight `feature/scenario-authoring` branch replaces the whole
+function (r049, `CREATE OR REPLACE`) with a copy of the same one-sided
+predicate, so a fix landing before it would be silently overwritten. Fix it in
+r049, where the function's current definition lives.
+
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
 So does the indicator picker (`list_indicators(with_values_for_aoi=)`), which is
