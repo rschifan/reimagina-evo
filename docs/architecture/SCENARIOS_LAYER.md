@@ -61,6 +61,43 @@ answer is now unknown" and have that beat the baseline.** Doing so needs a
 distinct signal the read layer honours — a `quality_flag` it inspects — not the
 absence of a value, which is indistinguishable from "not computed".
 
+⚠ **The value test belongs on both branches.** Guarding only the anti-join
+stops a valueless scenario row from *suppressing* the baseline, but leaves
+`scenario_id = X` matching that row unconditionally — so the pair qualifies
+twice and the one-row-per-pair invariant above is broken, which is the
+double-count the anti-join exists to avoid, reintroduced one case down. It is
+harder to see than the widened form, because it only bites once a scenario has
+recorded a valueless row, and because every reader that keys by feature (a dict
+comprehension, `dict(row)`, `fetchone()`) collapses the duplicate to whichever
+row the server sent *last* — so it reads as an intermittent wrong value rather
+than as a duplicate. That order follows the query plan: an index scan on
+`ir_scenario_slug_idx` returns the scenario row first and the baseline wins,
+while a seq scan (which the planner prefers once the table has statistics) puts
+it last and the read reports no value. In `fetch_aoi_children`, which puts the
+predicate in a `LEFT JOIN … ON`, the duplicate is not cosmetic: the feature's
+`overlap_measure` weight is counted twice and the AOI summary is quietly wrong.
+
+So a scenario row qualifies when it carries a value **or** when no baseline row
+exists for the pair — the second half keeping a `missing` row the baseline never
+computed from falling out of both branches and vanishing. Exactly one row
+survives per pair in all four configurations: a valued scenario row wins, a
+valueless one yields to the baseline, a valueless one with no baseline is still
+returned, and no scenario row leaves the baseline.
+
+⚠ **`serving_geo.indicator_overlay_tile` carries the predicate as a separate
+copy in SQL**, not as a call into `scenario_overlay`, so it had the same
+one-sided form and emitted two MVT features with the same `feature_id` — one
+valueless — whenever a scenario had a valueless row for a feature the baseline
+has a value for. It is fixed on the scenario-authoring branch, in r049, which
+is where the function's definition now lives: a fix landing here first would
+have been silently overwritten by that migration's `CREATE OR REPLACE`. Its
+`downgrade` keeps r043's one-sided predicate, so downgrading restores the
+function r043 shipped rather than one that never existed at that revision.
+
+Until that branch merges, the function on this one is still r043's and still
+draws such a feature twice, while the Python read paths above resolve it
+correctly — the two disagree on exactly this case, in that direction.
+
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
 So does the indicator picker (`list_indicators(with_values_for_aoi=)`), which is

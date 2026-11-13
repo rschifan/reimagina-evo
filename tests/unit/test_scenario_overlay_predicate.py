@@ -54,3 +54,36 @@ def test_the_baseline_predicate_is_untouched():
     sql, params = scenario_overlay("ir", None)
     assert sql == "ir.scenario_id IS NULL"
     assert params == []
+
+
+def test_the_scenario_branch_carries_the_value_test_too():
+    """The two branches must be complementary, not just the anti-join guarded.
+
+    Guarding only the ``NOT EXISTS`` stops a valueless scenario row from
+    suppressing the baseline, but leaves ``scenario_id = X`` matching that row
+    unconditionally — so the pair qualifies on *both* branches and is returned
+    twice, which is the double-count the anti-join exists to avoid. Observable
+    against a database (the row-count assertions in
+    tests/integration/test_scenario_read_overlay.py); pinned here because the
+    symptom there was an intermittent failure that tracked the query plan, and a
+    predicate that quietly loses this half would go back to flaking rather than
+    failing.
+    """
+    sql, _ = scenario_overlay("ir", SCENARIO)
+    scenario_branch = sql.split("OR (ir.scenario_id IS NULL", 1)[0]
+    assert "ir.value_numeric IS NOT NULL" in scenario_branch
+    assert "ir.value_text IS NOT NULL" in scenario_branch
+    assert "ir.value_json IS NOT NULL" in scenario_branch
+
+
+def test_a_valueless_scenario_row_is_kept_when_there_is_no_baseline():
+    """The other half of that fix. Requiring a value outright would drop a
+    `missing` scenario row for a feature the baseline never computed from both
+    branches, so the feature would vanish — the hole this predicate closes, in a
+    rarer configuration. The scenario branch therefore also admits a valueless
+    row when no baseline row exists for the pair."""
+    sql, _ = scenario_overlay("ir", SCENARIO)
+    scenario_branch = sql.split("OR (ir.scenario_id IS NULL", 1)[0]
+    assert "_bl.scenario_id IS NULL" in scenario_branch
+    assert "_bl.feature_id = ir.feature_id" in scenario_branch
+    assert "_bl.indicator_id = ir.indicator_id" in scenario_branch
