@@ -158,7 +158,7 @@ It exists because `curated_geo.area_of_interest.project_id` references it (`r004
 
 ### app_core.scenario
 
-A named what-if inside a project (r048). `project_id` is required and `aoi_id` is not: a scenario may be created before any AOI exists, so the project cannot always be derived from the AOI. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn edits have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`.
+A named what-if inside a project (r048). `project_id` is required and `aoi_id` is not: a scenario may be created before any AOI exists, so the project cannot always be derived from the AOI. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn edits have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`, but it is **inert today**: the policy admits every row while `app.current_project_id` is unset, nothing outside tests sets it, and the API connects as the table owner, so it provides no tenant isolation yet (a known, deferred risk).
 
 ### curated_geo.scenario_edit
 

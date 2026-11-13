@@ -84,8 +84,8 @@ highlight — and ``allowed_levels``, so the form can clamp its own input
 rather than re-derive a catalog bound. ``apps/cli/scenario.py`` is the same
 translation into the other dialect.
 
-**No credential in any response.** Task 8 found ``recompute`` printing a DSN
-with its password; the CLI's answer was a recursive mask in its printer. These
+**No credential in any response.** The CLI once printed ``recompute``'s DSN
+with its password, so every payload it prints is now masked recursively. These
 payloads are built here, so a mask would protect nothing — the DSN simply is
 not in them, which is also why the CLI's ``{"dsn": …}`` key has no counterpart
 here.

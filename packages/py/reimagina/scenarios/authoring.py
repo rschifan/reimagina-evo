@@ -292,9 +292,9 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
 def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
     """Take the scenario's row lock and return its ``aoi_id`` (possibly null).
 
-    The one serialisation point for everything that writes a scenario. Both
-    writers here need it for the same reason — each reads the scenario's
-    current state, decides from it, and writes — and both are reached from an
+    The serialisation point for the writers that read a scenario's state and
+    then decide from it. Both of these need it for the same reason — each reads the
+    scenario's current state, decides from it, and writes — and both are reached from an
     API route, where a double-submit is the ordinary case rather than the
     exotic one:
 
@@ -308,6 +308,9 @@ def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
       the attribute's version over them — override rows with no current
       ``asset_version``, which is invisible to freshness, so no indicator ever
       recomputes against them and the scenario quietly shows baseline numbers.
+
+    ``remove_edit`` is not on it: it deletes by edit id and collides with the
+    others only at its second statement, the ``updated_at`` touch.
 
     Taking it first, before anything is read, is what makes the whole
     materialisation see one state; it is released when the caller commits, so a

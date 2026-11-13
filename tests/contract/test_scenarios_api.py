@@ -1436,7 +1436,7 @@ DSN_WITH_PASSWORD = f"postgresql://reimagina:{PASSWORD}@db.internal:5432/reimagi
 def test_no_response_carries_the_dsn_or_its_password(
     client, events, monkeypatch, route
 ):
-    """⚠ Task 8 found ``recompute`` printing a full DSN, password included.
+    """⚠ The CLI once printed ``recompute``'s full DSN, password included.
 
     The CLI's fix was a recursive mask in its own printer. These responses are
     JSON built here, so that mask protects nothing: the only thing that keeps

@@ -306,8 +306,9 @@ fixture's 10-90k rows.
 
 ### Delta tile (`serving_geo.indicator_delta_tile`)
 
-These figures were measured in Task 11 and were not re-measured by this task;
-they are recorded here with their method.
+These tile figures were measured against the r049 tile path at pilot scale.
+They were not re-measured when the materialisation figures in this document
+were taken; they are recorded here with their method.
 
 Measured at pilot scale: 19,881 blocks, 20,181 current results, 400 features in
 a z=14 tile. Each figure is 15 timed calls through the shipped function, min and

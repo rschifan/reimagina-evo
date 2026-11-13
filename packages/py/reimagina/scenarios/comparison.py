@@ -95,8 +95,9 @@ def compare(
     on one side or the other. The qualifier is the whole of what is left out:
     a feature carrying no numeric value on *either* side is absent from
     ``rows`` and from the counts. A valueless scenario row is not in that set
-    — it does not shadow the baseline, so the feature still appears, reading
-    ``unchanged`` at its baseline value. See ``_joined``.
+    *over a numeric baseline* — it does not shadow the baseline, so the
+    feature still appears, reading ``unchanged`` at its baseline value. With
+    no numeric baseline either, the feature is dropped. See ``_joined``.
 
     Raises ``ScenarioNotFound`` (a ``LookupError``) for an unknown indicator
     slug, an unknown scenario, or an unknown ``aoi_id``. The last two refusals matter more than they
