@@ -7,7 +7,7 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 13 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `dc618d58aba3a5b103dcb2a51fbc293abd8b3452` |
+| **Generated from commit** | `8c93b8831fb2064629194c9c7b0237dd0316e941` |
 | **Branch** | `feature/scenario-authoring` |
 | **Working tree at generation** | clean |
 
@@ -20,14 +20,14 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 
 | Schedule A | File | Bytes | SHA-256 |
 |---|---|---:|---|
-| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 582,822 | `d00dac48f9ed2249919c928e6e7dbfce540db296e41606d4d83a2dbe092297fb` |
-| Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,692 | `79ceb223c0a69142ea930f660a6731520e2c5cd993d32a22fc4a46aa15ee4580` |
+| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 584,620 | `1d8fad3b927e9b64ea942ace2b8aa392ab14fe308d43902cdb9f8cbe881784c9` |
+| Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,908 | `628a4b4f23778df0bb41645688b6572300b6416f589d68ce76163bdee357d0d9` |
 | Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 711,857 | `90ae3b1e02f6a1f27443ab42b6e6be1d3c53903844a1844a500b777851cb7360` |
 | Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,588 | `0bf5c82c1906feaf7e621ae40583333b32d783c4d29d7d586f1df9a4abfd1fa9` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 269,709 | `24063c5b751cb8c5523c7249036557fcb1f9c5a166645aedba8a927dd54572e6` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 32,170 | `4bbdcb21970740380dcfe9093bd4efc7f7e4db06498ef07cb3310b0d4f3d6a07` |
-| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 381,409 | `f6468ede68964ebf719341037dd6c9bbded9523aae06b1f2bda534a82e7848ef` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 65,467 | `1495d9acce8d761f5d365c58b5d01c1f2ab04bd3544d84f624d3e0185aa5e85c` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 272,640 | `9a2d737a13f2bbd03be6f43b34e0fa2536d3b416bb6737a3b403497c189ccbec` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 32,720 | `cf51d4ba13c06590baa9212c39aa002ea10c68ba74a279d63dc50537dd8f286f` |
+| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 385,009 | `8319321370d2a8911c9adef0bf03b3994c9f5b8b56b2ad019edb7c8a1a1be25d` |
+| Annex — source | `docs/delivery/05_capability_proof.md` | 66,270 | `cd66605d9adbd8400d1f5e495a08e8cb274ba8f595724a2a8b566c7668b31ce5` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
 
 ## Verifying this
