@@ -308,7 +308,11 @@ describe("refusalText", () => {
         message: "no record matches the project_id in this request",
       },
     });
-    await expect(refusalText(err, "create")).resolves.toMatch(/project_id/);
+    const text = await refusalText(err, "create");
+    expect(text).toMatch(/^No record matches the project_id/);
+    // ⚠ The generic 404 appends the server's sentence, which also contains
+    // "project_id". What separates the branches is the generic wording.
+    expect(text).not.toMatch(/not there any more/i);
   });
 
   it("carries the storeys the ceiling allows out of a 422 precheck", async () => {
@@ -345,7 +349,11 @@ describe("refusalText", () => {
         message: "levels must be a positive number, got -3.0",
       },
     });
-    await expect(refusalText(err, "edits")).resolves.toMatch(/levels/);
+    const text = await refusalText(err, "edits");
+    expect(text).toMatch(/^levels was refused\./);
+    // ⚠ The generic fall-through appends the server's sentence, which also
+    // starts with "levels"; it reports a status code, this branch does not.
+    expect(text).not.toMatch(/400/);
   });
 
   it("reads a 400 on the geometry as a drawing problem", async () => {
@@ -356,7 +364,11 @@ describe("refusalText", () => {
         message: "the drawn area carries no polygon: …",
       },
     });
-    await expect(refusalText(err, "edits")).resolves.toMatch(/area|polygon/i);
+    const text = await refusalText(err, "edits");
+    expect(text).toMatch(/^The drawn area is not a polygon\./);
+    // Without the geometry branch this lands on the field branch
+    // ("area was refused.") or the generic one (a status code).
+    expect(text).not.toMatch(/was refused|400/);
   });
 
   // ⚠ The one refusal that must not read as "nothing happened". The overrides
@@ -385,12 +397,15 @@ describe("refusalText", () => {
     const err = apiError(503, {
       error: {
         code: "database_unavailable",
-        message: "The database was unreachable.",
+        // Deliberately not the branch's own wording: the served sentence is
+        // appended, and must not be what the assertion below matches.
+        message: "connection pool exhausted",
         request_id: "req-7",
       },
     });
     const text = await refusalText(err, "recompute");
-    expect(text).toMatch(/unreachable|unavailable/i);
+    expect(text).toMatch(/^The database was unreachable\. Try again/);
+    expect(text).not.toMatch(/503|failed:/);
     expect(text).not.toMatch(/nothing was written/i);
   });
 
