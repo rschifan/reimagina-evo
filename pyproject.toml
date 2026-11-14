@@ -102,7 +102,18 @@ dependencies = [
     #
     # The upper bound is deliberate — breaking changes ship inside minor
     # releases. See docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
-    "dbos>=3.4,<4",
+    #
+    # ⚠ The bound sits just above the minor in use, so patches arrive and a
+    # new minor is an edit here — which is what the sentence above means.
+    # `<4` would say "majors break us" while that sentence says minors do.
+    #
+    # Verify a minor bump against the full gated suite on a *fresh* database.
+    # The `dbos` schema is DBOS-owned, not Alembic-managed, so its workflow
+    # rows survive the integration suite's downgrade-to-base teardown. A test
+    # database reused across runs therefore carries state from earlier ones,
+    # and failures that pass in isolation are that, not the engine — which
+    # is how a move to 2.31 was once wrongly blamed for two of them.
+    "dbos>=3.4,<3.5",
 ]
 
 [project.optional-dependencies]
@@ -156,6 +167,17 @@ target-version = "py312"
 # auto-fixable. That is a mechanical diff across most files, and it belongs in
 # its own commit rather than inside a dependency upgrade.
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+# ⚠ Markdown is excluded, and that is a choice rather than an oversight.
+# Ruff 0.16 formats Python inside fenced code blocks, which it did not used to
+# — so the upgrade wanted to rewrite illustrative snippets across six
+# documents, `docs/legacy/` included. Those samples are written for a reader
+# mid-paragraph: they wrap where the prose needs them to and elide what is not
+# being discussed. Reflowing them to match source-file conventions makes them
+# worse as prose and produces diff noise in files no interpreter ever loads.
+# Python files are formatted as before.
+exclude = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

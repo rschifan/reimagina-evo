@@ -171,3 +171,96 @@ class TestToGeodataframe:
         gdf = op._to_geodataframe(table)
         assert gdf.loc[0, "name"] == "playground"
         assert gdf.loc[0, "country"] is None
+
+
+# ── lineage: `storage_uri` names the release, not our copy ──────────────────
+
+
+def test_places_record_the_release_they_were_cut_from(tmp_path, monkeypatch):
+    """`data_source_catalog.storage_uri` is lineage, so it names the release.
+
+    The same rule #95 settled for buildings, cdmx and raster, applied to the
+    one Overture theme it did not reach: places registered a `pending://`
+    placeholder and then overwrote it with the local bronze path once the
+    subset landed, so the catalog recorded where our copy sat and nothing
+    about where the places came from. The bronze copy needs no column — it
+    lives at `data/bronze/{source_id}/` by construction.
+    """
+    seen: dict[str, object] = {}
+    overwrites: list[str] = []
+
+    class FakeConn:
+        def commit(self):
+            pass
+
+    def _register(conn, **kwargs):
+        seen.update(kwargs)
+        return "source-1"
+
+    # Stubbed at the catalog, not at `ensure_places_source`: the URI is derived
+    # inside it from the release, so the value to check is the one written.
+    monkeypatch.setattr(op.feat, "seed_feature_types", lambda conn: None)
+    monkeypatch.setattr(op.cat, "get_source", lambda conn, **kwargs: None)
+    monkeypatch.setattr(op.cat, "register_source", _register)
+    monkeypatch.setattr(
+        op, "extract_places_subset", lambda **kwargs: tmp_path / "raw.parquet"
+    )
+    monkeypatch.setattr(
+        op,
+        "stage_places_subset",
+        lambda raw_path, **kwargs: (
+            tmp_path / "bronze.parquet",
+            tmp_path / "silver.parquet",
+        ),
+    )
+    monkeypatch.setattr(
+        op.cat,
+        "update_source_storage_uri",
+        lambda conn, source_id, storage_uri: overwrites.append(storage_uri),
+    )
+    monkeypatch.setattr(op, "load_places_subset", lambda conn, **kwargs: {})
+    monkeypatch.setattr(op, "summarize_places_layer", lambda conn, **kwargs: {})
+
+    op.bootstrap_places(
+        FakeConn(),
+        bbox=(-115.6, 32.5, -115.3, 32.7),
+        orchestrator_run_id="orch-1",
+        release="2026-10-22.0",
+    )
+
+    recorded = str(seen.get("storage_uri"))
+    assert recorded.startswith("s3://overturemaps-us-west-2/release/2026-10-22.0/")
+    assert "theme=places/type=place" in recorded
+    assert not overwrites, "the lineage must not be replaced with a local path"
+
+
+def test_a_places_row_registered_under_the_old_convention_moves_on_reingest(
+    monkeypatch,
+):
+    """An existing row that still holds a bronze path or a placeholder is
+    corrected on the next ingest, as `ensure_overture_buildings_source` does."""
+    updates: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        op.cat,
+        "get_source",
+        lambda conn, **kwargs: {
+            "id": "src-9",
+            "storage_uri": "pending://overture/places",
+        },
+    )
+    monkeypatch.setattr(
+        op.cat,
+        "update_source_storage_uri",
+        lambda conn, source_id, storage_uri: updates.append((source_id, storage_uri)),
+    )
+
+    source_id = op.ensure_places_source(object(), version="2026-10-22.0")
+
+    assert source_id == "src-9"
+    assert updates == [
+        (
+            "src-9",
+            "s3://overturemaps-us-west-2/release/2026-10-22.0/"
+            "theme=places/type=place/*.parquet",
+        )
+    ]

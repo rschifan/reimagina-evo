@@ -10,8 +10,14 @@ The pre-existing scaffolding (baseline features, indicator catalog,
 branch added on top of it. For the canonical architecture, see
 [`architecture/`](architecture/).
 
-Source paths are relative to the repo root. Line numbers are accurate
-at commit `d5bd093` (tip of `feature/raster-integration`).
+Source paths are relative to the repo root.
+
+⚠ **Line numbers drift; the symbol names do not.** This file used to pin them
+to commit `d5bd093` on `feature/raster-integration` — a branch that no longer
+exists and a commit no longer reachable from `main`, so the pin could not be
+checked by the time anyone wanted to. When a link's line number looks wrong,
+search for the function or DB object named next to it and trust that; when you
+edit this file, prefer naming the symbol over citing a line.
 
 ---
 

@@ -613,3 +613,67 @@ def test_a_relative_tile_base_url_resolves_same_origin():
     )
     assert function == "get_tile"
     assert f"{base}/{function}/{{z}}/{{x}}/{{y}}" == ("/api/tiles/get_tile/{z}/{x}/{y}")
+
+
+def test_every_ci_job_that_runs_the_orchestrator_sets_a_direct_dsn():
+    """A suite that reaches the real orchestrator needs ``DATABASE_URL_DIRECT``.
+
+    ``reimagina.orchestration.dbos_app.dbos_dsn`` raises when it is unset,
+    deliberately, because DBOS otherwise falls back to a private SQLite file —
+    a process that looks healthy and checkpoints nowhere recoverable. The guard
+    is right; a CI job that exercises the orchestrator without the variable is
+    not.
+
+    This is asserted because omitting it was not loud. ``tests/integration``
+    went red on a single end-to-end 404 whose own subject is route matching, and
+    ``pytest (conformance)`` — a later step in the same job — was reported
+    ``skipped`` rather than failed, so the port-contract suite stopped running
+    on main for months without anything saying so.
+    """
+    ci = CI_WORKFLOW.read_text()
+
+    # Split into job blocks on two-space-indented keys, the one indent level
+    # jobs live at. Parsing YAML would be heavier and this file deliberately
+    # treats the workflow as text (see the note above CI_WORKFLOW).
+    blocks = re.split(r"\n  (?=[a-z][a-z0-9-]*:)", ci)
+    suites_needing_it = ("tests/integration", "tests/conformance", "tests/recovery")
+
+    for block in blocks:
+        runs = [s for s in suites_needing_it if f"pytest {s}" in block]
+        if not runs:
+            continue
+        assert "DATABASE_URL_DIRECT:" in block, (
+            f"the CI job running {runs} constructs the real orchestrator, which "
+            "requires DATABASE_URL_DIRECT; without it dbos_dsn() raises and the "
+            "job fails on a test whose subject is something else entirely"
+        )
+
+
+def test_apt_steps_cannot_fail_the_build():
+    """A package-mirror outage must not read as a verdict on this code.
+
+    On 2026-11-11 the GitHub runners could not resolve `security.ubuntu.com`.
+    `apt-get` retried for 1h40m and failed, and because the system-dependency
+    step precedes `uv sync`, `pytest` never ran in either job that has one —
+    two of the four. The suite was green locally throughout.
+
+    The step is a documented *fallback*: fiona and rasterio ship cp312
+    manylinux wheels carrying their own GDAL, so it is not normally used at
+    all. Anything that cannot fail the build should not be able to fail the
+    build, so every apt step carries `continue-on-error` and a timeout.
+    """
+    ci = CI_WORKFLOW.read_text()
+    blocks = re.split(r"\n      - name: ", ci)
+    apt_steps = [b for b in blocks if "apt-get install" in b]
+
+    assert apt_steps, "expected at least one apt step; update this test if they went"
+    for step in apt_steps:
+        name = step.splitlines()[0]
+        assert "continue-on-error: true" in step, (
+            f"apt step {name!r} can fail the build; a mirror outage would stop "
+            "pytest from running at all"
+        )
+        assert "timeout-minutes:" in step, (
+            f"apt step {name!r} has no timeout; apt retried for 1h40m before "
+            "giving up once already"
+        )

@@ -32,7 +32,14 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
   server: {
-    port: 5173,
+    // `strictPort`, so a busy port is an error rather than a silent move to
+    // 5174. Vite's default is to increment, which leaves the Makefile's
+    // banner — and the browser tab you already have open — pointing at a port
+    // this server is not on, or worse at whatever else is there. `make dev`
+    // preflights both ports and names the holder; this makes sure Vite agrees
+    // rather than papering over it.
+    port: Number(process.env.VITE_PORT ?? 5173),
+    strictPort: true,
     proxy: {
       "/api": {
         target: process.env.REIMAGINA_API_URL ?? "http://127.0.0.1:8001",

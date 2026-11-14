@@ -210,6 +210,14 @@ def bootstrap_db(
             "role that may create databases and extensions."
         ),
     ),
+    direct_dsn: Optional[str] = typer.Option(
+        None,
+        "--direct-dsn",
+        envvar="DATABASE_URL_DIRECT",
+        help="Direct-port DSN for the ops-plane schema migration, which must "
+        "not cross pgbouncer. Defaults to $DATABASE_URL_DIRECT, then to "
+        "--app-dsn.",
+    ),
 ) -> int:
     """Create the app and test databases if absent, then migrate both to head.
 
@@ -225,11 +233,21 @@ def bootstrap_db(
     ``DATABASE_URL_ADMIN`` is the one new name. Creating a database requires a
     connection to a different one, and no variable in the project named it.
     """
+    # An empty string is "unset", not "a DSN that happens to be blank". Shells
+    # expand an undefined variable to nothing, so the documented
+    # `--app-dsn "$DATABASE_URL"` silently passes `""` whenever `.env` has not
+    # been exported into the shell — and the failure surfaced deep in a
+    # helper as `ValueError: DSN has no database name: ''`, which names
+    # neither the flag nor the variable that was empty.
+    app_dsn = app_dsn or DEFAULT_APP_DSN
+    test_dsn = test_dsn or DEFAULT_TEST_DSN
+    admin_dsn = admin_dsn or DEFAULT_ADMIN_DSN
     return _print(
         bootstrap_local_platform(
             app_dsn=app_dsn,
             test_dsn=test_dsn,
             admin_dsn=admin_dsn,
+            direct_dsn=direct_dsn or None,
         )
     )
 
@@ -1449,6 +1467,12 @@ def raster_ingest(
     ),
     code_version: str = typer.Option("dev", "--code-version"),
     orchestrator_run_id: Optional[str] = typer.Option(None, "--orchestrator-run-id"),
+    origin_uri: Optional[str] = typer.Option(
+        None,
+        "--origin-uri",
+        help="Where this raster came from, recorded as the source's lineage. "
+        "`raster fetch-worldpop` prints it as `url`. Defaults to --raw-path.",
+    ),
 ) -> int:
     return _print(
         ingest_raster(
@@ -1470,6 +1494,7 @@ def raster_ingest(
             published=not unpublished,
             code_version=code_version,
             orchestrator_run_id=orchestrator_run_id,
+            origin_uri=origin_uri,
         )
     )
 

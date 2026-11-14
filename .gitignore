@@ -121,3 +121,9 @@ cache/
 
 # ── Delivery PDFs (generated; built at delivery time from docs/delivery/*.md)
 docs/delivery/pdf/
+
+# Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
+# retirement left 6.8 MB of them tracked under a dotted directory, where a
+# review diff never showed them). Derived data: reproducible from the pipeline
+# against the INEGI sources, and the old rows stay in git history regardless.
+.*-backup/

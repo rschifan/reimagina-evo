@@ -151,17 +151,20 @@ def test_ingest_utm_raster_end_to_end(conn, isolated_data_dir, tmp_path):
     assert asset["crs"] == "EPSG:32614"
     assert float(asset["resolution_m"]) == pytest.approx(30.0)
 
-    # data_source_catalog.storage_uri must be rewritten from the '<pending>'
-    # placeholder in Step 1 to the real silver URI — matches the convention
-    # every other pipeline follows so explore.source_runs_v shows useful
-    # lineage for rasters too.
+    # data_source_catalog.storage_uri is lineage — where the data came from —
+    # so explore.source_runs_v answers that for rasters too. This asserted the
+    # silver COG path until the contract was settled: that is the file this
+    # ingest *produced*, which belongs on file_asset (asserted above) and is
+    # what tiles and zonal stats read. With no upstream given, the origin is
+    # the file the caller handed in.
     with conn.cursor() as cur:
         cur.execute(
             "SELECT storage_uri FROM curated_geo.data_source_catalog WHERE id = %s",
             (result.source_id,),
         )
         (catalog_uri,) = cur.fetchone()
-    assert catalog_uri == result.storage_uri
+    assert catalog_uri == raw.resolve().as_uri()
+    assert catalog_uri != result.storage_uri, "origin and local copy are distinct"
     assert "<pending>" not in catalog_uri
 
     layer = backend.raster_layer_repo().get_by_source(result.source_id)
@@ -381,3 +384,74 @@ def test_cli_raster_list_against_real_db(
                 ("cli-list-test",),
             )
         conn.commit()
+
+
+def _source_storage_uri(conn, source_id: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT storage_uri FROM curated_geo.data_source_catalog WHERE id = %s",
+            (source_id,),
+        )
+        return cur.fetchone()[0]
+
+
+def test_the_source_records_where_the_raster_came_from(
+    conn, isolated_data_dir, tmp_path
+):
+    """`data_source_catalog.storage_uri` is lineage; the local copy is the asset's.
+
+    The two columns were being used for the same thing. Ingest overwrote the
+    source's URI with the silver COG path — so the catalog lost where the data
+    came from, and the only record of origin a WorldPop download had (its URL)
+    was discarded at the call boundary.
+
+    Now the source records origin and `file_asset` records the local copy. The
+    asset path is unchanged, which matters: tiles (`serving_geo.raster_layer_v`)
+    and zonal stats both read it, and neither reads the source column.
+    """
+    raw = _write_tiny_utm_raster(tmp_path / "raw_utm.tif")
+    origin = "https://data.worldpop.org/GIS/Population/example.tif"
+
+    result = ingest_raster_source(
+        conn,
+        raw_path=raw,
+        source_name="lineage-test",
+        provider="pytest",
+        version="v1",
+        layer_slug="lineage_test",
+        origin_uri=origin,
+    )
+
+    assert _source_storage_uri(conn, result.source_id) == origin
+    # The local copy is unaffected, and still where serving reads it from.
+    assert result.storage_uri.startswith("file://data/silver/")
+    asset = (
+        backend_for_connection(conn).file_asset_repo().get_by_source(result.source_id)
+    )
+    assert asset["storage_uri"] == result.storage_uri
+
+
+def test_without_an_origin_the_source_records_the_file_it_was_given(
+    conn, isolated_data_dir, tmp_path
+):
+    """A caller that knows nothing upstream still gets honest lineage.
+
+    `raster ingest` on the CLI is handed a local file and nothing else. The
+    truthful answer to "where did this come from" is that file — not the silver
+    COG this system then produced from it, which is an output rather than an
+    origin.
+    """
+    raw = _write_tiny_utm_raster(tmp_path / "raw_utm.tif")
+
+    result = ingest_raster_source(
+        conn,
+        raw_path=raw,
+        source_name="lineage-default-test",
+        provider="pytest",
+        version="v1",
+        layer_slug="lineage_default_test",
+    )
+
+    recorded = _source_storage_uri(conn, result.source_id)
+    assert recorded == raw.resolve().as_uri()
+    assert "/silver/" not in recorded

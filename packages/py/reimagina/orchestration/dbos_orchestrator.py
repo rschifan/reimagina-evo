@@ -31,6 +31,7 @@ from reimagina.orchestration.port import (
     DBConnection,
     RUN_TERMINAL_STATES,
     UNIT_TERMINAL_STATES,
+    OpsPlaneNotProvisioned,
     RunEvent,
     RunHandle,
     RunStatus,
@@ -265,7 +266,27 @@ class DBOSOrchestrator:
             if dedup_id is not None:
                 options["deduplication_id"] = dedup_id
                 options["duplication_policy"] = "return-existing"
-            handle = _client().enqueue(options, run_id, units, params)
+            try:
+                handle = _client().enqueue(options, run_id, units, params)
+            except Exception as exc:  # noqa: BLE001 — re-raised unless it is 42P01
+                # The write-side twin of the 42P01 handling in `_from_workflow`,
+                # and the reason that one was not enough: a client never creates
+                # this schema, so on a database no worker has launched against,
+                # *reads* correctly answer "no such run" while every submit dies
+                # on an INSERT into a table that does not exist. Untranslated,
+                # that reaches the API as a SQLAlchemy error and is reported as
+                # an internal fault — sending whoever reads it hunting for a bug
+                # in shipped SQL, when the actual answer is that a provisioning
+                # step was skipped. Bootstrap provisions it now; this is the
+                # layer that stays correct when something bypasses bootstrap.
+                #
+                # Matched by SQLSTATE, not exception class, for the same reason
+                # as the read path: the error arrives wrapped by SQLAlchemy
+                # around a psycopg3 error, and psycopg3 is a transitive
+                # dependency this package never declared.
+                if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
+                    raise
+                raise OpsPlaneNotProvisioned() from exc
         else:
             # ``dev`` intentionally self-executes; an executor process does
             # the same when it is also an interactive submitter.

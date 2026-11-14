@@ -2427,7 +2427,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.20" },
-    { name = "dbos", specifier = ">=3.4,<4" },
+    { name = "dbos", specifier = ">=3.4,<3.5" },
     { name = "exactextract", specifier = ">=0.3" },
     { name = "fastapi", specifier = ">=0.160" },
     { name = "geopandas", specifier = ">=1.2" },
