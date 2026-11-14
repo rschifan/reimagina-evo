@@ -194,3 +194,14 @@ dragging checkpoint state along. DBOS tracks its own migrations in
    startup recovery is unaffected — a process only ever recovers its own id, at a
    moment when by definition it is not running them.
 4. **Pin `dbos>=2.28,<3`** and revisit when 2.29 ships.
+
+> **Status, 2026-11-09 — 3 and 4 are done.** The pin is `dbos>=3.4,<4`. DBOS 3's
+> `_recovery._recover_workflow` re-enqueues rather than executing directly, so a
+> recovered workflow starts through the queue's atomic ENQUEUED→PENDING dequeue
+> and duplicate recovery requests admit exactly one runner. The sweep is built
+> (`reimagina.orchestration.reclaim`), the gate is kept — the fix makes racing
+> *sweepers* safe, not sweeping a live executor — and
+> `tests/recovery/test_crash_recovery.py::test_a_peer_reclaims_a_dead_executors_run`
+> proves it end to end with a real `SIGKILL` and two distinct executor ids.
+> Recommendations 1 and 2 are unchanged. See `docs/architecture/JOB_LAYER.md`
+> — *Recovery — two mechanisms*.

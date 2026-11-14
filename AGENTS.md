@@ -2,13 +2,43 @@
 
 Operational rules for agents working in this repo.
 
+## Authorship
+
+Rossano Schifanella is the only actor on this repository's history. Every
+commit is authored **and** committed by `Rossano
+<rossano.schifanella@gmail.com>`. There is no co-author trailer, no session
+URL, and no agent attribution anywhere — not in commit messages, not in pull
+request text, not in code comments, not in docs.
+
+First thing in a fresh clone:
+
+```bash
+git config user.name "Rossano"
+git config user.email "rossano.schifanella@gmail.com"
+```
+
+An agent that cannot commit under that identity hands over a patch. It does
+not push under its own credential.
+
+Two things in `.claude/` enforce this, and both are tracked rather than local,
+because a rule that does not travel with the repository is not a rule:
+
+- `settings.json` empties agent commit and PR attribution, so no trailer is
+  appended in the first place
+- `hooks/require-rossano-identity.sh` refuses `git commit` outright when
+  `user.email` is anything else
+
+The hook exists because the failure is silent and one-way: a wrong
+`user.email` is invisible until the commit already carries it, and by then
+only rewriting history takes it back out.
+
 ## Repo map
 
 - `apps/`: deployable entrypoints
 - `packages/py/reimagina/`: shared backend namespace
 - `infra/db/`: migrations and seeds
 - `docs/architecture/`: architecture source of truth
-- `tests/`: `unit`, `integration`, `contract`, `conformance`, future `e2e`
+- `tests/`: `unit`, `integration`, `contract`, `conformance`, `e2e`
 - `tests/performance`: benchmark smoke checks and perf harness coverage
 
 ## Core architecture
@@ -29,7 +59,54 @@ Rules:
 - `observation` stores measured/derived facts about features
 - `explore` is for humans, not application dependencies
 - live MVT is the primary tile path; PMTiles are snapshot exports for stable reference layers only
+- live MVT has two servers behind one contract: Martin (default) and the API's own
+  `/tiles/{function}/{z}/{x}/{y}`. The contract is the SQL function signature
+  `(z, x, y, query_params json) RETURNS bytea`, and choosing a server is one variable,
+  `REIMAGINA_TILE_LIVE_BASE_URL`. `reimagina.tiles.functions.TILE_FUNCTIONS` is the one
+  list of servable functions; adding a tile function means adding it there
 - if a layer must be live, filtered, scenario-aware, or fast-changing, it cannot move to PMTiles
+- the map has no external basemap, on purpose: spatial context is the platform's own
+  street network, projected from `curated_geo.road_edge` into `curated_geo.feature` as
+  `global:road` by `reimagina.data.roads`. Attribution is derived from
+  `data_source_catalog.license` and served by `/tile-sources/attribution` — never
+  hardcoded in the frontend, which would credit OpenStreetMap on synthetic data
+- an AOI is the precondition for anything being *visible*, not a convenience:
+  `get_tile` scopes every request by AOI through an `EXISTS` against
+  `curated_geo.aoi_feature`, so a feature in no AOI is correctly typed, present in
+  `serving_geo`, and returns `204` on every tile with no error in the path
+- there are two kinds of AOI constructor, and they differ in one field.
+  INEGI-derived ones (`cdmx aoi-from-alcaldia`, `aoi-from-state`) declare a
+  `membership_key` and need the Marco Geoestadístico mirror on disk. The
+  Overture-derived one (`overture aoi-from-division`,
+  `reimagina.pipeline.overture_divisions`) needs only the S3 release and passes
+  `membership_key=None`, which is what makes membership geometric — the case r040's
+  own SQL comment names. Never declare a `membership_key` an AOI's features cannot
+  carry: it excludes all of them
+- `curated_geo.road_edge` has exactly two loaders: `scripts/synthetic_territory.py`
+  (generated) and `python -m apps.cli.app network bootstrap --aoi-id <uuid>` (real
+  OSM, via osmnx and Overpass). The latter also publishes the edges as
+  `global:road`, which is what gives the map street context. ⚠ Loading **replaces
+  the whole network** — it is not scoped to the AOI, which only bounds the fetch.
+  Use `--clip-bbox` where the AOI is mostly empty: a municipio-sized walk graph is
+  a multi-gigabyte Overpass request whose result is ~99% desert
+- an accessibility category with no destination in the data does **not** fail:
+  `pgr_drivingDistance` given a NULL start array returns zero rows, so every
+  block reports the 1,500 m cutoff and the choropleth comes out one flat colour
+  that reads as a real, uniformly bad surface. The park indicator shipped that
+  way on the real Mexicali pilot for all 19,058 blocks. Two things hold the line
+  now: `reimagina.data.amenities` is the single vocabulary of what counts as
+  which amenity (and, as importantly, what is deliberately excluded and why),
+  and `tests/contract/test_synthetic_territory_covers_every_category.py` refuses
+  a category with no destination in the synthetic territory — otherwise
+  `acceptance_run.sh` reproduces the failure in the artifact meant to disprove it
+- an indicator's `require_nonempty(loader=...)` hint must be a runnable command,
+  not a Python path. A user reading it has just had an indicator refuse to run;
+  telling them to call a function is telling them to write code.
+  `tests/contract/test_runbook_scripts_match_the_cli.py` enforces it
+- `OVERTURE_DEFAULT_RELEASE` is a pin with a shelf life of weeks — Overture deletes
+  superseded releases and three pins have already rotted. It stays a pin because the
+  value is written to `dataset_version`; `available_overture_releases()` is how you
+  find what to bump it to
 
 ## Inspection workflow
 
@@ -74,25 +151,57 @@ python -m apps.cli.app overlap declare-pair \
 python -m apps.cli.app overlap list-pairs
 python -m apps.cli.app overlap compute-all --aoi-id <uuid>
 
-# Indicator catalog + compute + rollup + AOI summary (Layer 2)
+# Indicator catalog + compute + AOI summary (Layer 2)
+# Every shipped indicator is block-grain. There is no `indicators rollup`:
+# a coarser number is an AOI summary. See JOB_LAYER.md.
 python -m apps.cli.app indicators seed-catalog
 python -m apps.cli.app indicators compute \
     --slug urban_form_block_compactness [--aoi-id <uuid>]
 python -m apps.cli.app indicators compute \
     --slug urban_form_block_building_density [--aoi-id <uuid>]
-python -m apps.cli.app indicators rollup \
-    --slug urban_form_block_compactness \
-    --source-type block --target-type ageb
 python -m apps.cli.app indicators aoi-summary \
     --aoi-id <uuid> --slug urban_form_block_compactness
+
+# A territory to run all of the above against, without the data lake
+python scripts/synthetic_territory.py
+
+# Real OSM street network for an AOI: loads road_node/road_edge AND publishes
+# global:road features. --clip-bbox bounds the fetch, not the AOI.
+python -m apps.cli.app network bootstrap --aoi-id <uuid> \
+    --clip-bbox -115.70,32.40,-115.20,32.80
+
+# Park, recreation and cultural destinations, from Overture places.
+# ⚠ --country is not optional on a border-crossing bbox: 156 of the Mexicali
+# box's 1,303 places are in the US, 36 of them parks.
+python -m apps.cli.app overture places \
+    --bbox -115.70,32.40,-115.20,32.80 --country MX --aoi-id <uuid>
+
+# What the places ingest counts as park or culture, and what it refuses.
+# The exclusions are the reviewable part: a keyword match on this theme pulls
+# in 907 hardware shops for `garden`.
+python -m apps.cli.app overture place-categories
 ```
+
+Two end-to-end runbooks, and they trade off against each other:
+
+| Script | Needs | Gives |
+|---|---|---|
+| `scripts/acceptance_run.sh` | nothing but Postgres | a synthetic territory, all 12 indicators, reproducible anywhere — the Schedule A acceptance criterion |
+| `scripts/mexicali_run.sh` | the Azure lake mirror on disk + network | the real Mexicali pilot: INEGI blocks/AGEBs, 2020 census, IMIP amenities, Overture buildings and places, OSM streets |
+
+`mexicali_run.sh` fails fast if the mirror is absent, naming each missing
+path — `data/` is gitignored, so a fresh clone never has it.
 
 Web read-side (API + map frontend):
 
 ```bash
-# Start both from two terminals
-REIMAGINA_APP_DSN=postgresql://localhost/reimagina_app python -m apps.api
-cd apps/web && npm install && npm run dev
+# One command for both. Reads REIMAGINA_APP_DSN, falling back to .env's
+# DATABASE_URL; Ctrl-C stops both.
+make dev
+
+# Or separately, if you want them in their own terminals
+make dev-api        # FastAPI on :8001 — the port vite.config.ts proxies to
+make dev-web        # Vite on :5173
 # Map at /, indicator catalog at /catalog.html, run dashboard at /ops.html.
 # The dashboard needs a worker to show anything running:
 #   DATABASE_URL_DIRECT=... python -m apps.worker
@@ -114,12 +223,13 @@ Testing is non-optional.
 | `tests/contract` | architectural boundaries and repo guardrails |
 | `tests/conformance` | the `Orchestrator` port contract, per implementation |
 | `tests/performance` | benchmark smoke checks and explain-plan contracts |
+| `tests/e2e` | the web app in a real browser — the only suite that opens a page |
 | `tests/workloads` | how an ops plane schedules; asserts what must hold for any engine, records what two may differ on |
 | `tests/recovery` | crash recovery across a real SIGKILL; opt-in via `REIMAGINA_RECOVERY_TEST=1` |
 | `docs/architecture/TESTING.md` | DB contract target |
 
 CI gates `unit`, `contract`, `integration` and `conformance` only. The other
-three are hand-run.
+four are hand-run.
 
 Rules:
 

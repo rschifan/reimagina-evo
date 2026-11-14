@@ -5,6 +5,7 @@
     "pr": "",
     "sessionUrl": false
   },
+  "includeCoAuthoredBy": false,
   "hooks": {
     "PreToolUse": [
       {
@@ -12,10 +13,10 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit *)",
-            "command": "[ \"$(git config user.email)\" = \"rossano.schifanella@gmail.com\" ] || printf %s '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"This repo requires every commit to be authored by Rossano <rossano.schifanella@gmail.com>. Run: git config user.name Rossano && git config user.email rossano.schifanella@gmail.com\"}}'",
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/require-rossano-identity.sh\"",
             "timeout": 10,
-            "statusMessage": "Checking commit authorship"
+            "onFailure": "block",
+            "statusMessage": "Checking commit identity"
           }
         ]
       }

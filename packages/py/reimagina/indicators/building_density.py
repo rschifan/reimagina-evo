@@ -91,7 +91,7 @@ def compute_block_building_density(
                 cur.fetchone()[0],
                 indicator_slug=spec.slug,
                 needs="the global:building feature layer",
-                loader="`reimagina.pipeline.overture.bootstrap_overture_buildings_subset`",
+                loader="`python -m apps.cli.app overture extract` then `overture load`",
             )
 
         rows = backend.feature_repo().centroid_in_parent_counts(

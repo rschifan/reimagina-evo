@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,41 @@ from . import bronze, silver
 from .loader import load_vector_source
 
 
+logger = logging.getLogger(__name__)
+
+#: How often the per-file extract reports progress, in files.
+#:
+#: ⚠ There to stop a working command from looking like a hung one. The
+#: low-memory path takes ~8 minutes over 512 files and printed nothing at all,
+#: which is indistinguishable from the swapping it exists to avoid. 32 gives
+#: ~16 lines over a release — enough to see movement, not enough to bury the
+#: result.
+_PROGRESS_EVERY_FILES = 32
+
 MEXICO_CITY_BBOX = (-99.597, 18.992, -98.606, 19.921)
+
+#: Mexicali urban core and its US-side surroundings, EPSG:4326.
+#:
+#: ⚠ **This bbox crosses the international border on purpose.** Calexico and
+#: El Centro (California) fall inside it, so a share of the buildings it
+#: returns are American. That is not a bug to fix by shrinking the box: the
+#: extract is deliberately a superset of the AOI, and
+#: :func:`_clip_buildings_to_aoi` deletes post-load whatever falls outside the
+#: Mexican municipal polygon, so "bbox-but-not-polygon orphans never persist".
+#: Shrinking it to hug the border would instead risk clipping Mexicali itself.
+#:
+#: A constant rather than a command-line argument because a bbox typed by hand
+#: is a number no reviewer can check and no run can reproduce.
+MEXICALI_BBOX = (-115.70, 32.40, -115.20, 32.80)
+
+#: ``names.primary`` of the Mexicali municipal boundary in Overture's
+#: ``divisions`` theme, as of release 2026-10-21.0. Upstream data, so it can
+#: be retitled between releases — which is why `overture divisions` exists to
+#: print what a release actually calls things.
+MEXICALI_DIVISION_NAME = "Municipio de Mexicali"
+
+#: Overture's subtype for a Mexican *municipio* / US county.
+DIVISION_SUBTYPE_COUNTY = "county"
 OVERTURE_PROVIDER = "Overture Maps Foundation"
 OVERTURE_LICENSE = "ODbL-1.0 / Overture terms"
 OVERTURE_BUILDINGS_SOURCE_NAME = "Overture Buildings - Mexico City BBox"
@@ -31,9 +66,10 @@ OVERTURE_S3_REGION = "us-west-2"
 #
 # ⚠ **Overture keeps only the most recent release on S3.** Older ones are
 # deleted, so any pin here has a shelf life measured in weeks and *will* stop
-# resolving — this is the second time it has: 2026-02-18.0 was never published,
-# and 2026-04-15.0 was published and then rotated away, after which every
-# extract failed with a bare `FileNotFoundError` naming a path.
+# resolving — this is the **third** time it has: 2026-02-18.0 was never
+# published, 2026-04-15.0 was published and then rotated away, and 2026-07-22.0
+# went the same way, after which every extract failed with a bare
+# `FileNotFoundError` naming a path.
 #
 # Kept as a pin anyway, because the value is recorded as `dataset_version` on
 # the source and on every row's provenance, and a moving default would make two
@@ -41,8 +77,22 @@ OVERTURE_S3_REGION = "us-west-2"
 # instead: `available_overture_releases()` turns the failure into a message that
 # names what S3 actually has, so bumping this is a ten-second fix rather than an
 # investigation. Override per-run with REIMAGINA_OVERTURE_RELEASE.
-OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-07-22.0")
+#
+# Verified against S3 on 2026-11-10, when the release listing held exactly
+# 2026-09-23.0, 2026-09-23.1 and 2026-10-21.0.
+OVERTURE_DEFAULT_RELEASE = os.environ.get("REIMAGINA_OVERTURE_RELEASE", "2026-10-21.0")
+#: Rows per batch when streaming an extract out of S3.
+#:
+#: Trades peak memory against per-batch overhead. 50k Overture building rows
+#: is a few hundred MB resident rather than the 4.4 GB the whole Mexicali
+#: bbox took when materialised at once, and large enough that row-group
+#: boundaries still dominate the read.
+_EXTRACT_BATCH_ROWS = 50_000
+
 OVERTURE_BUILDINGS_FILENAME = "overture_buildings_mexico_city.parquet"
+#: Legacy Mexico City Silver name. No longer a default — `silver_filename_for`
+#: derives the name from the Bronze artifact so the two cannot disagree about
+#: which city they hold. Kept because it is referenced by the CDMX fixtures.
 OVERTURE_BUILDINGS_SILVER_FILENAME = "overture_buildings_mexico_city_silver.parquet"
 OVERTURE_BUILDINGS_NOTES = (
     "First example source: Overture Mexico City buildings subset clipped to the "
@@ -127,6 +177,7 @@ def _extract_remote_overture_subset(
     source_glob: str,
     output_path: Path,
     bbox: tuple[float, float, float, float],
+    low_memory: bool = False,
 ) -> None:
     """Read the pinned Overture S3 GeoParquet release and write the bbox
     subset locally. Filters on the GeoParquet ``bbox`` struct columns so
@@ -155,10 +206,99 @@ def _extract_remote_overture_subset(
         & (pc.field("bbox", "ymax") >= min_lat)
         & (pc.field("bbox", "ymin") <= max_lat)
     )
-    # ponytail: materialises the whole metro subset in memory — fine for a
-    # city bbox; switch to dataset.to_batches() + ParquetWriter if a larger
-    # AOI OOMs.
-    pq.write_table(dataset.to_table(filter=flt), str(output_path))
+
+    if low_memory:
+        _write_subset_per_file(dataset, flt, output_path, s3, source_glob)
+    else:
+        # Materialises the bbox subset in one table. Fast, and the memory cost
+        # is NOT the rows — see `low_memory` in
+        # :func:`extract_overture_buildings_subset` for the measurement that
+        # says where it actually goes.
+        pq.write_table(dataset.to_table(filter=flt), str(output_path))
+
+
+def _progress(message: str) -> None:
+    """Report long-running progress.
+
+    Just the logger. `reimagina.logging_setup.configure_logging` — which
+    `apps/cli/app.py` calls — already sends `reimagina.*` records to stderr
+    precisely so "stdout stays the machine-readable JSON result channel".
+
+    The first version of this also wrote to stderr directly, on the reasoning
+    that progress should not depend on the caller configuring logging. That
+    printed every line twice under the CLI, which is the only caller that
+    matters here. Using the convention the repository already has is both
+    quieter and less code.
+    """
+    logger.info(message)
+
+
+def _write_subset_per_file(
+    dataset, flt, output_path: Path, filesystem, source_glob: str
+):
+    """Scan one file at a time so parquet metadata stays bounded.
+
+    ⚠ **The expensive thing is metadata, not data.** Measured on the Mexicali
+    bbox against release 2026-10-21.0 (512 files, 387,273 matching rows)::
+
+        baseline interpreter               109 MB
+        after pads.dataset()               132 MB   (1 s)
+        after count_rows(filter)         4,170 MB   (139 s)  <-- here
+        after draining 387,273 rows      4,578 MB   (4 s)
+
+    Nearly all of it is spent evaluating the bbox predicate against row-group
+    statistics across every file, before a single row is returned. Draining the
+    rows afterwards costs ~400 MB.
+
+    That rules out the two obvious fixes, both of which were tried and
+    measured: writing in batches instead of one table (4,457 -> 4,304 MB) and
+    capping `fragment_readahead`/`batch_readahead` (4,285 MB at 1/2). Neither
+    touches metadata.
+
+    Opening each file as its own single-file dataset and dropping it does. Peak
+    held **flat at 663 MB** across all 512 files — bounded rather than
+    proportional, which is the property that matters for an AOI larger than
+    one city.
+
+    The cost is wall time: 454 s against 40 s, because each file's footer is a
+    separate round trip and most of them match nothing. On this release all
+    387,273 rows came from the first 128 files; the remaining 384 were read for
+    their statistics and discarded.
+    """
+    written = 0
+    writer: pq.ParquetWriter | None = None
+    files = list(dataset.files)
+    total = len(files)
+    _progress(f"extract: scanning {total} files one at a time (bounded memory)")
+    try:
+        for index, path in enumerate(files, start=1):
+            one = pads.dataset(path, filesystem=filesystem, format="parquet")
+            for batch in one.to_batches(filter=flt, batch_size=_EXTRACT_BATCH_ROWS):
+                if batch.num_rows == 0:
+                    # Survived statistics pruning, but no row passes the
+                    # predicate. Skipping keeps a schema-only batch from
+                    # opening the writer with nothing in it.
+                    continue
+                if writer is None:
+                    # Schema taken from the first real batch, not the dataset:
+                    # they differ when the release carries columns no row in
+                    # this bbox populates.
+                    writer = pq.ParquetWriter(str(output_path), batch.schema)
+                writer.write_batch(batch)
+                written += batch.num_rows
+            # Explicit, because the metadata this holds is the whole point.
+            del one
+            if index % _PROGRESS_EVERY_FILES == 0 or index == total:
+                _progress(f"extract:   {index}/{total} files, {written:,} rows")
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if writer is None:
+        # No rows anywhere. Write an empty file with the dataset's schema
+        # rather than none: the caller stages this path into Bronze, and a
+        # missing file fails with "no such file" instead of "the bbox is empty".
+        pq.write_table(dataset.schema.empty_table(), str(output_path))
 
 
 def _extract_local_overture_subset(
@@ -182,6 +322,7 @@ def extract_overture_buildings_subset(
     source_glob: str | None = None,
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
     release: str = OVERTURE_DEFAULT_RELEASE,
+    low_memory: bool = False,
 ) -> Path:
     """Extract an Overture buildings subset to local GeoParquet.
 
@@ -195,12 +336,40 @@ def extract_overture_buildings_subset(
     AOI (e.g. Mexicali). ``release`` selects the Overture S3 release
     folder; the default tracks the most recently verified snapshot
     (see :data:`OVERTURE_DEFAULT_RELEASE`).
+
+    ``low_memory`` trades wall time for a bounded memory ceiling. Measured on
+    the Mexicali bbox, release 2026-10-21.0, 512 files, 387,273 matching rows:
+
+    ===========  ==========  =========
+    path         peak RSS    elapsed
+    ===========  ==========  =========
+    default      4,457 MB    40 s
+    low_memory     663 MB    454 s
+    ===========  ==========  =========
+
+    ⚠ The default's 4.4 GB is not the rows — those cost ~400 MB. It is parquet
+    metadata, read while evaluating the bbox predicate against row-group
+    statistics across all 512 files. See :func:`_write_subset_per_file` for
+    the attribution and for the two cheaper fixes that were tried and did not
+    work.
+
+    Default stays off: 4.4 GB is affordable on a server and 454 s is not free.
+    Turn it on where memory is the binding constraint — a laptop also running
+    Postgres, where the failure is not a clean OOM but swapping, which
+    presents as a hung process. ``scripts/mexicali_run.sh`` passes it for
+    exactly that reason.
+
+    The ceiling is flat rather than proportional (663 MB held across all 512
+    files), so ``low_memory`` is also the only path that is known to survive an
+    AOI materially larger than one city.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effective_glob = source_glob or overture_theme_type_glob(release=release)
     if str(effective_glob).startswith("s3://"):
-        _extract_remote_overture_subset(effective_glob, output_path, bbox)
+        _extract_remote_overture_subset(
+            effective_glob, output_path, bbox, low_memory=low_memory
+        )
     else:
         _extract_local_overture_subset(effective_glob, output_path, bbox)
     return output_path
@@ -260,13 +429,33 @@ def ensure_overture_buildings_source(
     )
 
 
+def silver_filename_for(bronze_path: str | Path) -> str:
+    """Derive the Silver filename from the Bronze artifact's own name.
+
+    ⚠ The default used to be the module constant, which is named for Mexico
+    City. Bronze takes its name from the raw file, so a Mexicali load landed
+    ``overture_buildings_mexicali.parquet`` in Bronze and then wrote
+    ``overture_buildings_mexico_city_silver.parquet`` beside it — two stages
+    of one ingest disagreeing about which city they held, in the layer whose
+    whole job is traceability. The paths are recorded in the load result and
+    in ``data_source_catalog.storage_uri``, so the wrong name propagates into
+    provenance.
+
+    Deriving it means the two names can no longer drift, for any AOI.
+    """
+    return f"{Path(bronze_path).stem}_silver.parquet"
+
+
 def stage_overture_buildings_subset(
     raw_path: str | Path,
     *,
     source_id: str,
-    silver_filename: str = OVERTURE_BUILDINGS_SILVER_FILENAME,
+    silver_filename: str | None = None,
 ) -> tuple[Path, Path]:
     """Land a raw GeoParquet subset to Bronze and write a cleaned Silver GeoParquet.
+
+    ``silver_filename`` defaults to :func:`silver_filename_for` of the Bronze
+    artifact rather than to a constant; pass one only to override.
 
     There is no ``bronze_filename``: ``bronze.land_file`` keeps the raw file's
     own name, because a Bronze file is a verbatim immutable copy and renaming it
@@ -277,7 +466,9 @@ def stage_overture_buildings_subset(
     """
     bronze_path = bronze.land_file(raw_path, source_id)
     gdf = silver.read_vector(bronze_path)
-    silver_path = silver.save_silver_vector(gdf, source_id, silver_filename)
+    silver_path = silver.save_silver_vector(
+        gdf, source_id, silver_filename or silver_filename_for(bronze_path)
+    )
     return bronze_path, silver_path
 
 
@@ -327,12 +518,14 @@ def bootstrap_overture_buildings_subset(
         code_version=code_version,
     )
 
-    clip_result: dict[str, int | str] = {}
+    clip_result: dict[str, int | str | float | None] = {}
     if aoi_id is not None:
         clip_result = _clip_buildings_to_aoi(
             conn,
             ingestion_run_id=str(load_result["ingestion_run_id"]),
             aoi_id=aoi_id,
+            loaded=int(load_result.get("records_written") or 0),
+            source_id=source_id,
         )
         conn.commit()
 
@@ -374,25 +567,138 @@ def load_overture_buildings_subset(
     )
 
 
+class ExtractAoiMismatch(RuntimeError):
+    """The extract's bbox and the AOI do not overlap, so the clip removed all of it."""
+
+
 def _clip_buildings_to_aoi(
-    conn, *, ingestion_run_id: str, aoi_id: str
-) -> dict[str, int | str]:
+    conn,
+    *,
+    ingestion_run_id: str,
+    aoi_id: str,
+    loaded: int | None = None,
+    source_id: str | None = None,
+) -> dict[str, int | str | float | None]:
     """Drop rows from this ingestion run whose centroid falls outside the
     AOI polygon. Bbox-based S3 extraction always returns a superset of
     the AOI; this guarantees ``aoi_feature`` recompute won't surface
-    bbox-only orphans later."""
+    bbox-only orphans later.
+
+    ⚠ **Leaving the AOI empty is a mismatch, and it raises.**
+
+    The clip exists because the bbox is a *superset* of the AOI. If, once it
+    has run, this source has no features left inside the AOI at all, the bbox
+    and the AOI are disjoint and the extract is of somewhere else — and the
+    original behaviour was to report the deletion as a successful clip and
+    carry on with an empty layer.
+
+    ⚠ The first version of this guard tested the wrong thing: "the clip
+    removed 100 % of what this run loaded". That is a false positive on a
+    re-run, and it fired on one. A second `overture load` of the same file
+    upserts — the rows that survived the first clip are skipped
+    ``ON CONFLICT``, and the rows the first clip *deleted* are re-inserted. So
+    run two loads exactly the rows that will be clipped again, and clipping
+    100 % of them is correct idempotent behaviour. Measured: 387,273 loaded,
+    43,566 re-inserted on the second pass, 343,707 already present and
+    untouched.
+
+    The invariant that actually distinguishes the two is about the AOI, not
+    about the run: *after clipping, does this source have anything inside the
+    AOI?* A re-run leaves 343,707 there; a Mexico City extract leaves nothing.
+
+    That is not theoretical. `scripts/mexicali_run.sh` omitted `--bbox`, so
+    `overture extract` used its own default — MEXICO_CITY_BBOX, 1,600 km
+    away. Several million Mexico City buildings were extracted, loaded, and
+    clipped to nothing against the Mexicali AOI. No error. The run continued
+    for four more steps and surfaced as
+    "urban_form_block_building_density needs the global:building feature
+    layer, which is empty" — a message about blocks, pointing at the wrong
+    thing entirely.
+
+    Refusing here puts the failure where the cause is. It costs nothing
+    legitimate: a load whose every row falls outside its own AOI has no
+    correct interpretation.
+    """
     cur = conn.cursor()
     cur.execute(
         """
+        WITH aoi_fixed AS (
+          -- ST_MakeValid, for consistency with `compute_overlaps`, which has
+          -- repaired the AOI geometry this way since r004. This clip did not,
+          -- and it is a DELETE — the one place an inconsistency costs data
+          -- rather than a wrong answer. INEGI polygons are routinely
+          -- self-intersecting, so the repair is not hypothetical.
+          --
+          -- ⚠ Hardening, NOT a diagnosis. The obvious theory — that an
+          -- invalid AOI makes ST_Intersects reject everything — was tested
+          -- and does not hold: a self-intersecting bowtie has ST_Area 0 yet
+          -- ST_Intersects still returns true for a point on its surface.
+          -- GEOS is more robust here than it looks. So this closes a real
+          -- asymmetry between two code paths over the same geometry; it is
+          -- not the explanation for any particular empty clip.
+          --
+          -- CollectionExtract(..., 3) keeps the polygonal parts: MakeValid on
+          -- a self-intersecting polygon can return a collection with stray
+          -- lines or points, and those would make the clip reject more than
+          -- it should.
+          SELECT CASE
+                   WHEN ST_IsValid(geometry) THEN geometry
+                   ELSE ST_CollectionExtract(ST_MakeValid(geometry), 3)
+                 END AS geometry
+          FROM curated_geo.area_of_interest
+          WHERE id = %s
+        )
         DELETE FROM curated_geo.feature f
-        USING curated_geo.area_of_interest aoi
+        USING aoi_fixed aoi
         WHERE f.ingestion_run_id = %s
-          AND aoi.id = %s
           AND NOT ST_Intersects(f.geometry, aoi.geometry)
         """,
-        (ingestion_run_id, aoi_id),
+        (aoi_id, ingestion_run_id),
     )
-    return {"clipped_outside_aoi": cur.rowcount, "clipped_to_aoi_id": aoi_id}
+    clipped = cur.rowcount or 0
+
+    remaining: int | None = None
+    if loaded and source_id is not None:
+        # Scoped to source_id rather than ingestion_run_id, because a re-run's
+        # surviving rows belong to the *earlier* run. Counting this run alone
+        # is what made the first version of this guard a false positive.
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM curated_geo.feature f
+            JOIN curated_geo.area_of_interest aoi ON aoi.id = %s
+            WHERE f.source_id = %s
+              AND f.type_slug = 'building'
+              AND ST_Intersects(
+                    f.geometry,
+                    CASE
+                      WHEN ST_IsValid(aoi.geometry) THEN aoi.geometry
+                      ELSE ST_CollectionExtract(ST_MakeValid(aoi.geometry), 3)
+                    END)
+            """,
+            (aoi_id, source_id),
+        )
+        remaining = int(cur.fetchone()[0])
+        if remaining == 0:
+            raise ExtractAoiMismatch(
+                f"after clipping {clipped:,} features, this source has none "
+                f"left inside AOI {aoi_id} — so the extract's bbox does not "
+                f"overlap it. The usual cause is an extract taken with the "
+                f"wrong --bbox: `overture extract` defaults to "
+                f"MEXICO_CITY_BBOX, so omitting --bbox for any other city "
+                f"silently extracts Mexico City. Check the bbox the parquet "
+                f"was built with, then re-extract."
+            )
+    return {
+        "clipped_outside_aoi": clipped,
+        "clipped_to_aoi_id": aoi_id,
+        # Recorded because a high-but-not-total clip is normal for a bbox that
+        # crosses a border, and a reader needs to tell that from a near-miss.
+        "clipped_fraction": (round(clipped / loaded, 4) if loaded else None),
+        # The number the guard actually judges. Also the one that tells a
+        # re-run (unchanged) from a first load (grew).
+        "remaining_in_aoi": remaining,
+    }
 
 
 def validate_overture_buildings_layer(conn) -> dict[str, Any]:

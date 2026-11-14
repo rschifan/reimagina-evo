@@ -1,0 +1,27 @@
+flowchart LR
+  db[("Database<br/>[Container: PostgreSQL 16, PostGIS]")]
+
+  subgraph worker["Recomputation worker [Container: Python, DBOS]"]
+    orch["Orchestration core<br/>[Component: reimagina.orchestration]<br/>Plans and executes runs durably,<br/>checkpointing to Postgres"]
+    jobs["Job definitions<br/>[Component: reimagina.jobs]<br/>The units a run executes:<br/>ingest, overlap, indicator, rollup"]
+    assets["Asset graph<br/>[Component: reimagina.assets]<br/>Resolves which outputs an edit<br/>invalidates, per attribute"]
+    scen["Scenario evaluation<br/>[Component: reimagina.scenarios]<br/>Resolves effective values as<br/>override then observation then base"]
+    ind["Indicator runners<br/>[Component: reimagina.indicators]<br/>Computes each indicator as SQL<br/>against PostGIS"]
+    pipe["Ingestion pipelines<br/>[Component: reimagina.pipeline]<br/>Bronze, silver and curated<br/>loading of source datasets"]
+  end
+
+  orch -->|"Asks for the invalidated outputs of an edit"| assets
+  assets -->|"Reads the dependency edges from [SQL/TCP]"| db
+  orch -->|"Dispatches units to"| jobs
+  jobs -->|"Executes indicator units with"| ind
+  jobs -->|"Executes ingestion units with"| pipe
+  ind -->|"Asks for the effective attribute values"| scen
+  scen -->|"Resolves the three-way overlay in [SQL/TCP]"| db
+  ind -->|"Writes indicator_result rows to [SQL/TCP]"| db
+  pipe -->|"Writes features and observations to [SQL/TCP]"| db
+  orch -->|"Checkpoints run state to [SQL/TCP]"| db
+
+  classDef component fill:#85bbf0,stroke:#5d82a8,color:#000
+  classDef store fill:#438dd5,stroke:#2e6295,color:#fff
+  class orch,jobs,assets,scen,ind,pipe component
+  class db store

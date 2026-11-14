@@ -77,7 +77,11 @@
       {filters.length ? "No runs match these filters." : "No runs yet."}
     </div>
   {:else}
-    <div class="overflow-x-auto">
+    <!-- `relative` so the scroll box is a containing block: an absolutely
+         positioned descendant (an `sr-only` label, a tooltip) would
+         otherwise escape it and scroll the whole document sideways. See
+         the note in catalog/IndexView.svelte. -->
+    <div class="relative overflow-x-auto">
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="text-left font-mono text-[10px] tracking-wide text-muted-foreground uppercase">
@@ -120,12 +124,39 @@
                   <span class="text-[11px] text-muted-foreground">no units</span>
                 {:else}
                   <div class="flex items-center gap-2">
-                    <progress
-                      class="h-1.5 w-24"
-                      value={p.done}
-                      max={p.total}
-                      aria-label={`${p.done} of ${p.total} units complete`}
-                    ></progress>
+                    <!--
+                      A stacked bar, not `<progress>`. A single-value bar can
+                      only say "how much is finished", and this column's job
+                      is "how did it go" — so a run whose only unit failed
+                      drew a full green bar next to a red `failed` badge.
+                      Four segments, each coloured by outcome; the track
+                      shows what is still to come.
+                    -->
+                    <div
+                      class="flex h-1.5 w-24 overflow-hidden rounded-full bg-line/60"
+                      role="img"
+                      aria-label={p.label}
+                      title={p.label}
+                    >
+                      {#if p.segments.succeeded > 0}
+                        <div
+                          class="bg-state-fresh"
+                          style={`width:${p.segments.succeeded}%`}
+                        ></div>
+                      {/if}
+                      {#if p.segments.failed > 0}
+                        <div
+                          class="bg-state-error"
+                          style={`width:${p.segments.failed}%`}
+                        ></div>
+                      {/if}
+                      {#if p.segments.running > 0}
+                        <div
+                          class="bg-state-partial"
+                          style={`width:${p.segments.running}%`}
+                        ></div>
+                      {/if}
+                    </div>
                     <span class="font-mono text-[11px]" data-numeric>
                       {p.done}/{p.total}{p.failed ? ` · ${p.failed} failed` : ""}
                     </span>

@@ -1,0 +1,21 @@
+flowchart LR
+  p["Person<br/>A human user of the system"]
+  s["Software system<br/>In scope: the system being described"]
+  e["External system<br/>Out of scope: depended on, not built here"]
+  c["Container<br/>An application or data store that must<br/>be running for the system to work"]
+  k["Component<br/>A grouping of code inside one container"]
+
+  a1[" "] -->|"Solid arrow: a labelled, one-way relationship.<br/>Inter-container lines also name the protocol."| a2[" "]
+
+  classDef person fill:#0b4884,stroke:#073962,color:#fff
+  classDef focus fill:#1168bd,stroke:#0b4884,color:#fff
+  classDef external fill:#8a8a8a,stroke:#6b6b6b,color:#fff
+  classDef container fill:#438dd5,stroke:#2e6295,color:#fff
+  classDef component fill:#85bbf0,stroke:#5d82a8,color:#000
+  classDef blank fill:#fff,stroke:#fff,color:#fff
+  class p person
+  class s focus
+  class e external
+  class c container
+  class k component
+  class a1,a2 blank

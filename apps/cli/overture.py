@@ -1,4 +1,4 @@
-"""CLI helpers for the first Overture Mexico City source."""
+"""CLI helpers for Overture sources: Mexico City buildings, and divisions as AOIs."""
 
 from __future__ import annotations
 
@@ -7,9 +7,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import apps.cli.cdmx as cdmx_cli
 from apps.cli.indicators import submit_after_ingest
+from reimagina.data import aoi as aoi_mod
 from reimagina.db import connect
+from reimagina.data import amenities as amen
+import reimagina.pipeline.overture_divisions as divisions
+import reimagina.pipeline.overture_places as places
+from reimagina.storage import backend_for_connection
 from reimagina.pipeline.overture import (
+    DIVISION_SUBTYPE_COUNTY,
     MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_MEXICO_CITY,
     OVERTURE_BUILDINGS_NOTES,
@@ -49,21 +56,27 @@ def extract_mexico_city_buildings(
     output_path: str | Path,
     release: str = OVERTURE_DEFAULT_RELEASE,
     bbox: tuple[float, float, float, float] = MEXICO_CITY_BBOX,
+    low_memory: bool = False,
 ) -> dict[str, Any]:
     """Extract an Overture buildings subset to local GeoParquet.
 
     ``release`` and ``bbox`` are required to support multi-AOI ingest:
     the CLI passes the AOI's bbox so each city pulls only its own
     footprint from S3.
+
+    ``low_memory`` caps peak memory at the cost of wall time — 663 MB / 454 s
+    against 4,457 MB / 40 s on the Mexicali bbox. Echoed in the payload so a
+    recorded run says which path produced the file.
     """
     extracted_path = extract_overture_buildings_subset(
-        output_path=output_path, release=release, bbox=bbox
+        output_path=output_path, release=release, bbox=bbox, low_memory=low_memory
     )
     return {
         "output_path": str(extracted_path),
         "format": "GeoParquet",
         "release": release,
         "bbox": ",".join(str(v) for v in bbox),
+        "low_memory": low_memory,
     }
 
 
@@ -145,3 +158,169 @@ def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
 def as_json(data: dict[str, Any]) -> str:
     """Serialize CLI output consistently for humans and scripts."""
     return json.dumps(data, indent=2, sort_keys=True, default=str)
+
+
+# ─── Divisions → AOI ───────────────────────────────────────────────────────
+#
+# A second AOI constructor, beside `cdmx.aoi_from_alcaldia` and
+# `cdmx.aoi_from_state`. Both of those are INEGI-derived and need the Marco
+# Geoestadístico mirror on disk; this one needs only the Overture release the
+# buildings already come from, which is why it exists.
+
+
+def list_overture_divisions(
+    *,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+) -> dict[str, Any]:
+    """List the administrative divisions Overture holds inside a bbox."""
+    candidates = divisions.list_divisions(bbox=bbox, release=release)
+    return {
+        "release": release,
+        "bbox": ",".join(str(v) for v in bbox),
+        "count": len(candidates),
+        "divisions": [c.as_dict() for c in candidates],
+    }
+
+
+def aoi_from_overture_division(
+    *,
+    dsn: str,
+    aoi_name: str,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+    subtype: str | None = DIVISION_SUBTYPE_COUNTY,
+    country: str | None = None,
+    name: str | None = None,
+    project_name: str = "Overture Pilot Cities",
+) -> dict[str, Any]:
+    """Create an AOI whose geometry is an Overture division polygon.
+
+    Mirrors ``cdmx.aoi_from_alcaldia``'s shape — same ``_ensure_dev_project``
+    pattern, same ``create_aoi`` call, same ``{"status": ...}`` payload a
+    caller can branch on — and differs in exactly one way that matters:
+
+    ⚠ ``membership_key=None``, because an Overture boundary carries no INEGI
+    code to declare. r040 made AOI membership identifier-based *where
+    identifiers exist*, and the membership SQL already handles their absence
+    by falling back to geometry in all three branches (polygon, line, point).
+    The comment above that clause names this case: "one that carries none of
+    them (Overture buildings, OSM establishments) is decided spatially as
+    before." Passing a key here would be worse than useless — it would
+    exclude every feature that lacks it.
+
+    A name that does not match is reported with the bbox's actual contents
+    rather than raised, because ``names.primary`` is upstream data that can be
+    retitled between releases.
+    """
+    match, candidates = divisions.find_division(
+        bbox=bbox, release=release, subtype=subtype, country=country, name=name
+    )
+    if match is None:
+        return {
+            "dsn": dsn,
+            "status": "no_matching_division",
+            "release": release,
+            "criteria": {"subtype": subtype, "country": country, "name": name},
+            "candidates": [c.as_dict() for c in candidates],
+            "message": (
+                "No division in the bbox matches those criteria. The "
+                "`candidates` list is what this release actually holds — "
+                "Overture's names.primary is upstream data and can change "
+                "between releases."
+            ),
+        }
+
+    with connect(dsn) as conn:
+        backend = backend_for_connection(conn)
+        project_id = cdmx_cli._ensure_dev_project(backend, project_name)
+        aoi_id = aoi_mod.create_aoi(
+            conn,
+            project_id=project_id,
+            name=aoi_name,
+            geometry_wkt=match.geometry_wkt,
+            description=(
+                f"AOI derived from Overture {divisions.DIVISIONS_THEME}/"
+                f"{divisions.DIVISIONS_AREA_TYPE} id={match.overture_id} "
+                f"({match.name}) in release {match.release}. "
+                f"Licence: {divisions.OVERTURE_LICENSE}."
+            ),
+            # See the ⚠ in this function's docstring.
+            membership_key=None,
+        )
+        conn.commit()
+
+    return {
+        "dsn": dsn,
+        "status": "ok",
+        "aoi_id": aoi_id,
+        "project_id": project_id,
+        "release": match.release,
+        "overture_id": match.overture_id,
+        "division_name": match.name,
+        "subtype": match.candidate.subtype,
+        "country": match.candidate.country,
+        "name": aoi_name,
+    }
+
+
+# ─── Places → amenity destinations ─────────────────────────────────────────
+#
+# The ingest that makes the accessibility park and culture indicators
+# measurable. Before it, the Mexicali pilot's only amenity layer was IMIP's,
+# which holds no park-like category, so `accessibility_block_park_network_m`
+# reported the 1,500 m cutoff for all 19,058 blocks and the map drew that as a
+# flat choropleth.
+
+
+def load_overture_places(
+    *,
+    dsn: str,
+    bbox: tuple[float, float, float, float],
+    release: str = OVERTURE_DEFAULT_RELEASE,
+    country: str | None = None,
+    aoi_id: str | None = None,
+    output_path: str | Path = "data/overture_places.parquet",
+    orchestrator_run_id: str | None = None,
+    code_version: str = "dev",
+) -> dict[str, Any]:
+    """Ingest park, recreation and cultural places for a bbox.
+
+    ``country`` filters by ISO code and should be supplied for any
+    border-crossing bbox — see
+    :func:`reimagina.pipeline.overture_places.extract_places_subset` for the
+    Calexico case it prevents.
+
+    ``aoi_id`` is reported against, not clipped to: a park just outside the
+    municipal boundary is one the adjacent blocks walk to, and removing it
+    would bias every edge block's distance upward.
+    """
+    with connect(dsn) as conn:
+        return places.bootstrap_places(
+            conn,
+            bbox=bbox,
+            release=release,
+            country=country,
+            aoi_id=aoi_id,
+            output_path=output_path,
+            orchestrator_run_id=orchestrator_run_id or str(uuid4()),
+            code_version=code_version,
+        )
+
+
+def overture_place_categories() -> dict[str, Any]:
+    """What the ingest counts, what it skips, and why.
+
+    Printed rather than left to the source, because the exclusions are the part
+    a reviewer needs to see: an indicator built on a category list is only as
+    trustworthy as the list, and "the code knows" is not a reviewable answer.
+    """
+    return {
+        "counted": {
+            key: list(values)
+            for key, values in amen.OVERTURE_AMENITY_CATEGORIES.items()
+        },
+        "total_counted": len(amen.overture_categories_to_load()),
+        "excluded_categories": amen.OVERTURE_EXCLUDED_LOOKALIKES,
+        "excluded_name_patterns": amen.PLACE_NAME_EXCLUSIONS,
+    }

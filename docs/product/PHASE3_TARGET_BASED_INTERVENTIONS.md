@@ -88,14 +88,15 @@ code, not a new paradigm.
 from typing import Protocol
 from random import Random
 
+
 class Allocator(Protocol):
     target_type: str
 
     def allocate(
         self,
         target: Target,
-        ctx: SpatialContext,      # resolved element_state / AoI geometry in scope
-        rng: Random,              # seeded — see requirement #2
+        ctx: SpatialContext,  # resolved element_state / AoI geometry in scope
+        rng: Random,  # seeded — see requirement #2
     ) -> list[ElementPlacement]:  # concrete elements / attribute assignments
         ...
 ```
@@ -125,6 +126,7 @@ optimizer when geometry suffices.
 
 ```python
 from shapely import LineString
+
 
 def place_trees(sidewalk: LineString, spacing_m: float) -> list:
     n = int(sidewalk.length // spacing_m)
