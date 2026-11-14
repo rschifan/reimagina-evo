@@ -9,6 +9,18 @@ Until `v1.0.0` the public API, database schema, and CLI contracts are considered
 
 ## [Unreleased]
 
+### Fixed
+
+- `storage._utils.scenario_overlay` returned a feature twice when a scenario had
+  a valueless (`quality_flag='missing'`) row for a feature the baseline had a
+  value for: the value test guarded only the anti-join, so the
+  `scenario_id = X` branch still matched the valueless row alongside the
+  baseline's. Readers that key by feature collapsed the duplicate to whichever
+  row arrived last — plan-dependent, hence an intermittent wrong value rather
+  than a visible duplicate — and `fetch_aoi_children` double-counted the
+  feature's weight in the AOI summary. A scenario row now qualifies only when it
+  carries a value or no baseline row exists for the pair.
+
 ## [0.1.0] — 2026-04-22
 
 ### Added
