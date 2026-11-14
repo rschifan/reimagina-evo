@@ -118,9 +118,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ⚠ 22, not 20. jsdom 31 supports Node ^22.22.2 || ^24.15.0 || >=26,
+      # and the undici 8 it pulls in needs >=22.19: undici binds
+      # `zlib.createZstdDecompress` at import, which Node 20 does not have, so
+      # under 20 every vitest file that loads jsdom dies in collection with
+      # "Cannot read properties of undefined (reading 'bind')". The jsdom
+      # upgrade arrived on a branch that could not run CI while it conflicted
+      # with main, so the first run is where it surfaced. Node 20 has been
+      # end-of-life since April 2026 in any case.
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
