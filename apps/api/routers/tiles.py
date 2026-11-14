@@ -14,6 +14,7 @@ import psycopg2
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from reimagina.data.attribution import attributions
 from reimagina.tiles.sources import resolve_tile_sources
 
 from ..deps import (
@@ -47,6 +48,36 @@ class TileSource(BaseModel):
     available: bool
     source_config: dict
     latest_snapshot: dict | None = None
+
+
+class AttributionRow(BaseModel):
+    provider: str
+    license: str | None = None
+    #: The credit line to render.
+    text: str
+
+
+@router.get("/attribution", response_model=list[AttributionRow])
+def list_attributions(
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> list[AttributionRow]:
+    """Credit lines for every source with features loaded.
+
+    ⚠ Derived rather than declared, because the same layer carries
+    different provenance in different deployments. The street layer is
+    OpenStreetMap in a real pilot and a generated grid in a demo, and a
+    frontend that always printed "© OpenStreetMap contributors" would make a
+    false claim on every synthetic territory — in a product whose argument
+    is that its provenance is checkable.
+
+    Registered-but-unloaded sources are excluded: crediting one would say
+    the map shows data it does not.
+    """
+    rows = attributions(conn)
+    return [
+        AttributionRow(provider=row.provider, license=row.license, text=row.text)
+        for row in rows
+    ]
 
 
 @router.get("", response_model=list[TileSource])

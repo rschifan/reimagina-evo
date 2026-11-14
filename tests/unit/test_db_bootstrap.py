@@ -32,6 +32,14 @@ class _Recorder:
         self.seeded_catalog = False
         self.seeded_assets = False
         self.provisioned: list[str] = []
+        # ⚠ The seeds also land in one ordered list, because the order is a
+        # contract and booleans cannot express it: a feature-backed asset
+        # resolves its `feature_type_id`, so `seed_assets` raises "references
+        # unknown feature type … run `feat seed-types` first" when the catalog
+        # is empty. That failure was real — `bootstrap-db` died on a database
+        # whose r003 seed had never landed, and told the user to run the step
+        # that comes *after* it.
+        self.calls: list[str] = []
 
 
 def _stub_collaborators(monkeypatch, *, app_created: bool = True) -> _Recorder:
@@ -58,15 +66,23 @@ def _stub_collaborators(monkeypatch, *, app_created: bool = True) -> _Recorder:
 
     monkeypatch.setattr("reimagina.db.connect", lambda dsn: _FakeConn())
 
+    def _seed_feature_types(conn):
+        recorder.calls.append("feature_types")
+
     def _seed_catalog(conn):
         recorder.seeded_catalog = True
+        recorder.calls.append("catalog")
 
     def _seed_assets(conn):
         recorder.seeded_assets = True
+        recorder.calls.append("assets")
 
     def _provision(dsn):
         recorder.provisioned.append(dsn)
 
+    monkeypatch.setattr(
+        "reimagina.data.feature.seed_feature_types", _seed_feature_types
+    )
     monkeypatch.setattr("reimagina.indicators.catalog.seed_catalog", _seed_catalog)
     monkeypatch.setattr("reimagina.assets.registry.seed_assets", _seed_assets)
     # Provisioning the ops plane is a real connection to a real server, stubbed
@@ -98,6 +114,26 @@ def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
     # The asset registry is seeded from code rather than from a migration body,
     # so bootstrap is the only thing that guarantees a fresh DB has it.
     assert recorder.seeded_assets is True
+
+    # Feature types must exist before assets resolve against them. The
+    # indicator catalog is independent of both, so only its presence matters.
+    calls = recorder.calls
+    # Asserted before the index comparison: `.index()` on a missing entry
+    # raises ValueError, which is how a reverted fix reported itself — an
+    # opaque traceback in place of the reason.
+    assert "feature_types" in calls, (
+        f"bootstrap_local_platform never seeded feature types (calls: {calls}); "
+        f"seed_assets resolves feature_type_id and raises without them"
+    )
+    assert calls.index("feature_types") < calls.index("assets"), (
+        f"bootstrap seeded in the order {calls}; assets resolve feature_type_id "
+        f"and cannot be seeded first"
+    )
+    # Feature types are seeded here for the same reason as assets — r003
+    # happens to insert them, but a database that predates that seed has none
+    # and bootstrap must not depend on the accident.
+    assert calls.count("assets") == 1
+    assert calls.count("feature_types") == 1
 
 
 def test_bootstrap_provisions_the_ops_plane_system_schema(monkeypatch):

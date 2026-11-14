@@ -65,6 +65,14 @@ test-integration: ## Run integration tests (requires Postgres + PostGIS running)
 test-conformance: ## Assert the Orchestrator port contract (requires Postgres).
 	$(PYTEST) tests/conformance -q --no-header -rA
 
+.PHONY: test-e2e
+test-e2e: ## Open every page in a real browser (needs the API + web dev server).
+	REIMAGINA_E2E=1 $(PYTEST) tests/e2e -q --no-header -rs
+
+.PHONY: test-recovery
+test-recovery: ## Kill a running executor and prove it resumes (needs >=20k blocks).
+	REIMAGINA_RECOVERY_TEST=1 $(PYTEST) tests/recovery -q --no-header -rs
+
 .PHONY: test-workloads
 test-workloads: ## Measure how this ops plane schedules (see tests/workloads/README.md).
 	REIMAGINA_BENCH=1 $(PYTEST) tests/workloads -q --no-header -rA
@@ -138,8 +146,62 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 #
 # The trap that remains is for the other exit: if one server dies on its own,
 # `wait` returns and it tears the survivor down rather than leaving it running.
+#
+# ⚠ The DSN is read from `.env`'s DATABASE_URL when REIMAGINA_APP_DSN is unset.
+# The API reads REIMAGINA_APP_DSN (apps/api/deps.py) and `.env` carries
+# DATABASE_URL, so a machine with a perfectly good `.env` still had to pass the
+# DSN by hand — while `scripts/acceptance_run.sh` and `scripts/mexicali_run.sh`
+# both source `.env` and need no argument. One command should mean one command.
+#
+# It fails loudly rather than defaulting: the API's own fallback DSN points at a
+# database called `reimagina`, and silently serving an empty or wrong database
+# looks like a broken frontend, not a missing variable.
+#
+# ⚠ Tiles are pointed at the API, not at Martin, and without this `make dev`
+# produces a blank map.
+#
+# `tile_live_base_url()` defaults to `http://localhost:3000/get_tile` — Martin —
+# because Martin is the recommended production path. But `make dev` starts two
+# processes and Martin is not one of them, so every tile request went to a
+# server nobody had started and the map drew nothing. The console reads
+# `AJAXError: Failed to fetch (0) http://localhost:3000/get_tile/...`, which is
+# easy to mistake for a data problem.
+#
+# `/api/tiles` is relative on purpose. The absolute form
+# `http://localhost:8001/tiles` is cross-origin from Vite's 5173 and fails CORS
+# — measured earlier at 53 requests, 53 `net::ERR_FAILED`, with no console
+# error object to find them by. Relative goes through Vite's `/api` proxy,
+# which strips the prefix, so the API's MVT router sees
+# `/tiles/get_tile/{z}/{x}/{y}` — Martin's own contract, which is why that
+# router exists.
+#
+# Assigned with `:=` so an explicit value still wins, and Martin goes back with
+# `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000/get_tile make dev`.
+#
+# ⚠ The value is captured BEFORE `.env` is sourced and restored after, so
+# only the invoking environment can override it. Without that, a `.env`
+# carrying `REIMAGINA_TILE_LIVE_BASE_URL` wins over the default and `make dev`
+# quietly points the map at Martin again — the exact failure this block
+# exists to prevent, reintroduced by the line two above it. `.env` is for
+# machine configuration like the DSN; which tile server a *development* run
+# talks to is this target's business, and it starts only one of them.
 dev: check-ports ## Start the API and the web dev server together. Ctrl-C stops both.
-	@echo "API  → http://127.0.0.1:$(API_PORT)"; \
+	@_tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
+	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
+	  set -a; . ./.env; set +a; \
+	  REIMAGINA_APP_DSN="$$DATABASE_URL"; export REIMAGINA_APP_DSN; \
+	fi; \
+	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
+	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
+	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
+	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
+	  exit 1; \
+	fi; \
+	: $${REIMAGINA_TILE_LIVE_BASE_URL:=/api/tiles}; \
+	export REIMAGINA_TILE_LIVE_BASE_URL; \
+	echo "DSN  → $$REIMAGINA_APP_DSN"; \
+	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"; \
+	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
 	echo; \
 	trap 'kill $$api $$web 2>/dev/null' EXIT; \

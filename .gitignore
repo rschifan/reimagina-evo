@@ -28,9 +28,20 @@ htmlcov/
 .pyre/
 
 # ── Local data ───────────────────────────────────────────────────────────────
-# Anything under data/ is local cache or bootstrap output — never tracked.
+# Anything under the repo-root data/ is local cache or bootstrap output —
+# never tracked.
+#
+# ⚠ The leading slash matters and was missing. A bare `data/` is matched at
+# EVERY depth, so it also ignored `packages/py/reimagina/data/` — the Python
+# package. The files already there stayed tracked (gitignore does not untrack),
+# which hid the problem completely: `data/feature.py`, `data/aoi.py` and the
+# rest kept working, while two NEW modules in the same package,
+# `data/roads.py` and `data/attribution.py`, were silently skipped by
+# `git add -A` and shipped to nobody. A fresh clone raised
+# `ModuleNotFoundError: No module named 'reimagina.data.roads'` the first time
+# anyone ran `network bootstrap`.
 # Bootstrap procedure to re-fetch is documented in docs/BOOTSTRAP.md.
-data/
+/data/
 
 # ── Environment / secrets ────────────────────────────────────────────────────
 .env
@@ -80,15 +91,18 @@ infra/docker/volumes/
 # ── Dated backup snapshots ───────────────────────────────────────────────────
 [0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 
-# ── Agent instruction files (local only, not published) ─────────────────────
+# ── Agent instruction files ─────────────────────────────────────────────────
+# CLAUDE.md stays local. `.claude/` does not, in full: the authorship rule is
+# only a rule if it travels with the repository, so the settings that empty
+# agent attribution and the hook that enforces the committer identity are
+# tracked. A directory ignored with a trailing slash cannot be re-included
+# file by file — git never descends into it — hence `.claude/*` and the two
+# negations. Everything else under `.claude/`, settings.local.json included,
+# stays ignored.
 CLAUDE.md
 .claude/*
-# ...except the project settings that enforce commit authorship, which have
-# to travel with the repository to be worth anything. Note `.claude/*` rather
-# than `.claude/`: git does not descend into an excluded *directory*, so a
-# negation for a file inside one never matches and the file stays silently
-# untracked — which is exactly how this was missed the first time.
 !.claude/settings.json
+!.claude/hooks/
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.log
@@ -104,6 +118,9 @@ artifacts/
 # locally — a repeat fetch of the same polygon drops from ~125 s to ~0 s — but
 # it is derived data; the graph that matters lives in Postgres.
 cache/
+
+# ── Delivery PDFs (generated; built at delivery time from docs/delivery/*.md)
+docs/delivery/pdf/
 
 # Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
 # retirement left 6.8 MB of them tracked under a dotted directory, where a

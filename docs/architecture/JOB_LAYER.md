@@ -72,10 +72,18 @@ The queue engine's own modules — the task definitions, the queue app, the LIST
 `packages/py/reimagina/orchestration/port.py` — four methods, plain dataclasses, no engine types.
 
 ```python
-class Orchestrator(Protocol):                                    # port.py:106
-    def submit_run(self, conn, *, changed_attributes, edited_features,
-                   scenario_id=None, aoi_id=None, code_version="dev",
-                   indicators=None) -> RunHandle: ...
+class Orchestrator(Protocol):  # port.py:106
+    def submit_run(
+        self,
+        conn,
+        *,
+        changed_attributes,
+        edited_features,
+        scenario_id=None,
+        aoi_id=None,
+        code_version="dev",
+        indicators=None,
+    ) -> RunHandle: ...
     def get_run(self, conn, run_id: str) -> RunStatus | None: ...
     def cancel_run(self, conn, run_id: str) -> bool: ...
     def subscribe_progress(self, run_id: str) -> AsyncIterator[RunEvent]: ...
@@ -415,7 +423,7 @@ Children are enqueued under deterministic ids (`{run_id}-{slug}`) and the body a
 
 **A direct DSN is mandatory and fails loudly.** `DATABASE_URL_DIRECT` or a `RuntimeError` — because DBOS falls back to a local SQLite file when no database URL is set, so a missing environment variable in production would produce a *working* process with private, unrecoverable checkpoints instead of an error. LISTEN/NOTIFY backs the progress streams and cannot cross PgBouncer in transaction mode, so it must be the direct one (`dbos_app.py:57-74`).
 
-**`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running; on 2.28.0 recovery is not idempotent, so that is a double execution. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
+**`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running — a double execution. DBOS 3 made duplicate *recovery requests* idempotent, which is a different thing and does not help here: recovering an executor that never stopped re-enqueues a workflow its original runner is still executing, and admits a second runner beside it. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
 
 **`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
 
@@ -437,12 +445,139 @@ Two layers, because bootstrap is not the only way a database gets migrated. A su
 
 ### The worker
 
-`python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. The worker also writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`.
+`python -m apps.worker` launches DBOS and blocks. Launching registers workflow definitions, starts DBOS dequeue and startup recovery, and registers two queues: `runs` for parent workflows and `units` for indicator work. Every process that launches — not only the worker — writes a Postgres heartbeat every `REIMAGINA_EXECUTOR_HEARTBEAT_S` seconds (default 30), visible through `explore.ops_executor_health_v`. It belongs to `launch()` rather than to the worker entrypoint because the queues registered there carry a worker concurrency, so **any** process that launches can dequeue and execute units — the worker, and also `dev` mode, which is how the CLI's `evaluate-scenario` and the integration suite execute in the submitting process. A `client` launches nothing, which is the API's default and why it is not in that list. An executor that can own work and never announces itself is one whose work can never be reclaimed.
 
 Two consequences, and they are the comparison:
 
 - **A worker is required in production.** The API is client-only by default, keeping long-running PostGIS work outside request processes. `dev` is the explicit one-process mode for the CLI and integration tests; it is not a deployment default.
-- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans need a deliberate sweep against a liveness signal, which is not built yet (`apps/worker/app.py:12-14`). Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, a live peer adopted nothing, and a manual sweep from the peer drove the run to completion. The sweep is built last and gated conservatively because the pinned 2.28.0 predates the idempotent-recovery fix, so a sweep fired against a live executor can double-execute (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`, `:191-195`, `pyproject.toml:56-69`).
+- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans are reclaimed by the sweep below, which is now built. Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, and a live peer adopted nothing until swept (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`).
+
+
+
+### Deduplication — one identity for one piece of outstanding work
+
+`submit_run` minted a fresh uuid per call, so a double-clicked button, a retried POST or an impatient operator started a second run recomputing what the first was already computing. Both wrote the same `indicator_result` rows, one after the other.
+
+DBOS 3 deduplicates natively. An enqueue carrying a `deduplication_id` collides with any workflow already holding that id on the same queue; `duplication_policy="return-existing"` returns a handle to it and discards the arguments just submitted. The id is cleared on every terminal transition, so **the key is held only while the work is outstanding**. `RunHandle.deduplicated` and the API's `deduplicated` field carry the fact back, because a resubmission is otherwise answered exactly like a fresh submit.
+
+⚠ **An identical request is not the same thing as identical work, and this is where a request-shaped id would be a correctness bug.** A scenario edit does not change the request — same attribute, same features, same scenario id. It changes the values those features resolve to. Deduplicate on request shape and an operator who edits an override mid-run and resubmits is handed back the run computing the values they just replaced, with nothing to say so.
+
+So the id folds in the content fingerprint of everything the planned units read. `serving_geo.asset_expected_version_v` gives each indicator the hash of its whole upstream closure, which includes `scenario.override.<attribute>` for that scenario. Editing an override republishes that asset, the closure hash moves, the id changes, and the resubmission is a new run. Measured rather than assumed: editing one override value moves the indicator's expected version from `79b1aeffc19f2aef` to `fc302faf525037df`, and restoring it moves it back, because the version is content addressed rather than a counter.
+
+**It fails open.** A planned unit with no expected version — an asset graph not yet backfilled — means input changes cannot be detected, so no id is produced and nothing is deduplicated. A redundant run costs CPU; a wrongly suppressed one costs an answer someone asked for.
+
+**The queue decides, not a prior read.** Checking for an in-flight twin and then enqueuing would be a read followed by a write with nothing holding between them: two concurrent submits of the same work would both see nothing and both enqueue. Handing the id to DBOS makes the uniqueness check and the insert one operation.
+
+Observed end to end on the live queue:
+
+```
+resubmit while outstanding          -> same run, deduplicated=True
+resubmit after the run is terminal  -> new run
+edit an override, same request      -> new run
+then resubmit with nothing changed  -> same run, deduplicated=True
+```
+
+`tests/integration/test_run_deduplication.py` holds all four, in `client` mode so nothing drains the queue and the window is not a race. It also asserts that the asset graph is seeded — without that, every test in the file would pass by never deduplicating anything.
+
+### Recovery — two mechanisms, and only one of them is DBOS's
+
+They are easy to conflate and they cover different failures.
+
+| | Covers | Who does it | Gate |
+|---|---|---|---|
+| **Startup recovery** | a process that comes back | `DBOS.launch()`, for its own `executor_id` only | none needed — a process is not running the workflows it is about to reclaim |
+| **Cross-executor sweep** | a process that never comes back | `orchestration.reclaim.sweep`, from a peer | `jobs_runtime.ops_executor_heartbeat` |
+
+Startup recovery is the library's, it is free, and it is enough for a restart,
+a redeploy, or an OOM kill followed by a supervisor restart. It is **not**
+enough for a death: a destroyed host or a scaled-away replica leaves PENDING
+workflows recorded against an id no process will ever claim again, and the run
+they belong to never reaches a terminal state. Nothing times it out, because
+from the database's point of view the work is still in progress.
+
+**The sweep.** A live executor periodically asks which executors have stopped
+publishing liveness and calls DBOS recovery for each, which re-enqueues their
+pending workflows onto itself. `reclaim.sweep` is one pass;
+`apps/worker/app.py` runs it on a loop every `REIMAGINA_RECLAIM_SWEEP_S`
+seconds. A reclaimed executor's heartbeat row is deleted **once it has nothing
+left open**, so the same corpse is not swept forever and does not sit
+permanently in `explore.ops_executor_health_v` as noise an operator learns to
+ignore.
+
+⚠ **"Once it has nothing left open" is the whole condition, because recovering
+zero workflows is not evidence that there were none.** Recovery asks
+`get_pending_workflows(executor_id, app_version)`, which filters on
+`application_version = <the sweeper's own version>`. A sweeper on a different
+version than the executor that died recovers nothing from it, every time,
+however much work is stranded — and that is the *normal* state during the
+blue-green deploy this version pinning exists to support, which deliberately
+leaves old-version `PENDING` workflows lying around.
+
+Deleting the row on that result destroyed the last pointer to the stranded
+work: the workflows stay `PENDING` forever, no later sweep looks at that id
+again, and `ops_executor_health_v` stops showing there was ever a worker
+there. A permanent leak produced by the cleanup step, with no symptom
+anywhere. So `reclaim.forget_executor` reads
+`dbos.workflow_status` for `PENDING`/`ENQUEUED` rows first and declines to
+forget an executor that still has any; the sweep reports those ids in
+`ReclaimReport.stranded_executors` and the worker logs them at WARNING.
+Draining one means starting a process pinned to the stranded
+`REIMAGINA_APP_VERSION` — see `docs/architecture/OPS_PLANE_RUNBOOK.md`.
+
+**Why it waited for DBOS 3.** Spike 1 measured the mechanism working on 2.28
+— `_recover_pending_workflows(["exec-A"])` from B returned two handles, drove
+the run to SUCCESS, and recomputed exactly one unit — and then recommended
+building it last, because 2.28.0 shipped six hours before the
+idempotent-recovery fix merged. Without that fix two peers sweeping the same
+dead executor could each start a runner for the same workflow. DBOS 3's
+`_recovery._recover_workflow` re-enqueues rather than executing directly,
+"so that every recovered workflow starts through the queue's atomic
+ENQUEUED->PENDING dequeue. That handoff admits exactly one runner, which makes
+duplicate recovery requests idempotent." Racing sweepers are therefore safe.
+
+⚠ **That fix does not make sweeping a *live* executor safe, which is why the
+liveness gate is a correctness requirement rather than a courtesy.**
+Re-enqueuing a workflow that a running process is still executing admits a
+second runner alongside the first. The idempotency is about duplicate
+*recovery requests*, not about recovering work that was never abandoned.
+
+Three properties follow, and each is enforced rather than documented:
+
+- **The threshold is many multiples of the beat.** `REIMAGINA_EXECUTOR_STALE_S`
+  defaults to 300 s against a 30 s beat, and `reclaim.stale_after_seconds`
+  **refuses to start** if the ratio falls below 4. The two are separate
+  environment variables, so nothing else would notice an operator slowing the
+  beat — the tempting edit, because beats look like chatter — without widening
+  the window. The asymmetry is the argument: reclaiming a dead executor late
+  costs latency; reclaiming a live one costs a duplicate execution.
+- **A sweeper never sweeps itself.** The exclusion is in the SQL, not left to
+  the caller. A process busy in a long unit with a wedged heartbeat thread is
+  exactly the case where its own row looks stale.
+- **An executor with no heartbeat row is never swept.** Absence is not
+  evidence of death. The one process that can be in that state is running code
+  old enough not to publish liveness, which is when guessing is worst.
+- **An executor is forgotten only when it is empty.** The liveness row is the
+  last pointer to stranded work, so dropping it is gated on
+  `dbos.workflow_status` holding nothing `PENDING` or `ENQUEUED` for that id —
+  not on how many workflows this sweep happened to recover.
+
+`tests/recovery/test_crash_recovery.py::test_a_peer_reclaims_a_dead_executors_run`
+is the end-to-end proof, with a real `SIGKILL` and two distinct executor ids.
+Observed on a 22,500-block territory: three units unfinished before the sweep,
+three recovered, run `succeeded`, dead heartbeat row gone.
+
+```
+LAUNCHED_AS             recovery-probe-sweeper
+UNFINISHED_BEFORE_SWEEP 3
+DEAD                    ['recovery-probe-dead']
+RECOVERED               3
+STATUS                  succeeded
+DEAD_HEARTBEAT_ROWS     0
+```
+
+Set `REIMAGINA_RECLAIM_ENABLED=0` to turn the sweep off. The worker logs a
+warning when you do, naming the consequence: a dead executor's runs stay in
+progress forever until a process with its id restarts.
 
 ---
 
@@ -497,18 +632,44 @@ Unchanged by any of this, and the reason an engine swap is safe:
 
 ---
 
-## Rollup — a direct call, not an orchestrated unit
+## Indicator rollup — removed, and what replaced each part of it
 
-`reimagina.jobs.rollup.run_rollup` (`jobs/rollup.py:38`) aggregates `indicator_result` rows from a fine grain to a coarse one via `curated_geo.feature_overlap`, applying the indicator's `aggregation_method` with math from the pure `reimagina.jobs.aggregation` module.
+`reimagina.jobs.rollup.run_rollup` aggregated `indicator_result` rows from a
+fine grain to a coarse one. It no longer exists. `39ab70a` ("block grain only")
+deleted the module, the `indicators rollup` CLI command, and
+`rollup_child_rows` on the overlap repository, which served only that worker.
+Every shipped indicator now declares `applies_to=("block",)`, and r016's write
+trigger rejects a result at a grain the indicator does not declare — so
+block-only is enforced in the database rather than merely intended.
 
-**It is not part of a run.** It is not in `SHIPPED_INDICATORS`, so `default_runners` never binds it (`runners.py:76-90`) and no `plan_wave` cascade can dispatch it. Callers invoke it directly from the CLI or an integration test (`jobs/rollup.py:10-11`, `apps/cli/indicators.py:58`). It opens its own `job_run` with `model_family="rollup"` (`rollup.py:75-79`), so its outputs carry provenance like any other compute.
+⚠ This section described the deleted worker as present for three months after it
+went. The paragraphs below are what remains, because four mechanisms share the
+word "rollup" and only one of them was removed:
 
-Behaviour worth keeping on the record:
+| Still here | What it does |
+|---|---|
+| `curated_geo.feature_overlap` + type pairs (r009) | the cross-grain bridge, read by AOI summaries and the observation rollup |
+| `reimagina.jobs.observation_rollup.run_observation_rollup` | observation → observation at a coarser grain, driven by `aggregation_recipe` |
+| `reimagina.jobs.aggregation.aggregate_children` | the weighted-mean and missing-data policy, shared with `jobs/aoi_summary.py` |
+| `aggregation_method` on `IndicatorSpec` | read by the AOI summary, which is how a scalar per AOI is still produced |
 
-- Weights are `feature_overlap.overlap_measure` — the absolute intersection (m² for polygon rollups) — not `overlap_ratio`, which collapses to ~1.0 for fully-nested children and degrades a weighted mean into an arithmetic one (`interfaces.py:445-448`).
-- Missing-data policy is shared with the AOI-summary worker in `aggregation.aggregate_children` (`aggregation.py:108`): sum weights, classify the missing share against a threshold defaulting to 0.5, drop missing children, aggregate the rest.
-- Idempotency comes from the write path, not from the worker: the repository stales any existing `current` row for the same `(feature, scenario, indicator)` before inserting (`repositories.py:2173-2190`), and the partial unique indexes `ir_one_current_base` / `ir_one_current_scenario` (`r016:193-196`, `:198-201`) enforce it in the database.
-- Stale-propagation from below is still not automatic: staling a child does not stale its parent rollup, and the caller that staled the child must re-run the rollup.
+Behaviour worth keeping on the record, because it governs the surviving
+aggregations:
+
+- Weights are `feature_overlap.overlap_measure` — the absolute intersection (m²
+  for polygon aggregation) — not `overlap_ratio`, which collapses to ~1.0 for
+  fully-nested children and degrades a weighted mean into an arithmetic one
+  (`interfaces.py:445-448`).
+- Missing-data policy lives in `aggregation.aggregate_children`
+  (`aggregation.py:108`): sum weights, classify the missing share against a
+  threshold defaulting to 0.5, drop missing children, aggregate the rest.
+- Idempotency comes from the write path, not from any worker: the repository
+  stales any existing `current` row for the same `(feature, scenario,
+  indicator)` before inserting (`repositories.py:2173-2190`), and the partial
+  unique indexes `ir_one_current_base` / `ir_one_current_scenario`
+  (`r016:193-196`, `:198-201`) enforce it in the database.
+- Stale-propagation upward was never automatic and is now moot for indicators:
+  there is no coarser indicator row to stale.
 
 ---
 

@@ -60,10 +60,10 @@ Before this work, the system already had:
 
 | Capability                                         | Where it lives                                                                                                                                                                                                                            |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Canonical feature + observation + indicator tables | [`curated_geo.feature`](../infra/db/migrations/versions/r003_feature_schema.py), [`.observation`](../infra/db/migrations/versions/r003_feature_schema.py), [`.indicator_result`](../infra/db/migrations/versions/r016_indicator_layer.py) |
+| Canonical feature + observation + indicator tables | [`curated_geo.feature`](../infra/db/migrations/versions/r003_feature_tables.py), [`.observation`](../infra/db/migrations/versions/r003_feature_tables.py), [`.indicator_result`](../infra/db/migrations/versions/r016_indicator_layer.py) |
 | One formula dispatcher for rollups                 | [`packages/py/reimagina/jobs/aggregation.py::aggregate`](../packages/py/reimagina/jobs/aggregation.py#L25) — supports `mean` / `weighted_mean` / `sum` / `min` / `max`                                                                    |
 | Cross-grain bridge                                 | [`curated_geo.feature_overlap`](../infra/db/migrations/versions/r009_feature_overlap.py) + [`PostgresOverlapRepository.compute_feature_overlaps`](../packages/py/reimagina/storage/postgres/repositories.py#L1069)                        |
-| Indicator rollup worker                            | [`packages/py/reimagina/jobs/rollup.py::run_rollup`](../packages/py/reimagina/jobs/rollup.py#L41)                                                                                                                                         |
+| Observation rollup worker                          | [`packages/py/reimagina/jobs/observation_rollup.py::run_observation_rollup`](../packages/py/reimagina/jobs/observation_rollup.py#L80) — the *indicator* rollup worker this row used to name was deleted in `39ab70a`; every indicator is block-grain now |
 | Live vector tiles                                  | Martin auto-publishes every `serving_geo.*(z,x,y,query_params json) RETURNS bytea` function — [`infra/docker/martin.yaml`](../infra/docker/martin.yaml)                                                                                   |
 | Existing MVT choropleth for indicators             | [`serving_geo.indicator_overlay_tile`](../infra/db/migrations/versions/r017_indicator_overlay_tile.py)                                                                                                                                    |
 
@@ -678,7 +678,7 @@ is `work / span`; on today's catalog that is 4.03, and 16 worker slots
 measure exactly 4.03. The shipped default of 8 reaches 3.92.
 
 ⚠ **The catalog exercises more of this than it used to, and still not
-much.** 9 of 11 indicators are roots. Adding `livability_block_score`
+much.** 10 of 12 indicators are roots. Adding `livability_block_score`
 took the number of attribute edits that produce two waves from one to
 four — `geometry`, `poi_version`, `network_version` and `num_levels` now
 each seed a family whose results a composite consumes, where before only

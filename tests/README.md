@@ -7,11 +7,16 @@
 | `tests/integration` | CI + `make test-integration` | Postgres + PostGIS |
 | `tests/conformance` | CI + `make test-conformance` | Postgres + PostGIS |
 | `tests/performance` | **no gate — nothing fails if it rots** | Postgres, seeded data |
-| `tests/e2e` | — | empty placeholder |
+| `tests/e2e` | `make test-e2e`, opt-in | API + web dev server + Chromium |
 
 `make check` runs lint, unit, contract and the web build. It does **not** run
 integration or conformance, which need a database; CI runs those in a separate
 job with a Postgres service.
+
+`tests/e2e` is the only suite that opens the app in a browser. Everything
+else sees the web app through jsdom or not at all, which is how the entire
+frontend stack was upgraded in one commit with the map untested: `npm run
+build` passed and 73 unit tests passed, and neither opens a page.
 
 ## The ungated suite
 
