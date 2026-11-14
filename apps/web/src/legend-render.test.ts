@@ -8,7 +8,10 @@ const PARK = {
   slug: "accessibility_block_park_network_m",
   name: "Distance to park or recreation site (network)",
   unit: "m",
-  grain: "block",
+  // `applies_to`, not `grain`: the catalog field was renamed and this
+  // fixture kept the old name, so the `as IndicatorSummary` cast stopped
+  // overlapping and `tsc --noEmit` — i.e. `npm run build` — failed on it.
+  applies_to: ["block"],
   valid_min: 0,
   valid_max: 1500,
 } as IndicatorSummary;
