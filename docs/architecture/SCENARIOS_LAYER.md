@@ -73,32 +73,37 @@ answer is now unknown" and have that beat the baseline.** Doing so needs a
 distinct signal the read layer honours — a `quality_flag` it inspects — not the
 absence of a value, which is indistinguishable from "not computed".
 
-⚠ **The value test belongs on both arms of the anti-join.** Putting it on the
-probe alone — which is what r043 did, and what `scenario_overlay` still does —
-stops a valueless scenario row from *suppressing* the baseline but leaves
-`scenario_id = X` matching that row unconditionally. Both rows then qualify, so
-the one-row-per-pair property above is broken: the double-count the anti-join
-exists to prevent, in the one case the probe was taught to ignore. It is harder
-to see than the widened form, because it needs a scenario to have recorded a
-valueless row, and because every reader keyed by feature — a dict comprehension,
-`dict(row)`, `fetchone()`, `ST_AsMVT`'s client — collapses the pair to whichever
-row arrived *last*. That order follows the query plan, so it reads as an
-intermittent wrong value rather than as a duplicate.
+⚠ **The value test belongs on both arms of the anti-join.** Guarding only the
+probe stops a valueless scenario row from *suppressing* the baseline, but leaves
+`scenario_id = X` matching that row unconditionally — so the pair qualifies
+twice and the one-row-per-pair invariant above is broken, which is the
+double-count the anti-join exists to avoid, reintroduced one case down. It is
+harder to see than the widened form, because it only bites once a scenario has
+recorded a valueless row, and because every reader that keys by feature (a dict
+comprehension, `dict(row)`, `fetchone()`, the client drawing an MVT tile)
+collapses the duplicate to whichever row arrived *last* — so it reads as an
+intermittent wrong value rather than as a duplicate. That order follows the
+query plan: an index scan on `ir_scenario_slug_idx` returns the scenario row
+first and the baseline wins, while a seq scan (which the planner prefers once
+the table has statistics) puts it last and the read reports no value. In
+`fetch_aoi_children`, which puts the predicate in a `LEFT JOIN … ON`, the
+duplicate is not cosmetic: the feature's `overlap_measure` weight is counted
+twice and the AOI summary is quietly wrong.
 
-A scenario row therefore qualifies when it carries a value **or** when the
-baseline has no row for the pair. The second half is load-bearing: excluding
-valueless rows outright would drop a `missing` row for a feature the baseline
-never computed out of both arms and the feature would vanish — the hole this
-predicate closes, one configuration over. Exactly one row survives per pair in
-all four configurations: a valued scenario row wins, a valueless one yields to
-the baseline, a valueless one with no baseline is still returned, and no
-scenario row leaves the baseline.
+So a scenario row qualifies when it carries a value **or** when no baseline row
+exists for the pair — the second half keeping a `missing` row the baseline never
+computed from falling out of both arms and vanishing. Exactly one row survives
+per pair in all four configurations: a valued scenario row wins, a valueless one
+yields to the baseline, a valueless one with no baseline is still returned, and
+no scenario row leaves the baseline.
 
-`serving_geo.indicator_overlay_tile` resolves it this way as of r049
-(`_OVERLAY`; `downgrade` still installs r043's one-sided `_OVERLAY_R043`).
-`storage._utils.scenario_overlay` — and with it the six Python read paths — is
-still one-sided here and fixed in a separate change, so until that lands the
-tile and those readers disagree on exactly this case.
+⚠ **The rule lives in two places, and both must change together.**
+`storage._utils.scenario_overlay` carries it for the six Python read paths;
+`serving_geo.indicator_overlay_tile` carries a separate copy in SQL (`_OVERLAY`
+in r049), because a tile function cannot call into Python. Both had the
+one-sided form and both were fixed (#93 and r049). r049's `downgrade` keeps
+r043's one-sided predicate, `_OVERLAY_R043`, so downgrading restores the
+function r043 shipped rather than one that never existed at that revision.
 
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.

@@ -376,10 +376,10 @@ def _body(scenario_predicate: str, *, delta: bool) -> str:
 #: the tile — where a baseline tile draws it, with ``quality_flag='missing'``
 #: and no ``value_numeric``.
 #:
-#: ``storage._utils.scenario_overlay`` carries the same one-sided form this
-#: fixes, and is corrected separately. Until that correction lands, this tile
-#: and the six Python read paths disagree on exactly this case — the tile draws
-#: the block once at its baseline value, they return it twice.
+#: ``storage._utils.scenario_overlay`` is the Python copy of this rule, for the
+#: six read paths that do not go through a tile. It had the same one-sided form
+#: and was fixed the same way (#93); change one and the other must follow, or
+#: the map and the API disagree about a scenario's value.
 _OVERLAY = f"""
             (p.scenario_id_txt IS NULL AND ir.scenario_id IS NULL)
             OR (p.scenario_id_txt IS NOT NULL
