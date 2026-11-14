@@ -8,7 +8,7 @@ import {
   activateIndicator,
   DELTA_NEUTRAL,
   DELTA_NEW,
-  DELTA_STOPS,
+  deltaStops,
   deltaDomainFromComparison,
   deltaTooltip,
   renderDeltaLegend,
@@ -84,11 +84,12 @@ function paletteOf(expression: unknown): string[] {
 function styleFor(
   properties: { state?: string; delta?: number | null },
   limit = 40,
+  higherIsBetter = true,
 ): Rgba {
   const props: Record<string, unknown> = {};
   if (properties.state !== undefined) props.state = properties.state;
   if (properties.delta !== undefined && properties.delta !== null) props.delta = properties.delta;
-  return paint(deltaFill({ min: -limit, max: limit }), props);
+  return paint(deltaFill({ min: -limit, max: limit }, higherIsBetter), props);
 }
 
 const channelSpread = (hexColour: string): number => {
@@ -98,7 +99,7 @@ const channelSpread = (hexColour: string): number => {
 
 describe("the delta ramp", () => {
   it("centres the diverging ramp on zero", () => {
-    const ramp = deltaRamp({ min: -40, max: 120 });
+    const ramp = deltaRamp({ min: -40, max: 120 }, true);
     expect(colourAt(ramp, 0)).toBe(DELTA_NEUTRAL);
   });
 
@@ -107,8 +108,8 @@ describe("the delta ramp", () => {
   // asymmetric, -40 would paint as the strongest decrease on the map and
   // read as the same size as +120.
   it("is symmetric about zero whatever the observed asymmetry", () => {
-    const lopsided = deltaRamp({ min: -40, max: 120 });
-    const even = deltaRamp({ min: -120, max: 120 });
+    const lopsided = deltaRamp({ min: -40, max: 120 }, true);
+    const even = deltaRamp({ min: -120, max: 120 }, true);
     for (const delta of [-120, -40, -1, 1, 40, 120]) {
       expect(colourAt(lopsided, delta)).toBe(colourAt(even, delta));
     }
@@ -118,18 +119,8 @@ describe("the delta ramp", () => {
     expect(channelSpread(DELTA_NEUTRAL)).toBeLessThanOrEqual(8);
   });
 
-  it("reads blue for a decrease and red for an increase, each strongest at its end", () => {
-    const ramp = deltaRamp({ min: -10, max: 10 });
-    const down = colourAt(ramp, -10);
-    const up = colourAt(ramp, 10);
-    const [dr, , db] = [1, 3, 5].map((i) => parseInt(down.slice(i, i + 2), 16));
-    const [ur, , ub] = [1, 3, 5].map((i) => parseInt(up.slice(i, i + 2), 16));
-    expect(db).toBeGreaterThan(dr);
-    expect(ur).toBeGreaterThan(ub);
-  });
-
   it("moves away from neutral monotonically on both arms", () => {
-    const ramp = deltaRamp({ min: -10, max: 10 });
+    const ramp = deltaRamp({ min: -10, max: 10 }, true);
     const dist = (a: string, b: string): number =>
       [1, 3, 5].reduce(
         (s, i) => s + (parseInt(a.slice(i, i + 2), 16) - parseInt(b.slice(i, i + 2), 16)) ** 2,
@@ -142,7 +133,7 @@ describe("the delta ramp", () => {
   });
 
   it("clamps beyond the domain rather than extrapolating", () => {
-    const ramp = deltaRamp({ min: -10, max: 10 });
+    const ramp = deltaRamp({ min: -10, max: 10 }, true);
     expect(colourAt(ramp, 500)).toBe(colourAt(ramp, 10));
     expect(colourAt(ramp, -500)).toBe(colourAt(ramp, -10));
   });
@@ -150,7 +141,7 @@ describe("the delta ramp", () => {
   it("survives a domain with nothing in it", () => {
     // max === min === 0 would be a divide-by-zero in the interpolation, which
     // MapLibre turns into NaN rather than an error.
-    const ramp = deltaRamp({ min: 0, max: 0 });
+    const ramp = deltaRamp({ min: 0, max: 0 }, true);
     expect(colourAt(ramp, 0)).toBe(DELTA_NEUTRAL);
     const [first, second] = paletteOf(ramp);
     expect(first).toBeDefined();
@@ -158,13 +149,89 @@ describe("the delta ramp", () => {
   });
 
   it("uses a different palette from the value ramp", () => {
-    const delta = new Set(paletteOf(deltaRamp({ min: -1, max: 1 })));
+    const delta = new Set(paletteOf(deltaRamp({ min: -1, max: 1 }, true)));
     const value = new Set(paletteOf(valueRamp(domain({ min: 0, max: 1 }))));
     expect(value.size).toBeGreaterThan(0);
     expect(delta).not.toEqual(value);
     // Not merely a different set: no colour in common, or a delta swatch could
     // be read as a point on the value ramp the same legend slot just showed.
     expect([...delta].filter((c) => value.has(c))).toEqual([]);
+  });
+});
+
+const rgb = (h: string): [number, number, number] =>
+  [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+
+// Green is teal-leaning (blue channel well above red), red is orange-leaning
+// (red far above green): the pair that stays apart under deuteranopia.
+const isGreen = (h: string): boolean => {
+  const [r, g] = rgb(h);
+  return g > r + 40;
+};
+const isRed = (h: string): boolean => {
+  const [r, g] = rgb(h);
+  return r > g + 40;
+};
+
+describe("the delta ramp colours by benefit, not by sign", () => {
+  const up = (higher: boolean) => colourAt(deltaRamp({ min: -10, max: 10 }, higher), 10);
+  const down = (higher: boolean) => colourAt(deltaRamp({ min: -10, max: 10 }, higher), -10);
+
+  it("higher is better: an increase is green and a decrease is red", () => {
+    expect(isGreen(up(true))).toBe(true);
+    expect(isRed(down(true))).toBe(true);
+  });
+
+  // The case this change exists for: a distance that fell is an improvement.
+  it("lower is better: an increase is RED and a decrease is GREEN", () => {
+    expect(isRed(up(false))).toBe(true);
+    expect(isGreen(down(false))).toBe(true);
+  });
+
+  it("is neutral at zero in both directions", () => {
+    for (const higher of [true, false]) {
+      const ramp = deltaRamp({ min: -10, max: 10 }, higher);
+      expect(colourAt(ramp, 0)).toBe(DELTA_NEUTRAL);
+    }
+  });
+
+  it("the two orientations are mirror images of each other", () => {
+    for (const d of [-10, -5, -1, 1, 5, 10]) {
+      expect(colourAt(deltaRamp({ min: -10, max: 10 }, false), d)).toBe(
+        colourAt(deltaRamp({ min: -10, max: 10 }, true), -d),
+      );
+    }
+  });
+
+  it("the full fill follows the direction for a changed block", () => {
+    expect(isGreen(hex(styleFor({ state: "changed", delta: -600 }, 600, false)))).toBe(true);
+    expect(isRed(hex(styleFor({ state: "changed", delta: 600 }, 600, false)))).toBe(true);
+    expect(isGreen(hex(styleFor({ state: "changed", delta: 600 }, 600, true)))).toBe(true);
+    expect(isRed(hex(styleFor({ state: "changed", delta: -600 }, 600, true)))).toBe(true);
+  });
+
+  it("a `new` block is distinct from both ends and from neutral, in both directions", () => {
+    for (const higher of [true, false]) {
+      const created = hex(styleFor({ state: "new" }, 40, higher));
+      expect(created).toBe(DELTA_NEW);
+      const ramp = deltaRamp({ min: -40, max: 40 }, higher);
+      for (const d of [-40, -20, 0, 20, 40]) expect(colourAt(ramp, d)).not.toBe(created);
+      expect(paletteOf(ramp)).not.toContain(DELTA_NEW);
+    }
+  });
+
+  it("unchanged stays neutral whatever the direction", () => {
+    for (const higher of [true, false]) {
+      expect(hex(styleFor({ state: "unchanged", delta: 0 }, 40, higher))).toBe(DELTA_NEUTRAL);
+    }
+  });
+
+  it("shares no colour with the value ramp, in either orientation", () => {
+    const value = new Set(paletteOf(valueRamp(domain({ min: 0, max: 1 }))));
+    for (const higher of [true, false]) {
+      const delta = paletteOf(deltaRamp({ min: -1, max: 1 }, higher));
+      expect(delta.filter((c) => value.has(c))).toEqual([]);
+    }
   });
 });
 
@@ -175,7 +242,7 @@ describe("the delta fill: state decides, delta does not", () => {
 
   it("paints `new` with its own fill, which is not on the ramp", () => {
     expect(hex(styleFor({ state: "new" }))).toBe(DELTA_NEW);
-    expect(paletteOf(deltaRamp({ min: -40, max: 40 }))).not.toContain(DELTA_NEW);
+    expect(paletteOf(deltaRamp({ min: -40, max: 40 }, true))).not.toContain(DELTA_NEW);
   });
 
   // The tile emits a NULL delta for `new` — "from nothing to 120" is not a
@@ -201,10 +268,10 @@ describe("the delta fill: state decides, delta does not", () => {
 
   it("paints a changed block on the ramp", () => {
     expect(hex(styleFor({ state: "changed", delta: 40 }, 40))).toBe(
-      colourAt(deltaRamp({ min: -40, max: 40 }), 40),
+      colourAt(deltaRamp({ min: -40, max: 40 }, true), 40),
     );
     expect(hex(styleFor({ state: "changed", delta: -40 }, 40))).toBe(
-      colourAt(deltaRamp({ min: -40, max: 40 }), -40),
+      colourAt(deltaRamp({ min: -40, max: 40 }, true), -40),
     );
   });
 
@@ -302,6 +369,17 @@ describe("deltaDomainFromComparison", () => {
     );
     expect(d.limit).toBe(5);
     expect(d.new).toBe(2);
+  });
+
+  it("carries the indicator's direction from the comparison summary", () => {
+    const base = comparison([{ delta: 8, state: "changed" }]);
+    for (const higher of [true, false]) {
+      const d = deltaDomainFromComparison({
+        ...base,
+        summary: { ...base.summary, higher_is_better: higher },
+      });
+      expect(d.higherIsBetter).toBe(higher);
+    }
   });
 
   it("says so when nothing changed, rather than inventing a span", () => {
@@ -464,6 +542,7 @@ const deltaDomain = {
   unchanged: 1,
   new: 1,
   basis: "percentile" as const,
+  higherIsBetter: true,
 };
 
 describe("activateIndicator", () => {
@@ -477,7 +556,19 @@ describe("activateIndicator", () => {
     );
     expect(String((added.sources[0].tiles as string[])[0])).toContain("&delta=true");
     const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
-    expect(fill).toEqual(deltaFill({ min: -40, max: 40 }));
+    expect(fill).toEqual(deltaFill({ min: -40, max: 40 }, true));
+  });
+
+  it("hands the indicator's direction to the delta fill", () => {
+    for (const higher of [true, false]) {
+      const { map, added } = fakeMap();
+      activateIndicator(
+        map, config, indicator(), value,
+        undefined, "a-1", undefined, "block", "s-1", { ...deltaDomain, higherIsBetter: higher },
+      );
+      const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
+      expect(fill).toEqual(deltaFill({ min: -40, max: 40 }, higher));
+    }
   });
 
   it("draws values on the value ramp otherwise, whatever a stale delta domain says", () => {
@@ -505,6 +596,44 @@ describe("what the difference view says in words", () => {
     expect(deltaTooltip({ state: "changed", delta: -3 }, ind)?.detail).toMatch(/^[-−]3.*units\/ha/);
   });
 
+  // The point of the whole change: colour says "good", the number says what
+  // happened. A distance that fell by 600 m must still read as a decrease.
+  it("keeps the sign on a lower-is-better value: -600 stays -600", () => {
+    const park = { name: "Distance to nearest park", unit: "m" };
+    const detail = deltaTooltip({ state: "changed", delta: -600 }, park)?.detail ?? "";
+    expect(detail).toMatch(/^[-\u2212]600 m/);
+    expect(detail).not.toMatch(/^\+/);
+    expect(deltaTooltip({ state: "changed", delta: 600 }, park)?.detail).toMatch(/^\+600 m/);
+  });
+
+  it("states the mapping in words, flipping with the direction", () => {
+    for (const higher of [true, false]) {
+      const host = document.createElement("div");
+      renderDeltaLegend(host, indicator(), { ...deltaDomain, higherIsBetter: higher });
+      const words = host.querySelector("[data-delta-meaning]")?.textContent ?? "";
+      expect(words).toMatch(/green: improvement/i);
+      expect(words).toMatch(/red: worse/i);
+      expect(words).toMatch(higher ? /higher is better/i : /lower is better/i);
+      expect(words).toMatch(higher ? /improvement \(an increase\)/i : /improvement \(a decrease\)/i);
+      expect(host.textContent).toMatch(/improvement/);
+      expect(host.textContent).toMatch(/worse/);
+    }
+  });
+
+  it("keeps the signed range in the legend and runs the gradient the right way round", () => {
+    for (const higher of [true, false]) {
+      const host = document.createElement("div");
+      renderDeltaLegend(host, indicator(), { ...deltaDomain, higherIsBetter: higher });
+      const bounds = host.querySelector(".bounds")?.textContent ?? "";
+      expect(bounds).toMatch(/^\u221240.*0.*\+40/);
+      const gradient = host.querySelector<HTMLElement>("[data-delta-gradient]")?.getAttribute("style") ?? "";
+      const first = gradient.indexOf(deltaStops(higher)[0]);
+      const last = gradient.indexOf(deltaStops(higher)[4]);
+      expect(first).toBeGreaterThan(-1);
+      expect(last).toBeGreaterThan(first);
+    }
+  });
+
   it("says nothing for a feature it cannot describe", () => {
     expect(deltaTooltip({ state: "changed" }, ind)).toBeNull();
     expect(deltaTooltip({}, ind)).toBeNull();
@@ -514,7 +643,7 @@ describe("what the difference view says in words", () => {
     const host = document.createElement("div");
     renderDeltaLegend(host, indicator(), deltaDomain);
     const html = host.innerHTML.toLowerCase();
-    for (const colour of [DELTA_NEUTRAL, DELTA_NEW, ...DELTA_STOPS]) {
+    for (const colour of [DELTA_NEUTRAL, DELTA_NEW, ...deltaStops(true)]) {
       expect(html).toContain(colour);
     }
     expect(host.textContent).toMatch(/new in this scenario \(1\)/);

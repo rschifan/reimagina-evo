@@ -45,34 +45,43 @@ const RAMP_START = "#f7fbff";
 const RAMP_END = "#08306b";
 
 /**
- * The delta palette: blue for a decrease, red for an increase, grey at zero.
+ * The delta palette: green for an improvement, red for a deterioration, grey
+ * at zero. Colour encodes *benefit*, not sign.
  *
- * The dataviz diverging pair (blue and red, a neutral midpoint, equal steps
- * per arm), stepped for this map's dark surface — on dark the strongest value
- * is the brightest, the reverse of the value ramp, and the midpoint is the
- * dark neutral, so "no change" recedes toward the surface instead of glowing.
+ * Whether a rise is an improvement is the catalog's `higher_is_better`: four of
+ * the twelve indicators are distances, where a fall is the good news. The
+ * ramp is oriented by that flag (see {@link deltaRamp}); the number a block
+ * reads keeps its own sign either way, so a park distance that fell by 600 m
+ * is still "-600" and is painted green.
  *
- * Sign only, never "good": whether a rise is an improvement is the
- * catalog's `higher_is_better`, and four of the twelve indicators are
- * distances. A colour that said red-is-bad would be wrong for a third of them.
+ * The pair is a teal-leaning green and an orange-leaning red, stepped for this
+ * map's dark surface (the strongest value is the brightest, the midpoint the
+ * dark neutral). Validated against `#1a1a19` with the dataviz validator: both
+ * ends inside the dark lightness band, deuteranopia/protanopia separation
+ * 9.5 (target 8), normal-vision separation 28.9, and 18.7 from the amber of a
+ * `new` block, which must not read as either side. Red and green is the
+ * classic colour-blindness problem, so colour is never the only channel: the
+ * legend states the mapping in words and the tooltip carries the signed value.
  *
  * Deliberately shares no colour with the value ramp, so a legend swatch is
  * never mistaken for a point on the other mode's scale.
  */
 export const DELTA_NEUTRAL = "#4a4a47";
-const DELTA_DOWN = "#3987e5";
-const DELTA_DOWN_MID = "#426896";
-const DELTA_UP_MID = "#985857";
-const DELTA_UP = "#e66767";
+const DELTA_GOOD = "#12a88c";
+const DELTA_GOOD_MID = "#2d7a6a";
+const DELTA_BAD_MID = "#974f48";
+const DELTA_BAD = "#e4554a";
 
-/** The ramp's stops, strongest decrease to strongest increase. */
-export const DELTA_STOPS: readonly string[] = [
-  DELTA_DOWN,
-  DELTA_DOWN_MID,
-  DELTA_NEUTRAL,
-  DELTA_UP_MID,
-  DELTA_UP,
-];
+/**
+ * The ramp's stops from the strongest decrease to the strongest increase.
+ * Left to right is the number line; which end is green depends on the
+ * indicator, so the same swatches run the other way for a distance.
+ */
+export function deltaStops(higherIsBetter: boolean): readonly string[] {
+  return higherIsBetter
+    ? [DELTA_BAD, DELTA_BAD_MID, DELTA_NEUTRAL, DELTA_GOOD_MID, DELTA_GOOD]
+    : [DELTA_GOOD, DELTA_GOOD_MID, DELTA_NEUTRAL, DELTA_BAD_MID, DELTA_BAD];
+}
 
 /**
  * A block the scenario computed where the baseline has nothing.
@@ -235,22 +244,29 @@ export function defaultGrain(indicator: IndicatorSummary): string | null {
  * Takes `{min, max}` rather than a full {@link RampDomain}: a difference has
  * no p50, no catalog bounds to fall back to and no basis the value legend
  * could describe. See {@link DeltaDomain} for what it has instead.
+ *
+ * `higherIsBetter` orients the colour, not the number: the input is still the
+ * signed delta, and only which arm is green changes.
  */
-export function deltaRamp(domain: Pick<RampDomain, "min" | "max">): ExpressionSpecification {
+export function deltaRamp(
+  domain: Pick<RampDomain, "min" | "max">,
+  higherIsBetter: boolean,
+): ExpressionSpecification {
   const reach = Math.max(Math.abs(domain.min), Math.abs(domain.max));
   // Nothing changed: a zero-width ramp would put every stop at 0 and the
   // interpolation would divide by it. The width is unobservable (everything
   // is the neutral grey) and only has to be non-degenerate.
   const m = reach === 0 ? 1 : reach;
+  const stops = deltaStops(higherIsBetter);
   return [
     "interpolate",
     ["linear"],
     ["to-number", ["get", "delta"]],
-    -m, DELTA_DOWN,
-    -m / 2, DELTA_DOWN_MID,
+    -m, stops[0],
+    -m / 2, stops[1],
     0, DELTA_NEUTRAL,
-    m / 2, DELTA_UP_MID,
-    m, DELTA_UP,
+    m / 2, stops[3],
+    m, stops[4],
   ];
 }
 
@@ -268,12 +284,15 @@ export function deltaRamp(domain: Pick<RampDomain, "min" | "max">): ExpressionSp
  * nothing. Both contradict the tile contract, and a wrong colour would be a
  * claim; a hole is visibly a hole.
  */
-export function deltaFill(domain: Pick<RampDomain, "min" | "max">): ExpressionSpecification {
+export function deltaFill(
+  domain: Pick<RampDomain, "min" | "max">,
+  higherIsBetter: boolean,
+): ExpressionSpecification {
   return [
     "case",
     ["==", ["get", "state"], "new"], DELTA_NEW,
     ["==", ["get", "state"], "unchanged"], DELTA_NEUTRAL,
-    ["all", ["==", ["get", "state"], "changed"], ["has", "delta"]], deltaRamp(domain),
+    ["all", ["==", ["get", "state"], "changed"], ["has", "delta"]], deltaRamp(domain, higherIsBetter),
     "rgba(0, 0, 0, 0)",
   ];
 }
@@ -295,6 +314,9 @@ export interface DeltaDomain {
   /** `percentile`: `limit` is p95 of |delta|. `none`: nothing changed, so
    *  `limit` is a placeholder and the ramp is a single grey. */
   basis: "percentile" | "none";
+  /** Whether a rise is an improvement, from the comparison summary. Orients
+   *  the colour; the numbers keep their signs. */
+  higherIsBetter: boolean;
 }
 
 
@@ -316,13 +338,13 @@ function nearestRank(sorted: number[], q: number): number {
 export function deltaDomainFromComparison(
   response: Pick<ComparisonResponse, "rows" | "summary">,
 ): DeltaDomain {
-  const { changed, unchanged, new: added } = response.summary;
+  const { changed, unchanged, new: added, higher_is_better: higherIsBetter } = response.summary;
   const magnitudes = response.rows
     .filter((r) => r.state === "changed" && r.delta !== null && Number.isFinite(r.delta))
     .map((r) => Math.abs(r.delta as number))
     .sort((a, b) => a - b);
   if (magnitudes.length === 0) {
-    return { limit: 1, changed, unchanged, new: added, basis: "none" };
+    return { limit: 1, changed, unchanged, new: added, basis: "none", higherIsBetter };
   }
   return {
     limit: nearestRank(magnitudes, 0.95),
@@ -330,7 +352,20 @@ export function deltaDomainFromComparison(
     unchanged,
     new: added,
     basis: "percentile",
+    higherIsBetter,
   };
+}
+
+
+/**
+ * Says in words which way is good for this indicator, so the colours do not
+ * have to be decoded and a switch between indicators visibly flips the
+ * mapping. The sign of the number is untouched: a decrease is a decrease.
+ */
+export function deltaMeaningText(higherIsBetter: boolean): string {
+  return higherIsBetter
+    ? "Green: improvement (an increase). Red: worse (a decrease). Higher is better."
+    : "Green: improvement (a decrease). Red: worse (an increase). Lower is better.";
 }
 
 
@@ -446,7 +481,7 @@ export function activateIndicator(
       // honest side of it. If flipping the toggle makes a block change
       // character, look there before looking here.
       "fill-color": asDelta && delta
-        ? deltaFill({ min: -delta.limit, max: delta.limit })
+        ? deltaFill({ min: -delta.limit, max: delta.limit }, delta.higherIsBetter)
         : valueRamp(domain),
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
@@ -684,7 +719,7 @@ export function renderLegend(
 /**
  * The legend for the difference view.
  *
- * The gradient is built from {@link DELTA_STOPS}, the same constants the map
+ * The gradient is built from {@link deltaStops}, the same constants the map
  * paints with, so the swatch cannot drift from the fill. The two non-ramp
  * states get their own labelled swatches: `new` has no place on a signed
  * scale, and "no change" is the grey at the centre, which the ramp alone
@@ -701,12 +736,13 @@ export function renderDeltaLegend(
     domain.basis === "none" ? "" : `${sign}${formatNumber(n)}`;
   container.innerHTML = `
     <div class="name">Change in ${escapeHtml(indicator.name)}</div>
-    <div class="gradient" data-delta-gradient style="background: linear-gradient(to right, ${DELTA_STOPS.join(", ")})"></div>
+    <div class="gradient" data-delta-gradient style="background: linear-gradient(to right, ${deltaStops(domain.higherIsBetter).join(", ")})"></div>
     <div class="bounds"><span>${bound(domain.limit, "\u2212")}</span><span>0</span><span>${bound(domain.limit, "+")}</span></div>
     <div class="unit">${escapeHtml(unit)}</div>
+    <div class="delta-meaning" data-delta-meaning>${escapeHtml(deltaMeaningText(domain.higherIsBetter))}</div>
     <div class="delta-key">
-      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_DOWN}"></i>decrease</span>
-      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_UP}"></i>increase</span>
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_GOOD}"></i>improvement</span>
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_BAD}"></i>worse</span>
       <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_NEUTRAL}"></i>no change (${fmtNumber(domain.unchanged)})</span>
       <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_NEW}"></i>new in this scenario (${fmtNumber(domain.new)})</span>
     </div>

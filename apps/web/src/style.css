@@ -448,6 +448,12 @@ body {
 /* The difference legend: what the non-ramp colours mean. Swatches are drawn
    from the same constants the map paints with (see `choropleth.ts`), inline,
    so this sheet cannot drift from the fill. */
+.legend .delta-meaning {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .legend .delta-key {
   display: grid;
   grid-template-columns: 1fr 1fr;
