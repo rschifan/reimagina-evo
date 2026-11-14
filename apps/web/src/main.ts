@@ -18,6 +18,11 @@
 // Every other module here imports only *types* from the package, so this one
 // line was the whole breaking change on the 5 → 6 upgrade.
 import * as maplibregl from "maplibre-gl";
+// maplibre-gl 6 ships its web worker as a separate module instead of
+// inlining it, so the bundler has to emit it and the library has to be
+// told where it landed. Without this the map renders its canvas and
+// controls, then fails at "Worker failed to load" and parses no tiles.
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mount } from "svelte";
 
@@ -35,6 +40,7 @@ import {
 import {
   getIndicatorStats,
   isAbortError,
+  listAttributions,
   listAois,
   listIndicators,
   listTileSources,
@@ -42,6 +48,8 @@ import {
 import {
   activateIndicator,
   choroplethConfig,
+  markLegendValue,
+  setValueHoverListener,
   clearGrainToggle,
   clearLegend,
   defaultGrain,
@@ -51,11 +59,16 @@ import {
   renderGrainToggle,
   renderLegend,
 } from "./choropleth";
+import { HISTOGRAM_BINS } from "./distribution";
 import {
   setDownloadAvailability,
   wireDownloadButtons,
 } from "./download";
 import { escapeHtml } from "./format";
+import type { Command } from "./commands";
+import { enablePalette } from "./palette";
+import { SHORTCUTS, wireShortcuts } from "./shortcuts";
+import { enableSidebar, type SidebarController } from "./sidebar";
 import {
   INPUT_LAYERS,
   extractTileSources,
@@ -91,6 +104,15 @@ interface AppState {
    *  the indicator's finest grain and is re-derived on every pick, so
    *  a coarse choice never leaks onto an indicator that lacks it. */
   activeGrain: string | null;
+  /**
+   * Places the hovered feature's value in the legend's distribution.
+   *
+   * Re-assigned on every indicator render so it closes over that
+   * indicator's histogram and ramp. A single long-lived handler would mark
+   * the new indicator's cursor against the previous one's bins — right-
+   * looking and wrong, which is the worst kind.
+   */
+  markHovered?: (value: number | null) => void;
 }
 
 
@@ -209,6 +231,7 @@ async function main(): Promise<void> {
 
   const state: AppState = { activeIndicator: null, activeGrain: null };
 
+  maplibregl.setWorkerUrl(maplibreWorkerUrl);
   const map = new maplibregl.Map({
     container: "map",
     style: emptyStyle(),
@@ -217,8 +240,107 @@ async function main(): Promise<void> {
     maxZoom: 18,
     minZoom: 5,
   });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  // ⚠ `showCompass: true`, which it was not.
+  //
+  // With no basemap there is nothing in the frame that says which way is
+  // north — no coastline, no street grid, no labels — so a rotated map is
+  // unrecoverable by looking at it. The compass is also the only way back
+  // from an accidental rotate, which a trackpad makes easy to do and hard
+  // to notice.
+  map.addControl(
+    new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }),
+    "top-right",
+  );
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+
+  // ⚠ A licence obligation, not a nicety.
+  //
+  // OpenStreetMap is ODbL and displaying it without credit is a breach, and
+  // the reason this map has no external basemap in the first place is
+  // licence hygiene. Publishing OSM-derived streets without the credit
+  // would spend exactly what that decision was protecting.
+  //
+  // The text comes from the API, which derives it from the licence recorded
+  // against each source that actually has features. Hardcoding it here
+  // would credit OpenStreetMap on a synthetic territory — a false
+  // provenance claim in a product whose argument is that its provenance is
+  // checkable — and crediting a registered-but-unloaded source would claim
+  // the map shows data it does not.
+  void listAttributions()
+    .then((rows) => {
+      if (rows.length === 0) return;
+      map.addControl(
+        new maplibregl.AttributionControl({
+          customAttribution: rows.map((row) => row.text),
+          // ⚠ `compact: true`, and the text is NOT shortened to achieve it.
+          //
+          // Expanded, four real sources render as one 200-character line
+          // spanning the whole viewport:
+          //
+          //   © OpenStreetMap contributors | IMIP Mexicali (Datos abiertos
+          //   del IMIP) | Overture Maps Foundation (ODbL-1.0 / Overture
+          //   terms) | INEGI (Libre uso — Términos de Uso de la Información
+          //   del INEGI)
+          //
+          // The obvious fix is to trim each credit, and that is the wrong
+          // one: the wording comes from `data_source_catalog.license` via
+          // `attribution.py`, whose own comment warns that an entry claiming
+          // "this exact wording is what the licence asks for" is worse than
+          // the honest fallback when it is wrong. Editing four providers'
+          // credit lines for layout is a licence judgement, and not one to
+          // make for a line break.
+          //
+          // Compact keeps every word and moves it behind the standard
+          // MapLibre (i) control — the same affordance every multi-source
+          // map uses, one click away and always visible.
+          compact: true,
+        }),
+        "bottom-right",
+      );
+      // ⚠ `compact: true` is not enough on its own, and the reason is in
+      // MapLibre's `_updateCompact`:
+      //
+      //     this._container.classList.add(
+      //       'maplibregl-compact', 'maplibregl-compact-show')
+      //
+      // It adds BOTH classes, so a compact control renders *expanded* on
+      // load and only collapses once the user first interacts with the map.
+      // Until then four real sources are still a 200-character bar across
+      // the viewport — which is exactly what `compact: true` was added to
+      // stop, so without this the fix does nothing for anyone who has not
+      // panned yet.
+      //
+      // Removing `-show` is stable: `_updateCompact` only re-adds it when
+      // `maplibregl-compact` is absent, and that class stays. Done on the
+      // next frame so the control's own first pass has already run.
+      requestAnimationFrame(() => {
+        document
+          .querySelectorAll(".maplibregl-ctrl-attrib.maplibregl-compact-show")
+          .forEach((el) => el.classList.remove("maplibregl-compact-show"));
+      });
+    })
+    .catch((err) => {
+      // Loud, because silence here is a licence breach rather than a
+      // missing nicety: a map that drew OSM geometry and failed to credit
+      // it must say so somewhere a developer will see.
+      console.error("could not resolve data attribution", err);
+    });
+
+  // Collapsing the panel changes the canvas size, and MapLibre only learns
+  // that when told. Without the resize the map keeps its old width and the
+  // reclaimed space renders as empty page.
+  const appEl = document.querySelector<HTMLElement>(".app");
+  const sidebarToggle =
+    document.querySelector<HTMLButtonElement>("#sidebar-toggle");
+  const sidebarScrim = document.querySelector<HTMLElement>("#sidebar-scrim");
+  let sidebar: SidebarController | null = null;
+  if (appEl && sidebarToggle) {
+    sidebar = enableSidebar(appEl, sidebarToggle, sidebarScrim, () => {
+      // After the CSS transition, not during it: resizing mid-animation
+      // makes MapLibre re-render every frame of it for nothing.
+      window.setTimeout(() => map.resize(), 180);
+    });
+  }
 
   // Loading indicator: visible whenever MapLibre has tile fetches in
   // flight. ``dataloading`` fires per-source-fetch, ``idle`` fires once
@@ -295,6 +417,20 @@ async function main(): Promise<void> {
 
     const aoiSelect = document.getElementById("aoi-select") as HTMLSelectElement | null;
     if (aoiSelect) populateAoiSelect(aoiSelect);
+
+    /**
+     * Re-frame the map on the active AOI.
+     *
+     * The map already does this when the AOI *changes*; this is the way
+     * back after panning away. With no basemap there is nothing in an empty
+     * frame to navigate by, so "I have lost the data" is a state a user can
+     * reach in one drag and could not previously leave.
+     */
+    const fitToActiveAoi = (): void => {
+      const id = getActiveAoiId();
+      const aoi = aois.find((a) => a.aoi_id === id);
+      if (aoi) flyToAoi(map, aoi);
+    };
 
     // React to any AOI change — picker, localStorage hydration, or a
     // future programmatic setActiveAoiId call. One central handler
@@ -399,6 +535,10 @@ async function main(): Promise<void> {
         stats = await getIndicatorStats(indicator.slug, {
           feature_type: grain,
           aoi_id: aoiId ?? undefined,
+          // Asked for alongside the percentiles rather than in a second
+          // request: it is the same scoped population and the same scan, and
+          // a legend whose shape arrives after its numbers reads as a bug.
+          bins: HISTOGRAM_BINS,
         });
       } catch (err) {
         console.warn("stats fetch failed, falling back to catalog bounds", err);
@@ -421,7 +561,15 @@ async function main(): Promise<void> {
           void renderIndicator(indicator);
         });
       }
-      if (legend) renderLegend(legend, indicator, domain);
+      const histogram = stats?.histogram ?? null;
+      if (legend) renderLegend(legend, indicator, domain, histogram);
+      // The hovered feature's place in the distribution. Registered after
+      // the legend exists, and re-registered per render so it closes over
+      // this indicator's histogram rather than a stale one.
+      state.markHovered = (value: number | null): void => {
+        if (legend) markLegendValue(legend, indicator, domain, histogram, value);
+      };
+      setValueHoverListener((value) => state.markHovered?.(value));
       if (downloads) setDownloadAvailability(downloads, true);
       setStatus(
         `Showing ${indicator.name} (${indicator.unit ?? "no unit"})` +
@@ -476,7 +624,147 @@ async function main(): Promise<void> {
       setDownloadAvailability(downloads, false);
     }
 
-    setStatus("Map ready. Spatial input layers loaded.");
+    // ── Command palette ───────────────────────────────────────────────
+    //
+    // Built after the catalogs resolve, because most of what it offers *is*
+    // the catalogs: every AOI, every indicator, every layer toggle. It is
+    // also the only surface in the app that can list what the app does —
+    // the draw tools are 28 px glyphs and the rest is three `<select>`s in
+    // a 1,173 px scroll.
+    //
+    // Rebuilt whenever the AOI changes, since the indicator list is scoped
+    // to the AOI and a palette offering an indicator with no values here
+    // would hand back an empty map.
+    const buildCommands = (): Command[] => {
+      const list: Command[] = [
+        {
+          id: "view.fit",
+          title: "Fit map to the active AOI",
+          group: "View",
+          hint: "f",
+          keywords: "zoom extent frame",
+          run: () => fitToActiveAoi(),
+        },
+        {
+          id: "view.panel",
+          title: sidebar?.collapsed() ? "Show panel" : "Hide panel",
+          group: "View",
+          hint: "\\",
+          keywords: "sidebar collapse",
+          run: () => sidebar?.toggle(),
+        },
+        {
+          id: "view.north",
+          title: "Reset bearing to north",
+          group: "View",
+          keywords: "rotate compass orientation",
+          run: () => {
+            map.easeTo({ bearing: 0, pitch: 0 });
+          },
+        },
+      ];
+
+      for (const shape of ["rectangle", "polygon", "circle"] as const) {
+        list.push({
+          id: `draw.${shape}`,
+          title: `Draw ${shape} selection`,
+          group: "Select",
+          hint: shape[0],
+          keywords: "area sub-aoi metrics",
+          run: () => selectionController?.startDrawing(shape),
+        });
+      }
+      list.push({
+        id: "draw.clear",
+        title: "Clear selection",
+        group: "Select",
+        hint: "esc",
+        run: () => selectionController?.clear(),
+      });
+
+      const activeId = getActiveAoiId();
+      for (const aoi of aois) {
+        list.push({
+          id: `aoi.${aoi.aoi_id}`,
+          title: aoi.name,
+          group: "Area of interest",
+          active: aoi.aoi_id === activeId,
+          keywords: "aoi city territory place",
+          run: () => {
+            if (!aoiSelect) return;
+            aoiSelect.value = aoi.aoi_id;
+            aoiSelect.dispatchEvent(new Event("change"));
+          },
+        });
+      }
+
+      for (const indicator of indicators) {
+        list.push({
+          id: `indicator.${indicator.slug}`,
+          title: indicator.name,
+          group: "Indicator",
+          hint: indicator.unit ?? undefined,
+          active: indicator.slug === state.activeIndicator?.slug,
+          keywords: indicator.slug,
+          run: () => {
+            if (!select) return;
+            select.value = indicator.slug;
+            select.dispatchEvent(new Event("change"));
+          },
+        });
+      }
+
+      for (const toggle of document.querySelectorAll<HTMLInputElement>(
+        "#layer-toggles input[type=checkbox]",
+      )) {
+        const name =
+          toggle.closest("label")?.textContent?.trim() ?? toggle.value;
+        list.push({
+          id: `layer.${toggle.id || name}`,
+          title: `${toggle.checked ? "Hide" : "Show"} ${name}`,
+          group: "Layer",
+          active: toggle.checked,
+          keywords: "toggle visibility",
+          run: () => toggle.click(),
+        });
+      }
+
+      for (const [title, href] of [
+        ["Indicator catalogue", "/catalog.html"],
+        ["Run dashboard", "/ops.html"],
+      ] as const) {
+        list.push({
+          id: `go.${href}`,
+          title,
+          group: "Go to",
+          keywords: "navigate page",
+          run: () => {
+            window.location.href = href;
+          },
+        });
+      }
+      return list;
+    };
+
+    const palette = enablePalette(buildCommands(), SHORTCUTS);
+    // The command list describes current state — which layer is on, which
+    // indicator is drawn — so it is rebuilt on open rather than cached.
+    const refreshCommands = (): void => palette.setCommands(buildCommands());
+    subscribeToAoi(() => refreshCommands());
+
+    wireShortcuts({
+      onPalette: () => {
+        refreshCommands();
+        palette.open();
+      },
+      onFit: () => fitToActiveAoi(),
+      onPanel: () => sidebar?.toggle(),
+      onDraw: (shape) => selectionController?.startDrawing(shape),
+      onClear: () => selectionController?.clear(),
+      isPaletteOpen: () => palette.isOpen(),
+    });
+
+    setStatus("Map ready. Press ⌘K for commands, ? for shortcuts.");
   });
   map.on("error", (e) => {
     setStatus(`Map error: ${e.error?.message ?? "unknown"}`);
@@ -493,9 +781,27 @@ function _wireSelectionToolbar(controller: SelectionController): () => void {
   // Active-mode highlighting: the button matching the current draw
   // shape gets ``aria-pressed=true``. Cleared on every clear/finish
   // so the user always sees the toolbar's truth.
+  //
+  // ⚠ Only buttons that name a shape take part. This read
+  // `btn.dataset.shape ?? null` and compared that to the active shape, so
+  // the clear button — which carries `data-action="clear"` and no
+  // `data-shape` — matched `null === null` at rest and was pressed. Its
+  // resting state was therefore solid cyan via
+  // `.selection-toolbar__btn[aria-pressed="true"]`: a palette of three draw
+  // modes showing "clear" as the selected one, and a false `aria-pressed`
+  // read aloud to anyone using a screen reader.
+  //
+  // `aria-pressed` is removed rather than set to "false" on a button that is
+  // not a toggle: a button that is never pressed is not a toggle button, and
+  // saying so is the difference between "not currently active" and "cannot
+  // be active".
   const setPressed = (shape: SelectionShape | null): void => {
     for (const btn of buttons) {
-      const target = btn.dataset.shape ?? null;
+      const target = btn.dataset.shape;
+      if (target === undefined) {
+        btn.removeAttribute("aria-pressed");
+        continue;
+      }
       btn.setAttribute("aria-pressed", target === shape ? "true" : "false");
     }
   };

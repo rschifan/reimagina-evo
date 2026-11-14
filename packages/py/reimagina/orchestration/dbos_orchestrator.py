@@ -19,10 +19,12 @@ import logging
 import os
 import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
+from typing import Any
 from uuid import uuid4
 
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.orchestration import runstore
+from reimagina.orchestration.dedup import deduplication_id
 from reimagina.orchestration.plan import noop_handle, plan_run
 from contextlib import closing as _closing
 from reimagina.orchestration.port import (
@@ -40,7 +42,7 @@ from reimagina.storage import backend_for_connection
 
 logger = logging.getLogger(__name__)
 
-_CLIENT = None
+_CLIENTS: dict[str, Any] = {}
 _CLIENT_LOCK = threading.Lock()
 _PROGRESS_SLOTS = threading.BoundedSemaphore(
     int(os.environ.get("REIMAGINA_PROGRESS_SUBSCRIBERS", "32"))
@@ -49,7 +51,7 @@ _PROGRESS_BUFFER = 128
 
 
 def _client():
-    """One shared DBOS client for this process.
+    """One shared DBOS client per system-database DSN, for this process.
 
     ``DBOSClient`` is not a handle — constructing one builds a SQLAlchemy engine
     with its own five-connection pool and opens a connection eagerly to check
@@ -59,22 +61,48 @@ def _client():
     Shared rather than context-managed because it is stateless for reads and
     lives as long as the process does. Never ``destroy()``ed for the same
     reason: there is no scope to tie it to.
+
+    ⚠ **Keyed by DSN, not a single global.** It was one global, built on first
+    use and never revisited, so the *first* value of ``DATABASE_URL_DIRECT``
+    this process ever saw was the database every later call read — whatever the
+    environment said by then.
+
+    Nothing raised. `get_run` consults the engine as its existence oracle, so a
+    client pinned to the wrong database answers "that run does not exist" for a
+    run that plainly does; `cancel_run` returns False for a live run, and
+    `subscribe_progress` yields `unknown` and closes. Three different wrong
+    answers, all of them confident, none of them an error.
+
+    It surfaced as cross-suite interference: `tests/integration/test_api_routes`
+    reaches a jobs route, which builds the client against `.env`'s
+    `reimagina_app`; `tests/conformance` then points `DATABASE_URL_DIRECT` at
+    `reimagina_test`, enqueues there, and asks a client still bound to
+    `reimagina_app`. Three conformance tests fail in `pytest tests/` and pass
+    when that directory is run alone — the shape of bug that gets written off
+    as flakiness. In production the DSN does not change, which is exactly why
+    this could sit here: latent, and indistinguishable from a real not-found.
+
+    A dict rather than rebuilding on change, so a process that legitimately
+    talks to two system databases keeps one pooled client for each instead of
+    thrashing them — the original reason for caching at all.
     """
-    global _CLIENT
-    if _CLIENT is None:
-        with _CLIENT_LOCK:
-            if _CLIENT is None:
-                from dbos import DBOSClient
+    from reimagina.orchestration import dbos_app
 
-                from reimagina.orchestration import dbos_app
+    dsn = dbos_app.dbos_dsn()
+    existing = _CLIENTS.get(dsn)
+    if existing is not None:
+        return existing
+    with _CLIENT_LOCK:
+        existing = _CLIENTS.get(dsn)
+        if existing is None:
+            from dbos import DBOSClient
 
-                # use_listen_notify: without it read_stream degrades to polling
-                # once a second, which is the latency the SSE endpoint exists to
-                # avoid.
-                _CLIENT = DBOSClient(
-                    system_database_url=dbos_app.dbos_dsn(), use_listen_notify=True
-                )
-    return _CLIENT
+            # use_listen_notify: without it read_stream degrades to polling
+            # once a second, which is the latency the SSE endpoint exists to
+            # avoid.
+            existing = DBOSClient(system_database_url=dsn, use_listen_notify=True)
+            _CLIENTS[dsn] = existing
+    return existing
 
 
 # DBOS's workflow-status enum mapped onto ours, for the window before the run
@@ -205,6 +233,22 @@ class DBOSOrchestrator:
         }
         dbos_app.validate_workflow_input(units, params)
 
+        # Computed before the enqueue and passed to it, so the queue itself is
+        # what rejects a duplicate. Doing the check here instead would be a
+        # read followed by a write with no lock between them — two concurrent
+        # submits of the same work would both see nothing and both enqueue.
+        # None means "do not deduplicate"; see `dedup` for when it fails open.
+        dedup_id = deduplication_id(
+            conn,
+            unit_slugs=[unit.indicator for unit in plan.units],
+            changed_attributes=changed_attributes,
+            edited_features=edited_features,
+            scenario_id=scenario_id,
+            aoi_id=aoi_id,
+            code_version=code_version,
+            indicators=indicators,
+        )
+
         mode = self._execution_mode or dbos_app.execution_mode()
         if mode not in {"client", "executor", "dev"}:
             raise ValueError(f"unknown DBOS execution mode: {mode!r}")
@@ -214,17 +258,16 @@ class DBOSOrchestrator:
             # database; a worker with the definitions later dequeues it.
             from dbos import EnqueueOptions
 
+            options = EnqueueOptions(
+                workflow_name=dbos_app.run_workflow.__name__,
+                queue_name=dbos_app.RUNS_QUEUE,
+                workflow_id=run_id,
+            )
+            if dedup_id is not None:
+                options["deduplication_id"] = dedup_id
+                options["duplication_policy"] = "return-existing"
             try:
-                _client().enqueue(
-                    EnqueueOptions(
-                        workflow_name=dbos_app.run_workflow.__name__,
-                        queue_name=dbos_app.RUNS_QUEUE,
-                        workflow_id=run_id,
-                    ),
-                    run_id,
-                    units,
-                    params,
-                )
+                handle = _client().enqueue(options, run_id, units, params)
             except Exception as exc:  # noqa: BLE001 — re-raised unless it is 42P01
                 # The write-side twin of the 42P01 handling in `_from_workflow`,
                 # and the reason that one was not enough: a client never creates
@@ -248,17 +291,42 @@ class DBOSOrchestrator:
             # ``dev`` intentionally self-executes; an executor process does
             # the same when it is also an interactive submitter.
             dbos_app.launch()
-            from dbos import SetWorkflowID
+            from dbos import SetEnqueueOptions, SetWorkflowID
 
-            with SetWorkflowID(run_id):
+            with (
+                SetWorkflowID(run_id),
+                SetEnqueueOptions(
+                    deduplication_id=dedup_id,
+                    duplication_policy="return-existing" if dedup_id else None,
+                ),
+            ):
                 # DBOS types the payload as a plain dict; RunParams is a
                 # TypedDict, which is structurally compatible but not nominally.
-                dbos_app.runs_queue().enqueue(
+                handle = dbos_app.runs_queue().enqueue(
                     dbos_app.run_workflow,
                     run_id,
                     units,
                     params,  # type: ignore[arg-type]
                 )
+
+        # The id the queue handed back is the authority. With
+        # `return-existing`, a collision yields a handle to the workflow
+        # already holding the id and discards the arguments just submitted —
+        # so a differing id is how, and the only way, this learns it happened.
+        settled = getattr(handle, "workflow_id", run_id) or run_id
+        if settled != run_id:
+            logger.info(
+                "run %s matched work already in flight as %s; returning that run",
+                run_id,
+                settled,
+            )
+            # ⚠ The plan written above is now unreferenced. It is reclaimed by
+            # the TTL sweep that `_persist_plan` already runs on every submit —
+            # the idempotency-collision case its docstring names. Deleting it
+            # here would be the obvious alternative and is wrong: this path
+            # also runs when the collision was with *this* process's own
+            # retry, and the plan is keyed per submit, not per run.
+            return RunHandle(run_id=settled, status=None, deduplicated=True)
 
         return RunHandle(run_id=run_id, status=None)
 
@@ -443,7 +511,20 @@ class DBOSOrchestrator:
             if snapshot.status in RUN_TERMINAL_STATES:
                 return
 
-        if not _PROGRESS_SLOTS.acquire(blocking=False):
+        # ⚠ Bound to a local, and released through that local everywhere below.
+        # The pump releases from a daemon thread that outlives this generator,
+        # so resolving the module global at release time means releasing
+        # whatever that name happens to point at *then* — a different object if
+        # anything rebound it in between. A test that patches the cap to one
+        # slot and returns before its pump wakes did exactly that: the thread
+        # acquired the patched semaphore and released the real one, which had
+        # never been acquired, raising "released too many times" inside the
+        # `finally` — so the `done` sentinel after it never reached the
+        # subscriber, and an SSE client would hang rather than see the stream
+        # close. Releasing the object you acquired is the invariant; a local
+        # makes it structural instead of a convention.
+        slots = _PROGRESS_SLOTS
+        if not slots.acquire(blocking=False):
             raise RuntimeError(
                 "progress subscriber capacity reached; reconnect shortly"
             )
@@ -478,7 +559,7 @@ class DBOSOrchestrator:
             finally:
                 # Released here, where the thread actually ends. See the
                 # docstring: this is the whole point of the slot.
-                _PROGRESS_SLOTS.release()
+                slots.release()
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(_offer, done)
 
@@ -490,7 +571,7 @@ class DBOSOrchestrator:
         except BaseException:
             # The slot is released by the pump, so a thread that never starts
             # would hold it for the life of the process.
-            _PROGRESS_SLOTS.release()
+            slots.release()
             raise
         try:
             while True:

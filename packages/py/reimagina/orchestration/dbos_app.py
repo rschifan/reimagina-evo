@@ -254,8 +254,15 @@ def config() -> DBOSConfig:
         "system_database_url": dbos_dsn(),
         "dbos_system_schema": "dbos",
         "executor_id": _executor_id(),
-        "run_admin_server": False,
     }
+    # ⚠ No `run_admin_server` key. DBOS 2 started an HTTP admin server inside
+    # every executor unless told not to, and this said not to. DBOS 3 removed
+    # the server outright — there is no `admin` module left in the package —
+    # so the key is not merely unnecessary, it is no longer a member of
+    # `DBOSConfig` and mypy rejects it. Nothing is lost: the surface it served
+    # (workflow listing, cancel, resume) is reachable through `DBOSClient`,
+    # which is what `dbos_orchestrator` already uses, and not having a port
+    # open in every worker is the better default anyway.
     # Pinning gates recovery: an unpinned version is an MD5 of the registered
     # workflow source, so any edit strands in-flight runs. Pinned, they become
     # recoverable onto possibly-incompatible code — which is why the deploy
@@ -382,8 +389,24 @@ def launch() -> None:
                 "process per role on a host.",
                 cfg["executor_id"],
             )
-        DBOS(config=cfg)
-        DBOS.launch()
+        global _dbos_launched
+        if not _dbos_launched:
+            DBOS(config=cfg)
+            DBOS.launch()
+            _dbos_launched = True
+        # ⚠ Before the queues are registered, not after.
+        #
+        # The first beat is unguarded so a process that cannot record its
+        # liveness does not start. That only holds if nothing usable is bound
+        # when it fails. With the queues assigned first, a failed beat left
+        # `_runs_queue`/`_units_queue` set, so the retry hit the idempotence
+        # short-circuit at the top of this function, returned cleanly, and the
+        # process went on dequeuing and executing units with no liveness row —
+        # invisible to the sweep, and therefore unreclaimable if it died. The
+        # exact state the unguarded beat exists to prevent.
+        #
+        # `_dbos_launched` is what makes the ordering safe: DBOS's own
+        # constructor is not idempotent, so a retry must not re-enter it.
         # After launch, per the deprecation of constructing Queue() directly.
         # worker_concurrency, not concurrency: the global limit also counts
         # PENDING workflows from earlier application versions, which a
@@ -422,6 +445,75 @@ def launch() -> None:
             worker_concurrency=settings.unit_concurrency(),
             polling_interval_sec=POLL_INTERVAL_SEC,
         )
+        _start_liveness()
+
+
+_heartbeat_stop = threading.Event()
+_heartbeat_thread: threading.Thread | None = None
+#: Whether `DBOS()` + `DBOS.launch()` have run in this process. Separate from
+#: the queue handles because they are no longer assigned together: liveness
+#: sits between them, and a failure there must leave a retry able to finish
+#: without re-entering DBOS's non-idempotent constructor.
+_dbos_launched = False
+
+
+def _start_liveness() -> None:
+    """Publish this executor's liveness for as long as the process lives.
+
+    Here rather than in the worker entrypoint, because the queues registered
+    just above carry a worker concurrency: **any** process that reaches this
+    line can dequeue and execute units, and the worker is not the only one
+    that does. ``dev`` mode launches and executes in the submitting process,
+    which is how the CLI's default ``evaluate-scenario`` and the integration
+    suite run, and a web process set to ``dev`` or ``executor`` launches too.
+    (A ``client`` never gets here: it enqueues through ``DBOSClient`` and
+    launches nothing, which is the API's default.) An executor that can own
+    work and never announces itself is one whose work can never be reclaimed
+    if it dies — ``orchestration.reclaim`` can only sweep an executor it can
+    see.
+
+    Imported here, not at module scope: ``executor_health`` imports this
+    module for the dsn and the executor id, so a top-level import would be a
+    cycle.
+
+    ⚠ **The first beat is deliberately unguarded**, so a process that cannot
+    record its liveness does not start. That looks harsh for a write to one
+    operational row, and it is the right harshness: the alternative is a
+    process that dequeues and executes units while invisible to the sweep, so
+    a crash strands its runs permanently and silently — the exact failure the
+    sweep exists to remove. By this point ``_assert_domain_database`` has
+    already proved the database is reachable and migrated, so a failure here
+    is a misconfiguration rather than a blip. Beats *inside* the loop are
+    guarded; see ``executor_health.start_heartbeat``.
+    """
+    global _heartbeat_thread
+    if _heartbeat_thread is not None:
+        return
+    from reimagina.orchestration.executor_health import start_heartbeat
+
+    _heartbeat_thread = start_heartbeat(_heartbeat_stop)
+
+
+def stop_liveness() -> None:
+    """Stop the heartbeat thread. For tests and orderly shutdown."""
+    global _heartbeat_thread
+    _heartbeat_stop.set()
+    if _heartbeat_thread is not None:
+        _heartbeat_thread.join(timeout=5.0)
+        if _heartbeat_thread.is_alive():
+            # ⚠ Leave the stop event set and the handle in place. Clearing
+            # them would let a beater that is merely slow — blocked in a
+            # connect, say — wake up, see an unset stop event and resume
+            # publishing liveness for an executor that is shutting down. A
+            # peer would then read that row as a live process and decline to
+            # reclaim its work.
+            logger.warning(
+                "the executor heartbeat did not stop within 5s; leaving it "
+                "marked stopped so it cannot resume publishing liveness"
+            )
+            return
+        _heartbeat_thread = None
+    _heartbeat_stop.clear()
 
 
 def runs_queue() -> Queue:

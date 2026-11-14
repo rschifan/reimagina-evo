@@ -14,8 +14,13 @@ queue, no worker, no run tables. That makes it the one path still runnable when
 the engine is down, and the reason ``coordinator.run_dirty_set`` is port-level
 rather than engine-level code.
 
-Run-level dedup is still not implemented anywhere — ``submit_run`` mints a fresh
-run id per call. See PHASE3_ORCHESTRATION_EXPLORATION.md §2.1 component 2.
+Run-level dedup now exists, in ``orchestration.dedup`` and the DBOS adapter:
+a submission carrying work already outstanding is answered with the run doing
+it. **This path is not covered by it.** ``evaluate_scenario`` computes in the
+calling process and returns when it is done, so there is no window in which a
+second call could find the first still outstanding — the deduplication would
+have nothing to collapse onto. That is a property of synchronous execution,
+not an omission.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Urban planning scenario modelling platform. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (Martin) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL read surface.
+Urban planning scenario modelling platform. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (Martin, or the API itself behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL read surface.
 
 > **Status:** functional prototype — API and schema contracts are not yet stable. See [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) for the current state of the system.
 
@@ -39,7 +39,7 @@ fail at the source-existence check.
 
 ## Quickstart
 
-Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker
+Requirements: Python 3.12+, Node 22.22+, Postgres 16 + PostGIS 3.4, Docker
 (for the local stack), GDAL ≥3.6 (for `fiona`/`rasterio` —
 `brew install gdal` on macOS, `apt install libgdal-dev` on
 Debian/Ubuntu).
@@ -53,16 +53,32 @@ make stack-up                        # or: docker compose -f infra/docker/docker
 
 # 3. Install deps + apply migrations
 make install                         # uv + npm
-make migrate                         # alembic upgrade head
+make migrate                         # creates both DBs, then alembic upgrade head
 
 # 4. Run dev servers (two terminals)
 make dev-api                         # FastAPI on :8001
 make dev-web                         # Vite on :5173
 ```
 
+`make migrate` takes no arguments: it reads `DATABASE_URL`,
+`TEST_DATABASE_URL` and `DATABASE_URL_ADMIN` from your `.env`. The last one is
+the connection it uses to *create* the other two databases — creating a
+database requires a connection to a different one — so it needs a role that
+may create databases and extensions. `.env.example` sets all three for both
+paths; if you change the password, change it there too.
+
+In Path A only one of the five DSNs goes through the pooler, and that is
+deliberate rather than an oversight: `localhost:5432` is PgBouncer in
+transaction mode holding a single database, so migrations, bootstrap, the test
+suites and the ops plane all connect to PostgreSQL itself on `localhost:5433`.
+`.env.example` says why against each line.
+
 If you prefer host-installed Postgres over the compose stack, switch to
 "Path B" inside `.env.example`, run `createdb reimagina_app reimagina_test`
-yourself, and skip step 2.
+yourself, and skip step 2. Path B's DSNs name no user, so they assume your own
+OS username is a Postgres role that can connect without a password and create
+databases — the usual Homebrew or Postgres.app arrangement. If yours is not,
+put a user and password in the four Path B DSNs.
 
 See [`docs/architecture/`](docs/architecture) for per-layer deep-dives.
 For the full fresh-machine data bootstrap, follow

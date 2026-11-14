@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    // `?url` imports are a Vite feature; without its client types the
+    // worker-asset import in main.ts does not type-check.
+    "types": ["vite/client"],
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",

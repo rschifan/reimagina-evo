@@ -21,11 +21,12 @@ permissions:
   contents: read
 
 env:
-  # The interpreter every uv command uses. `requires-python` is `>=3.11`, so
+  # The interpreter every uv command uses. `requires-python` is `>=3.12`, so
   # without this uv is free to pick — or download — any version satisfying it,
   # and the Python the suite ran on would be a resolution detail rather than a
-  # decision. Note the floor is 3.11 while this is 3.12: nothing tests 3.11
-  # today, so the declared range is wider than the gated one.
+  # decision. The floor and this now agree: the declared range used to be
+  # wider than the gated one (floor 3.11, nothing testing it), and raising the
+  # floor to 3.12 both closed that gap and let the resolver reach pyproj 3.8.
   UV_PYTHON: "3.12"
   # Makes every `uv run` assert the lockfile too, not just the explicit
   # `uv sync` step — `uv run` performs an implicit sync, and this keeps it from
@@ -117,9 +118,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ⚠ 22, not 20. jsdom 31 supports Node ^22.22.2 || ^24.15.0 || >=26,
+      # and the undici 8 it pulls in needs >=22.19: undici binds
+      # `zlib.createZstdDecompress` at import, which Node 20 does not have, so
+      # under 20 every vitest file that loads jsdom dies in collection with
+      # "Cannot read properties of undefined (reading 'bind')". The jsdom
+      # upgrade arrived on a branch that could not run CI while it conflicted
+      # with main, so the first run is where it surfaced. Node 20 has been
+      # end-of-life since April 2026 in any case.
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -163,17 +172,43 @@ jobs:
       # The app pool (deps.api_dsn) reads REIMAGINA_APP_DSN; test_api_routes
       # exercises a live app against it. Point it at the same migrated DB.
       REIMAGINA_APP_DSN: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
-      # ⚠ Required, not optional. `dbos_dsn()` raises rather than let DBOS fall
-      # back to SQLite, so any test that reaches the real orchestrator — e.g.
-      # test_api_routes' end-to-end 404 through the live app — fails without
-      # this. Omitting it cost a red integration job and, because `pytest
-      # (conformance)` is a later step in the same job, silently skipped the
-      # port-contract suite on every run.
+      # And the ops plane's own DSN, which is not optional: dbos_dsn() raises
+      # rather than let DBOS fall back to SQLite and write checkpoints
+      # somewhere unrecoverable. One integration test reaches the real
+      # orchestrator through the job routes, so without this line that test
+      # failed, the step failed, and `pytest (conformance)` below — a later
+      # step in this same job — was reported skipped rather than run. Direct
+      # and never pooled: LISTEN/NOTIFY backs the progress streams and cannot
+      # cross PgBouncer in transaction mode.
       #
-      # Same DSN as above: there is no pgbouncer in CI, so the pooled and
-      # direct DSNs coincide here. They must NOT be collapsed in deployments,
-      # where this one has to bypass the pooler for LISTEN/NOTIFY.
+      # Same DSN as the pooled one: there is no pgbouncer in CI, so the pooled
+      # and direct DSNs coincide here. They must NOT be collapsed in
+      # deployments, where this one has to bypass the pooler for LISTEN/NOTIFY.
       DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
+      # This job attaches a Postgres service precisely so the DB-backed suites
+      # run, so a run in which they skip has not passed — it has reported
+      # green having executed nothing. pytest exits 0 on an all-skipped
+      # session, and "322 skipped, 6 passed" reads as success in every summary
+      # anyone looks at. With this set, conftest fails instead of skipping
+      # when the database is unreachable.
+      #
+      # Not hypothetical: this workflow was green for months while
+      # `pytest (conformance)` skipped its whole suite for a missing
+      # DATABASE_URL_DIRECT. The variable above fixed that instance; this one
+      # makes the class of it visible.
+      REIMAGINA_REQUIRE_DB: "1"
+      #
+      # ⚠ One blind spot this layout keeps, recorded rather than papered over.
+      # All three DSNs above name the same database, and each suite below runs
+      # as its own process. A developer's `.env` has them distinct (as
+      # `.env.example` prescribes) and `pytest tests/` runs them in one
+      # process, so state cached across suites against a *stale DSN* cannot
+      # fail here and does fail for a reader. It did:
+      # `dbos_orchestrator._client()` cached one client on first use, and
+      # three conformance tests failed under `pytest tests/` while passing
+      # alone. The cover for that class is
+      # `tests/unit/test_dbos_client_cache.py`, which asserts the caching
+      # directly instead of hoping a pipeline shape exposes it.
     steps:
       - uses: actions/checkout@v7
 

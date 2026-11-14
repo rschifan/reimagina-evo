@@ -75,6 +75,26 @@ export interface IndicatorValueStats {
   p50: number | null;
   p95: number | null;
   max: number | null;
+  /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
+  histogram: ValueHistogram | null;
+}
+
+/**
+ * Equal-width bin counts over an indicator's **full** observed range.
+ *
+ * Deliberately not clipped to the ramp's p05–p95: the ramp clips so one
+ * outlier cannot flatten the colour scale, and a histogram that clipped the
+ * same way would hide the very thing it exists to show. The legend draws the
+ * ramp's extent on top of this.
+ */
+export interface ValueHistogram {
+  bins: number;
+  lo: number;
+  hi: number;
+  /** ``(hi - lo) / bins``. Zero when every value is identical. */
+  width: number;
+  /** One count per bin, left to right. Sums to the response's ``count``. */
+  counts: number[];
 }
 
 
@@ -90,16 +110,42 @@ export function listIndicators(aoiId?: string | null): Promise<IndicatorSummary[
 
 export function getIndicatorStats(
   slug: string,
-  options: { scenario_id?: string; feature_type?: string; aoi_id?: string } = {},
+  options: {
+    scenario_id?: string;
+    feature_type?: string;
+    aoi_id?: string;
+    /** Ask for a distribution alongside the percentiles. */
+    bins?: number;
+  } = {},
 ): Promise<IndicatorValueStats> {
   const params = new URLSearchParams();
   if (options.scenario_id) params.set("scenario_id", options.scenario_id);
   if (options.feature_type) params.set("feature_type", options.feature_type);
   if (options.aoi_id) params.set("aoi_id", options.aoi_id);
+  if (options.bins) params.set("bins", String(options.bins));
   const qs = params.toString();
   return jsonRequest<IndicatorValueStats>(
     `/indicators/${encodeURIComponent(slug)}/stats${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** A credit line the licence of some loaded source requires. */
+export interface AttributionRow {
+  provider: string;
+  license: string | null;
+  text: string;
+}
+
+/**
+ * Credit lines for the data actually loaded.
+ *
+ * Fetched rather than hardcoded: the street layer is OpenStreetMap in a
+ * real pilot and a generated grid in a demo, so a frontend that always
+ * printed "© OpenStreetMap contributors" would make a false provenance
+ * claim on every synthetic territory.
+ */
+export function listAttributions(): Promise<AttributionRow[]> {
+  return jsonRequest<AttributionRow[]>("/tile-sources/attribution");
 }
 
 export function listTileSources(): Promise<TileSource[]> {

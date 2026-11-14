@@ -13,7 +13,27 @@
     <div id="topbar"></div>
 
     <main class="app">
-      <aside class="sidebar">
+      <!-- Collapses the sidebar at any width, and is the only way to open it
+           below the breakpoint, where it becomes an overlay drawer. Lives
+           outside the sidebar so it stays reachable once the sidebar is
+           gone. `aria-expanded` is what a screen reader reads; the glyph is
+           swapped in main.ts to match. -->
+      <button
+        type="button"
+        id="sidebar-toggle"
+        class="sidebar-toggle"
+        aria-expanded="true"
+        aria-controls="sidebar"
+        title="Hide panel (\\)"
+      >
+        <span aria-hidden="true">⟨</span>
+        <span class="sr-only">Hide panel</span>
+      </button>
+      <!-- Click-catcher behind the drawer on small screens. A drawer with no
+           way out but the toggle is a trap on a phone, where the toggle is
+           the thing the drawer is covering. -->
+      <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
+      <aside class="sidebar" id="sidebar">
 
         <section data-section="aoi">
           <h2>Pilot</h2>

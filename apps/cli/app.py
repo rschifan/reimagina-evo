@@ -58,14 +58,23 @@ from .explore import (  # noqa: E402
     list_sources,
 )
 from .overture import (  # noqa: E402
+    aoi_from_overture_division,
+    load_overture_places,
+    overture_place_categories,
     as_json,
     extract_mexico_city_buildings,
+    list_overture_divisions,
     load_mexico_city_buildings,
     mexico_city_buildings_example,
     parse_bbox,
     validate_mexico_city_buildings,
 )
+from .network import bootstrap_osm_network  # noqa: E402
+from reimagina.pipeline.osm_network import WALK  # noqa: E402
 from reimagina.pipeline.overture import (  # noqa: E402
+    DIVISION_SUBTYPE_COUNTY,
+    MEXICALI_BBOX,
+    MEXICALI_DIVISION_NAME,
     MEXICO_CITY_BBOX,
     OVERTURE_BUILDINGS_SOURCE_NAME,
     OVERTURE_DEFAULT_RELEASE,
@@ -180,19 +189,27 @@ def status() -> int:
     help="Create local app/test DBs if needed and migrate both to head",
 )
 def bootstrap_db(
-    # ⚠ Every DSN reads the variable `.env.example` documents it by, and the
-    # flag beats the variable. They used to be hardcoded constants while
-    # `--direct-dsn` alone read the environment — so `make migrate`, which
-    # passes no flags at all, bootstrapped `postgresql://localhost/reimagina`
-    # while taking its direct DSN from `.env`. With a `.env` naming any other
-    # database that is two answers to one question, and since the two must
-    # agree it failed outright. `migrate`'s own help has always said it runs
-    # "on the configured DATABASE_URL"; now it does.
-    app_dsn: str = typer.Option(DEFAULT_APP_DSN, "--app-dsn", envvar="DATABASE_URL"),
-    test_dsn: str = typer.Option(
-        DEFAULT_TEST_DSN, "--test-dsn", envvar="TEST_DATABASE_URL"
+    app_dsn: str = typer.Option(
+        DEFAULT_APP_DSN,
+        "--app-dsn",
+        envvar="DATABASE_URL",
+        help="App database to create and migrate.",
     ),
-    admin_dsn: str = typer.Option(DEFAULT_ADMIN_DSN, "--admin-dsn"),
+    test_dsn: str = typer.Option(
+        DEFAULT_TEST_DSN,
+        "--test-dsn",
+        envvar="TEST_DATABASE_URL",
+        help="Test database to create and migrate.",
+    ),
+    admin_dsn: str = typer.Option(
+        DEFAULT_ADMIN_DSN,
+        "--admin-dsn",
+        envvar="DATABASE_URL_ADMIN",
+        help=(
+            "Database to connect to in order to CREATE the other two. Needs a "
+            "role that may create databases and extensions."
+        ),
+    ),
     direct_dsn: Optional[str] = typer.Option(
         None,
         "--direct-dsn",
@@ -202,6 +219,20 @@ def bootstrap_db(
         "--app-dsn.",
     ),
 ) -> int:
+    """Create the app and test databases if absent, then migrate both to head.
+
+    Every DSN is read from the environment when the flag is absent, because
+    ``make migrate`` passes no arguments and the environment is therefore the
+    only way to reach this command. They were import-time constants, which made
+    the documented variables inert: the admin connection could not be given a
+    user or a password, so this died with ``fe_sendauth: no password supplied``
+    against any Postgres that asks for one, and once past that it migrated
+    ``postgresql://localhost/reimagina`` while the API read ``DATABASE_URL`` —
+    ``migrated: true`` over an app database that stayed empty.
+
+    ``DATABASE_URL_ADMIN`` is the one new name. Creating a database requires a
+    connection to a different one, and no variable in the project named it.
+    """
     # An empty string is "unset", not "a DSN that happens to be blank". Shells
     # expand an undefined variable to nothing, so the documented
     # `--app-dsn "$DATABASE_URL"` silently passes `""` whenever `.env` has not
@@ -225,7 +256,9 @@ def bootstrap_db(
     "verify-schema",
     help="Check that the canonical first-layer schemas/tables/views exist",
 )
-def verify_schema(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def verify_schema(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     with connect(dsn) as conn:
         checks = verify_required_relations(conn)
     return _print({"dsn": dsn, "checks": checks, "all_present": all(checks.values())})
@@ -240,14 +273,18 @@ app.add_typer(explore_app, name="explore")
 
 
 @explore_app.command("layers", help="List the curated exploration catalog")
-def explore_layers(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def explore_layers(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_layers(dsn=dsn))
 
 
 @explore_app.command(
     "sources", help="List source registry rows joined with ingestion runs"
 )
-def explore_sources(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def explore_sources(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_sources(dsn=dsn))
 
 
@@ -255,14 +292,18 @@ def explore_sources(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     "feature-stats",
     help="Show canonical feature counts by type, role, source, and dataset version",
 )
-def explore_feature_stats(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def explore_feature_stats(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_feature_stats(dsn=dsn))
 
 
 @explore_app.command(
     "serving-stats", help="Show high-level counts over serving_geo.feature_v"
 )
-def explore_serving_stats(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def explore_serving_stats(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_serving_stats(dsn=dsn))
 
 
@@ -296,12 +337,22 @@ def overture_extract(
         "--bbox",
         help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexico City)",
     ),
+    low_memory: bool = typer.Option(
+        False,
+        "--low-memory",
+        help="Scan one S3 file at a time instead of the whole release. Peak "
+        "memory 663 MB instead of 4.4 GB, wall time 454 s instead of 40 s "
+        "(measured, Mexicali bbox, 387k rows). ⚠ Use it on a laptop also "
+        "running Postgres: there the 4.4 GB does not OOM cleanly, it swaps, "
+        "and swapping presents as a hung process",
+    ),
 ) -> int:
     return _print(
         extract_mexico_city_buildings(
             output_path=output_path,
             release=release,
             bbox=parse_bbox(bbox),
+            low_memory=low_memory,
         )
     )
 
@@ -311,7 +362,7 @@ def overture_extract(
 )
 def overture_load(
     raw_path: str = typer.Option(..., "--raw-path"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     orchestrator_run_id: Optional[str] = typer.Option(None, "--orchestrator-run-id"),
     code_version: str = typer.Option("dev", "--code-version"),
     release: str = typer.Option(
@@ -367,10 +418,142 @@ def overture_load(
 
 
 @overture_app.command(
+    "place-categories",
+    help="Show which Overture place categories count as park or culture, "
+    "and which are deliberately excluded",
+)
+def overture_place_categories_cmd() -> int:
+    # The exclusions are the reviewable part. An accessibility indicator is
+    # only as trustworthy as its destination list, and a keyword match on this
+    # theme pulls in 907 hardware shops for `garden`.
+    return _print(overture_place_categories())
+
+
+@overture_app.command(
+    "places",
+    help=(
+        "Load park, recreation and cultural destinations from Overture places "
+        "— what makes the park and culture accessibility indicators measurable"
+    ),
+)
+def overture_places(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE, "--release", help="Overture S3 release version"
+    ),
+    country: Optional[str] = typer.Option(
+        None,
+        "--country",
+        help="ISO-3166 alpha-2. ⚠ Supply it for any border-crossing bbox: the "
+        "Mexicali box also covers Calexico and Heber, and 156 of its 1,303 "
+        "places are in the US — including 36 parks no resident walks to",
+    ),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Report the inside/outside split against this AOI. Not a clip: a "
+        "park just outside the boundary is one the adjacent blocks walk to",
+    ),
+    output_path: str = typer.Option("data/overture_places.parquet", "--output-path"),
+) -> int:
+    return _print(
+        load_overture_places(
+            dsn=dsn,
+            bbox=parse_bbox(bbox),
+            release=release,
+            country=country,
+            aoi_id=aoi_id,
+            output_path=output_path,
+        )
+    )
+
+
+@overture_app.command(
+    "divisions",
+    help="List the administrative divisions Overture holds inside a bbox",
+)
+def overture_divisions(
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE,
+        "--release",
+        help="Overture S3 release version",
+    ),
+) -> int:
+    # The command that makes `aoi-from-division --name` checkable instead of
+    # guessable: Overture's names.primary is upstream data.
+    return _print(list_overture_divisions(bbox=parse_bbox(bbox), release=release))
+
+
+@overture_app.command(
+    "aoi-from-division",
+    help=(
+        "Create an AOI from an Overture division polygon — the AOI "
+        "constructor that needs no INEGI mirror on disk."
+    ),
+)
+def overture_aoi_from_division(
+    aoi_name: str = typer.Option(..., "--aoi-name", help="Name for the new AOI"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    bbox: str = typer.Option(
+        ",".join(str(v) for v in MEXICALI_BBOX),
+        "--bbox",
+        help="Clip box xmin,ymin,xmax,ymax in EPSG:4326 (default: Mexicali)",
+    ),
+    release: str = typer.Option(
+        OVERTURE_DEFAULT_RELEASE, "--release", help="Overture S3 release version"
+    ),
+    subtype: str = typer.Option(
+        DIVISION_SUBTYPE_COUNTY,
+        "--subtype",
+        help="Overture division subtype, e.g. county (a Mexican municipio), "
+        "region, locality",
+    ),
+    country: Optional[str] = typer.Option(
+        None,
+        "--country",
+        help="ISO-3166 alpha-2. ⚠ Supply it for any border-crossing bbox: "
+        "the Mexicali box holds both 'MX Municipio de Mexicali' and "
+        "'US Imperial County', and both are subtype=county",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        help=f"Overture names.primary, e.g. {MEXICALI_DIVISION_NAME!r}. "
+        "Run `overture divisions` to see what a release actually calls things",
+    ),
+    project_name: str = typer.Option("Overture Pilot Cities", "--project-name"),
+) -> int:
+    payload = aoi_from_overture_division(
+        dsn=dsn,
+        aoi_name=aoi_name,
+        bbox=parse_bbox(bbox),
+        release=release,
+        subtype=subtype,
+        country=country,
+        name=name,
+        project_name=project_name,
+    )
+    _print(payload)
+    return 0 if payload.get("status") == "ok" else 2
+
+
+@overture_app.command(
     "validate",
     help="Validate that loaded buildings are visible through serving_geo",
 )
-def overture_validate(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def overture_validate(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(validate_mexico_city_buildings(dsn=dsn))
 
 
@@ -378,7 +561,9 @@ def overture_validate(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     "executor-health",
     help="Show DBOS executor liveness from explore.ops_executor_health_v",
 )
-def explore_executor_health(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def explore_executor_health(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_executor_health(dsn=dsn))
 
 
@@ -390,7 +575,7 @@ def explore_executor_health(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -
     ),
 )
 def evaluate_scenario(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     changed_attribute: list[str] = typer.Option(
         [],
         "--changed-attribute",
@@ -459,7 +644,7 @@ app.add_typer(perf_app, name="perf")
     help="Seed deterministic observations and AOIs for benchmark tiers",
 )
 def perf_seed_observations(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     dataset_tier: str = typer.Option(  # type: ignore[call-overload]
         "smoke",
         "--dataset-tier",
@@ -480,7 +665,7 @@ def perf_seed_observations(
     "run", help="Run the named benchmark corpus and emit a structured JSON report"
 )
 def perf_run(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     dataset_tier: str = typer.Option(  # type: ignore[call-overload]
         "smoke",
         "--dataset-tier",
@@ -506,7 +691,7 @@ def perf_run(
 )
 def perf_explain(
     benchmark_name: str = typer.Argument(...),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     dataset_tier: str = typer.Option(  # type: ignore[call-overload]
         "smoke",
         "--dataset-tier",
@@ -527,7 +712,7 @@ def perf_explain(
     help="Show a live Postgres observability report for performance monitoring",
 )
 def perf_report(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     limit: int = typer.Option(10, "--limit"),
     format: str = typer.Option("json", "--format", click_type=click.Choice(["json"])),  # type: ignore[call-overload]
 ) -> int:
@@ -575,7 +760,7 @@ def tiles_manifest(
 )
 def tiles_export(
     layer_id: str = typer.Argument(...),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     output_dir: str = typer.Option("data/tiles/pmtiles", "--output-dir"),
     snapshot_base_url: str = typer.Option(
         tile_snapshot_base_url(), "--snapshot-base-url"
@@ -598,7 +783,7 @@ def tiles_export(
     help="Resolve frontend-facing layer source configs from the manifest and snapshot registry",
 )
 def tiles_sources(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     live_tilejson_base_url: str = typer.Option(
         tile_live_base_url(), "--live-tilejson-base-url"
     ),
@@ -619,7 +804,7 @@ def tiles_sources(
 
 @tiles_app.command("snapshots", help="List the PMTiles snapshot registry")
 def tiles_snapshots(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     layer_id: Optional[str] = typer.Option(None, "--layer-id"),
 ) -> int:
     return _print(
@@ -640,7 +825,9 @@ app.add_typer(assets_app, name="assets")
 
 
 @assets_app.command("seed", help="Register shipped assets and their edges (idempotent)")
-def assets_seed(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def assets_seed(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(assets_seed_cmd(dsn=dsn))
 
 
@@ -648,13 +835,15 @@ def assets_seed(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     "backfill-versions",
     help="Publish versions for source layers loaded before the asset graph existed",
 )
-def assets_backfill_versions(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def assets_backfill_versions(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(assets_backfill_cmd(dsn=dsn))
 
 
 @assets_app.command("observe", help="Probe observable assets and publish any change")
 def assets_observe(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     asset_key: Optional[str] = typer.Option(None, "--asset-key"),
 ) -> int:
     return _print(assets_observe_cmd(dsn=dsn, asset_key=asset_key))
@@ -662,7 +851,7 @@ def assets_observe(
 
 @assets_app.command("stale", help="What is out of date right now")
 def assets_stale(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     include_absent: bool = typer.Option(False, "--include-absent"),
 ) -> int:
     return _print(assets_stale_cmd(dsn=dsn, include_absent=include_absent))
@@ -673,7 +862,7 @@ def assets_inputs(
     asset_key: str = typer.Argument(
         ..., help="e.g. indicator.urban_form_block_composite"
     ),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
     return _print(assets_inputs_cmd(dsn=dsn, asset_key=asset_key))
 
@@ -681,7 +870,7 @@ def assets_inputs(
 @assets_app.command("consumers", help="Everything that must recompute if this changes")
 def assets_consumers(
     asset_key: str = typer.Argument(..., help="e.g. global.road_network"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
     return _print(assets_consumers_cmd(dsn=dsn, asset_key=asset_key))
 
@@ -691,7 +880,9 @@ app.add_typer(feat_app, name="feat")
 
 
 @feat_app.command("seed-types", help="Seed the MEX + global feature types (idempotent)")
-def feat_seed_types(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def feat_seed_types(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(seed_types(dsn=dsn))
 
 
@@ -721,7 +912,7 @@ def cdmx_fetch(
     "bootstrap", help="Fetch + stage + load CDMX layers into curated_geo.feature"
 )
 def cdmx_bootstrap(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     layers: Optional[str] = typer.Option(
         None,
         "--layers",
@@ -748,7 +939,9 @@ def cdmx_bootstrap(
 
 
 @cdmx_app.command("status", help="Row counts per MEX feature type")
-def cdmx_status_cmd(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def cdmx_status_cmd(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(cdmx_status(dsn=dsn))
 
 
@@ -763,7 +956,7 @@ def cdmx_aoi_from_alcaldia(
         help="INEGI municipality code, e.g. 015 for Cuauhtémoc, 002 for Mexicali",
     ),
     name: str = typer.Option(..., "--name"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     cve_ent: str = typer.Option(
         "09",
         "--cve-ent",
@@ -798,7 +991,7 @@ def cdmx_aoi_from_state(
         help="INEGI state code, e.g. 09 for CDMX, 02 for Baja California.",
     ),
     name: str = typer.Option(..., "--name"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     project_name: str = typer.Option(
         "CDMX Realistic-Scale Validation", "--project-name"
     ),
@@ -811,6 +1004,69 @@ def cdmx_aoi_from_state(
     )
     _print(payload)
     return 0 if payload.get("status") == "ok" else 2
+
+
+# ── network ──────────────────────────────────────────────────────────────
+network_app = typer.Typer(
+    name="network",
+    help="Routing network: fetch an AOI's OSM graph, load it, publish it as roads",
+)
+app.add_typer(network_app, name="network")
+
+
+@network_app.command(
+    "bootstrap",
+    help=(
+        "Fetch the AOI's OSM pedestrian graph, load road_node/road_edge, "
+        "and publish the edges as global:road features"
+    ),
+)
+def network_bootstrap(
+    aoi_id: str = typer.Option(
+        ...,
+        "--aoi-id",
+        help="AOI whose polygon bounds the OSM fetch. ⚠ Not a scope: loading "
+        "replaces the whole network, so a second AOI discards the first's graph",
+    ),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    network_type: str = typer.Option(
+        WALK,
+        "--network-type",
+        help="osmnx network type. 'walk' is the pedestrian graph the "
+        "accessibility indicators are defined against; both costs are set to "
+        "length, making the graph undirected, which is correct for walking "
+        "and wrong for driving",
+    ),
+    publish_features: bool = typer.Option(
+        True,
+        "--publish-features/--no-publish-features",
+        help="Also project road_edge into global:road features. On by "
+        "default: a network loaded and not published is routable and "
+        "invisible, which is the state this repository was already in",
+    ),
+    clip_bbox: Optional[str] = typer.Option(
+        None,
+        "--clip-bbox",
+        help="Narrow the FETCH boundary to xmin,ymin,xmax,ymax without "
+        "narrowing the AOI. ⚠ Needed for a mostly-empty AOI: Municipio de "
+        "Mexicali is 9,971 km2 of largely desert, and asking Overpass for a "
+        "walking graph over all of it costs minutes and gigabytes for a "
+        "result that is ~99% empty. Membership and indicators still scope to "
+        "the full municipal boundary",
+    ),
+) -> int:
+    # Needs network access to Overpass. Where that is blocked, the graph
+    # cannot be fetched at all and the accessibility family stays unavailable;
+    # there is no offline substitute that would not be invented data.
+    return _print(
+        bootstrap_osm_network(
+            dsn=dsn,
+            aoi_id=aoi_id,
+            network_type=network_type,
+            publish_features=publish_features,
+            clip_bbox=parse_bbox(clip_bbox) if clip_bbox else None,
+        )
+    )
 
 
 # ── inegi-marco ──────────────────────────────────────────────────────────
@@ -826,7 +1082,7 @@ app.add_typer(inegi_marco_app, name="inegi-marco")
     help="Stage + load INEGI marco layers (filtered by CVE_ENT) into curated_geo.feature",
 )
 def inegi_marco_bootstrap(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     layers: Optional[str] = typer.Option(
         None,
         "--layers",
@@ -880,7 +1136,7 @@ app.add_typer(inegi_censo_app, name="inegi-censo")
     help="Read filtered 2020 census parquet, join to features, write observations",
 )
 def inegi_censo_bootstrap(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     cve_ent: list[str] = typer.Option(
         [],
         "--cve-ent",
@@ -965,7 +1221,9 @@ app.add_typer(aoi_app, name="aoi")
 
 
 @aoi_app.command("list", help="List every AOI with bbox + feature count")
-def aoi_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def aoi_list(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_aois(dsn=dsn))
 
 
@@ -976,7 +1234,7 @@ def aoi_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
 )
 def aoi_delete(
     aoi_id: str = typer.Option(..., "--aoi-id"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
     return _print(delete_aoi(dsn=dsn, aoi_id=aoi_id))
 
@@ -986,7 +1244,7 @@ def aoi_delete(
     help="(Re)populate aoi_feature for one or all AOIs. Idempotent.",
 )
 def aoi_compute_features(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     aoi_id: Optional[str] = typer.Option(
         None,
         "--aoi-id",
@@ -1009,7 +1267,7 @@ app.add_typer(points_app, name="points")
     help="Stage + load amenity GeoParquet layers into curated_geo.feature",
 )
 def points_bootstrap(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     layers: Optional[str] = typer.Option(
         None,
         "--layers",
@@ -1048,7 +1306,9 @@ app.add_typer(indicators_app, name="indicators")
     "seed-catalog",
     help="Register every shipped indicator in curated_geo.indicator_catalog",
 )
-def indicators_seed_catalog(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def indicators_seed_catalog(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(seed_indicator_catalog(dsn=dsn))
 
 
@@ -1057,7 +1317,7 @@ def indicators_seed_catalog(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -
 )
 def indicators_compute(
     slug: str = typer.Option(..., "--slug"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     aoi_id: Optional[str] = typer.Option(None, "--aoi-id"),
     scenario_id: Optional[str] = typer.Option(None, "--scenario-id"),
     code_version: str = typer.Option("dev", "--code-version"),
@@ -1080,7 +1340,7 @@ def indicators_compute(
 def indicators_aoi_summary(
     aoi_id: str = typer.Option(..., "--aoi-id"),
     slug: str = typer.Option(..., "--slug"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     scenario_id: Optional[str] = typer.Option(None, "--scenario-id"),
 ) -> int:
     return _print(
@@ -1110,7 +1370,7 @@ def overlap_declare(
     source_slug: str = typer.Option(..., "--source-slug"),
     target_context: str = typer.Option(..., "--target-context"),
     target_slug: str = typer.Option(..., "--target-slug"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
     return _print(
         declare_overlap_pair(
@@ -1124,7 +1384,9 @@ def overlap_declare(
 
 
 @overlap_app.command("list-pairs", help="List declared type-pair rows")
-def overlap_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def overlap_list(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_overlap_pairs(dsn=dsn))
 
 
@@ -1133,7 +1395,7 @@ def overlap_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
     help="Compute overlaps for every declared pair (AOI-scoped recommended)",
 )
 def overlap_compute_all(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     aoi_id: Optional[str] = typer.Option(None, "--aoi-id"),
 ) -> int:
     return _print(compute_overlaps_all(dsn=dsn, aoi_id=aoi_id))
@@ -1160,7 +1422,7 @@ def raster_ingest(
         "Multi-band containers (HDF, multi-band NetCDF) are out of v1 "
         "scope — pre-extract one band with `gdal_translate -b <N>`.",
     ),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     source_name: str = typer.Option(
         ..., "--source-name", help='e.g. "MODIS LST 2026-01-15 day"'
     ),
@@ -1312,7 +1574,9 @@ def raster_fetch_worldpop(
     "list",
     help="List every registered raster layer (reads explore.raster_layer_v)",
 )
-def raster_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
+def raster_list(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
     return _print(list_raster_layers(dsn=dsn))
 
 
@@ -1321,7 +1585,7 @@ def raster_list(dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn")) -> int:
 )
 def raster_publish(
     layer_slug: str = typer.Option(..., "--layer-slug"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     unpublish: bool = typer.Option(
         False,
         "--unpublish",
@@ -1361,7 +1625,7 @@ def raster_zonal_stats(
         help="Prefix for the observation attribute_key (e.g. 'lst_day'); "
         "stats land as '<prefix>_<stat>' (e.g. 'lst_day_mean')",
     ),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     aoi_id: Optional[str] = typer.Option(
         None,
         "--aoi-id",
@@ -1455,7 +1719,7 @@ def derivation_add(
         "--method",
         click_type=click.Choice(["mean", "weighted_mean", "sum", "min", "max"]),
     ),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     raster_layer_slug: Optional[str] = typer.Option(
         None, "--raster-layer-slug", help="Required if --input-kind=raster"
     ),
@@ -1519,7 +1783,7 @@ def derivation_add(
     "list", help="Show recipes (reads serving_geo.aggregation_recipe_v)"
 )
 def derivation_list(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     raster_layer_slug: Optional[str] = typer.Option(
         None,
         "--raster-layer-slug",
@@ -1545,7 +1809,7 @@ def derivation_list(
 )
 def derivation_enable(
     recipe_id: str = typer.Option(..., "--recipe-id"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     disable: bool = typer.Option(
         False, "--disable", help="Set enabled=false instead of true"
     ),
@@ -1566,7 +1830,7 @@ def derivation_enable(
 )
 def derivation_remove(
     recipe_id: str = typer.Option(..., "--recipe-id"),
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
     return _print(
         remove_derivation(
@@ -1581,7 +1845,7 @@ def derivation_remove(
     help="Materialise one recipe by id, OR every enabled recipe for a raster layer",
 )
 def derivation_run(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     recipe_id: Optional[str] = typer.Option(
         None, "--recipe-id", help="UUID of a single recipe to run"
     ),
