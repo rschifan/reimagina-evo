@@ -190,3 +190,112 @@ def test_the_report_names_what_it_could_not_reclaim():
     )
     assert report.acted
     assert report.stranded_executors == ("vm:worker-9",)
+
+
+# ── what one sweep hands off is no longer the dead executor's ───────────────
+
+
+class _Handle:
+    def __init__(self, workflow_id):
+        self.workflow_id = workflow_id
+
+    def get_workflow_id(self):
+        return self.workflow_id
+
+
+class _ClosableConn(_Conn):
+    def close(self):
+        pass
+
+
+def _sweep_with(monkeypatch, *, results, recovered_ids):
+    """Run `reclaim.sweep` against a replayed connection and a stubbed DBOS.
+
+    `results` answers the sweep's queries in order: the dead-executor read,
+    then each `unfinished_workflows` read, then whatever `forget_executor`
+    runs. `recovered_ids` is what `DBOS._recover_pending_workflows` reports
+    having re-enqueued.
+    """
+    from dbos import DBOS
+
+    conn = _ClosableConn(results=results)
+    monkeypatch.setattr(reclaim.psycopg2, "connect", lambda dsn: conn)
+    monkeypatch.setattr(reclaim, "dbos_dsn", lambda: "postgresql://stub/db")
+    monkeypatch.setattr(reclaim, "_executor_id", lambda: "vm:sweeper")
+    monkeypatch.setattr(reclaim, "stale_after_seconds", lambda: 300)
+    monkeypatch.setattr(
+        DBOS,
+        "_recover_pending_workflows",
+        classmethod(lambda cls, ids: [_Handle(w) for w in recovered_ids]),
+    )
+    return reclaim.sweep(), conn
+
+
+def test_work_the_sweep_just_re_enqueued_does_not_strand_the_executor(monkeypatch):
+    """The case the recovery suite caught and no unit test reached.
+
+    DBOS 3 recovers by re-enqueueing: `reenqueue_for_recovery` moves a PENDING
+    workflow to ENQUEUED and leaves the dead executor's id on the row until a
+    live worker dequeues it. Read straight after recovery, every workflow the
+    sweep just rescued still looks unfinished against the dead executor — so
+    the sweep reported a cross-version strand that did not exist, kept the
+    liveness row, and only a later sweep forgot it. Measured on a 20,164-block
+    territory: three units recovered, the run succeeded, and the dead row
+    survived the sweep that reclaimed it.
+
+    What the sweep has just re-enqueued is handed off: recovery only takes
+    workflows of this process's version, which a live worker of that version
+    will dequeue. It stops counting against the dead executor the moment it is
+    re-enqueued.
+    """
+    report, conn = _sweep_with(
+        monkeypatch,
+        results=[
+            [("vm:dead",)],  # dead_executors
+            [("wf-1", "v1"), ("wf-2", "v1")],  # unfinished: still carry vm:dead
+            [("wf-1", "v1"), ("wf-2", "v1")],  # forget_executor's own check
+            [],  # DELETE
+        ],
+        recovered_ids=["wf-1", "wf-2"],
+    )
+
+    assert report.workflows_recovered == 2
+    assert report.stranded_executors == (), "a hand-off is not a strand"
+    deleted = [s for s in conn.statements if s[0].startswith("DELETE")]
+    assert deleted and deleted[0][1] == ("vm:dead",), "the dead row must be dropped"
+
+
+def test_unfinished_work_the_sweep_did_not_hand_off_still_strands(monkeypatch):
+    """The exclusion is exactly what was re-enqueued, and nothing more.
+
+    A second workflow on another version is never re-enqueued — recovery
+    filters on this process's version — so it stays against the dead executor
+    and must keep its liveness row, or nothing will ever look for it again.
+    """
+    report, conn = _sweep_with(
+        monkeypatch,
+        results=[
+            [("vm:dead",)],
+            [("wf-1", "v1"), ("wf-old", "v0")],
+        ],
+        recovered_ids=["wf-1"],
+    )
+
+    assert report.stranded_executors == ("vm:dead",)
+    assert not any(s[0].startswith("DELETE") for s in conn.statements)
+
+
+def test_forget_executor_still_refuses_unfinished_work_by_default():
+    """The safe primitive keeps its default: only an explicit hand-off is
+    excluded, so a caller that names none gets exactly the old guard."""
+    conn = _Conn(results=[[("wf-1", "v1")]])
+    assert reclaim.forget_executor(conn, "vm:dead") is False
+    assert not any("DELETE" in s[0] for s in conn.statements)
+
+
+def test_forget_executor_drops_the_row_once_everything_left_was_handed_off():
+    conn = _Conn(results=[[("wf-1", "v1")], []])
+    assert reclaim.forget_executor(conn, "vm:dead", handed_off={"wf-1"}) is True
+    assert conn.statements[-1][0].startswith(
+        "DELETE FROM jobs_runtime.ops_executor_heartbeat"
+    )

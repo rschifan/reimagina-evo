@@ -46,6 +46,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 import psycopg2
@@ -156,7 +157,9 @@ def unfinished_workflows(conn, executor_id: str) -> list[tuple[str, str]]:
         return [(row[0], row[1]) for row in cur.fetchall()]
 
 
-def forget_executor(conn, executor_id: str) -> bool:
+def forget_executor(
+    conn, executor_id: str, *, handed_off: Collection[str] = frozenset()
+) -> bool:
     """Drop a reclaimed executor's liveness row, but only once it is empty.
 
     Without this the same dead executor is re-swept on every pass forever, and
@@ -180,8 +183,15 @@ def forget_executor(conn, executor_id: str) -> bool:
 
     So the row is dropped only when the executor genuinely has nothing left
     open. Returns whether it was dropped, so the caller can say why not.
+
+    ``handed_off`` names workflows the caller has just re-enqueued, which no
+    longer depend on this executor; see ``sweep``. Nothing else is excluded,
+    and the default excludes nothing.
     """
-    if unfinished_workflows(conn, executor_id):
+    left = [
+        w for w in unfinished_workflows(conn, executor_id) if w[0] not in handed_off
+    ]
+    if left:
         return False
     with conn.cursor() as cur:
         cur.execute(
@@ -227,13 +237,28 @@ def sweep(*, dry_run: bool = False) -> ReclaimReport:
                 )
                 continue
             recovered += len(handles)
+            # ⚠ What recovery just re-enqueued still carries this executor's
+            # id. DBOS 3 recovers by moving a workflow PENDING -> ENQUEUED
+            # (`reenqueue_for_recovery`) and leaves `executor_id` alone until a
+            # live worker dequeues it, so a read straight after recovery finds
+            # every rescued workflow still "unfinished" against the dead
+            # executor. Counted, that reported a cross-version strand that did
+            # not exist and kept the row until a later sweep. They are handed
+            # off: recovery takes only this process's version, which a live
+            # worker of that version will dequeue. Only these are excluded —
+            # anything recovery did not re-enqueue still keeps the row.
+            handed_off = {h.get_workflow_id() for h in handles}
             logger.info(
                 "reclaimed %d workflow(s) from executor %r (last beat older than %gs)",
                 len(handles),
                 executor,
                 threshold,
             )
-            left = unfinished_workflows(conn, executor)
+            left = [
+                w
+                for w in unfinished_workflows(conn, executor)
+                if w[0] not in handed_off
+            ]
             if left:
                 # The row stays. `forget_executor` enforces this too — it is
                 # the safe primitive — but the detail for the log has to be
@@ -253,7 +278,7 @@ def sweep(*, dry_run: bool = False) -> ReclaimReport:
                     os.environ.get("REIMAGINA_APP_VERSION", "unpinned"),
                 )
             else:
-                forget_executor(conn, executor)
+                forget_executor(conn, executor, handed_off=handed_off)
             conn.commit()
 
     return ReclaimReport(
