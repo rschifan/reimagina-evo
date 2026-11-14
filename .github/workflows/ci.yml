@@ -5,7 +5,13 @@ on:
     # The long-lived ops-plane tracks are gated too. They are never merged into
     # main — the comparison is the deliverable — so a PR-only trigger would
     # leave both of them permanently untested.
-    branches: [main, "feat/**"]
+    #
+    # `feat/**` matches only a first segment of exactly `feat`, so the
+    # `feature/**` and `fix/**` branches the repo also uses got no push run at
+    # all and were tested for the first time when a PR opened. Both are listed
+    # now; a branch whose name matches none of these is still covered by the
+    # pull_request trigger, not by nothing.
+    branches: [main, "feat/**", "feature/**", "fix/**"]
   pull_request:
     branches: [main]
   schedule:
@@ -128,6 +134,9 @@ jobs:
       # end-of-life since April 2026 in any case.
       - uses: actions/setup-node@v7
         with:
+          # The floor above is also declared in apps/web/package.json, where
+          # engine-strict makes npm refuse rather than warn — so a wrong Node
+          # fails at install with one line instead of at worker spawn with five.
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
