@@ -23,8 +23,8 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
-| T2-8 | SSE for job status | **Not built** — FastAPI API scaffold shipped (see `API.md`); LISTEN/NOTIFY + SSE endpoint still pending |
-| T2-9 | Row-Level Security | **Done** — r011 |
+| T2-8 | SSE for job status | **Done** — `GET /jobs/{run_id}/events` (`apps/api/routers/jobs.py::stream_run_events`), over DBOS workflow streams rather than the LISTEN/NOTIFY this entry assumed. Detail below. |
+| T2-9 | Row-Level Security | **Policies done** — r011. ⚠ Inert in practice: permissive whenever `app.current_project_id` is unset, and nothing in the app sets it, so every current caller sees every row. FORCE RLS and a dedicated non-owner app role are deliberately deferred to the first deployed API route (see `ENGINEERING_NOTES.md`). Not a tenancy boundary yet. |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
 | T3-11 | STAC alignment for `file_asset` | **Not built** — low priority |
 | T3-12 | OGC API Features compliance | **Not built** — low priority |
@@ -165,9 +165,34 @@ CREATE TABLE curated_geo.observation_2024 PARTITION OF curated_geo.observation
 
 ### T2-8: Server-Sent Events for job status
 
-**Not built.** There is no mechanism for the frontend to know when a job completes. Clients must poll.
+**Done**, by a different transport than this entry anticipated.
 
-**Approach:** SSE endpoint + PostgreSQL `LISTEN/NOTIFY`.
+`GET /jobs/{run_id}/events` streams `text/event-stream`
+(`apps/api/routers/jobs.py::stream_run_events`). The run dashboard at
+`/ops.html` consumes run state by polling `GET /jobs` instead, because the
+page watches many runs at once and one stream per visible run is the wrong
+trade; the stream serves a single run's detail.
+
+**What changed from the plan below.** Progress does *not* arrive over
+`LISTEN/NOTIFY`. The ops plane moved to DBOS, and the per-run stream is a DBOS
+workflow stream — `subscribe_progress` takes no connection from the caller,
+because no engine's progress transport is the API's pooled one
+(`orchestration/port.py:167`). The `LISTEN/NOTIFY` module this entry assumed
+was deleted with the queue ops plane (`orchestration/frames.py:4`).
+
+The PgBouncer caveat below survived the change and is still load-bearing, now
+one layer down: `dbos_app.py::dbos_dsn` requires `DATABASE_URL_DIRECT` and
+raises rather than let DBOS fall back to SQLite, precisely because checkpoints
+and progress streams both need a real server connection.
+
+The route also owns its connection for the 404 check only, then closes it
+before streaming — a `StreamingResponse` does not complete until its body
+iterator is exhausted, so a `Depends(get_db_conn)` connection stayed borrowed
+for the whole subscription and starved the pool.
+
+**Original plan, kept for the record:**
+
+~~**Approach:** SSE endpoint + PostgreSQL `LISTEN/NOTIFY`.~~
 
 ```
 GET /jobs/{job_id}/events  →  text/event-stream
@@ -175,11 +200,9 @@ data: {"status": "running", "progress": 0.45}
 data: {"status": "complete", "result_url": "..."}
 ```
 
-Workers call `NOTIFY jobs_status, '{"job_id": "...", "status": "complete"}'` after writing to `jobs_runtime`.
+~~Workers call `NOTIFY jobs_status, '{"job_id": "...", "status": "complete"}'` after writing to `jobs_runtime`.~~
 
 **Note:** PgBouncer transaction mode is incompatible with `LISTEN/NOTIFY` (session-level). The SSE connection must bypass PgBouncer or use a separate pool in session mode.
-
-**Files needed:** `apps/api/` new SSE route; worker `NOTIFY` call after result write; optional `notify_job_status()` trigger on `jobs_runtime.status`.
 
 ---
 

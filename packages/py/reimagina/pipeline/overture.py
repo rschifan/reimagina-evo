@@ -456,6 +456,13 @@ def stage_overture_buildings_subset(
 
     ``silver_filename`` defaults to :func:`silver_filename_for` of the Bronze
     artifact rather than to a constant; pass one only to override.
+
+    There is no ``bronze_filename``: ``bronze.land_file`` keeps the raw file's
+    own name, because a Bronze file is a verbatim immutable copy and renaming it
+    would cost the only link back to what arrived. This signature used to accept
+    one and ignore it, so a caller that passed it got a silently different path
+    than it asked for. Callers that need the landed name read it off the
+    returned path.
     """
     bronze_path = bronze.land_file(raw_path, source_id)
     gdf = silver.read_vector(bronze_path)
@@ -482,18 +489,25 @@ def bootstrap_overture_buildings_subset(
     feat.seed_feature_types(conn)
     conn.commit()
 
+    # Lineage: the release this subset was cut from, which is where the data
+    # came from. It used to be a `pending://` placeholder overwritten with the
+    # local bronze path once landed — recording our copy and losing the
+    # source. The bronze copy needs no column: it lives at
+    # `data/bronze/{source_id}/` by construction. Passing it here also moves
+    # a row registered under the old convention onto this one on re-ingest,
+    # since `ensure_…` updates a URI that differs.
     source_id = ensure_overture_buildings_source(
-        conn, version=dataset_version, source_name=source_name, notes=notes
+        conn,
+        version=dataset_version,
+        source_name=source_name,
+        notes=notes,
+        storage_uri=overture_theme_type_glob(release=dataset_version),
     )
     conn.commit()
 
     bronze_path, silver_path = stage_overture_buildings_subset(
         raw_path, source_id=source_id
     )
-    cat.update_source_storage_uri(
-        conn, source_id, bronze.bronze_uri(source_id, bronze_path.name)
-    )
-    conn.commit()
 
     load_result = load_overture_buildings_subset(
         conn,

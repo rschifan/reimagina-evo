@@ -99,7 +99,6 @@ PLACES_NOTES = (
     "places theme for one bbox, filtered to the category allowlist in "
     "reimagina.data.amenities. Feeds the accessibility network indicators."
 )
-PLACES_PENDING_STORAGE_URI = "pending://overture/places"
 
 
 class OverturePlacesSchemaChanged(RuntimeError):
@@ -280,16 +279,29 @@ def ensure_places_source(
 ) -> str:
     """Idempotently register the ``data_source_catalog`` row for places.
 
+    ``storage_uri`` is lineage: the S3 path of the release the subset is cut
+    from, the same rule ``ensure_overture_buildings_source`` follows. It used
+    to be a ``pending://`` placeholder overwritten with the local bronze path
+    once the subset landed — recording where our copy sat and nothing about
+    where the places came from. The bronze copy needs no column; it lives at
+    ``data/bronze/{source_id}/`` by construction. A row still holding an older
+    URI is moved onto this one on re-ingest.
+
     Idempotent on ``(name, provider, version)`` like the amenity layers in
     ``pipeline.points``, so re-running the ingest for a new bbox reuses the
     release's row rather than accumulating one per run. The licence is read
     back out of this row by ``/tile-sources/attribution`` — which is why the
     map credits Overture rather than a hardcoded string.
     """
+    storage_uri = overture_theme_type_glob(
+        release=version, theme=PLACES_THEME, feature_type=PLACES_TYPE
+    )
     existing = cat.get_source(
         conn, name=source_name, provider=OVERTURE_PROVIDER, version=version
     )
     if existing is not None:
+        if existing["storage_uri"] != storage_uri:
+            cat.update_source_storage_uri(conn, str(existing["id"]), storage_uri)
         return str(existing["id"])
     return cat.register_source(
         conn,
@@ -297,7 +309,7 @@ def ensure_places_source(
         provider=OVERTURE_PROVIDER,
         storage_type="vector",
         integration_role="enrichment",
-        storage_uri=PLACES_PENDING_STORAGE_URI,
+        storage_uri=storage_uri,
         version=version,
         license=OVERTURE_LICENSE,
         notes=notes,
@@ -418,10 +430,6 @@ def bootstrap_places(
         country=country,
     )
     bronze_path, silver_path = stage_places_subset(raw_path, source_id=source_id)
-    cat.update_source_storage_uri(
-        conn, source_id, bronze.bronze_uri(source_id, bronze_path.name)
-    )
-    conn.commit()
 
     load_result = load_places_subset(
         conn,
