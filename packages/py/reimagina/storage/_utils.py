@@ -103,6 +103,31 @@ def scenario_overlay(
     and from every composite that consumes it, rather than falling back. That is
     the same class of hole this function exists to close, one layer down.
 
+    ⚠ The value test belongs on *both* branches, and that is what makes them
+    complementary. Guarding only the anti-join stops a valueless scenario row
+    from suppressing the baseline, but the ``scenario_id = X`` branch still
+    matches that row unconditionally — so both rows qualify and the pair comes
+    back twice. That is precisely the double-count the anti-join exists to
+    avoid, reintroduced one case down, and it is worse than the widened form
+    because it only bites once a scenario has recorded a valueless row. It
+    surfaced as an *intermittent* failure rather than a stable one: every reader
+    that keys by feature (a dict comprehension, ``dict(row)``, ``fetchone()``)
+    collapses the duplicate to whichever row the server sent last, and that
+    order follows the query plan — an index scan on ``ir_scenario_slug_idx``
+    returns the scenario row first and the baseline wins; once the table has
+    statistics the planner switches to a seq scan, physical order puts the
+    scenario row last, and the same read reports no value. In
+    ``fetch_aoi_children``, which puts this predicate in a ``LEFT JOIN … ON``,
+    the duplicate is not cosmetic at all: the feature's ``overlap_measure``
+    weight is counted twice and the AOI summary is quietly wrong.
+
+    So a scenario row qualifies when it carries a value *or* when there is no
+    baseline row to fall through to — the second half being what keeps a
+    ``missing`` row the baseline never computed from vanishing from both
+    branches. Exactly one row survives per pair in all four configurations:
+    valued scenario row wins; valueless one yields to the baseline; valueless
+    one with no baseline is still returned; no scenario row leaves the baseline.
+
     The trade-off is deliberate: a scenario cannot express "I have recomputed
     this and the answer is now unknown" and have that beat the baseline. Doing
     that needs a distinct signal — a ``quality_flag`` the read layer honours —
@@ -133,7 +158,16 @@ def scenario_overlay(
     if scenario_id is None:
         return f"{prefix}scenario_id IS NULL", []
     return (
-        f"""({prefix}scenario_id = {placeholder}
+        f"""(({prefix}scenario_id = {placeholder}
+              AND ({prefix}value_numeric IS NOT NULL
+                OR {prefix}value_text IS NOT NULL
+                OR {prefix}value_json IS NOT NULL
+                OR NOT EXISTS (
+                   SELECT 1 FROM curated_geo.indicator_result _bl
+                    WHERE _bl.feature_id = {prefix}feature_id
+                      AND _bl.indicator_id = {prefix}indicator_id
+                      AND _bl.status = 'current'
+                      AND _bl.scenario_id IS NULL)))
              OR ({prefix}scenario_id IS NULL AND NOT EXISTS (
                    SELECT 1 FROM curated_geo.indicator_result _ov
                     WHERE _ov.feature_id = {prefix}feature_id
