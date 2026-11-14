@@ -39,7 +39,7 @@ fail at the source-existence check.
 
 ## Quickstart
 
-Requirements: Python 3.11+, Node 20+, Postgres 16 + PostGIS 3.4, Docker
+Requirements: Python 3.12+, Node 22.22+, Postgres 16 + PostGIS 3.4, Docker
 (for the local stack), GDAL ≥3.6 (for `fiona`/`rasterio` —
 `brew install gdal` on macOS, `apt install libgdal-dev` on
 Debian/Ubuntu).
