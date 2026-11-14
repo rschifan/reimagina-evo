@@ -34,6 +34,7 @@ import pytest
 from reimagina.assets.registry import seed_assets
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import seed_catalog
+from reimagina.orchestration.dbos_app import ensure_system_database
 from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
 from reimagina.scenarios.overrides import apply_overrides
 
@@ -58,6 +59,16 @@ def committed(migrated_db, monkeypatch):
     would not see uncommitted rows.
     """
     monkeypatch.setenv("DATABASE_URL_DIRECT", migrated_db)
+    # ⚠ The ops-plane schema is provisioned here because nothing else in this
+    # suite does it, and client mode cannot: `DBOSClient` never runs DBOS's
+    # schema migrations, and only a worker's `launch()` or `make migrate`'s
+    # `ensure_system_database` creates them. These tests passed for as long as
+    # the test database still held a `dbos` schema some earlier process had
+    # left behind — it is DBOS-owned, so the integration suite's
+    # downgrade-to-base never removes it — and failed with `relation
+    # "dbos.workflow_status" does not exist` on a fresh one, which is what CI
+    # starts from. Idempotent, so repeat calls cost a version check.
+    ensure_system_database(migrated_db)
     # Unique per test. `migrated_db` is session-scoped and this fixture
     # commits, so a fixed ref collides with the previous test's row on
     # (source_id, dataset_version, source_record_ref).
