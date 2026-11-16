@@ -160,6 +160,24 @@ def _persist_plan(units) -> str:
     return plan_id
 
 
+def _is_undefined_table(exc: BaseException) -> bool:
+    """Is this SQLSTATE 42P01 — a relation that does not exist?
+
+    Matched by SQLSTATE rather than by exception class, on purpose and in both
+    places this is asked. The error reaches us wrapped by SQLAlchemy around a
+    psycopg3 error, and psycopg3 is here only transitively through DBOS — this
+    package never declared it, so importing `psycopg.errors.UndefinedTable` to
+    catch would be depending on something nothing guarantees.
+
+    The condition it identifies is one thing in two places: DBOS owns its
+    system schema and creates it in `launch()`, so on a database no worker has
+    ever launched against `dbos.workflow_status` does not exist. What each
+    caller then *does* about that differs, which is why this answers a question
+    rather than handling anything.
+    """
+    return getattr(getattr(exc, "orig", None), "sqlstate", None) == "42P01"
+
+
 class DBOSOrchestrator:
     """Durable execution with no standing service."""
 
@@ -279,12 +297,7 @@ class DBOSOrchestrator:
                 # in shipped SQL, when the actual answer is that a provisioning
                 # step was skipped. Bootstrap provisions it now; this is the
                 # layer that stays correct when something bypasses bootstrap.
-                #
-                # Matched by SQLSTATE, not exception class, for the same reason
-                # as the read path: the error arrives wrapped by SQLAlchemy
-                # around a psycopg3 error, and psycopg3 is a transitive
-                # dependency this package never declared.
-                if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
+                if not _is_undefined_table(exc):
                     raise
                 raise OpsPlaneNotProvisioned() from exc
         else:
@@ -378,12 +391,7 @@ class DBOSOrchestrator:
             # promises `RunStatus | None`, and leaking `UndefinedTable` through
             # it is the same contract break the other track avoids by mapping
             # its engine's not-found onto None.
-            #
-            # Matched by SQLSTATE rather than exception class on purpose: the
-            # error arrives wrapped by SQLAlchemy around a psycopg3 error, and
-            # psycopg3 reaches us only transitively through DBOS — importing it
-            # here would be depending on something this package never declared.
-            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
+            if not _is_undefined_table(exc):
                 raise
             return None
         if not found:

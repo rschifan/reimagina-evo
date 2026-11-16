@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import socket
 
-from scripts.preflight_ports import PortInUse, check_ports, describe_holder
+from scripts.preflight_ports import PortInUse, check_ports, describe_holder, main
 
 
 def _occupied() -> socket.socket:
@@ -80,3 +80,14 @@ def test_describe_holder_never_raises_on_a_free_port():
     free = sock.getsockname()[1]
     sock.close()
     assert isinstance(describe_holder(free), str)
+
+
+def test_a_non_numeric_argument_is_a_message_not_a_traceback():
+    """This script exists to replace an opaque failure with a clear one.
+
+    ``ValueError: invalid literal for int() with base 10: 'notaport'`` out of
+    its own argument parsing is the exact shape of failure it was written to
+    remove — and from the preflight step, it arrives before the banner, so a
+    developer sees a traceback where the whole point was a sentence.
+    """
+    assert main(["notaport:API"]) == 2
