@@ -7,14 +7,17 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 13 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `e5de87bf51091d37ffc90718774fbbc10497365a` |
+| **Generated from commit** | `807abe046d6a2983c2c2eaf5e5c7446159648d95` |
 | **Branch** | `feature/scenario-authoring` |
 | **Working tree at generation** | clean |
+| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `807abe046d6a` on `feature/scenario-authoring` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
 
-⚠ The tag is the authoritative identifier. The commit above is the one
-this file was generated *from*, which is necessarily the commit before
-the one that adds it — a file cannot record the hash of the commit that
-contains it. Resolve the two with `git rev-list -n 1 <tag>`.
+⚠ The tag is the authoritative identifier, and the **Check out** row
+names what to check out for the procedures below. The commit above is
+the one this file was generated *from*, which is necessarily the commit
+before the one that adds it — a file cannot record the hash of the
+commit that contains it. Resolve a tag to its commit with
+`git rev-list -n 1 <tag>`.
 
 ## Artefacts
 
@@ -26,14 +29,14 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 | Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,588 | `0bf5c82c1906feaf7e621ae40583333b32d783c4d29d7d586f1df9a4abfd1fa9` |
 | Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 272,640 | `9a2d737a13f2bbd03be6f43b34e0fa2536d3b416bb6737a3b403497c189ccbec` |
 | Work 4 — source | `docs/delivery/04_technical_documentation.md` | 32,720 | `cf51d4ba13c06590baa9212c39aa002ea10c68ba74a279d63dc50537dd8f286f` |
-| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 385,009 | `8319321370d2a8911c9adef0bf03b3994c9f5b8b56b2ad019edb7c8a1a1be25d` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 66,321 | `3027c67b6d218bc72b59542e8e31e8ae3eb4030ff49f9aaaf0f3a32b7374b4d7` |
+| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 384,226 | `dff693ae318636c075410fd26f8e18068414c74cfce0f6a3040c53f4cbc17228` |
+| Annex — source | `docs/delivery/05_capability_proof.md` | 67,105 | `8b9e598c28077fe5e1dce38d3f3454310bb5dafa5138471ee984a3f6752672c1` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
 
 ## Verifying this
 
 ⚠ **The four PDFs are not in the repository.** They are generated, and
-`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the tag
+`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the delivery
 contains the Markdown sources that produce them and not the PDFs
 themselves. `sha256sum -c` on a bare checkout therefore reports four
 `FAILED open or read` lines, and that is the expected result, not a
@@ -42,7 +45,8 @@ what you have.
 
 ### If you have the delivered PDFs
 
-Put them in a checkout of the tag at the paths the table above gives
+Put them in a checkout of the delivery (the **Check out** row above)
+at the paths the table above gives
 (`docs/delivery/pdf/`), then:
 
 ```bash
@@ -52,7 +56,7 @@ sha256sum -c docs/delivery/SHA256SUMS
 Every line must read `OK`. `SHA256SUMS` carries the same hashes in the
 format that command expects, so nothing has to be compared by eye.
 
-### If you have only the tag
+### If you have only the source
 
 Rebuild them. The PDFs are byte-reproducible: rendering them from the
 same sources produces the same bytes, because the only non-determinism
@@ -66,7 +70,7 @@ sha256sum -c docs/delivery/SHA256SUMS
 
 All nine lines then read `OK`. This is the stronger of the two checks:
 it needs no trust in the delivered files at all, only in the sources
-the tag identifies. It needs `pandoc` and the Chromium that
+the checkout holds. It needs `pandoc` and the Chromium that
 `scripts/render_delivery_pdfs.py` drives; the script names what is
 missing if it cannot find them.
 
@@ -79,8 +83,8 @@ key the recipient has independent reason to trust, and no such key
 exists in this engagement.
 
 ⚠ Neither this file nor `SHA256SUMS` can cover itself. The artefacts
-are covered by `SHA256SUMS`; both files are covered by the commit the
-tag points at.
+are covered by `SHA256SUMS`; both files are covered by the delivery
+commit the **Check out** row names.
 
 ---
 
