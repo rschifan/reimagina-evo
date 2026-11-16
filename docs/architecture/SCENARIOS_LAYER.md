@@ -506,17 +506,24 @@ Then submit a run for the scenario. There is no separate "mark stale" step to pe
 
 ### Duplicating a scenario
 
-A scenario is its override rows, so cloning one is a single copy.
+A named scenario is its **edits**; its override rows are derived from them. Clone the edits, not the overrides, and let materialisation write the rest.
 
-```sql
-INSERT INTO curated_geo.scenario_override
-  (scenario_id, feature_id, attribute_key, value_numeric, value_text)
-SELECT :new_scenario_id, feature_id, attribute_key, value_numeric, value_text
-FROM curated_geo.scenario_override
-WHERE scenario_id = :source_scenario_id;
-```
+⚠ Copying only `scenario_override` rows looks complete and is not. The clone shows no drawn areas and cannot be edited, and the first `scenario recompute` on it deletes every copied override, because materialisation step 4 removes any override that no surviving edit implies. A clone with no edits implies none.
 
-The copy has no results until a run is submitted for the new id. A copied id with no `app_core.scenario` row is invisible to `explore.scenario_v`; cloning a *named* scenario means creating the row first.
+1. Create the scenario through `create_scenario` (or `scenario create`, or `POST /scenarios`) rather than inserting the row. That call is the only place an AOI is checked against the project, a tie the schema does not enforce (see r048).
+2. Copy the edits, keeping their ordinals so the clone resolves overlapping areas in the same order:
+
+   ```sql
+   INSERT INTO curated_geo.scenario_edit
+     (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+   SELECT :new_scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric
+   FROM curated_geo.scenario_edit
+   WHERE scenario_id = :source_scenario_id;
+   ```
+
+3. Recompute the new id. Materialisation writes its overrides and publishes its versions, and the run that follows computes its results. Until then the clone has edits but no overrides and no results, which `explore.scenario_v` shows as an `override_count` of 0.
+
+A bare override set with no `app_core.scenario` row is still a valid what-if for the engine, as described above, but it is invisible to `explore.scenario_v` and to every authoring surface.
 
 There is no archive operation and no status column. Deleting a scenario retires its traces (see *The scenario id* above): its overrides are removed and its results are marked `stale`, so `current_indicator_v` no longer returns them. The stale rows remain in `indicator_result` as history, but they are no longer readable as the scenario's results or for comparison.
 
