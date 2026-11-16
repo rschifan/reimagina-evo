@@ -7,7 +7,7 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 13 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `8c93b8831fb2064629194c9c7b0237dd0316e941` |
+| **Generated from commit** | `e5de87bf51091d37ffc90718774fbbc10497365a` |
 | **Branch** | `feature/scenario-authoring` |
 | **Working tree at generation** | clean |
 
@@ -27,7 +27,7 @@ contains it. Resolve the two with `git rev-list -n 1 <tag>`.
 | Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 272,640 | `9a2d737a13f2bbd03be6f43b34e0fa2536d3b416bb6737a3b403497c189ccbec` |
 | Work 4 — source | `docs/delivery/04_technical_documentation.md` | 32,720 | `cf51d4ba13c06590baa9212c39aa002ea10c68ba74a279d63dc50537dd8f286f` |
 | Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 385,009 | `8319321370d2a8911c9adef0bf03b3994c9f5b8b56b2ad019edb7c8a1a1be25d` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 66,270 | `cd66605d9adbd8400d1f5e495a08e8cb274ba8f595724a2a8b566c7668b31ce5` |
+| Annex — source | `docs/delivery/05_capability_proof.md` | 66,321 | `3027c67b6d218bc72b59542e8e31e8ae3eb4030ff49f9aaaf0f3a32b7374b4d7` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
 
 ## Verifying this
