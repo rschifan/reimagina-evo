@@ -654,9 +654,13 @@ def _refuse_ceiling_breaches(
     by_type: dict[str, list[str]] = {}
     for feature_id in feature_ids:
         by_type.setdefault(feature_type[feature_id], []).append(feature_id)
-    baseline: dict[str, dict[str, float]] = {k: {} for k in _CEILING_ATTRIBUTES}
+    # `floors` beside the three ceiling inputs: the planned-floors bound is
+    # checked against the attribute that indicator reads, and `floors` is
+    # authorable on its own, so it can differ from `num_levels`.
+    checked = (*_CEILING_ATTRIBUTES, "floors")
+    baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
     for type_id, ids in by_type.items():
-        for key in _CEILING_ATTRIBUTES:
+        for key in checked:
             baseline[key].update(
                 effective_numeric(
                     conn,
@@ -685,6 +689,7 @@ def _refuse_ceiling_breaches(
             unit_size=_value(feature_id, "unit_size"),
             people_per_household=_value(feature_id, "people_per_household"),
             area_m2=float(areas.get(feature_id, 0.0)),
+            floors=_value(feature_id, "floors"),
         )
         for feature_id in feature_ids
     )

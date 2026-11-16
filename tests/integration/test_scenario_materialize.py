@@ -24,6 +24,7 @@ import pytest
 from reimagina.data import aoi as aoi_mod, feature as feat
 from reimagina.indicators.catalog import EDIFICABILITY_BLOCK_DENSITY, seed_catalog
 from reimagina.indicators.edificability import compute_block_housing_density
+from reimagina.scenarios.ceilings import FLOORS
 from reimagina.assets.keys import partition_key, scenario_override_asset_key
 from reimagina.assets.registry import seed_assets
 from reimagina.scenarios import authoring
@@ -44,6 +45,7 @@ from tests.integration._helpers import (
 )
 
 _DENSITY = EDIFICABILITY_BLOCK_DENSITY.slug
+_FLOORS = FLOORS
 
 # A row of six ~210 m squares at 19.40°N, each ~46,500 m². Spaced so a drawn
 # rectangle can take any prefix of them without clipping the next.
@@ -404,6 +406,27 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
     assert {b.feature_id for b in exc.value.breaches} == set(t.blocks[:4])
     assert _override_count(conn, sid) == 0
     assert _materialized_at(conn, sid) is None
+
+
+def test_a_floors_edit_is_judged_on_floors_not_on_num_levels(conn):
+    """``floors=201`` over ``num_levels=6`` is refused.
+
+    The two are separate authorable attributes. The planned-floors indicator
+    reads ``floors``, and its ``valid_max`` is 200, so this run would abort
+    the compute; checking ``num_levels`` in its place saw six storeys and let
+    it through.
+    """
+    t = _Territory(conn, attributes=_BASE)
+    sid = t.scenario()
+    t.edit(sid, _AREA_0_3, "num_levels", 6)
+    t.edit(sid, _AREA_0_3, "floors", 201)
+
+    with pytest.raises(CeilingExceeded) as exc:
+        materialize_scenario(conn, scenario_id=sid)
+
+    assert {b.indicator_slug for b in exc.value.breaches} == {_FLOORS}
+    assert {b.would_be for b in exc.value.breaches} == {201}
+    assert _override_count(conn, sid) == 0
 
 
 def test_one_district_breaching_does_not_refuse_on_a_blend(conn):

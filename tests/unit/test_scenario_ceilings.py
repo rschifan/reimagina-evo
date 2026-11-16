@@ -99,6 +99,40 @@ def test_a_floors_breach_is_found_though_density_is_legal():
     )
 
 
+def test_the_floors_bound_judges_floors_not_levels_when_they_differ():
+    """``floors`` is authorable on its own, and the indicator reads *it*.
+
+    Six levels over 201 floors is a block whose planned-floors result the
+    catalog's ``valid_max`` refuses. Judging ``levels`` in its place found
+    nothing to refuse, so the breach surfaced only as a plpgsql exception
+    halfway through the compute — the failure this module exists to prevent.
+    """
+    over = max_floors() + 1
+    six_levels_tall_floors = BlockInputs(
+        feature_id="b1",
+        levels=6,
+        unit_size=60,
+        people_per_household=3.6,
+        area_m2=SMALL,
+        floors=over,
+    )
+    [breach] = check_ceilings([six_levels_tall_floors])
+    assert breach.indicator_slug == FLOORS
+    assert breach.would_be == over
+
+    # And the converse: the bound reads `floors`, so legal floors pass even
+    # where `levels` alone would have been refused on the floors bound.
+    tall_levels_legal_floors = BlockInputs(
+        feature_id="b1",
+        levels=over,
+        unit_size=1e6,  # density legal, so only the floors bound is in play
+        people_per_household=3.6,
+        area_m2=1,
+        floors=6,
+    )
+    assert check_ceilings([tall_levels_legal_floors]) == []
+
+
 def test_two_breaches_on_one_block_are_both_reported():
     # 13 storeys at 60 m2 breaches density; the floors bound is breached too
     # once levels pass it, and the block must yield an entry for each.

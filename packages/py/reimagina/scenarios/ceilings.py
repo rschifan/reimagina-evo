@@ -11,9 +11,13 @@ run.
 Four bounds are reachable from the authorable attributes (levels, unit size,
 people per household):
 
-* ``urban_form_block_planned_floors`` = ``levels`` itself, because ``floors``
-  is written unchanged from ``--levels``. It depends on neither unit size nor
-  area, so it holds for every block and a form can pre-check it too.
+* ``urban_form_block_planned_floors`` = the effective ``floors`` attribute,
+  which the indicator reads directly. A proposal writes it unchanged from
+  ``--levels``, so the two are usually equal — but ``floors`` is authorable on
+  its own, and checking ``levels`` in its place passed ``floors=201`` over
+  ``num_levels=6``. ``BlockInputs.floors`` carries it; absent, it falls back
+  to ``levels``, which is what a form pre-checking one number means. It
+  depends on neither unit size nor area, so it holds for every block.
 
 * ``edificability_block_density`` = ``10000 * levels / unit_size``. Block area
   cancels, so this one is a property of the values alone.
@@ -55,6 +59,9 @@ class BlockInputs:
     unit_size: float
     people_per_household: float
     area_m2: float
+    #: The effective ``floors`` value, when it is known separately from
+    #: ``levels``. ``None`` means "the same as ``levels``".
+    floors: float | None = None
 
 
 @dataclass(frozen=True)
@@ -114,11 +121,10 @@ def check_ceilings(blocks: Iterable[BlockInputs]) -> list[CeilingBreach]:
     floors_bound = _bound_for(FLOORS)
     breaches: list[CeilingBreach] = []
     for b in blocks:
-        if b.levels <= 0:
-            continue
-        if b.levels > floors_bound:
-            breaches.append(CeilingBreach(b.feature_id, FLOORS, floors_bound, b.levels))
-        if b.unit_size <= 0:
+        floors = b.levels if b.floors is None else b.floors
+        if floors > floors_bound:
+            breaches.append(CeilingBreach(b.feature_id, FLOORS, floors_bound, floors))
+        if b.levels <= 0 or b.unit_size <= 0:
             continue
         density = _M2_PER_HECTARE * b.levels / b.unit_size
         units = b.area_m2 * b.levels / b.unit_size if b.area_m2 > 0 else 0.0
