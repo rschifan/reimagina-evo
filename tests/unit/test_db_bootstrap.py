@@ -116,6 +116,29 @@ def _bootstrap(**overrides):
     )
 
 
+def test_bootstrap_local_platform_defaults_to_no_test_database(monkeypatch):
+    """The production path, which the two tests around it only bracket.
+
+    One checks `bootstrap_postgres(test_dsn=None)` directly; the other patches
+    `bootstrap_local_platform` out entirely to watch the CLI. This is the layer
+    between them — the one `bootstrap-db` actually calls — and it is where the
+    `if test_dsn is not None` scheme-validation guard lives. Its default is the
+    whole point of the fix: run as the ops runbook prints it, this must create
+    no second database.
+    """
+    _stub_collaborators(monkeypatch)
+
+    result = bootstrap_local_platform(
+        app_dsn=POOLED_APP_DSN,
+        admin_dsn="postgresql://localhost/postgres",
+    )
+
+    assert "test" not in result, (
+        "a bare bootstrap-db must not report a test database it never created"
+    )
+    assert result["app"]["dsn"] == POOLED_APP_DSN
+
+
 def test_bootstrap_local_platform_runs_create_then_migrate(monkeypatch):
     recorder = _stub_collaborators(monkeypatch, app_created=False)
 

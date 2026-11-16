@@ -278,7 +278,7 @@ def status() -> int:
 
 @app.command(
     "bootstrap-db",
-    help="Create local app/test DBs if needed and migrate both to head",
+    help="Create the app DB if needed and migrate to head (--with-test-db for both)",
 )
 def bootstrap_db(
     app_dsn: str = typer.Option(
@@ -306,7 +306,7 @@ def bootstrap_db(
         "--admin-dsn",
         envvar="DATABASE_URL_ADMIN",
         help=(
-            "Database to connect to in order to CREATE the other two. Needs a "
+            "Database to connect to in order to CREATE the others. Needs a "
             "role that may create databases and extensions."
         ),
     ),

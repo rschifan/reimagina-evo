@@ -34,8 +34,13 @@ CLI form:
 1. Bootstrap the local app and test databases:
 
 ```bash
-python -m apps.cli.app bootstrap-db
+python -m apps.cli.app bootstrap-db --with-test-db
 ```
+
+`--with-test-db` because the test database is opt-in: `bootstrap-db` is also
+the ops runbook's remedy for a production database, and it must not create one
+there. Without the flag you get the app database only, and the integration
+suite has nothing to run against.
 
 2. Verify the canonical first-layer relations exist:
 

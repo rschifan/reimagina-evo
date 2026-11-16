@@ -383,6 +383,32 @@ export async function refusalText(
     );
   }
   if (status === 503) {
+    // ⚠ Two conditions answer 503 on `recompute`, and only one of them is an
+    // outage. `ops_plane_not_provisioned` means the job service's own storage
+    // was never created — the database is fine, and no amount of retrying will
+    // change that. Read off the status alone, this branch told a planner the
+    // database was unreachable and to try again in a moment: both false, and
+    // the advice can never succeed. That is the defect the server-side 503
+    // exists to remove, relocated to the client.
+    //
+    // The code is taken from the envelope, not from `d`, because `code` above
+    // reads only FastAPI's `detail` shape and this refusal carries the
+    // project's error envelope.
+    if (envelope?.code === "ops_plane_not_provisioned") {
+      // Safe to say the edits stand, which the outage branch below cannot: this
+      // is raised by the enqueue, and the enqueue runs only after the
+      // materialisation has committed.
+      //
+      // No command in the sentence — this module's dialect names fields, never
+      // flags, because a message describing a command line is written for
+      // someone this API does not have. `served` still appends the server's own
+      // remedy for whoever can act on it.
+      return (
+        "The edits were written and committed; the job service is not ready " +
+        "to recompute them yet. Nothing is wrong with your request — this " +
+        `deployment needs an operator to finish setting it up.${suffix(served)}`
+      );
+    }
     // Deliberately claims nothing about what was written: on `recompute` this
     // outage can arrive either side of the commit, which is exactly why the
     // router refuses to answer the enqueue half with a different code.

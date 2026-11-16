@@ -22,7 +22,7 @@ The current target state is:
 make install                   # Python + web deps
 export DATABASE_URL=postgresql://localhost/reimagina_app
 createdb reimagina_app
-make migrate                   # apps.cli.app bootstrap-db
+make migrate                   # apps.cli.app bootstrap-db --with-test-db
 make verify-sources            # data verify-sources (uses OVERTURE_DEFAULT_RELEASE)
 ```
 

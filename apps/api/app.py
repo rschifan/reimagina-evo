@@ -145,8 +145,16 @@ def create_app(
     app.add_exception_handler(psycopg2.Error, errors.database_error_handler)
     # Every route that submits a run, not only `POST /jobs`: `rerun` and the
     # scenario recompute reach the same `submit_run` and answered 500 for a
-    # condition whose remedy is a command. Starlette dispatches by MRO, so this
-    # wins over the `Exception` catch-all below regardless of order.
+    # condition whose remedy is a command.
+    #
+    # Order relative to the `Exception` entry below is irrelevant, but not for
+    # the reason "MRO" would suggest: `build_middleware_stack` pulls the
+    # `Exception`/500 handler out into `ServerErrorMiddleware`, the outermost
+    # layer, and hands every other handler to `ExceptionMiddleware`, the
+    # innermost. So the catch-all is not among the handlers this one is matched
+    # against at all — the inner middleware answers first and the outer never
+    # sees the exception. `test_unhandled_exceptions_use_this_apps_handler`
+    # rests on exactly that split.
     app.add_exception_handler(
         OpsPlaneNotProvisioned, errors.ops_plane_not_provisioned_handler
     )
@@ -212,10 +220,13 @@ def create_app(
     # all; everything 5xx falls through to `errors.unhandled_error_handler` for
     # the envelope and the request id.
     #
-    # Accepted consequence: those three now log a traceback per request, via
-    # `log.exception`, where titiler's factory logged nothing. A COG this
-    # process cannot open is an operator fault that should be loud, and the
-    # volume is bounded by how long the broken state lasts.
+    # Accepted consequence: those three now log a traceback per request where
+    # titiler's factory logged nothing — in fact two, because
+    # `ServerErrorMiddleware` re-raises after sending the response, so
+    # `log.exception` is followed by the server's own "Exception in ASGI
+    # application". A COG this process cannot open is an operator fault that
+    # should be loud, and the volume is bounded by how long the broken state
+    # lasts.
     raster_status_codes = {
         exc: code for exc, code in DEFAULT_STATUS_CODES.items() if code < 500
     }
