@@ -309,8 +309,11 @@ def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
       ``asset_version``, which is invisible to freshness, so no indicator ever
       recomputes against them and the scenario quietly shows baseline numbers.
 
-    ``remove_edit`` is not on it: it deletes by edit id and collides with the
-    others only at its second statement, the ``updated_at`` touch.
+    ``remove_edit`` takes it too, but for lock *order* rather than for a read:
+    ``delete_scenario`` locks the scenario and reaches the edits last, through
+    the cascade, so a remover that locked the edit first and the scenario
+    second would deadlock against it. Every writer here locks the scenario
+    before any of its edits.
 
     Taking it first, before anything is read, is what makes the whole
     materialisation see one state; it is released when the caller commits, so a
@@ -422,18 +425,39 @@ def remove_edit(conn: Any, *, edit_id: str) -> bool:
 
     Ordinals are not renumbered: they only have to be ordered, not dense, and
     renumbering would rewrite rows other readers may hold ids for.
+
+    The scenario is locked *before* the edit is touched, which is the order
+    ``delete_scenario`` uses (scenario first, edits last by cascade). Deleting
+    the edit first and touching ``updated_at`` second — the obvious order —
+    deadlocks against a concurrent delete: each transaction holds the row the
+    other is waiting for. The edit's scenario is read unlocked only to know
+    which row to lock; the delete below re-checks that the edit still belongs
+    to it, and a scenario deleted in the meantime reads as "nothing removed".
     """
     _require_postgres(conn)
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM curated_geo.scenario_edit WHERE id = %s RETURNING scenario_id",
+            "SELECT scenario_id FROM curated_geo.scenario_edit WHERE id = %s",
             (edit_id,),
         )
         row = cur.fetchone()
         if row is None:
             return False
+        scenario_id = str(row[0])
+        try:
+            _lock_scenario(cur, scenario_id)
+        except ScenarioNotFound:
+            return False
         cur.execute(
-            "UPDATE app_core.scenario SET updated_at = now() WHERE id = %s", (row[0],)
+            "DELETE FROM curated_geo.scenario_edit "
+            "WHERE id = %s AND scenario_id = %s RETURNING 1",
+            (edit_id, scenario_id),
+        )
+        if cur.fetchone() is None:
+            return False
+        cur.execute(
+            "UPDATE app_core.scenario SET updated_at = now() WHERE id = %s",
+            (scenario_id,),
         )
         return True
 

@@ -526,3 +526,115 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
                 c.close()
             except Exception as exc:  # noqa: BLE001 - warned about, never fatal
                 warnings.warn(f"close failed: {exc}", stacklevel=2)
+
+
+def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
+    migrated_db,
+):
+    """``remove_edit`` and ``delete_scenario`` take their locks in one order.
+
+    ``delete_scenario`` locks the scenario row first and reaches the edits
+    last, through the cascade. ``remove_edit`` used to do the opposite: delete
+    the edit, then touch the scenario's ``updated_at``. Run together, each
+    holds what the other waits for — the remover holds the edit row and waits
+    on the scenario, the delete holds the scenario and its cascade waits on the
+    edit — and Postgres breaks the cycle by aborting one of them with
+    ``DeadlockDetected``. An edit removal from the map racing a delete from
+    the CLI is the ordinary way to get there.
+
+    Deterministic rather than timed: the delete takes its lock, the remover is
+    started, and the test waits until Postgres reports that backend blocked on
+    a lock before letting the delete run on to its cascade. With the lock
+    taken first, the remover is blocked before it has touched the edit, so the
+    delete finishes and the remover then finds nothing to remove.
+    """
+    c_del = psycopg2.connect(migrated_db)
+    c_rm = psycopg2.connect(migrated_db)
+    setup = psycopg2.connect(migrated_db)
+    territory = None
+    sid = None
+    try:
+        territory = _Territory(setup, suffix="_remove_vs_delete")
+        sid = territory.scenario(name="Removed while deleted")
+        setup.commit()
+        edit_id = get_scenario(setup, sid)["edits"][0]["id"]
+
+        with c_del.cursor() as cur:
+            authoring._lock_scenario(cur, sid)
+
+        outcome: list[object] = []
+
+        def remove() -> None:
+            try:
+                outcome.append(authoring.remove_edit(c_rm, edit_id=edit_id))
+                c_rm.commit()
+            except BaseException as exc:  # noqa: BLE001 - asserted on below
+                outcome.append(exc)
+
+        rm_pid = c_rm.get_backend_pid()
+        remover = threading.Thread(target=remove)
+        remover.start()
+        try:
+            with setup.cursor() as cur:
+                for _ in range(300):
+                    cur.execute(
+                        "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s",
+                        (rm_pid,),
+                    )
+                    row = cur.fetchone()
+                    setup.rollback()
+                    if row is not None and row[0] == "Lock":
+                        break
+                    threading.Event().wait(0.05)
+                else:
+                    pytest.fail("remove_edit never blocked on a lock")
+
+            delete_scenario(c_del, scenario_id=sid)
+            c_del.commit()
+        finally:
+            remover.join(timeout=30)
+
+        assert not remover.is_alive()
+        assert outcome == [False], outcome
+        assert get_scenario(setup, sid) is None
+    finally:
+        for c in (c_del, c_rm):
+            try:
+                c.rollback()
+            except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+                warnings.warn(f"rollback failed: {exc}", stacklevel=2)
+        setup.rollback()
+        if territory is not None:
+            if sid is not None:
+                for table in ("asset_version", "asset_materialization"):
+                    discard(
+                        setup,
+                        f"DELETE FROM curated_geo.{table} WHERE partition_key = %s",
+                        partition_key({"scenario": sid}),
+                    )
+            discard(
+                setup,
+                "DELETE FROM app_core.project WHERE id = %s",
+                territory.project_id,
+            )
+            discard(
+                setup,
+                "DELETE FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
+                territory.blocks,
+            )
+            discard(
+                setup,
+                "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
+                "(SELECT id FROM curated_geo.data_source_catalog WHERE name = %s)",
+                territory.source_name,
+            )
+            discard(
+                setup,
+                "DELETE FROM curated_geo.data_source_catalog WHERE name = %s",
+                territory.source_name,
+            )
+        for c in (c_del, c_rm, setup):
+            try:
+                c.close()
+            except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+                warnings.warn(f"close failed: {exc}", stacklevel=2)
