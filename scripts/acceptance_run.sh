@@ -214,6 +214,43 @@ with open(os.environ["AREA_GEOJSON"], "w") as handle:
 print(f"  drew {os.environ['AREA_GEOJSON']}")
 PYEOF
 
+# A `--keep` run reuses the "Synthetic Mexicali" project by name, and a
+# scenario name is unique within its project, so the previous run's scenario
+# would make `scenario create` refuse and `set -e` stop the run here. It is
+# deleted through `delete_scenario`, the same call the API's DELETE makes, so
+# its overrides, versions, results and materialisations go with it rather
+# than lingering as orphans no FK can follow.
+if [[ $KEEP -eq 1 ]]; then
+  $PY - <<'PYEOF'
+import contextlib
+import os
+import sys
+
+sys.path.insert(0, "packages/py")
+from apps.cli.scenario import list_scenarios  # noqa: E402
+from reimagina.scenarios.authoring import delete_scenario  # noqa: E402
+from reimagina.storage import connect  # noqa: E402
+
+dsn = os.environ["DATABASE_URL"]
+with contextlib.closing(connect(dsn)) as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT project_id::text FROM curated_geo.area_of_interest WHERE id = %s",
+            (os.environ["AOI_ID"],),
+        )
+        (project_id,) = cur.fetchone()
+    stale = [
+        s["id"]
+        for s in list_scenarios(dsn=dsn, project_id=project_id)["scenarios"]
+        if s["name"] == "Acceptance upzoning"
+    ]
+    for scenario_id in stale:
+        delete_scenario(conn, scenario_id=scenario_id)
+        print(f"  removed the previous run's scenario {scenario_id}")
+    conn.commit()
+PYEOF
+fi
+
 CREATED="$($CLI scenario create --name "Acceptance upzoning" --aoi-id "$AOI_ID")"
 echo "$CREATED"
 SCENARIO_ID="$($PY -c 'import json,sys; print(json.load(sys.stdin)["scenario_id"])' <<<"$CREATED")"
