@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,13 +17,63 @@ try:
     #
     # The two branches deliberately bind different classes to one name, which
     # is what the fallback is for, so the assignment is ignored rather than
-    # unified — and the `click_type=click.Choice(...)` sites below are typer's
-    # documented idiom, which its stubs carry no overload for. Both suppressions
-    # are stub friction, not defects: all 48 commands answer `--help` and the
-    # suite is green.
+    # unified.
     from typer._click.exceptions import ClickException as _TyperClickException
 except ImportError:  # pragma: no cover
     from click.exceptions import ClickException as _TyperClickException  # type: ignore[assignment]
+
+# Option vocabularies. typer renders a `StrEnum` as a choice list, validates
+# against it and completes it in the shell — which is what these used to get
+# from `click_type=click.Choice([...])`. typer 0.29 removed `click_type`
+# outright (no replacement parameter), and because a `typer.Option(...)` call
+# is a default value it is evaluated at import, so the old form did not
+# degrade: it raised `TypeError` and took all 48 commands down with it.
+#
+# `StrEnum` rather than `(str, Enum)`: the members are passed straight into
+# functions and f-strings that expect the bare value, and only `StrEnum`
+# guarantees `str(member) == member.value` on 3.12.
+
+
+class _DatasetTier(StrEnum):
+    smoke = "smoke"
+    representative = "representative"
+    stress = "stress"
+
+
+class _PerfReportFormat(StrEnum):
+    json = "json"
+
+
+class _CdmxLayer(StrEnum):
+    municipalities = "municipalities"
+    agebs = "agebs"
+    blocks = "blocks"
+    colonias = "colonias"
+
+
+class _AggregationKind(StrEnum):
+    intensive = "intensive"
+    extensive = "extensive"
+
+
+class _DerivationInputKind(StrEnum):
+    raster = "raster"
+    observation = "observation"
+
+
+class _AggregationMethod(StrEnum):
+    mean = "mean"
+    weighted_mean = "weighted_mean"
+    sum = "sum"
+    min = "min"
+    max = "max"
+
+
+class _WeightBasis(StrEnum):
+    area = "area"
+    length = "length"
+    presence = "presence"
+
 
 packages_dir = Path(__file__).resolve().parents[2] / "packages" / "py"
 if str(packages_dir) not in sys.path:
@@ -645,10 +696,9 @@ app.add_typer(perf_app, name="perf")
 )
 def perf_seed_observations(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
-    dataset_tier: str = typer.Option(  # type: ignore[call-overload]
-        "smoke",
+    dataset_tier: _DatasetTier = typer.Option(
+        _DatasetTier.smoke,
         "--dataset-tier",
-        click_type=click.Choice(["smoke", "representative", "stress"]),
     ),
     feature_limit: Optional[int] = typer.Option(None, "--feature-limit"),
 ) -> int:
@@ -666,10 +716,9 @@ def perf_seed_observations(
 )
 def perf_run(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
-    dataset_tier: str = typer.Option(  # type: ignore[call-overload]
-        "smoke",
+    dataset_tier: _DatasetTier = typer.Option(
+        _DatasetTier.smoke,
         "--dataset-tier",
-        click_type=click.Choice(["smoke", "representative", "stress"]),
     ),
     benchmark: Optional[list[str]] = typer.Option(None, "--benchmark"),
     iterations: Optional[int] = typer.Option(None, "--iterations"),
@@ -692,10 +741,9 @@ def perf_run(
 def perf_explain(
     benchmark_name: str = typer.Argument(...),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
-    dataset_tier: str = typer.Option(  # type: ignore[call-overload]
-        "smoke",
+    dataset_tier: _DatasetTier = typer.Option(
+        _DatasetTier.smoke,
         "--dataset-tier",
-        click_type=click.Choice(["smoke", "representative", "stress"]),
     ),
 ) -> int:
     return _print(
@@ -714,7 +762,7 @@ def perf_explain(
 def perf_report(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     limit: int = typer.Option(10, "--limit"),
-    format: str = typer.Option("json", "--format", click_type=click.Choice(["json"])),  # type: ignore[call-overload]
+    format: _PerfReportFormat = typer.Option(_PerfReportFormat.json, "--format"),
 ) -> int:
     return _print(
         performance_report(
@@ -896,10 +944,9 @@ app.add_typer(cdmx_app, name="cdmx")
 
 @cdmx_app.command("fetch", help="Download (or reuse cached) archive for one CDMX layer")
 def cdmx_fetch(
-    layer: str = typer.Option(  # type: ignore[call-overload]
+    layer: _CdmxLayer = typer.Option(
         ...,
         "--layer",
-        click_type=click.Choice(["municipalities", "agebs", "blocks", "colonias"]),
     ),
     overwrite: bool = typer.Option(False, "--overwrite"),
 ) -> int:
@@ -1437,10 +1484,9 @@ def raster_ingest(
         "--layer-slug",
         help="Stable slug for the raster_layer row (e.g. lst_day_2026_01_15)",
     ),
-    aggregation_kind: str = typer.Option(  # type: ignore[call-overload]
-        "intensive",
+    aggregation_kind: _AggregationKind = typer.Option(
+        _AggregationKind.intensive,
         "--aggregation-kind",
-        click_type=click.Choice(["intensive", "extensive"]),
         help="Drives default zonal-stats; use 'extensive' for count/sum-per-pixel rasters",
     ),
     logical_name: Optional[str] = typer.Option(None, "--logical-name"),
@@ -1699,10 +1745,9 @@ raster_app.add_typer(derivation_app, name="derivation")
     "to materialise the observations it produces.",
 )
 def derivation_add(
-    input_kind: str = typer.Option(  # type: ignore[call-overload]
+    input_kind: _DerivationInputKind = typer.Option(
         ...,
         "--input-kind",
-        click_type=click.Choice(["raster", "observation"]),
     ),
     target_feature_type: str = typer.Option(
         ...,
@@ -1714,10 +1759,9 @@ def derivation_add(
         "--attribute-key-prefix",
         help="Output prefix — one observation per (feature, <prefix>_<suffix>)",
     ),
-    method: str = typer.Option(  # type: ignore[call-overload]
+    method: _AggregationMethod = typer.Option(
         ...,
         "--method",
-        click_type=click.Choice(["mean", "weighted_mean", "sum", "min", "max"]),
     ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     raster_layer_slug: Optional[str] = typer.Option(
@@ -1733,10 +1777,9 @@ def derivation_add(
         "--input-feature-type",
         help="Required if --input-kind=observation (grain of the source observations)",
     ),
-    weight_basis: Optional[str] = typer.Option(  # type: ignore[call-overload]
+    weight_basis: Optional[_WeightBasis] = typer.Option(
         None,
         "--weight-basis",
-        click_type=click.Choice(["area", "length", "presence"]),
         help="Required with --method=weighted_mean for observation inputs",
     ),
     params: Optional[str] = typer.Option(
