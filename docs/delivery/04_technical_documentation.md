@@ -2,7 +2,7 @@
 title: "Technical documentation"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 4"
 author: "Rossano Schifanella"
-date: "11 November 2026"
+date: "13 November 2026"
 ---
 
 ## Document control
@@ -22,6 +22,11 @@ date: "11 November 2026"
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
 | 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
+| 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
+
+### Provenance of the figures
+
+Re-measured on 13 November 2026, at migration `r049`: the install appendix in §10 (revision, table count, every test count) and the acceptance run's duration in §7.1. Carried forward from an earlier measurement and not re-measured for this revision: the "22,500 blocks, ~40 s" generation time in §6.1, and the third-party dependency inventory.
 
 ### About this document
 
@@ -238,7 +243,7 @@ cd apps/web && npm test                # web unit tests
 > schema from `TEST_DATABASE_URL`. Name the suites you want.
 
 For an end-to-end check that the platform *does* something rather than merely
-starts — a populated database, eleven computed indicators, tiles with features
+starts — a populated database, twelve computed indicators, tiles with features
 in them — run `scripts/acceptance_run.sh` (§7.1). It needs no credentials.
 
 The three hand-run suites are `performance` (benchmark budgets and
@@ -278,9 +283,10 @@ On a sixteen-block territory every unit finishes in milliseconds and the
 crash arrives after the work is already done, which would prove the opposite
 of what the test claims.
 
-**What none of these cover.** `evaluate-scenario --sync` runs the coordinator
-in-process with no ops plane at all. It is the path that still works when the
-engine is down, and steps 10 and 11 of the acceptance run use it — so a green
+**What none of these cover.** `scenario recompute --sync` (and
+`evaluate-scenario --sync`) runs the coordinator in-process with no ops plane
+at all. It is the path that still works when the engine is down, and steps 10
+and 11 of the acceptance run use it — so a green
 acceptance run before step 12 says nothing about the orchestrator. That is
 why step 12 exists.
 
@@ -404,7 +410,7 @@ closes it.
 ### 7.1 Without credentials — a generated territory
 
 If you have no access to the data lake, this is the path to a populated
-system. It takes about a minute and needs no network:
+system. It takes about a minute and a half and needs no network:
 
 ```bash
 scripts/acceptance_run.sh
@@ -661,15 +667,16 @@ is reported with its actual result.
 |---|---|---|
 | 1 | `cp .env.example .env` | OK |
 | 2 | `make install` | OK |
-| 3 | `make migrate` | Both databases created and migrated to `r047`; 24 tables in `curated_geo` |
+| 3 | `make migrate` | Both databases created and migrated to `r049`; 25 tables in `curated_geo` |
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
 | 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 655 passed |
-| 7 | `pytest tests/integration` | 366 passed, 1 skipped |
+| 6 | `pytest tests/unit tests/contract` | 954 passed |
+| 7 | `pytest tests/integration` | 502 passed, 1 skipped |
 | 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,038 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 141 passed |
+| 8b | `pytest tests/performance` | 6 passed, 1 skipped |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,473 passed, 2 skipped |
+| 10 | `cd apps/web && npm test` | 253 passed |
 | 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 27 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
@@ -680,8 +687,9 @@ it is a different assertion from steps 6–8 run in sequence. CI runs each suite
 as its own process, so nothing there exercises state cached across suites — and
 a reader's first instinct is `pytest`, not four invocations. One such leak
 existed and is fixed (`dbos_orchestrator._client()` cached a client against
-the first DSN the process saw; see §9.2). The skips are the browser suite,
-which needs servers running, and two fixtures that need upstream data.
+the first DSN the process saw; see §9.2). The two skips are one integration test that needs `ogr2ogr` with the PMTiles
+driver (GDAL 3.8 or later), and one conformance test that does not apply to the
+synchronous orchestrator, which finishes a run before `submit_run` returns.
 
 The database-backed suites are run with `REIMAGINA_REQUIRE_DB=1`. Without it
 `pytest` exits 0 when every database test *skips*, and "322 skipped, 6 passed"

@@ -2313,7 +2313,12 @@ class PostgresIndicatorCatalogRepository:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def list_indicators(self, *, with_values_for_aoi: str | None = None) -> list[dict]:
+    def list_indicators(
+        self,
+        *,
+        with_values_for_aoi: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict]:
         """Catalog rows, optionally only those with current values in an AOI.
 
         The catalog says what an indicator *is*, not whether anyone has
@@ -2324,10 +2329,40 @@ class PostgresIndicatorCatalogRepository:
         map, which reads as a broken indicator rather than an absent one.
 
         ``with_values_for_aoi`` narrows to indicators holding at least one
-        ``status='current'`` baseline result on a feature belonging to that
-        AOI. Scenario rows are excluded (``scenario_id IS NULL``): a value
-        that exists only inside a what-if is not a reason to offer the
-        indicator on the baseline map.
+        ``status='current'`` result on a feature belonging to that AOI.
+
+        ``scenario_id`` says which results count. Omitted, only baseline rows
+        do (``scenario_id IS NULL``): a value that exists only inside a what-if
+        is not a reason to offer the indicator on the baseline map. Given, the
+        scenario's own rows count **as well as** the baseline's — the five
+        edificability indicators have no baseline rows at all, so a picker
+        counting baseline rows only hides exactly the indicators a scenario
+        exists to answer, while one counting the scenario's rows only drops
+        every indicator it did not recompute, each of which still renders
+        through to its baseline value under ``_utils.scenario_overlay``.
+
+        ⚠ Widened to ``scenario_id = %s OR scenario_id IS NULL``, and
+        deliberately **not** the ``scenario_overlay`` anti-join every other
+        scenario read uses. The difference is whether the predicate's query
+        emits rows. It does in ``get_current``,
+        ``list_current_for_indicator``, ``list_current_with_geometry``,
+        ``value_stats``, ``fetch_aoi_children`` and
+        ``serving_geo.indicator_overlay_tile``, where both rows matching for a
+        feature the scenario recomputed means that feature is returned or
+        averaged twice — the bug the anti-join exists to close. Here the
+        predicate sits inside an ``EXISTS`` over ``indicator_catalog``: it
+        emits nothing and answers "is there at least one", so one matching row
+        and two are the same answer and double-counting is unrepresentable.
+        The anti-join would buy that nothing for a correlated ``NOT EXISTS``
+        per catalog row. ``tests/integration/
+        test_indicator_picker_scenario.py::
+        test_an_indicator_is_offered_exactly_once_under_a_scenario`` keeps the
+        claim honest against the state that would expose it.
+
+        A well-formed id naming no scenario is answered, not refused: it
+        matches no scenario row, so the result is exactly the baseline set —
+        which is also exactly what would render, since every read under an
+        unknown scenario resolves to the baseline.
 
         ``EXISTS`` rather than a join, for the same reason the tile functions
         use it — one row per indicator regardless of how many results match.
@@ -2337,14 +2372,19 @@ class PostgresIndicatorCatalogRepository:
         clause = ""
         params: list = []
         if with_values_for_aoi is not None:
-            clause = """
+            if scenario_id is None:
+                scenario_sql = "ir.scenario_id IS NULL"
+            else:
+                scenario_sql = "(ir.scenario_id = %s OR ir.scenario_id IS NULL)"
+                params.append(scenario_id)
+            clause = f"""
                 WHERE EXISTS (
                     SELECT 1
                     FROM curated_geo.indicator_result ir
                     JOIN curated_geo.aoi_feature af ON af.feature_id = ir.feature_id
                     WHERE ir.indicator_slug = c.slug
                       AND ir.status = 'current'
-                      AND ir.scenario_id IS NULL
+                      AND {scenario_sql}
                       AND ir.value_numeric IS NOT NULL
                       AND af.aoi_id = %s::uuid
                 )

@@ -154,6 +154,20 @@ def _manifest(
     tag = tag or _git("describe", "--tags", "--exact-match") or "(untagged)"
     branch = _git("rev-parse", "--abbrev-ref", "HEAD")
     dirty = bool(_git("status", "--porcelain"))
+    # What a recipient checks out. Both verification procedures start from a
+    # checkout, and "(untagged)" names nothing to check out, so an untagged
+    # manifest has to say what stands in for the tag. It is a git row, like
+    # the tag itself, so the prose below is the same either way and `--check`
+    # keeps comparing it.
+    if tag == "(untagged)":
+        checkout = (
+            "⚠ untagged, so not yet an issued delivery: the commit that adds "
+            f"this file, the first after `{(commit or '?')[:12]}` on "
+            f"`{branch or '?'}` to touch `docs/delivery/MANIFEST.md`. Tag that "
+            "commit before issuing."
+        )
+    else:
+        checkout = f"`git checkout {tag}`"
 
     lines = [
         "# Delivery manifest",
@@ -168,11 +182,14 @@ def _manifest(
         f"| **Generated from commit** | `{commit or '(not a git repository)'}` |",
         f"| **Branch** | `{branch or '—'}` |",
         f"| **Working tree at generation** | {'MODIFIED — not a clean delivery' if dirty else 'clean'} |",
+        f"| **Check out** | {checkout} |",
         "",
-        "⚠ The tag is the authoritative identifier. The commit above is the one",
-        "this file was generated *from*, which is necessarily the commit before",
-        "the one that adds it — a file cannot record the hash of the commit that",
-        "contains it. Resolve the two with `git rev-list -n 1 <tag>`.",
+        "⚠ The tag is the authoritative identifier, and the **Check out** row",
+        "names what to check out for the procedures below. The commit above is",
+        "the one this file was generated *from*, which is necessarily the commit",
+        "before the one that adds it — a file cannot record the hash of the",
+        "commit that contains it. Resolve a tag to its commit with",
+        "`git rev-list -n 1 <tag>`.",
         "",
         "## Artefacts",
         "",
@@ -187,7 +204,7 @@ def _manifest(
         "## Verifying this",
         "",
         "⚠ **The four PDFs are not in the repository.** They are generated, and",
-        "`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the tag",
+        "`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the delivery",
         "contains the Markdown sources that produce them and not the PDFs",
         "themselves. `sha256sum -c` on a bare checkout therefore reports four",
         "`FAILED open or read` lines, and that is the expected result, not a",
@@ -196,7 +213,8 @@ def _manifest(
         "",
         "### If you have the delivered PDFs",
         "",
-        "Put them in a checkout of the tag at the paths the table above gives",
+        "Put them in a checkout of the delivery (the **Check out** row above)",
+        "at the paths the table above gives",
         "(`docs/delivery/pdf/`), then:",
         "",
         "```bash",
@@ -206,7 +224,7 @@ def _manifest(
         "Every line must read `OK`. `SHA256SUMS` carries the same hashes in the",
         "format that command expects, so nothing has to be compared by eye.",
         "",
-        "### If you have only the tag",
+        "### If you have only the source",
         "",
         "Rebuild them. The PDFs are byte-reproducible: rendering them from the",
         "same sources produces the same bytes, because the only non-determinism",
@@ -220,7 +238,7 @@ def _manifest(
         "",
         "All nine lines then read `OK`. This is the stronger of the two checks:",
         "it needs no trust in the delivered files at all, only in the sources",
-        "the tag identifies. It needs `pandoc` and the Chromium that",
+        "the checkout holds. It needs `pandoc` and the Chromium that",
         "`scripts/render_delivery_pdfs.py` drives; the script names what is",
         "missing if it cannot find them.",
         "",
@@ -233,8 +251,8 @@ def _manifest(
         "exists in this engagement.",
         "",
         "⚠ Neither this file nor `SHA256SUMS` can cover itself. The artefacts",
-        "are covered by `SHA256SUMS`; both files are covered by the commit the",
-        "tag points at.",
+        "are covered by `SHA256SUMS`; both files are covered by the delivery",
+        "commit the **Check out** row names.",
         "",
         "---",
         "",
@@ -259,6 +277,7 @@ _GIT_ROWS = (
     "| **Generated from commit** |",
     "| **Branch** |",
     "| **Working tree at generation** |",
+    "| **Check out** |",
 )
 
 

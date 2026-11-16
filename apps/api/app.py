@@ -27,7 +27,17 @@ from titiler.core.factory import TilerFactory
 from . import deps, errors
 from .cog_security import validated_cog_path
 from .middleware import RequestIdMiddleware
-from .routers import aois, features, health, indicators, jobs, metrics, mvt, tiles
+from .routers import (
+    aois,
+    features,
+    health,
+    indicators,
+    jobs,
+    metrics,
+    mvt,
+    scenarios,
+    tiles,
+)
 
 
 def _cors_origins_from_env() -> list[str]:
@@ -111,7 +121,11 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_origins,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/edits`.
+        # It is invisible in dev — vite proxies :5173 to :8001, so the browser
+        # sees one origin and sends no preflight — and a non-proxied
+        # deployment cannot call either route without it.
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-Id"],
         allow_credentials=False,
@@ -141,9 +155,14 @@ def create_app(
     # the two a client is sent to is `REIMAGINA_TILE_LIVE_BASE_URL`, resolved
     # by `tiles.sources`, so this route existing costs nothing until a
     # deployment points at it. See `apps/api/routers/mvt.py`, and
-    # `docs/superpowers/specs/API_SERVED_MVT.md` for why both exist.
+    # `docs/architecture/TILE_SERVING.md` ("Why both, rather than picking
+    # one") for why both exist.
     app.include_router(mvt.router)
     app.include_router(jobs.router)
+    # Scenario authoring. Every handler here opens its own committed
+    # connection rather than taking `Depends(get_db_conn)`, which rolls
+    # back on the success path — see `routers/scenarios.py`.
+    app.include_router(scenarios.router)
     # Raster tiles: mount titiler's standard COG endpoints under /cog so
     # the API + tile server share a process, a dep tree, and an origin.
     # Splitting titiler into a sidecar (separate uvicorn or Docker) is

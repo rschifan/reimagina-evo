@@ -13,12 +13,13 @@ A scenario is a named "what if" — a proposed state of the city that has not ha
 The workflow is:
 
 ```
-project  →  scenario_id  →  scenario_override rows  →  submit_run  →  indicator_result
+project  →  scenario  →  scenario_edit (drawn areas)  →  scenario_override rows  →  submit_run  →  indicator_result
 ```
 
-- **Project** — `app_core.project`, the workspace an area of interest belongs to. The only table in `app_core` (`r001_schemas_and_extensions.py:19-35`).
-- **Scenario** — a bare uuid, not a row. There is no `app_core.scenario` table; every `scenario_id` column is a plain uuid with no FK, deliberately (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`).
-- **Override** — one attribute edit, in `curated_geo.scenario_override` (r030). The override rows *are* the scenario.
+- **Project** — `app_core.project`, the workspace an area of interest and its scenarios belong to (`r001_schemas_and_extensions.py:19-35`).
+- **Scenario** — a named row in `app_core.scenario` (r048), unique by name within its project. It is the addressed resource: created, listed, shown, recomputed and deleted by id. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` are still plain uuids with no FK (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`), so what ties them to the scenario row is code, not schema — see *The scenario* below.
+- **Edit** — one drawn area carrying one attribute value, in `curated_geo.scenario_edit` (r048). This is what a person authors.
+- **Override** — one per-feature attribute edit, in `curated_geo.scenario_override` (r030). Materialising a scenario expands its edits into override rows, and those rows are what the indicators read.
 - **Run** — an execution submitted through the `Orchestrator` port. Defined in `JOB_LAYER.md`.
 - **Indicator result** — the output, in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
 
@@ -37,6 +38,17 @@ Six read paths carry it, plus the tile: `list_current_for_indicator`,
 `list_current_with_geometry`, `value_stats`, and
 `serving_geo.indicator_overlay_tile`. The predicate is
 `storage/_utils.scenario_overlay`.
+
+**The difference, on the same tile function** (r049).
+`serving_geo.indicator_overlay_tile` takes an optional `delta` parameter and
+then emits `delta` and `state` per feature instead of `value_numeric` and
+`quality_flag`. The classification is `scenarios/comparison.py`'s, not a second
+opinion: the effective value is `COALESCE(scenario, baseline)` resolved before
+anything is classified, a feature with no baseline is `new` and carries no
+delta, and both sides require a numeric value — so a map and the comparison
+endpoint cannot report different counts for the same scenario. `delta` with no
+scenario is an empty tile rather than the baseline's own values, which would
+read as "my scenario did nothing".
 
 ⚠ **An anti-join, not `scenario_id = X OR scenario_id IS NULL`.** The widened
 form looks equivalent and silently double-counts: where a scenario *has*
@@ -61,49 +73,70 @@ answer is now unknown" and have that beat the baseline.** Doing so needs a
 distinct signal the read layer honours — a `quality_flag` it inspects — not the
 absence of a value, which is indistinguishable from "not computed".
 
-⚠ **The value test belongs on both branches.** Guarding only the anti-join
-stops a valueless scenario row from *suppressing* the baseline, but leaves
+⚠ **The value test belongs on both arms of the anti-join.** Guarding only the
+probe stops a valueless scenario row from *suppressing* the baseline, but leaves
 `scenario_id = X` matching that row unconditionally — so the pair qualifies
 twice and the one-row-per-pair invariant above is broken, which is the
 double-count the anti-join exists to avoid, reintroduced one case down. It is
 harder to see than the widened form, because it only bites once a scenario has
 recorded a valueless row, and because every reader that keys by feature (a dict
-comprehension, `dict(row)`, `fetchone()`) collapses the duplicate to whichever
-row the server sent *last* — so it reads as an intermittent wrong value rather
-than as a duplicate. That order follows the query plan: an index scan on
-`ir_scenario_slug_idx` returns the scenario row first and the baseline wins,
-while a seq scan (which the planner prefers once the table has statistics) puts
-it last and the read reports no value. In `fetch_aoi_children`, which puts the
-predicate in a `LEFT JOIN … ON`, the duplicate is not cosmetic: the feature's
-`overlap_measure` weight is counted twice and the AOI summary is quietly wrong.
+comprehension, `dict(row)`, `fetchone()`, the client drawing an MVT tile)
+collapses the duplicate to whichever row arrived *last* — so it reads as an
+intermittent wrong value rather than as a duplicate. That order follows the
+query plan: an index scan on `ir_scenario_slug_idx` returns the scenario row
+first and the baseline wins, while a seq scan (which the planner prefers once
+the table has statistics) puts it last and the read reports no value. In
+`fetch_aoi_children`, which puts the predicate in a `LEFT JOIN … ON`, the
+duplicate is not cosmetic: the feature's `overlap_measure` weight is counted
+twice and the AOI summary is quietly wrong.
 
 So a scenario row qualifies when it carries a value **or** when no baseline row
 exists for the pair — the second half keeping a `missing` row the baseline never
-computed from falling out of both branches and vanishing. Exactly one row
-survives per pair in all four configurations: a valued scenario row wins, a
-valueless one yields to the baseline, a valueless one with no baseline is still
-returned, and no scenario row leaves the baseline.
+computed from falling out of both arms and vanishing. Exactly one row survives
+per pair in all four configurations: a valued scenario row wins, a valueless one
+yields to the baseline, a valueless one with no baseline is still returned, and
+no scenario row leaves the baseline.
 
-⚠ **`serving_geo.indicator_overlay_tile` carries the predicate as a separate
-copy in SQL**, not as a call into `scenario_overlay`, so it had the same
-one-sided form and emitted two MVT features with the same `feature_id` — one
-valueless — whenever a scenario had a valueless row for a feature the baseline
-has a value for. It is fixed on the scenario-authoring branch, in r049, which
-is where the function's definition now lives: a fix landing here first would
-have been silently overwritten by that migration's `CREATE OR REPLACE`. Its
-`downgrade` keeps r043's one-sided predicate, so downgrading restores the
+⚠ **The rule lives in two places, and both must change together.**
+`storage._utils.scenario_overlay` carries it for the six Python read paths;
+`serving_geo.indicator_overlay_tile` carries a separate copy in SQL (`_OVERLAY`
+in r049), because a tile function cannot call into Python. Both had the
+one-sided form and both were fixed (#93 and r049). r049's `downgrade` keeps
+r043's one-sided predicate, `_OVERLAY_R043`, so downgrading restores the
 function r043 shipped rather than one that never existed at that revision.
-
-Until that branch merges, the function on this one is still r043's and still
-draws such a feature twice, while the Python read paths above resolve it
-correctly — the two disagree on exactly this case, in that direction.
 
 ⚠ **Writes stay exact-match.** Supersession is not a fallback question:
 `_mark_existing_current_stale` and the write path key on `scenario_id` exactly.
-So does the indicator picker (`list_indicators(with_values_for_aoi=)`), which is
-baseline-only by design.
 
-⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created — `app_core` contains only `project` (r001:27). The mechanism is `curated_geo.scenario_override`.
+⚠ **The indicator picker is the one read that uses the widened form, because
+it emits no rows.** `list_indicators(with_values_for_aoi=, scenario_id=)` was
+baseline-only, which hid every indicator that exists only inside a scenario —
+the whole edificability family — from the picker that a scenario was authored
+to drive. It now counts the named scenario's rows *and* the baseline's, written
+as `(ir.scenario_id = %s OR ir.scenario_id IS NULL)` inside its `EXISTS` probe
+over `indicator_catalog`.
+
+That is not an exception to the rule above; it is the rule's boundary. The
+anti-join exists because a read that *returns* rows must not match both a
+feature's scenario row and its baseline row. This predicate sits inside an
+`EXISTS`: it emits nothing and answers "is there at least one", so one matching
+row and two are the same answer and double-counting is unrepresentable. The
+anti-join would add a correlated `NOT EXISTS` per catalog row for an identical
+result — measured at 34× the planner's cost on the dev dataset for the same 12
+slugs. Both halves of the `OR` are load-bearing: baseline-only is the bug
+above, and scenario-only would drop every indicator the scenario did not
+recompute, each of which still renders through to its baseline value by the
+overlay rule.
+
+`scenario_id` is a *filter* here and not the resource being addressed, so a
+well-formed id naming no scenario is answered with the baseline set — which is
+also what would render — rather than refused. A malformed one is rejected at
+the API boundary as 422, typed `UUID`, so it never reaches the `uuid` cast.
+Pinned in `tests/integration/test_indicator_picker_scenario.py`, whose
+`test_an_indicator_is_offered_exactly_once_under_a_scenario` gives one feature
+both rows — the state a join would duplicate.
+
+⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created. The mechanism is `curated_geo.scenario_edit` expanded into `curated_geo.scenario_override`, with `app_core.scenario` naming the whole.
 
 ---
 
@@ -124,20 +157,27 @@ CREATE TABLE IF NOT EXISTS app_core.project (
 );
 ```
 
-It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`). Nothing else in the schema depends on it today.
+It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`), and since r048 `app_core.scenario.project_id` does too.
 
 ---
 
-### The scenario id — no table
+### app_core.scenario
 
-A `scenario_id` is minted by the caller and carried on the rows that need it. `curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` all take a plain `uuid` with no foreign key.
+A named what-if inside a project (r048). `project_id` is required and `aoi_id` is not: a scenario may be created before any AOI exists, so the project cannot always be derived from the AOI. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn edits have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`, but it is **inert today**: the policy admits every row while `app.current_project_id` is unset, nothing outside tests sets it, and the API connects as the table owner, so it provides no tenant isolation yet (a known, deferred risk).
 
-This is a recorded decision, not an oversight: `app_core.scenario` was deferred to a later layer and the FK was to be added together with the table (`r016_indicator_layer.py:7-10`). r030 matched the same convention rather than inventing a different one (`r030:5-6`). `NULL` means baseline — the city as it is today.
+### curated_geo.scenario_edit
 
-Two consequences worth stating:
+One drawn area carrying one attribute value, ordered by `ordinal` ("later edits win"; not `created_at`, because `now()` is transaction-start time). The geometry CHECK is a type check only. One proposal (levels, unit size, people per household) writes four edits. Deleting the scenario cascades them.
 
-- Nothing enforces that a `scenario_id` refers to anything. A typo'd uuid produces a valid, empty scenario.
-- There is no scenario name, status, or project link in the database. `app_core.project` and a scenario are not connected by any column.
+### The scenario id — what the schema does not tie together
+
+`curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` still take a plain `uuid` with no foreign key: r016 and r030 chose that while the entity was deferred, and r048 added the entity without adding the FKs. `NULL` means baseline — the city as it is today.
+
+Consequences worth stating:
+
+- Nothing in the schema enforces that a `scenario_id` on those four tables refers to a scenario row. A typo'd uuid produces a valid, empty scenario, and the low-level `apply_override` path (below) can still write overrides for an id that has no row.
+- ⚠ **A scenario's AOI is tied to its project by code, not by the schema.** r048 declares `aoi_id` as a plain reference to `curated_geo.area_of_interest(id)`, so the database accepts a scenario in project A bounded by project B's AOI. Materialisation scopes its selection by `aoi_id` alone, so such a scenario would write overrides over B's features. `create_scenario` is the column's only writer and refuses the pair (`_require_aoi_in_project`); a new insert path has to repeat that check.
+- Because those four tables have no FK, deleting a scenario does not cascade into them. `delete_scenario` retires the traces by hand: it removes the scenario's overrides, retires its asset versions and materialisations, and marks its `current` results `stale`. Only then does it delete the row, which cascades the edits.
 
 ---
 
@@ -298,9 +338,28 @@ A background job then populates `curated_geo.aoi_feature` with the intersection 
 
 ---
 
-### Recording a scenario edit
+### Authoring a scenario
 
-A scenario begins existing the moment its first override row is written. Mint a uuid client-side and use it.
+Create the scenario, draw an area with the three policy inputs, then recompute:
+
+```bash
+python -m apps.cli.app scenario create --name "Upzoning" --aoi-id <uuid>
+python -m apps.cli.app scenario set-attribute --scenario-id <uuid> \
+    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2
+python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
+python -m apps.cli.app scenario compare --scenario-id <uuid> \
+    --slug urban_form_block_planned_floors
+python -m apps.cli.app scenario list      # reads explore.scenario_v
+python -m apps.cli.app scenario show --scenario-id <uuid>
+```
+
+`recompute` materialises the edits into override rows (selecting blocks with `ST_Covers(area, geometry_centroid)`) and then runs the selective recompute. `scripts/acceptance_run.sh` step 10 exercises exactly this path.
+
+---
+
+### Recording a scenario edit directly
+
+The low-level path writes override rows without a scenario row. It remains for code that already holds a scenario id; the authoring path above is the one that creates a scenario others can find by name.
 
 ```python
 from uuid import uuid4
@@ -318,7 +377,11 @@ apply_override(
 
 `apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:42-44`).
 
-No CLI command or API route writes override rows today, so nothing a user can reach authors an edit. The write surface itself exists and is exercised: `apply_override` (`overrides.py:26`), `apply_overrides` (`:62`) and `publish_scenario_version` (`:85`) are called from four integration tests — `test_scenario_whatif.py`, `test_edificability_pipeline.py`, `test_asset_publish.py` and `test_freshness_driven_recompute.py`. Everything downstream of the table — change-set derivation, the overlay, the run — is wired. What is missing is an HTTP or CLI route into it.
+Three surfaces author an edit, and none of them owns a rule. `apps/cli/scenario.py` at a terminal, `apps/api/routers/scenarios.py` over HTTP, and `apps/web/src/scenario.ts` on the map all call `reimagina.scenarios.proposal`, which is where the four edits one proposal writes, the refusal of a degenerate number and the density precheck live — so the three refuse the same things for the same reasons. A surface adds exactly two things of its own: the dialect of its refusals (`--levels` on a command line, `levels` in a request body, a highlighted input on a form) and, on the map, the one check a form can make before the round trip.
+
+**The map's precheck is a saved round trip, not a guarantee**, and `scenario.ts` says so next to the inputs. Only the density ceiling is independent of block area, so it is the only one checkable before a block is chosen; the housing-unit and population ceilings are the server's, per block, at materialisation. The bound itself is read from `GET /indicators/edificability_block_density` rather than compiled into the frontend, because `ceilings._bound_for` reads it from the same catalog — a second copy would agree until the day the catalog moved.
+
+**The map carries the scenario in one place and four reads.** `scenario_id` goes on the indicator list (without it the picker hides the five edificability indicators, which have no baseline rows at all), the overlay's tile URL, the ramp's stats and the download URLs — and nowhere else, because the overlay is resolved in SQL (r043) rather than in the client. ⚠ The baseline's tile URL is byte-identical to the one that existed before scenarios: MapLibre caches tiles by URL, so a parameter added to the baseline invalidates every cached tile of every indicator on every AOI.
 
 ---
 
@@ -443,19 +506,26 @@ Then submit a run for the scenario. There is no separate "mark stale" step to pe
 
 ### Duplicating a scenario
 
-A scenario is its override rows, so cloning one is a single copy.
+A named scenario is its **edits**; its override rows are derived from them. Clone the edits, not the overrides, and let materialisation write the rest.
 
-```sql
-INSERT INTO curated_geo.scenario_override
-  (scenario_id, feature_id, attribute_key, value_numeric, value_text)
-SELECT :new_scenario_id, feature_id, attribute_key, value_numeric, value_text
-FROM curated_geo.scenario_override
-WHERE scenario_id = :source_scenario_id;
-```
+⚠ Copying only `scenario_override` rows looks complete and is not. The clone shows no drawn areas and cannot be edited, and the first `scenario recompute` on it deletes every copied override, because materialisation step 4 removes any override that no surviving edit implies. A clone with no edits implies none.
 
-The copy has no results until a run is submitted for the new id.
+1. Create the scenario through `create_scenario` (or `scenario create`, or `POST /scenarios`) rather than inserting the row. That call is the only place an AOI is checked against the project, a tie the schema does not enforce (see r048).
+2. Copy the edits, keeping their ordinals so the clone resolves overlapping areas in the same order:
 
-There is no archive operation: with no scenario row there is no status to set. Results for an unused scenario simply stop being recomputed, and stay readable for comparison.
+   ```sql
+   INSERT INTO curated_geo.scenario_edit
+     (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+   SELECT :new_scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric
+   FROM curated_geo.scenario_edit
+   WHERE scenario_id = :source_scenario_id;
+   ```
+
+3. Recompute the new id. Materialisation writes its overrides and publishes its versions, and the run that follows computes its results. Until then the clone has edits but no overrides and no results, which `explore.scenario_v` shows as an `override_count` of 0.
+
+A bare override set with no `app_core.scenario` row is still a valid what-if for the engine, as described above, but it is invisible to `explore.scenario_v` and to every authoring surface.
+
+There is no archive operation and no status column. Deleting a scenario retires its traces (see *The scenario id* above): its overrides are removed and its results are marked `stale`, so `current_indicator_v` no longer returns them. The stale rows remain in `indicator_result` as history, but they are no longer readable as the scenario's results or for comparison.
 
 ---
 
@@ -466,6 +536,7 @@ Within this layer:
 1. `app_core.project` — r001, needed by `area_of_interest`
 2. `curated_geo.feature` — DATA_LAYER (r003); `scenario_override.feature_id` references it
 3. `curated_geo.scenario_override` — r030
+4. `app_core.scenario` and `curated_geo.scenario_edit` — r048
 
 `scenario_override` is created late (r030) rather than with `project`, because it depends on `feature` and nothing depends on it. See `JOB_LAYER.md` — *Migration order* for how the job-layer tables interleave.
 

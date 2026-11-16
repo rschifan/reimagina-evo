@@ -19,7 +19,7 @@ lineage; the pipeline reads from the local Bronze copy.
 > the municipal boundary (`divisions/division_area`, `MX county Municipio de
 > Mexicali`) and 343,696 buildings inside the urban bbox, from public
 > anonymous S3, with no credential and no mirror on disk. See
-> `docs/BOOTSTRAP.md` §5 and `docs/superpowers/specs/MEXICALI_FROM_OVERTURE.md`.
+> `docs/BOOTSTRAP.md` §5.
 > What Overture does **not** replace is INEGI: there are no manzanas or AGEBs
 > in it, so the block-grain indicators still need this mirror. The Overture
 > route gives a real map of a real city; it does not give a Mexicali

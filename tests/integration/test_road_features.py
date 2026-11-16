@@ -9,7 +9,16 @@ piece in place except the step connecting the two. The visible consequence
 was a map with no spatial reference at all: a block as a rectangle in black,
 with no way to tell which neighbourhood it was in or which way a street runs.
 
-See `docs/superpowers/specs/STREET_CONTEXT.md`.
+Two constraints shape the projection and are asserted below. It *replaces*
+rather than upserts: `load_graph` truncates and reloads the network and
+`road_edge.id` is a fresh sequence value each time, so an upsert keyed on
+`source_record_ref` would orphan the previous load's features and double the
+street layer on every ingest. And it must run after AOI membership is
+computed, or the roads are present, typed and in `serving_geo` yet in no AOI,
+so every tile returns `204` with no error anywhere.
+
+The wider design (no external basemap, derived attribution, the z12 role gate):
+`docs/architecture/TILE_SERVING.md`, "Street context".
 """
 
 from __future__ import annotations

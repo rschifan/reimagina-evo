@@ -35,9 +35,21 @@ BAD = "not-a-uuid"
 WELL_FORMED = "00000000-0000-0000-0000-000000000000"
 SLUG = "urban_form_block_compactness"
 
+
+def _label(url: str) -> str:
+    """Path plus the filter's name, so one route's two filters get two ids.
+
+    ``/indicators`` takes both ``aoi_id`` and ``scenario_id``; labelled by path
+    alone the two cases collide and pytest numbers them, which names neither.
+    """
+    path, _, query = url.partition("?")
+    return f"{path}?{query.split('=')[0]}" if query else path
+
+
 # Every route that takes an id the client can mistype. Each 500'd before.
 QUERY_AND_BODY = [
     ("GET", f"/indicators?aoi_id={BAD}", None),
+    ("GET", f"/indicators?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/stats?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/stats?aoi_id={BAD}", None),
@@ -80,7 +92,7 @@ def client(monkeypatch):
 @pytest.mark.parametrize(
     ("method", "url", "body"),
     QUERY_AND_BODY,
-    ids=[f"{m} {u.split('?')[0]}" for m, u, _ in QUERY_AND_BODY],
+    ids=[f"{m} {_label(u)}" for m, u, _ in QUERY_AND_BODY],
 )
 def test_a_malformed_id_in_a_filter_is_422(client, method, url, body):
     resp = client.request(method, url, json=body)
