@@ -896,8 +896,9 @@ ROLLBACK;
 BEGIN;
 SELECT plan(6);
 
--- Setup. scenario_id is a bare uuid with no FK (r016:7-10), so no scenario
--- row is created — or creatable — here.
+-- Setup. scenario_id is a bare uuid with no FK (r016:7-10; app_core.scenario exists
+-- since r048, but no migration ties job_run.scenario_id to it), so no scenario
+-- row is required here, and a made-up id is accepted.
 INSERT INTO jobs_runtime.job_run (id, scenario_id, model_family, status, code_version)
 VALUES ('99999999-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000001', 'accessibility', 'succeeded', 'v1');
 INSERT INTO curated_geo.indicator_catalog

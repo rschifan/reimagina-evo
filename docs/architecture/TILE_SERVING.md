@@ -117,8 +117,6 @@ The bytes are one function call; the HTTP is the work.
 `GET /tiles/{function}` returns TileJSON 3.0.0, so the route is drop-in for
 the resolver's `tilejson_url` as well as its `tiles_url_template`.
 
-Full rationale: `docs/superpowers/specs/API_SERVED_MVT.md`.
-
 ## Street context, without an external basemap
 
 The map has no basemap, deliberately — `main.ts`: "the prototype avoids
@@ -214,13 +212,43 @@ The baseline feature channel. Martin publishes it at
   empty tile when absent so a misconfigured caller never leaks the
   whole table.
 - Optional query param: `scenario_id` (uuid). Omit for base state.
-- Returns empty below `z=10`; choropleth below city scale is misleading
-  (every feature collapses into one pixel). `infra/tiles/layers.json`
-  reflects this with `minzoom: 10`.
+- Optional query param: `delta` (r049) — a boolean in Postgres's own
+  spelling, which is the *whole* vocabulary: `1`, `t`, `tr`, `tru`,
+  `true`, `y`, `ye`, `yes`, `on`, case ignored, surrounding whitespace
+  trimmed (`o` is excluded because Postgres excludes it — ambiguous
+  between `on` and `off`). Anything else, `false` included, is the value
+  view, so an unrecognised input falls back to the older behaviour rather
+  than to the newer one. The prefixes and the trim are deliberate: a
+  hand-typed `?delta=true ` would otherwise serve values to a client
+  asking for a difference, silently.
+- Returns empty below `z=8` — r025 lowered the floor from 10 once AOI
+  filtering made a z=8 tile of one municipio ~19 k blocks rather than
+  country-scale volume, and added the `ST_Simplify(…, 0.0005)` tier for
+  z=8/9. `infra/tiles/layers.json` advertises `minzoom: 11` to clients,
+  which is a rendering choice about where a choropleth reads well, not
+  the function's floor; the two numbers are different claims and neither
+  is 10.
 - Emits per feature: `feature_id`, `type_slug`, `value_numeric`,
   `quality_flag`. Frontend's `fill-color` expression reads
   `value_numeric`; `quality_flag` is used to dim `estimated` / `missing`
   rows if the UI wants to distinguish them.
+- **Two views, one function.** With `delta` set the tile emits
+  `feature_id`, `type_slug`, `delta` and `state` — and *not*
+  `value_numeric`, so a client that forgot to switch from the sequential
+  value ramp to the diverging delta ramp paints nothing rather than
+  painting a difference as a value. `state` is `changed`, `unchanged` or
+  `new`, exactly as `GET /scenarios/{id}/comparison` reports it
+  (`reimagina.scenarios.comparison`); the two surfaces are the same
+  classification, and
+  `tests/integration/test_indicator_overlay_delta.py::test_the_delta_tile_and_the_comparison_endpoint_agree`
+  is what keeps them from drifting. A `new` feature carries no `delta` at
+  all (`ST_AsMVT` omits a NULL property) because there is nothing to
+  subtract from. `delta` without a valid `scenario_id` is an empty tile:
+  serving baseline values under that property would paint every block
+  `unchanged`, which is a finding produced by a missing parameter.
+- The signature did not change, so `TILE_FUNCTIONS` and `layers.json`
+  still name one relation for this channel — but `layers.json` documents
+  the parameter, because the contract did change.
 
 ## Source classification
 

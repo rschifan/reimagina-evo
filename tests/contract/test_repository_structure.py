@@ -130,6 +130,30 @@ def test_explore_module_is_not_used_by_domain_logic_outside_cli():
         )
 
 
+def test_the_shared_backend_never_imports_a_deployable_app():
+    """`packages/py/reimagina` is below `apps/`, and the arrow points one way.
+
+    Written down because the first thing that tempts anyone to turn it round
+    is a rule the CLI implemented first and the API router then needs: the
+    four edits one proposal writes, the density precheck, the refusal of a
+    non-finite value. Importing those from `apps.cli` would make the HTTP
+    surface depend on the command line, and the cheap-looking alternative —
+    the router re-deriving them — is how `floors` and `num_levels` drift
+    apart. They live in `reimagina.scenarios.proposal` instead, and this is
+    what stops the shortcut being taken the other way.
+    """
+    disallowed_import = re.compile(r"^\s*(from\s+apps[\s.]|import\s+apps[\s.])", re.M)
+    offenders = [
+        path
+        for path in (ROOT / "packages" / "py" / "reimagina").rglob("*.py")
+        if disallowed_import.search(path.read_text())
+    ]
+    assert offenders == [], (
+        "the shared backend namespace must not import a deployable app: "
+        f"{[str(p.relative_to(ROOT)) for p in offenders]}"
+    )
+
+
 # ── Dependency pinning ───────────────────────────────────────────────────────
 #
 # CI used to run `pip install -e '.[dev]'`, which re-resolved every dependency
@@ -306,10 +330,9 @@ def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
 
 # Documents that describe the system as built. A path or a command named in one
 # of these has to resolve. Deliberately NOT the whole of `docs/`:
-# `docs/product/` holds architecture *proposals* and `docs/superpowers/specs/`
-# holds specs for work not yet done, and both legitimately name files that do
-# not exist yet. Adding a proposal to this list would force the proposal to be
-# implemented before it could be written down.
+# `docs/product/` holds architecture *proposals*, which legitimately name files
+# that do not exist yet. Adding a proposal to this list would force the
+# proposal to be implemented before it could be written down.
 AS_BUILT_DOCS = (
     "AGENTS.md",
     "README.md",
@@ -516,8 +539,8 @@ def test_ci_requires_the_database_it_attaches_rather_than_skipping():
 def test_the_api_and_martin_resolve_to_the_same_live_tile_url_shape():
     """Switching tile servers must be one environment variable, or nothing.
 
-    This is the pass/fail criterion the spec for the API-served MVT route set
-    for itself: *if switching between Martin and the API is anything more
+    This is the pass/fail criterion the API-served MVT route was built
+    against: *if switching between Martin and the API is anything more
     than changing one environment variable, this is not worth building.* A
     second tile implementation the frontend, the manifest or the resolver has
     to know about is two code paths to keep in step, and the one that is not

@@ -210,7 +210,7 @@ Domain provenance, not scheduler state. `curated_geo.indicator_result.job_run_id
 -- r016_indicator_layer.py:30-43, plus r028:67 and r031:43-44
 CREATE TABLE jobs_runtime.job_run (
   id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  scenario_id   uuid,                    -- no FK: app_core.scenario is deferred (r016:7-8)
+  scenario_id   uuid,                    -- no FK, though app_core.scenario exists since r048: r016:7-8 left it bare and no later migration ties it
   model_family  text        NOT NULL,
   status        text        NOT NULL
                             CHECK (status IN ('queued','running','succeeded','failed','cancelled')),

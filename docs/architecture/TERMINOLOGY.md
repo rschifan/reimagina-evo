@@ -139,10 +139,10 @@ The fraction of a feature's area, length, or presence that falls inside an AOI. 
 ## Scenarios
 
 ### Project
-A workspace row in `app_core.project` — the only table in `app_core` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It does not group scenarios: no column connects a project to a scenario.
+A workspace row in `app_core.project` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It groups scenarios: `app_core.scenario.project_id` (r048) references it.
 
 ### Scenario
-A named proposed state of the city. A scenario is a **bare uuid, not a row** — there is no `app_core.scenario` table, and every `scenario_id` column is a plain uuid with no foreign key (r016:7-10, r030:5-6). A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
+A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, and is the addressed resource for authoring. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` remain plain uuids with no foreign key (r016:7-10, r030:5-6); the authoring code, not the schema, keeps them consistent with the row. A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
 
 ### Attribute override
 One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. The override rows *are* the scenario: reading them back yields the change-set a run needs (`scenarios/overrides.py:96`).

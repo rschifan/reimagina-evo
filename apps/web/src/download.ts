@@ -14,6 +14,11 @@ type DownloadFormat = "csv" | "geojson" | "parquet";
 export function wireDownloadButtons(
   container: HTMLElement,
   getActiveSlug: () => string | null,
+  // ⚠ The scenario the map is showing, read at click time. Without it the
+  // export is the baseline's values while the choropleth above it draws the
+  // scenario's — the same slug, a different city, and nothing in the file
+  // says which. The export routes take `scenario_id` for this reason.
+  getActiveScenarioId: () => string | null = () => null,
 ): void {
   const buttons = container.querySelectorAll<HTMLButtonElement>("button[data-format]");
   for (const button of buttons) {
@@ -22,7 +27,7 @@ export function wireDownloadButtons(
       if (!slug) return;
       const format = button.dataset.format as DownloadFormat | undefined;
       if (!format) return;
-      const href = downloadUrl(slug, format);
+      const href = downloadUrl(slug, format, getActiveScenarioId());
       // Use a transient anchor rather than `window.location.href` so the
       // page doesn't navigate away — feels better for power users who
       // may export multiple formats back to back.

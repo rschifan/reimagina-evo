@@ -9,6 +9,7 @@ explicit and keeps test files symmetric.
 
 from __future__ import annotations
 
+import warnings
 from uuid import uuid4
 
 from reimagina.data import catalog as cat
@@ -124,6 +125,24 @@ def seed_catalog_committed(conn, specs=None) -> None:
         conn.commit()
     finally:
         conn.autocommit = True
+
+
+def discard(conn, sql: str, *params) -> None:
+    """One cleanup statement, guarded and committed on its own.
+
+    Cleanup as a single transaction is cleanup that stops at its first
+    failure: everything after it stays unrun and the rows this test
+    *committed* live on in the session's shared database. Each statement
+    therefore stands alone, and a failure is warned about rather than
+    swallowed — silence here looks exactly like success.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 - warned about, never fatal
+        conn.rollback()
+        warnings.warn(f"cleanup failed ({sql.split()[2]}): {exc}", stacklevel=2)
 
 
 # ── Synthetic OSM network ───────────────────────────────────────────────────
