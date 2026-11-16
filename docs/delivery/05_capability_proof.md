@@ -27,10 +27,11 @@ date: "13 November 2026"
 | 0.9 | 2026-11-11 | Rossano Schifanella | §A.1 — the park indicator recomputed over the ingested destinations: 27.9 % of blocks at the cutoff, replacing 100 % |
 | 0.10 | 2026-11-11 | Rossano Schifanella | §A.1 — the culture indicator computed on real data (60.8 % at the cutoff) and the seven-of-twelve real-data coverage picture |
 | 0.11 | 2026-11-13 | Rossano Schifanella | The acceptance run re-measured at `r049`: the scenario is authored through the CLI (§9), the territory carries streets (§2, §10), and the environment of record, wall time and API operation count are current |
+| 0.12 | 2026-11-16 | Rossano Schifanella | The feature-provenance count re-measured over the street-carrying territory (108 of 108, replacing 67 of 67); the introduction no longer claims every figure comes from one sitting |
 
 ### Provenance of the figures
 
-Re-measured on 13 November 2026, at migration `r049`, from a fresh run of `scripts/acceptance_run.sh`: the environment of record's migration head and revision count, the per-schema table counts, the whole-run wall time, the API operation counts (§14), and the transcripts in §2, §4, §9, §10 and §12. Not re-measured for this revision, and carried forward from earlier runs: the package versions and the third-party dependency count in §1; the crash-recovery and sweep proofs in §13 and the 22,500-block scale figures in §16, which need a generated territory of that size; and Appendix A, which requires the Azure lake mirror and network access that were not available. Each of those figures is true of the run that produced it, not necessarily of this revision.
+Re-measured on 13 November 2026, at migration `r049`, from a fresh run of `scripts/acceptance_run.sh`: the environment of record's migration head and revision count, the per-schema table counts, the whole-run wall time, the API operation counts (§14), and the transcripts in §2, §4, §9, §10 and §12. Re-measured on 16 November 2026 from a further fresh run: the feature-provenance count in §2. Not re-measured for this revision, and carried forward from earlier runs: the package versions and the third-party dependency count in §1; the crash-recovery and sweep proofs in §13 and the 22,500-block scale figures in §16, which need a generated territory of that size; and Appendix A, which requires the Azure lake mirror and network access that were not available. Each of those figures is true of the run that produced it, not necessarily of this revision.
 
 ### Why this document exists
 
@@ -40,9 +41,13 @@ technically competent reader to install and run the system". Both criteria are
 about behaviour, and neither can be settled by reading a design document.
 
 So this annex records what the system was observed doing. Every number, table
-and transcript in **§1 to §17** was produced on one machine, in one sitting,
-against a database that did not exist when the sitting began. Nothing there is
-quoted from a previous run, a test fixture, or a specification.
+and transcript in **§1 to §17** was produced by running the system against a
+database that did not exist when that run began. None is quoted from a test
+fixture or a specification. They do not all come from the same run: the
+*Provenance of the figures* note above lists which were re-measured for this
+revision and which are carried forward from an earlier run, and a
+carried-forward figure is a measurement of the run that produced it, not of
+this revision.
 
 **Appendix A is different and says so.** It records a run against the real
 Mexicali data, which needs the Azure lake mirror and therefore cannot be
@@ -190,12 +195,15 @@ when the engine is down.
 Everything before step 12 therefore proved the platform *without* exercising
 the orchestration module Schedule A names.
 
-**Provenance is not optional.** All **67 of 67** generated features carry a
-non-null `source_id`, `ingestion_run_id` and `dataset_version`. They were
-written through `reimagina.data.feature.load_features`, the same function the
-real pipelines use, so they pass the same triggers and carry the same columns.
-Nothing in the generator bypasses the loader; the street graph likewise goes
-through `reimagina.pipeline.osm_network.load_graph` and the AOI through
+**Provenance is not optional.** All **108 of 108** features in the territory
+carry a non-null `source_id`, `ingestion_run_id` and `dataset_version`: the 68
+the generator writes and the 40 `global:road` features projected from the
+street graph, counted over the whole of `curated_geo.feature` after the run.
+The generated ones were written through `reimagina.data.feature.load_features`,
+the same function the real pipelines use, so they pass the same triggers and
+carry the same columns. Nothing in the generator bypasses the loader; the
+street graph likewise goes through `reimagina.pipeline.osm_network.load_graph`,
+the roads through `reimagina.data.roads`, and the AOI through
 `reimagina.data.aoi.create_aoi`.
 
 ---
