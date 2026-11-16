@@ -107,11 +107,20 @@ there is nothing internal in it to withhold:
 |---|---|---|
 | 409 | `POST /jobs/{id}/cancel`, `/rerun` | the run is already terminal, or has nothing to retry |
 | 422 | `POST /jobs`, `/jobs/preview` | an indicator slug no registry entry matches |
-| 503 | `POST /jobs` | the ops plane's schema is missing from this database — `OpsPlaneNotProvisioned`, naming `bootstrap-db`. A deployment state, not a fault in the request, which is why it is not a 500 |
 
 The Ops dashboard renders `detail` when present and falls back to the
 envelope's `message` plus its `request_id`, so both shapes reach the operator
 as words rather than as a status line.
+
+**One refusal does not use `detail`: the ops-plane 503.** A missing
+`dbos` schema answers the envelope above, with
+`code: "ops_plane_not_provisioned"` and a `message` naming `bootstrap-db` —
+the one place the envelope's `message` carries a sentence meant to be read,
+because it is this project's own text and not a driver's. It is registered
+app-wide in `create_app` rather than caught per route, so **every** path that
+submits a run answers it: `POST /jobs`, `POST /jobs/{id}/rerun` and
+`POST /scenarios/{id}/recompute`. A per-route `except` covered one of the
+three, and the other two answered 500 for the identical condition.
 
 ### Validation errors (422)
 

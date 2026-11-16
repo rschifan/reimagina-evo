@@ -20,6 +20,7 @@ import psycopg2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from rio_tiler.errors import PointOutsideBounds
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import TilerFactory
@@ -142,6 +143,13 @@ def create_app(
         psycopg2.InterfaceError, errors.database_unavailable_handler
     )
     app.add_exception_handler(psycopg2.Error, errors.database_error_handler)
+    # Every route that submits a run, not only `POST /jobs`: `rerun` and the
+    # scenario recompute reach the same `submit_run` and answered 500 for a
+    # condition whose remedy is a command. Starlette dispatches by MRO, so this
+    # wins over the `Exception` catch-all below regardless of order.
+    app.add_exception_handler(
+        OpsPlaneNotProvisioned, errors.ops_plane_not_provisioned_handler
+    )
     app.add_exception_handler(Exception, errors.unhandled_error_handler)
 
     app.include_router(health.router)

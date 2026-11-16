@@ -725,5 +725,40 @@ def test_an_unprovisioned_ops_plane_is_503_and_names_the_remedy(monkeypatch):
         resp = client.post("/jobs", json={"indicators": ["x"]})
 
     assert resp.status_code == 503
-    detail = resp.json()["detail"]
-    assert "bootstrap-db" in detail, "the error must name the command that fixes it"
+    body = resp.json()["error"]
+    assert body["code"] == "ops_plane_not_provisioned"
+    assert "bootstrap-db" in body["message"], (
+        "the error must name the command that fixes it"
+    )
+    assert body["request_id"]
+
+
+def test_rerun_answers_503_when_the_ops_plane_is_unprovisioned(monkeypatch):
+    """The rerun path submits too, and went uncaught — a 500 on a deployment state.
+
+    Three routes reach ``submit_run``; only ``POST /jobs`` translated the
+    refusal. So the same unprovisioned database that told a client "not ready
+    yet, run bootstrap-db" on a fresh submit told it "internal error, see the
+    logs" the moment the client pressed Rerun instead — about the identical
+    condition, with the identical remedy.
+    """
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            raise OpsPlaneNotProvisioned()
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    reader = _FakeOpsReader([_run_row()])
+    reader.list_units_detailed = lambda run_id: [
+        {"indicator": "urban_form_block_compactness", "status": "failed", "detail": "x"}
+    ]
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.post(f"/jobs/{_run_row()['run_id']}/rerun")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"]["code"] == "ops_plane_not_provisioned"
