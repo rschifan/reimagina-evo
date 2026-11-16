@@ -42,7 +42,11 @@ psql "$DATABASE_URL_DIRECT" -c "SELECT to_regclass('dbos.workflow_status')"
 python -m apps.cli.app bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"
 ```
 
-Idempotent, so it is safe to run against a database that already has it.
+Idempotent, so it is safe to run against a database that already has it, and it
+creates nothing you did not ask for: the test database is opt-in behind
+`--with-test-db`, which only `make migrate` passes. Without it, this command
+used to create and migrate `reimagina_test` on whatever host it ran on —
+including this one.
 
 Pass the *application's* DSN; every DDL step inside — Alembic and the
 ops-plane schema both — takes `--direct-dsn`, which defaults to

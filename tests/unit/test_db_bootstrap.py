@@ -48,9 +48,22 @@ def _stub_collaborators(monkeypatch, *, app_created: bool = True) -> _Recorder:
 
     monkeypatch.setattr(
         "reimagina.db.bootstrap.bootstrap_postgres",
+        # `.get`, and the "test" key only when a DSN was supplied: `test_dsn` is
+        # optional now, and a stub that claims a database the real function
+        # would not have touched is a stub that cannot catch the regression.
         lambda **kwargs: {
             "app": {"created": app_created, "dsn": kwargs["app_dsn"], "migrated": True},
-            "test": {"created": True, "dsn": kwargs["test_dsn"], "migrated": True},
+            **(
+                {
+                    "test": {
+                        "created": True,
+                        "dsn": kwargs["test_dsn"],
+                        "migrated": True,
+                    }
+                }
+                if kwargs.get("test_dsn") is not None
+                else {}
+            ),
         },
     )
 
@@ -202,6 +215,43 @@ def test_alembic_runs_over_the_direct_dsn_too(monkeypatch):
     )
 
     assert migrated[0] == DIRECT_DSN, "the app database migrates over the direct route"
+
+
+def test_bootstrap_postgres_without_a_test_dsn_touches_one_database(monkeypatch):
+    """`bootstrap-db` is the production remedy the ops runbook prints.
+
+    `OPS_PLANE_RUNBOOK.md` tells an operator to run it against the live
+    database to install the ops-plane schema. It also created and migrated
+    `reimagina_test` every time, because `test_dsn` defaulted to
+    `postgresql://localhost/reimagina_test` — and to a production host,
+    localhost is the production server. A remedy command must not create a
+    database nobody asked for, on a machine where nobody would look for it.
+
+    So the test database is opt-in now: absent a DSN, this function does not
+    reach for one.
+    """
+    created: list[tuple[str, str]] = []
+    migrated: list[str] = []
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.ensure_postgres_database",
+        lambda admin_dsn, target_dsn: created.append((admin_dsn, target_dsn)) or False,
+    )
+    monkeypatch.setattr(
+        "reimagina.storage.postgres.bootstrap.run_postgres_migrations",
+        lambda dsn: migrated.append(dsn),
+    )
+
+    result = bootstrap_postgres(
+        app_dsn="postgresql://localhost/reimagina",
+        admin_dsn="postgresql://localhost/postgres",
+        test_dsn=None,
+    )
+
+    assert [target for _, target in created] == ["postgresql://localhost/reimagina"]
+    assert migrated == ["postgresql://localhost/reimagina"]
+    assert "test" not in result, (
+        "the result must not claim a test database that was never touched"
+    )
 
 
 def test_bootstrap_postgres_reports_the_app_dsn_not_the_migration_route(monkeypatch):

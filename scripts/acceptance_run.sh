@@ -81,7 +81,7 @@ PYEOF
 fi
 
 step "1. Migrating to head"
-$CLI bootstrap-db
+$CLI bootstrap-db --with-test-db
 
 step "2. Verifying the first-layer schema"
 $CLI verify-schema

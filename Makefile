@@ -96,7 +96,7 @@ check: lint test build-web test-web ## Lint + the DB-free suites + web. Run befo
 
 .PHONY: migrate
 migrate: ## Run all DB migrations on $DATABASE_URL (see .env), creating the DBs if needed.
-	$(PYTHON) -m apps.cli.app bootstrap-db
+	$(PYTHON) -m apps.cli.app bootstrap-db --with-test-db
 
 .PHONY: verify-sources
 verify-sources: ## Smoke-test that every upstream source is reachable.
