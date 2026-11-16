@@ -16,9 +16,14 @@
  * /indicators/{slug}/stats endpoint and fall back to the catalog
  * bounds only when stats aren't available (zero rows, etc.).
  */
-import type { MapLayerMouseEvent, Map as MapLibreMap } from "maplibre-gl";
+import type {
+  ExpressionSpecification,
+  MapLayerMouseEvent,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 
 import type {
+  ComparisonResponse,
   IndicatorSummary,
   IndicatorValueStats,
   TileSource,
@@ -27,6 +32,7 @@ import type {
 import { distributionSvg, percentileOf } from "./distribution";
 import { escapeHtml, fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
+import { tileUrlFor } from "./scenario";
 import type { SelectionController } from "./selection";
 import { registerValueAwareLayer } from "./selection-filter";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -37,6 +43,55 @@ const OVERLAY_LAYER = "indicator_overlay__fill";
 const OVERLAY_LINE_LAYER = "indicator_overlay__line";
 const RAMP_START = "#f7fbff";
 const RAMP_END = "#08306b";
+
+/**
+ * The delta palette: green for an improvement, red for a deterioration, grey
+ * at zero. Colour encodes *benefit*, not sign.
+ *
+ * Whether a rise is an improvement is the catalog's `higher_is_better`: four of
+ * the twelve indicators are distances, where a fall is the good news. The
+ * ramp is oriented by that flag (see {@link deltaRamp}); the number a block
+ * reads keeps its own sign either way, so a park distance that fell by 600 m
+ * is still "-600" and is painted green.
+ *
+ * The pair is a teal-leaning green and an orange-leaning red, stepped for this
+ * map's dark surface (the strongest value is the brightest, the midpoint the
+ * dark neutral). Validated against `#1a1a19` with the dataviz validator: both
+ * ends inside the dark lightness band, deuteranopia/protanopia separation
+ * 9.5 (target 8), normal-vision separation 28.9, and 18.7 from the amber of a
+ * `new` block, which must not read as either side. Red and green is the
+ * classic colour-blindness problem, so colour is never the only channel: the
+ * legend states the mapping in words and the tooltip carries the signed value.
+ *
+ * Deliberately shares no colour with the value ramp, so a legend swatch is
+ * never mistaken for a point on the other mode's scale.
+ */
+export const DELTA_NEUTRAL = "#4a4a47";
+const DELTA_GOOD = "#12a88c";
+const DELTA_GOOD_MID = "#2d7a6a";
+const DELTA_BAD_MID = "#974f48";
+const DELTA_BAD = "#e4554a";
+
+/**
+ * The ramp's stops from the strongest decrease to the strongest increase.
+ * Left to right is the number line; which end is green depends on the
+ * indicator, so the same swatches run the other way for a distance.
+ */
+export function deltaStops(higherIsBetter: boolean): readonly string[] {
+  return higherIsBetter
+    ? [DELTA_BAD, DELTA_BAD_MID, DELTA_NEUTRAL, DELTA_GOOD_MID, DELTA_GOOD]
+    : [DELTA_GOOD, DELTA_GOOD_MID, DELTA_NEUTRAL, DELTA_BAD_MID, DELTA_BAD];
+}
+
+/**
+ * A block the scenario computed where the baseline has nothing.
+ *
+ * Its own hue, off the diverging scale entirely: `new` is a different
+ * *kind* of thing from "changed by a lot", not a larger one, and the ramp has
+ * no honest place to put it. Amber is the one dataviz hue that is neither
+ * end of the diverging pair nor near its grey.
+ */
+export const DELTA_NEW = "#eda100";
 
 // The currently-active indicator's disposers — tooltip deregistration
 // and hover-highlight teardown. Cleared and re-populated on every
@@ -108,13 +163,31 @@ export function populateIndicatorSelect(
 }
 
 
+/**
+ * Relative width below which two statistics are the same number.
+ *
+ * `percentile_cont` interpolates, and interpolating between identical doubles
+ * is not exact: a scenario whose values are all 1333 comes back with p05 and
+ * p95 differing around the 13th significant digit. Compared with `>` that is a
+ * spread, so the legend claimed "observed p05–p95" over identical endpoints —
+ * the one claim {@link RampBasis} exists to stop it making. A part in a
+ * billion is five orders of magnitude clear of that noise and still far finer
+ * than anything the ramp can draw, so a genuinely narrow spread is kept.
+ */
+const SPREAD_EPSILON = 1e-9;
+
+function spreads(low: number, high: number): boolean {
+  return high - low > SPREAD_EPSILON * Math.max(1, Math.abs(low), Math.abs(high));
+}
+
+
 export function rampDomainFromStats(
   stats: IndicatorValueStats | null,
   indicator: IndicatorSummary,
 ): RampDomain {
   const count = stats?.count ?? 0;
   // Prefer observed p05→p95 so outliers don't dominate the ramp.
-  if (stats && count > 0 && stats.p05 !== null && stats.p95 !== null && stats.p95 > stats.p05) {
+  if (stats && count > 0 && stats.p05 !== null && stats.p95 !== null && spreads(stats.p05, stats.p95)) {
     return {
       min: stats.p05,
       max: stats.p95,
@@ -125,7 +198,7 @@ export function rampDomainFromStats(
     };
   }
   // Flat distribution (p05 == p95) — widen to min/max so we still see something.
-  if (stats && count > 0 && stats.min !== null && stats.max !== null && stats.max > stats.min) {
+  if (stats && count > 0 && stats.min !== null && stats.max !== null && spreads(stats.min, stats.max)) {
     return {
       min: stats.min,
       max: stats.max,
@@ -160,6 +233,180 @@ export function defaultGrain(indicator: IndicatorSummary): string | null {
 }
 
 
+/**
+ * The diverging colour expression for a signed change, centred on zero.
+ *
+ * Symmetric about zero whatever `domain` says: `{min: -40, max: 120}` is a
+ * ramp from -120 to 120 that has seen less on one side. An asymmetric span
+ * would put -40 at the strongest blue and +120 at the strongest red, so the
+ * two ends read as the same size and zero would no longer be the grey.
+ *
+ * Takes `{min, max}` rather than a full {@link RampDomain}: a difference has
+ * no p50, no catalog bounds to fall back to and no basis the value legend
+ * could describe. See {@link DeltaDomain} for what it has instead.
+ *
+ * `higherIsBetter` orients the colour, not the number: the input is still the
+ * signed delta, and only which arm is green changes.
+ */
+export function deltaRamp(
+  domain: Pick<RampDomain, "min" | "max">,
+  higherIsBetter: boolean,
+): ExpressionSpecification {
+  const reach = Math.max(Math.abs(domain.min), Math.abs(domain.max));
+  // Nothing changed: a zero-width ramp would put every stop at 0 and the
+  // interpolation would divide by it. The width is unobservable (everything
+  // is the neutral grey) and only has to be non-degenerate.
+  const m = reach === 0 ? 1 : reach;
+  const stops = deltaStops(higherIsBetter);
+  return [
+    "interpolate",
+    ["linear"],
+    ["to-number", ["get", "delta"]],
+    -m, stops[0],
+    -m / 2, stops[1],
+    0, DELTA_NEUTRAL,
+    m / 2, stops[3],
+    m, stops[4],
+  ];
+}
+
+
+/**
+ * The fill for the delta tile: **`state` decides, `delta` only scales.**
+ *
+ * The tile emits `delta` as NULL for a `new` block — nothing to subtract from
+ * — and `ST_AsMVT` drops a NULL property, so the key is simply absent. Absent
+ * is also what any ramp reads as zero. Branching on `delta` being present, or
+ * coalescing it to 0, would paint a block the scenario *created* as "no
+ * change". Those are different questions; this asks the right one.
+ *
+ * A state this does not know, or a `changed` block with no delta, paints
+ * nothing. Both contradict the tile contract, and a wrong colour would be a
+ * claim; a hole is visibly a hole.
+ */
+export function deltaFill(
+  domain: Pick<RampDomain, "min" | "max">,
+  higherIsBetter: boolean,
+): ExpressionSpecification {
+  return [
+    "case",
+    ["==", ["get", "state"], "new"], DELTA_NEW,
+    ["==", ["get", "state"], "unchanged"], DELTA_NEUTRAL,
+    ["all", ["==", ["get", "state"], "changed"], ["has", "delta"]], deltaRamp(domain, higherIsBetter),
+    "rgba(0, 0, 0, 0)",
+  ];
+}
+
+
+/**
+ * What the delta ramp spans, and how many blocks fell into each state.
+ *
+ * Its own type rather than a {@link RampDomain}: that one describes a
+ * distribution of values (a median, catalog bounds, a basis of percentile /
+ * min-max / uniform / empty), and none of that is true of a difference.
+ */
+export interface DeltaDomain {
+  /** The ramp spans -limit to +limit. */
+  limit: number;
+  changed: number;
+  unchanged: number;
+  new: number;
+  /** `percentile`: `limit` is p95 of |delta|. `none`: nothing changed, so
+   *  `limit` is a placeholder and the ramp is a single grey. */
+  basis: "percentile" | "none";
+  /** Whether a rise is an improvement, from the comparison summary. Orients
+   *  the colour; the numbers keep their signs. */
+  higherIsBetter: boolean;
+}
+
+
+/** Nearest-rank percentile of an ascending array (`q` in 0..1). */
+function nearestRank(sorted: number[], q: number): number {
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))];
+}
+
+
+/**
+ * The delta ramp's span, from the comparison the API already serves.
+ *
+ * p95 of |delta| over the `changed` rows, for the reason the value ramp uses
+ * p05–p95: one outlier edit should not wash every other change to grey.
+ * `new` rows are excluded — they have no delta — and so are `unchanged`
+ * ones, whose zeros would drag the percentile toward neutral on a city where
+ * three blocks were edited.
+ */
+export function deltaDomainFromComparison(
+  response: Pick<ComparisonResponse, "rows" | "summary">,
+): DeltaDomain {
+  const { changed, unchanged, new: added, higher_is_better: higherIsBetter } = response.summary;
+  const magnitudes = response.rows
+    .filter((r) => r.state === "changed" && r.delta !== null && Number.isFinite(r.delta))
+    .map((r) => Math.abs(r.delta as number))
+    .sort((a, b) => a - b);
+  if (magnitudes.length === 0) {
+    return { limit: 1, changed, unchanged, new: added, basis: "none", higherIsBetter };
+  }
+  return {
+    limit: nearestRank(magnitudes, 0.95),
+    changed,
+    unchanged,
+    new: added,
+    basis: "percentile",
+    higherIsBetter,
+  };
+}
+
+
+/**
+ * Says in words which way is good for this indicator, so the colours do not
+ * have to be decoded and a switch between indicators visibly flips the
+ * mapping. The sign of the number is untouched: a decrease is a decrease.
+ */
+export function deltaMeaningText(higherIsBetter: boolean): string {
+  return higherIsBetter
+    ? "Green: improvement (an increase). Red: worse (a decrease). Higher is better."
+    : "Green: improvement (a decrease). Red: worse (an increase). Lower is better.";
+}
+
+
+/** The delta legend's one-line account of its scale, as `rampScopeText` is
+ *  for the value legend. */
+export function deltaScopeText(domain: DeltaDomain, unit: string | null): string {
+  if (domain.basis === "none") {
+    return "ramp: no block changed — nothing to scale by";
+  }
+  const u = unit ? ` ${unit}` : "";
+  return (
+    `ramp: ±${formatNumber(domain.limit)}${u} — 95th percentile of the ` +
+    `change across ${fmtNumber(domain.changed)} changed blocks`
+  );
+}
+
+
+/** Which of the two views of a scenario the map is drawing. */
+export type ViewMode = "value" | "delta";
+
+
+/**
+ * The baseline colour expression: `value_numeric` on a light-to-dark blue ramp.
+ *
+ * Lifted out of `activateIndicator` unchanged so the delta ramp has something
+ * to be compared against.
+ */
+export function valueRamp(domain: RampDomain): ExpressionSpecification {
+  // If domain.max==min we've got a degenerate range; widen so the linear
+  // interpolation doesn't divide by zero (MapLibre silently produces NaN).
+  const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
+  return [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
+    domain.min, RAMP_START,
+    rampMax, RAMP_END,
+  ];
+}
+
+
 export function activateIndicator(
   map: MapLibreMap,
   config: ChoroplethConfig,
@@ -169,16 +416,31 @@ export function activateIndicator(
   aoiId?: string | null,
   selectionController?: SelectionController,
   grain?: string | null,
+  // The active scenario, or null/absent for the baseline city. Only the tile
+  // URL reads it; everything else about the layer is the same either way,
+  // which is the point of resolving the overlay in SQL (r043).
+  scenarioId?: string | null,
+  // The scenario's difference from the baseline, when that is what is shown.
+  // Absent means the value view. Only meaningful with a `scenarioId`; without
+  // one the tile URL ignores it, so the fill must too, or a delta fill would
+  // sit over a value tile and paint nothing at all.
+  delta?: DeltaDomain | null,
 ): void {
   removeIndicator(map);
+  const asDelta = Boolean(delta && scenarioId);
 
-  // `{z}/{x}/{y}` in the template is literal and must survive query-
-  // string composition, so use a plain concatenation — URLSearchParams
-  // or `new URL(template)` would reject the curly-brace placeholders.
-  const params = new URLSearchParams({ indicator_slug: indicator.slug });
-  if (grain) params.set("feature_type", grain);
-  if (aoiId) params.set("aoi_id", aoiId);
-  const tileUrl = `${config.tilesUrlTemplate}?${params.toString()}`;
+  // The URL is built by `scenario.tileUrlFor` rather than here, because
+  // whether `scenario_id` is on it is a decision with a cache attached: the
+  // baseline URL has to stay byte-identical to the one that existed before
+  // scenarios, and that is asserted where the builder lives.
+  const tileUrl = tileUrlFor({
+    template: config.tilesUrlTemplate,
+    slug: indicator.slug,
+    grain,
+    aoiId,
+    scenarioId,
+    delta: asDelta,
+  });
 
   // promoteId surfaces MVT feature_id as feature.id so setFeatureState
   // can target the right feature for hover highlighting — same
@@ -191,9 +453,6 @@ export function activateIndicator(
     promoteId: "feature_id",
   });
 
-  // If domain.max==min we've got a degenerate range; widen so the linear
-  // interpolation doesn't divide by zero (MapLibre silently produces NaN).
-  const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
   const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
   // Insert below the selection mask so the dim wash sits ON TOP of
@@ -212,13 +471,18 @@ export function activateIndicator(
     source: OVERLAY_SOURCE,
     "source-layer": config.sourceLayer,
     paint: {
-      "fill-color": [
-        "interpolate",
-        ["linear"],
-        ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
-        domain.min, RAMP_START,
-        rampMax, RAMP_END,
-      ],
+      // ⚠ Not a repair of the value tile. In delta mode a block whose
+      // baseline is numeric but whose current scenario row is valueless
+      // renders as a plain `unchanged, 0`; in value mode the same block is
+      // drawn twice by `indicator_overlay_tile` and whichever copy draws last
+      // wins, so it can flicker between a value and a hole. That is a known
+      // defect of the value tile (strict xfail in
+      // tests/integration/test_indicator_overlay_delta.py), and delta is the
+      // honest side of it. If flipping the toggle makes a block change
+      // character, look there before looking here.
+      "fill-color": asDelta && delta
+        ? deltaFill({ min: -delta.limit, max: delta.limit }, delta.higherIsBetter)
+        : valueRamp(domain),
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
     },
@@ -300,6 +564,7 @@ export function activateIndicator(
         layerId: OVERLAY_LAYER,
         format: (feature) => {
           const props = feature.properties ?? {};
+          if (asDelta) return deltaTooltip(props, indicator);
           const raw = props.value_numeric;
           if (raw === undefined || raw === null) return null;
           const num = typeof raw === "number" ? raw : Number(raw);
@@ -313,6 +578,36 @@ export function activateIndicator(
         },
       })),
     );
+  }
+}
+
+
+/**
+ * What hovering a block says in delta mode.
+ *
+ * The three states in words, because the colour alone cannot: grey is
+ * "unchanged" and amber is "new", and neither has a number to show.
+ */
+export function deltaTooltip(
+  props: Record<string, unknown>,
+  indicator: Pick<IndicatorSummary, "name" | "unit">,
+): { title: string; detail: string } | null {
+  const unit = indicator.unit ? ` ${indicator.unit}` : "";
+  switch (props.state) {
+    case "new":
+      return { title: indicator.name, detail: "new in this scenario \u2014 no baseline value" };
+    case "unchanged":
+      return { title: indicator.name, detail: "no change from the baseline" };
+    case "changed": {
+      const delta = typeof props.delta === "number" ? props.delta : Number(props.delta);
+      if (!Number.isFinite(delta)) return null;
+      return {
+        title: indicator.name,
+        detail: `${delta > 0 ? "+" : ""}${fmtNumber(delta)}${unit} from the baseline`,
+      };
+    }
+    default:
+      return null;
   }
 }
 
@@ -418,6 +713,83 @@ export function renderLegend(
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+/**
+ * The legend for the difference view.
+ *
+ * The gradient is built from {@link deltaStops}, the same constants the map
+ * paints with, so the swatch cannot drift from the fill. The two non-ramp
+ * states get their own labelled swatches: `new` has no place on a signed
+ * scale, and "no change" is the grey at the centre, which the ramp alone
+ * cannot say is a state rather than a very small change.
+ */
+export function renderDeltaLegend(
+  container: HTMLElement,
+  indicator: IndicatorSummary,
+  domain: DeltaDomain,
+): void {
+  container.hidden = false;
+  const unit = indicator.unit ?? "";
+  const bound = (n: number, sign: string): string =>
+    domain.basis === "none" ? "" : `${sign}${formatNumber(n)}`;
+  container.innerHTML = `
+    <div class="name">Change in ${escapeHtml(indicator.name)}</div>
+    <div class="gradient" data-delta-gradient style="background: linear-gradient(to right, ${deltaStops(domain.higherIsBetter).join(", ")})"></div>
+    <div class="bounds"><span>${bound(domain.limit, "\u2212")}</span><span>0</span><span>${bound(domain.limit, "+")}</span></div>
+    <div class="unit">${escapeHtml(unit)}</div>
+    <div class="delta-meaning" data-delta-meaning>${escapeHtml(deltaMeaningText(domain.higherIsBetter))}</div>
+    <div class="delta-key">
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_GOOD}"></i>improvement</span>
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_BAD}"></i>worse</span>
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_NEUTRAL}"></i>no change (${fmtNumber(domain.unchanged)})</span>
+      <span class="delta-key__item"><i class="delta-key__swatch" style="background: ${DELTA_NEW}"></i>new in this scenario (${fmtNumber(domain.new)})</span>
+    </div>
+    <div class="scope">${escapeHtml(deltaScopeText(domain, indicator.unit ?? null))}</div>
+  `.trim();
+}
+
+
+/**
+ * The value / difference switch, shown only while a scenario is active.
+ *
+ * A baseline city has no difference to show, so the control is hidden rather
+ * than disabled: a disabled "Difference" button next to a baseline map reads
+ * as a feature that is broken.
+ */
+export function renderModeToggle(
+  container: HTMLElement,
+  scenarioActive: boolean,
+  active: ViewMode,
+  onPick: (mode: ViewMode) => void,
+): void {
+  if (!scenarioActive) {
+    container.hidden = true;
+    container.replaceChildren();
+    return;
+  }
+  container.hidden = false;
+  const label = document.createElement("span");
+  label.className = "grain-toggle__label";
+  label.textContent = "View";
+  container.replaceChildren(label);
+  const modes: Array<[ViewMode, string]> = [
+    ["value", "Values"],
+    ["delta", "Difference"],
+  ];
+  for (const [mode, text] of modes) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "grain-toggle__btn";
+    btn.dataset.mode = mode;
+    btn.textContent = text;
+    btn.setAttribute("aria-pressed", mode === active ? "true" : "false");
+    btn.addEventListener("click", () => {
+      if (mode !== active) onPick(mode);
+    });
+    container.append(btn);
+  }
 }
 
 

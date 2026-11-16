@@ -44,6 +44,16 @@
           <div id="aoi-info" class="aoi-info" hidden></div>
         </section>
 
+        <!-- Scenario authoring: picker, one proposal form, recompute.
+             Rendered from `src/scenario.ts`; empty until then, like
+             `#layer-toggles`. Sits under the pilot because a scenario
+             belongs to one AOI and governs which indicators the picker
+             below can offer. -->
+        <section data-section="scenario">
+          <h2>Scenario</h2>
+          <div id="scenario-panel" class="scenario-panel"></div>
+        </section>
+
         <section data-section="layers">
           <h2>Spatial layers</h2>
           <div id="layer-toggles" class="layer-toggles"></div>
@@ -58,6 +68,9 @@
             </select>
           </label>
           <div id="grain-toggle" class="grain-toggle" hidden></div>
+          <!-- Values / Difference, for the active scenario only. Rendered from
+               `src/choropleth.ts`; hidden on the baseline city. -->
+          <div id="mode-toggle" class="grain-toggle" hidden></div>
           <div id="legend" class="legend" hidden></div>
           <div id="downloads" class="downloads" hidden>
             <button type="button" data-format="csv">Download CSV</button>

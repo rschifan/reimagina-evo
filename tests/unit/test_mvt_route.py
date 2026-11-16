@@ -5,8 +5,8 @@ the HTTP, and all of it is decidable without Postgres. So the status codes,
 the validators and the encoding live here, and `tests/integration` asserts
 that real bytes come back and decode.
 
-See `docs/superpowers/specs/API_SERVED_MVT.md` for why this route exists
-alongside Martin rather than instead of it.
+See `docs/architecture/TILE_SERVING.md` for why this route exists alongside
+Martin rather than instead of it.
 """
 
 from __future__ import annotations

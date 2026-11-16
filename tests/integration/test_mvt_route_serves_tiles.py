@@ -13,7 +13,7 @@ vacuous-green class this repository has already paid for once. The decoder in
 `scripts/mvt_inspect.py` is dependency-free and in-tree, so these tests
 decode protobuf without importing anything that might be absent.
 
-See `docs/superpowers/specs/API_SERVED_MVT.md`.
+Why the route exists alongside Martin: `docs/architecture/TILE_SERVING.md`.
 """
 
 from __future__ import annotations

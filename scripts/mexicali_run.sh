@@ -285,7 +285,7 @@ fi
 #
 # The lake has no Mexicali buildings. Overture does, and its divisions theme is
 # also where a boundary comes from on a machine with no mirror — see
-# docs/superpowers/specs/MEXICALI_FROM_OVERTURE.md. Here the boundary is
+# docs/BOOTSTRAP.md §5. Here the boundary is
 # INEGI's, so only the buildings are fetched.
 step "6. Extracting and loading Overture buildings"
 BUILDINGS=data/overture_buildings_mexicali.parquet
