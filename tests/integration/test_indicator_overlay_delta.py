@@ -378,6 +378,11 @@ _DELTA_SPELLINGS = [
     "true ",
     " true ",
     "\ttrue\n",
+    # Vertical tab is whitespace to the boolean parser, and the one character
+    # SQL's E'' strings have no letter escape for: `E'\v'` is a literal `v`,
+    # which trimmed the letter and left the tab. Both halves are pinned.
+    "\vtrue",
+    "vtrue",
     "yes",
     "ye",
     "y",

@@ -135,7 +135,11 @@ _TRUE_WORDS = "'1', 't', 'tr', 'tru', 'true', 'y', 'ye', 'yes', 'on'"
 #: The whitespace Postgres's boolean parser ignores around a value. Trimmed
 #: because a trailing space in a hand-typed or hand-assembled URL is the
 #: likeliest way anyone meets the boundary at all.
-_SPACE = r"E' \t\n\r\f\v'"
+#:
+#: ⚠ Vertical tab is ``\013``, not ``\v``. An ``E''`` string has no ``\v``
+#: escape: it reads as a literal ``v``, so the set trimmed the *letter* —
+#: ``vtrue`` selected the delta — and left the tab, so ``\vtrue`` did not.
+_SPACE = r"E' \t\n\r\f\013'"
 
 #: Zoom-dependent simplification and tile clipping, shared by both branches so
 #: the two views cannot drift into drawing different outlines for one feature.
