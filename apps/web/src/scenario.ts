@@ -888,7 +888,13 @@ export function enableScenarioPanel(
   }
 
   async function removeGroup(editIds: string[]): Promise<void> {
-    if (!activeId) return;
+    // Captured once: the edits belong to the scenario that listed them, and
+    // `activeId` can change while a DELETE is in flight. Reading it per
+    // iteration sent the rest of the group to whichever scenario was picked
+    // next — the backend refused those ids, and the first scenario was left
+    // holding a partly removed proposal.
+    const scenarioId = activeId;
+    if (!scenarioId) return;
     // Sequential, and every id of the group: three edits of four is the
     // half-written proposal `groupEditsByArea` exists to keep off the screen.
     // A failure partway is reported with what is left, because the scenario is
@@ -896,13 +902,16 @@ export function enableScenarioPanel(
     let removed = 0;
     for (const editId of editIds) {
       try {
-        await removeScenarioEdit(activeId, editId);
+        await removeScenarioEdit(scenarioId, editId);
         removed += 1;
       } catch (err) {
-        await refused(err, "removeEdit");
+        if (activeId === scenarioId) await refused(err, "removeEdit");
         break;
       }
     }
+    // The removal finishes regardless; what it says and redraws is for the
+    // scenario on screen, and a different one is showing its own rules now.
+    if (activeId !== scenarioId) return;
     if (removed === editIds.length) {
       say(
         `Rule removed. Recompute to withdraw the overrides it wrote — ` +

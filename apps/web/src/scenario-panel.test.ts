@@ -210,3 +210,50 @@ describe("recompute polling", () => {
     expect(part("comparison").textContent).toBe("");
   });
 });
+
+describe("removing a rule", () => {
+  const area = "POLYGON((0 0,1 0,1 1,0 1,0 0))";
+  const row = (ordinal: number, key: string, value: number) => ({
+    id: `e${ordinal}`,
+    ordinal,
+    type_id: "t-1",
+    attribute_key: key,
+    value_numeric: value,
+    geometry_wkt: area,
+    created_at: "",
+  });
+
+  // ⚠ The loop used to read `activeId` on every iteration, so picking another
+  // scenario mid-removal sent the rest of A's edit ids to B. The backend
+  // refused them, and A kept a partly removed proposal.
+  it("sends every DELETE to the scenario the rule belongs to", async () => {
+    api.getScenario.mockResolvedValue({
+      edits: [row(1, "num_levels", 6), row(2, "floors", 6), row(3, "unit_size", 60)],
+    });
+    pick("B");
+    await settle();
+    pick("A");
+    await settle();
+
+    let releaseFirst!: () => void;
+    api.removeScenarioEdit
+      .mockReturnValueOnce(new Promise<void>((r) => (releaseFirst = r)))
+      .mockResolvedValue(undefined);
+    (host.querySelector(".scenario-panel__rule-remove") as HTMLButtonElement).click();
+    await settle();
+
+    pick("B");
+    await settle();
+    const before = message();
+    releaseFirst();
+    await settle();
+
+    expect(api.removeScenarioEdit.mock.calls).toEqual([
+      ["A", "e1"],
+      ["A", "e2"],
+      ["A", "e3"],
+    ]);
+    // The completion message is about A; B is on screen and says nothing new.
+    expect(message()).toBe(before);
+  });
+});
