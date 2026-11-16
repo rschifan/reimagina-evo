@@ -108,7 +108,9 @@ def test_the_manifest_names_something_to_check_out():
     that stands in for it and the warning that the delivery is not issued yet.
     """
     manifest = (DELIVERY / "MANIFEST.md").read_text()
-    rows = [line for line in manifest.splitlines() if line.startswith("| **Check out** |")]
+    rows = [
+        line for line in manifest.splitlines() if line.startswith("| **Check out** |")
+    ]
     assert len(rows) == 1, "MANIFEST.md has no **Check out** row; regenerate it"
     (row,) = rows
     assert "git checkout " in row or "the commit that adds this file" in row, row
