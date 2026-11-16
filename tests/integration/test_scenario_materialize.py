@@ -33,6 +33,7 @@ from reimagina.scenarios.authoring import (
     ScenarioHasNoAOI,
     add_edit,
     create_scenario,
+    delete_scenario,
     materialize_scenario,
     remove_edit,
 )
@@ -384,6 +385,30 @@ def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
     remove_edit(conn, edit_id=eid)
     materialize_scenario(conn, scenario_id=sid)
 
+    assert _current_version(conn, sid, "num_levels") is None
+
+
+def test_an_uppercase_id_materialises_under_the_canonical_partition(conn):
+    """The partition key is a string; the id it is built from must be canonical.
+
+    ``recompute`` in the CLI passes ``--scenario-id`` through as typed. Postgres
+    finds the scenario row whatever the case, so the run succeeds — but the
+    versions it publishes are keyed ``scenario=<UPPERCASE>``, which the API's
+    canonical delete never matches, so they outlived the scenario. Deleting
+    under the uppercase spelling must clean up the same partition as well.
+    """
+    feat.seed_feature_types(conn)
+    seed_assets(conn)
+    t = _Territory(conn)
+    sid = t.scenario()
+    t.edit(sid, _AREA_0_3, "num_levels", 6)
+
+    materialize_scenario(conn, scenario_id=sid.upper())
+
+    assert _current_version(conn, sid, "num_levels") is not None
+    assert _current_version(conn, sid.upper(), "num_levels") is None
+
+    delete_scenario(conn, scenario_id=sid.upper())
     assert _current_version(conn, sid, "num_levels") is None
 
 

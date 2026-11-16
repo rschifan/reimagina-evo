@@ -22,6 +22,7 @@ behind, and no half-deleted scenario.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -507,6 +508,7 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
     materialised to last time, and ``materialized_at`` does not move.
     """
     _require_postgres(conn)
+    scenario_id = _canonical_id(scenario_id)
     aoi_id = _scenario_aoi(conn, scenario_id)
     matched, resolved, feature_type = _resolve_edits(conn, scenario_id, aoi_id)
     _refuse_ceiling_breaches(conn, resolved=resolved, feature_type=feature_type)
@@ -536,6 +538,24 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
         overrides_removed=len(removed),
         results_superseded=superseded,
     )
+
+
+def _canonical_id(scenario_id: str) -> str:
+    """The scenario id in the one spelling a partition key may use.
+
+    Postgres compares ``uuid`` values, so ``WHERE id = 'ABC…'`` finds the row
+    whatever the case. A partition key is a *string*, ``scenario=<id>``, and
+    compares as one. Materialising under an uppercase id wrote versions and
+    materialisations under a key no lowercase delete would ever match, so they
+    outlived the scenario. Both writers of that key canonicalise here first.
+
+    A malformed id is a scenario that does not exist, the same answer
+    ``_lock_scenario`` gives for a well-formed one that matches nothing.
+    """
+    try:
+        return str(uuid.UUID(str(scenario_id)))
+    except ValueError as exc:
+        raise ScenarioNotFound(f"scenario {scenario_id} does not exist") from exc
 
 
 def _scenario_aoi(conn: Any, scenario_id: str) -> str:
@@ -867,6 +887,7 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     step leaves the scenario whole.
     """
     _require_postgres(conn)
+    scenario_id = _canonical_id(scenario_id)
     with conn.cursor() as cur:
         _lock_scenario(cur, scenario_id)
         cur.execute(
