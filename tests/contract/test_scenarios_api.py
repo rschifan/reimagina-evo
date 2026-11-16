@@ -665,9 +665,7 @@ def test_an_unreachable_database_at_the_enqueue_is_503_not_a_refusal(
     assert opened[0] == "connect"
 
 
-def test_recompute_answers_503_when_the_ops_plane_is_unprovisioned(
-    client, monkeypatch
-):
+def test_recompute_answers_503_when_the_ops_plane_is_unprovisioned(client, monkeypatch):
     """Materialisation counts are deliberately absent here.
 
     ``_enqueue_failure`` reports what stands for a *constraint* failure, and

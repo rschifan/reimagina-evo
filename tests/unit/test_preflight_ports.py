@@ -22,11 +22,31 @@ def _occupied() -> socket.socket:
 
 
 def test_free_ports_pass():
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    free = sock.getsockname()[1]
-    sock.close()  # closed, so nothing holds it
-    check_ports([(free, "API")])  # must not raise
+    """A port nothing holds must pass the preflight.
+
+    ⚠ Retried, and the retry is the test. Asking the kernel for an ephemeral
+    port and then closing it leaves a window in which anything else on the
+    machine can take it — and `_is_free` sets no ``SO_REUSEADDR`` on purpose,
+    so it forgives no transient state either. That is right for the preflight
+    and makes this assertion racy: the single-shot version failed for a reason
+    that had nothing to do with the code under test.
+
+    Five attempts, because the race needs an unlucky coincidence each time and
+    the alternative — weakening `_is_free` — would delete the strictness the
+    check exists for.
+    """
+    last: PortInUse | None = None
+    for _ in range(5):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        free = sock.getsockname()[1]
+        sock.close()  # closed, so nothing holds it
+        try:
+            check_ports([(free, "API")])
+            return
+        except PortInUse as exc:
+            last = exc
+    raise AssertionError(f"no ephemeral port passed the preflight in 5 tries: {last}")
 
 
 def test_a_held_port_is_reported_with_its_label():
