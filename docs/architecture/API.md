@@ -90,12 +90,19 @@ body so server logs + user-visible incidents can be correlated without
 leaking stack traces.
 
 ⚠ This held only as long as `apps.api.errors.unhandled_error_handler` is the
-handler Starlette actually reaches for `Exception`. titiler's
-`DEFAULT_STATUS_CODES` contains an `Exception: 500` entry, and registering it
-replaced ours for every route — after which unhandled errors answered
+handler Starlette actually reaches for every 5xx. titiler's
+`DEFAULT_STATUS_CODES` maps four classes to 500 — `Exception`,
+`RasterioIOError`, `RasterioError`, `RioTilerError` — and all four answered
 `{"detail": str(exc)}` with no request id, echoing back whatever the exception
-carried. `create_app` now filters that one entry out and keeps the
-raster-specific ones; `tests/unit/test_api_error_envelope.py` holds the line.
+carried. `Exception` was the worst of it, because registering it replaced ours
+for every route in the app; but a `RasterioIOError` carries the COG's path, and
+for a remote COG the URL with any SAS token still in its query string.
+
+`create_app` therefore keeps titiler's map only where it says something other
+than "internal error" — `{exc: code for … if code < 500}`, the ten 400s and
+404s that are the reason it is registered at all. Everything 5xx falls through
+to the envelope above. `tests/unit/test_api_error_envelope.py` holds both
+halves of that line.
 
 ### Refusals that name their own remedy (`detail`)
 
