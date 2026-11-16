@@ -325,7 +325,7 @@ def test_a_second_scenario_in_the_project_is_untouched(conn):
     assert get_scenario(conn, keeper) is not None
 
 
-# ── The fourth step, which the spec argues for by name ──────────────────────
+# ── The fourth step, which is not cosmetic ──────────────────────────────────
 
 
 def test_a_deleted_scenario_leaves_no_stale_asset_entry(conn):

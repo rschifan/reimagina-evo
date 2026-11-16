@@ -1062,8 +1062,9 @@ a missing input.
 - **The road tile cost question, partly.** §16 lists it as unproved because
   the measurement there is 40 synthetic edges. A real walking network for one
   city is 117,858 edges over 12,695 km. The tile *size* at z12 on this network
-  is still unmeasured and the open risk in
-  `docs/superpowers/specs/STREET_CONTEXT.md` stands.
+  is still unmeasured and the open density risk in
+  `docs/architecture/TILE_SERVING.md` ("Street context, without an external
+  basemap") stands.
 - **`--clip-bbox` earning its existence.** The AOI is the full municipality,
   9,971 km² reaching the Sea of Cortez at San Felipe and almost entirely
   desert. The fetch covered **0.1409** of it. An unclipped request is a

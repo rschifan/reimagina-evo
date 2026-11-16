@@ -734,7 +734,7 @@ def test_the_edits_route_delegates_the_four_edits_to_the_domain(
     """⚠ Three numbers make four edits, and that rule has one home.
 
     ``--levels`` writes both ``floors`` and ``num_levels``; a surface that
-    re-derived the list would re-introduce the spec's named failure — planned
+    re-derived the list would re-introduce the failure the four-edit rule exists to prevent — planned
     floors frozen on the baseline while edificability moves. The assertion is
     therefore that the router *calls* ``proposal.edits_for``, not that it
     happens to produce the same four keys today: a local reimplementation

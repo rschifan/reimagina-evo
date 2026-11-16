@@ -2,7 +2,7 @@
 
 Catalog-level assertions (unique / FK / RLS / policy) read ``pg_catalog`` rather
 than trying the violation, because the ``conn`` fixture never commits and a
-constraint that was declared but is not the one the spec names would still
+constraint that was declared but is not the one intended would still
 reject *something*.
 """
 

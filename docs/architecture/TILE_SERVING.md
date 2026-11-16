@@ -117,8 +117,6 @@ The bytes are one function call; the HTTP is the work.
 `GET /tiles/{function}` returns TileJSON 3.0.0, so the route is drop-in for
 the resolver's `tilejson_url` as well as its `tiles_url_template`.
 
-Full rationale: `docs/superpowers/specs/API_SERVED_MVT.md`.
-
 ## Street context, without an external basemap
 
 The map has no basemap, deliberately — `main.ts`: "the prototype avoids

@@ -13,9 +13,10 @@ inspection commands read from ``explore``. That is not a stylistic preference
 the CLI without an edit here (the select is ``*``), and a question the CLI can
 answer is a question the engineer can also answer in DBeaver with the same
 statement. The two Python readers exist for the API, which needs a scenario's
-edits; the view carries the counts, which is what inspection asks for and what
-the spec names (`SCENARIO_AUTHORING.md`: "`scenario show` reports an edit
-count and a materialised-at timestamp").
+edits; the view carries the counts, which is what inspection asks for:
+``scenario show`` reports an edit count and a materialised-at timestamp, so
+the state between runs (edits drawn, and whether a materialisation has seen
+them) is visible without recomputing anything.
 
 **The rules of a proposal are not in this file.** ``reimagina.scenarios.proposal``
 owns them — the four edits three numbers write, the refusal of a non-positive
@@ -145,8 +146,8 @@ def create(
 
     ``app_core.scenario.project_id`` is NOT NULL and ``aoi_id`` is not, so the
     project cannot simply be read off the AOI in general (r048). It can be
-    whenever an AOI *is* given, and the spec's own example passes only
-    ``--name`` and ``--aoi-id``; deriving it there is what makes that command
+    whenever an AOI *is* given, and the documented example (AGENTS.md) passes
+    only ``--name`` and ``--aoi-id``; deriving it there is what makes that command
     line work, and the alternative is asking the user for a uuid the database
     already knows.
 
