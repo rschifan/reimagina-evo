@@ -155,7 +155,8 @@ def create_app(
     # the two a client is sent to is `REIMAGINA_TILE_LIVE_BASE_URL`, resolved
     # by `tiles.sources`, so this route existing costs nothing until a
     # deployment points at it. See `apps/api/routers/mvt.py`, and
-    # `docs/superpowers/specs/API_SERVED_MVT.md` for why both exist.
+    # `docs/architecture/TILE_SERVING.md` ("Why both, rather than picking
+    # one") for why both exist.
     app.include_router(mvt.router)
     app.include_router(jobs.router)
     # Scenario authoring. Every handler here opens its own committed
