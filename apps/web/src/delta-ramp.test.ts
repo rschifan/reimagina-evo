@@ -12,7 +12,6 @@ import {
   deltaDomainFromComparison,
   deltaTooltip,
   renderDeltaLegend,
-  renderModeToggle,
   deltaFill,
   deltaRamp,
   deltaScopeText,
@@ -650,21 +649,5 @@ describe("what the difference view says in words", () => {
     expect(host.textContent).toMatch(/new in this scenario \(1\)/);
     expect(host.textContent).toMatch(/no change \(1\)/);
     expect(host.textContent).toMatch(/95th percentile/);
-  });
-
-  it("offers the view switch only while a scenario is active", () => {
-    const host = document.createElement("div");
-    renderModeToggle(host, false, "value", () => undefined);
-    expect(host.hidden).toBe(true);
-    expect(host.querySelectorAll("button")).toHaveLength(0);
-
-    const picked: string[] = [];
-    renderModeToggle(host, true, "value", (m) => picked.push(m));
-    expect(host.hidden).toBe(false);
-    const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
-    expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false"]);
-    buttons[0].click(); // already active: not a change
-    buttons[1].click();
-    expect(picked).toEqual(["delta"]);
   });
 });

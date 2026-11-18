@@ -1,5 +1,5 @@
 // The run follower and the rule removal, out of the DOM. These pin what
-// `scenario-panel.test.ts` pinned through the old sidebar panel: each case
+// tests of the old sidebar panel pinned through its DOM: each case
 // here exists because the ordering of awaits and timers once went wrong.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
