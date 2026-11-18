@@ -24,6 +24,7 @@ function uniformStats(): IndicatorValueStats {
     p50: 1500,
     p95: 1500,
     max: 1500,
+    sum: null,
     histogram: null,
   };
 }
@@ -51,6 +52,7 @@ describe("renderLegend", () => {
       p50: null,
       p95: null,
       max: null,
+      sum: null,
       histogram: null,
     };
     renderLegend(el, PARK, rampDomainFromStats(empty, PARK), null);

@@ -419,6 +419,7 @@ function stats(overrides: Partial<IndicatorValueStats>): IndicatorValueStats {
     p50: null,
     p95: null,
     max: null,
+    sum: null,
     histogram: null,
     ...overrides,
   };

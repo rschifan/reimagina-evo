@@ -75,6 +75,8 @@ export interface IndicatorValueStats {
   p50: number | null;
   p95: number | null;
   max: number | null;
+  /** Over the same rows as ``count``; ``null`` when there are none. */
+  sum: number | null;
   /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
   histogram: ValueHistogram | null;
 }
