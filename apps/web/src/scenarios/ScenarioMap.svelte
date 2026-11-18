@@ -65,6 +65,12 @@
     // where the camera waits until then.
     map = createMap(container, [-115.45, 32.62], 11);
     const unsubscribeRefresh = onMapRefresh(() => (refreshTick += 1));
+    // Handled, as the map page handles it: with no listener MapLibre writes
+    // every failed tile to the console, so a tile server that is not running
+    // reads as a broken page instead of saying what is wrong.
+    map.on("error", (e) => {
+      mapNote = `Map error: ${e.error?.message ?? "unknown"}`;
+    });
     map.on("load", () => {
       void (async () => {
         try {
