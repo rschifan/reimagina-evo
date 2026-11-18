@@ -53,7 +53,6 @@ let filters = $state.raw<RunStatus[]>([]);
 let openRun = $state.raw<RunDetailResponse | null>(null);
 let openRunId = $state<string | null>(null);
 let loading = $state(false);
-let refreshing = $state(false);
 let paused = $state(false);
 // Per resource, because both are read every tick: one shared slot let the
 // list's success erase the detail's failure in the same tick.
@@ -95,13 +94,10 @@ export const ops = {
   get openRun() {
     return openRun;
   },
-  /** First load only. A background refresh sets `refreshing`, so the table
-   *  never blanks out under someone mid-scan. */
+  /** First load only, so a background refresh never blanks the table out
+   *  under someone mid-scan. */
   get loading() {
     return loading;
-  },
-  get refreshing() {
-    return refreshing;
   },
   get paused() {
     return paused;
@@ -171,8 +167,7 @@ async function loadList({ background }: { background: boolean }): Promise<void> 
   listInFlight?.abort();
   const ctrl = new AbortController();
   listInFlight = ctrl;
-  if (background) refreshing = true;
-  else loading = true;
+  if (!background) loading = true;
   try {
     const sentAt = Date.now();
     const page = await listRuns({ statuses: filters, limit }, { signal: ctrl.signal });
@@ -191,7 +186,6 @@ async function loadList({ background }: { background: boolean }): Promise<void> 
     listError = describe(err);
   } finally {
     if (listInFlight === ctrl) {
-      refreshing = false;
       loading = false;
     }
   }
@@ -206,8 +200,7 @@ async function loadDetail({ background }: { background: boolean }): Promise<void
   detailInFlight?.abort();
   const ctrl = new AbortController();
   detailInFlight = ctrl;
-  if (background) refreshing = true;
-  else loading = true;
+  if (!background) loading = true;
   try {
     const sentAt = Date.now();
     const detail = await getRunDetail(runId, { signal: ctrl.signal });
@@ -221,7 +214,6 @@ async function loadDetail({ background }: { background: boolean }): Promise<void
     detailError = describe(err);
   } finally {
     if (detailInFlight === ctrl) {
-      refreshing = false;
       loading = false;
     }
   }

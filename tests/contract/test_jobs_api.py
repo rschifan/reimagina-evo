@@ -487,6 +487,32 @@ def test_run_detail_carries_expected_ms_and_unit_slots(monkeypatch):
     }
 
 
+def test_run_detail_stamps_server_now_before_reading_units(monkeypatch):
+    """The page draws running bars to ``server_now``. Stamped after the read, a
+    unit that finished in between gets a bar past its ``completed_at``, and the
+    next poll shortens it."""
+    order: list[str] = []
+    reader = _FakeOpsReader([_run_row()])
+    real_units = reader.list_units_detailed
+    reader.list_units_detailed = lambda run_id: (
+        order.append("read") or real_units(run_id)
+    )
+    app = _app_with_reader(reader, monkeypatch)
+    monkeypatch.setattr(
+        "apps.api.routers.jobs._server_now",
+        lambda: order.append("stamp") or datetime.now(timezone.utc),
+    )
+
+    with TestClient(app) as client:
+        assert (
+            client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail").status_code
+            == 200
+        )
+    app.dependency_overrides.clear()
+
+    assert order == ["stamp", "read"]
+
+
 def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatch):
     """The window between ``submit_run`` returning and the workflow's first step.
 
@@ -501,7 +527,10 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
             return RunStatus(
                 run_id=run_id,
                 status="queued",
-                units=(UnitStatusView("urban_form_block_compactness", "queued"),),
+                units=(
+                    UnitStatusView("urban_form_block_compactness", "queued"),
+                    UnitStatusView("urban_form_block_composite", "queued"),
+                ),
                 submitted_at=datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc),
             )
 
@@ -518,8 +547,13 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
     # The engine's creation time, not this request's clock — otherwise a run
     # queued for hours reads as 0.0 s old on every poll.
     assert resp.json()["run"]["submitted_at"].startswith("2026-08-20T10:00:00")
-    # No AOI and no prerequisites reach this path, so no estimate either.
+    # No AOI reaches this path, so no estimate either.
     assert resp.json()["units"][0]["expected_ms"] is None
+    # Prerequisites do: without them every row sits at depth 0 here and moves
+    # once the envelope row appears.
+    deps = {u["indicator"]: u["depends_on"] for u in resp.json()["units"]}
+    assert deps["urban_form_block_compactness"] == []
+    assert "urban_form_block_compactness" in deps["urban_form_block_composite"]
     assert resp.json()["unit_slots"] == 8
 
 
