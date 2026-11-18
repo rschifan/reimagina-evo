@@ -152,6 +152,15 @@ def test_expected_duration_ignores_failures_other_aois_and_later_runs(conn):
     assert _reader(conn).expected_durations(this) == {}
 
 
+def test_a_finished_run_is_not_its_own_estimate(conn):
+    """Reopened after it finished, a run's own successes must not become its
+    forecast: they completed after it was submitted."""
+    this = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
+    _time_unit(conn, this, "a", "2099-01-01T00:00:00Z", "2099-01-01T00:00:09Z")
+
+    assert _reader(conn).expected_durations(this) == {}
+
+
 def test_whole_dataset_runs_match_each_other(conn):
     """``aoi_id`` NULL is the launch form's default; ``=`` would never match it."""
     old = _make_run(conn, status="succeeded", units=[("a", "succeeded")])
