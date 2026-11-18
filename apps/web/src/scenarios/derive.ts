@@ -8,6 +8,7 @@
  */
 import type { IndicatorValueStats, ReachableIndicator, ScenarioListRow } from "../api";
 import { fmtNumber } from "../format";
+import type { Tone } from "../lib/components/ui/tone";
 
 export type ScenarioStatus =
   | "no-rules"
@@ -30,6 +31,21 @@ const LABELS: Record<ScenarioStatus, string> = {
 
 export function statusLabel(status: ScenarioStatus): string {
   return LABELS[status];
+}
+
+/** Typed as a total map so the compiler proves every status has a tone. */
+const TONES: Record<ScenarioStatus, Tone> = {
+  "no-rules": "neutral",
+  "not-computed": "neutral",
+  stale: "stale",
+  queued: "accent",
+  computing: "accent",
+  failed: "error",
+  "up-to-date": "fresh",
+};
+
+export function statusTone(status: ScenarioStatus): Tone {
+  return TONES[status];
 }
 
 /** A run status as the table names it, or null when it says nothing new. */

@@ -136,3 +136,11 @@ describe("the hash", () => {
     expect(parseHash(formatHash("A", null))).toEqual({ scenarioId: "A", slug: null });
   });
 });
+
+describe("statusTone", () => {
+  it("a failed scenario reads as an error, a current one as fresh", async () => {
+    const { statusTone } = await import("./derive");
+    expect(statusTone("failed")).toBe("error");
+    expect(statusTone("up-to-date")).toBe("fresh");
+  });
+});

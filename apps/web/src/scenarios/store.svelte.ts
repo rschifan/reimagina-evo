@@ -56,6 +56,8 @@ export interface Message {
 }
 
 export interface WorkspaceState {
+  /** Every pilot, for the picker. The active one is `aoiId`. */
+  aois: AOIRow[];
   aoiId: string | null;
   projectId: string | null;
   indicators: ReachableIndicator[];
@@ -77,6 +79,7 @@ export interface WorkspaceState {
 }
 
 export const ws: WorkspaceState = $state({
+  aois: [],
   aoiId: null,
   projectId: null,
   indicators: [],
@@ -146,6 +149,7 @@ export async function boot(): Promise<void> {
     }),
   ]);
   ws.indicators = indicators;
+  ws.aois = aois;
   for (const [slug, field] of [
     [DENSITY_INDICATOR_SLUG, "densityValidMax"],
     [FLOORS_INDICATOR_SLUG, "floorsValidMax"],
