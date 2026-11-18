@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -42,6 +43,7 @@ _RUN_TERMINAL = frozenset({"succeeded", "partial", "failed", "cancelled"})
 _STREAM_MAX_SECONDS = 300.0
 _HEARTBEAT_SECONDS = 15.0
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
@@ -184,6 +186,7 @@ def _submit_response(
 def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
     from reimagina.db import connect
     from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.orchestration.plan import UnknownIndicators
     from reimagina.provenance import code_version
 
     orchestrator = get_orchestrator()
@@ -215,15 +218,21 @@ def submit_run(body: SubmitRunBody, response: Response) -> SubmitRunResponse:
         # app-wide in `create_app` and answers 503 with the remedy named —
         # because `rerun` below and the scenario recompute reach this same
         # `submit_run`, and a per-route `except` covered one of the three.
-        handle = orchestrator.submit_run(
-            conn,
-            changed_attributes=body.changed_attributes or [],
-            edited_features=body.edited_features or [],
-            scenario_id=body.scenario_id,
-            aoi_id=body.aoi_id,
-            code_version=code_version(),
-            indicators=indicators,
-        )
+        #
+        # `UnknownIndicators` *is* caught per route, as `/preview` does, so the
+        # same typo answers the same 422 there and here rather than a 500.
+        try:
+            handle = orchestrator.submit_run(
+                conn,
+                changed_attributes=body.changed_attributes or [],
+                edited_features=body.edited_features or [],
+                scenario_id=body.scenario_id,
+                aoi_id=body.aoi_id,
+                code_version=code_version(),
+                indicators=indicators,
+            )
+        except UnknownIndicators as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         # "noop" when the run had nothing to recompute; else the queued run_id.
         status = handle.status.status if handle.status else "queued"
         if body.wait and handle.status is None:
@@ -548,6 +557,7 @@ def rerun_run(run_id: str, response: Response) -> RerunResponse:
     """
     from reimagina.db import connect
     from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.orchestration.plan import UnknownIndicators
     from reimagina.provenance import code_version
 
     if not is_run_id(run_id):
@@ -575,21 +585,26 @@ def rerun_run(run_id: str, response: Response) -> RerunResponse:
                 status_code=409, detail="every indicator in that run succeeded"
             )
 
-        handle = get_orchestrator().submit_run(
-            conn,
-            changed_attributes=[],
-            edited_features=[],
-            scenario_id=row["scenario_id"],
-            aoi_id=row["aoi_id"],
-            code_version=code_version(),
-            indicators=slugs,
-        )
+        # A slug recorded by this run may since have been renamed or removed.
+        try:
+            handle = get_orchestrator().submit_run(
+                conn,
+                changed_attributes=[],
+                edited_features=[],
+                scenario_id=row["scenario_id"],
+                aoi_id=row["aoi_id"],
+                code_version=code_version(),
+                indicators=slugs,
+            )
+        except UnknownIndicators as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     status = handle.status.status if handle.status else "queued"
     response.status_code = 202
     return RerunResponse(
         run_id=handle.run_id,
         status=status,
+        deduplicated=handle.deduplicated,
         rerun_of=run_id,
         indicators=slugs,
     )
@@ -630,10 +645,19 @@ def delete_run(
             detail=f"run {run_id} is still {row['status']} — cancel it first",
         )
 
+    from reimagina.orchestration.factory import get_orchestrator
+
     # Its own committed connection: the pooled one rolls back on teardown, which
     # would make this look like it worked and change nothing.
+    #
+    # ⚠ The engine forgets it too, and before the commit. The engine is the
+    # existence oracle (`/detail` and `GET /jobs/{id}` fall back to it), so a
+    # run gone from our tables alone comes back as a ghost; and the engine
+    # delete is not transactional, so a failure there must roll this back.
     with contextlib.closing(connect(api_dsn())) as write_conn, write_conn:
         deleted = get_backend(write_conn).ops_run_reader().delete_run(run_id)
+        if deleted:
+            get_orchestrator().forget_runs([run_id])
     return DeletedRuns(deleted=1 if deleted else 0)
 
 
@@ -642,12 +666,15 @@ def delete_finished_runs() -> DeletedRuns:
     """Forget every finished run, leaving live ones alone.
 
     Same boundary as the single delete: history goes, computed values stay.
+    Same engine rule too: forgotten there before the commit.
     """
     from reimagina.db import connect
+    from reimagina.orchestration.factory import get_orchestrator
 
     with contextlib.closing(connect(api_dsn())) as conn, conn:
         deleted = get_backend(conn).ops_run_reader().delete_terminal_runs()
-    return DeletedRuns(deleted=deleted)
+        get_orchestrator().forget_runs(deleted)
+    return DeletedRuns(deleted=len(deleted))
 
 
 @router.get("", response_model=RunListResponse)
@@ -669,18 +696,64 @@ def list_runs(
     parameter, so ``?status=failed&status=running`` binds to None, returns 200,
     and silently ignores the filter.
     """
+    from reimagina.orchestration.factory import get_orchestrator
+
     reader = get_backend(conn).ops_run_reader()
     # ``[]`` binds as an empty array, which matches no row — "no filter" has to
     # reach the reader as None, not as the empty list a query string produces.
     statuses = [s.value for s in status] if status else None
+    now = _server_now()
+    runs = [
+        RunRow(**row)
+        for row in reader.list_runs(statuses=statuses, limit=limit, offset=offset)
+    ]
+    total = reader.count_runs(statuses=statuses)
+    status_counts = reader.count_runs_by_status()
+
+    # ⚠ Runs nothing has dequeued have no envelope yet — it is written by the
+    # workflow's first step — so with no worker running they were in no list,
+    # no chip and no health count while sitting in the engine's queue. Folded
+    # in from the port, as `/detail` already falls back to it; first page only.
+    #
+    # Deduped against the envelope table, not the page: recovery re-enqueues an
+    # in-flight run whose envelope already says `running`, and counting it again
+    # as queued would double it in the chips. Best-effort, because the fold only
+    # adds information — an engine read error must not take the whole index
+    # (and with it the health strip) down to a 500.
+    # ponytail: the fold is capped at `limit`, so past that many queued runs the
+    # chip undercounts; add an engine-side count if a queue ever gets that deep.
+    try:
+        pending = get_orchestrator().list_enqueued_runs(limit=limit)
+    except Exception:
+        logger.warning(
+            "could not list enqueued runs; index shows envelopes only", exc_info=True
+        )
+        pending = []
+    enqueued = [
+        RunRow(
+            run_id=s.run_id,
+            status="queued",
+            code_version="",
+            submitted_at=s.submitted_at or now,
+            units_total=len(s.units),
+        )
+        for s in pending
+        if reader.get_run_row(s.run_id) is None
+    ]
+    if enqueued:
+        status_counts["queued"] = status_counts.get("queued", 0) + len(enqueued)
+        if statuses is None or "queued" in statuses:
+            total += len(enqueued)
+            # Not truncated back to `limit`: that would push envelope rows off
+            # page 1 while page 2 still starts at reader offset `limit`.
+            if offset == 0:
+                runs = enqueued + runs
+
     return RunListResponse(
-        runs=[
-            RunRow(**row)
-            for row in reader.list_runs(statuses=statuses, limit=limit, offset=offset)
-        ],
-        server_now=_server_now(),
-        total=reader.count_runs(statuses=statuses),
-        status_counts=reader.count_runs_by_status(),
+        runs=runs,
+        server_now=now,
+        total=total,
+        status_counts=status_counts,
         executors=[
             ExecutorRow(
                 executor_id=row["executor_id"],
@@ -706,9 +779,10 @@ def get_run_detail(
     implementation for two columns.
 
     ⚠ Falls back to the port when the envelope row is missing. ``orchestration_run``
-    is written by the workflow's *first step*, not by ``submit_run``, so for a
-    second or two after launch a purely SQL answer is 404 — which is exactly when
-    the user has just been navigated here.
+    is written by the workflow's *first step*, not by ``submit_run``, so until a
+    worker dequeues the run — a second or two with one running, indefinitely
+    with none — a purely SQL answer is 404, which is exactly when the user has
+    just been navigated here.
     """
     reader = get_backend(conn).ops_run_reader()
     row = reader.get_run_row(run_id)
@@ -744,17 +818,23 @@ def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
     if status is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     now = _server_now()
+    # The engine's own creation time: `now` here made a run queued for hours
+    # read as 0.0 s old on every poll.
+    submitted = status.submitted_at or now
     return RunDetailResponse(
         run=RunRow(
             run_id=status.run_id,
             status=status.status,
             code_version="",
-            submitted_at=now,
+            submitted_at=submitted,
             units_total=len(status.units),
         ),
         units=[
             UnitDetail(
-                indicator=u.indicator, status=u.status, detail=u.detail, queued_at=now
+                indicator=u.indicator,
+                status=u.status,
+                detail=u.detail,
+                queued_at=submitted,
             )
             for u in status.units
         ],

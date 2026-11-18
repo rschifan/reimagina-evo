@@ -125,8 +125,8 @@ class OpsRunReader(Protocol):
         """
         ...
 
-    def delete_terminal_runs(self) -> int:
-        """Delete every finished run, returning how many went.
+    def delete_terminal_runs(self) -> list[str]:
+        """Delete every finished run, returning the ids that went.
 
         Live runs are left alone: their workflow is still writing to these rows,
         so deleting one would have it recreate a half-run envelope behind you.

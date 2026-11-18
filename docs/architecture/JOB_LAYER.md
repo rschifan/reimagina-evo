@@ -69,7 +69,7 @@ The queue engine's own modules — the task definitions, the queue app, the LIST
 
 ## The port
 
-`packages/py/reimagina/orchestration/port.py` — four methods, plain dataclasses, no engine types.
+`packages/py/reimagina/orchestration/port.py` — six methods, plain dataclasses, no engine types.
 
 ```python
 class Orchestrator(Protocol):  # port.py:106

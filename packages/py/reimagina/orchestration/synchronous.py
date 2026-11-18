@@ -129,6 +129,13 @@ class SynchronousOrchestrator:
             ),
         )
 
+    def list_enqueued_runs(self, limit: int = 50) -> list[RunStatus]:
+        """Always empty — a run here is finished before ``submit_run`` returns."""
+        return []
+
+    def forget_runs(self, run_ids: Sequence[str]) -> None:
+        """Nothing to forget: this engine keeps no record outside the store."""
+
     def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
         """Always False — a run here is already over by the time anyone has its id.
 

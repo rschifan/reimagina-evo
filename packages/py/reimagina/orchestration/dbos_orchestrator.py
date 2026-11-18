@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import AsyncIterator, Iterable, Sequence
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -119,8 +120,12 @@ _RUN_STATUS_FOR = {
 }
 
 
-def _persist_plan(units) -> str:
+def _persist_plan(units, plan_id: str) -> str:
     """Store the resolved feature set; return the handle the workflow carries.
+
+    ⚠ ``plan_id`` is the run id, not a fresh uuid. The TTL sweep spares a plan
+    whose workflow is still queued or running, and it can only find that
+    workflow if the plan is keyed by the workflow's own id.
 
     ⚠ Commits and closes before returning. A worker can dequeue the moment the
     workflow is enqueued and reads the plan on its own connection, so an
@@ -135,14 +140,11 @@ def _persist_plan(units) -> str:
     ⚠ Not in ``orchestration/plan.py``, which states it "touches no queue,
     worker or run table"; this writes to ``jobs_runtime``.
     """
-    from uuid import uuid4
-
     from reimagina.db import connect
     from reimagina.storage import backend_for_connection as _backend
 
     from reimagina.orchestration import dbos_app
 
-    plan_id = str(uuid4())
     with _closing(connect(dbos_app.dbos_dsn())) as plan_conn:
         _backend(plan_conn).run_plan_repo().write(
             plan_id=plan_id,
@@ -158,6 +160,27 @@ def _persist_plan(units) -> str:
         )
         plan_conn.commit()
     return plan_id
+
+
+def _as_run_status(row: Any) -> RunStatus:
+    """A DBOS status row as a run, for when the engine is the only record."""
+    args = (row.input or {}).get("args", ())
+    units = args[1] if len(args) > 1 else []
+    return RunStatus(
+        run_id=row.workflow_id,
+        status=_RUN_STATUS_FOR.get(row.status, "running"),
+        units=tuple(
+            UnitStatusView(u["slug"], "queued", None)
+            for u in units
+            if isinstance(u, dict) and "slug" in u
+        ),
+        # DBOS stamps epoch milliseconds.
+        submitted_at=(
+            datetime.fromtimestamp(row.created_at / 1000, timezone.utc)
+            if row.created_at is not None
+            else None
+        ),
+    )
 
 
 def _is_undefined_table(exc: BaseException) -> bool:
@@ -247,7 +270,7 @@ class DBOSOrchestrator:
             "scenario_id": scenario_id,
             "aoi_id": aoi_id,
             # Committed before the workflow is enqueued; see `_persist_plan`.
-            "plan_id": _persist_plan(plan.units),
+            "plan_id": _persist_plan(plan.units, run_id),
         }
         dbos_app.validate_workflow_input(units, params)
 
@@ -333,12 +356,11 @@ class DBOSOrchestrator:
                 run_id,
                 settled,
             )
-            # ⚠ The plan written above is now unreferenced. It is reclaimed by
-            # the TTL sweep that `_persist_plan` already runs on every submit —
-            # the idempotency-collision case its docstring names. Deleting it
-            # here would be the obvious alternative and is wrong: this path
-            # also runs when the collision was with *this* process's own
-            # retry, and the plan is keyed per submit, not per run.
+            # The plan written above is keyed by `run_id`, which never became
+            # a workflow (the settled run carries its own plan), so nothing
+            # reads it. It is left for the TTL sweep `_persist_plan` runs on
+            # every submit: with no workflow row its liveness guard does not
+            # spare it, and the age bound collects it.
             return RunHandle(run_id=settled, status=None, deduplicated=True)
 
         return RunHandle(run_id=run_id, status=None)
@@ -396,17 +418,38 @@ class DBOSOrchestrator:
             return None
         if not found:
             return None
-        args = (found[0].input or {}).get("args", ())
-        units = args[1] if len(args) > 1 else []
-        return RunStatus(
-            run_id=run_id,
-            status=_RUN_STATUS_FOR.get(found[0].status, "running"),
-            units=tuple(
-                UnitStatusView(u["slug"], "queued", None)
-                for u in units
-                if isinstance(u, dict) and "slug" in u
-            ),
-        )
+        return _as_run_status(found[0])
+
+    def list_enqueued_runs(self, limit: int = 50) -> list[RunStatus]:
+        from reimagina.orchestration import dbos_app
+
+        try:
+            found = _client().list_workflows(
+                status=["ENQUEUED", "DELAYED"],
+                # The per-indicator unit workflows are enqueued too; they are
+                # not runs.
+                name=dbos_app.run_workflow.__name__,
+                limit=limit,
+                sort_desc=True,
+                load_output=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — re-raised unless it is 42P01
+            # Same reading as `_from_workflow`: no schema, no workflows.
+            if not _is_undefined_table(exc):
+                raise
+            return []
+        return [_as_run_status(row) for row in found]
+
+    def forget_runs(self, run_ids: Sequence[str]) -> None:
+        if not run_ids:
+            return
+        try:
+            # delete_children: the units are child workflows, for the same
+            # reason `cancel_run` passes cancel_children.
+            _client().delete_workflows(list(run_ids), delete_children=True)
+        except Exception as exc:  # noqa: BLE001 — re-raised unless it is 42P01
+            if not _is_undefined_table(exc):
+                raise
 
     # ── Cancel ──────────────────────────────────────────────────────────────
 
@@ -456,13 +499,43 @@ class DBOSOrchestrator:
             # envelope ourselves, already terminal, closes that: `create_run` is
             # ON CONFLICT DO NOTHING so the workflow's later attempt is a no-op,
             # and `finalize_run` refuses to move a terminal run.
+            #
+            # ⚠ Scope and units come from the workflow input. This envelope is
+            # the only one the run will ever have, so None here loses its
+            # scenario/AOI for good; and with no `job_unit` rows the run reads
+            # as zero units and `/rerun` says "every indicator succeeded".
+            # `code_version` keeps its sentinel: it marks a run that never
+            # reached `s_open_run`.
+            params: dict = {}
+            with contextlib.suppress(Exception):  # still close it if this fails
+                found = _client().list_workflows(workflow_ids=[run_id])
+                args: Sequence[Any] = (
+                    (found[0].input or {}).get("args", ()) if found else ()
+                )
+                if len(args) > 2 and isinstance(args[2], dict):
+                    params = args[2]
             runstore.create_run(
                 conn,
                 run_id=run_id,
-                scenario_id=None,
-                aoi_id=None,
+                scenario_id=params.get("scenario_id"),
+                aoi_id=params.get("aoi_id"),
                 code_version="cancelled-before-start",
                 status=final,
+            )
+            # After the envelope (job_unit FKs it); ON CONFLICT DO NOTHING, so
+            # it cannot overwrite a worker's write.
+            runstore.record_units(
+                conn,
+                run_id=run_id,
+                units=[
+                    {
+                        "indicator": unit.indicator,
+                        "features": [],
+                        "status": "cancelled",
+                        "detail": "run cancelled",
+                    }
+                    for unit in current.units
+                ],
             )
             logger.info("cancelled run %s before its envelope was written", run_id)
         conn.commit()

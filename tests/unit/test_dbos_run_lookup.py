@@ -66,3 +66,83 @@ def test_an_error_with_no_driver_cause_propagates(monkeypatch):
     orch = _orchestrator_raising(monkeypatch, RuntimeError("engine unreachable"))
     with pytest.raises(RuntimeError, match="engine unreachable"):
         orch._from_workflow("some-run-id")
+
+
+def _queued_row(**overrides):
+    from types import SimpleNamespace
+
+    row = dict(
+        workflow_id="run-1",
+        status="ENQUEUED",
+        created_at=1_755_684_000_000,  # 2025-08-20T10:00:00Z, epoch ms
+        input={
+            "args": (
+                "run-1",
+                [{"slug": "urban_form_block_compactness"}],
+                {"scenario_id": "scn-1", "aoi_id": "aoi-1", "plan_id": "run-1"},
+            )
+        },
+    )
+    row.update(overrides)
+    return SimpleNamespace(**row)
+
+
+def test_a_pre_envelope_run_carries_the_engines_creation_time():
+    """Without it the detail page re-stamped a queued run as "now" every poll."""
+    from datetime import datetime, timezone
+
+    from reimagina.orchestration.dbos_orchestrator import _as_run_status
+
+    status = _as_run_status(_queued_row())
+    assert status.submitted_at == datetime(2025, 8, 20, 10, 0, tzinfo=timezone.utc)
+    assert _as_run_status(_queued_row(created_at=None)).submitted_at is None
+
+
+def test_cancelling_before_the_envelope_keeps_scope_and_units(monkeypatch):
+    """The fallback envelope is the only one the run will ever get.
+
+    It used to be written with no scenario/AOI and no `job_unit` rows, so the
+    cancelled run showed zero units and `/rerun` answered "every indicator
+    succeeded" for a run in which nothing ran.
+    """
+    from types import SimpleNamespace
+
+    from reimagina.orchestration import dbos_orchestrator, runstore
+
+    written: dict = {}
+
+    class _Client:
+        def list_workflows(self, **_):
+            return [_queued_row()]
+
+        def cancel_workflow(self, *_, **__):
+            pass
+
+    monkeypatch.setattr(dbos_orchestrator, "_client", lambda: _Client())
+    monkeypatch.setattr(
+        dbos_orchestrator,
+        "backend_for_connection",
+        lambda conn: SimpleNamespace(
+            job_run_repo=lambda: SimpleNamespace(cancel_run_backends=lambda rid: 0)
+        ),
+    )
+    monkeypatch.setattr(runstore, "get_run", lambda conn, rid: None)
+    monkeypatch.setattr(runstore, "set_unit_status", lambda conn, **kw: False)
+    monkeypatch.setattr(runstore, "list_units", lambda conn, rid: [])
+    monkeypatch.setattr(runstore, "finalize_run", lambda conn, **kw: False)
+    monkeypatch.setattr(
+        runstore, "create_run", lambda conn, **kw: written.update(run=kw)
+    )
+    monkeypatch.setattr(
+        runstore, "record_units", lambda conn, **kw: written.update(units=kw["units"])
+    )
+
+    orch = DBOSOrchestrator(registry=(), execution_mode="client")
+    assert orch.cancel_run(SimpleNamespace(commit=lambda: None), "run-1") is True
+
+    assert written["run"]["scenario_id"] == "scn-1"
+    assert written["run"]["aoi_id"] == "aoi-1"
+    assert written["run"]["status"] == "cancelled"
+    assert [(u["indicator"], u["status"]) for u in written["units"]] == [
+        ("urban_form_block_compactness", "cancelled")
+    ]
