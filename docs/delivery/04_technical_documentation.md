@@ -23,6 +23,7 @@ date: "13 November 2026"
 | 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
 | 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
+| 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
 
 ### Provenance of the figures
 
@@ -192,14 +193,14 @@ is written around both:
 
 ## 5. Running the platform
 
-The read side is one command:
+The whole platform is one command:
 
 ```bash
 make dev
 ```
 
-It starts the API on `:8001` and the web app on `:5173`, and Ctrl-C stops
-both. It reads `REIMAGINA_APP_DSN`, falling back to `DATABASE_URL` from
+It starts the API on `:8001`, the web app on `:5173` and the worker, and
+Ctrl-C stops all three. It reads `REIMAGINA_APP_DSN`, falling back to `DATABASE_URL` from
 `.env`, and refuses to start rather than silently serving the API's own
 default database — an empty database looks like a broken frontend, not a
 missing variable.
@@ -210,12 +211,12 @@ Svelte transforms that the API cannot. A deployment runs `make build-web`
 and serves the static output behind one reverse proxy that maps `/api`, which
 is the mapping `vite.config.ts` performs in development.
 
-To run them in separate terminals, or to add the worker:
+To run them in separate terminals:
 
 ```bash
 make dev-api      # FastAPI on :8001
 make dev-web      # Vite on :5173
-DATABASE_URL_DIRECT=... python -m apps.worker
+make dev-worker   # drains runs; reads DATABASE_URL_DIRECT from .env
 ```
 
 The worker is required for anything to compute. Without it the run dashboard
