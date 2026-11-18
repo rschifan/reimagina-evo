@@ -33,14 +33,9 @@
   // A clock of its own, not the poll tick: deriving "now" from the last
   // response would freeze every relative time whenever polling backs off or
   // the tab is hidden.
-  // Monotonic, so a jittery offset never draws a bar shorter than last tick.
+  // Monotonic, so a jittery offset never moves a relative time backward.
   let now = $state(Date.now());
   const tick = () => (now = monotonicNow(now, serverNow(Date.now(), ops.offsetMs)));
-  // 100 ms while a live run is on screen, so its bars grow smoothly between
-  // one-second polls; once a second otherwise.
-  const watchingLive = $derived(
-    ops.openRun !== null && !isRunTerminal(ops.openRun.run.status),
-  );
 
   let refresh: (() => void) | null = null;
   /** Announced transitions only. Marking the table itself polite would
@@ -111,7 +106,7 @@
   $effect(() => {
     const t = setInterval(() => {
       if (!document.hidden) tick();
-    }, watchingLive ? 100 : 1_000);
+    }, 1_000);
     return () => clearInterval(t);
   });
 

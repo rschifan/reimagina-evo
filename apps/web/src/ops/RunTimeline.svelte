@@ -1,18 +1,19 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import Card from "../lib/components/ui/Card.svelte";
-  import type { UnitDetail } from "./api";
-  import { timelineModel, UNIT_VISUAL, type RowState } from "./timeline";
+  import type { RunDetailResponse } from "./api";
+  import { timelineAt, UNIT_VISUAL, type RowState } from "./timeline";
 
-  let {
-    units,
-    slots,
-    now,
-    live,
-  }: { units: UnitDetail[]; slots: number; now: number; live: boolean } = $props();
+  let { detail, live }: { detail: RunDetailResponse; live: boolean } = $props();
 
-  // Every rule lives in timeline.ts; this file only draws the model.
-  const m = $derived(timelineModel(units, slots, now, live));
+  // Every rule lives in timeline.ts; this file only draws the model. Drawn at
+  // the response's own time (see `timelineAt`), so motion between one-second
+  // polls is CSS: a linear transition one poll long keeps bars gliding
+  // without ever drawing past what the server has said.
+  const m = $derived(timelineAt(detail, live));
+  const units = $derived(detail.units);
+  const slots = $derived(detail.unit_slots);
+  const GLIDE = "transition-[left,width] duration-1000 ease-linear";
 
   const legend = Object.entries(UNIT_VISUAL) as [RowState, (typeof UNIT_VISUAL)[RowState]][];
 
@@ -35,13 +36,13 @@
 {#snippet guides()}
   {#if m.forecastPct !== null}
     <div
-      class="pointer-events-none absolute inset-y-0 border-l border-dashed border-muted-foreground/60"
+      class={`pointer-events-none absolute inset-y-0 border-l border-dashed border-muted-foreground/60 ${GLIDE}`}
       style:left={`${m.forecastPct}%`}
     ></div>
   {/if}
   {#if m.nowPct !== null}
     <div
-      class="pointer-events-none absolute inset-y-0 w-px bg-foreground"
+      class={`pointer-events-none absolute inset-y-0 w-px bg-foreground ${GLIDE}`}
       style:left={`${m.nowPct}%`}
     ></div>
   {/if}
@@ -103,19 +104,20 @@
           <span class="truncate font-mono text-[11px]" title={row.unit.indicator}>
             {row.unit.indicator}
           </span>
+          <span class="sr-only">{v.label}</span>
         </span>
 
         <div class="relative h-7">
           {#if row.expectedPct !== null}
             <div
-              class="absolute top-1/2 h-3 -translate-y-1/2 rounded-sm border border-dashed border-state-partial"
+              class={`absolute top-1/2 h-3 -translate-y-1/2 rounded-sm border border-dashed border-state-partial ${GLIDE}`}
               style:left={`${row.leftPct}%`}
               style:width={`${row.expectedPct}%`}
             ></div>
           {/if}
           {#if v.bar && row.unit.started_at}
             <div
-              class={`absolute top-1/2 h-3 min-w-[2px] -translate-y-1/2 rounded-sm ${v.bar}`}
+              class={`absolute top-1/2 h-3 min-w-[2px] -translate-y-1/2 rounded-sm ${v.bar} ${GLIDE}`}
               style:left={`${row.leftPct}%`}
               style:width={`${row.widthPct}%`}
             ></div>
@@ -136,7 +138,7 @@
 
         <span
           class={`text-right font-mono text-[11px] tabular-nums whitespace-nowrap ${
-            row.over ? "text-state-stale" : "text-muted-foreground"
+            row.over ? "text-foreground" : "text-muted-foreground"
           }`}
         >
           {row.numbers}

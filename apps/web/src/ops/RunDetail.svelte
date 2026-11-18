@@ -181,10 +181,5 @@
     </dl>
   </Card>
 
-  <RunTimeline
-    units={detail.units}
-    slots={detail.unit_slots}
-    {now}
-    live={!isRunTerminal(run.status)}
-  />
+  <RunTimeline {detail} live={!isRunTerminal(run.status)} />
 </section>

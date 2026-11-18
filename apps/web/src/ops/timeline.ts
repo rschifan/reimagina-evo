@@ -10,7 +10,7 @@
  *   when there is no forecast (A2). Positions are fractions of a fixed axis.
  */
 import type { Tone } from "../lib/components/ui/tone";
-import type { UnitDetail } from "./api";
+import type { RunDetailResponse, UnitDetail } from "./api";
 import { formatDuration } from "./derive";
 
 export type RowState =
@@ -31,7 +31,7 @@ export const UNIT_VISUAL: Record<
   succeeded: { label: "done", bar: "bg-state-fresh", dot: "bg-state-fresh" },
   failed: { label: "failed", bar: "bg-state-error", dot: "bg-state-error" },
   cancelled: { label: "cancelled", bar: "bg-line", dot: "bg-line" },
-  skipped: { label: "skipped", bar: null, dot: "bg-line" },
+  skipped: { label: "skipped", bar: null, dot: "border-2 border-line" },
   ready: {
     label: "next, waits for a free slot",
     bar: null,
@@ -210,7 +210,11 @@ export function timelineModel(
       state,
       leftPct: s ? pct(s.start) : 0,
       widthPct: s ? pct(s.end) - pct(s.start) : 0,
-      expectedPct: state === "running" && exp !== null ? (exp / axis) * 100 : null,
+      // Clamped: on a fallback axis a long estimate would run off the track.
+      expectedPct:
+        state === "running" && exp !== null && s
+          ? Math.min((exp / axis) * 100, 100 - pct(s.start))
+          : null,
       numbers,
       note: note(unit, state, by),
       over,
@@ -228,13 +232,15 @@ export function timelineModel(
     : [];
 
   const count = (st: RowState) => rows.filter((r) => r.state === st).length;
-  const done = rows.filter((r) => ["succeeded", ...ENDED].includes(r.state)).length;
+  const ended = count("cancelled") + count("skipped");
   const chips: { text: string; tone: Tone }[] = [];
   if (units.length) {
     if (live) chips.push({ text: `${formatDuration(elapsedMs)} elapsed`, tone: "neutral" });
     if (count("running")) chips.push({ text: `${count("running")} running`, tone: "partial" });
-    chips.push({ text: `${done} of ${rows.length} done`, tone: "fresh" });
+    // "done" is what the legend calls done: succeeded, in its green.
+    chips.push({ text: `${count("succeeded")} of ${rows.length} done`, tone: "fresh" });
     if (count("failed")) chips.push({ text: `${count("failed")} failed`, tone: "error" });
+    if (ended) chips.push({ text: `${ended} cancelled or skipped`, tone: "neutral" });
     if (count("ready")) chips.push({ text: `${count("ready")} next in line`, tone: "stale" });
     if (count("blocked"))
       chips.push({ text: `${count("blocked")} waiting on prerequisites`, tone: "neutral" });
@@ -249,7 +255,7 @@ export function timelineModel(
       chips.push(
         elapsedMs <= forecast
           ? { text: `expected finish in ~${formatDuration(forecast - elapsedMs)}`, tone: "neutral" }
-          : { text: `${formatDuration(elapsedMs - forecast)} past forecast`, tone: "stale" },
+          : { text: `${formatDuration(elapsedMs - forecast)} past forecast`, tone: "neutral" },
       );
   }
 
@@ -264,4 +270,15 @@ export function timelineModel(
     strip,
     chips,
   };
+}
+
+/**
+ * The model at the response's own time, not the wall clock. A unit's finish
+ * reaches the page one poll late; drawing running bars to the wall clock grew
+ * them past `completed_at` and snapped them back when it arrived. At the
+ * data's time a finish lands at or after the edge already drawn, so no bar
+ * ever shortens. `RunTimeline.svelte` animates between polls with CSS.
+ */
+export function timelineAt(detail: RunDetailResponse, live: boolean): TimelineModel {
+  return timelineModel(detail.units, detail.unit_slots, Date.parse(detail.server_now), live);
 }

@@ -7,7 +7,9 @@ import {
   rowOrder,
   rowState,
   ticks,
+  timelineAt,
   timelineModel,
+  UNIT_VISUAL,
 } from "./timeline";
 
 const RECORDED = fixture.units as UnitDetail[];
@@ -181,7 +183,8 @@ describe("chips", () => {
   test("live, past the forecast", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(12), true);
     expect(texts(m)).toContain("2.0s past forecast");
-    expect(m.chips.find((c) => c.text.endsWith("past forecast"))!.tone).toBe("stale");
+    // stale (amber) already means "ready, next in line"; one colour, one meaning.
+    expect(m.chips.find((c) => c.text.endsWith("past forecast"))!.tone).toBe("neutral");
   });
 
   test("finished", () => {
@@ -207,5 +210,60 @@ describe("degenerate input", () => {
     expect(m.rows.map((r) => r.state)).toEqual(["ready", "ready"]);
     expect(m.forecast).toBeNull();
     expect(m.axis).toBe(10_000);
+  });
+});
+
+describe("review fixes", () => {
+  test("drawn at the response's own time, so a finish between polls never shortens a bar", () => {
+    const run = fixture.run as never;
+    const poll = (units: UnitDetail[], s: number) =>
+      timelineAt({ run, units, server_now: iso(s), unit_slots: 8 }, true);
+    const before = poll([unit("a", { status: "running", started_at: iso(0) })], 5);
+    const after = poll(
+      [unit("a", { status: "succeeded", started_at: iso(0), completed_at: iso(5.4) })],
+      6,
+    );
+    const right = (m: ReturnType<typeof timelineAt>) => m.rows[0].leftPct + m.rows[0].widthPct;
+    expect(right(before)).toBeCloseTo((5 / before.axis) * 100e3, 6);
+    expect(right(after)).toBeGreaterThanOrEqual(right(before));
+  });
+
+  test("the expected outline stays inside the track on a fallback axis", () => {
+    const m = timelineModel(
+      [
+        unit("a", { status: "running", started_at: iso(1), expected_ms: 60_000 }),
+        unit("b", { status: "running", started_at: iso(0) }),
+      ],
+      8,
+      at(2),
+      true,
+    );
+    const a = m.rows.find((r) => r.unit.indicator === "a")!;
+    expect(m.axis).toBe(10_000);
+    expect(a.leftPct + a.expectedPct!).toBeLessThanOrEqual(100);
+  });
+
+  test("'done' counts what the legend calls done", () => {
+    const m = timelineModel(
+      [
+        unit("s", { status: "succeeded", started_at: iso(0), completed_at: iso(1) }),
+        unit("f", { status: "failed", started_at: iso(0), completed_at: iso(1) }),
+        unit("c", { status: "cancelled" }),
+        unit("k", { status: "skipped" }),
+      ],
+      8,
+      at(5),
+      false,
+    );
+    expect(m.chips.slice(0, 3)).toEqual([
+      { text: "1 of 4 done", tone: "fresh" },
+      { text: "1 failed", tone: "error" },
+      { text: "2 cancelled or skipped", tone: "neutral" },
+    ]);
+  });
+
+  test("every state has its own dot", () => {
+    const dots = Object.values(UNIT_VISUAL).map((v) => v.dot);
+    expect(new Set(dots).size).toBe(dots.length);
   });
 });

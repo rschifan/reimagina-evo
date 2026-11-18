@@ -148,8 +148,12 @@ the forecast.
 - `clockOffset` uses the request midpoint: `server_now − (sent + received) / 2`.
 - The displayed `now` is monotonic: `now = max(previousNow, serverNow(...))`
   within one run page, so bars never step backward on a jittery sample.
-- While a live run is open, `clientNow` ticks every 100 ms (1 s otherwise),
-  so bars grow smoothly between 1 s polls.
+- The timeline is drawn at the **response's own `server_now`**, not the wall
+  clock (`timelineAt`), and a one-second linear CSS transition glides bars
+  between polls. A unit's finish reaches the page one poll late; drawing to
+  the wall clock grew running bars past `completed_at` and snapped them back
+  when it arrived. At the data's time a finish always lands at or after the
+  edge already drawn. (Revised after review; this replaced a 100 ms tick.)
 
 Slots are shared by every live run (one global units queue), so the chips
 never claim how many slots are busy, and "waits for a free slot" is true
