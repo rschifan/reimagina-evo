@@ -207,16 +207,15 @@ path — `data/` is gitignored, so a fresh clone never has it.
 Web read-side (API + map frontend):
 
 ```bash
-# One command for both. Reads REIMAGINA_APP_DSN, falling back to .env's
-# DATABASE_URL; Ctrl-C stops both.
+# One command for API, web and worker. Reads REIMAGINA_APP_DSN, falling back
+# to .env's DATABASE_URL; Ctrl-C stops all three.
 make dev
 
 # Or separately, if you want them in their own terminals
 make dev-api        # FastAPI on :8001 — the port vite.config.ts proxies to
 make dev-web        # Vite on :5173
+make dev-worker     # drains runs; without it every run stays queued
 # Map at /, indicator catalog at /catalog.html, run dashboard at /ops.html.
-# The dashboard needs a worker to show anything running:
-#   DATABASE_URL_DIRECT=... python -m apps.worker
 
 # Then
 open http://localhost:8001/docs      # OpenAPI / Swagger
