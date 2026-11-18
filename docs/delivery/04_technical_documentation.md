@@ -24,10 +24,11 @@ date: "13 November 2026"
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
 | 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
+| 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
 
 ### Provenance of the figures
 
-Re-measured on 13 November 2026, at migration `r049`: the install appendix in §10 (revision, table count, every test count) and the acceptance run's duration in §7.1. Carried forward from an earlier measurement and not re-measured for this revision: the "22,500 blocks, ~40 s" generation time in §6.1, and the third-party dependency inventory.
+Re-measured on 19 November 2026, at migration `r050`: the install appendix in §10 (revision, table count, every test count). Carried forward from an earlier measurement and not re-measured for this revision: the acceptance run's duration in §7.1 (13 November, `r049`), the "22,500 blocks, ~40 s" generation time in §6.1, and the third-party dependency inventory.
 
 ### About this document
 
@@ -668,29 +669,43 @@ is reported with its actual result.
 |---|---|---|
 | 1 | `cp .env.example .env` | OK |
 | 2 | `make install` | OK |
-| 3 | `make migrate` | Both databases created and migrated to `r049`; 25 tables in `curated_geo` |
+| 3 | `make migrate` | Both databases created and migrated to `r050`; 25 tables in `curated_geo` |
 | 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
-| 5 | `make dev-web` | Vite ready; `/`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 954 passed |
-| 7 | `pytest tests/integration` | 502 passed, 1 skipped |
-| 8 | `pytest tests/conformance` | 17 passed, 1 skipped |
+| 5 | `make dev-web` | Vite ready; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
+| 6 | `pytest tests/unit tests/contract` | 1,013 passed |
+| 7 | `pytest tests/integration` | 525 passed, 1 skipped |
+| 8 | `pytest tests/conformance` | 21 passed, 1 skipped |
 | 8b | `pytest tests/performance` | 6 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,473 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 253 passed |
-| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 27 passed, in a real browser against both servers |
+| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,559 passed, 2 skipped |
+| 10 | `cd apps/web && npm test` | 322 passed |
+| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 31 passed, in a real browser against both servers |
 
-Measured against PostgreSQL 16.15, PostGIS 3.7 and pgRouting 4.0.2. CI pins
+Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3. CI pins
 PostGIS 3.4 and pgRouting 3.6.1; the schema is identical across both.
+
+Three things about this run differ from a fresh machine, and are stated rather
+than smoothed over. It used Path B (§3.1) with the databases named
+`reimagina_install` and `reimagina_install_test`, because the machine's other
+work already uses the default names and the integration suite drops schemas
+(§9.5). The API and Vite ran on ports 8041 and 5193 (`API_PORT`, `WEB_PORT`),
+because 8001 and 5173 were in use. And step 11 ran after loading the generated
+territory (§7.1, `scripts/acceptance_run.sh`) with tiles served by the API
+(`REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles`, §6.2): the browser suite asserts
+that streets draw and that the legend shows a distribution, and an empty
+database with no tile server has neither — on it those two tests fail and the
+other 29 pass.
 
 Step 9 is the whole tree in one process, and it is listed separately because
 it is a different assertion from steps 6–8 run in sequence. CI runs each suite
 as its own process, so nothing there exercises state cached across suites — and
 a reader's first instinct is `pytest`, not four invocations. One such leak
 existed and is fixed (`dbos_orchestrator._client()` cached a client against
-the first DSN the process saw; see §9.2). The two skips are one integration test that needs `ogr2ogr` with the PMTiles
-driver (GDAL 3.8 or later), and one conformance test that does not apply to the
-synchronous orchestrator, which finishes a run before `submit_run` returns.
+the first DSN the process saw; see §9.2). The two skips are one integration test that needs a database reached through a
+transaction-mode pgbouncer (`REIMAGINA_POOLED_TEST_DSN`), and one conformance
+test that does not apply to the synchronous orchestrator, which finishes a run
+before `submit_run` returns. On a machine whose `ogr2ogr` lacks the PMTiles
+driver (GDAL older than 3.8) one more integration test skips.
 
 The database-backed suites are run with `REIMAGINA_REQUIRE_DB=1`. Without it
 `pytest` exits 0 when every database test *skips*, and "322 skipped, 6 passed"
