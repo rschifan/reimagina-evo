@@ -86,6 +86,10 @@ export interface AOIRow {
   name: string;
 }
 
+/** The route's own ceiling (`limit: int = Query(50, ge=1, le=200)`, jobs.py);
+ *  anything larger is a 422 on every poll, not a bigger page. */
+export const MAX_RUN_LIMIT = 200;
+
 export function listRuns(
   opts: { statuses?: RunStatus[]; limit?: number } = {},
   init: { signal?: AbortSignal } = {},
@@ -185,6 +189,8 @@ export interface SubmitRunResponse {
    *  Polling this id would 404, which is why the API suppresses it. */
   run_id: string | null;
   status: string;
+  /** True when run_id names a run already doing this work: nothing new started. */
+  deduplicated?: boolean;
 }
 
 export function submitRun(

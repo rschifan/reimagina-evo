@@ -81,7 +81,7 @@ PYEOF
 fi
 
 step "1. Migrating to head"
-$CLI bootstrap-db
+$CLI bootstrap-db --with-test-db
 
 step "2. Verifying the first-layer schema"
 $CLI verify-schema
@@ -348,7 +348,8 @@ WORKER_PID=$!
 # Waited for through the product's own liveness surface rather than by
 # sleeping or grepping the log: the row appearing is itself the heartbeat
 # feature working, and a fixed sleep would be a race on a loaded machine.
-$PY - <<'PYEOF'
+# On failure the worker's own startup exception is in its log, not here.
+$PY - <<'PYEOF' || { echo "  worker log: $WORKER_LOG" >&2; tail -20 "$WORKER_LOG" >&2; exit 1; }
 import os
 import sys
 import time

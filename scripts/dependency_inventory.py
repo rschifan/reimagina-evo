@@ -59,12 +59,33 @@ def _site_packages() -> Path:
             "no .venv found — run `uv sync --locked --extra dev` first; this "
             "script reads licences from installed metadata, not from uv.lock"
         )
+    if len(candidates) > 1:
+        # ⚠ Not `candidates[0]`. After a Python bump `.venv/lib` holds both the
+        # old and the new interpreter directory, and string order puts the
+        # *older* one first — `python3.12` sorts before `python3.13` — so the
+        # inventory was generated from the stale tree and said so nowhere.
+        #
+        # Refusing rather than picking by `sys.version_info`: an ambiguous venv
+        # is an operator problem with a one-line fix, and choosing silently
+        # hides the staleness instead of reporting it. This document has to
+        # match the tree it claims to describe.
+        named = "\n  ".join(str(c.relative_to(ROOT)) for c in candidates)
+        sys.exit(
+            "more than one interpreter directory in .venv/lib, so which tree "
+            "this inventory would describe is ambiguous:\n  "
+            + named
+            + "\nRebuild it: `rm -rf .venv && uv sync --locked --extra dev`"
+        )
     return candidates[0]
 
 
 def _licence_from_files(dist_info: Path) -> str | None:
     """First line of a bundled licence, when metadata declares nothing."""
-    for pattern in ("licenses/LICENSE*", "LICENSE*", "COPYING*"):
+    # `LICEN[CS]E` for both spellings: npm packages use `LICENCE` often enough
+    # that `scripts/third_party_licences.py` already globs for it, and this
+    # script reading only one of the two was the difference between a resolved
+    # row and an UNRESOLVED one.
+    for pattern in ("licenses/LICEN[CS]E*", "LICEN[CS]E*", "COPYING*"):
         for path in dist_info.glob(pattern):
             head = path.read_text(encoding="utf-8", errors="replace").strip()
             first = next((ln.strip() for ln in head.splitlines() if ln.strip()), "")
@@ -111,7 +132,6 @@ def npm_packages() -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str
     if not lock.exists():
         sys.exit("apps/web/package-lock.json missing")
     data = json.loads(lock.read_text())
-    modules = ROOT / "apps" / "web" / "node_modules"
     production: set[tuple[str, str, str]] = set()
     development: set[tuple[str, str, str]] = set()
     for key, entry in data.get("packages", {}).items():
@@ -121,19 +141,17 @@ def npm_packages() -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str
         licence = entry.get("license") or ""
         if not licence:
             # The lockfile often omits it even when the package ships one.
-            pkg_licence = modules / name / "LICENSE"
-            if pkg_licence.exists():
-                first = next(
-                    (
-                        ln.strip()
-                        for ln in pkg_licence.read_text(
-                            encoding="utf-8", errors="replace"
-                        ).splitlines()
-                        if ln.strip()
-                    ),
-                    "",
-                )
-                licence = f"{first[:60]} (from LICENSE file)" if first else ""
+            #
+            # ⚠ The *key*, not the name. A nested dependency's key is
+            # `node_modules/a/node_modules/b` while its name is `b`, so joining
+            # `node_modules` to the name looked for `node_modules/b` — which a
+            # nested install does not have — and the row came out UNRESOLVED
+            # with the licence file sitting at the key's own path. The key is
+            # already the path relative to `apps/web`.
+            #
+            # `_licence_from_files` rather than a second copy of its glob-and-
+            # read-first-line logic, which is what this block used to be.
+            licence = _licence_from_files(ROOT / "apps" / "web" / key) or ""
         licence = licence or "UNRESOLVED"
         row = (name, entry.get("version", ""), licence)
         (development if entry.get("dev") else production).add(row)

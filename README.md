@@ -55,9 +55,12 @@ make stack-up                        # or: docker compose -f infra/docker/docker
 make install                         # uv + npm
 make migrate                         # creates both DBs, then alembic upgrade head
 
-# 4. Run dev servers (two terminals)
+# 4. Run dev servers — API, web and worker in one terminal (Ctrl-C stops all)
+make dev
+# …or one per terminal:
 make dev-api                         # FastAPI on :8001
 make dev-web                         # Vite on :5173
+make dev-worker                      # drains runs; without it they stay queued
 ```
 
 `make migrate` takes no arguments: it reads `DATABASE_URL`,

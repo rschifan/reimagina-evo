@@ -211,7 +211,7 @@ PYEOF
 fi
 
 step "1b. Migrating and seeding the catalogs"
-$CLI bootstrap-db
+$CLI bootstrap-db --with-test-db
 $CLI verify-schema
 $CLI feat seed-types
 $CLI indicators seed-catalog

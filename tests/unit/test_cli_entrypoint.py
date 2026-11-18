@@ -827,13 +827,47 @@ def test_cli_bootstrap_db_reads_every_dsn_from_the_environment(monkeypatch, caps
         lambda **kwargs: {"ok": True, **kwargs},
     )
 
-    exit_code = main(["bootstrap-db"])
+    # `--with-test-db` because the test database is opt-in; without it there is
+    # no TEST_DATABASE_URL read to assert, and this test's subject is that
+    # every DSN comes from the environment.
+    exit_code = main(["bootstrap-db", "--with-test-db"])
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["app_dsn"] == "postgresql://someone@db.example:5432/app"
     assert payload["test_dsn"] == "postgresql://someone@db.example:5432/app_test"
     assert payload["admin_dsn"] == "postgresql://someone@db.example:5432/postgres"
+
+
+def test_cli_bootstrap_db_passes_no_test_dsn_unless_asked(monkeypatch, capsys):
+    """Default off, so the runbook's own invocation creates nothing extra.
+
+    `OPS_PLANE_RUNBOOK.md` prints `bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"`
+    as the production remedy for a missing ops-plane schema. Run there, the old
+    default also put a `reimagina_test` database on the production server.
+    """
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://env.example/app_test")
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+
+    assert main(["bootstrap-db"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["test_dsn"] is None
+
+
+def test_cli_bootstrap_db_with_test_db_passes_one(monkeypatch, capsys):
+    """`make migrate` is the caller that wants both, and says so."""
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://env.example/app_test")
+    monkeypatch.setattr(
+        "apps.cli.app.bootstrap_local_platform",
+        lambda **kwargs: {"ok": True, **kwargs},
+    )
+
+    assert main(["bootstrap-db", "--with-test-db"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["test_dsn"] == "postgresql://env.example/app_test"
 
 
 def test_cli_bootstrap_db_flags_still_beat_the_environment(monkeypatch, capsys):
@@ -961,7 +995,7 @@ def test_print_leaves_everything_that_is_not_a_dsn_alone(capsys):
 
 
 def test_bootstrap_db_takes_every_dsn_from_the_documented_variable(monkeypatch, capsys):
-    """`make migrate` passes no flags, so the environment has to supply them.
+    """`make migrate` passes only `--with-test-db`, so the environment supplies the rest.
 
     It bootstrapped a hardcoded `postgresql://localhost/reimagina` while
     reading `DATABASE_URL_DIRECT` from the environment — one DSN from a
@@ -986,7 +1020,10 @@ def test_bootstrap_db_takes_every_dsn_from_the_documented_variable(monkeypatch, 
     monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://localhost/demo_test")
     monkeypatch.setenv("DATABASE_URL_DIRECT", "postgresql://localhost/reimagina_demo")
 
-    assert main(["bootstrap-db"]) == 0
+    # `--with-test-db` because the test database is opt-in; this test's subject
+    # is which *variable* each DSN comes from, and TEST_DATABASE_URL is only
+    # consulted when one was asked for.
+    assert main(["bootstrap-db", "--with-test-db"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["app_dsn"] == "postgresql://localhost/reimagina_demo"

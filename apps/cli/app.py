@@ -278,7 +278,7 @@ def status() -> int:
 
 @app.command(
     "bootstrap-db",
-    help="Create local app/test DBs if needed and migrate both to head",
+    help="Create the app DB if needed and migrate to head (--with-test-db for both)",
 )
 def bootstrap_db(
     app_dsn: str = typer.Option(
@@ -287,18 +287,26 @@ def bootstrap_db(
         envvar="DATABASE_URL",
         help="App database to create and migrate.",
     ),
-    test_dsn: str = typer.Option(
-        DEFAULT_TEST_DSN,
+    test_dsn: Optional[str] = typer.Option(
+        None,
         "--test-dsn",
         envvar="TEST_DATABASE_URL",
-        help="Test database to create and migrate.",
+        help="Test database to create and migrate. Only used with --with-test-db.",
+    ),
+    with_test_db: bool = typer.Option(
+        False,
+        "--with-test-db/--no-test-db",
+        help=(
+            "Also create and migrate the test database. `make migrate` passes "
+            "this; the ops runbook's remedy invocation deliberately does not."
+        ),
     ),
     admin_dsn: str = typer.Option(
         DEFAULT_ADMIN_DSN,
         "--admin-dsn",
         envvar="DATABASE_URL_ADMIN",
         help=(
-            "Database to connect to in order to CREATE the other two. Needs a "
+            "Database to connect to in order to CREATE the others. Needs a "
             "role that may create databases and extensions."
         ),
     ),
@@ -324,6 +332,16 @@ def bootstrap_db(
 
     ``DATABASE_URL_ADMIN`` is the one new name. Creating a database requires a
     connection to a different one, and no variable in the project named it.
+
+    ⚠ **The test database is opt-in, and off by default.** This command is not
+    only a local convenience: ``docs/architecture/OPS_PLANE_RUNBOOK.md`` prints
+    it as *the* remedy for a production database whose ops-plane schema is
+    missing. With the old default it also created and migrated
+    ``reimagina_test`` there, because ``--test-dsn`` fell back to
+    ``postgresql://localhost/reimagina_test`` and to a production host
+    localhost is the production server. Off by default is the fail-safe
+    direction: ``make migrate`` is the one caller that wants a test database,
+    and it asks.
     """
     # An empty string is "unset", not "a DSN that happens to be blank". Shells
     # expand an undefined variable to nothing, so the documented
@@ -332,7 +350,7 @@ def bootstrap_db(
     # helper as `ValueError: DSN has no database name: ''`, which names
     # neither the flag nor the variable that was empty.
     app_dsn = app_dsn or DEFAULT_APP_DSN
-    test_dsn = test_dsn or DEFAULT_TEST_DSN
+    test_dsn = (test_dsn or DEFAULT_TEST_DSN) if with_test_db else None
     admin_dsn = admin_dsn or DEFAULT_ADMIN_DSN
     return _print(
         bootstrap_local_platform(

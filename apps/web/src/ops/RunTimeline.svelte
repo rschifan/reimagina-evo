@@ -143,7 +143,7 @@
                   class="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-sm bg-line"
                   style={`left:${row.queuedLeftPx}px;width:${row.queuedWidthPx}px`}
                   title={`waited ${formatDuration(
-                    ((row.runLeftPx - row.queuedLeftPx) / PX_PER_SECOND) * 1000,
+                    (row.queuedWidthPx / scale) * 1000,
                   )}`}
                 ></span>
               {/if}

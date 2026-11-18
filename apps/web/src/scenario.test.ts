@@ -442,6 +442,33 @@ describe("refusalText", () => {
     expect(text).not.toMatch(/nothing was written/i);
   });
 
+  it("does not read an unprovisioned ops plane as a database outage", async () => {
+    // Two different conditions now answer 503 on this route, and this mapper
+    // branches on the status. So the deployment-state 503 arrived wearing the
+    // outage's words: "The database was unreachable. Try again in a moment."
+    //
+    // Both halves of that are false here. The database is reachable — the
+    // materialisation just committed through it, which is why this code can
+    // only be raised afterwards — and trying again in a moment will never
+    // work, because what is missing is a provisioning step. Telling a planner
+    // to retry something that cannot succeed is the same defect the server-side
+    // 503 exists to remove, moved to the client.
+    const err = apiError(503, {
+      error: {
+        code: "ops_plane_not_provisioned",
+        message: "the ops plane's storage is missing — run `bootstrap-db`",
+        request_id: "req-9",
+      },
+    });
+    const text = await refusalText(err, "recompute");
+    expect(text).not.toMatch(/database was unreachable/i);
+    expect(text).not.toMatch(/try again in a moment/i);
+    // The edits really are safe, and this is the one screen that must say so.
+    expect(text).toMatch(/written and committed/i);
+    // The server's own sentence still reaches the screen for whoever can act.
+    expect(text).toMatch(/bootstrap-db/);
+  });
+
   it("falls back to the status when the body is not JSON", async () => {
     const err = apiError(500, "<html>502 from the proxy</html>", "Internal Server Error");
     await expect(refusalText(err, "list")).resolves.toMatch(/500/);

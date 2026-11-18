@@ -185,3 +185,33 @@ def test_the_sweep_reclaims_an_abandoned_plan(conn):
     assert repo.sweep(older_than_hours=24) >= 1
     with pytest.raises(LookupError):
         repo.features_for(plan_id=stale, indicator_slug="slug")
+
+
+def test_the_sweep_spares_the_plan_of_a_run_still_queued(conn):
+    """Age is not the bound: queue wait is unbounded while no worker runs.
+
+    A run left ENQUEUED past the TTL had its plan swept by the next submit,
+    and every unit then failed with the missing-plan LookupError once a worker
+    finally dequeued it. ``plan_id`` is the run id, which is the workflow id.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('dbos.workflow_status')")
+        if cur.fetchone()[0] is None:
+            pytest.skip("no DBOS system schema on this database")
+    repo = backend_for_connection(conn).run_plan_repo()
+    queued = _plan_id()
+    repo.write(plan_id=queued, units={"slug": _features(2)})
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO dbos.workflow_status (workflow_uuid, status) "
+            "VALUES (%s, 'ENQUEUED')",
+            (queued,),
+        )
+        cur.execute(
+            "UPDATE jobs_runtime.run_plan SET created_at = now() - interval '48 hours' "
+            "WHERE plan_id = %s::uuid",
+            (queued,),
+        )
+
+    repo.sweep(older_than_hours=24)
+    assert repo.features_for(plan_id=queued, indicator_slug="slug")

@@ -46,6 +46,7 @@ from reimagina.scenarios.authoring import (
     ScenarioHasNoAOI,
     ScenarioNotFound,
 )
+from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from reimagina.scenarios.ceilings import DENSITY, CeilingBreach, max_levels_for
 from reimagina.scenarios.comparison import ComparisonResult
 from reimagina.scenarios.proposal import edits_for
@@ -662,6 +663,39 @@ def test_an_unreachable_database_at_the_enqueue_is_503_not_a_refusal(
     assert "recompute_not_enqueued" not in json.dumps(response.json())
     # The materialisation really did run first, so this is the enqueue's half.
     assert opened[0] == "connect"
+
+
+def test_recompute_answers_503_when_the_ops_plane_is_unprovisioned(client, monkeypatch):
+    """Materialisation counts are deliberately absent here.
+
+    ``_enqueue_failure`` reports what stands for a *constraint* failure, and
+    re-raises connection-class failures bare, because counts are no use to a
+    client that must wait on the database before it can read anything back.
+    An unprovisioned ops plane is that second kind: nothing to do with the
+    counts until an operator runs ``bootstrap-db``. So this answers the plain
+    503 envelope, exactly as an outage does one phase earlier.
+    """
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            raise OpsPlaneNotProvisioned()
+
+    monkeypatch.setattr(mod, "connect", lambda dsn=None: _FakeConn([]))
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(
+        monkeypatch,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+    )
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/recompute")
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "ops_plane_not_provisioned"
+    assert "bootstrap-db" in response.json()["error"]["message"]
+    assert "materialized" not in json.dumps(response.json())
 
 
 def test_the_materialisation_half_still_goes_through_the_shared_mapping(

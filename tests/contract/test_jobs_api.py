@@ -11,6 +11,7 @@ ops-plane swap moves — and these tests keep working across such a swap.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -270,7 +271,7 @@ class _FakeOpsReader:
         return {"succeeded": 1}
 
     def get_run_row(self, run_id):
-        return self.runs[0] if self.runs else None
+        return next((r for r in self.runs if r["run_id"] == run_id), None)
 
     def list_units_detailed(self, run_id):
         return [
@@ -315,7 +316,22 @@ def _run_row(**overrides):
     return row
 
 
-def _app_with_reader(reader, monkeypatch):
+class _NoEngine:
+    """An engine with nothing queued, recording what it was told to forget."""
+
+    def __init__(self, enqueued=()):
+        self.enqueued = list(enqueued)
+        self.forgotten: list[str] = []
+
+    def list_enqueued_runs(self, limit=50):
+        return self.enqueued
+
+    def forget_runs(self, run_ids):
+        self.forgotten.extend(run_ids)
+
+
+def _app_with_reader(reader, monkeypatch, orchestrator=None):
+    _install(monkeypatch, orchestrator if orchestrator is not None else _NoEngine())
     monkeypatch.setattr(
         "apps.api.routers.jobs.get_backend",
         lambda conn: type("_B", (), {"ops_run_reader": lambda self: reader})(),
@@ -343,6 +359,35 @@ def test_list_jobs_returns_the_whole_index_in_one_response(monkeypatch):
     # The clock the page corrects against; without it every duration is the
     # browser's guess.
     assert body["server_now"]
+
+
+def test_list_jobs_shows_a_run_no_worker_has_dequeued(monkeypatch):
+    """Its envelope is written by the workflow's first step, so with no worker
+    running the index read "0 queued" while the run sat in the engine."""
+    engine = _NoEngine(
+        [
+            RunStatus(
+                run_id="11111111-1111-1111-1111-111111111111",
+                status="queued",
+                units=(UnitStatusView("urban_form_block_compactness", "queued"),),
+                submitted_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+            )
+        ]
+    )
+    app = _app_with_reader(_FakeOpsReader([_run_row()]), monkeypatch, engine)
+
+    with TestClient(app) as client:
+        body = client.get("/jobs").json()
+    app.dependency_overrides.clear()
+
+    assert [r["run_id"] for r in body["runs"]] == [
+        "11111111-1111-1111-1111-111111111111",
+        _run_row()["run_id"],
+    ]
+    assert body["runs"][0]["status"] == "queued"
+    assert body["runs"][0]["units_total"] == 1
+    assert body["total"] == 2
+    assert body["status_counts"] == {"succeeded": 1, "queued": 1}
 
 
 def test_repeated_status_params_reach_the_reader(monkeypatch):
@@ -425,11 +470,11 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
                 run_id=run_id,
                 status="queued",
                 units=(UnitStatusView("urban_form_block_compactness", "queued"),),
+                submitted_at=datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc),
             )
 
-    _install(monkeypatch, _FakeOrchestrator())
     reader = _FakeOpsReader([])  # no envelope row yet
-    app = _app_with_reader(reader, monkeypatch)
+    app = _app_with_reader(reader, monkeypatch, _FakeOrchestrator())
 
     with TestClient(app) as client:
         resp = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail")
@@ -438,6 +483,9 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
     assert resp.status_code == 200
     assert resp.json()["run"]["status"] == "queued"
     assert resp.json()["units"][0]["indicator"] == "urban_form_block_compactness"
+    # The engine's creation time, not this request's clock — otherwise a run
+    # queued for hours reads as 0.0 s old on every poll.
+    assert resp.json()["run"]["submitted_at"].startswith("2026-08-20T10:00:00")
 
 
 def test_run_detail_404s_when_neither_plane_knows_the_run(monkeypatch):
@@ -445,8 +493,7 @@ def test_run_detail_404s_when_neither_plane_knows_the_run(monkeypatch):
         def get_run(self, conn, run_id):
             return None
 
-    _install(monkeypatch, _FakeOrchestrator())
-    app = _app_with_reader(_FakeOpsReader([]), monkeypatch)
+    app = _app_with_reader(_FakeOpsReader([]), monkeypatch, _FakeOrchestrator())
 
     with TestClient(app) as client:
         resp = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail")
@@ -616,13 +663,14 @@ class _DeletingReader(_FakeOpsReader):
 
     def delete_terminal_runs(self):
         self.cleared += 1
-        return 4
+        return ["r1", "r2", "r3", "r4"]
 
 
 def test_deleting_a_finished_run_removes_it(monkeypatch):
     reader = _DeletingReader([_run_row(status="succeeded")])
     _fake_connections(monkeypatch)
-    app = _app_with_reader(reader, monkeypatch)
+    engine = _NoEngine()
+    app = _app_with_reader(reader, monkeypatch, engine)
 
     with TestClient(app) as client:
         resp = client.delete("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c")
@@ -631,6 +679,8 @@ def test_deleting_a_finished_run_removes_it(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 1}
     assert reader.deleted == ["06baed8c-a6c9-47c1-ab0c-cc38a77f260c"]
+    # The engine is the existence oracle: left there, the run comes back.
+    assert engine.forgotten == ["06baed8c-a6c9-47c1-ab0c-cc38a77f260c"]
 
 
 def test_deleting_a_live_run_is_refused(monkeypatch):
@@ -665,7 +715,8 @@ def test_deleting_an_unknown_run_is_a_404(monkeypatch):
 def test_clearing_history_reports_how_many_went(monkeypatch):
     reader = _DeletingReader([])
     _fake_connections(monkeypatch)
-    app = _app_with_reader(reader, monkeypatch)
+    engine = _NoEngine()
+    app = _app_with_reader(reader, monkeypatch, engine)
 
     with TestClient(app) as client:
         resp = client.delete("/jobs")
@@ -674,6 +725,7 @@ def test_clearing_history_reports_how_many_went(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"deleted": 4}
     assert reader.cleared == 1
+    assert engine.forgotten == ["r1", "r2", "r3", "r4"]
 
 
 def test_post_jobs_reports_a_deduplicated_resubmission(monkeypatch):
@@ -702,6 +754,47 @@ def test_post_jobs_reports_a_deduplicated_resubmission(monkeypatch):
     }
 
 
+def test_submit_422s_an_unknown_indicator_like_preview_does(monkeypatch):
+    """The same typo answered 422 on /preview and 500 on POST /jobs."""
+    from reimagina.orchestration.plan import UnknownIndicators
+
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            raise UnknownIndicators(["nope"])
+
+    _install(monkeypatch, _FakeOrchestrator())
+
+    with TestClient(create_app(initialise_pool=False)) as client:
+        resp = client.post("/jobs", json={"indicators": ["nope"]})
+
+    assert resp.status_code == 422
+    assert "nope" in resp.json()["detail"]
+
+
+def test_rerun_reports_a_deduplicated_resubmission(monkeypatch):
+    """Rerun dropped the flag, so a collapsed submit read as a fresh run."""
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            return RunHandle(run_id="already-running", status=None, deduplicated=True)
+
+    reader = _FakeOpsReader([_run_row(status="failed")])
+    reader.list_units_detailed = lambda run_id: [
+        {"indicator": "urban_form_block_compactness", "status": "failed", "detail": "x"}
+    ]
+    app = _app_with_reader(reader, monkeypatch, _FakeOrchestrator())
+
+    with TestClient(app) as client:
+        body = client.post(f"/jobs/{_run_row()['run_id']}/rerun").json()
+    app.dependency_overrides.clear()
+
+    assert body["run_id"] == "already-running"
+    assert body["deduplicated"] is True
+
+
 def test_an_unprovisioned_ops_plane_is_503_and_names_the_remedy(monkeypatch):
     """A missing ops-plane schema is a deployment state, not a bug in a request.
 
@@ -725,5 +818,38 @@ def test_an_unprovisioned_ops_plane_is_503_and_names_the_remedy(monkeypatch):
         resp = client.post("/jobs", json={"indicators": ["x"]})
 
     assert resp.status_code == 503
-    detail = resp.json()["detail"]
-    assert "bootstrap-db" in detail, "the error must name the command that fixes it"
+    body = resp.json()["error"]
+    assert body["code"] == "ops_plane_not_provisioned"
+    assert "bootstrap-db" in body["message"], (
+        "the error must name the command that fixes it"
+    )
+    assert body["request_id"]
+
+
+def test_rerun_answers_503_when_the_ops_plane_is_unprovisioned(monkeypatch):
+    """The rerun path submits too, and went uncaught — a 500 on a deployment state.
+
+    Three routes reach ``submit_run``; only ``POST /jobs`` translated the
+    refusal. So the same unprovisioned database that told a client "not ready
+    yet, run bootstrap-db" on a fresh submit told it "internal error, see the
+    logs" the moment the client pressed Rerun instead — about the identical
+    condition, with the identical remedy.
+    """
+    _fake_connections(monkeypatch)
+
+    class _FakeOrchestrator:
+        def submit_run(self, conn, **kwargs):
+            raise OpsPlaneNotProvisioned()
+
+    reader = _FakeOpsReader([_run_row()])
+    reader.list_units_detailed = lambda run_id: [
+        {"indicator": "urban_form_block_compactness", "status": "failed", "detail": "x"}
+    ]
+    app = _app_with_reader(reader, monkeypatch, _FakeOrchestrator())
+
+    with TestClient(app) as client:
+        resp = client.post(f"/jobs/{_run_row()['run_id']}/rerun")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"]["code"] == "ops_plane_not_provisioned"

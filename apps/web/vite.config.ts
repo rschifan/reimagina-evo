@@ -38,11 +38,18 @@ export default defineConfig({
     // this server is not on, or worse at whatever else is there. `make dev`
     // preflights both ports and names the holder; this makes sure Vite agrees
     // rather than papering over it.
-    port: Number(process.env.VITE_PORT ?? 5173),
+    // `||`, not `??`: `??` only catches `undefined`, and `make dev` exports
+    // this variable — so a shell where `.env` was never sourced passes `""`,
+    // `Number("")` is `0`, and `strictPort` then binds an arbitrary free port
+    // while the banner above still promises 5173. An empty string is "unset".
+    port: Number(process.env.VITE_PORT || 5173),
     strictPort: true,
     proxy: {
       "/api": {
-        target: process.env.REIMAGINA_API_URL ?? "http://127.0.0.1:8001",
+        // `||` for the same reason as `port` above: empty means unset, and an
+        // empty target is exactly the silently-misdirected proxy this file's
+        // own header warns about.
+        target: process.env.REIMAGINA_API_URL || "http://127.0.0.1:8001",
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },

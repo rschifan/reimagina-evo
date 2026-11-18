@@ -36,11 +36,11 @@ def ensure_postgres_database(admin_dsn: str, target_dsn: str) -> bool:
 def bootstrap_postgres(
     *,
     app_dsn: str,
-    test_dsn: str,
+    test_dsn: str | None = None,
     admin_dsn: str,
     direct_dsn: str | None = None,
 ) -> dict[str, dict[str, str | bool]]:
-    """Create both databases and migrate them to head.
+    """Create the app database and migrate it to head; the test database on request.
 
     ``direct_dsn`` is an alternate *route* to the app database, not a different
     database: in the compose stack ``app_dsn`` reaches pgbouncer on 5432 and
@@ -60,6 +60,20 @@ def bootstrap_postgres(
     and deriving one by swapping a database name into ``direct_dsn`` would
     assume the two live on the same server — exactly the inference that puts
     DDL somewhere nobody expects.
+
+    ⚠ **``test_dsn`` is opt-in, and absent it nothing is created.** It used to
+    default to ``postgresql://localhost/reimagina_test`` and be created
+    unconditionally, which is wrong for the caller that matters most:
+    ``docs/architecture/OPS_PLANE_RUNBOOK.md`` prints ``bootstrap-db`` as *the*
+    production remedy for a missing ops-plane schema, and to a production host
+    localhost is the production server. So the documented fix for one problem
+    silently created a test database on a live machine and migrated it. A
+    remedy command creates only what it was asked to. ``make migrate`` passes
+    ``--with-test-db``; nothing else needs to.
+
+    When it is absent the returned dict has no ``"test"`` key — callers print
+    this, and a key claiming ``migrated: true`` about a database nothing
+    touched is the same class of lie the ``"app"`` key was fixed to avoid.
     """
     if direct_dsn is not None:
         # Host and port must be free to differ — that is what pooled-vs-direct
@@ -78,13 +92,15 @@ def bootstrap_postgres(
             )
 
     app_created = ensure_postgres_database(admin_dsn, app_dsn)
-    test_created = ensure_postgres_database(admin_dsn, test_dsn)
     run_postgres_migrations(direct_dsn or app_dsn)
-    run_postgres_migrations(test_dsn)
-    return {
+    result: dict[str, dict[str, str | bool]] = {
         # The app's own DSN, not the route the migration travelled: this dict
         # is what `make migrate` prints, and it should name the DSN the
         # application will use.
         "app": {"dsn": app_dsn, "created": app_created, "migrated": True},
-        "test": {"dsn": test_dsn, "created": test_created, "migrated": True},
     }
+    if test_dsn is not None:
+        test_created = ensure_postgres_database(admin_dsn, test_dsn)
+        run_postgres_migrations(test_dsn)
+        result["test"] = {"dsn": test_dsn, "created": test_created, "migrated": True}
+    return result

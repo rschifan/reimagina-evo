@@ -42,12 +42,15 @@ def run_migrations(dsn: str) -> None:
 def bootstrap_local_platform(
     *,
     app_dsn: str = DEFAULT_APP_DSN,
-    test_dsn: str = DEFAULT_TEST_DSN,
+    test_dsn: str | None = None,
     admin_dsn: str = DEFAULT_ADMIN_DSN,
     direct_dsn: str | None = None,
 ) -> dict[str, dict[str, str | bool]]:
     backend_name_for_dsn(app_dsn)  # validate scheme
-    backend_name_for_dsn(test_dsn)
+    # `test_dsn` is opt-in: see `bootstrap_postgres`, which explains why a
+    # remedy command printed in a production runbook must not create one.
+    if test_dsn is not None:
+        backend_name_for_dsn(test_dsn)
     if direct_dsn is not None:
         backend_name_for_dsn(direct_dsn)
     # Both DDL steps below take `direct_dsn` when there is one — Alembic here,

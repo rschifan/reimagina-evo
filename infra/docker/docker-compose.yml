@@ -48,25 +48,43 @@ services:
   # Transaction mode is compatible with all app code that uses SET LOCAL
   # (not SET) for session variables and does not use LISTEN/NOTIFY.
   # For LISTEN/NOTIFY (SSE job status), connect directly via DATABASE_URL_DIRECT.
+  #
+  # ⚠ Not `bitnami/pgbouncer`, which this used to be. That tag no longer
+  # resolves — Broadcom retired Bitnami's free Docker Hub catalogue — and the
+  # service was broken before that, twice over: Bitnami's pooler listens on
+  # 6432, not the 5432 mapped and health-checked below, so it never became
+  # healthy; and it exposes the pool under the alias `postgres`, so the
+  # `REIMAGINA_APP_DSN` in `.env.example` (…:5432/reimagina) was answered
+  # "no such database" even on the right port. `bitnamilegacy/pgbouncer`
+  # still serves the old tags, as a frozen archive with no security rebuilds.
+  #
+  # This Alpine community image fixes all three: it listens on 5432, exposes
+  # the pool under `DB_NAME`, and ships `pg_isready`, which the healthcheck
+  # runs *inside* the container. Its environment variable names are its own —
+  # the keys below changed from Bitnami's `POSTGRESQL_*`/`PGBOUNCER_*`, the
+  # values did not.
   pgbouncer:
-    image: bitnami/pgbouncer:1.23.1
+    image: edoburu/pgbouncer:v1.26.1-p0
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      POSTGRESQL_HOST:     postgres
-      POSTGRESQL_PORT:     5432
-      POSTGRESQL_DATABASE: ${POSTGRES_DB:-reimagina}
-      POSTGRESQL_USERNAME: ${POSTGRES_USER:-reimagina_app}
-      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      PGBOUNCER_POOL_MODE:         transaction
-      PGBOUNCER_MAX_CLIENT_CONN:   200
-      PGBOUNCER_DEFAULT_POOL_SIZE: 20
-      PGBOUNCER_SERVER_RESET_QUERY: "DISCARD ALL"
+      DB_HOST:     postgres
+      DB_PORT:     5432
+      DB_NAME:     ${POSTGRES_DB:-reimagina}
+      DB_USER:     ${POSTGRES_USER:-reimagina_app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Client logins use SCRAM, not this image's default `md5`: md5 password
+      # auth is deprecated upstream, and Postgres 16 already stores SCRAM.
+      AUTH_TYPE:   scram-sha-256
+      POOL_MODE:            transaction
+      MAX_CLIENT_CONN:      200
+      DEFAULT_POOL_SIZE:    20
+      SERVER_RESET_QUERY:   "DISCARD ALL"
       # Silence noisy connect/disconnect logs in dev
-      PGBOUNCER_LOG_CONNECTIONS:    0
-      PGBOUNCER_LOG_DISCONNECTIONS: 0
+      LOG_CONNECTIONS:      0
+      LOG_DISCONNECTIONS:   0
     ports:
       - "5432:5432"
     healthcheck:

@@ -20,6 +20,7 @@ import psycopg2
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from rio_tiler.errors import PointOutsideBounds
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import TilerFactory
@@ -142,6 +143,30 @@ def create_app(
         psycopg2.InterfaceError, errors.database_unavailable_handler
     )
     app.add_exception_handler(psycopg2.Error, errors.database_error_handler)
+    # Every route that submits a run, not only `POST /jobs`: `rerun` and the
+    # scenario recompute reach the same `submit_run` and answered 500 for a
+    # condition whose remedy is a command.
+    #
+    # Order relative to the `Exception` entry below is irrelevant, but not for
+    # the reason "MRO" would suggest: `build_middleware_stack` pulls the
+    # `Exception`/500 handler out into `ServerErrorMiddleware`, the outermost
+    # layer, and hands every other handler to `ExceptionMiddleware`, the
+    # innermost. So the catch-all is not among the handlers this one is matched
+    # against at all — the inner middleware answers first and the outer never
+    # sees the exception. `test_unhandled_exceptions_use_this_apps_handler`
+    # rests on exactly that split.
+    #
+    # `type: ignore[arg-type]`: Starlette annotates the handler as taking
+    # `Exception`, because handlers live in a dict it dispatches from by type —
+    # so a narrower one is correct at runtime and unrepresentable in that
+    # signature. The three psycopg2 registrations above escape the same error
+    # only because psycopg2 ships no stubs, making those classes `Any`. Keep
+    # the narrow annotation: this handler echoes `str(exc)`, which is safe for
+    # this exception and for no other, and the parameter type is what says so.
+    app.add_exception_handler(
+        OpsPlaneNotProvisioned,
+        errors.ops_plane_not_provisioned_handler,  # type: ignore[arg-type]
+    )
     app.add_exception_handler(Exception, errors.unhandled_error_handler)
 
     app.include_router(health.router)
@@ -186,19 +211,33 @@ def create_app(
     # titiler's DEFAULT_STATUS_CODES omits PointOutsideBounds — pin it
     # to 404 explicitly.
     #
-    # ⚠ `Exception` is filtered out, and that is the whole point of building
-    # the map by hand. DEFAULT_STATUS_CODES contains `Exception: 500`, and
-    # `add_exception_handler` is a dict assignment — so passing the map
-    # unaltered silently *replaced* `errors.unhandled_error_handler`,
-    # registered above, for every route in the app. titiler's catch-all
-    # answers `{"detail": str(exc)}`, which echoed the exception's own text to
-    # the client: full SQL, bound parameters, and whatever else a driver puts
-    # in a message. It also dropped the request id the envelope carries, so
-    # the one response an operator most needs to correlate was the one that
-    # could not be. The raster-specific entries are kept — they are why this
-    # is called at all.
+    # ⚠ **Every 5xx entry is filtered out, not only `Exception`.** titiler's
+    # `exception_handler_factory` answers `{"detail": str(exc)}`, which echoes
+    # the exception's own text to the client and drops the request id the
+    # envelope exists to carry. For `Exception` that was catastrophic —
+    # `add_exception_handler` is a dict assignment, so passing the map
+    # unaltered silently *replaced* `errors.unhandled_error_handler` for every
+    # route, handing out SQL and bound parameters. But the catch-all was the
+    # loudest instance of the problem, not the whole of it: `RasterioIOError`,
+    # `RasterioError` and `RioTilerError` were mapped to 500 by the same dict
+    # and echoed the same way, and a `RasterioIOError` carries the COG's path —
+    # for a remote COG, the URL with any SAS token still in its query string.
+    #
+    # So the rule is the status, not the class: titiler's map is wanted exactly
+    # where it says something other than "internal error". Those are the ten
+    # 400s and 404s that are the reason `add_exception_handlers` is called at
+    # all; everything 5xx falls through to `errors.unhandled_error_handler` for
+    # the envelope and the request id.
+    #
+    # Accepted consequence: those three now log a traceback per request where
+    # titiler's factory logged nothing — in fact two, because
+    # `ServerErrorMiddleware` re-raises after sending the response, so
+    # `log.exception` is followed by the server's own "Exception in ASGI
+    # application". A COG this process cannot open is an operator fault that
+    # should be loud, and the volume is bounded by how long the broken state
+    # lasts.
     raster_status_codes = {
-        exc: code for exc, code in DEFAULT_STATUS_CODES.items() if exc is not Exception
+        exc: code for exc, code in DEFAULT_STATUS_CODES.items() if code < 500
     }
     add_exception_handlers(app, {**raster_status_codes, PointOutsideBounds: 404})
     return app
