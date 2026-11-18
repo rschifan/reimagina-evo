@@ -112,7 +112,8 @@ there is nothing internal in it to withhold:
 
 | Status | Where | Means |
 |---|---|---|
-| 409 | `POST /jobs/{id}/cancel`, `/rerun` | the run is already terminal, or has nothing to retry |
+| 409 | `POST /jobs/{id}/cancel` | the run is already terminal |
+| 409 | `POST /jobs/{id}/rerun` | the run is still live — cancel it first — or every indicator in it succeeded, so there is nothing to retry |
 | 422 | `POST /jobs`, `/jobs/preview`, `/jobs/{id}/rerun` | an indicator slug no registry entry matches — for a rerun, one the original run recorded that has since been renamed or removed |
 
 The Ops dashboard renders `detail` when present and falls back to the
