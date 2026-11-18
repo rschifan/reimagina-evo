@@ -7,12 +7,9 @@
   import {
     canCancel,
     canRerun,
-    durationMs,
-    formatDuration,
+    isRunTerminal,
     isStalled,
-    progressOf,
     runTone,
-    unitTone,
   } from "./derive";
 
   let {
@@ -74,7 +71,6 @@
   }
 
   const run = $derived(detail.run);
-  const p = $derived(progressOf(run));
 
   let heading = $state<HTMLElement | null>(null);
   // Hash routing swaps this subtree, which destroys whatever had focus and
@@ -159,117 +155,31 @@
     {/if}
   </div>
 
-  <div class="mt-3 grid gap-3 sm:grid-cols-2">
-    <Card title="Run">
-      <dl class="grid grid-cols-2 gap-y-1 font-mono text-[11px]">
-        <dt class="text-muted-foreground">status</dt>
-        <dd>
-          <Badge tone={runTone[run.status]}>{run.status}</Badge>
-          {#if isStalled(run, now)}
-            <Badge tone="error" title="every unit finished but the run never closed">
-              stalled
-            </Badge>
-          {/if}
-        </dd>
-        <dt class="text-muted-foreground">submitted</dt>
-        <dd data-numeric>{new Date(run.submitted_at).toLocaleString()}</dd>
-        <dt class="text-muted-foreground">completed</dt>
-        <dd data-numeric>
-          {run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}
-        </dd>
-        <dt class="text-muted-foreground">duration</dt>
-        <dd data-numeric>
-          {formatDuration(durationMs(run.submitted_at, run.completed_at, now))}
-        </dd>
-        <dt class="text-muted-foreground">code version</dt>
-        <dd>{run.code_version || "—"}</dd>
-        <dt class="text-muted-foreground">scenario</dt>
-        <dd>{run.scenario_id ?? "—"}</dd>
-        <dt class="text-muted-foreground">aoi</dt>
-        <dd>{run.aoi_id ?? "—"}</dd>
-      </dl>
-    </Card>
+  <Card title="Run" class="mt-3 max-w-xl">
+    <dl class="grid grid-cols-2 gap-y-1 font-mono text-[11px]">
+      <dt class="text-muted-foreground">status</dt>
+      <dd>
+        <Badge tone={runTone[run.status]}>{run.status}</Badge>
+        {#if isStalled(run, now)}
+          <Badge tone="error" title="every unit finished but the run never closed">
+            stalled
+          </Badge>
+        {/if}
+      </dd>
+      <dt class="text-muted-foreground">submitted</dt>
+      <dd data-numeric>{new Date(run.submitted_at).toLocaleString()}</dd>
+      <dt class="text-muted-foreground">completed</dt>
+      <dd data-numeric>
+        {run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}
+      </dd>
+      <dt class="text-muted-foreground">code version</dt>
+      <dd>{run.code_version || "—"}</dd>
+      <dt class="text-muted-foreground">scenario</dt>
+      <dd>{run.scenario_id ?? "—"}</dd>
+      <dt class="text-muted-foreground">aoi</dt>
+      <dd>{run.aoi_id ?? "—"}</dd>
+    </dl>
+  </Card>
 
-    <Card title="Progress">
-      {#if p.total === 0}
-        <p class="text-[11px] text-muted-foreground">This run has no units.</p>
-      {:else}
-        <!-- The same stacked bar as RunList, not `<progress>`: a single-value
-             bar fills for a failed or cancelled unit and calls it "complete".
-             See ProgressSegments in derive.ts. -->
-        <div
-          class="flex h-2 w-full overflow-hidden rounded-full bg-line/60"
-          role="img"
-          aria-label={p.label}
-          title={p.label}
-        >
-          {#if p.segments.succeeded > 0}
-            <div class="bg-state-fresh" style={`width:${p.segments.succeeded}%`}></div>
-          {/if}
-          {#if p.segments.failed > 0}
-            <div class="bg-state-error" style={`width:${p.segments.failed}%`}></div>
-          {/if}
-          {#if p.segments.running > 0}
-            <div class="bg-state-partial" style={`width:${p.segments.running}%`}></div>
-          {/if}
-        </div>
-        <p class="mt-2 font-mono text-[11px]" data-numeric>
-          {p.done} of {p.total} units{p.failed ? ` · ${p.failed} failed` : ""}
-        </p>
-      {/if}
-    </Card>
-  </div>
-
-  <RunTimeline units={detail.units} {now} />
-
-  <div class="mt-4 overflow-x-auto">
-    <table class="w-full border-collapse text-sm">
-      <thead>
-        <tr class="text-left font-mono text-[10px] tracking-wide text-muted-foreground uppercase">
-          <th class="py-2 pr-4">Indicator</th>
-          <th class="py-2 pr-4">Status</th>
-          <th class="py-2 pr-4">Started</th>
-          <th class="py-2 pr-4">Duration</th>
-          <th class="py-2 pr-4">Detail</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each detail.units as unit (unit.indicator)}
-          <tr class="border-t border-line/60 align-top">
-            <td class="py-2 pr-4 font-mono text-[12px]">{unit.indicator}</td>
-            <td class="py-2 pr-4">
-              <Badge tone={unitTone[unit.status]}>{unit.status}</Badge>
-            </td>
-            <td class="py-2 pr-4 font-mono text-[11px]" data-numeric>
-              {unit.started_at ? new Date(unit.started_at).toLocaleTimeString() : "—"}
-            </td>
-            <td class="py-2 pr-4 font-mono text-[11px]" data-numeric>
-              {formatDuration(durationMs(unit.started_at, unit.completed_at, now))}
-            </td>
-            <td class="max-w-md py-2 pr-4">
-              {#if unit.detail}
-                <!-- A ≤500-char exception repr, not a traceback, but still too
-                     long for a cell. <details> is keyboard-reachable, which a
-                     title= tooltip is not. -->
-                <details>
-                  <summary
-                    class="cursor-pointer font-mono text-[10.5px] text-state-error"
-                  >
-                    {unit.detail.slice(0, 80)}{unit.detail.length > 80 ? "…" : ""}
-                  </summary>
-                  <p
-                    class="mt-1 font-mono text-[10.5px] break-words whitespace-pre-wrap text-state-error"
-                  >
-                    {unit.detail}
-                  </p>
-                </details>
-              {:else}
-                <span class="text-[11px] text-muted-foreground">—</span>
-              {/if}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  </div>
+  <RunTimeline {detail} live={!isRunTerminal(run.status)} />
 </section>

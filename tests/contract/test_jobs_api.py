@@ -256,8 +256,9 @@ def test_events_404s_for_an_unknown_run(monkeypatch):
 class _FakeOpsReader:
     """Records what the route asked for, so the binding can be asserted."""
 
-    def __init__(self, runs=None):
+    def __init__(self, runs=None, expected=None):
         self.runs = runs or []
+        self.expected = expected or {}
         self.calls: list[dict] = []
 
     def list_runs(self, *, statuses=None, limit=50, offset=0):
@@ -284,6 +285,9 @@ class _FakeOpsReader:
                 "completed_at": "2026-08-20T10:00:09+00:00",
             }
         ]
+
+    def expected_durations(self, run_id):
+        return self.expected
 
     def list_executor_health(self):
         return [
@@ -456,6 +460,33 @@ def test_run_detail_carries_unit_timings(monkeypatch):
     assert unit["started_at"] and unit["completed_at"]
 
 
+def test_run_detail_carries_expected_ms_and_unit_slots(monkeypatch):
+    monkeypatch.setenv("REIMAGINA_UNIT_CONCURRENCY", "8")
+    reader = _FakeOpsReader(
+        [_run_row()], expected={"urban_form_block_compactness": 5000}
+    )
+    reader.list_units_detailed = lambda run_id: [
+        {
+            "indicator": slug,
+            "status": "queued",
+            "detail": None,
+            "queued_at": "2026-08-20T10:00:00+00:00",
+        }
+        for slug in ("urban_form_block_compactness", "urban_form_block_composite")
+    ]
+    app = _app_with_reader(reader, monkeypatch)
+
+    with TestClient(app) as client:
+        body = client.get("/jobs/06baed8c-a6c9-47c1-ab0c-cc38a77f260c/detail").json()
+    app.dependency_overrides.clear()
+
+    assert body["unit_slots"] == 8
+    assert {u["indicator"]: u["expected_ms"] for u in body["units"]} == {
+        "urban_form_block_compactness": 5000,
+        "urban_form_block_composite": None,
+    }
+
+
 def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatch):
     """The window between ``submit_run`` returning and the workflow's first step.
 
@@ -463,6 +494,7 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
     purely SQL answer is 404 — precisely when the user has just been navigated
     to the run they launched.
     """
+    monkeypatch.setenv("REIMAGINA_UNIT_CONCURRENCY", "8")
 
     class _FakeOrchestrator:
         def get_run(self, conn, run_id):
@@ -486,6 +518,9 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
     # The engine's creation time, not this request's clock — otherwise a run
     # queued for hours reads as 0.0 s old on every poll.
     assert resp.json()["run"]["submitted_at"].startswith("2026-08-20T10:00:00")
+    # No AOI and no prerequisites reach this path, so no estimate either.
+    assert resp.json()["units"][0]["expected_ms"] is None
+    assert resp.json()["unit_slots"] == 8
 
 
 def test_run_detail_404s_when_neither_plane_knows_the_run(monkeypatch):
