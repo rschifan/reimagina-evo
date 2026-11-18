@@ -155,8 +155,17 @@ def create_app(
     # against at all — the inner middleware answers first and the outer never
     # sees the exception. `test_unhandled_exceptions_use_this_apps_handler`
     # rests on exactly that split.
+    #
+    # `type: ignore[arg-type]`: Starlette annotates the handler as taking
+    # `Exception`, because handlers live in a dict it dispatches from by type —
+    # so a narrower one is correct at runtime and unrepresentable in that
+    # signature. The three psycopg2 registrations above escape the same error
+    # only because psycopg2 ships no stubs, making those classes `Any`. Keep
+    # the narrow annotation: this handler echoes `str(exc)`, which is safe for
+    # this exception and for no other, and the parameter type is what says so.
     app.add_exception_handler(
-        OpsPlaneNotProvisioned, errors.ops_plane_not_provisioned_handler
+        OpsPlaneNotProvisioned,
+        errors.ops_plane_not_provisioned_handler,  # type: ignore[arg-type]
     )
     app.add_exception_handler(Exception, errors.unhandled_error_handler)
 
