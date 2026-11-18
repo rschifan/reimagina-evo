@@ -68,8 +68,10 @@ export interface WorkspaceState {
   slug: string | null;
   mode: "value" | "delta";
   rules: EditGroup[];
-  /** The run this page enqueued and is following, for its scenario only. */
-  followed: { scenarioId: string; runId: string; status: string } | null;
+  /** Runs this page enqueued and is following, by scenario. A run is
+   *  followed to its end whichever row is selected, so its row refreshes
+   *  when it lands; only what it says and redraws is for the selection. */
+  following: Record<string, { runId: string; status: string }>;
   comparison: ComparisonHeadline | null;
   message: Message | null;
   /** The area drawn on the map, which the next rule is written over. */
@@ -94,7 +96,7 @@ export const ws: WorkspaceState = $state({
   slug: null,
   mode: "value",
   rules: [],
-  followed: null,
+  following: {},
   comparison: null,
   message: null,
   drawn: null,
@@ -108,7 +110,8 @@ export const ws: WorkspaceState = $state({
 let selection = 0;
 /** Bumped on every pilot change, for the same reason. */
 let pilot = 0;
-let cancelFollow: (() => void) | null = null;
+/** One follower per scenario; a second recompute replaces the first. */
+const followers = new Map<string, () => void>();
 let pendingRoute: { scenarioId: string | null; slug: string | null } | null = null;
 const mapRefreshListeners = new Set<() => void>();
 
@@ -173,6 +176,8 @@ async function onPilot(aoi: AOIRow | null): Promise<void> {
   ws.projectId = aoi?.project_id ?? null;
   if (!changed) return;
   const myPilot = ++pilot;
+  // Runs of the previous pilot's scenarios: their rows are no longer shown.
+  stopAllFollowing();
   if (ws.selectedId !== null) {
     // A scenario belongs to one pilot; carried across, its rules select
     // nothing here and its overlay is scoped to the wrong city.
@@ -251,10 +256,14 @@ async function refreshRow(scenarioId: string): Promise<void> {
   await pooled(rowTasks(scenarioId), 6);
 }
 
-function stopFollowing(): void {
-  cancelFollow?.();
-  cancelFollow = null;
-  ws.followed = null;
+function stopFollowing(scenarioId: string): void {
+  followers.get(scenarioId)?.();
+  followers.delete(scenarioId);
+  delete ws.following[scenarioId];
+}
+
+function stopAllFollowing(): void {
+  for (const scenarioId of [...followers.keys()]) stopFollowing(scenarioId);
 }
 
 async function loadRules(scenarioId: string, token: number): Promise<void> {
@@ -270,8 +279,8 @@ async function loadRules(scenarioId: string, token: number): Promise<void> {
 /** Show `scenarioId` (null: the baseline city). */
 export function select(scenarioId: string | null): void {
   if (scenarioId === ws.selectedId) return;
-  const token = ++selection;
-  stopFollowing();
+  ++selection;
+  const token = selection;
   ws.selectedId = scenarioId;
   ws.comparison = null;
   ws.rules = [];
@@ -411,18 +420,16 @@ export async function removeRuleGroup(editIds: string[]): Promise<void> {
 export async function recompute(): Promise<void> {
   const scenarioId = ws.selectedId;
   if (!scenarioId) return;
-  const token = selection;
+  /** Messages are for the scenario on screen; a run of another says nothing. */
+  const shown = (): boolean => ws.selectedId === scenarioId;
   say("Materialising the rules and queueing the recompute…");
   let result;
   try {
     result = await recomputeScenario(scenarioId);
   } catch (err) {
-    if (token === selection) await refused(err, "recompute");
+    if (shown()) await refused(err, "recompute");
     return;
   }
-  // Switched scenario during the request: the run is the old one's, and
-  // following it would write its status over the scenario now showing.
-  if (token !== selection) return;
   const matched = Object.values(result.matched_per_edit);
   const caught = matched.length > 0 ? Math.max(...matched) : 0;
   const materialised =
@@ -431,56 +438,71 @@ export async function recompute(): Promise<void> {
     `${result.overrides_removed} removed.`;
   void loadScenarios();
   if (result.run_id === null) {
-    say(`${materialised} Nothing needed recomputing.`);
+    if (shown()) say(`${materialised} Nothing needed recomputing.`);
     return;
   }
   const runId = result.run_id;
   const short = runId.slice(0, 8);
-  ws.followed = { scenarioId, runId, status: result.run_status };
-  say(
-    `${materialised} Run ${short} is ${result.run_status}` +
-      `${result.deduplicated ? " (already in flight)" : ""}…`,
+  // A second recompute of the same scenario supersedes the first follower:
+  // left running, the old one would report its run over the new one's.
+  stopFollowing(scenarioId);
+  ws.following[scenarioId] = { runId, status: result.run_status };
+  if (shown()) {
+    say(
+      `${materialised} Run ${short} is ${result.run_status}` +
+        `${result.deduplicated ? " (already in flight)" : ""}…`,
+    );
+  }
+  const finish = (): void => {
+    followers.delete(scenarioId);
+    delete ws.following[scenarioId];
+    void loadScenarios();
+  };
+  followers.set(
+    scenarioId,
+    followRun(runId, {
+      progress(status) {
+        ws.following[scenarioId] = { runId, status };
+        if (shown()) say(`${materialised} Run ${short} is ${status}…`);
+      },
+      landed(run) {
+        finish();
+        // The row is refreshed whichever scenario is on screen: the table
+        // holds them side by side, and a stale row there is the failure.
+        void refreshRow(scenarioId);
+        if (!shown()) return;
+        ws.comparison = null;
+        const failed = run.units.filter((u) => u.status === "failed").length;
+        say(
+          `Run ${short} ${run.status}` +
+            `${failed > 0 ? ` (${failed} indicator${failed === 1 ? "" : "s"} failed)` : ""}. ` +
+            "The table and the map now show its results.",
+        );
+        refreshMap();
+      },
+      failed(run) {
+        finish();
+        if (!shown()) return;
+        say(
+          `Run ${short} ${run.status}. The overrides stand; the indicator results ` +
+            "did not change. The Runs page has the detail.",
+          "bad",
+        );
+      },
+      unreadable() {
+        finish();
+        if (shown()) say(`Run ${short} could not be read — follow it on the Runs page.`, "bad");
+      },
+      handedOver(status) {
+        finish();
+        if (!shown()) return;
+        say(
+          `Run ${short} is still ${status}. Follow it on the Runs page; reload ` +
+            "this page once it has finished.",
+        );
+      },
+    }),
   );
-  cancelFollow = followRun(runId, {
-    progress(status) {
-      if (ws.followed) ws.followed.status = status;
-      say(`${materialised} Run ${short} is ${status}…`);
-    },
-    landed(run) {
-      ws.followed = null;
-      ws.comparison = null;
-      const failed = run.units.filter((u) => u.status === "failed").length;
-      say(
-        `Run ${short} ${run.status}` +
-          `${failed > 0 ? ` (${failed} indicator${failed === 1 ? "" : "s"} failed)` : ""}. ` +
-          "The table and the map now show its results.",
-      );
-      void loadScenarios();
-      void refreshRow(scenarioId);
-      refreshMap();
-    },
-    failed(run) {
-      ws.followed = null;
-      say(
-        `Run ${short} ${run.status}. The overrides stand; the indicator results ` +
-          "did not change. The Runs page has the detail.",
-        "bad",
-      );
-      void loadScenarios();
-    },
-    unreadable() {
-      ws.followed = null;
-      say(`Run ${short} could not be read — follow it on the Runs page.`, "bad");
-    },
-    handedOver(status) {
-      ws.followed = null;
-      say(
-        `Run ${short} is still ${status}. Follow it on the Runs page; reload ` +
-          "this page once it has finished.",
-      );
-      void loadScenarios();
-    },
-  });
 }
 
 export async function compare(): Promise<void> {

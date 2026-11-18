@@ -216,19 +216,42 @@ describe("recompute", () => {
     run_status: "queued", deduplicated: false,
   });
 
-  it("switching scenario cancels the followed run", async () => {
+  it("a run keeps being followed after a switch, and nothing about it reaches the selection", async () => {
     api.recomputeScenario.mockResolvedValue(recomputed("run-1"));
     api.getRun.mockResolvedValue({ run_id: "run-1", status: "succeeded", units: [] });
     const refreshed = vi.fn();
     store.onMapRefresh(refreshed);
     store.select("A");
     await store.recompute();
-    expect(store.ws.followed?.runId).toBe("run-1");
+    expect(store.ws.following.A?.runId).toBe("run-1");
     store.select("B");
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(api.getRun).not.toHaveBeenCalled();
+    store.ws.comparison = { counts: "B's", denominator: "d", shift: "s" };
+    store.ws.message = { text: "about B", tone: "ok" };
+    api.getIndicatorStats.mockClear();
+    await vi.advanceTimersByTimeAsync(2_000);
+    // Followed to the end: A's row is refreshed from its results ...
+    expect(api.getRun).toHaveBeenCalled();
+    expect(store.ws.following.A).toBeUndefined();
+    expect(api.getIndicatorStats.mock.calls.map((c) => c[1].scenario_id)).toEqual(["A", "A"]);
+    // ... and B, on screen, hears nothing of it.
     expect(refreshed).not.toHaveBeenCalled();
-    expect(store.ws.followed).toBeNull();
+    expect(store.ws.comparison?.counts).toBe("B's");
+    expect(store.ws.message?.text).toBe("about B");
+  });
+
+  it("a second recompute replaces the first run's follower", async () => {
+    api.recomputeScenario
+      .mockResolvedValueOnce(recomputed("run-1"))
+      .mockResolvedValueOnce(recomputed("run-2"));
+    api.getRun.mockImplementation(async (id: string) => ({ run_id: id, status: "running", units: [] }));
+    store.select("A");
+    await store.recompute();
+    await store.recompute();
+    api.getRun.mockClear();
+    await vi.advanceTimersByTimeAsync(6_000);
+    const followed = new Set(api.getRun.mock.calls.map((c) => c[0]));
+    expect(followed).toEqual(new Set(["run-2"]));
+    expect(store.ws.following.A?.runId).toBe("run-2");
   });
 
   it("a landed run refreshes that row, clears the comparison and fires onMapRefresh", async () => {
@@ -243,7 +266,7 @@ describe("recompute", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(refreshed).toHaveBeenCalledTimes(1);
     expect(store.ws.comparison).toBeNull();
-    expect(store.ws.followed).toBeNull();
+    expect(store.ws.following.A).toBeUndefined();
     const asked = api.getIndicatorStats.mock.calls.map((c) => c[1].scenario_id);
     expect(asked).toEqual(["A", "A"]);
   });

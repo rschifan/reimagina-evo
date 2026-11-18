@@ -75,10 +75,7 @@
             <td class="py-2"></td>
           </tr>
           {#each ws.scenarios as row (row.id)}
-            {@const status = statusFor(
-              row,
-              ws.followed?.scenarioId === row.id ? ws.followed : null,
-            )}
+            {@const status = statusFor(row, ws.following[row.id] ?? null)}
             <tr
               aria-selected={ws.selectedId === row.id}
               class={cn(
