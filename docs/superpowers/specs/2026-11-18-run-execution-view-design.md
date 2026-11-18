@@ -138,10 +138,10 @@ Running bars have a 2 px minimum width so a just-started unit is visible.
 
 Header chips are about **this run only**: run status and elapsed · `6
 running` · `4 of 12 done` ·
-`2 next in line` · `2 waiting on prerequisites` · forecast line
-(`expected finish in ~14 s`, `3 s past forecast`, or `finished 30 s ·
-forecast was 27 s`). A forecast-axis run also draws a dashed vertical line at
-the forecast.
+`2 next in line` · `2 waiting on prerequisites` · `finished in 30 s` once
+done. The forecast is not shown (no chip, no line): it only sets the axis, so
+bars keep their scale for the whole run. (Amended 2026-11-18: the forecast
+chip and dashed line were removed as noise.)
 
 ### Clock
 

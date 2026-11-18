@@ -793,6 +793,9 @@ def get_run_detail(
     with none — a purely SQL answer is 404, which is exactly when the user has
     just been navigated here.
     """
+    # Stamped before the reads: the page draws running bars to this time, so a
+    # unit finishing after the stamp is still behind it when it arrives.
+    now = _server_now()
     reader = get_backend(conn).ops_run_reader()
     row = reader.get_run_row(run_id)
     if row is None:
@@ -810,7 +813,7 @@ def get_run_detail(
             )
             for unit in units
         ],
-        server_now=_server_now(),
+        server_now=now,
         unit_slots=settings.unit_concurrency(),
     )
 
@@ -833,6 +836,7 @@ def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
     if status is None:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")
     now = _server_now()
+    within = {u.indicator for u in status.units}
     # The engine's own creation time: `now` here made a run queued for hours
     # read as 0.0 s old on every poll.
     submitted = status.submitted_at or now
@@ -850,6 +854,9 @@ def _detail_before_envelope(conn, run_id: str) -> RunDetailResponse:
                 status=u.status,
                 detail=u.detail,
                 queued_at=submitted,
+                # Same prerequisites as the envelope path, or rows reorder
+                # when the envelope row appears.
+                depends_on=_prerequisites(u.indicator, within),
             )
             for u in status.units
         ],
