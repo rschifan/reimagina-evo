@@ -73,8 +73,11 @@
     <div class="mt-4 grid grid-cols-[16rem_minmax(0,1fr)_7rem] items-center gap-x-3">
       <span class="text-[11px] text-muted-foreground">parallel units</span>
       <div class="relative h-8">
+        <!-- The path jumps to each poll's data; the clip glides with the bars,
+             so the strip never runs ahead of the now line. -->
         <svg
-          class="absolute inset-0 h-full w-full overflow-visible"
+          class="absolute inset-0 h-full w-full overflow-visible transition-[clip-path] duration-1000 ease-linear"
+          style:clip-path={m.nowPct === null ? "none" : `inset(-4px ${100 - m.nowPct}% -4px 0)`}
           viewBox={`0 0 100 ${STRIP_H}`}
           preserveAspectRatio="none"
           role="img"
