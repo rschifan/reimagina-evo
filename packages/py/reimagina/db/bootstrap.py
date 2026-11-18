@@ -120,7 +120,10 @@ def bootstrap_local_platform(
     # `direct_dsn` when the caller named one: this is a schema migration, and
     # `ensure_system_database` explains at length why one must not cross a
     # transaction-mode pooler. Falling back to `app_dsn` keeps the common local
-    # install working, where there is one DSN and it is already direct.
+    # install working, where there is one DSN and it is already direct. When it
+    # is not — the runbook's `--app-dsn "$REIMAGINA_APP_DSN"` with no direct DSN
+    # in the shell — `ensure_system_database` detects the pooler and refuses,
+    # where it used to migrate through it and report success.
     #
     # ⚠ The parameter wins over the environment, and the resolution happens in
     # the CLI rather than here — `reimagina.db` reads no environment variables,
