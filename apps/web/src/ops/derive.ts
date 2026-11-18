@@ -60,9 +60,19 @@ export function serverNow(clientNow: number, offsetMs: number): number {
   return clientNow + offsetMs;
 }
 
-export function clockOffset(serverIso: string, clientNow: number): number {
+/** The server stamped its clock somewhere inside the request; the midpoint of
+ *  send and receive is the best guess. Arrival time alone counted the whole
+ *  round trip as skew, so every slow response nudged "now" forward. */
+export function clockOffset(serverIso: string, sentAt: number, receivedAt: number): number {
   const server = Date.parse(serverIso);
-  return Number.isNaN(server) ? 0 : server - clientNow;
+  return Number.isNaN(server) ? 0 : server - (sentAt + receivedAt) / 2;
+}
+
+/** The displayed clock never steps back by less than `toleranceMs`: offsets
+ *  re-estimated from each response jitter, and a bar that shrinks on a tick
+ *  reads as the run going backward. A larger correction is real and taken. */
+export function monotonicNow(prev: number, next: number, toleranceMs = 1_000): number {
+  return next < prev && prev - next < toleranceMs ? prev : next;
 }
 
 export interface Progress {

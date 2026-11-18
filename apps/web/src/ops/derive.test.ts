@@ -4,6 +4,7 @@ import type { RunRow } from "./api";
 import { RUN_STATUSES } from "./api";
 import {
   clockOffset,
+  monotonicNow,
   durationMs,
   formatDuration,
   isStalled,
@@ -239,15 +240,31 @@ describe("isStalled", () => {
 describe("clock correction", () => {
   it("recovers the server offset from the response", () => {
     const clientNow = Date.parse("2026-08-20T10:00:00+00:00");
-    const offset = clockOffset("2026-08-20T10:00:20+00:00", clientNow);
+    const offset = clockOffset("2026-08-20T10:00:20+00:00", clientNow, clientNow);
     expect(offset).toBe(20_000);
+  });
+
+  it("measures against the request's midpoint, not its arrival", () => {
+    // Sent at 18 s, answered at 20 s: the server stamped it around 19 s.
+    const at = (s: number) => Date.parse("2026-08-20T10:00:00Z") + s * 1000;
+    expect(clockOffset("2026-08-20T10:00:20Z", at(18), at(20))).toBe(1_000);
+  });
+
+  it("an unparseable stamp corrects nothing", () => {
+    expect(clockOffset("nope", 0, 10)).toBe(0);
+  });
+
+  it("now never steps back on a jittery sample, but takes a real correction", () => {
+    expect(monotonicNow(10_000, 9_600)).toBe(10_000);
+    expect(monotonicNow(10_000, 10_100)).toBe(10_100);
+    expect(monotonicNow(10_000, 5_000)).toBe(5_000);
   });
 
   it("a client clock behind the server does not suppress a stalled run", () => {
     // Client is 60s slow. Uncorrected, `now - last_terminal` stays under the
     // grace and the badge never appears — the failure this correction exists for.
     const clientNow = lastTerminalPlus(20_000) - 60_000;
-    const offset = clockOffset("2026-08-20T10:00:29+00:00", clientNow);
+    const offset = clockOffset("2026-08-20T10:00:29+00:00", clientNow, clientNow);
     expect(isStalled(run(), clientNow + offset)).toBe(true);
     expect(isStalled(run(), clientNow)).toBe(false);
   });
