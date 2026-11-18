@@ -120,6 +120,13 @@ describe("the table", () => {
     expect(store.ws.cells.baseline.floors).toEqual({ value: 1, error: null });
   });
 
+  it("opens on the first indicator a rule reaches, not on an empty map", () => {
+    // An overlay with nothing picked is the one view indistinguishable from a
+    // broken map — the map page learned that before this page existed.
+    expect(store.ws.selectedId).toBeNull();
+    expect(store.ws.slug).toBe("units");
+  });
+
   it("cells are fetched with sum or median per the indicator's statistic", () => {
     expect(store.ws.cells.B.units.value).toBe(10); // sum
     expect(store.ws.cells.B.floors.value).toBe(2); // p50

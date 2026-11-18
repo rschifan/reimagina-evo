@@ -158,6 +158,9 @@ export async function boot(): Promise<void> {
     }),
   ]);
   ws.indicators = indicators;
+  // Open on an indicator: an overlay with nothing picked is the one view
+  // indistinguishable from a broken map. A route naming another wins later.
+  ws.slug ??= indicators[0]?.slug ?? null;
   ws.aois = aois;
   for (const [slug, field] of [
     [DENSITY_INDICATOR_SLUG, "densityValidMax"],
@@ -288,7 +291,6 @@ export function select(scenarioId: string | null): void {
     ws.mode = "value";
     return;
   }
-  if (ws.slug === null) ws.slug = ws.indicators[0]?.slug ?? null;
   void loadRules(scenarioId, token);
 }
 
