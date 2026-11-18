@@ -18,7 +18,7 @@ import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 import { listAttributions, type AOIRow } from "./api";
 
-/** No basemap: licence hygiene, see the attribution note in `main.ts`. */
+/** No basemap: licence hygiene, see the attribution note in `installMapControls`. */
 function emptyStyle(): StyleSpecification {
   return {
     version: 8,

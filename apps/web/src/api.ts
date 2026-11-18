@@ -103,20 +103,11 @@ export interface ValueHistogram {
 /** Catalog indicators. With ``aoiId``, only those holding current values in
  *  that AOI — the picker should not offer an indicator whose overlay would
  *  render empty, because an empty map reads as a broken indicator rather
- *  than an uncomputed one.
- *
- *  With ``scenarioId``, that scenario's results count toward ``aoiId`` as well
- *  as the baseline's. Both halves matter: without it the picker hides the five
- *  edificability indicators, which have no baseline rows at all and so exist
- *  only inside a scenario — exactly what a scenario is authored to show. It
- *  has no effect without ``aoiId``, which is what narrows. */
-export function listIndicators(
-  aoiId?: string | null,
-  scenarioId?: string | null,
-): Promise<IndicatorSummary[]> {
+ *  than an uncomputed one. The scenario workspace does not use this list:
+ *  it offers {@link listReachableIndicators}. */
+export function listIndicators(aoiId?: string | null): Promise<IndicatorSummary[]> {
   const params = new URLSearchParams();
   if (aoiId) params.set("aoi_id", aoiId);
-  if (scenarioId) params.set("scenario_id", scenarioId);
   const qs = params.toString();
   return jsonRequest<IndicatorSummary[]>(`/indicators${qs ? `?${qs}` : ""}`);
 }
