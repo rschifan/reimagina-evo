@@ -8,9 +8,10 @@ const { chromium } = require('playwright');
 const WEB = process.env.E2E_WEB || 'http://127.0.0.1:5173';
 const OUT = process.env.E2E_OUT;
 const PAGES = [
-  { name: 'map',     path: '/' },
-  { name: 'catalog', path: '/catalog.html' },
-  { name: 'ops',     path: '/ops.html' },
+  { name: 'map',       path: '/' },
+  { name: 'scenarios', path: '/scenarios.html' },
+  { name: 'catalog',   path: '/catalog.html' },
+  { name: 'ops',       path: '/ops.html' },
 ];
 
 (async () => {
