@@ -38,12 +38,6 @@
 </script>
 
 {#snippet guides()}
-  {#if m.forecastPct !== null}
-    <div
-      class={`pointer-events-none absolute inset-y-0 border-l border-dashed border-muted-foreground/60 ${GLIDE}`}
-      style:left={`${m.forecastPct}%`}
-    ></div>
-  {/if}
   {#if m.nowPct !== null}
     <div
       class={`pointer-events-none absolute inset-y-0 w-px bg-foreground ${GLIDE}`}

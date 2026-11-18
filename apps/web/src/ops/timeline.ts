@@ -150,8 +150,8 @@ export interface TimelineModel {
   rows: Row[];
   axis: number;
   elapsedMs: number;
+  /** Only fixes the axis; not drawn. */
   forecast: number | null;
-  forecastPct: number | null;
   /** Null once the run has finished. */
   nowPct: number | null;
   ticks: { pct: number; label: string }[];
@@ -249,19 +249,7 @@ export function timelineModel(
     if (count("ready")) chips.push({ text: `${count("ready")} next in line`, tone: "stale" });
     if (count("blocked"))
       chips.push({ text: `${count("blocked")} waiting on prerequisites`, tone: "neutral" });
-    if (!live)
-      chips.push({
-        text:
-          `finished in ${formatDuration(elapsedMs)}` +
-          (forecast === null ? "" : ` · forecast was ${formatDuration(forecast)}`),
-        tone: "neutral",
-      });
-    else if (forecast !== null)
-      chips.push(
-        elapsedMs <= forecast
-          ? { text: `expected finish in ~${formatDuration(forecast - elapsedMs)}`, tone: "neutral" }
-          : { text: `${formatDuration(elapsedMs - forecast)} past forecast`, tone: "neutral" },
-      );
+    if (!live) chips.push({ text: `finished in ${formatDuration(elapsedMs)}`, tone: "neutral" });
   }
 
   return {
@@ -269,7 +257,6 @@ export function timelineModel(
     axis,
     elapsedMs,
     forecast,
-    forecastPct: forecast === null ? null : pct(forecast),
     nowPct: live ? pct(elapsedMs) : null,
     ticks: ticks(axis),
     strip,

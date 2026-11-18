@@ -175,16 +175,15 @@ describe("chips", () => {
   const texts = (m: ReturnType<typeof timelineModel>) => m.chips.map((c) => c.text);
   const one = (over: Partial<UnitDetail>) => [unit("a", { expected_ms: 10_000, ...over })];
 
+  // The forecast only fixes the axis; it is not shown, inside or past it.
   test("live, inside the forecast", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(4), true);
-    expect(texts(m)).toEqual(["4.0s elapsed", "1 running", "0 of 1 done", "expected finish in ~6.0s"]);
+    expect(texts(m)).toEqual(["4.0s elapsed", "1 running", "0 of 1 done"]);
   });
 
   test("live, past the forecast", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(12), true);
-    expect(texts(m)).toContain("2.0s past forecast");
-    // stale (amber) already means "ready, next in line"; one colour, one meaning.
-    expect(m.chips.find((c) => c.text.endsWith("past forecast"))!.tone).toBe("neutral");
+    expect(texts(m)).toEqual(["12.0s elapsed", "1 running", "0 of 1 done"]);
   });
 
   test("finished", () => {
@@ -194,7 +193,7 @@ describe("chips", () => {
       at(30),
       false,
     );
-    expect(texts(m)).toEqual(["1 of 1 done", "finished in 12.0s · forecast was 10.0s"]);
+    expect(texts(m)).toEqual(["1 of 1 done", "finished in 12.0s"]);
   });
 });
 
