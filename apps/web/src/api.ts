@@ -122,6 +122,21 @@ export function listIndicators(
 }
 
 
+/** An indicator a scenario rule can change, and the number a summary table
+ *  shows for it: a total for counts, a median for rates. */
+export interface ReachableIndicator extends IndicatorSummary {
+  statistic: "sum" | "median";
+}
+
+
+/** What a scenario rule can change, inputs before dependents. Derived on the
+ *  server from the catalog, so the workspace never offers an indicator a rule
+ *  cannot move. */
+export function listReachableIndicators(): Promise<ReachableIndicator[]> {
+  return jsonRequest<ReachableIndicator[]>("/scenarios/indicators");
+}
+
+
 /** One indicator's catalog metadata, whether or not it holds values anywhere.
  *
  *  Unscoped on purpose where {@link listIndicators} is scoped: the density
