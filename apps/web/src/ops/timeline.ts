@@ -112,9 +112,11 @@ export function axisMs(elapsed: number, forecast: number | null, live: boolean):
   return axis;
 }
 
-const TICK_STEPS_S = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+const TICK_STEPS_S = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
 
-function tickLabel(ms: number): string {
+/** Sub-second steps get hundredths (0.25s), whole seconds otherwise. */
+function tickLabel(ms: number, step: number): string {
+  if (step < 1000) return `${+(ms / 1000).toFixed(2)}s`;
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
@@ -125,9 +127,9 @@ export function ticks(axis: number): { pct: number; label: string }[] {
     (TICK_STEPS_S.find((s) => axis / (s * 1000) <= 6) ?? TICK_STEPS_S.at(-1)!) * 1000;
   const out: { pct: number; label: string }[] = [];
   for (let v = 0; v < axis - step / 2; v += step) {
-    out.push({ pct: (v / axis) * 100, label: tickLabel(v) });
+    out.push({ pct: (v / axis) * 100, label: tickLabel(v, step) });
   }
-  out.push({ pct: 100, label: tickLabel(axis) });
+  out.push({ pct: 100, label: tickLabel(axis, step) });
   return out;
 }
 
@@ -155,6 +157,9 @@ export interface TimelineModel {
   ticks: { pct: number; label: string }[];
   /** Running-unit count at each start/finish, for the parallelism strip. */
   strip: { pct: number; running: number }[];
+  /** The strip's full height: the per-worker slots, or the peak if higher —
+   *  several workers can run more of one run's units at once. */
+  stripMax: number;
   chips: { text: string; tone: Tone }[];
 }
 
@@ -268,6 +273,7 @@ export function timelineModel(
     nowPct: live ? pct(elapsedMs) : null,
     ticks: ticks(axis),
     strip,
+    stripMax: Math.max(slots, ...strip.map((x) => x.running)),
     chips,
   };
 }

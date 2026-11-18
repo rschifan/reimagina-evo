@@ -267,3 +267,23 @@ describe("review fixes", () => {
     expect(new Set(dots).size).toBe(dots.length);
   });
 });
+
+describe("follow-ups", () => {
+  test("a sub-second axis keeps its zero tick and labels its end", () => {
+    const tk = ticks(400);
+    expect(tk[0]).toEqual({ pct: 0, label: "0s" });
+    expect(tk.at(-1)).toEqual({ pct: 100, label: "0.4s" });
+    expect(tk.length).toBeGreaterThan(2);
+    expect(new Set(tk.map((x) => x.label)).size).toBe(tk.length);
+  });
+
+  test("the strip scale reaches the observed peak above the per-worker slots", () => {
+    const running = (i: string) =>
+      unit(i, { status: "running", started_at: "2026-08-20T10:00:00Z" });
+    const now = Date.parse("2026-08-20T10:00:05Z");
+    const m = timelineModel([running("a"), running("b"), running("c")], 2, now, true);
+    expect(Math.max(...m.strip.map((s) => s.running))).toBe(3);
+    expect(m.stripMax).toBe(3);
+    expect(timelineModel([running("a")], 2, now, true).stripMax).toBe(2);
+  });
+});
