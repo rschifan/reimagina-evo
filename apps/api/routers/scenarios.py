@@ -115,7 +115,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import psycopg2
@@ -145,10 +145,13 @@ from reimagina.scenarios.proposal import (
     edits_for,
     polygon_wkt,
     precheck_ceilings,
+    reachable_indicators,
     require_positive,
+    table_statistic,
 )
 
 from ..deps import api_dsn, get_backend
+from .indicators import IndicatorSummary, _catalog_row_to_dict
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -606,6 +609,39 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
                 "that created it"
             )
     return ScenarioDetail(**created)
+
+
+class ReachableIndicator(IndicatorSummary):
+    """An indicator a scenario rule can change, and the number a table shows.
+
+    ``statistic`` is ``sum`` for counts (dwellings, people) and ``median``
+    otherwise; ``proposal.table_statistic`` is the one place that decides.
+    """
+
+    statistic: Literal["sum", "median"]
+
+
+# ⚠ Declared before `/{scenario_id}`: FastAPI matches in declaration order, and
+# below it this path is read as a scenario called "indicators" and answers 404.
+@router.get("/indicators", response_model=list[ReachableIndicator])
+def reachable_indicators_route() -> list[ReachableIndicator]:
+    """The indicators a scenario rule can change, inputs before dependents.
+
+    Derived from the catalog's declared reads (``proposal.reachable_indicators``)
+    rather than listed, so the scenario workspace offers what a rule moves and
+    nothing a rule cannot.
+    """
+    order = reachable_indicators()
+    with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
+        rows = get_backend(conn).indicator_catalog_repo().list_indicators()
+    by_slug = {row["slug"]: _catalog_row_to_dict(row) for row in rows}
+    return [
+        ReachableIndicator(
+            **by_slug[slug], statistic=table_statistic(by_slug[slug]["unit"])
+        )
+        for slug in order
+        if slug in by_slug
+    ]
 
 
 @router.get("/{scenario_id}", response_model=ScenarioDetail)

@@ -1543,3 +1543,60 @@ def test_the_router_does_not_import_the_cli():
     # surfaces stay legible to each other.
     assert not [name for name in imported if name.split(".")[:2] == ["apps", "cli"]]
     assert "reimagina.scenarios.proposal" in imported
+
+
+# ── what a rule can reach ────────────────────────────────────────────────
+
+
+def _catalog(monkeypatch) -> None:
+    """Serve the shipped catalog's twelve rows without a database."""
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+
+    rows = [
+        {
+            "slug": spec.slug,
+            "name": spec.name,
+            "computation_kind": spec.computation_kind,
+            "value_type": spec.value_type,
+            "unit": spec.unit,
+            "valid_min": spec.valid_min,
+            "valid_max": spec.valid_max,
+            "aggregation_method": spec.aggregation_method,
+            "applies_to": list(spec.applies_to),
+        }
+        for spec in SHIPPED_INDICATORS
+    ]
+
+    class _Repo:
+        def list_indicators(self, **_kwargs: Any) -> list[dict]:
+            return rows
+
+    class _Backend:
+        def indicator_catalog_repo(self) -> _Repo:
+            return _Repo()
+
+    monkeypatch.setattr(mod, "get_backend", lambda conn: _Backend())
+
+
+def test_the_indicator_list_is_not_read_as_a_scenario_id(client, events, monkeypatch):
+    """`/scenarios/indicators` must not fall into `/scenarios/{scenario_id}`.
+
+    FastAPI matches routes in declaration order, so declared below the
+    `{scenario_id}` routes this path answers "no scenario with id
+    'indicators'" — a 404 that reads like a missing scenario, not a missing
+    route.
+    """
+    from reimagina.scenarios.proposal import reachable_indicators
+
+    _catalog(monkeypatch)
+
+    response = client.get("/scenarios/indicators")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [row["slug"] for row in body] == reachable_indicators()
+    statistic = {row["slug"]: row["statistic"] for row in body}
+    assert statistic["edificability_block_housing_units"] == "sum"
+    assert statistic["edificability_block_population"] == "sum"
+    assert statistic["edificability_block_density"] == "median"
+    assert events == ["connect", "close"]
