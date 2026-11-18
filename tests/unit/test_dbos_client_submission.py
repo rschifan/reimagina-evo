@@ -69,7 +69,9 @@ def test_client_mode_enqueues_the_named_parent_workflow(monkeypatch):
     monkeypatch.setattr(dbos_app, "assert_same_domain_database", lambda conn: None)
     # The plan is persisted to `jobs_runtime.run_plan` on its own connection
     # before the workflow is enqueued; this test has no database.
-    monkeypatch.setattr(dbos_orchestrator, "_persist_plan", lambda units: "plan-1")
+    monkeypatch.setattr(
+        dbos_orchestrator, "_persist_plan", lambda units, plan_id: "plan-1"
+    )
     monkeypatch.setattr(
         dbos_app,
         "launch",
@@ -118,7 +120,9 @@ def test_the_workflow_input_carries_a_plan_handle_not_the_feature_ids(monkeypatc
     )
     monkeypatch.setattr(dbos_orchestrator, "_client", lambda: Client())
     monkeypatch.setattr(dbos_app, "assert_same_domain_database", lambda conn: None)
-    monkeypatch.setattr(dbos_orchestrator, "_persist_plan", lambda units: "plan-1")
+    monkeypatch.setattr(
+        dbos_orchestrator, "_persist_plan", lambda units, plan_id: "plan-1"
+    )
 
     dbos_orchestrator.DBOSOrchestrator(registry=(), execution_mode="client").submit_run(
         _Conn(),
@@ -166,7 +170,9 @@ def test_the_enqueue_carries_a_deduplication_id(monkeypatch):
     )
     monkeypatch.setattr(dbos_orchestrator, "_client", lambda: Client())
     monkeypatch.setattr(dbos_app, "assert_same_domain_database", lambda conn: None)
-    monkeypatch.setattr(dbos_orchestrator, "_persist_plan", lambda units: "plan-1")
+    monkeypatch.setattr(
+        dbos_orchestrator, "_persist_plan", lambda units, plan_id: "plan-1"
+    )
 
     dbos_orchestrator.DBOSOrchestrator(registry=(), execution_mode="client").submit_run(
         _Conn(),
@@ -207,7 +213,9 @@ def test_a_collision_returns_the_run_already_doing_the_work(monkeypatch):
     )
     monkeypatch.setattr(dbos_orchestrator, "_client", lambda: Client())
     monkeypatch.setattr(dbos_app, "assert_same_domain_database", lambda conn: None)
-    monkeypatch.setattr(dbos_orchestrator, "_persist_plan", lambda units: "plan-1")
+    monkeypatch.setattr(
+        dbos_orchestrator, "_persist_plan", lambda units, plan_id: "plan-1"
+    )
 
     handle = dbos_orchestrator.DBOSOrchestrator(
         registry=(), execution_mode="client"

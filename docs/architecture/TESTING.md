@@ -18,7 +18,7 @@ CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- Build the schema by running the Alembic migrations (r001 → r043):
---   make migrate        # python -m apps.cli.app bootstrap-db  (Makefile:71-73)
+--   make migrate        # apps.cli.app bootstrap-db --with-test-db
 -- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:
 

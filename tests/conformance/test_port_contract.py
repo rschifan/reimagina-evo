@@ -7,7 +7,7 @@ is the comparison, rather than a shared fixture neither branch could host (the
 branches never merge).
 
 Nothing here imports an engine, a queue, or a run table. It goes through
-``factory.get_orchestrator`` and the port's four methods and nothing else; a
+``factory.get_orchestrator`` and the port's methods and nothing else; a
 test that needs to know how a run is stored belongs in that engine's own suite.
 """
 
@@ -103,6 +103,14 @@ def test_an_unknown_run_is_none_not_an_error(orchestrator, seeded):
         orchestrator.get_run(seeded.conn, "00000000-0000-0000-0000-000000000000")
         is None
     )
+
+
+def test_listing_enqueued_runs_returns_a_list(orchestrator, seeded):
+    assert isinstance(orchestrator.list_enqueued_runs(limit=5), list)
+
+
+def test_forgetting_an_unknown_run_is_a_noop(orchestrator, seeded):
+    orchestrator.forget_runs(["00000000-0000-0000-0000-000000000000"])
 
 
 # ── Cancel ──────────────────────────────────────────────────────────────────

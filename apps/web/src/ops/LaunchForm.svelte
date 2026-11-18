@@ -113,9 +113,15 @@
     message = null;
     failed = false;
     try {
-      const { status, runId } = await launchRun(body, refreshNow);
+      const { status, runId, deduplicated } = await launchRun(body, refreshNow);
       if (!runId) {
         message = `Nothing to recompute (${status}). ${preview?.reason ?? ""}`;
+        return;
+      }
+      // Stay on the form: navigating away would destroy the message, and the
+      // old run's page looks exactly like a fresh submit.
+      if (deduplicated) {
+        message = `That work is already in flight as run ${runId} — nothing new was started.`;
         return;
       }
       location.hash = `#/r/${runId}`;

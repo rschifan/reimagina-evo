@@ -16,6 +16,7 @@ import {
   listRuns,
   rerunRun,
   submitRun,
+  MAX_RUN_LIMIT,
   RUN_STATUSES,
   type AOIRow,
   type SubmitRunBody,
@@ -31,8 +32,8 @@ import { clockOffset, isRunTerminal, statusCounts } from "./derive";
  *
  * Freshness *is* the product here — an operator watches a run advance, and
  * units routinely finish in about a second, so a slower tick makes a real
- * transition invisible. The cost is one query per tick per open tab, which is
- * why the list, the counts and the executors travel in a single response
+ * transition invisible. The cost is one list query per tick per open tab, plus
+ * the open run's detail until it is terminal, which is why the list, the counts and the executors travel in a single response
  * rather than three, and why a hidden tab polls not at all.
  */
 const POLL_MS = 1_000;
@@ -54,11 +55,14 @@ let openRunId = $state<string | null>(null);
 let loading = $state(false);
 let refreshing = $state(false);
 let paused = $state(false);
-let error = $state<string | null>(null);
+// Per resource, because both are read every tick: one shared slot let the
+// list's success erase the detail's failure in the same tick.
+let listError = $state<string | null>(null);
+let detailError = $state<string | null>(null);
 let lastLoadedAt = $state<Date | null>(null);
 let offsetMs = $state(0);
 /** Actions in flight, keyed `{run_id}:{action}`. None of them is idempotent —
- *  rerun and launch each mint a new run — and there is no server-side dedupe,
+ *  rerun mints a new run, and launch dedupes only identical in-flight work —
  *  so disabling the button on this set is the only protection there is. */
 let busy = $state.raw<Set<string>>(new Set());
 
@@ -103,7 +107,7 @@ export const ops = {
     return paused;
   },
   get error() {
-    return error;
+    return listError ?? detailError;
   },
   get lastLoadedAt() {
     return lastLoadedAt;
@@ -140,14 +144,17 @@ export function loadMore(): void {
   // Raise the limit rather than advancing an offset: under a two-second poll a
   // new run shifts every offset window, so paging would duplicate and drop rows
   // as you read.
-  limit += 50;
+  limit = Math.min(limit + 50, MAX_RUN_LIMIT);
   void load({ background: true });
 }
 
 export function setOpenRun(runId: string | null): void {
   if (runId === openRunId) return; // see setFilters
   openRunId = runId;
-  if (runId === null) openRun = null;
+  // ⚠ Unconditional: a failed first read of the new run would otherwise leave
+  // the previous run's detail on screen, and its Cancel/Delete aimed at it.
+  openRun = null;
+  detailError = null;
   void load({ background: true });
 }
 
@@ -174,13 +181,13 @@ async function loadList({ background }: { background: boolean }): Promise<void> 
     counts = page.status_counts;
     total = page.total;
     offsetMs = clockOffset(page.server_now, Date.now());
-    error = null;
+    listError = null;
     lastLoadedAt = new Date();
   } catch (err) {
     if (isAbortError(err)) return;
     // Keep the last known rows and say the refresh failed. Blanking the table
     // is strictly worse than showing numbers with a warning.
-    error = describe(err);
+    listError = describe(err);
   } finally {
     if (listInFlight === ctrl) {
       refreshing = false;
@@ -193,6 +200,8 @@ async function loadList({ background }: { background: boolean }): Promise<void> 
 async function loadDetail({ background }: { background: boolean }): Promise<void> {
   const runId = openRunId;
   if (!runId) return;
+  // Nothing about a finished run can change; stop re-reading it.
+  if (openRun?.run.run_id === runId && isRunTerminal(openRun.run.status)) return;
   detailInFlight?.abort();
   const ctrl = new AbortController();
   detailInFlight = ctrl;
@@ -203,11 +212,11 @@ async function loadDetail({ background }: { background: boolean }): Promise<void
     if (detailInFlight !== ctrl || openRunId !== runId) return;
     openRun = detail;
     offsetMs = clockOffset(detail.server_now, Date.now());
-    error = null;
+    detailError = null;
     lastLoadedAt = new Date();
   } catch (err) {
     if (isAbortError(err)) return;
-    error = describe(err);
+    detailError = describe(err);
   } finally {
     if (detailInFlight === ctrl) {
       refreshing = false;
@@ -216,20 +225,21 @@ async function loadDetail({ background }: { background: boolean }): Promise<void
   }
 }
 
-/** What a poll tick reads: whichever view is open. */
+/**
+ * What a poll tick reads: the list unconditionally, plus the open run.
+ *
+ * ⚠ Executor health and the in-flight tallies ride only on the list response,
+ * and the health strip is chrome on every route. Polling just the detail while
+ * a run was open froze the strip at "no executor has ever reported" while a
+ * worker started and ran the very run on screen — the false alarm the strip
+ * exists to prevent, shown to someone watching a stuck run.
+ */
 async function load({ background }: { background: boolean }): Promise<void> {
-  await (openRunId ? loadDetail({ background }) : loadList({ background }));
+  await Promise.all([loadList({ background }), loadDetail({ background })]);
 }
 
 export async function boot(): Promise<void> {
-  // The list unconditionally, even when the page opened straight into a run.
-  //
-  // Executor health and the in-flight tallies ride on the list response, and
-  // the health strip is chrome on every route. Booting into a detail URL
-  // without this left the strip claiming "no executor has ever reported" while
-  // a worker was heartbeating fine — the precise false alarm the strip exists
-  // to prevent, shown at the moment someone is deep-linked into a stuck run.
-  await Promise.all([loadList({ background: false }), loadDetail({ background: false })]);
+  await load({ background: false });
 }
 
 /**
@@ -264,15 +274,11 @@ export function startPolling(): { stop: () => void; refreshNow: () => void } {
 
   const tick = async () => {
     if (stopped || document.hidden || paused) return schedule();
-    // Nothing about a finished run can change; stop re-reading it. The list
-    // keeps polling underneath.
-    if (openRunId && openRun && isRunTerminal(openRun.run.status))
-      return schedule();
     await load({ background: true });
     // Count consecutive failures rather than comparing messages. `ApiError`
     // embeds the status line, so a backend flapping 502 → 504 produces a
     // different string each tick and a message compare never backs off at all.
-    fails = error ? fails + 1 : 0;
+    fails = ops.error ? fails + 1 : 0;
     delay =
       fails > 1
         ? Math.min(POLL_MS * 2 ** (fails - 1), BACKOFF_MAX_MS)
@@ -335,12 +341,12 @@ export async function loadAois(): Promise<void> {
 export async function launchRun(
   body: SubmitRunBody,
   refreshNow: () => void,
-): Promise<{ status: string; runId: string | null }> {
+): Promise<{ status: string; runId: string | null; deduplicated: boolean }> {
   const release = beginAction("launch");
   try {
     const res = await submitRun(body);
     refreshNow();
-    return { status: res.status, runId: res.run_id };
+    return { status: res.status, runId: res.run_id, deduplicated: res.deduplicated ?? false };
   } finally {
     release();
   }

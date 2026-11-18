@@ -22,7 +22,7 @@ The current target state is:
 make install                   # Python + web deps
 export DATABASE_URL=postgresql://localhost/reimagina_app
 createdb reimagina_app
-make migrate                   # apps.cli.app bootstrap-db
+make migrate                   # apps.cli.app bootstrap-db --with-test-db
 make verify-sources            # data verify-sources (uses OVERTURE_DEFAULT_RELEASE)
 ```
 
@@ -291,7 +291,7 @@ SELECT type_slug, count(*) FROM curated_geo.feature GROUP BY type_slug;
 ## 10. Smoke services
 
 ```sh
-make dev &          # API on :8001 and web on :5173 together
+make dev &          # API on :8001, web on :5173 and the run worker together
 martin --config infra/docker/martin.yaml &   # Martin on :3000 (optional)
 ```
 

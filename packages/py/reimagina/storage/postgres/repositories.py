@@ -3030,16 +3030,34 @@ class PostgresRunPlanRepository:
         the engine hands back an existing run and the plan just written is
         never referenced by anything.
 
-        ⚠ ``older_than_hours`` must exceed the longest run this deployment can
-        produce. Sweeping a plan out from under a live run makes every
-        subsequent unit fail with a missing-plan LookupError — the loud failure
-        that is supposed to mean "a write was lost". The unit timeout alone is
-        120 minutes by default, so the margin here is deliberately generous.
+        ⚠ Age alone is the wrong bound. A plan must outlive submit → last unit
+        read, i.e. queue wait *plus* run time, and queue wait is unbounded while
+        no worker is running. Sweeping a plan out from under a queued or live
+        run makes every unit fail with a missing-plan LookupError — the loud
+        failure that is supposed to mean "a write was lost". So a plan whose
+        workflow (``plan_id`` is the run id) is still open is never swept. The
+        age predicate stays: a plan is written *before* its enqueue, so a
+        concurrent submit's sweep must not take a fresh plan with no workflow
+        row yet.
+
+        ⚠ The schema probe is its own statement. On a database no worker has
+        launched against, ``dbos.workflow_status`` does not exist, and naming it
+        in the DELETE fails at parse time — inside the submitter's plan
+        transaction — whatever an ``OR to_regclass(...) IS NULL`` would say.
         """
         with self.connection.cursor() as cur:
+            cur.execute("SELECT to_regclass('dbos.workflow_status') IS NOT NULL")
+            (engine_present,) = cur.fetchone()
+            guard = (
+                " AND NOT EXISTS (SELECT 1 FROM dbos.workflow_status w"
+                " WHERE w.workflow_uuid = run_plan.plan_id::text"
+                " AND w.status IN ('ENQUEUED', 'PENDING', 'DELAYED'))"
+                if engine_present
+                else ""
+            )
             cur.execute(
                 "DELETE FROM jobs_runtime.run_plan "
-                "WHERE created_at < now() - make_interval(hours => %s)",
+                "WHERE created_at < now() - make_interval(hours => %s)" + guard,
                 (older_than_hours,),
             )
             return cur.rowcount
@@ -3219,8 +3237,11 @@ class PostgresOpsRunReader:
             )
             return cur.rowcount > 0
 
-    def delete_terminal_runs(self) -> int:
-        """Forget every finished run.
+    def delete_terminal_runs(self) -> list[str]:
+        """Forget every finished run; return the ids that went.
+
+        Ids, not a count: the caller must forget the same runs in the engine,
+        which is the existence oracle and would otherwise resurrect them.
 
         ⚠ Terminal only, and the filter is bound from ``RUN_TERMINAL_STATES``
         rather than written out. A live run's workflow still owns these rows —
@@ -3233,10 +3254,10 @@ class PostgresOpsRunReader:
         with self.connection.cursor() as cur:
             cur.execute(
                 "DELETE FROM jobs_runtime.orchestration_run "
-                "WHERE status = ANY(%(terminal)s)",
+                "WHERE status = ANY(%(terminal)s) RETURNING id::text",
                 {"terminal": sorted(RUN_TERMINAL_STATES)},
             )
-            return cur.rowcount
+            return [row[0] for row in cur.fetchall()]
 
     # ── Executors ───────────────────────────────────────────────────────────
 

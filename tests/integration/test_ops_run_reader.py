@@ -198,6 +198,7 @@ def test_clearing_history_spares_live_runs(conn):
 
     removed = reader.delete_terminal_runs()
 
-    assert removed >= 1
+    assert done in removed
+    assert live not in removed
     assert reader.get_run_row(done) is None
     assert reader.get_run_row(live) is not None

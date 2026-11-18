@@ -113,7 +113,21 @@ def main(argv: list[str]) -> int:
     ports: list[tuple[int, str]] = []
     for arg in argv:
         port, _, label = arg.partition(":")
-        ports.append((int(port), label or port))
+        try:
+            number = int(port)
+        except ValueError:
+            # The one failure this script must never produce is a traceback.
+            # It exists to replace `[Errno 98] Address already in use` with a
+            # sentence, and it ran before `make dev`'s banner — so a typo in a
+            # port argument printed a `ValueError` where the whole point was
+            # to say what was wrong and what to do.
+            print(
+                f"\nnot a port number: {arg!r} — expected PORT or PORT:LABEL, "
+                "as in `python scripts/preflight_ports.py 8001:API 5173:Web`\n",
+                file=sys.stderr,
+            )
+            return 2
+        ports.append((number, label or port))
     try:
         check_ports(ports)
     except PortInUse as exc:

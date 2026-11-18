@@ -26,10 +26,17 @@ from reimagina.orchestration.dbos_app import ensure_system_database
 
 
 def _regclass(dsn: str, relation: str):
-    with (
-        psycopg2.connect(dsn) as conn,
-        conn.cursor() as cur,
-    ):
+    """Read one relation's OID, and close the socket after.
+
+    ``closing`` for the same reason ``_run`` below spells out: psycopg2's own
+    context manager scopes the *transaction* and leaves the socket open. This
+    is called four times per run against a fixture database that is then
+    dropped ``WITH (FORCE)`` — and the FORCE was partly covering for these.
+
+    No second ``conn`` context: this only reads, so there is nothing to commit,
+    and the connection closes a statement later.
+    """
+    with closing(psycopg2.connect(dsn)) as conn, conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s)", (relation,))
         return cur.fetchone()[0]
 

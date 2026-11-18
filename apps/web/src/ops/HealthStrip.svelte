@@ -1,13 +1,21 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import type { ExecutorRow, RunRow } from "./api";
+  import { ops } from "./store.svelte";
 
   let { executors, runs }: { executors: ExecutorRow[]; runs: RunRow[] } = $props();
 
   // 3× the 30 s default heartbeat, so one missed beat is not an alarm.
   const FRESH_S = 90;
 
-  const inFlight = $derived(runs.filter((r) => r.status === "running").length);
+  // ⚠ Liveness, not row count: nothing deletes a row when its process exits
+  // (a `dev`-mode CLI run or an old worker leaves one; only the worker's
+  // reclaim sweep removes it), so "a row exists" does not mean "a worker is up".
+  const liveCount = $derived(executors.filter((e) => e.heartbeat_age_s < FRESH_S).length);
+  const live = $derived(liveCount > 0);
+
+  // Run-level, from the unfiltered counts: `runs` is the filtered, limited page.
+  const inFlight = $derived(ops.counts.running + ops.counts.cancelling);
   const unitsRunning = $derived(runs.reduce((n, r) => n + r.units_running, 0));
   const unitsQueued = $derived(
     runs.reduce((n, r) => n + (r.units_total - r.units_terminal - r.units_running), 0),
@@ -22,13 +30,19 @@
 <div
   class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line/60 px-4 py-2 font-mono text-[11px] text-muted-foreground"
 >
-  {#if executors.length === 0}
+  {#if !live}
     <!-- Zero rows is the fresh-install case, and an empty strip here would do
-         precisely what the strip exists to prevent. -->
-    <Badge tone="error">no executor has ever reported</Badge>
-    <span>nothing will run until a worker is started</span>
-  {:else}
-    <Badge tone="accent">{executors.length} executor{executors.length === 1 ? "" : "s"}</Badge>
+         precisely what the strip exists to prevent. Stale rows stay listed
+         below: they say a worker once existed, and which one died. -->
+    <Badge tone="error">
+      {executors.length === 0 ? "no executor has ever reported" : "no live executor"}
+    </Badge>
+    <span>nothing will run until a worker is started (<code>make dev-worker</code>)</span>
+  {/if}
+  {#if live}
+    <Badge tone="accent">{liveCount} executor{liveCount === 1 ? "" : "s"}</Badge>
+  {/if}
+  {#if executors.length > 0}
     {#each executors as ex (ex.executor_id)}
       <Badge
         tone={ex.heartbeat_age_s < FRESH_S ? "fresh" : "error"}
@@ -42,6 +56,8 @@
 
   <span class="text-line">·</span>
   <span data-numeric>{inFlight} run{inFlight === 1 ? "" : "s"} in flight</span>
-  <span data-numeric>{unitsRunning} unit{unitsRunning === 1 ? "" : "s"} running</span>
-  <span data-numeric>{unitsQueued} queued</span>
+  <!-- Unit tallies are summed over the page on screen; the API has no
+       unfiltered unit counts, so say so rather than pass them off as global. -->
+  <span data-numeric>{unitsRunning} unit{unitsRunning === 1 ? "" : "s"} running in view</span>
+  <span data-numeric>{unitsQueued} queued in view</span>
 </div>
