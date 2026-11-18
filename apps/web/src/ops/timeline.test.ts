@@ -286,3 +286,44 @@ describe("follow-ups", () => {
     expect(timelineModel([running("a")], 2, now, true).stripMax).toBe(2);
   });
 });
+
+describe("edge cases", () => {
+  test("every unit downstream of a failure says it won't start", () => {
+    const f = unit("f", { status: "failed", started_at: iso(0), completed_at: iso(1) });
+    const child = unit("c", { depends_on: ["f"] });
+    const grandchild = unit("g", { depends_on: ["c"] });
+    const notes = new Map(
+      timelineModel([f, child, grandchild], 8, at(2), true).rows.map((r) => [
+        r.unit.indicator,
+        r.note,
+      ]),
+    );
+    expect(notes.get("c")).toBe("won't start: f failed");
+    expect(notes.get("g")).toBe("won't start: f failed");
+  });
+
+  test("a zero-millisecond estimate shows a plain duration, never NaN", () => {
+    const row = (startS: number) =>
+      timelineModel(
+        [unit("a", { status: "running", started_at: iso(startS), expected_ms: 0 })],
+        8,
+        at(4),
+        true,
+      ).rows[0];
+    expect(row(4).numbers).toBe("0.0s");
+    expect(row(0).numbers).toBe("4.0s");
+    expect(row(4).expectedPct).toBeNull();
+  });
+
+  test("a stalled run (every unit ended, run still open) stops growing", () => {
+    const done = [
+      unit("a", { status: "succeeded", started_at: iso(0), completed_at: iso(5) }),
+      unit("b", { status: "failed", started_at: iso(0), completed_at: iso(8) }),
+    ];
+    const early = timelineModel(done, 8, at(10), true);
+    const late = timelineModel(done, 8, at(600), true);
+    expect(late.elapsedMs).toBe(8_000);
+    expect(late.axis).toBe(early.axis);
+    expect(late.nowPct).toBe(early.nowPct);
+  });
+});
