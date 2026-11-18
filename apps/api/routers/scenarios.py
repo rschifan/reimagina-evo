@@ -260,8 +260,9 @@ class ScenarioListRow(ScenarioRow):
     """
 
     edit_count: int
-    #: The newest run, or None. A queued run has no row until a worker opens
-    #: it, so during that window this is the previous run.
+    #: The newest run envelope (``orchestration_run``), or None. A queued run
+    #: has no envelope until a worker opens it, so during that window this is
+    #: the previous run.
     latest_run: LatestRun | None = None
 
 

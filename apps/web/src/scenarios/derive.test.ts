@@ -91,6 +91,19 @@ describe("statusFor", () => {
     ).toBe("up-to-date");
   });
 
+  it("a partial latest run says some indicators failed, not up to date", () => {
+    expect(
+      statusFor(row({ materialized_at: DONE, latest_run: { id: "r", status: "partial" } }), null),
+    ).toBe("partial");
+    expect(statusLabel("partial")).toBe("Partly failed");
+  });
+
+  it("a run being cancelled is still in flight", () => {
+    expect(
+      statusFor(row({ materialized_at: DONE, latest_run: { id: "r", status: "cancelling" } }), null),
+    ).toBe("computing");
+  });
+
   it("every status has a label", () => {
     expect(statusLabel("stale")).toBe("Rules changed — recompute");
     expect(statusLabel("no-rules")).toBe("No rules yet");
@@ -142,5 +155,6 @@ describe("statusTone", () => {
     const { statusTone } = await import("./derive");
     expect(statusTone("failed")).toBe("error");
     expect(statusTone("up-to-date")).toBe("fresh");
+    expect(statusTone("partial")).toBe("partial");
   });
 });

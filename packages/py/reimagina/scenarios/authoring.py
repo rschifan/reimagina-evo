@@ -231,13 +231,18 @@ def list_scenarios(
     """Scenarios, newest first, optionally narrowed by project and/or AOI.
 
     Each row also carries ``edit_count`` and ``latest_run`` — ``{id, status}``
-    of the scenario's newest ``job_run``, or ``None`` — so a summary of every
-    scenario costs one query. ``latest_run`` is what tells a failed recompute
-    apart from a good one: both set ``materialized_at``.
+    of the scenario's newest run, or ``None`` — so a summary of every scenario
+    costs one query. ``latest_run`` is what tells a failed recompute apart from
+    a good one: both set ``materialized_at``.
 
-    ⚠ A run still waiting in the queue has no ``job_run`` row until a worker
-    opens it (``dbos_app.s_open_run``), so during that window this names the
-    previous run. A caller following the run it just enqueued knows better.
+    ⚠ The run is the envelope in ``orchestration_run``, not a ``job_run`` row.
+    ``job_run`` holds one row per indicator *unit*, so its newest row can be a
+    unit that succeeded inside a run that failed, and its id is not one
+    ``GET /jobs/{run_id}`` knows.
+
+    ⚠ A run still waiting in the queue has no envelope until a worker opens it
+    (``dbos_app.s_open_run``), so during that window this names the previous
+    run. A caller following the run it just enqueued knows better.
     """
     _require_postgres(conn)
     with conn.cursor() as cur:
@@ -250,9 +255,9 @@ def list_scenarios(
                    r.id AS latest_run_id, r.status AS latest_run_status
             FROM app_core.scenario s
             LEFT JOIN LATERAL (
-                SELECT id, status FROM jobs_runtime.job_run
+                SELECT id, status FROM jobs_runtime.orchestration_run
                 WHERE scenario_id = s.id
-                ORDER BY queued_at DESC, id DESC
+                ORDER BY submitted_at DESC, id DESC
                 LIMIT 1
             ) r ON true
             WHERE (%(p)s::uuid IS NULL OR s.project_id = %(p)s::uuid)

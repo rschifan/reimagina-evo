@@ -306,8 +306,9 @@ export interface ScenarioRow {
  *  needs. Only the list carries these; a detail does not. */
 export interface ScenarioListRow extends ScenarioRow {
   edit_count: number;
-  /** The newest run, or null. A queued run has no row until a worker opens
-   *  it, so during that window this names the previous run. */
+  /** The newest run (its envelope, the id the Runs page uses), or null. A
+   *  queued run has no envelope until a worker opens it, so during that
+   *  window this names the previous run. */
   latest_run: { id: string; status: string } | null;
 }
 

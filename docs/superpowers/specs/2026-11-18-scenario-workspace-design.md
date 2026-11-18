@@ -151,11 +151,12 @@ already persisted in `localStorage` and so shared with the map page) and
    reading `explore.scenario_v`, which application code does not use.
    `edit_count` lets the table say "no rules yet" without one request per
    scenario. `latest_run` is `{id, status} | null`: the scenario's newest
-   `jobs_runtime.job_run` row. `GET /jobs` cannot stand in for it — it has no
+   run envelope in `jobs_runtime.orchestration_run` (corrected after review:
+   `job_run` holds one row per indicator unit, not per run). `GET /jobs` cannot stand in for it — it has no
    scenario filter and pages at 200 — and a failed recompute still sets
    `materialized_at`, so without this a reload would show a failed scenario
    as up to date (*my call*).
-   `# ponytail:` a run still waiting in the queue has no `job_run` row until a
+   `# ponytail:` a run still waiting in the queue has no envelope until a
    worker opens it (`dbos_app.s_open_run`), so a reload during that window
    shows the previous run's status; the page shows "Queued" for the run it is
    itself following. Reading the queue's workflow input closes the window if

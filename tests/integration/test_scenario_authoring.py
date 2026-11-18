@@ -71,15 +71,27 @@ def test_create_then_find_again(conn):
     assert [s["id"] for s in list_scenarios(conn, project_id=p)] == [sid]
 
 
-def _run(conn, sid, status, queued_at):
+def _run(conn, sid, status, submitted_at):
+    """One run envelope — what the Runs page lists and `GET /jobs/{id}` reads."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs_runtime.orchestration_run "
+            "(scenario_id, status, code_version, submitted_at) "
+            "VALUES (%s, %s, 'test', %s::timestamptz) RETURNING id",
+            (sid, status, submitted_at),
+        )
+        return str(cur.fetchone()[0])
+
+
+def _unit_provenance(conn, sid, status, queued_at):
+    """A per-indicator `job_run` row: provenance of one unit, not a run."""
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs_runtime.job_run "
             "(model_family, status, code_version, scenario_id, queued_at) "
-            "VALUES ('test', %s, 'test', %s, %s::timestamptz) RETURNING id",
+            "VALUES ('test', %s, 'test', %s, %s::timestamptz)",
             (status, sid, queued_at),
         )
-        return str(cur.fetchone()[0])
 
 
 def test_the_list_counts_each_scenarios_edits(conn):
@@ -101,19 +113,22 @@ def test_the_list_counts_each_scenarios_edits(conn):
 def test_the_list_names_each_scenarios_newest_run(conn):
     """A failed recompute still sets materialized_at; only its run says it failed.
 
-    Without the newest run on the row, a reload shows that scenario as up to
-    date.
+    The run is the envelope in `orchestration_run`, not a `job_run` row:
+    those are written one per indicator unit, so the newest of them can be a
+    unit that succeeded inside a run that failed — and its id is not a run id
+    `GET /jobs/{run_id}` knows.
     """
     p = insert_project(conn)
     a = _aoi(conn, p)
     ran = create_scenario(conn, project_id=p, name="A", aoi_id=a)
     create_scenario(conn, project_id=p, name="B", aoi_id=a)
-    _run(conn, ran, "failed", "2026-11-18T09:00:00Z")
-    newest = _run(conn, ran, "succeeded", "2026-11-18T10:00:00Z")
+    _run(conn, ran, "succeeded", "2026-11-18T09:00:00Z")
+    newest = _run(conn, ran, "partial", "2026-11-18T10:00:00Z")
+    _unit_provenance(conn, ran, "succeeded", "2026-11-18T11:00:00Z")
 
     rows = {r["name"]: r for r in list_scenarios(conn, aoi_id=a)}
 
-    assert rows["A"]["latest_run"] == {"id": newest, "status": "succeeded"}
+    assert rows["A"]["latest_run"] == {"id": newest, "status": "partial"}
     assert rows["B"]["latest_run"] is None
 
 

@@ -17,6 +17,7 @@ export type ScenarioStatus =
   | "queued"
   | "computing"
   | "failed"
+  | "partial"
   | "up-to-date";
 
 const LABELS: Record<ScenarioStatus, string> = {
@@ -26,6 +27,7 @@ const LABELS: Record<ScenarioStatus, string> = {
   queued: "Queued",
   computing: "Computing",
   failed: "Failed",
+  partial: "Partly failed",
   "up-to-date": "Up to date",
 };
 
@@ -41,6 +43,7 @@ const TONES: Record<ScenarioStatus, Tone> = {
   queued: "accent",
   computing: "accent",
   failed: "error",
+  partial: "partial",
   "up-to-date": "fresh",
 };
 
@@ -51,8 +54,11 @@ export function statusTone(status: ScenarioStatus): Tone {
 /** A run status as the table names it, or null when it says nothing new. */
 function fromRun(status: string): ScenarioStatus | null {
   if (status === "queued") return "queued";
-  if (status === "running") return "computing";
+  // `cancelling` is still in flight: the run has not stopped yet.
+  if (status === "running" || status === "cancelling") return "computing";
   if (status === "failed" || status === "cancelled") return "failed";
+  // Results landed, but some indicators failed: not "up to date".
+  if (status === "partial") return "partial";
   return null;
 }
 
