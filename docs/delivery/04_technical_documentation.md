@@ -51,7 +51,7 @@ A working installation serves four things:
 | Surface | Address | Purpose |
 |---|---|---|
 | API | `http://localhost:8001` | Features, indicators, downloads, job control; OpenAPI at `/docs` |
-| Web application | `http://localhost:5173` | Map, indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`). Press `⌘K` for the command palette, `?` for the shortcut list |
+| Web application | `http://localhost:5173` | Map, scenario workspace (`/scenarios.html`), indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`). Press `⌘K` for the command palette, `?` for the shortcut list |
 | Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin (the default) |
 | Vector tiles, in-process | `http://localhost:8001/tiles` | The same tiles from the API itself, behind the same URL contract. §6.2 says when to use which |
 | Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |

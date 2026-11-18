@@ -22,7 +22,7 @@ date: "13 November 2026"
 
 ## Database
 
-Introspected from a database migrated to Alembic revision **`r049`**, running PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) with PostGIS 3.7.0.
+Introspected from a database migrated to Alembic revision **`r050`**, running PostgreSQL 17.10 (Postgres.app) with PostGIS 3.5.6.
 
 ### `app_core`
 
@@ -1017,6 +1017,7 @@ Indexes:
 - `job_unit_pkey` — CREATE UNIQUE INDEX job_unit_pkey ON jobs_runtime.job_unit USING btree (id)
 - `job_unit_run_id_indicator_slug_key` — CREATE UNIQUE INDEX job_unit_run_id_indicator_slug_key ON jobs_runtime.job_unit USING btree (run_id, indicator_slug)
 - `job_unit_run_idx` — CREATE INDEX job_unit_run_idx ON jobs_runtime.job_unit USING btree (run_id, status)
+- `job_unit_success_by_slug_idx` — CREATE INDEX job_unit_success_by_slug_idx ON jobs_runtime.job_unit USING btree (indicator_slug, completed_at DESC) WHERE (status = 'succeeded'::text)
 
 #### `jobs_runtime.ops_executor_heartbeat`
 
@@ -1115,9 +1116,9 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 Taken from the application's own OpenAPI document (`reimagina API` 0.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-The API exposes **59 operations** in total. **40** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+The API exposes **60 operations** in total. **41** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 
-### Project endpoints (40)
+### Project endpoints (41)
 
 #### `aois`
 
@@ -1183,6 +1184,7 @@ The API exposes **59 operations** in total. **40** are written for this project;
 |---|---|---|---|---|
 | `GET` | `/scenarios` | List Scenarios Route | `project_id`, `aoi_id` | no |
 | `POST` | `/scenarios` | Create Scenario Route | — | yes |
+| `GET` | `/scenarios/indicators` | Reachable Indicators Route | — | no |
 | `DELETE` | `/scenarios/{scenario_id}` | Delete Scenario Route | `scenario_id` | no |
 | `GET` | `/scenarios/{scenario_id}` | Get Scenario Route | `scenario_id` | no |
 | `GET` | `/scenarios/{scenario_id}/comparison` | Comparison Route | `scenario_id`, `indicator_slug`, `aoi_id`, `limit` | no |
