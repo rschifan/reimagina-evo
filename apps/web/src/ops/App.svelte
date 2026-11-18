@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { RefreshCw } from "@lucide/svelte";
 
   import TopBar from "../lib/TopBar.svelte";
 
@@ -137,9 +136,6 @@
         updated {ops.lastLoadedAt.toLocaleTimeString()}
       {/if}
     </span>
-    {#if ops.refreshing}
-      <RefreshCw class="size-3 text-muted-foreground animate-spin" aria-hidden="true" />
-    {/if}
     {#if ops.stale}
       <span
         class="rounded border border-state-stale/40 px-1.5 py-0.5 font-mono text-[11px] text-state-stale"

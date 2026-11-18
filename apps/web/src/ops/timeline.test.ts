@@ -175,16 +175,15 @@ describe("chips", () => {
   const texts = (m: ReturnType<typeof timelineModel>) => m.chips.map((c) => c.text);
   const one = (over: Partial<UnitDetail>) => [unit("a", { expected_ms: 10_000, ...over })];
 
+  // The forecast only fixes the axis; it is not shown, inside or past it.
   test("live, inside the forecast", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(4), true);
-    expect(texts(m)).toEqual(["4.0s elapsed", "1 running", "0 of 1 done", "expected finish in ~6.0s"]);
+    expect(texts(m)).toEqual(["4.0s elapsed", "1 running", "0 of 1 done"]);
   });
 
   test("live, past the forecast", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(12), true);
-    expect(texts(m)).toContain("2.0s past forecast");
-    // stale (amber) already means "ready, next in line"; one colour, one meaning.
-    expect(m.chips.find((c) => c.text.endsWith("past forecast"))!.tone).toBe("neutral");
+    expect(texts(m)).toEqual(["12.0s elapsed", "1 running", "0 of 1 done"]);
   });
 
   test("finished", () => {
@@ -194,7 +193,7 @@ describe("chips", () => {
       at(30),
       false,
     );
-    expect(texts(m)).toEqual(["1 of 1 done", "finished in 12.0s · forecast was 10.0s"]);
+    expect(texts(m)).toEqual(["1 of 1 done", "finished in 12.0s"]);
   });
 });
 
@@ -265,5 +264,25 @@ describe("review fixes", () => {
   test("every state has its own dot", () => {
     const dots = Object.values(UNIT_VISUAL).map((v) => v.dot);
     expect(new Set(dots).size).toBe(dots.length);
+  });
+});
+
+describe("follow-ups", () => {
+  test("a sub-second axis keeps its zero tick and labels its end", () => {
+    const tk = ticks(400);
+    expect(tk[0]).toEqual({ pct: 0, label: "0s" });
+    expect(tk.at(-1)).toEqual({ pct: 100, label: "0.4s" });
+    expect(tk.length).toBeGreaterThan(2);
+    expect(new Set(tk.map((x) => x.label)).size).toBe(tk.length);
+  });
+
+  test("the strip scale reaches the observed peak above the per-worker slots", () => {
+    const running = (i: string) =>
+      unit(i, { status: "running", started_at: "2026-08-20T10:00:00Z" });
+    const now = Date.parse("2026-08-20T10:00:05Z");
+    const m = timelineModel([running("a"), running("b"), running("c")], 2, now, true);
+    expect(Math.max(...m.strip.map((s) => s.running))).toBe(3);
+    expect(m.stripMax).toBe(3);
+    expect(timelineModel([running("a")], 2, now, true).stripMax).toBe(2);
   });
 });
