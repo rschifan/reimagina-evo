@@ -115,6 +115,17 @@ class OpsRunReader(Protocol):
 
     def list_units_detailed(self, run_id: str) -> list[dict]: ...
 
+    def expected_durations(self, run_id: str) -> dict[str, int]:
+        """Slug → milliseconds the indicator took on its last successful run.
+
+        Three rules, each so the estimate is a fixed fact about this run: the
+        same AOI (NULL matching NULL, the whole-dataset default), succeeded
+        only, and completed before this run was submitted — so it does not move
+        while the run is live, and a finished run shows the forecast it had.
+        Slugs with no such history are absent.
+        """
+        ...
+
     def delete_run(self, run_id: str) -> bool:
         """Delete one run's envelope and its unit rows. True if a row went.
 
