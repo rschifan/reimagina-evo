@@ -64,8 +64,12 @@
       takes them.
     </p>
   {:else}
+    <!-- `novalidate`: the browser's own checks would refuse the defaults (60
+         is off a `step` of 5 counted from `min` 1) and pre-empt
+         `validateEdit`, whose refusal names the ceiling and the allowance. -->
     <form
       class="flex flex-col gap-3"
+      novalidate
       onsubmit={(e) => {
         e.preventDefault();
         void run(() => applyRule(ws.drawn, { levels, unitSize, peoplePerHousehold }));

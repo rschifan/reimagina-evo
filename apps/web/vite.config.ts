@@ -32,6 +32,10 @@ import { defineConfig } from "vite";
 // pages' own stylesheets import it.
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
+  // Under Vitest, resolve Svelte's browser build: the server build has no
+  // `mount`, and a component test that cannot mount is the gap a form the
+  // browser refused to submit slipped through (`scenarios/rule-panel.test.ts`).
+  resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
   server: {
     // `strictPort`, so a busy port is an error rather than a silent move to
     // 5174. Vite's default is to increment, which leaves the Makefile's
