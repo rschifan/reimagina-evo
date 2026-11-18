@@ -1482,7 +1482,9 @@ def test_no_response_carries_the_dsn_or_its_password(
         monkeypatch,
         create_scenario=lambda c, **kw: SCENARIO_ID,
         get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[dict(EDIT_ROW)]),
-        list_scenarios=lambda c, **kw: [dict(SCENARIO_ROW)],
+        list_scenarios=lambda c, **kw: [
+            dict(SCENARIO_ROW, edit_count=0, latest_run=None)
+        ],
         add_edit=lambda c, **kw: EDIT_ID,
         remove_edit=lambda c, **kw: True,
         materialize_scenario=lambda c, **kw: MATERIALIZED,
@@ -1600,3 +1602,34 @@ def test_the_indicator_list_is_not_read_as_a_scenario_id(client, events, monkeyp
     assert statistic["edificability_block_population"] == "sum"
     assert statistic["edificability_block_density"] == "median"
     assert events == ["connect", "close"]
+
+
+def test_the_list_carries_each_scenarios_edit_count_and_newest_run(
+    client, events, monkeypatch
+):
+    """The workspace table's status column reads these two fields off the list.
+
+    Pydantic drops an undeclared key without a word, so a row model missing
+    either field would serve a table where every scenario looks unrecomputed
+    and none ever failed.
+    """
+    ran = {
+        **SCENARIO_ROW,
+        "edit_count": 4,
+        "latest_run": {"id": "run-123", "status": "failed"},
+    }
+    fresh = {
+        **SCENARIO_ROW,
+        "id": str(uuid4()),
+        "name": "fresh",
+        "edit_count": 0,
+        "latest_run": None,
+    }
+    _patch(monkeypatch, list_scenarios=lambda conn, **_kw: [ran, fresh])
+
+    body = client.get(f"/scenarios?aoi_id={AOI_ID}").json()
+
+    assert body[0]["edit_count"] == 4
+    assert body[0]["latest_run"] == {"id": "run-123", "status": "failed"}
+    assert body[1]["edit_count"] == 0
+    assert body[1]["latest_run"] is None

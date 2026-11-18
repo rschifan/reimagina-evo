@@ -228,24 +228,51 @@ def _require_aoi_in_project(conn: Any, *, aoi_id: str, project_id: str) -> None:
 def list_scenarios(
     conn: Any, *, project_id: str | None = None, aoi_id: str | None = None
 ) -> list[dict]:
-    """Scenarios, newest first, optionally narrowed by project and/or AOI."""
+    """Scenarios, newest first, optionally narrowed by project and/or AOI.
+
+    Each row also carries ``edit_count`` and ``latest_run`` — ``{id, status}``
+    of the scenario's newest ``job_run``, or ``None`` — so a summary of every
+    scenario costs one query. ``latest_run`` is what tells a failed recompute
+    apart from a good one: both set ``materialized_at``.
+
+    ⚠ A run still waiting in the queue has no ``job_run`` row until a worker
+    opens it (``dbos_app.s_open_run``), so during that window this names the
+    previous run. A caller following the run it just enqueued knows better.
+    """
     _require_postgres(conn)
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, project_id, aoi_id, name, description,
-                   created_at, updated_at, materialized_at
-            FROM app_core.scenario
-            WHERE (%(p)s::uuid IS NULL OR project_id = %(p)s::uuid)
-              AND (%(a)s::uuid IS NULL OR aoi_id = %(a)s::uuid)
-            ORDER BY created_at DESC, name
+            SELECT s.id, s.project_id, s.aoi_id, s.name, s.description,
+                   s.created_at, s.updated_at, s.materialized_at,
+                   (SELECT count(*) FROM curated_geo.scenario_edit e
+                     WHERE e.scenario_id = s.id) AS edit_count,
+                   r.id AS latest_run_id, r.status AS latest_run_status
+            FROM app_core.scenario s
+            LEFT JOIN LATERAL (
+                SELECT id, status FROM jobs_runtime.job_run
+                WHERE scenario_id = s.id
+                ORDER BY queued_at DESC, id DESC
+                LIMIT 1
+            ) r ON true
+            WHERE (%(p)s::uuid IS NULL OR s.project_id = %(p)s::uuid)
+              AND (%(a)s::uuid IS NULL OR s.aoi_id = %(a)s::uuid)
+            ORDER BY s.created_at DESC, s.name
             """,
             {"p": project_id, "a": aoi_id},
         )
         cols = [d[0] for d in cur.description]
-        return [
-            _stringify_ids(dict(zip(cols, row, strict=True))) for row in cur.fetchall()
-        ]
+        rows = []
+        for values in cur.fetchall():
+            row = dict(zip(cols, values, strict=True))
+            run_id = row.pop("latest_run_id")
+            run_status = row.pop("latest_run_status")
+            row["edit_count"] = int(row["edit_count"])
+            row["latest_run"] = (
+                None if run_id is None else {"id": str(run_id), "status": run_status}
+            )
+            rows.append(_stringify_ids(row))
+        return rows
 
 
 def get_scenario(conn: Any, scenario_id: str) -> dict | None:

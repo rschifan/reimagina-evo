@@ -246,6 +246,25 @@ class ScenarioRow(BaseModel):
     materialized_at: datetime | None = None
 
 
+class LatestRun(BaseModel):
+    id: str
+    status: str
+
+
+class ScenarioListRow(ScenarioRow):
+    """A list row: the scenario plus what a summary of every scenario needs.
+
+    Only on the list. ``get_scenario`` does not compute them, and a detail
+    defaulting ``edit_count`` to 0 beside its own non-empty ``edits`` would be
+    a response contradicting itself.
+    """
+
+    edit_count: int
+    #: The newest run, or None. A queued run has no row until a worker opens
+    #: it, so during that window this is the previous run.
+    latest_run: LatestRun | None = None
+
+
 class ScenarioDetail(ScenarioRow):
     override_count: int = 0
     edits: list[EditRow] = []
@@ -571,15 +590,18 @@ def _feature_type_id(conn: Any, context: str, slug: str) -> str:
 # ── scenarios ────────────────────────────────────────────────────────────
 
 
-@router.get("", response_model=list[ScenarioRow])
+@router.get("", response_model=list[ScenarioListRow])
 def list_scenarios_route(
     project_id: UUID | None = Query(default=None),
     aoi_id: UUID | None = Query(default=None),
-) -> list[ScenarioRow]:
-    """Scenarios, newest first, optionally narrowed by project and/or AOI."""
+) -> list[ScenarioListRow]:
+    """Scenarios, newest first, optionally narrowed by project and/or AOI.
+
+    Each row carries its ``edit_count`` and ``latest_run``.
+    """
     with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
         rows = list_scenarios(conn, project_id=_opt(project_id), aoi_id=_opt(aoi_id))
-    return [ScenarioRow(**row) for row in rows]
+    return [ScenarioListRow(**row) for row in rows]
 
 
 @router.post("", status_code=201, response_model=ScenarioDetail)

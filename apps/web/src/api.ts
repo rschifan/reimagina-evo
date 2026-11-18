@@ -287,6 +287,16 @@ export interface ScenarioRow {
 }
 
 
+/** A `GET /scenarios` row: the scenario plus what a summary of all of them
+ *  needs. Only the list carries these; a detail does not. */
+export interface ScenarioListRow extends ScenarioRow {
+  edit_count: number;
+  /** The newest run, or null. A queued run has no row until a worker opens
+   *  it, so during that window this names the previous run. */
+  latest_run: { id: string; status: string } | null;
+}
+
+
 export interface EditRow {
   id: string;
   ordinal: number;
@@ -401,12 +411,12 @@ export interface ComparisonResponse {
 
 export function listScenarios(
   filters: { projectId?: string | null; aoiId?: string | null } = {},
-): Promise<ScenarioRow[]> {
+): Promise<ScenarioListRow[]> {
   const params = new URLSearchParams();
   if (filters.projectId) params.set("project_id", filters.projectId);
   if (filters.aoiId) params.set("aoi_id", filters.aoiId);
   const qs = params.toString();
-  return jsonRequest<ScenarioRow[]>(`/scenarios${qs ? `?${qs}` : ""}`);
+  return jsonRequest<ScenarioListRow[]>(`/scenarios${qs ? `?${qs}` : ""}`);
 }
 
 

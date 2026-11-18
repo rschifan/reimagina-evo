@@ -71,6 +71,52 @@ def test_create_then_find_again(conn):
     assert [s["id"] for s in list_scenarios(conn, project_id=p)] == [sid]
 
 
+def _run(conn, sid, status, queued_at):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs_runtime.job_run "
+            "(model_family, status, code_version, scenario_id, queued_at) "
+            "VALUES ('test', %s, 'test', %s, %s::timestamptz) RETURNING id",
+            (status, sid, queued_at),
+        )
+        return str(cur.fetchone()[0])
+
+
+def test_the_list_counts_each_scenarios_edits(conn):
+    """The workspace says "no rules yet" from the list, not one read per row."""
+    p = insert_project(conn)
+    a = _aoi(conn, p)
+    with_rules = create_scenario(conn, project_id=p, name="with", aoi_id=a)
+    create_scenario(conn, project_id=p, name="without", aoi_id=a)
+    t = _type_id(conn)
+    for key in ("floors", "num_levels", "unit_size", "people_per_household"):
+        _edit(conn, with_rules, t, attribute_key=key)
+
+    rows = {r["name"]: r for r in list_scenarios(conn, aoi_id=a)}
+
+    assert rows["with"]["edit_count"] == 4
+    assert rows["without"]["edit_count"] == 0
+
+
+def test_the_list_names_each_scenarios_newest_run(conn):
+    """A failed recompute still sets materialized_at; only its run says it failed.
+
+    Without the newest run on the row, a reload shows that scenario as up to
+    date.
+    """
+    p = insert_project(conn)
+    a = _aoi(conn, p)
+    ran = create_scenario(conn, project_id=p, name="A", aoi_id=a)
+    create_scenario(conn, project_id=p, name="B", aoi_id=a)
+    _run(conn, ran, "failed", "2026-11-18T09:00:00Z")
+    newest = _run(conn, ran, "succeeded", "2026-11-18T10:00:00Z")
+
+    rows = {r["name"]: r for r in list_scenarios(conn, aoi_id=a)}
+
+    assert rows["A"]["latest_run"] == {"id": newest, "status": "succeeded"}
+    assert rows["B"]["latest_run"] is None
+
+
 def test_an_unknown_scenario_is_none(conn):
     assert get_scenario(conn, "00000000-0000-0000-0000-000000000000") is None
 
