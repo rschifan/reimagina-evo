@@ -1,7 +1,7 @@
 # Port conformance suite
 
 What every `Orchestrator` implementation must do, asserted through
-`factory.get_orchestrator` and the port's four methods only — never through a
+`factory.get_orchestrator` and the port's methods only — never through a
 queue, an engine client, or a run table.
 
 ## Why it is not in `tests/integration/`

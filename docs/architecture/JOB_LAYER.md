@@ -69,7 +69,7 @@ The queue engine's own modules — the task definitions, the queue app, the LIST
 
 ## The port
 
-`packages/py/reimagina/orchestration/port.py` — four methods, plain dataclasses, no engine types.
+`packages/py/reimagina/orchestration/port.py` — six methods, plain dataclasses, no engine types.
 
 ```python
 class Orchestrator(Protocol):  # port.py:106
@@ -439,7 +439,7 @@ Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the
 
 `bootstrap_local_platform` now calls `dbos_app.ensure_system_database()`, so `make migrate` provisions it alongside the indicator catalog and the asset registry (`db/bootstrap.py`). It provisions without launching: `launch()` would also start the dequeuer and startup recovery, so a bootstrap command would begin *executing* work as a side effect of creating a schema. Idempotent, advisory-locked, and guarded by the same `_assert_domain_database` check as `launch()` — pointed at a database that does not exist, DBOS creates one, and a bootstrap command is exactly where a DSN typo gets typed.
 
-Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which `POST /jobs` answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped.
+Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which **every route that submits** answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped. The handler is registered app-wide in `create_app`, not caught per route: three routes reach `submit_run` — `POST /jobs`, `POST /jobs/{id}/rerun` and `POST /scenarios/{id}/recompute` — and a per-route `except` covered the first while the other two answered 500 for the same condition with the same remedy.
 
 **Both DDL steps in a bootstrap take the direct route.** `bootstrap-db` carries a `--direct-dsn` (defaulting to `$DATABASE_URL_DIRECT`, then to `--app-dsn`), and Alembic and the ops-plane schema both travel over it. Alembic would survive a pooler — every migration here avoids `CONCURRENTLY` so it runs inside one transaction, and a transaction-mode pooler pins a backend for a transaction's duration — so routing it direct is consistency rather than repair. The ops-plane schema is the one that genuinely needs it: its session advisory lock does not survive transaction pooling. The flag beats the environment variable, and a direct DSN naming a different database is refused, since a direct DSN is another route to the same database and only host and port may differ.
 

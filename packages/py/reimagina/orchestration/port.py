@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
 # ── Status vocabulary ────────────────────────────────────────────────────────
@@ -123,6 +124,10 @@ class RunStatus:
     run_id: str
     status: str  # succeeded | partial | failed | running | queued
     units: tuple[UnitStatusView, ...] = field(default_factory=tuple)
+    # The engine's own creation time, set only where the engine is the sole
+    # record (no envelope yet). Without it a run queued for hours with nothing
+    # draining reads as submitted "now" on every poll.
+    submitted_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +187,22 @@ class Orchestrator(Protocol):
         ...
 
     def get_run(self, conn: DBConnection, run_id: str) -> RunStatus | None: ...
+
+    def list_enqueued_runs(self, limit: int = 50) -> list[RunStatus]:
+        """Runs the engine holds that no step has opened an envelope for yet.
+
+        The run index reads our tables only, so without this a run nothing has
+        dequeued — no worker running — is invisible everywhere but its own URL.
+        """
+        ...
+
+    def forget_runs(self, run_ids: Sequence[str]) -> None:
+        """Drop these runs from the engine; the caller already dropped our rows.
+
+        The engine is the existence oracle (``get_run`` falls back to it), so a
+        run deleted from our tables alone comes back as a ghost.
+        """
+        ...
 
     def cancel_run(self, conn: DBConnection, run_id: str) -> bool:
         """Stop a run; True if it was live, False if unknown or already terminal.

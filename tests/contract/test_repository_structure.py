@@ -658,7 +658,24 @@ def test_every_ci_job_that_runs_the_orchestrator_sets_a_direct_dsn():
     # Split into job blocks on two-space-indented keys, the one indent level
     # jobs live at. Parsing YAML would be heavier and this file deliberately
     # treats the workflow as text (see the note above CI_WORKFLOW).
-    blocks = re.split(r"\n  (?=[a-z][a-z0-9-]*:)", ci)
+    #
+    # ⚠ Sliced to the `jobs:` section first, because "two-space-indented key"
+    # only means "a job" inside it. Top-level `on:` has two-space-indented
+    # children too, so `push:` and `pull_request:` were arriving here as job
+    # blocks — and a block is only inspected when it contains `pytest <suite>`,
+    # so the failure mode was a non-job block satisfying the assertion for a
+    # real job, or a real job's text split across two of them. Cutting at the
+    # next top-level key keeps this correct whatever order the file's top-level
+    # keys are written in.
+    assert "\njobs:\n" in ci, (
+        "the workflow has no bare `jobs:` line at column zero, so the split "
+        "below cannot find the jobs section — if the key grew a trailing "
+        "comment or the file arrived with CRLF endings, fix the pattern here "
+        "rather than letting this read as an IndexError with no reason"
+    )
+    jobs_section = ci.split("\njobs:\n", 1)[1]
+    jobs_section = re.split(r"\n(?=[a-z])", jobs_section)[0]
+    blocks = re.split(r"\n  (?=[a-z][a-z0-9-]*:)", jobs_section)
     suites_needing_it = ("tests/integration", "tests/conformance", "tests/recovery")
 
     for block in blocks:

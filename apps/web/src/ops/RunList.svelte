@@ -1,7 +1,7 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import Chip from "../lib/components/ui/Chip.svelte";
-  import { RUN_STATUSES, type RunRow, type RunStatus } from "./api";
+  import { MAX_RUN_LIMIT, RUN_STATUSES, type RunRow, type RunStatus } from "./api";
   import {
     durationMs,
     formatDuration,
@@ -177,7 +177,7 @@
 
     <div class="mt-3 flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
       <span data-numeric>{runs.length} of {total} shown</span>
-      {#if runs.length < total}
+      {#if runs.length < total && runs.length < MAX_RUN_LIMIT}
         <button
           class="rounded border border-line px-2 py-1 hover:text-foreground"
           onclick={onLoadMore}

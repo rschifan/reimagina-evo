@@ -31,7 +31,8 @@ that is a leaked backend per request, which is what ``POST /jobs`` learned.
 
 **The status code of every refusal.** The scenario layer raises nine distinct
 things and leaves two driver errors raw; each becomes one status, chosen
-once, in ``_refusals``:
+once, in ``_refusals``. The last row is the exception — handled app-wide rather
+than here, for the reason given under it:
 
 ===============================  ======  =====================================
 raised                           status  why
@@ -57,7 +58,20 @@ a malformed id in the path       404     ``test_malformed_ids.py``'s rule: an
                                         scenario, and it must not become SQL
 a malformed id in a filter       422     the same file's other half: rejected
                                         at the boundary, before any statement
+``OpsPlaneNotProvisioned``       503     the engine's own schema is missing from
+                                        this database, so no run can be
+                                        submitted at all. Registered app-wide
+                                        in ``create_app``, not mapped here: a
+                                        deployment state rather than anything
+                                        about this request, and the same answer
+                                        on all three routes that submit
 ===============================  ======  =====================================
+
+That last one carries no materialisation counts, deliberately. ``_enqueue_failure``
+below reports what stands for a *constraint* failure; this is the other kind, where
+the counts are no use to a client that cannot read anything back until an operator
+runs ``bootstrap-db`` — the same reasoning that re-raises a connection-class
+failure bare.
 
 ``_refusals`` does **not** wrap the enqueue half of ``recompute``. By then the
 materialisation is committed, so the same mapping would describe the wrong half

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import socket
 
-from scripts.preflight_ports import PortInUse, check_ports, describe_holder
+from scripts.preflight_ports import PortInUse, check_ports, describe_holder, main
 
 
 def _occupied() -> socket.socket:
@@ -22,11 +22,31 @@ def _occupied() -> socket.socket:
 
 
 def test_free_ports_pass():
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    free = sock.getsockname()[1]
-    sock.close()  # closed, so nothing holds it
-    check_ports([(free, "API")])  # must not raise
+    """A port nothing holds must pass the preflight.
+
+    ⚠ Retried, and the retry is the test. Asking the kernel for an ephemeral
+    port and then closing it leaves a window in which anything else on the
+    machine can take it — and `_is_free` sets no ``SO_REUSEADDR`` on purpose,
+    so it forgives no transient state either. That is right for the preflight
+    and makes this assertion racy: the single-shot version failed for a reason
+    that had nothing to do with the code under test.
+
+    Five attempts, because the race needs an unlucky coincidence each time and
+    the alternative — weakening `_is_free` — would delete the strictness the
+    check exists for.
+    """
+    last: PortInUse | None = None
+    for _ in range(5):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        free = sock.getsockname()[1]
+        sock.close()  # closed, so nothing holds it
+        try:
+            check_ports([(free, "API")])
+            return
+        except PortInUse as exc:
+            last = exc
+    raise AssertionError(f"no ephemeral port passed the preflight in 5 tries: {last}")
 
 
 def test_a_held_port_is_reported_with_its_label():
@@ -80,3 +100,14 @@ def test_describe_holder_never_raises_on_a_free_port():
     free = sock.getsockname()[1]
     sock.close()
     assert isinstance(describe_holder(free), str)
+
+
+def test_a_non_numeric_argument_is_a_message_not_a_traceback():
+    """This script exists to replace an opaque failure with a clear one.
+
+    ``ValueError: invalid literal for int() with base 10: 'notaport'`` out of
+    its own argument parsing is the exact shape of failure it was written to
+    remove — and from the preflight step, it arrives before the banner, so a
+    developer sees a traceback where the whole point was a sentence.
+    """
+    assert main(["notaport:API"]) == 2

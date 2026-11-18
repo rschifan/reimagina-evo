@@ -393,6 +393,17 @@ def launch() -> None:
         if not _dbos_launched:
             DBOS(config=cfg)
             DBOS.launch()
+            # ⚠ Only the latest registered version dequeues the API's rows: a
+            # client enqueue carries no app_version. Unpinned, the version is
+            # an MD5 of workflow source, so going backwards (branch switch,
+            # revert, second worktree) leaves a newer one recorded as latest
+            # and this executor silently dequeues nothing. The most recent
+            # launch wins, so two unpinned executors on *different* source
+            # running at once still strand whichever launched first — pin
+            # REIMAGINA_APP_VERSION when running more than one. Pinned versions
+            # are deliberate (blue-green) and must not steal each other's runs.
+            if not os.environ.get("REIMAGINA_APP_VERSION"):
+                DBOS.set_latest_application_version(DBOS.application_version)
             _dbos_launched = True
         # ⚠ Before the queues are registered, not after.
         #
@@ -407,6 +418,7 @@ def launch() -> None:
         #
         # `_dbos_launched` is what makes the ordering safe: DBOS's own
         # constructor is not idempotent, so a retry must not re-enter it.
+        _start_liveness()
         # After launch, per the deprecation of constructing Queue() directly.
         # worker_concurrency, not concurrency: the global limit also counts
         # PENDING workflows from earlier application versions, which a
@@ -445,7 +457,6 @@ def launch() -> None:
             worker_concurrency=settings.unit_concurrency(),
             polling_interval_sec=POLL_INTERVAL_SEC,
         )
-        _start_liveness()
 
 
 _heartbeat_stop = threading.Event()
@@ -461,7 +472,7 @@ def _start_liveness() -> None:
     """Publish this executor's liveness for as long as the process lives.
 
     Here rather than in the worker entrypoint, because the queues registered
-    just above carry a worker concurrency: **any** process that reaches this
+    just below carry a worker concurrency: **any** process that reaches this
     line can dequeue and execute units, and the worker is not the only one
     that does. ``dev`` mode launches and executes in the submitting process,
     which is how the CLI's default ``evaluate-scenario`` and the integration

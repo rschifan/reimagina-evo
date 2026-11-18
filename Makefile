@@ -96,7 +96,7 @@ check: lint test build-web test-web ## Lint + the DB-free suites + web. Run befo
 
 .PHONY: migrate
 migrate: ## Run all DB migrations on $DATABASE_URL (see .env), creating the DBs if needed.
-	$(PYTHON) -m apps.cli.app bootstrap-db
+	$(PYTHON) -m apps.cli.app bootstrap-db --with-test-db
 
 .PHONY: verify-sources
 verify-sources: ## Smoke-test that every upstream source is reachable.
@@ -140,28 +140,34 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 # `set -m` breaks exactly that. It gives each background job its own process
 # group, which isolates the servers from the terminal's signal and leaves the
 # trap as the only thing that can stop them — and a trap cannot reliably reach
-# them, because neither job IS the server: `uv run uvicorn` spawns a child
-# python, `npm run dev` spawns a child vite. Measured, both ways: with `set -m`
+# them, because no job IS the server: `uv run uvicorn` spawns a child python,
+# `npm run dev` a child vite, `uv run python -m apps.worker` a child python.
+# Measured, both ways: with `set -m`
 # and a group kill, vite died and uvicorn kept holding its port.
 #
 # The trap that remains is for the other exit: if one server dies on its own,
 # `wait` returns and it tears the survivor down rather than leaving it running.
 #
-# ⚠ The DSN is read from `.env`'s DATABASE_URL when REIMAGINA_APP_DSN is unset.
+# ⚠ The worker is not optional. The API only enqueues (client mode,
+# reimagina/orchestration/dbos_app.py); without a worker every run submitted
+# from the UI sits `queued` forever and no log says why.
+#
+# ⚠ The DSN is REIMAGINA_APP_DSN from the shell, then from `.env`, then `.env`'s
+# DATABASE_URL.
 # The API reads REIMAGINA_APP_DSN (apps/api/deps.py) and `.env` carries
 # DATABASE_URL, so a machine with a perfectly good `.env` still had to pass the
 # DSN by hand — while `scripts/acceptance_run.sh` and `scripts/mexicali_run.sh`
 # both source `.env` and need no argument. One command should mean one command.
 #
 # It fails loudly rather than defaulting: the API's own fallback DSN points at a
-# database called `reimagina`, and silently serving an empty or wrong database
+# database called `reimagina_app`, and silently serving an empty or wrong database
 # looks like a broken frontend, not a missing variable.
 #
 # ⚠ Tiles are pointed at the API, not at Martin, and without this `make dev`
 # produces a blank map.
 #
 # `tile_live_base_url()` defaults to `http://localhost:3000/get_tile` — Martin —
-# because Martin is the recommended production path. But `make dev` starts two
+# because Martin is the recommended production path. But `make dev` starts three
 # processes and Martin is not one of them, so every tile request went to a
 # server nobody had started and the map drew nothing. The console reads
 # `AJAXError: Failed to fetch (0) http://localhost:3000/get_tile/...`, which is
@@ -185,11 +191,11 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 # exists to prevent, reintroduced by the line two above it. `.env` is for
 # machine configuration like the DSN; which tile server a *development* run
 # talks to is this target's business, and it starts only one of them.
-dev: check-ports ## Start the API and the web dev server together. Ctrl-C stops both.
+dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
 	@_tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
 	  set -a; . ./.env; set +a; \
-	  REIMAGINA_APP_DSN="$$DATABASE_URL"; export REIMAGINA_APP_DSN; \
+	  : $${REIMAGINA_APP_DSN:=$$DATABASE_URL}; export REIMAGINA_APP_DSN; \
 	fi; \
 	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
@@ -204,9 +210,10 @@ dev: check-ports ## Start the API and the web dev server together. Ctrl-C stops 
 	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
 	echo; \
-	trap 'kill $$api $$web 2>/dev/null' EXIT; \
+	trap 'kill $$api $$web $$worker 2>/dev/null' EXIT; \
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT) & api=$$!; \
 	( cd apps/web && VITE_PORT=$(WEB_PORT) REIMAGINA_API_URL=http://127.0.0.1:$(API_PORT) npm run dev ) & web=$$!; \
+	$(PYTHON) -m apps.worker & worker=$$!; \
 	wait
 
 .PHONY: dev-api
@@ -218,6 +225,10 @@ dev-api: ## Start the FastAPI read-side API with reload.
 dev-web: ## Start the Vite dev server for the web app.
 	@$(PYTHON) scripts/preflight_ports.py $(WEB_PORT):Web
 	cd apps/web && VITE_PORT=$(WEB_PORT) npm run dev
+
+.PHONY: dev-worker
+dev-worker: ## Start the DBOS ops-plane worker (runs stay queued without it).
+	$(PYTHON) -m apps.worker
 
 # ─── Git / PR workflow ───────────────────────────────────────────────────────
 # Usage: `make branch NAME=fix/indicator-formatting`
