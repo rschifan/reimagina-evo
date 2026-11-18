@@ -51,6 +51,22 @@ function prerequisites(unit: UnitDetail, by: Map<string, UnitDetail>): UnitDetai
   return unit.depends_on.flatMap((d) => by.get(d) ?? []);
 }
 
+/** The first prerequisite, at any depth, that ended without succeeding. */
+function deadAncestor(
+  unit: UnitDetail,
+  by: Map<string, UnitDetail>,
+  seen = new Set<string>(),
+): UnitDetail | null {
+  for (const p of prerequisites(unit, by)) {
+    if (seen.has(p.indicator)) continue;
+    seen.add(p.indicator);
+    if (ENDED.has(p.status)) return p;
+    const dead = deadAncestor(p, by, seen);
+    if (dead) return dead;
+  }
+  return null;
+}
+
 export function rowState(unit: UnitDetail, by: Map<string, UnitDetail>): RowState {
   if (unit.status !== "queued") return unit.status;
   return prerequisites(unit, by).every((p) => p.status === "succeeded")
@@ -167,9 +183,9 @@ function note(unit: UnitDetail, state: RowState, by: Map<string, UnitDetail>): s
   if (state === "ready") return "next · waits for a free slot";
   if (state === "skipped") return unit.detail ? `skipped · ${unit.detail}` : "skipped";
   if (state !== "blocked") return null;
-  const pre = prerequisites(unit, by);
-  const dead = pre.find((p) => ENDED.has(p.status));
+  const dead = deadAncestor(unit, by);
   if (dead) return `won't start: ${dead.indicator} ${dead.status}`;
+  const pre = prerequisites(unit, by);
   return `after ${pre
     .filter((p) => p.status !== "succeeded")
     .map((p) => p.indicator)
@@ -185,7 +201,10 @@ export function timelineModel(
   const by = new Map(units.map((u) => [u.indicator, u]));
   const t0 = Math.min(...units.map((u) => t(u.queued_at)!));
   const lastEnd = Math.max(t0, ...units.map((u) => t(u.completed_at) ?? t0));
-  const elapsedMs = units.length ? Math.max(0, (live ? now : lastEnd) - t0) : 0;
+  // A live run whose units have all ended is stalled (the run row never
+  // closed): its time stops at the last finish instead of growing the axis.
+  const settled = units.every((u) => ENDED.has(u.status) || u.status === "succeeded");
+  const elapsedMs = units.length ? Math.max(0, (live && !settled ? now : lastEnd) - t0) : 0;
   const forecast = forecastMs(units, slots);
   const axis = axisMs(elapsedMs, forecast, live);
   const pct = (ms: number) => Math.min(100, Math.max(0, (ms / axis) * 100));
@@ -201,7 +220,8 @@ export function timelineModel(
   const rows: Row[] = rowOrder(units).map((unit) => {
     const state = rowState(unit, by);
     const s = span.get(unit.indicator);
-    const exp = unit.expected_ms;
+    // A 0 ms estimate gives no percentage (0/0); treat it as none.
+    const exp = unit.expected_ms ? unit.expected_ms : null;
     let numbers = "–";
     let over = false;
     if (s && state === "running") {
