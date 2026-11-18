@@ -678,7 +678,7 @@ is reported with its actual result.
 | 8 | `pytest tests/conformance` | 21 passed, 1 skipped |
 | 8b | `pytest tests/performance` | 6 passed, 1 skipped |
 | 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,559 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 322 passed |
+| 10 | `cd apps/web && npm test` | 325 passed |
 | 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 31 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3. CI pins
