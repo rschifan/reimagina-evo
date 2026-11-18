@@ -54,7 +54,10 @@ ops-plane schema both — takes `--direct-dsn`, which defaults to
 flag beats the variable, so a stale `DATABASE_URL_DIRECT` in the shell cannot
 quietly redirect the migration. A direct DSN naming a *different* database is
 refused rather than used: it is another route to the same one, so only host
-and port may differ.
+and port may differ. With neither set, `--app-dsn` pointing at pgbouncer is
+refused too, before anything is migrated, and the error names `--direct-dsn`:
+the ops-plane schema cannot be installed through a transaction-mode pooler,
+and the command detects one by asking the connection, not by reading the DSN.
 
 ## Configuration that will bite you
 

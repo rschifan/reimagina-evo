@@ -321,6 +321,19 @@ runbook's explicit `--app-dsn "$REIMAGINA_APP_DSN"`, with
 `DATABASE_URL_DIRECT` unexported. Narrower than a blanket "pooled deployments
 are broken", and still the one path an operator is told to type.
 
+**Outcome, 2026-11-18 — neither branch above, a third probe.** The `SET`
+probe does not discriminate: pgbouncer runs `server_reset_query` in
+transaction mode only with `server_reset_query_always = 1`, so the setting
+read back `'1'` through the pooler too. The configuration fallback would never
+fire either: `bootstrap-db` reads `$DATABASE_URL_DIRECT` into `--direct-dsn`,
+so "no direct DSN but the variable set" cannot reach this code from the CLI.
+What does discriminate is backend identity: two autocommit connections open
+side by side read `pg_backend_pid()` three times each. Direct Postgres gives
+one pid per connection and two different pids; the compose pooler handed both
+connections the same backend in 20 of 20 idle probes, and a single round still
+flagged 46–47 of 50 under load. Built as `_assert_own_session` in
+`dbos_app.py`, ahead of `_assert_domain_database`.
+
 **Builder note:** the probe must not itself fail on a plain Postgres where the
 role lacks some unrelated privilege — `LISTEN` needs none. Keep the error
 message distinct from `_assert_domain_database`'s.

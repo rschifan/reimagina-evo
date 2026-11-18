@@ -216,6 +216,66 @@ def _assert_domain_database(dsn: str) -> None:
             )
 
 
+def _assert_own_session(dsn: str) -> None:
+    """Refuse a DSN whose connections do not each keep one server session.
+
+    DBOS's schema migration takes a *session* advisory lock on an AUTOCOMMIT
+    connection and holds it across the statements that follow. A
+    transaction-mode pooler (pgbouncer's `pool_mode = transaction`, or
+    `statement`) gives the backend back to the pool after every one of them,
+    so the lock serialises nothing and stays behind on a pooled backend.
+    Nothing about a DSN says whether a pooler is in front, so this asks the
+    connection.
+
+    The question is the requirement itself: does each connection keep its own
+    backend? Two connections open side by side, autocommit like the
+    migration's, each read `pg_backend_pid()` three times, interleaved. Direct
+    Postgres cannot answer with anything but one pid per connection and two
+    different pids, so a direct DSN is never refused. Through a transaction
+    pooler the second connection is handed the backend the first just
+    released, or one connection hops between backends.
+
+    Measured against this project's compose pooler (pgbouncer 1.26,
+    transaction mode). A single round caught every idle probe but missed 3 to
+    4 in 50 with other clients hammering the pool, which is why there are
+    three. As written: 800 of 800 refused through the pooler, idle and under 4
+    and 16 busy clients; 0 of 800 over the direct port. A miss, should one
+    happen, is the behaviour before this guard existed — never a refusal of a
+    direct DSN.
+
+    ⚠ Not "SET a GUC, read it back in the next statement". The obvious probe,
+    and it passes through pgbouncer: the pooler runs `server_reset_query` in
+    transaction mode only with `server_reset_query_always = 1`, so session
+    state leaks from one client to the next and reads back unchanged. Nor
+    `LISTEN`, which pgbouncer forwards rather than refuses.
+
+    Autocommit matters: without it the first statement opens a transaction,
+    the pooler pins a backend to it, and the probe passes.
+    """
+    with (
+        contextlib.closing(psycopg2.connect(dsn)) as first,
+        contextlib.closing(psycopg2.connect(dsn)) as second,
+    ):
+        first.autocommit = second.autocommit = True
+        pids: tuple[set[int], set[int]] = (set(), set())
+        for _ in range(3):
+            for conn, seen in zip((first, second), pids):
+                with conn.cursor() as cur:
+                    cur.execute("SELECT pg_backend_pid()")
+                    seen.add(cur.fetchone()[0])
+    first_pids, second_pids = pids
+    if len(first_pids) == len(second_pids) == 1 and first_pids != second_pids:
+        return
+    raise RuntimeError(
+        f"{dsn.rsplit('@', 1)[-1]} goes through a connection pooler that shares "
+        "server sessions between clients (two connections were served by the "
+        "same backend, or one by several). The ops-plane schema migration holds "
+        "a session advisory lock across statements, which such a pooler cannot "
+        "keep. Pass --direct-dsn, or set DATABASE_URL_DIRECT, to the database's "
+        "direct port."
+    )
+
+
 def assert_same_domain_database(conn) -> None:
     """Ensure the planner and DBOS checkpoints share one database.
 
@@ -303,9 +363,9 @@ def ensure_system_database(dsn: str | None = None) -> None:
     the LISTEN/NOTIFY triggers the progress stream reads — neither of which
     survives a transaction-mode pooler, where consecutive statements can land
     on different backends, so the lock covers none of the DDL that follows it
-    and is never released by the backend holding it. This is the same reason
-    `dbos_dsn` refuses anything else, and `.env.example` says the same of
-    Alembic.
+    and is never released by the backend holding it. `.env.example` says the
+    same of Alembic. Handed a pooled DSN, this refuses rather than migrating
+    through it — see `_assert_own_session`.
 
     ⚠ Deliberately **not** implemented by launching DBOS and immediately
     destroying it. ``launch()`` also starts the queue dequeuer and the
@@ -326,6 +386,9 @@ def ensure_system_database(dsn: str | None = None) -> None:
     from dbos._sys_db import SystemDatabase
 
     dsn = dsn or dbos_dsn()
+    # Route before target: a pooled DSN is refused whatever database it
+    # reaches, and the domain check below would pass on a migrated one.
+    _assert_own_session(dsn)
     # The same guard `launch()` applies, for the same reason and more sharply
     # here: pointed at a database that does not exist, DBOS creates one and
     # installs this very schema into it. A bootstrap command is exactly where
