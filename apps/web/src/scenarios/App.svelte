@@ -5,6 +5,7 @@
   import TopBar from "../lib/TopBar.svelte";
 
   import { formatHash, parseHash } from "./derive";
+  import ScenarioMap from "./ScenarioMap.svelte";
   import ScenarioTable from "./ScenarioTable.svelte";
   import { applyRoute, boot, create, ws } from "./store.svelte";
 
@@ -95,4 +96,5 @@
     {ws.message?.text ?? ""}
   </p>
   <ScenarioTable />
+  <ScenarioMap />
 </main>
