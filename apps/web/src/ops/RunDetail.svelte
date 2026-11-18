@@ -7,8 +7,6 @@
   import {
     canCancel,
     canRerun,
-    durationMs,
-    formatDuration,
     isRunTerminal,
     isStalled,
     runTone,
@@ -173,10 +171,6 @@
       <dt class="text-muted-foreground">completed</dt>
       <dd data-numeric>
         {run.completed_at ? new Date(run.completed_at).toLocaleString() : "—"}
-      </dd>
-      <dt class="text-muted-foreground">duration</dt>
-      <dd data-numeric>
-        {formatDuration(durationMs(run.submitted_at, run.completed_at, now))}
       </dd>
       <dt class="text-muted-foreground">code version</dt>
       <dd>{run.code_version || "—"}</dd>
