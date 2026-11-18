@@ -7,6 +7,7 @@
   import {
     isRunTerminal,
     runIdFromHash,
+    monotonicNow,
     serverNow,
     statusesFromHash,
     statusesToHash,
@@ -32,8 +33,9 @@
   // A clock of its own, not the poll tick: deriving "now" from the last
   // response would freeze every relative time whenever polling backs off or
   // the tab is hidden.
-  let clientNow = $state(Date.now());
-  const now = $derived(serverNow(clientNow, ops.offsetMs));
+  // Monotonic, so a jittery offset never moves a relative time backward.
+  let now = $state(Date.now());
+  const tick = () => (now = monotonicNow(now, serverNow(Date.now(), ops.offsetMs)));
 
   let refresh: (() => void) | null = null;
   /** Announced transitions only. Marking the table itself polite would
@@ -103,7 +105,7 @@
 
   $effect(() => {
     const t = setInterval(() => {
-      if (!document.hidden) clientNow = Date.now();
+      if (!document.hidden) tick();
     }, 1_000);
     return () => clearInterval(t);
   });

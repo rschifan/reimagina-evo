@@ -1,182 +1,178 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
-  import type { UnitDetail } from "./api";
-  import {
-    fitPxPerSecond,
-    formatDuration,
-    liveWindowMs,
-    timelineOf,
-    unitTone,
-    PX_PER_SECOND,
-  } from "./derive";
+  import Card from "../lib/components/ui/Card.svelte";
+  import type { RunDetailResponse } from "./api";
+  import { timelineAt, UNIT_VISUAL, type RowState } from "./timeline";
 
-  let { units, now }: { units: UnitDetail[]; now: number } = $props();
+  let { detail, live }: { detail: RunDetailResponse; live: boolean } = $props();
 
-  let trackWidth = $state(0);
+  // Every rule lives in timeline.ts; this file only draws the model. Drawn at
+  // the response's own time (see `timelineAt`), so motion between one-second
+  // polls is CSS: a linear transition one poll long keeps bars gliding
+  // without ever drawing past what the server has said.
+  const m = $derived(timelineAt(detail, live));
+  const units = $derived(detail.units);
+  const slots = $derived(detail.unit_slots);
+  const GLIDE = "transition-[left,width] duration-1000 ease-linear";
 
-  const anyLive = $derived(
-    units.some((u) => u.started_at !== null && u.completed_at === null),
-  );
+  const legend = Object.entries(UNIT_VISUAL) as [RowState, (typeof UNIT_VISUAL)[RowState]][];
 
-  /**
-   * Both modes fill the panel; they differ in what they divide by.
-   *
-   * A finished run divides by its own elapsed time — final, computed once, so
-   * nothing it produces can move. A live run divides by a *window* that steps
-   * to the next whole 10 s, because dividing by a growing elapsed time is what
-   * made every bar drift leftward. Between thresholds the scale is constant and
-   * nothing moves; crossing 10 s, 20 s, 30 s rescales once.
-   */
-  // Measured once at the fixed scale purely to learn the run's elapsed time,
-  // which is what the fit divides by. Durations do not depend on the scale.
-  const measured = $derived(timelineOf(units, now, PX_PER_SECOND));
-
-  const axisMs = $derived(
-    anyLive ? liveWindowMs(measured.elapsedMs) : measured.elapsedMs,
-  );
-  const scale = $derived(fitPxPerSecond(axisMs, trackWidth));
-
-  const t = $derived(timelineOf(units, now, scale, axisMs));
-
-  /**
-   * Rows in dispatch order, so the picture reads top-to-bottom as the run
-   * happened — a dependency chain becomes a diagonal, a wave a block of bars.
-   */
-  const rows = $derived([...t.rows].sort((a, b) => a.runLeftPx - b.runLeftPx));
-
-  let scroller = $state<HTMLElement | null>(null);
-  const liveEdge = $derived(
-    t.rows.some((r) => r.live) ? Math.max(...t.rows.map((r) => r.runLeftPx + r.runWidthPx)) : null,
-  );
-
-  // Follow a growing run, but only when the reader is already at the right-hand
-  // end — yanking the view while someone is inspecting an earlier unit would be
-  // its own kind of "it moved on its own".
-  $effect(() => {
-    if (liveEdge === null || !scroller) return;
-    const atEnd =
-      scroller.scrollWidth - scroller.scrollLeft - scroller.clientWidth < 48;
-    if (atEnd) scroller.scrollLeft = scroller.scrollWidth;
+  /** The strip as one step path in a 100 × 32 box (x in %, y in px). */
+  const STRIP_H = 32;
+  const y = (running: number) => STRIP_H - (Math.min(running, slots) / Math.max(slots, 1)) * (STRIP_H - 4);
+  const stripPath = $derived.by(() => {
+    if (!m.strip.length) return "";
+    let d = `M ${m.strip[0].pct} ${STRIP_H} V ${y(m.strip[0].running)}`;
+    for (let i = 1; i < m.strip.length; i++) {
+      d += ` H ${m.strip[i].pct} V ${y(m.strip[i].running)}`;
+    }
+    return `${d} V ${STRIP_H} Z`;
   });
+
+  const tickShift = (i: number, n: number) =>
+    i === 0 ? "" : i === n - 1 ? "-translate-x-full" : "-translate-x-1/2";
 </script>
 
-{#if rows.length}
-  <div class="mt-4 rounded-lg border border-line">
-    <header
-      class="flex flex-wrap items-baseline gap-x-3 border-b border-line px-3 py-2"
-    >
-      <h3 class="font-mono text-[11px] tracking-wide text-muted-foreground uppercase">
-        Execution
-      </h3>
-      <span class="font-mono text-[11px] text-muted-foreground" data-numeric>
-        {rows.length} units · up to {t.peak} at once · {formatDuration(t.elapsedMs)}
-      </span>
-      <span class="ml-auto flex items-center gap-3 text-[10px] text-muted-foreground">
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-2 w-3 rounded-sm bg-line"></span> waiting
-        </span>
-        <span class="flex items-center gap-1">
-          <span class="inline-block h-2 w-3 rounded-sm bg-accent"></span> running
-        </span>
-      </span>
-    </header>
+{#snippet guides()}
+  {#if m.forecastPct !== null}
+    <div
+      class={`pointer-events-none absolute inset-y-0 border-l border-dashed border-muted-foreground/60 ${GLIDE}`}
+      style:left={`${m.forecastPct}%`}
+    ></div>
+  {/if}
+  {#if m.nowPct !== null}
+    <div
+      class={`pointer-events-none absolute inset-y-0 w-px bg-foreground ${GLIDE}`}
+      style:left={`${m.nowPct}%`}
+    ></div>
+  {/if}
+{/snippet}
 
-    <div class="flex">
-      <!-- Labels sit outside the scroller so they stay put while the track
-           scrolls; the two panes share a row height to stay aligned. -->
-      <div class="shrink-0 border-r border-line/60 py-3">
-        <div class="h-5 px-3 font-mono text-[10px] text-muted-foreground uppercase">
-          unit
-        </div>
-        {#each rows as row (row.indicator)}
-          <div class="h-9 w-56 px-3">
-            <div class="truncate font-mono text-[11px]">{row.indicator}</div>
-            {#if row.depends_on.length}
-              <div class="truncate font-mono text-[10px] text-muted-foreground">
-                after {row.depends_on.join(", ")}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-
-      <!--
-        A fixed pixels-per-second track, wide enough for the whole run and
-        scrolled when that exceeds the panel.
-
-        This is the point of the layout: a bar's position and width are computed
-        from its own timestamps alone, never from the run's total. Nothing
-        already drawn moves when the run gets longer — a running bar simply
-        grows to the right, which is the direction time goes.
-      -->
-      <div
-        bind:this={scroller}
-        bind:clientWidth={trackWidth}
-        class="grow overflow-x-auto py-3"
-      >
-        <div class="relative" style={`width:${Math.max(t.widthPx, 1)}px`}>
-          <div class="relative h-5">
-            {#each t.ticks as tick (tick.atPx)}
-              <span
-                class="absolute top-0 font-mono text-[10px] text-muted-foreground"
-                style={`left:${tick.atPx}px`}
-                data-numeric
-              >
-                {tick.label}
-              </span>
-            {/each}
-          </div>
-
-          {#each rows as row (row.indicator)}
-            <div class="relative h-9">
-              {#each t.ticks as tick (tick.atPx)}
-                <span
-                  class="absolute inset-y-0 w-px bg-line/40"
-                  style={`left:${tick.atPx}px`}
-                ></span>
-              {/each}
-
-              <!-- The wait, drawn rather than left blank: it is why a unit that
-                   started late started late. -->
-              {#if row.queuedWidthPx > 1}
-                <span
-                  class="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-sm bg-line"
-                  style={`left:${row.queuedLeftPx}px;width:${row.queuedWidthPx}px`}
-                  title={`waited ${formatDuration(
-                    (row.queuedWidthPx / scale) * 1000,
-                  )}`}
-                ></span>
-              {/if}
-
-              <span
-                class={`absolute top-1/2 h-2.5 -translate-y-1/2 rounded-sm ${
-                  row.status === "failed"
-                    ? "bg-state-error"
-                    : row.status === "succeeded"
-                      ? "bg-accent"
-                      : row.live
-                        ? "bg-interactive"
-                        : "bg-state-stale"
-                }`}
-                style={`left:${row.runLeftPx}px;width:${Math.max(row.runWidthPx, 2)}px`}
-                title={`${row.indicator} · ${row.status} · ran ${formatDuration(row.durationMs)}`}
-              ></span>
-            </div>
-          {/each}
-        </div>
-      </div>
-
-      <div class="shrink-0 border-l border-line/60 py-3">
-        <div class="h-5"></div>
-        {#each rows as row (row.indicator)}
-          <div class="flex h-9 items-start gap-1.5 px-3">
-            <span class="font-mono text-[10.5px] text-muted-foreground" data-numeric>
-              {formatDuration(row.durationMs)}
-            </span>
-            <Badge tone={unitTone[row.status]}>{row.status.slice(0, 4)}</Badge>
-          </div>
-        {/each}
-      </div>
+<Card title="Execution" class="mt-4">
+  {#if !units.length}
+    <p class="text-[11px] text-muted-foreground">This run has no units.</p>
+  {:else}
+    <div class="flex flex-wrap items-center gap-1.5">
+      {#each m.chips as chip (chip.text)}
+        <Badge tone={chip.tone}>{chip.text}</Badge>
+      {/each}
     </div>
-  </div>
-{/if}
+
+    <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+      {#each legend as [state, v] (state)}
+        <li class="flex items-center gap-1.5">
+          <span class={`size-2 shrink-0 rounded-full ${v.dot}`}></span>{v.label}
+        </li>
+      {/each}
+      <li class="flex items-center gap-1.5">
+        <span class="h-2 w-3.5 rounded-sm border border-dashed border-state-partial"></span>
+        expected (last run)
+      </li>
+    </ul>
+
+    <div class="mt-4 grid grid-cols-[16rem_minmax(0,1fr)_7rem] items-center gap-x-3">
+      <span class="text-[11px] text-muted-foreground">parallel units</span>
+      <div class="relative h-8">
+        <!-- The path jumps to each poll's data; the clip glides with the bars,
+             so the strip never runs ahead of the now line. -->
+        <svg
+          class="absolute inset-0 h-full w-full overflow-visible transition-[clip-path] duration-1000 ease-linear"
+          style:clip-path={m.nowPct === null ? "none" : `inset(-4px ${100 - m.nowPct}% -4px 0)`}
+          viewBox={`0 0 100 ${STRIP_H}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label={`Units running at once, out of ${slots} slots`}
+        >
+          <line
+            x1="0"
+            x2="100"
+            y1={y(slots)}
+            y2={y(slots)}
+            class="stroke-muted-foreground"
+            stroke-dasharray="3 3"
+            vector-effect="non-scaling-stroke"
+          />
+          <path d={stripPath} class="fill-state-partial/40" />
+        </svg>
+        {@render guides()}
+      </div>
+      <span class="text-right font-mono text-[11px] text-muted-foreground">
+        {slots} slots
+      </span>
+
+      {#each m.rows as row (row.unit.indicator)}
+        {@const v = UNIT_VISUAL[row.state]}
+        <span class="flex h-7 min-w-0 items-center gap-2">
+          <span class={`size-2 shrink-0 rounded-full ${v.dot}`} title={v.label}></span>
+          <span class="truncate font-mono text-[11px]" title={row.unit.indicator}>
+            {row.unit.indicator}
+          </span>
+          <span class="sr-only">{v.label}</span>
+        </span>
+
+        <div class="relative h-7">
+          {#if row.expectedPct !== null}
+            <div
+              class={`absolute top-1/2 h-3 -translate-y-1/2 rounded-sm border border-dashed border-state-partial ${GLIDE}`}
+              style:left={`${row.leftPct}%`}
+              style:width={`${row.expectedPct}%`}
+            ></div>
+          {/if}
+          {#if v.bar && row.unit.started_at}
+            <div
+              class={`absolute top-1/2 h-3 min-w-[2px] -translate-y-1/2 rounded-sm ${v.bar} ${GLIDE}`}
+              style:left={`${row.leftPct}%`}
+              style:width={`${row.widthPct}%`}
+            ></div>
+          {/if}
+          {#if row.note}
+            <span
+              class={`absolute top-1/2 max-w-[60%] -translate-y-1/2 truncate pl-2 text-[11px] ${
+                row.state === "ready" ? "text-state-stale" : "text-muted-foreground"
+              }`}
+              style:left={`${Math.min(m.nowPct ?? 0, 40)}%`}
+              title={row.note}
+            >
+              {row.note}
+            </span>
+          {/if}
+          {@render guides()}
+        </div>
+
+        <span
+          class={`text-right font-mono text-[11px] tabular-nums whitespace-nowrap ${
+            row.over ? "text-foreground" : "text-muted-foreground"
+          }`}
+        >
+          {row.numbers}
+        </span>
+
+        {#if row.state === "failed" && row.unit.detail}
+          <!-- A ≤500-char exception repr; <details> is keyboard-reachable,
+               which a title= tooltip is not. -->
+          <details class="col-span-3 mb-1 pl-4">
+            <summary class="cursor-pointer font-mono text-[10.5px] text-state-error">
+              {row.unit.detail.slice(0, 80)}{row.unit.detail.length > 80 ? "…" : ""}
+            </summary>
+            <p class="mt-1 font-mono text-[10.5px] break-words whitespace-pre-wrap text-state-error">
+              {row.unit.detail}
+            </p>
+          </details>
+        {/if}
+      {/each}
+
+      <span></span>
+      <div class="relative h-4 font-mono text-[10px] text-muted-foreground">
+        {#each m.ticks as tick, i (i)}
+          <span
+            class={`absolute top-0 whitespace-nowrap ${tickShift(i, m.ticks.length)}`}
+            style:left={`${tick.pct}%`}
+          >
+            {tick.label}
+          </span>
+        {/each}
+      </div>
+      <span></span>
+    </div>
+  {/if}
+</Card>

@@ -174,13 +174,14 @@ async function loadList({ background }: { background: boolean }): Promise<void> 
   if (background) refreshing = true;
   else loading = true;
   try {
+    const sentAt = Date.now();
     const page = await listRuns({ statuses: filters, limit }, { signal: ctrl.signal });
     if (listInFlight !== ctrl) return; // a newer request already won
     runs = page.runs;
     executors = page.executors;
     counts = page.status_counts;
     total = page.total;
-    offsetMs = clockOffset(page.server_now, Date.now());
+    offsetMs = clockOffset(page.server_now, sentAt, Date.now());
     listError = null;
     lastLoadedAt = new Date();
   } catch (err) {
@@ -208,10 +209,11 @@ async function loadDetail({ background }: { background: boolean }): Promise<void
   if (background) refreshing = true;
   else loading = true;
   try {
+    const sentAt = Date.now();
     const detail = await getRunDetail(runId, { signal: ctrl.signal });
     if (detailInFlight !== ctrl || openRunId !== runId) return;
     openRun = detail;
-    offsetMs = clockOffset(detail.server_now, Date.now());
+    offsetMs = clockOffset(detail.server_now, sentAt, Date.now());
     detailError = null;
     lastLoadedAt = new Date();
   } catch (err) {
