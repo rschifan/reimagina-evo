@@ -3206,10 +3206,10 @@ class PostgresOpsRunReader:
         return rows[0] if rows else None
 
     def list_units_detailed(self, run_id: str) -> list[dict]:
-        """Units with their timings, ordered as the run dispatched them.
+        """Units with their timings, by slug.
 
-        ``COALESCE(started_at, queued_at)`` rather than the slug: the operator is
-        reading a timeline, and a unit that never started still has a place in it.
+        Display order is the client's (dependency depth, then slug). Ordering by
+        start time here reshuffled the rows every time a unit started.
         """
         if not _is_run_id(run_id):
             return []
@@ -3219,10 +3219,35 @@ class PostgresOpsRunReader:
                    status, detail, queued_at, started_at, completed_at
             FROM jobs_runtime.job_unit
             WHERE run_id = %(run_id)s::uuid
-            ORDER BY COALESCE(started_at, queued_at), indicator_slug
+            ORDER BY indicator_slug
             """,
             {"run_id": str(run_id)},
         )
+
+    def expected_durations(self, run_id: str) -> dict[str, int]:
+        if not _is_run_id(run_id):
+            return {}
+        rows = self._read_query(
+            """
+            SELECT DISTINCT ON (u.indicator_slug)
+                   u.indicator_slug AS slug,
+                   (EXTRACT(EPOCH FROM u.completed_at - u.started_at) * 1000)::bigint
+                       AS ms
+            FROM jobs_runtime.orchestration_run this
+            JOIN jobs_runtime.job_unit mine ON mine.run_id = this.id
+            JOIN jobs_runtime.job_unit u
+              ON u.indicator_slug = mine.indicator_slug
+             AND u.status = 'succeeded'
+             AND u.started_at IS NOT NULL
+             AND u.completed_at < this.submitted_at
+            JOIN jobs_runtime.orchestration_run r
+              ON r.id = u.run_id AND r.aoi_id IS NOT DISTINCT FROM this.aoi_id
+            WHERE this.id = %(run_id)s::uuid
+            ORDER BY u.indicator_slug, u.completed_at DESC
+            """,
+            {"run_id": str(run_id)},
+        )
+        return {row["slug"]: int(row["ms"]) for row in rows}
 
     # ── Deletion ────────────────────────────────────────────────────────────
 

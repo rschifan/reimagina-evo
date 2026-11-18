@@ -24,14 +24,14 @@ def _reader(conn):
     return backend_for_connection(conn).ops_run_reader()
 
 
-def _make_run(conn, *, status="running", units=(), code_version="test"):
+def _make_run(conn, *, status="running", units=(), code_version="test", aoi_id=None):
     """One run envelope plus its units, via the writer the workflow uses."""
     run_id = str(uuid4())
     runstore.create_run(
         conn,
         run_id=run_id,
         scenario_id=None,
-        aoi_id=None,
+        aoi_id=aoi_id,
         code_version=code_version,
         status=status,
     )
@@ -118,7 +118,65 @@ def test_a_malformed_run_id_is_an_empty_answer_not_an_error(conn, bad_id):
     assert reader.list_units_detailed(bad_id) == []
 
 
-def test_units_carry_their_timings_in_dispatch_order(conn):
+def _time_unit(conn, run_id, slug, started, completed):
+    """Pin a unit's timings; ``set_unit_status`` stamps ``now()``, the same
+    instant for every row in a test's transaction."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE jobs_runtime.job_unit SET started_at = %s, completed_at = %s "
+            "WHERE run_id = %s::uuid AND indicator_slug = %s",
+            (started, completed, run_id, slug),
+        )
+
+
+def test_expected_duration_is_the_last_same_aoi_success_before_this_run(conn):
+    old = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
+    _time_unit(conn, old, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:07Z")
+    newer = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
+    _time_unit(conn, newer, "a", "2026-01-02T00:00:00Z", "2026-01-02T00:00:05Z")
+    this = _make_run(conn, units=[("a", "queued")], aoi_id="x")
+
+    assert _reader(conn).expected_durations(this) == {"a": 5000}
+
+
+def test_expected_duration_ignores_failures_other_aois_and_later_runs(conn):
+    """Each would make the estimate a guess, or let it move while the run is live."""
+    failed = _make_run(conn, status="failed", units=[("a", "failed")], aoi_id="x")
+    _time_unit(conn, failed, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:03Z")
+    other = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="y")
+    _time_unit(conn, other, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:04Z")
+    later = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
+    _time_unit(conn, later, "a", "2099-01-01T00:00:00Z", "2099-01-01T00:00:06Z")
+    this = _make_run(conn, units=[("a", "queued")], aoi_id="x")
+
+    assert _reader(conn).expected_durations(this) == {}
+
+
+def test_whole_dataset_runs_match_each_other(conn):
+    """``aoi_id`` NULL is the launch form's default; ``=`` would never match it."""
+    old = _make_run(conn, status="succeeded", units=[("a", "succeeded")])
+    _time_unit(conn, old, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:02.5Z")
+    this = _make_run(conn, units=[("a", "queued"), ("b", "queued")])
+
+    assert _reader(conn).expected_durations(this) == {"a": 2500}
+
+
+def test_expected_durations_guards_the_id(conn):
+    assert _reader(conn).expected_durations("not-a-uuid") == {}
+    assert _reader(conn).expected_durations(str(uuid4())) == {}
+
+
+def test_units_are_ordered_by_slug(conn):
+    """Display order is the client's; start order would reshuffle it mid-run."""
+    run_id = _make_run(conn, units=[("beta", "running"), ("alpha", "queued")])
+    _time_unit(conn, run_id, "beta", "2026-01-01T00:00:00Z", None)
+
+    units = _reader(conn).list_units_detailed(run_id)
+
+    assert [u["indicator"] for u in units] == ["alpha", "beta"]
+
+
+def test_units_carry_their_timings(conn):
     """``started_at``/``completed_at`` are what the dashboard renders as duration."""
     run_id = _make_run(conn, units=[("beta", "queued"), ("alpha", "running")])
     runstore.set_unit_status(
