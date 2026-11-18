@@ -694,7 +694,7 @@ export function renderEditGroups(
 }
 
 
-function describeGroup(group: EditGroup, position: number): string {
+export function describeGroup(group: EditGroup, position: number): string {
   const parts = [
     group.levels === null ? "storeys —" : `${fmt(group.levels)} storeys`,
     group.unitSize === null ? "m²/dwelling —" : `${fmt(group.unitSize)} m²/dwelling`,

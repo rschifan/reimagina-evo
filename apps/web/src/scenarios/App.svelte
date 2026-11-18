@@ -5,6 +5,7 @@
   import TopBar from "../lib/TopBar.svelte";
 
   import { formatHash, parseHash } from "./derive";
+  import RulePanel from "./RulePanel.svelte";
   import ScenarioMap from "./ScenarioMap.svelte";
   import ScenarioTable from "./ScenarioTable.svelte";
   import { applyRoute, boot, create, ws } from "./store.svelte";
@@ -42,8 +43,11 @@
     untrack(() => applyRoute(route));
   });
 
-  // Selection → URL, without a history entry per click.
+  // Selection → URL, without a history entry per click — and only once the
+  // route the page opened with has been applied, or the empty selection of a
+  // page still loading would overwrite the link it was opened from.
   $effect(() => {
+    if (!ws.routeReady) return;
     const next = formatHash(ws.selectedId, ws.slug);
     if (next !== location.hash && !(next === "#/" && location.hash === "")) {
       history.replaceState(null, "", next);
@@ -96,5 +100,10 @@
     {ws.message?.text ?? ""}
   </p>
   <ScenarioTable />
-  <ScenarioMap />
+  <!-- Map first in the document, so below 1024 px the rules stack under the
+       map they are drawn on; beside it, the rules come first. -->
+  <div class="grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)]">
+    <ScenarioMap />
+    <div class="lg:order-first"><RulePanel /></div>
+  </div>
 </main>

@@ -148,6 +148,27 @@ describe("the table", () => {
   });
 });
 
+describe("a link opened cold", () => {
+  it("keeps its route until the pilot's scenarios are known, then applies it", async () => {
+    vi.resetModules();
+    aoi.listeners.clear();
+    aoi.emit(null);
+    const cold = await import("./store.svelte");
+    await cold.boot();
+    cold.applyRoute({ scenarioId: "B", slug: "floors" });
+    // Not yet applied: nothing may write the URL back from an empty selection.
+    expect(cold.ws.routeReady).toBe(false);
+    aoi.emit(PILOT);
+    await settle();
+    expect(cold.ws.selectedId).toBe("B");
+    expect(cold.ws.slug).toBe("floors");
+    expect(cold.ws.routeReady).toBe(true);
+    // and the table still fills: every row, not only the one the link named
+    expect(cold.ws.cells.baseline?.units).toEqual({ value: 1, error: null });
+    expect(cold.ws.cells.A?.units).toEqual({ value: 10, error: null });
+  });
+});
+
 describe("selection", () => {
   it("a route naming an unknown scenario selects nothing and says so", () => {
     store.applyRoute({ scenarioId: "gone", slug: null });

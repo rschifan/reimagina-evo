@@ -76,6 +76,11 @@ export interface WorkspaceState {
   drawn: Feature<Polygon> | null;
   densityValidMax: number | null;
   floorsValidMax: number | null;
+  /** False until the route a page opened with has been applied. Whatever
+   *  writes the selection back into the URL waits for it — before then the
+   *  selection is empty only because the pilot is still loading, and writing
+   *  that would erase the link the page was opened from. */
+  routeReady: boolean;
 }
 
 export const ws: WorkspaceState = $state({
@@ -95,6 +100,7 @@ export const ws: WorkspaceState = $state({
   drawn: null,
   densityValidMax: null,
   floorsValidMax: null,
+  routeReady: false,
 });
 
 /** Bumped on every selection change; an async action holding an older one
@@ -288,6 +294,7 @@ export function applyRoute(route: { scenarioId: string | null; slug: string | nu
     pendingRoute = route;
     return;
   }
+  ws.routeReady = true;
   if (route.slug && ws.indicators.some((i) => i.slug === route.slug)) ws.slug = route.slug;
   if (route.scenarioId === null) {
     select(null);

@@ -10,6 +10,7 @@ import { ApiError } from "./http";
 import {
   CLIENT_PRECHECK_NOTE,
   comparisonHeadline,
+  describeGroup,
   groupEditsByArea,
   maxLevelsFor,
   isTerminalRunStatus,
@@ -716,5 +717,28 @@ describe("renderEditGroups", () => {
     const host = document.createElement("div");
     renderEditGroups(host, [], vi.fn());
     expect(host.textContent).toMatch(/no rule|nothing drawn|draw/i);
+  });
+});
+
+
+describe("describeGroup", () => {
+  const group = (complete: boolean) => ({
+    areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
+    levels: 6,
+    unitSize: 60,
+    peoplePerHousehold: complete ? 3.6 : null,
+    editIds: ["e1"],
+    complete,
+    ordinal: 1,
+  });
+
+  it("names a rule by its position and its three numbers", () => {
+    expect(describeGroup(group(true), 2)).toBe(
+      "Area 2: 6 storeys · 60 m²/dwelling · 3.6 people/household",
+    );
+  });
+
+  it("flags an incomplete rule rather than papering over it", () => {
+    expect(describeGroup(group(false), 1)).toMatch(/incomplete, will not compute$/);
   });
 });
