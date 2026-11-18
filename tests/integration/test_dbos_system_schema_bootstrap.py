@@ -15,6 +15,7 @@ submit itself cannot work. Bootstrap owns this now.
 
 from __future__ import annotations
 
+import os
 from contextlib import closing
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
@@ -140,4 +141,36 @@ def test_ensure_system_database_refuses_a_database_that_is_not_ours(migrated_db:
 
     assert _regclass(not_ours, "dbos.workflow_status") is None, (
         "the guard must run before DBOS touches the database at all"
+    )
+
+
+POOLED_DSN = os.environ.get("REIMAGINA_POOLED_TEST_DSN")
+
+
+@pytest.mark.skipif(
+    not POOLED_DSN,
+    reason="needs REIMAGINA_POOLED_TEST_DSN: a scratch database reached through "
+    "a transaction-mode pgbouncer, e.g. the compose stack's pooler",
+)
+def test_ensure_system_database_refuses_a_transaction_mode_pooler():
+    """The runbook's `bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"` with no
+    direct DSN in the shell sent the ops-plane migration through pgbouncer and
+    reported success. That migration holds a session advisory lock across
+    statements, which transaction pooling does not keep for one client.
+
+    Needs a real pooler, so CI skips it: no fake can show that the probe tells
+    pgbouncer from Postgres, which is the whole claim. Run it against the
+    compose stack's pooler. The database needs no migration — the pooler check
+    comes before the domain-table check.
+    """
+    assert POOLED_DSN is not None
+    assert _regclass(POOLED_DSN, "dbos.workflow_status") is None, (
+        "precondition: the schema must be absent for the second check to mean anything"
+    )
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL_DIRECT"):
+        ensure_system_database(POOLED_DSN)
+
+    assert _regclass(POOLED_DSN, "dbos.workflow_status") is None, (
+        "refused means nothing was migrated through the pooler"
     )
