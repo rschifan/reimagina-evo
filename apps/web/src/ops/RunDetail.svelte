@@ -194,12 +194,25 @@
       {#if p.total === 0}
         <p class="text-[11px] text-muted-foreground">This run has no units.</p>
       {:else}
-        <progress
-          class="h-2 w-full"
-          value={p.done}
-          max={p.total}
-          aria-label={`${p.done} of ${p.total} units complete`}
-        ></progress>
+        <!-- The same stacked bar as RunList, not `<progress>`: a single-value
+             bar fills for a failed or cancelled unit and calls it "complete".
+             See ProgressSegments in derive.ts. -->
+        <div
+          class="flex h-2 w-full overflow-hidden rounded-full bg-line/60"
+          role="img"
+          aria-label={p.label}
+          title={p.label}
+        >
+          {#if p.segments.succeeded > 0}
+            <div class="bg-state-fresh" style={`width:${p.segments.succeeded}%`}></div>
+          {/if}
+          {#if p.segments.failed > 0}
+            <div class="bg-state-error" style={`width:${p.segments.failed}%`}></div>
+          {/if}
+          {#if p.segments.running > 0}
+            <div class="bg-state-partial" style={`width:${p.segments.running}%`}></div>
+          {/if}
+        </div>
         <p class="mt-2 font-mono text-[11px]" data-numeric>
           {p.done} of {p.total} units{p.failed ? ` · ${p.failed} failed` : ""}
         </p>
