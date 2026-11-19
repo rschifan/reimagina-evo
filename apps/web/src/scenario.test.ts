@@ -585,7 +585,8 @@ describe("groupEditsByArea", () => {
     const [group] = groupEditsByArea(partial);
     expect(group.levels).toBe(6);
     expect(group.unitSize).toBeNull();
-    expect(group.complete).toBe(false);
+    // Storeys alone are a whole rule now: each block keeps its own unit size.
+    expect(group.complete).toBe(true);
   });
 
   it("marks a whole proposal complete", () => {
@@ -626,5 +627,39 @@ describe("describeGroup", () => {
 
   it("flags an incomplete rule rather than papering over it", () => {
     expect(describeGroup(group(false), 1)).toMatch(/incomplete, will not compute$/);
+  });
+});
+
+
+describe("a rule that sets only some numbers", () => {
+  // Writing all four flattened the area; a number left out keeps each
+  // block's own value.
+  it("validates only the numbers it sets, and needs one", () => {
+    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: 5 })).toBeNull();
+    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: -1 })).toMatch(
+      /people_per_household/,
+    );
+    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: null })).toMatch(
+      /at least one/,
+    );
+  });
+
+  it("checks density only when storeys and unit size are both set", () => {
+    expect(validateEdit({ levels: 40, unitSize: null, peoplePerHousehold: null, densityValidMax: 2000 })).toBeNull();
+    expect(validateEdit({ levels: 40, unitSize: 60, peoplePerHousehold: null, densityValidMax: 2000 })).toMatch(
+      /density ceiling/,
+    );
+  });
+
+  it("is a whole rule with one number, and its label shows only that number", () => {
+    const [group] = groupEditsByArea([edit(1, "people_per_household", 5, AREA_A)]);
+    expect(group.complete).toBe(true);
+    expect(group.levels).toBeNull();
+    expect(describeGroup(group, 1)).toBe("Rule 1 · 5 people");
+  });
+
+  it("is incomplete when storeys are half written", () => {
+    const [group] = groupEditsByArea([edit(1, "floors", 3, AREA_A)]);
+    expect(group.complete).toBe(false);
   });
 });

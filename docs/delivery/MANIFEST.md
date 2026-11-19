@@ -7,10 +7,10 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 13 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `6bd9597fba36f95c1b9ee804f4fe23e160b1c802` |
-| **Branch** | `feat/scenario-map-editing` |
+| **Generated from commit** | `21ce082231580a097519fb41bd264f6f359679f7` |
+| **Branch** | `fix/rule-keeps-block-values` |
 | **Working tree at generation** | MODIFIED — not a clean delivery |
-| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `6bd9597fba36` on `feat/scenario-map-editing` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
+| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `21ce08223158` on `fix/rule-keeps-block-values` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
 
 ⚠ The tag is the authoritative identifier, and the **Check out** row
 names what to check out for the procedures below. The commit above is
@@ -27,8 +27,8 @@ commit that contains it. Resolve a tag to its commit with
 | Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,908 | `628a4b4f23778df0bb41645688b6572300b6416f589d68ce76163bdee357d0d9` |
 | Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 784,248 | `c429c18b697dc43e995aca2f0ef8d9ef643b5e79b423340bb909ebc8f1cd79bc` |
 | Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,953 | `1412005faa88fb1cc23163d585a8223162492c8223c572d45673c11b87044cb8` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 407,044 | `3e975981b28cd957f0364b8c8ec8faf00b1da34226525d38922bc005819effd1` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 36,699 | `52c52efc796e0061c1b3e26b328e993321dbd338b7096242d170d90c24bc8480` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 409,364 | `d1909f8d4073ef2227f701768289ab763d8b78646ef58bb5d7bb941a738de03c` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 36,989 | `d7a4ccc7c18905d067966fe0a21d34c7513b1d61b1ecde85c034251ce99970d8` |
 | Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 539,443 | `e584436a2f153527043658c91f3ea5ffb3ef7dfdab637b6ccaf313d471f683d8` |
 | Annex — source | `docs/delivery/05_capability_proof.md` | 71,157 | `4566ed8b8b44fd6e18cd2913eccff68875507201ed209f3a480821f9e7443daf` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |

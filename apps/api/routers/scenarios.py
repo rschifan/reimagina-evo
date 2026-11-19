@@ -143,6 +143,7 @@ from reimagina.scenarios.authoring import (
 from reimagina.scenarios.comparison import compare
 from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
+    EmptyProposal,
     ProposalValueError,
     edits_for,
     polygon_wkt,
@@ -219,13 +220,15 @@ class ProposalBody(BaseModel):
         "Feature, or a bare geometry. Several polygons are unioned into one "
         "area, because a selection made with two strokes is one rule."
     )
-    levels: float
-    unit_size: float
-    people_per_household: float
-    lot_coverage: float = Field(
-        1.0,
-        description="Share of the block built on (COS), 0 < c ≤ 1. Omitted "
-        "means 1.0, the whole block — the formula as it was before coverage.",
+    levels: float | None = None
+    unit_size: float | None = None
+    people_per_household: float | None = None
+    lot_coverage: float | None = Field(
+        None,
+        description="Share of the block built on (COS), 0 < c ≤ 1. Like every "
+        "number here, omitted means the rule does not set it and each block "
+        "keeps its own (1.0, the whole block, when it has none). At least one "
+        "number must be set.",
     )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
@@ -237,18 +240,19 @@ class UpdateRuleBody(BaseModel):
     ``edit_ids`` are the rule's edits as ``GET /scenarios/{id}`` lists them —
     every edit of one area. They are updated in place, so the rule keeps its
     position in "later wins".
+
+    The numbers are the rule's **whole** set: one left out is no longer set by
+    the rule, and each block keeps its own value for it.
     """
 
     edit_ids: list[UUID] = Field(min_length=1)
     area: dict[str, Any] | None = Field(
         None, description="The moved or resized area; omitted keeps the area."
     )
-    levels: float
-    unit_size: float
-    people_per_household: float
-    #: Required, unlike on POST: a default here would reset a 60 % rule to
-    #: 100 % — two thirds more homes — for any caller that left it out.
-    lot_coverage: float
+    levels: float | None = None
+    unit_size: float | None = None
+    people_per_household: float | None = None
+    lot_coverage: float | None = None
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
 
@@ -434,6 +438,11 @@ def _refusals() -> Iterator[None]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScenarioHasNoAOI as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EmptyProposal as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "empty_proposal", "field": None, "message": str(exc)},
+        ) from exc
     except ProposalValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -745,6 +754,34 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
 # ── edits ────────────────────────────────────────────────────────────────
 
 
+def _checked_edits(body: ProposalBody | UpdateRuleBody) -> list[dict[str, Any]]:
+    """The edits a rule writes, after the value and ceiling refusals.
+
+    Only the numbers set are written or checked: one left out keeps each
+    block's own value (``proposal.edits_for``).
+    """
+    proposed = edits_for(
+        body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+    )
+    require_positive(
+        **{
+            field: value
+            for field, value in (
+                ("levels", body.levels),
+                ("unit_size", body.unit_size),
+                ("people_per_household", body.people_per_household),
+            )
+            if value is not None
+        }
+    )
+    if body.lot_coverage is not None:
+        require_coverage(body.lot_coverage)
+    precheck_ceilings(
+        body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+    )
+    return proposed
+
+
 @router.post("/{scenario_id}/edits", status_code=201, response_model=EditsWritten)
 def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
     """Draw one area and write the four edits of one proposal over it.
@@ -757,19 +794,8 @@ def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        require_positive(
-            levels=body.levels,
-            unit_size=body.unit_size,
-            people_per_household=body.people_per_household,
-        )
-        require_coverage(body.lot_coverage)
-        precheck_ceilings(
-            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
-        )
+        proposed = _checked_edits(body)
         geometry_wkt = polygon_wkt(body.area)
-        proposed = edits_for(
-            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
-        )
 
         written: list[WrittenEdit] = []
         with contextlib.closing(connect(api_dsn())) as conn, conn:
@@ -806,25 +832,8 @@ def update_rule_route(scenario_id: str, body: UpdateRuleBody) -> EditsWritten:
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        require_positive(
-            levels=body.levels,
-            unit_size=body.unit_size,
-            people_per_household=body.people_per_household,
-        )
-        require_coverage(body.lot_coverage)
-        precheck_ceilings(
-            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
-        )
+        values = {e["attribute_key"]: e["value_numeric"] for e in _checked_edits(body)}
         geometry_wkt = None if body.area is None else polygon_wkt(body.area)
-        values = {
-            edit["attribute_key"]: edit["value_numeric"]
-            for edit in edits_for(
-                body.levels,
-                body.unit_size,
-                body.people_per_household,
-                body.lot_coverage,
-            )
-        }
         with contextlib.closing(connect(api_dsn())) as conn, conn:
             type_id = _feature_type_id(conn, body.type_context, body.type_slug)
             rows = update_rule(
