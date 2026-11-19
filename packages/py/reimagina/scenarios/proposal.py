@@ -24,7 +24,8 @@ however it needs to; ``apps/cli/scenario.py`` is the worked example.
 from __future__ import annotations
 
 import math
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 from reimagina.scenarios.authoring import InvalidGeometry
 from reimagina.scenarios.ceilings import (
@@ -35,6 +36,9 @@ from reimagina.scenarios.ceilings import (
     max_floors,
     max_levels_for,
 )
+
+if TYPE_CHECKING:
+    from reimagina.indicators.catalog import IndicatorSpec
 
 #: The ``feature_id`` the precheck gives its one synthetic block. No feature
 #: has been selected yet — that happens at materialisation — so the string is
@@ -225,3 +229,45 @@ def polygon_wkt(geojson: Any) -> str:
             "and a point or a line selects nothing"
         )
     return str(unary_union(polygons).wkt)
+
+
+#: Units whose block values add up to something a planner reads as a total —
+#: dwellings, people. Everything else (a density, a storey count, a 0–1 score)
+#: is a rate, and a sum of rates is a number nobody can interpret.
+_ADDITIVE_UNITS = frozenset({"units", "people"})
+
+
+def reachable_indicators(
+    registry: Sequence[IndicatorSpec] | None = None,
+) -> list[str]:
+    """The indicators a proposal can change, inputs before their dependents.
+
+    **Derived, not listed.** The attributes come from :func:`edits_for` and the
+    reach from ``impact.compute_dirty_set`` — the same function that decides
+    what a recompute runs — so the scenario workspace offers exactly what a
+    rule moves. A list typed here would agree with the catalog until the day
+    an indicator started reading ``num_levels``, and from then on hide it.
+
+    ``edits_for(1, 1, 1)`` is only a way to ask which keys a proposal writes:
+    the values never reach anything.
+    """
+    # Local imports: orchestration and the catalog import the scenario layer's
+    # neighbours, and this is the one function here that needs either.
+    from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import compute_dirty_set
+
+    changed = {edit["attribute_key"] for edit in edits_for(1, 1, 1)}
+    units = compute_dirty_set(
+        changed, (), SHIPPED_INDICATORS if registry is None else registry
+    )
+    return [unit.indicator for unit in units]
+
+
+def table_statistic(unit: str | None) -> Literal["sum", "median"]:
+    """The one number a summary table shows for an indicator with this unit.
+
+    A total for counts, a median for rates. One rule, here, beside the list it
+    describes, so every surface that tabulates a scenario agrees on what a
+    cell means.
+    """
+    return "sum" if unit in _ADDITIVE_UNITS else "median"

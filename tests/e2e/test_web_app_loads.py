@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-PAGES = ("map", "catalog", "ops")
+PAGES = ("map", "scenarios", "catalog", "ops")
 
 
 @pytest.mark.parametrize("page", PAGES)
@@ -163,7 +163,7 @@ class TestInteraction:
         assert probe["interaction"]["legendHasDistribution"] is True
         assert probe["interaction"]["distributionBars"] > 0
 
-    @pytest.mark.parametrize("page", ["map", "catalog", "ops"])
+    @pytest.mark.parametrize("page", PAGES)
     def test_no_page_drifts_sideways_on_a_phone(self, probe, page) -> None:
         """⚠ Measured as scroll, not as `scrollWidth`.
 

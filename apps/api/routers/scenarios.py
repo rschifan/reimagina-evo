@@ -115,7 +115,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import psycopg2
@@ -145,10 +145,13 @@ from reimagina.scenarios.proposal import (
     edits_for,
     polygon_wkt,
     precheck_ceilings,
+    reachable_indicators,
     require_positive,
+    table_statistic,
 )
 
 from ..deps import api_dsn, get_backend
+from .indicators import IndicatorSummary, _catalog_row_to_dict
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -241,6 +244,26 @@ class ScenarioRow(BaseModel):
     # None means the edits have not been expanded into overrides yet, which is
     # a different statement from "expanded, and there was nothing to do".
     materialized_at: datetime | None = None
+
+
+class LatestRun(BaseModel):
+    id: str
+    status: str
+
+
+class ScenarioListRow(ScenarioRow):
+    """A list row: the scenario plus what a summary of every scenario needs.
+
+    Only on the list. ``get_scenario`` does not compute them, and a detail
+    defaulting ``edit_count`` to 0 beside its own non-empty ``edits`` would be
+    a response contradicting itself.
+    """
+
+    edit_count: int
+    #: The newest run envelope (``orchestration_run``), or None. A queued run
+    #: has no envelope until a worker opens it, so during that window this is
+    #: the previous run.
+    latest_run: LatestRun | None = None
 
 
 class ScenarioDetail(ScenarioRow):
@@ -568,15 +591,18 @@ def _feature_type_id(conn: Any, context: str, slug: str) -> str:
 # ── scenarios ────────────────────────────────────────────────────────────
 
 
-@router.get("", response_model=list[ScenarioRow])
+@router.get("", response_model=list[ScenarioListRow])
 def list_scenarios_route(
     project_id: UUID | None = Query(default=None),
     aoi_id: UUID | None = Query(default=None),
-) -> list[ScenarioRow]:
-    """Scenarios, newest first, optionally narrowed by project and/or AOI."""
+) -> list[ScenarioListRow]:
+    """Scenarios, newest first, optionally narrowed by project and/or AOI.
+
+    Each row carries its ``edit_count`` and ``latest_run``.
+    """
     with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
         rows = list_scenarios(conn, project_id=_opt(project_id), aoi_id=_opt(aoi_id))
-    return [ScenarioRow(**row) for row in rows]
+    return [ScenarioListRow(**row) for row in rows]
 
 
 @router.post("", status_code=201, response_model=ScenarioDetail)
@@ -606,6 +632,39 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
                 "that created it"
             )
     return ScenarioDetail(**created)
+
+
+class ReachableIndicator(IndicatorSummary):
+    """An indicator a scenario rule can change, and the number a table shows.
+
+    ``statistic`` is ``sum`` for counts (dwellings, people) and ``median``
+    otherwise; ``proposal.table_statistic`` is the one place that decides.
+    """
+
+    statistic: Literal["sum", "median"]
+
+
+# ⚠ Declared before `/{scenario_id}`: FastAPI matches in declaration order, and
+# below it this path is read as a scenario called "indicators" and answers 404.
+@router.get("/indicators", response_model=list[ReachableIndicator])
+def reachable_indicators_route() -> list[ReachableIndicator]:
+    """The indicators a scenario rule can change, inputs before dependents.
+
+    Derived from the catalog's declared reads (``proposal.reachable_indicators``)
+    rather than listed, so the scenario workspace offers what a rule moves and
+    nothing a rule cannot.
+    """
+    order = reachable_indicators()
+    with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
+        rows = get_backend(conn).indicator_catalog_repo().list_indicators()
+    by_slug = {row["slug"]: _catalog_row_to_dict(row) for row in rows}
+    return [
+        ReachableIndicator(
+            **by_slug[slug], statistic=table_statistic(by_slug[slug]["unit"])
+        )
+        for slug in order
+        if slug in by_slug
+    ]
 
 
 @router.get("/{scenario_id}", response_model=ScenarioDetail)

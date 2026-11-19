@@ -78,3 +78,17 @@ describe("vite dev server config", () => {
     expect(config.server.proxy["/api"].target).toBe("http://127.0.0.1:9001");
   });
 });
+
+describe("vite build entries", () => {
+  // ⚠ Naming `rollupOptions.input` replaces Vite's entry discovery, so a page
+  // missing here is silently not built — and `dist/` is gitignored, so no
+  // review would show it gone.
+  it("builds every page the top bar links to", async () => {
+    vi.resetModules();
+    const module = await import(CONFIG);
+    const input = (module.default as { build: { rollupOptions: { input: Record<string, string> } } })
+      .build.rollupOptions.input;
+    expect(Object.keys(input).sort()).toEqual(["catalog", "index", "ops", "scenarios"]);
+    expect(input.scenarios).toMatch(/\/scenarios\.html$/);
+  });
+});

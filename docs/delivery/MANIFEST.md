@@ -7,10 +7,10 @@ by its date, version, commit or tag, and SHA-256 hash.
 |---|---|
 | **Date** | 13 November 2026 |
 | **Tag** | `(untagged)` |
-| **Generated from commit** | `057da143f57a470af290984ec317c508e4696d54` |
-| **Branch** | `docs/delivery-worker-start` |
+| **Generated from commit** | `92303ca543711321ec31fd04ac93e8fdec11cfd1` |
+| **Branch** | `feat/scenario-workspace` |
 | **Working tree at generation** | clean |
-| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `057da143f57a` on `docs/delivery-worker-start` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
+| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `92303ca54371` on `feat/scenario-workspace` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
 
 ⚠ The tag is the authoritative identifier, and the **Check out** row
 names what to check out for the procedures below. The commit above is
@@ -25,10 +25,10 @@ commit that contains it. Resolve a tag to its commit with
 |---|---|---:|---|
 | Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 717,426 | `e86ab522f975a5175bff20dc95a71bcd852734040bcc1087727206ebe2cb6c0d` |
 | Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,908 | `628a4b4f23778df0bb41645688b6572300b6416f589d68ce76163bdee357d0d9` |
-| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 778,731 | `a6015f6e288664c15d9329eed6b883b0ddc860bbbef89820abbd5267d9745ad7` |
-| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,588 | `0bf5c82c1906feaf7e621ae40583333b32d783c4d29d7d586f1df9a4abfd1fa9` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 391,487 | `125bedcb7923526daa0c4ffda47a9b0e1b3be7ef00c3237dac8253f3e152bb3e` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 32,881 | `315ce1dd0c647b9a6c013e7a14553ac0564f783ca6b766b149725644c163ef9f` |
+| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 781,563 | `77f891c4a66f3a0ca09f77c2c45303b471b27b413f9c00279a928d8cfd8b86fc` |
+| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,834 | `fb74dbc1555d6d8515a237c707b822a8643adaf5247c5196c57d8b431e985f9b` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 398,308 | `7091dccd87d284565618658340506cb8a4aa42ef9db20a6ef8366582d82e1fe2` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 34,086 | `12ee0dfd023d37384c7145b08c1253a17429ff62a08eeb5c3b2e9b3803388ca2` |
 | Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 522,100 | `9939836da4daa3f04f41443c3eb152ebd96a874a32008db7592a9203e1a56f59` |
 | Annex — source | `docs/delivery/05_capability_proof.md` | 67,105 | `8b9e598c28077fe5e1dce38d3f3454310bb5dafa5138471ee984a3f6752672c1` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |

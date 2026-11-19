@@ -15,18 +15,19 @@
    *
    * `actions` is where a page puts its own controls (a refresh stamp, an AOI
    * picker, a pause button); the bar itself stays identical across pages so it
-   * reads as one product rather than three.
+   * reads as one product rather than four.
    */
   let {
     current,
     actions,
   }: {
-    current: "map" | "catalog" | "ops";
+    current: "map" | "scenarios" | "catalog" | "ops";
     actions?: Snippet;
   } = $props();
 
   const links = [
     { key: "map", href: "/index.html", label: "Map" },
+    { key: "scenarios", href: "/scenarios.html", label: "Scenarios" },
     { key: "catalog", href: "/catalog.html", label: "Catalog" },
     { key: "ops", href: "/ops.html", label: "Runs" },
   ] as const;
