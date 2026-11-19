@@ -68,6 +68,8 @@ def fake_censo_root(tmp_path: Path) -> Path:
             "p_15ymas": pa.array([80.0, 160.0], type=pa.float64()),
             "p_18ymas": pa.array([70.0, 150.0], type=pa.float64()),
             "vivtot": pa.array([40, 80], type=pa.int64()),
+            # Block 2 has no occupied dwelling: INEGI writes 0, not null.
+            "prom_ocup": pa.array([3.2, 0.0], type=pa.float64()),
         }
     )
     pq.write_table(table, part / "part-0.parquet")
@@ -177,6 +179,32 @@ def test_bootstrap_writes_one_observation_per_feature_and_column(
     keys = {row["attribute_key"] for row in obs_rows}
     expected = {f"censo_2020_{c}" for c in inegi_censo.HEADLINE_COLUMNS}
     assert keys == expected
+
+
+def test_prom_ocup_lands_as_the_household_size_a_rule_overrides(
+    conn,
+    fake_censo_root: Path,
+    cuauhtemoc_features,
+):
+    """INEGI's average occupants per dwelling is a scenario input's baseline.
+
+    It lands under ``people_per_household``, the key ``effective_numeric``
+    resolves for the edificability family, and not as ``censo_2020_prom_ocup``,
+    which no indicator reads. A block with no occupied dwelling reads 0 in the
+    census; that is an absence, not a household of nobody, so it is not
+    written and the block keeps whatever fallback it has.
+    """
+    feat_a, _ = cuauhtemoc_features
+    result = inegi_censo.bootstrap(
+        conn,
+        cve_ent_filter=["9"],
+        columns=("prom_ocup",),
+        source_root=fake_censo_root,
+    )
+    obs_rows = _fetch_obs_for(conn, source_id=result.source_id)
+    assert {
+        (r["feature_id"], r["attribute_key"]): r["value_numeric"] for r in obs_rows
+    } == {(feat_a, "people_per_household"): 3.2}
 
 
 def test_bootstrap_round_trips_population_value(

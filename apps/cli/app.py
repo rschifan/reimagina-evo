@@ -114,6 +114,7 @@ from .overture import (  # noqa: E402
     load_overture_places,
     overture_place_categories,
     as_json,
+    derive_block_storeys,
     extract_mexico_city_buildings,
     list_overture_divisions,
     load_mexico_city_buildings,
@@ -655,6 +656,23 @@ def overture_aoi_from_division(
     )
     _print(payload)
     return 0 if payload.get("status") == "ok" else 2
+
+
+@overture_app.command(
+    "block-storeys",
+    help="Write each block's baseline storeys (num_levels, floors) from the "
+    "median num_floors of the Overture buildings in it",
+)
+def overture_block_storeys(
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    aoi_id: Optional[str] = typer.Option(
+        None, "--aoi-id", help="Only this AOI's blocks (default: every block)"
+    ),
+    code_version: str = typer.Option("dev", "--code-version"),
+) -> int:
+    return _print(
+        derive_block_storeys(dsn=dsn, aoi_id=aoi_id, code_version=code_version)
+    )
 
 
 @overture_app.command(

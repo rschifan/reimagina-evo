@@ -54,9 +54,36 @@ instead — correct for a fixture, wrong for real data. `effective_numeric`
 resolves override → observation → jsonb, so real observations later shadow
 these values without anyone having to delete them first.
 
+**Fitted to the census (``--fit-to-census``).** The flat values above are
+generic, and on a real city they are absurd: over Mexicali they gave 13.8
+million potential dwellings against the census's 340,169, because the 1–6
+storeys average 3.5 where the city is mostly single-storey, and the formula
+builds every block over wall to wall at 60 m². Fitted mode keeps the values
+synthetic but shapes them to the place, so the baseline reads as the city that
+exists and a scenario rule's change is measured against it:
+
+    num_levels / floors   drawn per block from the storey mix of the
+                          Overture buildings in the selected blocks
+                          (Mexicali: 94% one storey); 1–6 if none is tagged
+                          — or, where a ``floors`` observation holds a real
+                          height, that height
+    unit_size             block area × storeys ÷ census dwellings
+                          (``censo_2020_vivtot``), so the formula gives the
+                          census count exactly
+    people_per_household  the median of the census's own values
+                          (``people_per_household`` observations), else 3.6
+
+⚠ A block the census found without dwellings gets ``num_levels`` 0, so the
+baseline invents no homes on it, while ``floors`` keeps a height for planned
+floors; its ``unit_size`` is the fitted median, which multiplies zero. This
+holds only because real heights land as ``floors`` observations and never as
+``num_levels`` ones (``reimagina.pipeline.block_storeys``): an observation
+would shadow the 0.
+
 Usage:
 
     python scripts/seed_demo_attributes.py --aoi-id <uuid>
+    python scripts/seed_demo_attributes.py --aoi-id <uuid> --fit-to-census
     python scripts/seed_demo_attributes.py --dry-run          # all blocks, no write
 """
 
@@ -96,6 +123,94 @@ def levels_for(feature_id: str) -> int:
     return MIN_LEVELS + int.from_bytes(digest, "big") % (MAX_LEVELS - MIN_LEVELS + 1)
 
 
+def storeys_from_mix(feature_id: str, mix: dict[int, int]) -> int:
+    """A stable storey count for a block, drawn from ``{storeys: buildings}``.
+
+    The same blake2b as ``levels_for``, mapped onto the mix's cumulative
+    counts, so the share of blocks at each height follows the share of
+    buildings at it and a re-run draws the same value for the same block.
+    """
+    digest = hashlib.blake2b(feature_id.encode("utf-8"), digest_size=8).digest()
+    pick = int.from_bytes(digest, "big") % sum(mix.values())
+    for storeys, count in sorted(mix.items()):
+        if pick < count:
+            return storeys
+        pick -= count
+    raise AssertionError("unreachable: pick < sum(mix)")
+
+
+def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
+    """Per-block synthetic values shaped to the census; see the module docstring."""
+    cur.execute(
+        """
+        SELECT ROUND((b.attributes->>'num_floors')::numeric)::int, count(*)
+        FROM curated_geo.feature blk
+        JOIN curated_geo.feature b
+          ON b.type_slug = 'building'
+         AND jsonb_typeof(b.attributes->'num_floors') = 'number'
+         AND ST_Contains(blk.geometry, b.geometry_centroid)
+        WHERE blk.id = ANY(%s::uuid[])
+          AND (b.attributes->>'num_floors')::numeric >= 0.5
+        GROUP BY 1
+        """,
+        (feature_ids,),
+    )
+    mix = dict(cur.fetchall())
+    cur.execute(
+        """
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_numeric)
+        FROM curated_geo.observation
+        WHERE attribute_key = 'people_per_household' AND is_current
+          AND feature_id = ANY(%s::uuid[])
+        """,
+        (feature_ids,),
+    )
+    household = cur.fetchone()[0] or CONSTANT_ATTRIBUTES["people_per_household"]
+
+    def current(key: str) -> str:
+        return (
+            "(SELECT o.value_numeric FROM curated_geo.observation o "
+            f"WHERE o.feature_id = f.id AND o.attribute_key = '{key}' AND o.is_current)"
+        )
+
+    # Area as the indicator measures it (geodesic), or the fit is off by the
+    # projection's scale and the census count is not reproduced.
+    cur.execute(
+        f"""
+        SELECT f.id::text, ST_Area(f.geometry::geography),
+               {current("censo_2020_vivtot")}, {current("floors")}
+        FROM curated_geo.feature f
+        WHERE f.id = ANY(%s::uuid[])
+        """,
+        (feature_ids,),
+    )
+    blocks = cur.fetchall()
+
+    payloads: dict[str, dict[str, object]] = {}
+    sizes: list[float] = []
+    for fid, area, dwellings, real_floors in blocks:
+        storeys = storeys_from_mix(fid, mix) if mix else levels_for(fid)
+        levels = int(real_floors) if real_floors else storeys
+        payload: dict[str, object] = {
+            "poi_version": CONSTANT_ATTRIBUTES["poi_version"],
+            "network_version": CONSTANT_ATTRIBUTES["network_version"],
+            "people_per_household": round(float(household), 2),
+            "floors": storeys,
+        }
+        if dwellings and dwellings > 0 and area > 0:
+            size = area * levels / dwellings
+            payload.update(num_levels=levels, unit_size=size)
+            sizes.append(size)
+        else:
+            payload["num_levels"] = 0
+        payloads[fid] = payload
+    sizes.sort()
+    median = sizes[len(sizes) // 2] if sizes else CONSTANT_ATTRIBUTES["unit_size"]
+    for payload in payloads.values():
+        payload.setdefault("unit_size", median)
+    return [{"feature_id": fid, **p} for fid, p in payloads.items()]
+
+
 def _block_ids(cur, aoi_id: str | None) -> list[str]:
     """Every MEX:block feature, optionally restricted to one AOI.
 
@@ -124,7 +239,9 @@ def _block_ids(cur, aoi_id: str | None) -> list[str]:
     return [row[0] for row in cur.fetchall()]
 
 
-def seed(dsn: str, *, aoi_id: str | None, dry_run: bool) -> dict[str, object]:
+def seed(
+    dsn: str, *, aoi_id: str | None, dry_run: bool, fit_to_census: bool = False
+) -> dict[str, object]:
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor() as cur:
@@ -139,20 +256,29 @@ def seed(dsn: str, *, aoi_id: str | None, dry_run: bool) -> dict[str, object]:
                     ),
                 }
 
-            payloads = [
-                (
-                    json.dumps(
-                        {
-                            **CONSTANT_ATTRIBUTES,
-                            # Same value, two keys -- see the module docstring.
-                            "num_levels": levels_for(fid),
-                            "floors": levels_for(fid),
-                        }
-                    ),
-                    fid,
-                )
-                for fid in feature_ids
-            ]
+            if fit_to_census:
+                payloads = [
+                    (
+                        json.dumps({k: v for k, v in p.items() if k != "feature_id"}),
+                        str(p["feature_id"]),
+                    )
+                    for p in _fitted_payloads(cur, feature_ids)
+                ]
+            else:
+                payloads = [
+                    (
+                        json.dumps(
+                            {
+                                **CONSTANT_ATTRIBUTES,
+                                # Same value, two keys -- see the module docstring.
+                                "num_levels": levels_for(fid),
+                                "floors": levels_for(fid),
+                            }
+                        ),
+                        fid,
+                    )
+                    for fid in feature_ids
+                ]
             if dry_run:
                 sample = json.loads(payloads[0][0])
                 return {
@@ -188,9 +314,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Report what would be written without writing it",
     )
+    parser.add_argument(
+        "--fit-to-census",
+        action="store_true",
+        help="Shape the synthetic values to the place: storeys from the tagged "
+        "buildings' mix, m² per dwelling so each block's dwellings equal the census",
+    )
     args = parser.parse_args(argv)
 
-    result = seed(args.dsn, aoi_id=args.aoi_id, dry_run=args.dry_run)
+    result = seed(
+        args.dsn,
+        aoi_id=args.aoi_id,
+        dry_run=args.dry_run,
+        fit_to_census=args.fit_to_census,
+    )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
