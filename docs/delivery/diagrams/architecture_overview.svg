@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="770" viewBox="0 0 800 770" font-family="IBM Plex Sans, Inter, Helvetica, Arial, sans-serif" role="img" aria-labelledby="ao-title">
+  <title id="ao-title">Figure 1 — Architecture overview</title>
+  <defs>
+    <marker id="ao-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a505c"/>
+    </marker>
+  </defs>
+  <style>
+    .ao-h { font-size: 17px; font-weight: 600; fill: #16181d; }
+    .ao-t { font-size: 15px; fill: #2b303a; }
+    .ao-m { font-size: 15px; fill: #5a606c; }
+    .ao-l { font-size: 15px; fill: #3b414d; }
+    .ao-line { stroke: #4a505c; stroke-width: 1.6; fill: none; marker-end: url(#ao-arrow); }
+    .ao-ext { fill: #f3f4f6; stroke: #8a909c; stroke-width: 1.4; stroke-dasharray: 6 4; }
+    .ao-proc { fill: #ffffff; stroke: #1f5fae; stroke-width: 2; }
+    .ao-db { fill: #eaf1fa; stroke: #1f5fae; stroke-width: 2; }
+    .ao-chip { fill: #ffffff; stroke: #8a909c; stroke-width: 1.2; }
+  </style>
+
+  <rect width="800" height="770" fill="#ffffff"/>
+  <text x="20" y="32" font-size="20" font-weight="700" fill="#16181d">Figure 1 — Architecture overview</text>
+
+  <!-- Row A: external sources, web application -->
+  <rect class="ao-ext" x="20" y="56" width="250" height="156" rx="6"/>
+  <text class="ao-h" x="34" y="82">External sources</text>
+  <text class="ao-t" x="34" y="108">Overture Maps · S3</text>
+  <text class="ao-t" x="34" y="130">OpenStreetMap · Overpass</text>
+  <text class="ao-t" x="34" y="152">WorldPop · REST</text>
+  <text class="ao-t" x="34" y="174">INEGI, SIGCDMX portals</text>
+  <text class="ao-t" x="34" y="196">Offline data mirror · files</text>
+
+  <rect class="ao-proc" x="530" y="56" width="250" height="156" rx="6"/>
+  <text class="ao-h" x="544" y="82">Web application</text>
+  <text class="ao-m" x="544" y="104">Vite · MapLibre · Svelte</text>
+  <text class="ao-t" x="544" y="140">Map · Scenarios</text>
+  <text class="ao-t" x="544" y="162">Catalogue · Runs</text>
+
+  <!-- Row A to row B -->
+  <line class="ao-line" x1="145" y1="212" x2="145" y2="264"/>
+  <text class="ao-l" x="155" y="243">HTTPS · S3 · read</text>
+
+  <line class="ao-line" x1="655" y1="212" x2="655" y2="264"/>
+  <text class="ao-l" x="665" y="243">HTTP /api</text>
+
+  <polyline class="ao-line" points="530,190 400,190 400,264"/>
+  <text class="ao-l" x="410" y="243">MVT</text>
+
+  <!-- Row B: CLI, tile server, API -->
+  <rect class="ao-proc" x="20" y="266" width="250" height="84" rx="6"/>
+  <text class="ao-h" x="34" y="292">CLI pipelines</text>
+  <text class="ao-m" x="34" y="314">Python · Typer</text>
+  <text class="ao-t" x="34" y="336">ingest · derive · export</text>
+
+  <rect class="ao-proc" x="290" y="266" width="220" height="84" rx="6"/>
+  <text class="ao-h" x="304" y="292">Tile server (Martin)</text>
+  <text class="ao-m" x="304" y="314">optional · port 3000</text>
+  <text class="ao-t" x="304" y="336">MVT from serving_geo</text>
+
+  <rect class="ao-proc" x="530" y="266" width="250" height="84" rx="6"/>
+  <text class="ao-h" x="544" y="292">API (FastAPI)</text>
+  <text class="ao-m" x="544" y="314">port 8001</text>
+  <text class="ao-t" x="544" y="336">REST · SSE · /tiles · /cog</text>
+
+  <!-- Row B to database -->
+  <line class="ao-line" x1="145" y1="350" x2="145" y2="484"/>
+  <text class="ao-l" x="155" y="420">SQL: load, derive</text>
+
+  <line class="ao-line" x1="400" y1="350" x2="400" y2="484"/>
+  <text class="ao-l" x="410" y="420">SQL tile functions</text>
+
+  <line class="ao-line" x1="580" y1="350" x2="580" y2="484"/>
+  <text class="ao-l" x="588" y="406">direct:</text>
+  <text class="ao-l" x="588" y="426">enqueue,</text>
+  <text class="ao-l" x="588" y="446">progress</text>
+
+  <line class="ao-line" x1="720" y1="350" x2="720" y2="382"/>
+  <rect class="ao-proc" x="664" y="384" width="116" height="52" rx="6"/>
+  <text class="ao-h" x="676" y="406">pgbouncer</text>
+  <text class="ao-m" x="676" y="426">pooled SQL</text>
+  <line class="ao-line" x1="720" y1="436" x2="720" y2="484"/>
+
+  <!-- Database -->
+  <rect class="ao-db" x="20" y="486" width="760" height="124" rx="6"/>
+  <text class="ao-h" x="36" y="512">PostgreSQL · PostGIS · pgRouting</text>
+
+  <rect class="ao-chip" x="36" y="526" width="114" height="68" rx="4"/>
+  <text class="ao-t" x="93" y="552" text-anchor="middle">curated_geo</text>
+  <text class="ao-m" x="93" y="576" text-anchor="middle">source data</text>
+
+  <rect class="ao-chip" x="158" y="526" width="114" height="68" rx="4"/>
+  <text class="ao-t" x="215" y="552" text-anchor="middle">serving_geo</text>
+  <text class="ao-m" x="215" y="576" text-anchor="middle">read contract</text>
+
+  <rect class="ao-chip" x="280" y="526" width="114" height="68" rx="4"/>
+  <text class="ao-t" x="337" y="552" text-anchor="middle">explore</text>
+  <text class="ao-m" x="337" y="576" text-anchor="middle">inspection</text>
+
+  <rect class="ao-chip" x="402" y="526" width="114" height="68" rx="4"/>
+  <text class="ao-t" x="459" y="552" text-anchor="middle">app_core</text>
+  <text class="ao-m" x="459" y="576" text-anchor="middle">projects</text>
+
+  <rect class="ao-chip" x="524" y="526" width="114" height="68" rx="4"/>
+  <text class="ao-t" x="581" y="552" text-anchor="middle">jobs_runtime</text>
+  <text class="ao-m" x="581" y="576" text-anchor="middle">run state</text>
+
+  <rect class="ao-chip" x="646" y="526" width="118" height="68" rx="4"/>
+  <text class="ao-t" x="705" y="552" text-anchor="middle">dbos</text>
+  <text class="ao-m" x="705" y="576" text-anchor="middle">queues</text>
+
+  <!-- Worker -->
+  <line class="ao-line" x1="350" y1="610" x2="350" y2="664"/>
+  <text class="ao-l" x="340" y="642" text-anchor="end">dequeue units</text>
+  <line class="ao-line" x1="450" y1="664" x2="450" y2="610"/>
+  <text class="ao-l" x="460" y="642">write results</text>
+
+  <rect class="ao-proc" x="270" y="666" width="260" height="84" rx="6"/>
+  <text class="ao-h" x="284" y="692">Worker (DBOS executor)</text>
+  <text class="ao-m" x="284" y="714">queues runs, units</text>
+  <text class="ao-t" x="284" y="736">indicator computation</text>
+
+  <!-- Legend -->
+  <rect class="ao-ext" x="584" y="672" width="26" height="16" rx="2"/>
+  <text class="ao-m" x="620" y="686">External system</text>
+  <rect class="ao-proc" x="584" y="698" width="26" height="16" rx="2"/>
+  <text class="ao-m" x="620" y="712">Platform process</text>
+  <rect class="ao-db" x="584" y="724" width="26" height="16" rx="2"/>
+  <text class="ao-m" x="620" y="738">Database, schemas</text>
+</svg>
