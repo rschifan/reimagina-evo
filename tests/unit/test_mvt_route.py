@@ -234,6 +234,41 @@ class TestEmptyTile:
         assert "max-age" in client.get(URL).headers["cache-control"]
 
 
+class TestScenarioTilesAreNeverReusedUnchecked:
+    """A scenario changes under the same URL every time it is recomputed.
+
+    `max-age` plus `stale-while-revalidate` let the browser hand the map the
+    previous run's tile for up to six minutes after a recompute: the table
+    showed the new totals while the map still painted the old rules. A
+    scenario tile must be revalidated on every request; the ETag keeps an
+    unchanged one at a 304.
+    """
+
+    SCENARIO_URL = "/tiles/indicator_overlay_tile/14/2938/6619?scenario_id=s-1"
+
+    @pytest.mark.parametrize("payload", [BIG_TILE, b""], ids=["tile", "empty"])
+    def test_a_scenario_tile_is_revalidated_every_time(self, served, payload) -> None:
+        client, _ = served(payload)
+        cache = client.get(self.SCENARIO_URL).headers["cache-control"]
+        assert cache == "no-cache"
+
+    def test_the_difference_tile_is_too(self, served) -> None:
+        client, _ = served(BIG_TILE)
+        url = f"{self.SCENARIO_URL}&delta=true"
+        assert client.get(url).headers["cache-control"] == "no-cache"
+
+    def test_an_unchanged_scenario_tile_still_answers_304(self, served) -> None:
+        client, _ = served(BIG_TILE)
+        etag = client.get(self.SCENARIO_URL).headers["ETag"]
+        again = client.get(self.SCENARIO_URL, headers={"If-None-Match": etag})
+        assert again.status_code == 304
+
+    def test_the_baseline_keeps_its_cache_lifetime(self, served) -> None:
+        client, _ = served(BIG_TILE)
+        url = "/tiles/indicator_overlay_tile/14/2938/6619?indicator_slug=x"
+        assert "max-age" in client.get(url).headers["cache-control"]
+
+
 class TestConditionalRequests:
     """The highest-value optimisation on this path: a 304 buys 100%."""
 

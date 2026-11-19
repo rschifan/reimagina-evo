@@ -168,10 +168,11 @@ def test_create_set_attribute_list_and_show_round_trip(
         "num_levels",
         "unit_size",
         "people_per_household",
+        "lot_coverage",
     ]
 
     shown = _run(capsys, "show", "--scenario-id", scenario_id, "--dsn", migrated_db)
-    assert shown["scenario"]["edit_count"] == 4
+    assert shown["scenario"]["edit_count"] == 5
     assert shown["scenario"]["name"] == "Centralidad norte"
     # Drawn, not yet materialised — the state the view exists to make visible.
     assert shown["scenario"]["materialized_at"] is None

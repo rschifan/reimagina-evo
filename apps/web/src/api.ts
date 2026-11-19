@@ -312,7 +312,7 @@ export function downloadUrl(
 
 // ── scenarios ───────────────────────────────────────────────────────────
 //
-// The eight routes of `apps/api/routers/scenarios.py`, typed. Shapes mirror
+// The nine routes of `apps/api/routers/scenarios.py`, typed. Shapes mirror
 // that module's pydantic models and, as everywhere else in this file, only
 // the fields the map reads.
 //
@@ -386,6 +386,20 @@ export interface ProposalBody {
   levels: number;
   unit_size: number;
   people_per_household: number;
+  /** Share of the block built on, `0 < c ≤ 1`; the API reads absent as 1. */
+  lot_coverage?: number;
+}
+
+
+/** `PATCH /scenarios/{id}/rules`: one rule's new numbers, and optionally its
+ *  new area, applied to its existing edits in place. */
+export interface UpdateRuleBody {
+  edit_ids: string[];
+  area?: GeoJSON.Feature | GeoJSON.Geometry;
+  levels: number;
+  unit_size: number;
+  people_per_household: number;
+  lot_coverage: number;
 }
 
 
@@ -512,6 +526,15 @@ export function addScenarioEdits(
  * delete reported to the user as "Unexpected end of JSON input". The status is
  * the whole answer, so there is nothing to parse.
  */
+/** Change one rule in place: it keeps its edits and its place in "later wins". */
+export function updateRule(scenarioId: string, body: UpdateRuleBody): Promise<EditsWritten> {
+  return jsonRequest<EditsWritten>(
+    `/scenarios/${encodeURIComponent(scenarioId)}/rules`,
+    { method: "PATCH", body },
+  );
+}
+
+
 export async function removeScenarioEdit(
   scenarioId: string,
   editId: string,

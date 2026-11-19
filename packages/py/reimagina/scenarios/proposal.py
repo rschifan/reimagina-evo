@@ -54,10 +54,12 @@ class ProposalValueError(ValueError):
     line, ``levels`` in a request body.
     """
 
-    def __init__(self, field: str, value: float) -> None:
+    def __init__(
+        self, field: str, value: float, *, must: str = "be a positive number"
+    ) -> None:
         self.field = field
         self.value = value
-        super().__init__(f"{field} must be a positive number, got {value!r}")
+        super().__init__(f"{field} must {must}, got {value!r}")
 
 
 class CeilingPrecheckFailed(ValueError):
@@ -107,9 +109,16 @@ class CeilingPrecheckFailed(ValueError):
 
 
 def edits_for(
-    levels: float, unit_size: float, people_per_household: float
+    levels: float,
+    unit_size: float,
+    people_per_household: float,
+    lot_coverage: float = 1.0,
 ) -> list[dict[str, Any]]:
-    """The four edits one proposal writes, in the order they are written.
+    """The five edits one proposal writes, in the order they are written.
+
+    ``lot_coverage`` is the share of the block that is built on (COS). It
+    defaults to 1.0 — the whole block, today's meaning — so a caller that
+    never heard of it keeps the formula it had; the web page sends 0.6.
 
     Three numbers, four rules: ``levels`` sets both ``floors`` and
     ``num_levels``, which are the same quantity under two names
@@ -131,6 +140,7 @@ def edits_for(
             "attribute_key": "people_per_household",
             "value_numeric": float(people_per_household),
         },
+        {"attribute_key": "lot_coverage", "value_numeric": float(lot_coverage)},
     ]
 
 
@@ -148,8 +158,19 @@ def require_positive(**values: float) -> None:
             raise ProposalValueError(field, value)
 
 
+def require_coverage(lot_coverage: float) -> None:
+    """Refuse a lot coverage that is not a share of the block: ``0 < c ≤ 1``."""
+    if not math.isfinite(lot_coverage) or not 0 < lot_coverage <= 1:
+        raise ProposalValueError(
+            "lot_coverage", lot_coverage, must="be a share between 0 and 1"
+        )
+
+
 def precheck_ceilings(
-    levels: float, unit_size: float, people_per_household: float
+    levels: float,
+    unit_size: float,
+    people_per_household: float,
+    lot_coverage: float = 1.0,
 ) -> None:
     """Refuse a proposal the area-independent bounds already rule out.
 
@@ -170,6 +191,7 @@ def precheck_ceilings(
                 unit_size=unit_size,
                 people_per_household=people_per_household,
                 area_m2=0.0,
+                lot_coverage=lot_coverage,
             )
         ]
     )

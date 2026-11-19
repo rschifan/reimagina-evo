@@ -1,6 +1,8 @@
 <script lang="ts">
-  import type { Map as MapLibreMap } from "maplibre-gl";
-  import { onMount } from "svelte";
+  import type { Feature, Polygon } from "geojson";
+  import * as maplibregl from "maplibre-gl";
+  import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
+  import { onMount, untrack } from "svelte";
 
   import {
     downloadUrl,
@@ -30,12 +32,26 @@
     type TileSourceCatalog,
   } from "../layers";
   import { cn } from "../lib/utils";
+  import type { EditGroup } from "../scenario";
   import { createMap, flyToAoi } from "../map-base";
   import { enableSelection, type SelectionController, type SelectionShape } from "../selection";
+  import { installSelectionHandle } from "../selection-handle";
   import { TooltipController } from "../tooltip";
 
+  import { anchorBox } from "./box-anchor";
   import { noValuesNote } from "./derive";
-  import { onMapRefresh, setIndicator, setMode, ws } from "./store.svelte";
+  import { inferShape, rulesToFeatureCollection, wktToGeometry } from "./rule-geometry";
+  import RuleBox from "./RuleBox.svelte";
+  import {
+    applyNewRule,
+    deleteRule,
+    onMapRefresh,
+    saveRule,
+    setIndicator,
+    setMode,
+    ws,
+    type RuleValues,
+  } from "./store.svelte";
 
   /**
    * One scenario on the map, on the indicators a rule can reach, with the
@@ -58,6 +74,32 @@
   let refreshTick = $state(0);
   let renderToken = 0;
   let mapNote = $state("");
+
+  // ── the rule being edited ────────────────────────────────────────────
+  //
+  // `new`: a shape just drawn. `rule`: a saved rule, loaded into terra-draw so
+  // it can be dragged; its static outline is hidden meanwhile. Only one box at
+  // a time, and none while a gesture's recompute is running.
+  const RULES_SOURCE = "scenario-rules";
+  const RULES_FILL = "scenario-rules-fill";
+  const RULES_LINE = "scenario-rules-line";
+  type Editing =
+    | { kind: "new" }
+    | {
+        kind: "rule";
+        group: EditGroup;
+        index: number;
+        draggable: boolean;
+        overriddenBy: number | null;
+      };
+  let editing = $state<Editing | null>(null);
+  let boxPos = $state<{ left: number; top: number } | null>(null);
+  let boxEl = $state<HTMLDivElement | undefined>();
+  /** The next publish is `edit()` loading the rule, not the planner moving it. */
+  let loadingRule = false;
+  /** The open rule was dragged or resized since it was opened. */
+  let moved = false;
+  let labels: maplibregl.Marker[] = [];
 
   const indicator = $derived(ws.indicators.find((i) => i.slug === ws.slug) ?? null);
 
@@ -91,19 +133,230 @@
         // blocks a rule selects.
         installInputLayers(map, catalog, tooltips, ws.aoiId, (layer) => layer.typeSlug === "road");
         selection = enableSelection(map);
-        selection.subscribe((sel) => {
+        // The rim handle that resizes a circle, as on the explore page; after
+        // enableSelection so it paints above terra-draw's outline.
+        installSelectionHandle(map, selection);
+        installRulesLayer(map);
+        // ⚠ untrack: the controller publishes synchronously from inside
+        // whatever called it, effects included. Read tracked, `editing` here
+        // became a dependency of the pilot effect (which clears the
+        // selection), so opening a box re-ran it and wiped the shape.
+        selection.subscribe((sel) => untrack(() => {
           ws.drawn = sel?.feature ?? null;
-          if (!sel) shape = null;
+          if (!sel) {
+            shape = null;
+            // Cleared from outside (a pilot switch): the box goes with it.
+            if (!loadingRule && editing && !ws.busy) closeBox(false);
+            return;
+          }
+          if (selection?.isDrawing()) return;
+          if (loadingRule) loadingRule = false;
+          else if (editing?.kind === "rule") moved = true;
+          if (editing === null) {
+            ws.boxError = null;
+            editing = { kind: "new" };
+          }
+          shape = null;
+          placeBox();
+        }));
+        map.on("move", placeBox);
+        map.on("click", RULES_FILL, (e) => {
+          if (editing || ws.busy || selection?.isDrawing()) return;
+          const index = Number(e.features?.[0]?.properties?.index);
+          if (Number.isFinite(index)) openRule(index);
         });
+        map.on("mouseenter", RULES_FILL, () => {
+          if (map) map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", RULES_FILL, () => {
+          if (map) map.getCanvas().style.cursor = "";
+        });
+        // Tests drive the map through this in the browser suite; dev only.
+        if (import.meta.env.DEV) (window as unknown as { __scenarioMap?: MapLibreMap }).__scenarioMap = map;
         ready = true;
       })();
     });
+    window.addEventListener("keydown", onKey);
     return () => {
+      window.removeEventListener("keydown", onKey);
       unsubscribeRefresh();
+      for (const label of labels) label.remove();
       map?.remove();
       map = null;
     };
   });
+
+  /** Rule outlines: above the indicator fill (choropleth.ts inserts below
+   *  `scenario-rules*`), below terra-draw's shapes, so a rule being edited
+   *  shows over its own outline. */
+  function installRulesLayer(m: MapLibreMap): void {
+    const before = m.getStyle()?.layers.find((l) => l.id.startsWith("td-"))?.id;
+    m.addSource(RULES_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    m.addLayer(
+      { id: RULES_FILL, type: "fill", source: RULES_SOURCE, paint: { "fill-color": "#22d3ee", "fill-opacity": 0.08 } },
+      before,
+    );
+    m.addLayer(
+      { id: RULES_LINE, type: "line", source: RULES_SOURCE, paint: { "line-color": "#22d3ee", "line-width": 1.5 } },
+      before,
+    );
+  }
+
+  // The selected scenario's rules, outlined and labelled. Labels are HTML
+  // markers: the map has no glyph source (no third-party service may be
+  // required at runtime), so a symbol layer cannot draw text.
+  $effect(() => {
+    const rules = ws.rules;
+    if (!ready || !map) return;
+    const fc = rulesToFeatureCollection(rules);
+    (map.getSource(RULES_SOURCE) as GeoJSONSource | undefined)?.setData(fc);
+    for (const label of labels) label.remove();
+    labels = fc.features.map((feature) => {
+      const element = document.createElement("div");
+      element.className =
+        "pointer-events-none rounded bg-surface/90 px-1.5 py-0.5 text-[10px] text-foreground";
+      element.textContent = String(feature.properties?.label ?? "");
+      const [[minX, minY], [maxX, maxY]] = bboxOf(feature.geometry as Polygon);
+      return new maplibregl.Marker({ element })
+        .setLngLat([(minX + maxX) / 2, (minY + maxY) / 2])
+        .addTo(map as MapLibreMap);
+    });
+  });
+
+  // Another scenario or pilot on screen: whatever was being edited is gone.
+  // ⚠ Only the selection and the pilot are dependencies: read tracked,
+  // `editing` made opening a box re-run this and close it at once.
+  $effect(() => {
+    void ws.selectedId;
+    void ws.aoiId;
+    untrack(() => {
+      if (!ws.busy && editing) closeBox(true);
+    });
+  });
+
+  function bboxOf(geometry: Polygon | GeoJSON.MultiPolygon): [[number, number], [number, number]] {
+    const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates.flat();
+    const points = rings.flat();
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+    return [
+      [Math.min(...xs), Math.min(...ys)],
+      [Math.max(...xs), Math.max(...ys)],
+    ];
+  }
+
+  /** Put the box next to the shape being edited, inside the map. */
+  function placeBox(): void {
+    if (!map || !editing) return;
+    const geometry =
+      ws.drawn?.geometry ??
+      (editing.kind === "rule" ? wktToGeometry(editing.group.areaWkt) : null);
+    if (!geometry) return;
+    const [[minLon, minLat], [maxLon, maxLat]] = bboxOf(geometry);
+    const topLeft = map.project([minLon, maxLat]);
+    const bottomRight = map.project([maxLon, minLat]);
+    const canvas = map.getContainer();
+    boxPos = anchorBox(
+      { minX: topLeft.x, minY: topLeft.y, maxX: bottomRight.x, maxY: bottomRight.y },
+      { width: canvas.clientWidth, height: canvas.clientHeight },
+      { width: boxEl?.offsetWidth ?? 224, height: boxEl?.offsetHeight ?? 280 },
+    );
+  }
+
+  /** Open a saved rule — `index` is its 1-based place in "later wins". */
+  function openRule(index: number): void {
+    const ordered = [...ws.rules].sort((a, b) => a.ordinal - b.ordinal);
+    const group = ordered[index - 1];
+    if (!group || !map) return;
+    const geometry = wktToGeometry(group.areaWkt);
+    const kind = inferShape(geometry);
+    ws.boxError = null;
+    editing = {
+      kind: "rule",
+      group,
+      index,
+      draggable: kind !== null,
+      overriddenBy: laterOverlap(index, ordered, geometry),
+    };
+    // Hide the static outline: the editable copy is what the planner moves.
+    for (const id of [RULES_FILL, RULES_LINE]) map.setFilter(id, ["!=", ["get", "index"], index]);
+    moved = false;
+    if (kind !== null && selection) {
+      loadingRule = true;
+      selection.edit({ type: "Feature", properties: {}, geometry: geometry as Polygon }, kind);
+    } else {
+      placeBox();
+    }
+  }
+
+  /**
+   * The first later rule whose area may overlap this one's.
+   *
+   * ponytail: bounding boxes, not polygons — it can name a rule whose box
+   * overlaps but whose shape does not. A polygon intersection when rules get
+   * irregular enough for that to mislead.
+   */
+  function laterOverlap(
+    index: number,
+    ordered: EditGroup[],
+    geometry: Polygon | GeoJSON.MultiPolygon,
+  ): number | null {
+    const [[a0, b0], [a1, b1]] = bboxOf(geometry);
+    for (let i = index; i < ordered.length; i += 1) {
+      let other;
+      try {
+        other = bboxOf(wktToGeometry(ordered[i].areaWkt));
+      } catch {
+        continue;
+      }
+      const [[c0, d0], [c1, d1]] = other;
+      if (a0 <= c1 && c0 <= a1 && b0 <= d1 && d0 <= b1) return i + 1;
+    }
+    return null;
+  }
+
+  function closeBox(clearShape: boolean): void {
+    editing = null;
+    boxPos = null;
+    loadingRule = false;
+    moved = false;
+    ws.boxError = null;
+    if (map) for (const id of [RULES_FILL, RULES_LINE]) map.setFilter(id, null);
+    if (clearShape) selection?.clear();
+  }
+
+  async function apply(values: RuleValues, scenarioName?: string): Promise<void> {
+    const area = ws.drawn;
+    if (!area) return;
+    if (await applyNewRule(area, values, scenarioName)) closeBox(true);
+  }
+
+  async function save(values: RuleValues): Promise<void> {
+    const current = editing;
+    if (current?.kind !== "rule") return;
+    const area: Feature<Polygon> | null = moved ? ws.drawn : null;
+    if (await saveRule(current.group, area, values)) closeBox(true);
+  }
+
+  async function remove(): Promise<void> {
+    const current = editing;
+    if (current?.kind !== "rule") return;
+    if (await deleteRule(current.group)) closeBox(true);
+  }
+
+  function onKey(event: KeyboardEvent): void {
+    const target = event.target as HTMLElement | null;
+    if (target && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "Escape") {
+      if (editing && !ws.busy) closeBox(true);
+      else clearDrawing();
+      return;
+    }
+    if (editing || ws.busy) return;
+    const next = ({ r: "rectangle", p: "polygon", c: "circle" } as const)[event.key];
+    if (next) draw(next);
+  }
 
   // The pilot: clip the context layers to it and fly there.
   $effect(() => {
@@ -166,24 +419,41 @@
       setMode("value");
       return;
     }
-    let stats: IndicatorValueStats | null = null;
-    try {
-      stats = await getIndicatorStats(current.slug, {
-        feature_type: grain ?? undefined,
-        aoi_id: aoiId ?? undefined,
-        scenario_id: scenarioId ?? undefined,
-        bins: HISTOGRAM_BINS,
-      });
-    } catch (err) {
-      console.warn("stats unavailable; ramp from catalog bounds", err);
-    }
+    // A scenario is coloured on the baseline city's scale, so a colour means
+    // the same value on every scenario: a dense rule shows as the darkest
+    // colour instead of turning every block it did not touch the palest one.
+    const statsFor = async (scenario: string | null): Promise<IndicatorValueStats | null> => {
+      try {
+        return await getIndicatorStats(current.slug, {
+          feature_type: grain ?? undefined,
+          aoi_id: aoiId ?? undefined,
+          scenario_id: scenario ?? undefined,
+          bins: HISTOGRAM_BINS,
+        });
+      } catch (err) {
+        console.warn("stats unavailable; ramp from catalog bounds", err);
+        return null;
+      }
+    };
+    const [stats, base] = await Promise.all([
+      statsFor(scenarioId),
+      scenarioId ? statsFor(null) : Promise.resolve(null),
+    ]);
     if (myToken !== renderToken || !map) return;
-    const domain = rampDomainFromStats(stats, current);
+    const shown = scenarioId ? base : stats;
+    const domain = rampDomainFromStats(shown, current);
+    // No `selection`: on the explore page it clips the layer to the drawn
+    // area; here the planner edits a rule against the whole city.
     activateIndicator(map, config, current, domain, { tooltips, aoiId, grain, scenarioId });
     renderLegend(
-      legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
+      legend, current, domain, shown?.histogram ?? null, shown?.count_at_cap ?? null, shown?.count ?? 0,
     );
-    mapNote = stats && stats.count === 0 ? noValuesNote(current.name, scenarioId !== null) : "";
+    mapNote =
+      stats && stats.count === 0
+        ? noValuesNote(current.name, scenarioId !== null)
+        : scenarioId
+          ? "Colours use the baseline city's range; values above it show in the darkest colour."
+          : "";
   }
 
   function draw(next: SelectionShape) {
@@ -219,13 +489,13 @@
       </select>
     </label>
     <div role="group" aria-label="Show" class="flex overflow-hidden rounded border border-line">
-      {#each [["value", "Values"], ["delta", "Difference"]] as const as [mode, label] (mode)}
+      {#each [["delta", "Change"], ["value", "Values"]] as const as [mode, label] (mode)}
         <button
           type="button"
           aria-pressed={ws.mode === mode}
           disabled={mode === "delta" && ws.selectedId === null}
           title={mode === "delta" && ws.selectedId === null
-            ? "Pick a scenario to see its difference from the baseline city"
+            ? "Pick a scenario to see its change against the baseline city"
             : undefined}
           class={cn(
             "px-2.5 py-1 disabled:opacity-50",
@@ -300,6 +570,40 @@
       class="legend absolute right-3 bottom-8 max-w-[280px] rounded border border-line bg-surface/95 p-2 text-xs"
       hidden
     ></div>
+    {#if editing}
+      {@const current = editing}
+      <div
+        bind:this={boxEl}
+        class="absolute z-10"
+        style:left="{boxPos?.left ?? 56}px"
+        style:top="{boxPos?.top ?? 12}px"
+      >
+        {#key current.kind === "rule" ? `rule-${current.index}` : "new"}
+          <RuleBox
+            mode={current.kind}
+            values={current.kind === "rule"
+              ? {
+                  levels: current.group.levels ?? ws.lastValues.levels,
+                  unitSize: current.group.unitSize ?? ws.lastValues.unitSize,
+                  peoplePerHousehold:
+                    current.group.peoplePerHousehold ?? ws.lastValues.peoplePerHousehold,
+                  lotCoverage: current.group.lotCoverage ?? 1,
+                }
+              : ws.lastValues}
+            needsScenarioName={current.kind === "new" && ws.selectedId === null}
+            defaultName={`Scenario ${ws.scenarios.length + 1}`}
+            overriddenBy={current.kind === "rule" ? current.overriddenBy : null}
+            busy={ws.busy}
+            error={ws.boxError}
+            draggable={current.kind === "rule" ? current.draggable : true}
+            onapply={(values, name) => void apply(values, name)}
+            onsave={(values) => void save(values)}
+            ondelete={() => void remove()}
+            oncancel={() => closeBox(true)}
+          />
+        {/key}
+      </div>
+    {/if}
   </div>
   <p class="text-xs text-muted-foreground" role="status">{mapNote}</p>
 </section>

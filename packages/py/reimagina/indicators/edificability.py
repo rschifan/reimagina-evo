@@ -3,9 +3,14 @@
 Three indicators, one calculation — the worked example the Reimagina
 collaborators supplied:
 
-    housing_units = (lot_size × num_levels) / unit_size
+    housing_units = (lot_size × lot_coverage × num_levels) / unit_size
     population    = housing_units × people_per_household
     density       = housing_units / lot_size_in_hectares
+
+``lot_coverage`` — the share of the block that is built on (COS) — is the one
+addition to their example, and it is optional: a block without it is computed
+at 1.0, the whole block, which is the example exactly. The census-fitted
+baseline carries none, so it does not move. A scenario rule writes it.
 
 Computed at **block** grain: `lot_size` is the manzana's geodesic area, because
 no cadastral lot layer exists yet (`MEX:lot` is a declared feature type with
@@ -56,7 +61,7 @@ _FRAME_FOR: dict[str, str] = {
 }
 
 #: Attribute keys every edificability indicator needs, in row order.
-_ATTRIBUTES = ("num_levels", "unit_size", "people_per_household")
+_ATTRIBUTES = ("num_levels", "unit_size", "people_per_household", "lot_coverage")
 
 
 def _edificability_rows(
@@ -104,7 +109,12 @@ def _edificability_rows(
         if levels is None or unit_size is None or people is None:
             # Missing input — leave whatever this feature already holds.
             continue
-        rows.append((feature_id, area_m2, levels, unit_size, people))
+        # Optional, unlike the three above: absent means the whole block.
+        coverage = attributes["lot_coverage"].get(feature_id, 1.0)
+        # The levels slot carries CUS = COS × levels (kernels.py names
+        # num_levels as the CUS term), so the kernels and the dataflow keep
+        # their shapes and every one of the three moves by the same factor.
+        rows.append((feature_id, area_m2, levels * coverage, unit_size, people))
     return rows
 
 

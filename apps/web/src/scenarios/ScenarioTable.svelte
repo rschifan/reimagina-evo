@@ -62,7 +62,7 @@
             )}
           >
             <th scope="row" class="py-2 pr-4 text-left font-normal">
-              <button type="button" class="hover:underline" onclick={() => select(null)}>
+              <button type="button" class="hover:underline disabled:opacity-50" disabled={ws.busy} onclick={() => select(null)}>
                 Baseline city
               </button>
             </th>
@@ -88,7 +88,7 @@
               )}
             >
               <th scope="row" class="py-2 pr-4 text-left font-normal">
-                <button type="button" class="hover:underline" onclick={() => select(row.id)}>
+                <button type="button" class="hover:underline disabled:opacity-50" disabled={ws.busy} onclick={() => select(row.id)}>
                   {row.name}
                 </button>
               </th>

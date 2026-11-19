@@ -20,7 +20,7 @@ def test_authorable_is_the_derived_set_minus_three() -> None:
     assert set(authorable_attributes()) == set(overridable_attributes()) - _EXCLUDED
 
 
-def test_all_four_authorable_attributes_are_pinned() -> None:
+def test_every_authorable_attribute_is_pinned() -> None:
     """The exact set, so a fifth lever (or a lost one) is a reviewed change.
 
     The derived-set test above cannot notice a new policy attribute: it
@@ -30,6 +30,7 @@ def test_all_four_authorable_attributes_are_pinned() -> None:
     """
     assert authorable_attributes() == (
         "floors",
+        "lot_coverage",
         "num_levels",
         "people_per_household",
         "unit_size",
@@ -57,8 +58,8 @@ def test_a_new_policy_attribute_appears_without_editing_a_list(
         value_type="numeric",
         aggregation_method="mean",
         applies_to=("block",),
-        inputs=(AssetEdge("mex.block", attributes=("lot_coverage",)),),
+        inputs=(AssetEdge("mex.block", attributes=("setback_m",)),),
     )
-    assert "lot_coverage" not in authorable_attributes()
+    assert "setback_m" not in authorable_attributes()
     monkeypatch.setattr(registry, "_shipped", lambda: (*SHIPPED_INDICATORS, extra))
-    assert "lot_coverage" in authorable_attributes()
+    assert "setback_m" in authorable_attributes()

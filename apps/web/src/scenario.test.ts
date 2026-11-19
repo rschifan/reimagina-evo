@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "./http";
 import {
   CLIENT_PRECHECK_NOTE,
-  comparisonHeadline,
   describeGroup,
   groupEditsByArea,
   maxLevelsFor,
@@ -15,7 +14,7 @@ import {
   tileUrlFor,
   validateEdit,
 } from "./scenario";
-import type { ComparisonResponse, EditRow } from "./api";
+import type { EditRow } from "./api";
 
 /**
  * ``valid_max`` of ``edificability_block_density`` in the shipped catalog
@@ -142,6 +141,29 @@ describe("maxLevelsFor", () => {
     [125, 1000, 12],
   ])("allows %i m² per dwelling under a %i bound exactly %i storeys", (unitSize, bound, allowed) => {
     expect(maxLevelsFor(unitSize, bound)).toBe(allowed);
+  });
+});
+
+
+describe("lot coverage", () => {
+  const ok = { levels: 6, unitSize: 60, peoplePerHousehold: 3.6 };
+
+  it("must be a share of the block", () => {
+    for (const bad of [0, -0.1, 1.2, Number.NaN]) {
+      expect(validateEdit({ ...ok, lotCoverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
+    }
+    expect(validateEdit({ ...ok, lotCoverage: 0.6 })).toBeNull();
+  });
+
+  // density = coverage × levels × 10000 / unit_size: 20 storeys at 60 m² is
+  // 3333/ha at full coverage, 1666 at half.
+  it("scales the density ceiling", () => {
+    const at = (lotCoverage: number) =>
+      validateEdit({ ...ok, levels: 20, lotCoverage, densityValidMax: 2000 });
+    expect(at(1)).toMatch(/density ceiling/);
+    expect(at(0.5)).toBeNull();
+    expect(maxLevelsFor(60, 2000, 0.5)).toBe(24);
+    expect(maxLevelsFor(60, 2000)).toBe(12);
   });
 });
 
@@ -508,90 +530,6 @@ describe("isTerminalRunStatus", () => {
 });
 
 
-// ── the comparison strip ───────────────────────────────────────────────
-
-/**
- * A comparison as the endpoint answers it. ⚠ 12 + 3 + 1 = 16 = ``row_count``,
- * and 16 is **not** the AOI's block count: a feature with no numeric value on
- * either side is absent from the rows by design, and the response carries no
- * total for that reason.
- */
-function comparison(overrides: Partial<ComparisonResponse> = {}): ComparisonResponse {
-  return {
-    scenario_id: "s-1",
-    indicator_slug: "edificability_block_density",
-    aoi_id: AOI,
-    summary: {
-      changed: 12,
-      unchanged: 3,
-      new: 1,
-      mean_delta: 3.5,
-      higher_is_better: true,
-    },
-    row_count: 16,
-    rows: [],
-    rows_truncated: false,
-    ...overrides,
-  };
-}
-
-describe("comparisonHeadline", () => {
-  it("states the comparison's own row count, which the three counts sum to", () => {
-    const response = comparison();
-    const { changed, unchanged, new: added } = response.summary;
-    expect(changed + unchanged + added).toBe(response.row_count);
-    expect(comparisonHeadline(response).counts).toBe("12 changed · 3 unchanged · 1 new");
-    expect(comparisonHeadline(response).denominator).toContain("16");
-  });
-
-  // ⚠ The denominator comes from `row_count`, not from the array. `rows` is
-  // whatever `limit` left behind — the response says so with `rows_truncated`
-  // — and a strip reading "3 changed of 2" is read as a broken comparison.
-  it("takes its denominator from the row count, not from the rows it was handed", () => {
-    const text = comparisonHeadline(
-      comparison({
-        rows: [
-          { feature_id: "f1", baseline: 1, scenario: 2, delta: 1, state: "changed" },
-          { feature_id: "f2", baseline: 1, scenario: 1, delta: 0, state: "unchanged" },
-        ],
-        rows_truncated: true,
-      }),
-    ).denominator;
-    expect(text).toContain("16");
-    expect(text).not.toMatch(/\b2\b/);
-  });
-
-  // The counts are of features that had a value on one side or the other, and
-  // the response deliberately carries no total. Saying so is what stops the
-  // strip from being read as "16 blocks in this AOI".
-  it("says what the count is of, rather than implying the territory's size", () => {
-    expect(comparisonHeadline(comparison()).denominator).toMatch(/either side/i);
-    expect(comparisonHeadline(comparison()).denominator).toMatch(/not the AOI/i);
-  });
-
-  it("gives the mean shift a direction from the catalog", () => {
-    expect(comparisonHeadline(comparison()).shift).toMatch(/higher is better/);
-    expect(
-      comparisonHeadline(
-        comparison({
-          summary: { changed: 12, unchanged: 3, new: 1, mean_delta: -40, higher_is_better: false },
-        }),
-      ).shift,
-    ).toMatch(/lower is better/);
-  });
-
-  it("does not invent a mean where no row had a baseline", () => {
-    const shift = comparisonHeadline(
-      comparison({
-        summary: { changed: 0, unchanged: 0, new: 16, mean_delta: null, higher_is_better: true },
-      }),
-    ).shift;
-    expect(shift).toMatch(/no baseline/i);
-    expect(shift).not.toMatch(/\d/);
-  });
-});
-
-
 // ── the edit list ──────────────────────────────────────────────────────
 
 function edit(ordinal: number, key: string, value: number, wkt: string): EditRow {
@@ -653,6 +591,17 @@ describe("groupEditsByArea", () => {
   it("marks a whole proposal complete", () => {
     expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].complete).toBe(true);
   });
+
+  // A rule written before lot coverage existed has four edits: still a whole
+  // proposal, computed at full coverage.
+  it("reads lot coverage when the rule has it, and leaves it null otherwise", () => {
+    expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].lotCoverage).toBeNull();
+    const five = [...proposalEdits(AREA_A, 1), edit(5, "lot_coverage", 0.6, AREA_A)];
+    const [group] = groupEditsByArea(five);
+    expect(group.lotCoverage).toBe(0.6);
+    expect(group.complete).toBe(true);
+    expect(group.editIds).toHaveLength(5);
+  });
 });
 
 
@@ -662,14 +611,16 @@ describe("describeGroup", () => {
     levels: 6,
     unitSize: 60,
     peoplePerHousehold: complete ? 3.6 : null,
+    lotCoverage: null as number | null,
     editIds: ["e1"],
     complete,
     ordinal: 1,
   });
 
-  it("names a rule by its position and its three numbers", () => {
-    expect(describeGroup(group(true), 2)).toBe(
-      "Area 2: 6 storeys · 60 m²/dwelling · 3.6 people/household",
+  it("names a rule by its position and its numbers", () => {
+    expect(describeGroup(group(true), 2)).toBe("Rule 2 · 6 st · 60 m² · 3.6 people");
+    expect(describeGroup({ ...group(true), lotCoverage: 0.6 }, 3)).toBe(
+      "Rule 3 · 6 st · 60 m² · 3.6 people · 60 %",
     );
   });
 

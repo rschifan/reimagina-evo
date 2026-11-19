@@ -93,6 +93,17 @@ export interface SelectionController {
    * checking shape.
    */
   setCircleRing(ring: number[][]): void;
+  /**
+   * Load an existing shape — a saved scenario rule — as the selection, ready
+   * to drag (and resize, by the handles its shape gets). It is published
+   * through ``subscribe`` exactly as a finished drawing is, and every drag
+   * after that arrives as a ``change``. A shape terra-draw refuses in its own
+   * mode (a circle whose ring is not quite round any more) loads as a polygon.
+   */
+  edit(feature: Feature<Polygon>, shape: SelectionShape): void;
+  /** True while a shape is being drawn and is not finished yet: the
+   *  selection published meanwhile is the drawing in progress. */
+  isDrawing(): boolean;
 }
 
 
@@ -166,6 +177,27 @@ const TD_MODE: Record<SelectionShape, string> = {
   rectangle: "rectangle",
   polygon: "polygon",
 };
+
+
+/** Mean distance, in km, from a ring's centroid to its vertices — the
+ *  ``radiusKilometers`` terra-draw keeps on a circle feature. */
+function _ringRadiusKm(feature: Feature<Polygon>): number {
+  const ring = feature.geometry.coordinates[0] ?? [];
+  const points = ring.slice(0, -1);
+  if (points.length === 0) return 0;
+  const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
+  const cy = points.reduce((s, p) => s + p[1], 0) / points.length;
+  const toRad = Math.PI / 180;
+  const km = (p: number[]): number => {
+    const dLat = (p[1] - cy) * toRad;
+    const dLon = (p[0] - cx) * toRad;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(cy * toRad) * Math.cos(p[1] * toRad) * Math.sin(dLon / 2) ** 2;
+    return 2 * 6371.0088 * Math.asin(Math.sqrt(a));
+  };
+  return points.reduce((s, p) => s + km(p), 0) / points.length;
+}
 
 
 // ── Map-gesture suppression while drawing ───────────────────────────
@@ -416,9 +448,14 @@ export function enableSelection(map: MapLibreMap): SelectionController {
   };
 
   let _activeShape: SelectionShape | null = null;
+  /** A drawing was started and has not finished. Not terra-draw's mode:
+   *  ``finish`` publishes before the switch to select mode, so the mode
+   *  still says "drawing" when the finished shape arrives. */
+  let _drawing = false;
 
   draw.on("finish", (id) => {
     if (_activeShape === null) return;
+    _drawing = false;
     _publishLatest(_activeShape);
     // Auto-enter select mode + pre-select the shape we just drew, so
     // the very next mousedown on the shape's interior or vertex
@@ -460,10 +497,12 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       // the metrics + dimming math unambiguous.
       controller.clear();
       _activeShape = shape;
+      _drawing = true;
       draw.setMode(TD_MODE[shape]);
       syncMapGestures(map, TD_MODE[shape]);
     },
     clear(): void {
+      _drawing = false;
       _activeShape = null;
       _activeSelectedShape = null;
       draw.clear();
@@ -474,6 +513,30 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     },
     getSelection(): SelectionGeometry | null {
       return _selection;
+    },
+    isDrawing(): boolean {
+      return _drawing;
+    },
+    edit(feature: Feature<Polygon>, shape: SelectionShape): void {
+      controller.clear();
+      const load = (as: SelectionShape): boolean => {
+        const id = crypto.randomUUID();
+        const properties: Record<string, string | number> = { mode: TD_MODE[as] };
+        if (as === "circle") properties.radiusKilometers = _ringRadiusKm(feature);
+        const [result] = draw.addFeatures([
+          { type: "Feature", id, geometry: feature.geometry, properties },
+        ]);
+        if (!result?.valid) return false;
+        _activeShape = as;
+        draw.setMode("select");
+        draw.selectFeature(id);
+        syncMapGestures(map, "select");
+        _publishLatest(as);
+        return true;
+      };
+      if (!load(shape) && shape !== "polygon" && !load("polygon")) {
+        console.warn("terra-draw refused the rule's shape; it cannot be dragged");
+      }
     },
     ownsClick(point: PointLike): boolean {
       return _drawingAtPointerDown || hitsSelectionHandle(map, point);
