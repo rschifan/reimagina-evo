@@ -5,10 +5,19 @@
  * hide a tile error it never showed. The banner shows the most important
  * active message: errors (an alert) before loading (a status).
  */
-export type BannerChannel = "api" | "map" | "values" | "loading";
 
-/** Most important first. */
-const ORDER: readonly BannerChannel[] = ["api", "map", "values", "loading"];
+/** Every channel, most important first; `error` ones are alerts, the rest
+ *  statuses. Adding a channel is one entry. */
+const CHANNELS = {
+  api: { error: true },
+  map: { error: true },
+  values: { error: true },
+  loading: { error: false },
+} as const;
+
+export type BannerChannel = keyof typeof CHANNELS;
+
+const ORDER = Object.keys(CHANNELS) as BannerChannel[];
 
 /** Returns `set(channel, message)`; `null` clears that channel. */
 export function createBanner(el: HTMLElement | null): (channel: BannerChannel, message: string | null) => void {
@@ -23,7 +32,7 @@ export function createBanner(el: HTMLElement | null): (channel: BannerChannel, m
     const key = top === undefined ? null : `${top}\0${messages.get(top)}`;
     if (key === shown) return;
     shown = key;
-    const error = top !== undefined && top !== "loading";
+    const error = top !== undefined && CHANNELS[top].error;
     el.hidden = top === undefined;
     // Errors interrupt; loading messages wait their turn.
     el.setAttribute("role", error ? "alert" : "status");
