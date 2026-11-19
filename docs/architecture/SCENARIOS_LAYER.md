@@ -360,7 +360,7 @@ python -m apps.cli.app scenario show --scenario-id <uuid>
 
 On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an area, type the numbers this area changes in the box that opens beside it (empty — a field left empty keeps each block's own value), Apply. Apply writes the rule, recomputes and switches the map to the change; on the baseline city it creates the scenario first. A saved rule is clicked to change its numbers, dragged or resized, or deleted, each followed by a recompute. When the recompute refuses (a per-block ceiling) or the rule catches no block, the page undoes its own write.
 
-`recompute` materialises the edits into override rows (selecting blocks with `ST_Covers(area, geometry_centroid)`) and then runs the selective recompute. `scripts/acceptance_run.sh` step 10 exercises exactly this path.
+`recompute` materialises the edits into override rows (selecting blocks with `ST_Covers(area, geometry_centroid)`) and then runs the selective recompute. From the API the run covers the scenario's **footprint** only — every block a current rule overrides, plus every block whose override this materialisation removed, with their attributes — rather than every block of the AOI: a block without an override reads the baseline through the overlay, so recomputing it under the scenario only rewrote baseline values (on Mexicali, 19,058 blocks for a rule over 2,400; about 20 s a run). The CLI's `scenario recompute` still plans from freshness. `scripts/acceptance_run.sh` step 10 exercises exactly this path.
 
 ---
 

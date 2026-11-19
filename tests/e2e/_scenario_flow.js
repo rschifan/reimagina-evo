@@ -83,13 +83,16 @@ async function run(page) {
   // The box opens empty: a rule sets only what is typed.
   await fillRule(box, { levels: 6, unitSize: 60, coverage: 60 });
   await box.getByRole('button', { name: 'Apply' }).click();
+  // The map page's spinner, while the recompute runs.
+  const spun = await page.locator('.map-loading[data-loading="true"]')
+    .waitFor({ timeout: 5_000 }).then(() => true, () => false);
   await gestureDone(page, box);
   const created = (await (await fetch(`${API}/scenarios`)).json()).find((s) => s.name === NAME);
   report.scenarioId = created ? created.id : null;
   const centre1 = await rendered(page, ...blk(0, 1));
   const bar = await page.locator('section[aria-label="Scenario"]').innerText();
-  step('apply on the baseline creates the scenario and shows the change', created && centre1 && centre1.state === 'changed', {
-    prefilledName: named, created: Boolean(created), centre: centre1, bar,
+  step('apply on the baseline creates the scenario and shows the change', created && centre1 && centre1.state === 'changed' && spun, {
+    spinnerShown: spun, prefilledName: named, created: Boolean(created), centre: centre1, bar,
     changePressed: await page.getByRole('button', { name: 'Change' }).getAttribute('aria-pressed'),
   });
   if (!created) return;
