@@ -1085,3 +1085,44 @@ def test_a_rule_update_sends_the_rules_full_set(client, territory):
     assert [e["attribute_key"] for e in response.json()["edits"]] == [
         "people_per_household"
     ]
+
+
+# ── what a recompute asks the ops-plane to compute ───────────────────────
+
+
+def test_a_recompute_names_the_blocks_and_inputs_the_rules_touch(
+    client, territory, orchestrator
+):
+    """Not the whole city. Planned from freshness, every indicator reading a
+    changed input recomputed all of the AOI's blocks under the scenario —
+    19,058 in Mexicali for a rule over 2,400 — though blocks without an
+    override read the baseline anyway."""
+    sid = _scenario(client, territory)
+    _post(client, sid, people_per_household=5.0)
+    caught = client.post(f"/scenarios/{sid}/recompute").json()["matched_per_edit"]
+
+    submitted = orchestrator[-1]
+    assert sorted(submitted["changed_attributes"]) == [
+        "floors",
+        "num_levels",
+        "people_per_household",
+        "unit_size",
+    ]
+    assert len(set(submitted["edited_features"])) == max(caught.values())
+    assert len(set(submitted["edited_features"])) < len(territory.blocks)
+
+
+def test_a_moved_rule_recomputes_its_old_blocks_too(client, territory, orchestrator):
+    sid = _scenario(client, territory)
+    ids = _post(client, sid)
+    client.post(f"/scenarios/{sid}/recompute")
+    before = set(orchestrator[-1]["edited_features"])
+
+    assert _patch(client, sid, ids, area=_MOVED).status_code == 200
+    client.post(f"/scenarios/{sid}/recompute")
+    after = set(orchestrator[-1]["edited_features"])
+
+    # Their overrides are gone; recomputing them is what puts the baseline
+    # back under the scenario. (The moved area's own blocks are the first
+    # test's subject.)
+    assert before and before <= after, "the blocks the rule left must be recomputed"

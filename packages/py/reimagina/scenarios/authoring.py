@@ -114,12 +114,21 @@ class MaterializeResult:
     it is deliberately not the number of rows the edit ended up owning: an edit
     fully covered by a later one still caught what it caught, and reporting 0
     for it would read as a mis-drawn area.
+
+    ``footprint_features`` and ``footprint_attributes`` are what the recompute
+    has to cover: every block a current rule overrides plus every block whose
+    override this materialisation removed, and the attributes involved. Blocks
+    outside it carry no override and read the baseline through the overlay, so
+    recomputing them under the scenario would only rewrite baseline values —
+    which is what planning from freshness did, for every block of the AOI.
     """
 
     matched_per_edit: dict[str, int]
     overrides_written: int
     overrides_removed: int
     results_superseded: int
+    footprint_features: tuple[str, ...] = ()
+    footprint_attributes: tuple[str, ...] = ()
 
 
 def create_scenario(
@@ -693,11 +702,14 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
             "UPDATE app_core.scenario SET materialized_at = now() WHERE id = %s",
             (scenario_id,),
         )
+    touched = set(resolved) | set(removed)
     return MaterializeResult(
         matched_per_edit=matched,
         overrides_written=written,
         overrides_removed=len(removed),
         results_superseded=superseded,
+        footprint_features=tuple(sorted({feature_id for feature_id, _ in touched})),
+        footprint_attributes=tuple(sorted({key for _, key in touched})),
     )
 
 

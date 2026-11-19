@@ -128,3 +128,13 @@ describe("removeRule", () => {
     expect(result).toEqual({ removed: 1, error: boom });
   });
 });
+
+
+describe("how often a run is checked", () => {
+  // A two-second poll added up to two seconds after every run had already
+  // landed — on a recompute that now takes a few seconds, a third of the wait.
+  it("checks twice a second, and still follows for two minutes", () => {
+    expect(RUN_POLL_MS).toBeLessThanOrEqual(500);
+    expect(RUN_POLL_MS * MAX_RUN_POLLS).toBe(120_000);
+  });
+});
