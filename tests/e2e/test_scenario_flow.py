@@ -62,7 +62,9 @@ STEPS = [
 def test_step(flow, name):
     steps = {step["name"]: step for step in flow["steps"]}
     crashed = steps.get("the flow ran to the end")
-    assert name in steps, f"never reached: {crashed['detail'] if crashed else 'unknown'}"
+    assert name in steps, (
+        f"never reached: {crashed['detail'] if crashed else 'unknown'}"
+    )
     assert steps[name]["ok"], json.dumps(steps[name]["detail"], indent=2)
 
 
