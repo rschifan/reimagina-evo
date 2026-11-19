@@ -25,6 +25,7 @@ date: "13 November 2026"
 | 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
 | 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
+| 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
 
 ### Provenance of the figures
 
@@ -462,6 +463,20 @@ python -m apps.cli.app points bootstrap
 python -m apps.cli.app indicators seed-catalog
 python -m apps.cli.app indicators compute --slug urban_form_block_compactness
 ```
+
+The indicators a scenario rule changes need a baseline for the rule's inputs.
+After the census, the buildings and the AOI are loaded:
+
+```bash
+python -m apps.cli.app inegi-censo bootstrap --cve-ent 02 --columns prom_ocup
+python -m apps.cli.app overture block-storeys --aoi-id "$AOI_ID"
+python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
+```
+
+Household size comes from the census and storeys from Overture where they
+exist; the rest is synthetic, fitted so each block's dwellings equal the
+census count. `scripts/mexicali_run.sh` runs all three (step 9b), and
+`docs/delivery/05_capability_proof.md` §A.2 records what they produced.
 
 ## 8. Operating the platform
 

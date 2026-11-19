@@ -34,6 +34,13 @@ const PAGES = [
       title: await tab.title().catch(() => null),
       text: (await tab.locator('body').innerText().catch(() => '')).slice(0, 4000),
       consoleErrors: errors,
+      // The map's own box, not the frame around it: MapLibre falls back to a
+      // 300 px canvas when its container is 0 px tall, so a canvas existing
+      // proves nothing about whether anyone can see the map.
+      mapBox: await tab.evaluate(() => {
+        const m = document.querySelector('.maplibregl-map');
+        return m ? { width: m.clientWidth, height: m.clientHeight } : null;
+      }).catch(() => null),
       requests,
       failedRequests: failed,
     };

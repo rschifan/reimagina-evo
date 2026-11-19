@@ -132,3 +132,132 @@ def test_dry_run_writes_nothing(conn, migrated_db):
             (block_id,),
         )
         assert "num_levels" not in cur.fetchone()[0]
+
+
+# ─── Fitted to the census ─────────────────────────────────────────────────
+
+
+def _census_dwellings(conn, block_id: str, dwellings: float) -> None:
+    from reimagina.data import observation as obs
+
+    source_id = _register_source(
+        conn,
+        name=f"censo_fit_{uuid4().hex[:8]}",
+        storage_type="tabular",
+        integration_role="enrichment",
+    )
+    obs.upsert_observation(
+        conn,
+        feature_id=block_id,
+        attribute_key="censo_2020_vivtot",
+        value_type="numeric",
+        value=dwellings,
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+    )
+
+
+def _housing_units(conn, block_id: str) -> float:
+    seed_catalog(conn)
+    compute_block_housing_units(conn, feature_ids=[block_id], code_version="test")
+    return (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .get_current(
+            feature_id=block_id, indicator_slug=EDIFICABILITY_BLOCK_HOUSING_UNITS.slug
+        )["value_numeric"]
+    )
+
+
+def test_fitted_baseline_dwellings_equal_the_census_count(conn, migrated_db):
+    """The fitted m² per dwelling is whatever makes the formula give the census.
+
+    So the baseline reads as the city that exists, and a rule's change is
+    measured against it rather than against a block built over wall to wall.
+    """
+    block_id = _block(conn, {})
+    _census_dwellings(conn, block_id, 7)
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    assert abs(_housing_units(conn, block_id) - 7) < 1e-6
+
+
+def test_a_block_the_census_found_empty_starts_with_no_dwellings(conn, migrated_db):
+    block_id = _block(conn, {})
+    _census_dwellings(conn, block_id, 0)
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    assert _housing_units(conn, block_id) == 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT attributes FROM curated_geo.feature WHERE id = %s::uuid",
+            (block_id,),
+        )
+        attributes = cur.fetchone()[0]
+    # Planned floors still has a building height to show.
+    assert attributes["floors"] >= 1
+
+
+def test_a_real_height_never_builds_homes_the_census_did_not_count(conn, migrated_db):
+    """Real storeys feed planned floors; the dwelling count stays the census."""
+    from reimagina.data import observation as obs
+
+    block_id = _block(conn, {})
+    _census_dwellings(conn, block_id, 0)
+    source_id = _register_source(
+        conn,
+        name=f"storeys_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    obs.upsert_observation(
+        conn,
+        feature_id=block_id,
+        attribute_key="floors",
+        value_type="numeric",
+        value=3.0,
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+    )
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    assert _housing_units(conn, block_id) == 0
+
+
+def test_fitted_dwellings_use_the_real_height_where_there_is_one(conn, migrated_db):
+    from reimagina.data import observation as obs
+
+    block_id = _block(conn, {})
+    _census_dwellings(conn, block_id, 4)
+    source_id = _register_source(
+        conn,
+        name=f"storeys_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    obs.upsert_observation(
+        conn,
+        feature_id=block_id,
+        attribute_key="floors",
+        value_type="numeric",
+        value=3.0,
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+    )
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT attributes FROM curated_geo.feature WHERE id = %s::uuid",
+            (block_id,),
+        )
+        assert cur.fetchone()[0]["num_levels"] == 3
+    assert abs(_housing_units(conn, block_id) - 4) < 1e-6

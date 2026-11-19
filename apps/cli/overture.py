@@ -14,6 +14,7 @@ from reimagina.db import connect
 from reimagina.data import amenities as amen
 import reimagina.pipeline.overture_divisions as divisions
 import reimagina.pipeline.overture_places as places
+from reimagina.pipeline import block_storeys
 from reimagina.storage import backend_for_connection
 from reimagina.pipeline.overture import (
     DIVISION_SUBTYPE_COUNTY,
@@ -153,6 +154,14 @@ def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
     """Inspect the serving layer after the Overture buildings load."""
     with connect(dsn) as conn:
         return validate_overture_buildings_layer(conn)
+
+
+def derive_block_storeys(
+    *, dsn: str, aoi_id: str | None, code_version: str = "dev"
+) -> dict[str, Any]:
+    """Each block's baseline storeys: median num_floors of its Overture buildings."""
+    with connect(dsn) as conn:
+        return block_storeys.bootstrap(conn, aoi_id=aoi_id, code_version=code_version)
 
 
 def as_json(data: dict[str, Any]) -> str:
