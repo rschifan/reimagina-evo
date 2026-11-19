@@ -299,6 +299,9 @@ class IndicatorValueStats(BaseModel):
     #: Over the same rows as ``count``. A scenario table's total for counts
     #: (dwellings, people); ``None`` when there are no values.
     sum: float | None = None
+    #: Rows with ``value >= cap_value`` over the same rows as ``count``;
+    #: ``None`` when the indicator has no cap.
+    count_at_cap: int | None = None
     histogram: ValueHistogram | None = None
 
 

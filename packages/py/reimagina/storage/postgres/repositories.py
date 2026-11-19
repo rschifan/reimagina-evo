@@ -2857,13 +2857,34 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.50) WITHIN GROUP (ORDER BY ir.value_numeric) AS p50,
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
                   MAX(ir.value_numeric)                                          AS max,
-                  SUM(ir.value_numeric)                                          AS sum
+                  SUM(ir.value_numeric)                                          AS sum,
+                  cap.cap_value                                                  AS cap_value,
+                  COUNT(*) FILTER (WHERE ir.value_numeric >= cap.cap_value)      AS at_cap
                 FROM curated_geo.indicator_result ir
+                CROSS JOIN (
+                  SELECT cap_value FROM curated_geo.indicator_catalog WHERE slug = %s
+                ) cap
                 WHERE {where}
+                GROUP BY cap.cap_value
                 """,
-                params,
+                [indicator_slug, *params],
             )
-            count, vmin, p05, p50, p95, vmax, vsum = cur.fetchone()
+            # GROUP BY the cap so the empty population still has no row.
+            row = cur.fetchone()
+        if row is None:
+            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = (
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+            )
+        else:
+            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = row
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
@@ -2874,6 +2895,9 @@ class PostgresIndicatorResultRepository:
             # Over the same rows as `count`: the scenario overlay included, each
             # feature once. None with no rows — no values is no total.
             "sum": float(vsum) if vsum is not None else None,
+            # Rows at or past the catalog cap, over the same rows as `count`;
+            # None when the indicator has no cap.
+            "count_at_cap": int(at_cap) if cap_value is not None else None,
         }
         if bins > 0:
             stats["histogram"] = self._value_histogram(

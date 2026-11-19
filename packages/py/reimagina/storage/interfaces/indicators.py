@@ -150,7 +150,9 @@ class IndicatorResultRepository(Protocol):
         """Summary statistics for a numeric indicator's current values.
 
         Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`, `sum`
-        (all `None` when there are no rows). Intended to drive the
+        (all `None` when there are no rows) and `count_at_cap`: the rows with
+        `value >= cap_value` from the catalog, over the same rows as `count`
+        (`None` when the indicator has no cap). Intended to drive the
         frontend's choropleth colour ramp from the real distribution
         rather than the catalog's safety bounds.
 

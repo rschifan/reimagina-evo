@@ -716,6 +716,43 @@ def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_ea
     assert resp_b.json()["count"] == 1
 
 
+def test_stats_count_at_cap_is_null_without_a_cap(client, two_aois_one_block_each):
+    """Compactness has no cap, so there is nothing to count at it."""
+    fixture = two_aois_one_block_each
+    payload = client.get(f"/indicators/{fixture['slug']}/stats").json()
+    assert payload["count_at_cap"] is None
+
+
+def test_stats_count_at_cap_counts_rows_on_the_cap(
+    client, conn, two_aois_one_block_each
+):
+    """Cap = the larger of the two blocks' values: only that block's AOI
+    has a row on the cap, and the count follows the AOI scope."""
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT feature_id, value_numeric FROM curated_geo.indicator_result "
+            "WHERE indicator_slug = %s AND status = 'current' "
+            "AND feature_id = ANY(%s::uuid[])",
+            (fixture["slug"], [fixture["block_a"], fixture["block_b"]]),
+        )
+        values = {str(f): v for f, v in cur.fetchall()}
+        top = max(values, key=values.get)
+        cur.execute(
+            "UPDATE curated_geo.indicator_catalog SET cap_value = %s WHERE slug = %s",
+            (max(values.values()), fixture["slug"]),
+        )
+    on_cap_aoi, other_aoi = (
+        (fixture["aoi_a"], fixture["aoi_b"])
+        if top == str(fixture["block_a"])
+        else (fixture["aoi_b"], fixture["aoi_a"])
+    )
+    url = f"/indicators/{fixture['slug']}/stats"
+    assert client.get(f"{url}?aoi_id={on_cap_aoi}").json()["count_at_cap"] == 1
+    assert client.get(f"{url}?aoi_id={other_aoi}").json()["count_at_cap"] == 0
+    assert client.get(url).json()["count_at_cap"] == 1
+
+
 @pytest.mark.parametrize("fmt", ["csv", "geojson", "parquet"])
 def test_downloads_scope_rows_to_picked_aoi(client, two_aois_one_block_each, fmt):
     """The catalog's stats say "this AOI", so its downloads must hold the same
