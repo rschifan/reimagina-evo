@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { INPUT_LAYERS, groupRastersAndOverlays, minzoomForGrain } from "./layers";
+import { INPUT_LAYERS, aggregationRampStops, groupRastersAndOverlays, minzoomForGrain } from "./layers";
 
 /**
  * The zoom at which `serving_geo.get_tile` starts serving
@@ -89,5 +89,25 @@ describe("INPUT_LAYERS", () => {
         layer.typeSlug === "road" ? INFRASTRUCTURE_FLOOR : 0,
       );
     }
+  });
+});
+
+
+// MapLibre refuses an "interpolate" whose inputs are not strictly ascending,
+// and the whole layer with it: an overlay whose values are all equal
+// (p05 = p95) put "The map could not load some data" on the map page.
+describe("aggregationRampStops", () => {
+  const ascending = (stops: number[]) => stops.every((v, i) => i === 0 || v > stops[i - 1]);
+
+  it("keeps a real range as it is", () => {
+    expect(aggregationRampStops(10, 30)).toEqual([10, 20, 30]);
+  });
+
+  it("stays strictly ascending when every value is the same", () => {
+    for (const v of [0, 5, -3, 1e6]) expect(ascending(aggregationRampStops(v, v))).toBe(true);
+  });
+
+  it("stays strictly ascending when the range is upside down", () => {
+    expect(ascending(aggregationRampStops(8, 2))).toBe(true);
   });
 });

@@ -80,6 +80,10 @@ def test_the_map_asks_for_tiles_in_the_documented_shape(probe):
     parameters that function expects. This asserts the request, not the
     response — the response needs a tile server, and whether one is running is
     a deployment question rather than a property of the app.
+
+    Every spatial layer starts off (#112: the map opens on the indicator
+    alone), so the probe turns Streets on through its checkbox first, as a
+    planner would.
     """
     tiles = [u for u in probe["pages"]["map"]["requests"] if "/get_tile/" in u]
     assert tiles, "the map requested no vector tiles"
@@ -209,10 +213,10 @@ class TestStreetContext:
     tile path the other baseline layers already use.
     """
 
-    def test_the_street_layer_is_offered_and_on(self, probe) -> None:
-        """On by default, alone among the optional layers: orientation is
-        the problem it solves, and a context layer nobody switches on
-        provides none."""
+    def test_the_street_layer_is_offered_first(self, probe) -> None:
+        """Offered, and first in the list. It starts off like every spatial
+        layer since #112 — the map opens on the indicator alone — and is the
+        first switch a planner reaches for orientation."""
         labels = probe["interaction"]["streetToggle"]
         assert any("street" in label.lower() for label in labels), labels
         assert labels[0].lower().startswith("street"), (
