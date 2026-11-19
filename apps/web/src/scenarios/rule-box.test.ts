@@ -121,3 +121,30 @@ describe("the rule box", () => {
     expect(button("Apply").disabled).toBe(true);
   });
 });
+
+
+describe("numbers left empty", () => {
+  const EMPTY = { levels: null, unitSize: null, peoplePerHousehold: null, lotCoverage: null };
+
+  it("opens empty, saying each block keeps its own value", () => {
+    const { input, target } = open({ values: EMPTY });
+    expect(input("Storeys").value).toBe("");
+    expect(input("Storeys").placeholder).toBe("as is");
+    expect(target.textContent).toMatch(/empty keeps each block's own value/);
+  });
+
+  it("sends only the numbers typed", () => {
+    const { type, button, handlers } = open({ values: EMPTY });
+    type("People per home", "5");
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith({ ...EMPTY, peoplePerHousehold: 5 }, undefined);
+  });
+
+  it("refuses a rule with no number", () => {
+    const { button, handlers, target } = open({ values: EMPTY });
+    button("Apply").click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/Set at least one number/);
+  });
+});

@@ -540,7 +540,7 @@ def update_rule(
             raise RuleNotFound(
                 f"edits {sorted(edit_ids)} are not one rule of scenario {scenario_id}"
             )
-        ids = [edit_id for edit_id, _, _ in rows]
+        ids = [edit_id for edit_id, key, _ in rows if key in values]
         for edit_id, key, _ in rows:
             if key in values:
                 cur.execute(
@@ -548,7 +548,13 @@ def update_rule(
                     "WHERE id = %s",
                     (values[key], edit_id),
                 )
-        if repaired is not None:
+            else:
+                # Not in the rule's new set: the rule no longer sets it, and
+                # each block keeps its own value.
+                cur.execute(
+                    "DELETE FROM curated_geo.scenario_edit WHERE id = %s", (edit_id,)
+                )
+        if repaired is not None and ids:
             cur.execute(
                 "UPDATE curated_geo.scenario_edit "
                 "SET geometry = ST_GeomFromEWKB(%s) WHERE id = ANY(%s::uuid[])",

@@ -80,6 +80,8 @@ async function run(page) {
   await box.waitFor({ timeout: 10_000 });
   const named = await box.getByLabel('Scenario name', { exact: true }).inputValue().catch(() => null);
   await box.getByLabel('Scenario name', { exact: true }).fill(NAME);
+  // The box opens empty: a rule sets only what is typed.
+  await fillRule(box, { levels: 6, unitSize: 60, coverage: 60 });
   await box.getByRole('button', { name: 'Apply' }).click();
   await gestureDone(page, box);
   const created = (await (await fetch(`${API}/scenarios`)).json()).find((s) => s.name === NAME);
@@ -138,8 +140,7 @@ async function run(page) {
   await drawRectangle(page, ...span(3, 0, 3, 1));
   await box.waitFor({ timeout: 10_000 });
   const v3 = { levels: 3, unitSize: 66, coverage: 0.6 };
-  await page.locator('form').getByLabel('Storeys', { exact: true }).fill(String(v3.levels));
-  await page.locator('form').getByLabel('m² per home').fill(String(v3.unitSize));
+  await fillRule(box, { levels: v3.levels, unitSize: v3.unitSize, coverage: 60 });
   await box.getByRole('button', { name: 'Apply' }).click();
   await gestureDone(page, box);
   await page.getByRole('button', { name: 'Values' }).click();
@@ -169,6 +170,39 @@ async function run(page) {
   step('deleting every rule returns the scenario to the baseline', left.length === 0 && (!after || after.state === 'unchanged'), {
     edits: left.length, rendered: after,
   });
+
+  // 6: a rule that sets only household size changes population, and density
+  // keeps each block's own value — writing every number flattened the area.
+  await page.getByRole('button', { name: 'Values' }).click();
+  await settled(page);
+  const before = [await rendered(page, ...blk(0, 1)), await rendered(page, ...blk(1, 2))];
+  await drawRectangle(page, ...span(0, 1, 1, 2));
+  await box.waitFor({ timeout: 10_000 });
+  await fillRule(box, { people: 5 });
+  await box.getByRole('button', { name: 'Apply' }).click();
+  await gestureDone(page, box);
+  await page.getByRole('button', { name: 'Values' }).click();
+  await settled(page);
+  const dens = [await rendered(page, ...blk(0, 1)), await rendered(page, ...blk(1, 2))];
+  await page.getByLabel('Indicator').selectOption({ label: 'Resident Population (potential)' });
+  await page.getByRole('button', { name: 'Change' }).click();
+  await settled(page);
+  const people = await rendered(page, ...blk(0, 1));
+  const v = (f) => f && f.value_numeric;
+  step('a rule that sets only household size keeps each block\'s density', dens.every(Boolean)
+    && approx(v(dens[0]), v(before[0])) && approx(v(dens[1]), v(before[1]))
+    && Math.abs(v(dens[0]) - v(dens[1])) > 1e-6 && people && people.state === 'changed', {
+    before, after: dens, people,
+  });
+}
+
+/** Type a rule's numbers into its box; anything not given is left empty. */
+async function fillRule(box, { levels, unitSize, people, coverage }) {
+  for (const [label, value] of [
+    ['Storeys', levels], ['m² per home', unitSize], ['People per home', people], ['Lot coverage (%)', coverage],
+  ]) {
+    await box.getByLabel(label, { exact: true }).fill(value === undefined ? '' : String(value));
+  }
 }
 
 /** Fit the map to the indicator's blocks; return their screen box and grid. */
