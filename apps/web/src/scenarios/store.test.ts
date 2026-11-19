@@ -217,128 +217,56 @@ describe("selection", () => {
   });
 });
 
-describe("recompute", () => {
-  const recomputed = (runId: string | null) => ({
-    scenario_id: "A", matched_per_edit: { e1: 4 }, overrides_written: 4,
-    overrides_removed: 0, results_superseded: 0, run_id: runId,
-    run_status: "queued", deduplicated: false,
-  });
-
-  it("a run keeps being followed after a switch, and nothing about it reaches the selection", async () => {
-    api.recomputeScenario.mockResolvedValue(recomputed("run-1"));
-    api.getRun.mockResolvedValue({ run_id: "run-1", status: "succeeded", units: [] });
-    const refreshed = vi.fn();
-    store.onMapRefresh(refreshed);
-    store.select("A");
-    await store.recompute();
-    expect(store.ws.following.A?.runId).toBe("run-1");
-    store.select("B");
-    store.ws.comparison = { counts: "B's", denominator: "d", shift: "s" };
-    store.ws.message = { text: "about B", tone: "ok" };
-    api.getIndicatorStats.mockClear();
-    await vi.advanceTimersByTimeAsync(2_000);
-    // Followed to the end: A's row is refreshed from its results ...
-    expect(api.getRun).toHaveBeenCalled();
-    expect(store.ws.following.A).toBeUndefined();
-    expect(api.getIndicatorStats.mock.calls.map((c) => c[1].scenario_id)).toEqual(["A", "A"]);
-    // ... and B, on screen, hears nothing of it.
-    expect(refreshed).not.toHaveBeenCalled();
-    expect(store.ws.comparison?.counts).toBe("B's");
-    expect(store.ws.message?.text).toBe("about B");
-  });
-
-  it("a second recompute replaces the first run's follower", async () => {
-    api.recomputeScenario
-      .mockResolvedValueOnce(recomputed("run-1"))
-      .mockResolvedValueOnce(recomputed("run-2"));
-    api.getRun.mockImplementation(async (id: string) => ({ run_id: id, status: "running", units: [] }));
-    store.select("A");
-    await store.recompute();
-    await store.recompute();
-    api.getRun.mockClear();
-    await vi.advanceTimersByTimeAsync(6_000);
-    const followed = new Set(api.getRun.mock.calls.map((c) => c[0]));
-    expect(followed).toEqual(new Set(["run-2"]));
-    expect(store.ws.following.A?.runId).toBe("run-2");
-  });
-
-  it("a landed run refreshes that row, clears the comparison and fires onMapRefresh", async () => {
-    api.recomputeScenario.mockResolvedValue(recomputed("run-1"));
-    api.getRun.mockResolvedValue({ run_id: "run-1", status: "succeeded", units: [] });
-    const refreshed = vi.fn();
-    store.onMapRefresh(refreshed);
-    store.select("A");
-    store.ws.comparison = { counts: "c", denominator: "d", shift: "s" };
-    await store.recompute();
-    api.getIndicatorStats.mockClear();
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(refreshed).toHaveBeenCalledTimes(1);
-    expect(store.ws.comparison).toBeNull();
-    expect(store.ws.following.A).toBeUndefined();
-    const asked = api.getIndicatorStats.mock.calls.map((c) => c[1].scenario_id);
-    expect(asked).toEqual(["A", "A"]);
-  });
-
-  it("a scenario with no rules is told how to write one, not that nothing needed recomputing", async () => {
-    api.recomputeScenario.mockResolvedValue({
-      ...recomputed(null), matched_per_edit: {}, overrides_written: 0,
-    });
-    store.select("A");
-    await store.recompute();
-    expect(store.ws.message?.text).toMatch(/no rules yet/);
-    expect(store.ws.message?.text).toMatch(/draw an area on the map/i);
-  });
-
-  it("removing the last rule and recomputing still reports what it withdrew", async () => {
-    api.recomputeScenario.mockResolvedValue({
-      ...recomputed("run-1"), matched_per_edit: {}, overrides_written: 0, overrides_removed: 4,
-    });
-    api.getRun.mockResolvedValue({ run_id: "run-1", status: "running", units: [] });
-    store.select("A");
-    await store.recompute();
-    expect(store.ws.message?.text).toMatch(/4 removed/);
-  });
-
-  it("a failed run leaves the overrides standing and says so", async () => {
-    api.recomputeScenario.mockResolvedValue(recomputed("run-1"));
-    api.getRun.mockResolvedValue({ run_id: "run-1", status: "failed", units: [] });
-    store.select("A");
-    await store.recompute();
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(store.ws.message?.tone).toBe("bad");
-    expect(store.ws.message?.text).toMatch(/overrides stand/);
-  });
-});
-
-describe("authoring", () => {
+describe("refusals and scope", () => {
   const AREA = {
     type: "Feature" as const,
     properties: {},
     geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] },
   };
 
-  it("applyRule refuses locally with validateEdit's text before any request", async () => {
+  it("apply refuses locally with validateEdit's text before any request", async () => {
     store.select("A");
-    await store.applyRule(AREA, { levels: -1, unitSize: 60, peoplePerHousehold: 3.6 });
+    const ok = await store.applyNewRule(AREA, { levels: -1, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 });
+    expect(ok).toBe(false);
     expect(api.addScenarioEdits).not.toHaveBeenCalled();
-    expect(store.ws.message?.text).toMatch(/levels/);
+    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
   });
 
-  it("removing a rule sends every DELETE to the scenario it belongs to, even after a switch", async () => {
+  it("deleting a rule sends every DELETE to the scenario it belongs to, even after a switch", async () => {
     let releaseFirst!: () => void;
     api.removeScenarioEdit
       .mockReturnValueOnce(new Promise<void>((r) => (releaseFirst = r)))
       .mockResolvedValue(undefined);
+    api.recomputeScenario.mockResolvedValue({
+      scenario_id: "A", matched_per_edit: {}, overrides_written: 0, overrides_removed: 4,
+      results_superseded: 0, run_id: null, run_status: "", deduplicated: false,
+    });
     store.select("A");
-    const removal = store.removeRuleGroup(["e1", "e2", "e3"]);
+    const removal = store.deleteRule({
+      areaWkt: "POLYGON((0 0,1 0,1 1,0 0))", levels: 6, unitSize: 60, peoplePerHousehold: 3.6,
+      lotCoverage: null, editIds: ["e1", "e2", "e3"], complete: true, ordinal: 1,
+    });
     store.select("B");
     releaseFirst();
     await removal;
-    expect(api.removeScenarioEdit.mock.calls).toEqual([
-      ["A", "e1"],
-      ["A", "e2"],
-      ["A", "e3"],
-    ]);
+    expect(api.removeScenarioEdit.mock.calls).toEqual([["A", "e1"], ["A", "e2"], ["A", "e3"]]);
+    expect(api.recomputeScenario).toHaveBeenCalledWith("A");
+  });
+});
+
+
+describe("the default view", () => {
+  it("is the change when the scenario has rules, the values otherwise", async () => {
+    api.getScenario.mockResolvedValueOnce({
+      edits: [{ id: "e1", ordinal: 1, type_id: "t", attribute_key: "num_levels", value_numeric: 3, geometry_wkt: "POLYGON((0 0,1 0,1 1,0 0))", created_at: "" }],
+    });
+    store.select("A");
+    await settle();
+    expect(store.ws.mode).toBe("delta");
+    api.getScenario.mockResolvedValueOnce({ edits: [] });
+    store.select("B");
+    await settle();
+    expect(store.ws.mode).toBe("value");
   });
 });
 

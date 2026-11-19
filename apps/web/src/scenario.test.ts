@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "./http";
 import {
   CLIENT_PRECHECK_NOTE,
-  comparisonHeadline,
   describeGroup,
   groupEditsByArea,
   maxLevelsFor,
@@ -15,7 +14,7 @@ import {
   tileUrlFor,
   validateEdit,
 } from "./scenario";
-import type { ComparisonResponse, EditRow } from "./api";
+import type { EditRow } from "./api";
 
 /**
  * ``valid_max`` of ``edificability_block_density`` in the shipped catalog
@@ -527,90 +526,6 @@ describe("isTerminalRunStatus", () => {
   it("redraws the map for the two that produced results", () => {
     expect(["succeeded", "partial"].map(runProducedResults)).toEqual([true, true]);
     expect(["failed", "cancelled"].map(runProducedResults)).toEqual([false, false]);
-  });
-});
-
-
-// ── the comparison strip ───────────────────────────────────────────────
-
-/**
- * A comparison as the endpoint answers it. ⚠ 12 + 3 + 1 = 16 = ``row_count``,
- * and 16 is **not** the AOI's block count: a feature with no numeric value on
- * either side is absent from the rows by design, and the response carries no
- * total for that reason.
- */
-function comparison(overrides: Partial<ComparisonResponse> = {}): ComparisonResponse {
-  return {
-    scenario_id: "s-1",
-    indicator_slug: "edificability_block_density",
-    aoi_id: AOI,
-    summary: {
-      changed: 12,
-      unchanged: 3,
-      new: 1,
-      mean_delta: 3.5,
-      higher_is_better: true,
-    },
-    row_count: 16,
-    rows: [],
-    rows_truncated: false,
-    ...overrides,
-  };
-}
-
-describe("comparisonHeadline", () => {
-  it("states the comparison's own row count, which the three counts sum to", () => {
-    const response = comparison();
-    const { changed, unchanged, new: added } = response.summary;
-    expect(changed + unchanged + added).toBe(response.row_count);
-    expect(comparisonHeadline(response).counts).toBe("12 changed · 3 unchanged · 1 new");
-    expect(comparisonHeadline(response).denominator).toContain("16");
-  });
-
-  // ⚠ The denominator comes from `row_count`, not from the array. `rows` is
-  // whatever `limit` left behind — the response says so with `rows_truncated`
-  // — and a strip reading "3 changed of 2" is read as a broken comparison.
-  it("takes its denominator from the row count, not from the rows it was handed", () => {
-    const text = comparisonHeadline(
-      comparison({
-        rows: [
-          { feature_id: "f1", baseline: 1, scenario: 2, delta: 1, state: "changed" },
-          { feature_id: "f2", baseline: 1, scenario: 1, delta: 0, state: "unchanged" },
-        ],
-        rows_truncated: true,
-      }),
-    ).denominator;
-    expect(text).toContain("16");
-    expect(text).not.toMatch(/\b2\b/);
-  });
-
-  // The counts are of features that had a value on one side or the other, and
-  // the response deliberately carries no total. Saying so is what stops the
-  // strip from being read as "16 blocks in this AOI".
-  it("says what the count is of, rather than implying the territory's size", () => {
-    expect(comparisonHeadline(comparison()).denominator).toMatch(/either side/i);
-    expect(comparisonHeadline(comparison()).denominator).toMatch(/not the AOI/i);
-  });
-
-  it("gives the mean shift a direction from the catalog", () => {
-    expect(comparisonHeadline(comparison()).shift).toMatch(/higher is better/);
-    expect(
-      comparisonHeadline(
-        comparison({
-          summary: { changed: 12, unchanged: 3, new: 1, mean_delta: -40, higher_is_better: false },
-        }),
-      ).shift,
-    ).toMatch(/lower is better/);
-  });
-
-  it("does not invent a mean where no row had a baseline", () => {
-    const shift = comparisonHeadline(
-      comparison({
-        summary: { changed: 0, unchanged: 0, new: 16, mean_delta: null, higher_is_better: true },
-      }),
-    ).shift;
-    expect(shift).toMatch(/no baseline/i);
-    expect(shift).not.toMatch(/\d/);
   });
 });
 

@@ -92,6 +92,9 @@ export interface SelectionController {
    * mode (a circle whose ring is not quite round any more) loads as a polygon.
    */
   edit(feature: Feature<Polygon>, shape: SelectionShape): void;
+  /** True while a shape is being drawn and is not finished yet: the
+   *  selection published meanwhile is the drawing in progress. */
+  isDrawing(): boolean;
 }
 
 
@@ -465,6 +468,10 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     },
     getSelection(): SelectionGeometry | null {
       return _selection;
+    },
+    isDrawing(): boolean {
+      const mode = draw.getMode();
+      return mode === "circle" || mode === "rectangle" || mode === "polygon";
     },
     edit(feature: Feature<Polygon>, shape: SelectionShape): void {
       controller.clear();

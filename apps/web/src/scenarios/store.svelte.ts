@@ -5,7 +5,7 @@
  * The rule the whole module keeps: **a response lands only on the selection
  * that asked for it.** Each action captures the scenario it acts for and a
  * selection token, and drops its result when either has moved — a slow rule
- * load, comparison or run for scenario A must never be drawn over B.
+ * load, map refresh or run for scenario A must never be drawn over B.
  */
 import type { Feature, Polygon } from "geojson";
 
@@ -13,7 +13,6 @@ import {
   addScenarioEdits,
   createScenario,
   deleteScenario,
-  getComparison,
   getIndicator,
   getIndicatorStats,
   getScenario,
@@ -30,12 +29,10 @@ import { setKnownAois, subscribe as subscribeToAoi } from "../aoi";
 import {
   DENSITY_INDICATOR_SLUG,
   FLOORS_INDICATOR_SLUG,
-  comparisonHeadline,
   densityBoundOf,
   groupEditsByArea,
   refusalText,
   validateEdit,
-  type ComparisonHeadline,
   type EditGroup,
   type ScenarioOperation,
 } from "../scenario";
@@ -83,7 +80,6 @@ export interface WorkspaceState {
    *  followed to its end whichever row is selected, so its row refreshes
    *  when it lands; only what it says and redraws is for the selection. */
   following: Record<string, { runId: string; status: string }>;
-  comparison: ComparisonHeadline | null;
   message: Message | null;
   /** The area drawn on the map, which the next rule is written over. */
   drawn: Feature<Polygon> | null;
@@ -115,7 +111,6 @@ export const ws: WorkspaceState = $state({
   mode: "value",
   rules: [],
   following: {},
-  comparison: null,
   message: null,
   drawn: null,
   densityValidMax: null,
@@ -306,13 +301,16 @@ export function select(scenarioId: string | null): void {
   ++selection;
   const token = selection;
   ws.selectedId = scenarioId;
-  ws.comparison = null;
   ws.rules = [];
   if (scenarioId === null) {
     ws.mode = "value";
     return;
   }
-  void loadRules(scenarioId, token);
+  // The change against the baseline is what a scenario with rules is for;
+  // one with none has nothing to show there.
+  void loadRules(scenarioId, token).then(() => {
+    if (token === selection) ws.mode = ws.rules.length > 0 ? "delta" : "value";
+  });
 }
 
 /**
@@ -343,7 +341,6 @@ export function applyRoute(route: { scenarioId: string | null; slug: string | nu
 export function setIndicator(slug: string): void {
   if (!ws.indicators.some((i) => i.slug === slug)) return;
   ws.slug = slug;
-  ws.comparison = null;
 }
 
 export function setMode(mode: "value" | "delta"): void {
@@ -372,193 +369,6 @@ export async function create(name: string): Promise<void> {
     void refreshRow(created.id);
   } catch (err) {
     await refused(err, "create");
-  }
-}
-
-export async function applyRule(
-  area: Feature<Polygon> | null,
-  values: { levels: number; unitSize: number; peoplePerHousehold: number },
-): Promise<void> {
-  const scenarioId = ws.selectedId;
-  if (!scenarioId) return;
-  if (!area) {
-    say("Draw an area on the map first — a rule is an area.", "bad");
-    return;
-  }
-  const refusal = validateEdit({
-    ...values,
-    densityValidMax: ws.densityValidMax,
-    floorsValidMax: ws.floorsValidMax,
-  });
-  if (refusal) {
-    say(refusal, "bad");
-    return;
-  }
-  const token = selection;
-  try {
-    const written = await addScenarioEdits(scenarioId, {
-      area,
-      levels: values.levels,
-      unit_size: values.unitSize,
-      people_per_household: values.peoplePerHousehold,
-    });
-    await loadScenarios();
-    if (token !== selection) return;
-    say(
-      `${written.edits.length} edits written over the drawn area on ` +
-        `${written.feature_type}. Recompute to materialise them.`,
-    );
-    await loadRules(scenarioId, token);
-  } catch (err) {
-    if (token === selection) await refused(err, "edits");
-  }
-}
-
-/** Remove one rule — every edit of it — from the scenario it belongs to. */
-export async function removeRuleGroup(editIds: string[]): Promise<void> {
-  const scenarioId = ws.selectedId;
-  if (!scenarioId) return;
-  const token = selection;
-  const { removed, error } = await removeRule(scenarioId, editIds);
-  await loadScenarios();
-  // The removal finishes regardless; what it says is for the scenario it
-  // removed from, and another one may be on screen now.
-  if (token !== selection) return;
-  if (error) await refused(error, "removeEdit");
-  else
-    say(
-      "Rule removed. Recompute to withdraw the overrides it wrote — " +
-        "removing the rule does not withdraw them on its own.",
-    );
-  if (error && removed > 0) {
-    say(
-      `${removed} of ${editIds.length} edits removed; the rule is now ` +
-        "incomplete and will not compute. Remove the rest.",
-      "bad",
-    );
-  }
-  await loadRules(scenarioId, token);
-}
-
-export async function recompute(): Promise<void> {
-  const scenarioId = ws.selectedId;
-  if (!scenarioId) return;
-  /** Messages are for the scenario on screen; a run of another says nothing. */
-  const shown = (): boolean => ws.selectedId === scenarioId;
-  say("Materialising the rules and queueing the recompute…");
-  let result;
-  try {
-    result = await recomputeScenario(scenarioId);
-  } catch (err) {
-    if (shown()) await refused(err, "recompute");
-    return;
-  }
-  const matched = Object.values(result.matched_per_edit);
-  const caught = matched.length > 0 ? Math.max(...matched) : 0;
-  const materialised =
-    `${caught} block${caught === 1 ? "" : "s"} caught, ` +
-    `${result.overrides_written} overrides written, ` +
-    `${result.overrides_removed} removed.`;
-  void loadScenarios();
-  // No edits on the server and nothing withdrawn: the planner pressed
-  // Recompute before writing a rule. Say how to write one; "0 blocks caught"
-  // reads as a broken compute.
-  if (matched.length === 0 && result.overrides_removed === 0 && result.run_id === null) {
-    if (shown()) {
-      say(
-        "This scenario has no rules yet, so nothing changed. Draw an area on the " +
-          "map with the tools at its top left, apply the numbers to it, then recompute.",
-      );
-    }
-    return;
-  }
-  if (result.run_id === null) {
-    if (shown()) say(`${materialised} Nothing needed recomputing.`);
-    return;
-  }
-  const runId = result.run_id;
-  const short = runId.slice(0, 8);
-  // A second recompute of the same scenario supersedes the first follower:
-  // left running, the old one would report its run over the new one's.
-  stopFollowing(scenarioId);
-  ws.following[scenarioId] = { runId, status: result.run_status };
-  if (shown()) {
-    say(
-      `${materialised} Run ${short} is ${result.run_status}` +
-        `${result.deduplicated ? " (already in flight)" : ""}…`,
-    );
-  }
-  const finish = (): void => {
-    followers.delete(scenarioId);
-    delete ws.following[scenarioId];
-    void loadScenarios();
-  };
-  followers.set(
-    scenarioId,
-    followRun(runId, {
-      progress(status) {
-        ws.following[scenarioId] = { runId, status };
-        if (shown()) say(`${materialised} Run ${short} is ${status}…`);
-      },
-      landed(run) {
-        finish();
-        // The row is refreshed whichever scenario is on screen: the table
-        // holds them side by side, and a stale row there is the failure.
-        void refreshRow(scenarioId);
-        if (!shown()) return;
-        ws.comparison = null;
-        const failed = run.units.filter((u) => u.status === "failed").length;
-        say(
-          `Run ${short} ${run.status}` +
-            `${failed > 0 ? ` (${failed} indicator${failed === 1 ? "" : "s"} failed)` : ""}. ` +
-            "The table and the map now show its results.",
-        );
-        refreshMap();
-      },
-      failed(run) {
-        finish();
-        if (!shown()) return;
-        say(
-          `Run ${short} ${run.status}. The overrides stand; the indicator results ` +
-            "did not change. The Runs page has the detail.",
-          "bad",
-        );
-      },
-      unreadable() {
-        finish();
-        if (shown()) say(`Run ${short} could not be read — follow it on the Runs page.`, "bad");
-      },
-      handedOver(status) {
-        finish();
-        if (!shown()) return;
-        say(
-          `Run ${short} is still ${status}. Follow it on the Runs page; reload ` +
-            "this page once it has finished.",
-        );
-      },
-    }),
-  );
-}
-
-export async function compare(): Promise<void> {
-  const scenarioId = ws.selectedId;
-  const slug = ws.slug;
-  if (!scenarioId) return;
-  if (!slug) {
-    say("Pick an indicator to compare.", "bad");
-    return;
-  }
-  const token = selection;
-  try {
-    const response = await getComparison(scenarioId, {
-      indicator_slug: slug,
-      aoi_id: ws.aoiId,
-    });
-    if (token !== selection || slug !== ws.slug) return;
-    const unit = ws.indicators.find((i) => i.slug === slug)?.unit ?? null;
-    ws.comparison = comparisonHeadline(response, unit);
-  } catch (err) {
-    if (token === selection) await refused(err, "compare");
   }
 }
 
@@ -649,7 +459,6 @@ async function afterLanding(scenarioId: string, landing: Landing, done: string):
   if (ws.selectedId !== scenarioId) return;
   await loadRules(scenarioId, selection);
   refreshMap();
-  ws.comparison = null;
   if (landing.outcome === "landed") {
     ws.mode = "delta";
     say(`${done} The map shows the change against the baseline city.`);

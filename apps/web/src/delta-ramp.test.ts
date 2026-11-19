@@ -606,6 +606,12 @@ describe("where the indicator is drawn in the layer stack", () => {
     expect(order.indexOf("basemap")).toBe(0);
   });
 
+  it("goes under a scenario's rule outlines too", () => {
+    const { map, order } = fakeMap(["basemap", "scenario-rules-fill", "scenario-rules-line", "td-polygon"]);
+    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    expect(order.slice(-3)).toEqual(["scenario-rules-fill", "scenario-rules-line", "td-polygon"]);
+  });
+
   it("goes under the spotlight mask, which sits under the drawn area", () => {
     const { map, order } = fakeMap(["basemap", "__selection_mask__fill", "td-polygon"]);
     activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
