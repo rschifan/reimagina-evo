@@ -100,12 +100,17 @@ def pytest_collection_modifyitems(config, items):
 
     `testpaths = ["tests"]` means a bare `pytest` would collect this suite and
     spend minutes on it. Opt in explicitly.
+
+    ⚠ This hook sees every item in the session, not just this directory's, so
+    it must filter: unfiltered, `pytest tests` skipped all 1,653 tests.
     """
     if os.environ.get("REIMAGINA_BENCH") == "1":
         return
     skip = pytest.mark.skip(reason="workload suite: set REIMAGINA_BENCH=1 to run")
+    here = os.path.dirname(__file__)
     for item in items:
-        item.add_marker(skip)
+        if str(item.path).startswith(here + os.sep):
+            item.add_marker(skip)
 
 
 # ── Database ────────────────────────────────────────────────────────────────

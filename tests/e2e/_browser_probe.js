@@ -5,7 +5,7 @@
 // change to the driver.
 const { chromium } = require('playwright');
 
-const WEB = process.env.E2E_WEB || 'http://127.0.0.1:5173';
+const WEB = process.env.E2E_WEB || 'http://localhost:5173';
 const OUT = process.env.E2E_OUT;
 const PAGES = [
   { name: 'map',       path: '/' },
@@ -109,9 +109,28 @@ const PAGES = [
   await tab.keyboard.press('Escape');
 
   // Streets: the map's only spatial reference, and the thing that makes a
-  // block something other than a rectangle in black.
+  // block something other than a rectangle in black. Off on open, like every
+  // spatial layer, so switch it on and watch what comes back. `click()` in
+  // the page rather than a pointer click: the Layers group may be collapsed,
+  // and the palette toggles layers the same way.
   interaction.streetToggle = await tab.$$eval('#layer-toggles label',
     (els) => els.map((e) => e.textContent.trim())).catch(() => []);
+  interaction.streetsOnAtOpen = await tab.$eval('#layer-toggles input[type=checkbox]',
+    (e) => e.checked).catch(() => null);
+  const layerTileRequests = [];
+  tab.on('request', (r) => { if (r.url().includes('/get_tile/')) layerTileRequests.push(r.url()); });
+  await tab.$eval('#layer-toggles input[type=checkbox]', (e) => e.click()).catch(() => {});
+  await tab.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await tab.waitForTimeout(1500);
+  // Streets are served from z12. A large territory opens fitted below that,
+  // so zoom in on its centre (MapLibre's own `=` key) until they are asked for.
+  for (let i = 0; i < 6 && layerTileRequests.length === 0; i += 1) {
+    await tab.focus('.maplibregl-canvas').catch(() => {});
+    await tab.keyboard.press('Equal');
+    await tab.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    await tab.waitForTimeout(1000);
+  }
+  interaction.layerTileRequests = layerTileRequests;
   interaction.roadTiles = roadTiles;
   interaction.attribution = await tab
     .$eval('.maplibregl-ctrl-attrib-inner', (e) => e.textContent)

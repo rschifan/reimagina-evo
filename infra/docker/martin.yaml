@@ -43,8 +43,3 @@ postgres:
         publish: false
       functions:
         publish: true
-
-# Tile cache headers — CDN/browser caching for static-ish datasets.
-# Adjust max_age based on ingestion frequency (lower for frequently updated data).
-sprites: {}
-fonts: {}

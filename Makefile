@@ -39,7 +39,7 @@ help: ## Show this help.
 .PHONY: install
 install: ## Install Python + web dependencies.
 	uv sync --extra dev
-	cd apps/web && npm install
+	cd apps/web && npm ci
 
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
 
@@ -191,8 +191,10 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 # exists to prevent, reintroduced by the line two above it. `.env` is for
 # machine configuration like the DSN; which tile server a *development* run
 # talks to is this target's business, and it starts only one of them.
-dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
-	@_tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
+#
+# `dev-api` runs the same preamble, so the API it starts reads the same
+# database and points the map at the same tiles as `make dev`.
+DEV_ENV = _tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
 	  set -a; . ./.env; set +a; \
 	  : $${REIMAGINA_APP_DSN:=$$DATABASE_URL}; export REIMAGINA_APP_DSN; \
@@ -200,13 +202,16 @@ dev: check-ports ## Start the API, the web dev server and the worker together. C
 	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
 	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
-	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
+	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make $@"; \
 	  exit 1; \
 	fi; \
 	: $${REIMAGINA_TILE_LIVE_BASE_URL:=/api/tiles}; \
 	export REIMAGINA_TILE_LIVE_BASE_URL; \
 	echo "DSN  → $$REIMAGINA_APP_DSN"; \
-	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"; \
+	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"
+
+dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
+	@$(DEV_ENV); \
 	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
 	echo; \
@@ -217,14 +222,15 @@ dev: check-ports ## Start the API, the web dev server and the worker together. C
 	wait
 
 .PHONY: dev-api
-dev-api: ## Start the FastAPI read-side API with reload.
+dev-api: ## Start the FastAPI read-side API with reload (same DSN and tiles as `make dev`).
 	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API
+	@$(DEV_ENV); \
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
 
 .PHONY: dev-web
-dev-web: ## Start the Vite dev server for the web app.
+dev-web: ## Start the Vite dev server for the web app (proxies /api to API_PORT).
 	@$(PYTHON) scripts/preflight_ports.py $(WEB_PORT):Web
-	cd apps/web && VITE_PORT=$(WEB_PORT) npm run dev
+	cd apps/web && VITE_PORT=$(WEB_PORT) REIMAGINA_API_URL=http://127.0.0.1:$(API_PORT) npm run dev
 
 .PHONY: dev-worker
 dev-worker: ## Start the DBOS ops-plane worker (runs stay queued without it).
