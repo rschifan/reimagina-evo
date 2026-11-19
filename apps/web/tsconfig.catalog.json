@@ -2,7 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "verbatimModuleSyntax": true,
-    "types": ["svelte", "vite/client"]
+    "types": ["svelte", "vite/client", "geojson"]
   },
   "include": [
     "src/catalog/**/*.ts",

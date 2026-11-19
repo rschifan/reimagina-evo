@@ -68,6 +68,8 @@ Download filters (`/values.csv`, `/values.geojson`, `/values.parquet`):
 
 - `scenario_id` (uuid, optional) — base city if omitted
 - `feature_type` (string, optional) — e.g. `block`, `ageb`
+- `aoi_id` (uuid, optional) — only features in that AOI, the same scope as
+  `/indicators/{slug}/stats?aoi_id=`
 - `limit` (int, 1..500_000; default 100_000) — hard cap so a single
   request can't monopolise memory
 

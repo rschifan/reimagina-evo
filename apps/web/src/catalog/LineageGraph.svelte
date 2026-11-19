@@ -2,6 +2,7 @@
   import { ArrowRight } from "@lucide/svelte";
 
   import type { DependencyEdge } from "./api";
+  import { unitLabel } from "./derive";
 
   let {
     slug,
@@ -62,7 +63,7 @@
                 <span class="min-w-0 flex-1">
                   <span class="block truncate text-[13px]">{edge.depends_on_name}</span>
                   <span class="block truncate font-mono text-[10.5px] text-muted-foreground">
-                    {edge.depends_on_slug}{edge.depends_on_unit ? ` · ${edge.depends_on_unit}` : ""}
+                    {edge.depends_on_slug} · {unitLabel(edge.depends_on_unit)}
                   </span>
                 </span>
                 <ArrowRight class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />

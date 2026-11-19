@@ -125,6 +125,7 @@ class IndicatorResultRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
         feature_type: str | None = None,
+        aoi_id: str | None = None,
         limit: int = 100_000,
     ) -> list[dict[str, Any]]:
         """Like list_current_for_indicator but also returns geometry_wkb.

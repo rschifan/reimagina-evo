@@ -477,8 +477,15 @@ async function main(): Promise<void> {
       // the handler above already resets the grain, renders, wires the legend,
       // enables the downloads and sets the status line. Reaching past it would
       // mean keeping a second copy of that sequence in step with this one.
+      //
+      // `?indicator=<slug>` picks it instead — the catalog's "Open on map".
+      // A slug with no values in this AOI is not in the picker, so it falls
+      // back to the first one rather than to an empty map.
       if (!select.value && indicators.length > 0) {
-        select.value = indicators[0].slug;
+        const wanted = new URLSearchParams(location.search).get("indicator");
+        select.value = indicators.some((i) => i.slug === wanted)
+          ? (wanted as string)
+          : indicators[0].slug;
         select.dispatchEvent(new Event("change"));
       }
     }

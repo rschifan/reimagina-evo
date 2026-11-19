@@ -381,6 +381,9 @@ def download_values_csv(
     slug: str,
     scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
+    aoi_id: UUID | None = Query(
+        default=None, description="Optional AOI scope, as on /stats"
+    ),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> StreamingResponse:
@@ -399,6 +402,7 @@ def download_values_csv(
             indicator_slug=slug,
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
+            aoi_id=_as_str(aoi_id),
             limit=limit,
         )
     )
@@ -415,6 +419,9 @@ def download_values_geojson(
     slug: str,
     scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
+    aoi_id: UUID | None = Query(
+        default=None, description="Optional AOI scope, as on /stats"
+    ),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
@@ -427,6 +434,7 @@ def download_values_geojson(
             indicator_slug=slug,
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
+            aoi_id=_as_str(aoi_id),
             limit=limit,
         )
     )
@@ -444,6 +452,9 @@ def download_values_parquet(
     slug: str,
     scenario_id: UUID | None = Query(default=None),
     feature_type: str | None = Query(default=None),
+    aoi_id: UUID | None = Query(
+        default=None, description="Optional AOI scope, as on /stats"
+    ),
     limit: int = Query(default=100_000, ge=1, le=500_000),
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
@@ -456,6 +467,7 @@ def download_values_parquet(
             indicator_slug=slug,
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
+            aoi_id=_as_str(aoi_id),
             limit=limit,
         )
     )
