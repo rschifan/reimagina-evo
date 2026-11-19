@@ -269,32 +269,24 @@ export interface WithinPolygonResponse {
 }
 
 
-export async function fetchMetricsWithinPolygon(
+/** Features of each type intersecting ``polygon``. POST, not GET: the polygon
+ *  does not fit a query string, and a GET cached by URL would answer a redrawn
+ *  shape at the same vertices with a stale 304. */
+export function fetchMetricsWithinPolygon(
   body: WithinPolygonRequest,
   init: { signal?: AbortSignal } = {},
 ): Promise<WithinPolygonResponse> {
-  // POST not GET because the polygon payload doesn't fit cleanly in a
-  // query string and (more importantly) browsers cache GETs by URL —
-  // we don't want a re-drawn polygon at the same vertices to read a
-  // stale 304. POST + AbortController is also the standard pattern
-  // for "supersede an in-flight request when a newer selection
-  // arrives".
-  const response = await fetch(`${API_BASE}/metrics/within-polygon`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: init.signal,
-  });
-  if (!response.ok) {
-    throw new ApiError(
-      `${response.status} ${response.statusText} on /metrics/within-polygon`,
-      response,
-    );
-  }
-  return response.json() as Promise<WithinPolygonResponse>;
+  return jsonRequest<WithinPolygonResponse>("/metrics/within-polygon", { body, signal: init.signal });
+}
+
+
+/** An indicator's ``/stats`` numbers over the features whose centroid lies in
+ *  ``polygon`` (no histogram). */
+export function indicatorWithinPolygon(
+  body: { aoi_id: string; polygon: GeoJSON.Polygon; indicator_slug: string; feature_type?: string },
+  init: { signal?: AbortSignal } = {},
+): Promise<IndicatorValueStats> {
+  return jsonRequest<IndicatorValueStats>("/metrics/indicator-within-polygon", { body, signal: init.signal });
 }
 
 

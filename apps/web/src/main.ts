@@ -20,7 +20,7 @@ import { mount } from "svelte";
 
 import TopBar from "./lib/TopBar.svelte";
 import "./topbar.css";
-import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, TileSource } from "./api";
+import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
 import { createMap, flyToAoi } from "./map-base";
 
 import {
@@ -30,8 +30,10 @@ import {
   subscribe as subscribeToAoi,
 } from "./aoi";
 import {
+  fetchMetricsWithinPolygon,
   getFeatureIndicators,
   getIndicatorStats,
+  indicatorWithinPolygon,
   isAbortError,
   listAois,
   listIndicators,
@@ -56,15 +58,12 @@ import {
 } from "./choropleth";
 import { HISTOGRAM_BINS } from "./distribution";
 import { renderDownloads } from "./download";
-import { escapeHtml } from "./format";
-import { isHoverGloballySuspended } from "./hover-highlight";
 import { renderInspector } from "./inspector";
 import type { Command } from "./commands";
 import { enablePalette } from "./palette";
 import { SHORTCUTS, wireShortcuts } from "./shortcuts";
 import { enableSidebar, type SidebarController } from "./sidebar";
 import {
-  INPUT_LAYERS,
   extractTileSources,
   installInputLayers,
   installAggregationOverlays,
@@ -82,7 +81,12 @@ import {
 } from "./selection";
 import { installSelectionHandle } from "./selection-handle";
 import { installSelectionMask } from "./selection-mask";
-import { streamMetrics, type MetricResult, type MetricSpec } from "./selection-metrics";
+import {
+  INITIAL_CARD,
+  nextCardState,
+  renderSelectionCard,
+  type SelectionStats,
+} from "./selection-card";
 import { TooltipController } from "./tooltip";
 
 // Fallback centre when no AOIs come back from the API. CDMX-Cuauhtémoc
@@ -263,7 +267,6 @@ async function main(): Promise<void> {
     // paints on top in MapLibre's default ordering).
     installSelectionHandle(map, selectionController);
     _wireSelectionToolbar(selectionController);
-    _wireSelectionPanel(selectionController);
     // Selection lives at session-only scope; switching AOI clears it
     // so a circle drawn in CDMX doesn't bleed into Mexicali's view.
 
@@ -315,6 +318,15 @@ async function main(): Promise<void> {
     let pinRequest: AbortController | null = null;
     // The grain the overlay is drawn at, so a pin knows what it pinned.
     let drawnGrain: string | null = null;
+    // The legend's AOI-wide stats, for the selection card's comparison line.
+    let aoiStats: IndicatorValueStats | null = null;
+
+    // The selection card asks about the indicator drawn now; with none, blocks.
+    const refreshSelectionCard = _wireSelectionCard(selectionController, () => ({
+      indicator: state.activeIndicator,
+      grain: state.activeIndicator ? drawnGrain : "block",
+      aoiStats,
+    }));
 
     const showInspector = (): void => {
       if (!inspectorEl || !pinned) return;
@@ -367,10 +379,18 @@ async function main(): Promise<void> {
     }
 
     // A click on a block pins it; a click on empty map closes the card.
-    // Ignored while a selection shape is drawn or edited (hover is off then
-    // too): the click belongs to the shape.
+    // A click that began while a shape was being drawn belongs to the shape,
+    // the one that finishes it included (terra-draw is in select mode by the
+    // time the click lands, hence the capture at pointerdown). A finished
+    // selection does not block pinning.
+    let clickBelongsToDraw = false;
+    map.getContainer().addEventListener(
+      "pointerdown",
+      () => { clickBelongsToDraw = selectionController.isDrawing(); },
+      { capture: true },
+    );
     map.on("click", (e) => {
-      if (isHoverGloballySuspended()) return;
+      if (clickBelongsToDraw) return;
       const id = overlayFeatureAt(map, e.point);
       if (id === null) closeInspector();
       else if (id !== pinned?.id) void pin(id);
@@ -391,8 +411,7 @@ async function main(): Promise<void> {
       refreshAggregationOverlayAoi(map, sources, aoi?.aoi_id ?? null);
       // Switching AOI invalidates any active circle/rectangle/polygon
       // selection — a CDMX-drawn circle has no meaningful intersection
-      // with a Mexicali viewport. Clear up-front so the metrics panel
-      // doesn't keep showing stale numbers.
+      // with a Mexicali viewport. Clearing also clears the selection card.
       selectionController.clear();
       // Re-render the picker so AOI-scoped observation overlays
       // (``source_config.aois``) hide on AOIs they don't apply to.
@@ -445,6 +464,8 @@ async function main(): Promise<void> {
       closeInspector();
       state.activeIndicator = null;
       state.activeGrain = null;
+      aoiStats = null;
+      refreshSelectionCard();
       removeIndicator(map);
       renderIndicatorInfo(null);
       const grainEl = document.getElementById("grain-toggle");
@@ -541,6 +562,8 @@ async function main(): Promise<void> {
         stats ? null : `Could not load the values of ${indicator.name}; colours use the catalog range.`,
         "error",
       );
+      aoiStats = stats;
+      refreshSelectionCard();
     }
 
     if (select) {
@@ -803,113 +826,76 @@ function _wireSelectionToolbar(controller: SelectionController): () => void {
 }
 
 
-function _wireSelectionPanel(
+/**
+ * Keep the selection card in step with the selection: one request per settled
+ * change (150 ms debounce), the previous one aborted, the previous numbers
+ * kept on screen, dimmed, until the answer replaces them. Returns a refresh
+ * for when the indicator or its AOI stats change under a standing selection.
+ */
+function _wireSelectionCard(
   controller: SelectionController,
+  current: () => {
+    indicator: IndicatorSummary | null;
+    grain: string | null;
+    aoiStats: IndicatorValueStats | null;
+  },
 ): () => void {
-  const panel = document.getElementById("selection-panel");
-  const list = panel?.querySelector(".selection-panel__metrics") as HTMLDListElement | null;
-  const totalValue = panel?.querySelector(".selection-panel__total-value") as HTMLSpanElement | null;
-  if (!panel || !list) return () => undefined;
-
-  // Default metric specs derived from INPUT_LAYERS. Each one binds a
-  // user-facing label to the canonical ``type_slug`` recognised by
-  // the /metrics/within-polygon endpoint. Future grain additions
-  // land in the panel automatically by extending INPUT_LAYERS — no
-  // wiring change here.
-  const specs: MetricSpec[] = INPUT_LAYERS.map((l) => ({
-    label: `${l.label} selected`,
-    typeSlug: l.typeSlug,
-  }));
-
-  // Supersede in-flight metrics requests when a newer selection
-  // arrives. Same pattern as ``renderIndicator``'s ``renderToken``
-  // — without it, a slow request from N can clobber the result of a
-  // newer request N+1, leaving the panel showing the wrong polygon's
-  // numbers.
+  const card = document.getElementById("selection-panel");
+  if (!card) return () => undefined;
+  let state = INITIAL_CARD;
+  // What the numbers on screen were fetched for: stale numbers keep their unit.
+  let shown: ReturnType<typeof current> = { indicator: null, grain: "block", aoiStats: null };
   let inFlight: AbortController | null = null;
+  const paint = (): void =>
+    renderSelectionCard(card, state, shown.indicator, shown.aoiStats, shown.grain);
 
-  const render = async (selection: SelectionGeometry | null): Promise<void> => {
-    // Abort any in-flight request: either we have a new selection or
-    // the user cleared the panel; the previous result is no longer
-    // wanted regardless.
-    if (inFlight !== null) {
-      inFlight.abort();
-      inFlight = null;
-    }
-    if (selection === null) {
-      panel.hidden = true;
-      list.innerHTML = "";
-      if (totalValue) totalValue.textContent = "0";
-      return;
-    }
+  const update = async (selection: SelectionGeometry | null): Promise<void> => {
+    inFlight?.abort();
+    inFlight = null;
     const aoiId = getActiveAoiId();
-    if (aoiId === null) {
-      panel.hidden = true;
+    if (selection === null || aoiId === null) {
+      state = nextCardState(state, { type: "cleared" });
+      paint();
       return;
     }
-    panel.hidden = false;
-    if (totalValue) totalValue.textContent = "…";
-
+    state = nextCardState(state, { type: "selection-changed" });
+    paint();
+    const token = state.token;
+    const ctx = current();
     const ctrl = new AbortController();
     inFlight = ctrl;
-    // Progressive rendering: results stream in as each per-type
-    // request resolves. Small layers (block ~50 ms, ageb ~20 ms,
-    // muni ~10 ms) appear in the panel before the heavy buildings
-    // request settles. The user sees three-of-four numbers in
-    // under 100 ms even when buildings are still in flight.
-    const accumulated = new Map<string, MetricResult>();
-    const repaint = (): void => {
-      let total = 0;
-      for (const r of accumulated.values()) total += r.featuresCounted;
-      if (totalValue) totalValue.textContent = total.toLocaleString();
-      // Show every spec that's resolved — including zero-count rows
-      // (display "0") and per-spec errors (display "—"). Hiding
-      // zero-counts conflated "no features matched" with "fetch
-      // failed" and left the user wondering whether the panel was
-      // mid-load or done. Per-spec rows are cheap (one row per
-      // INPUT_LAYER) so showing all of them is fine.
-      const rows = [...accumulated.values()];
-      list.innerHTML = rows
-        .map(
-          (r) =>
-            `<dt>${escapeHtml(r.spec.label)}</dt><dd>${escapeHtml(r.display)}</dd>`,
-        )
-        .join("");
-    };
-    const onResult = (result: MetricResult): void => {
-      // Drop if a newer request superseded this one while we waited.
-      if (inFlight !== ctrl) return;
-      accumulated.set(result.spec.typeSlug, result);
-      repaint();
-    };
+    const polygon = selection.feature.geometry;
+    let stats: SelectionStats | null = null;
     try {
-      await streamMetrics(selection, specs, aoiId, onResult, ctrl.signal);
+      if (ctx.indicator) {
+        stats = await indicatorWithinPolygon({
+          aoi_id: aoiId,
+          polygon,
+          indicator_slug: ctx.indicator.slug,
+          feature_type: ctx.grain ?? undefined,
+        }, { signal: ctrl.signal });
+      } else {
+        const res = await fetchMetricsWithinPolygon(
+          { aoi_id: aoiId, polygon, type_slugs: ["block"] },
+          { signal: ctrl.signal },
+        );
+        stats = { count: res.results.find((r) => r.type_slug === "block")?.count ?? 0 };
+      }
     } catch (err) {
-      // Subscriber callbacks are fire-and-forget, so a rethrow here
-      // lands as an unhandled rejection nobody sees. Per-spec failures
-      // already render as "—" in the panel; log the rest.
-      if (!isAbortError(err)) console.warn("selection metrics failed:", err);
+      if (isAbortError(err)) return;
+      // Shown in the card as a one-line failure; the detail goes to the console.
+      console.warn("selection summary failed:", err);
     }
     if (inFlight === ctrl) inFlight = null;
+    const next = nextCardState(state, { type: "response", token, stats });
+    if (next === state) return;
+    state = next;
+    shown = ctx;
+    paint();
   };
 
-  // Debounced subscription. The endpoint is fast (sub-100 ms for a
-  // small polygon) but firing one HTTP request per terra-draw change
-  // event during a drag burns network + DB cycles for results the
-  // user never sees. 150 ms trailing matches the visual cadence the
-  // operator perceives as "live".
-  const unsubscribe = controller.subscribe(
-    (sel) => { void render(sel); },
-    { debounceMs: 150 },
-  );
-
-  return () => {
-    if (inFlight !== null) {
-      inFlight.abort();
-      inFlight = null;
-    }
-    unsubscribe();
-  };
+  controller.subscribe((sel) => { void update(sel); }, { debounceMs: 150 });
+  return () => { void update(controller.getSelection()); };
 }
 
 

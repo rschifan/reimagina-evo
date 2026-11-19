@@ -119,12 +119,6 @@ export function setHoverGloballySuspended(suspended: boolean): void {
 }
 
 
-/** True while a selection shape is drawn or edited: map clicks belong to it. */
-export function isHoverGloballySuspended(): boolean {
-  return _suspended;
-}
-
-
 export function enableHoverHighlight(
   map: MapLibreMap,
   cfg: HoverHighlightConfig,

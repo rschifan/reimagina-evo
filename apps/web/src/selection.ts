@@ -12,8 +12,8 @@
  * Three downstream consumers live in sibling modules:
  *   - :mod:`selection-mask` dims out-of-selection features via a
  *     spotlight overlay layer (Felt / Mapbox-Studio idiom).
- *   - :mod:`selection-metrics` aggregates rendered features inside
- *     the selection (count / sum / mean) for the side panel.
+ *   - :mod:`selection-card` summarises the selection (block count,
+ *     the active indicator inside it) bottom-right of the map.
  *   - ``main.ts`` wires the toolbar UI.
  *
  * The store pattern matches ``aoi.ts`` (manual EventEmitter,
@@ -70,6 +70,8 @@ export interface SelectionController {
   startDrawing(shape: SelectionShape): void;
   clear(): void;
   getSelection(): SelectionGeometry | null;
+  /** A shape is being drawn right now (not merely selected). */
+  isDrawing(): boolean;
   /** Subscribe to selection changes. Fires immediately with the
    *  current state so consumers can bootstrap without an extra
    *  ``getSelection()`` call. Returns an unsubscribe function. */
@@ -124,6 +126,15 @@ function _ensureClosedPolygonFeature(
 
 
 // ─── Mode names — match the keys terra-draw uses internally ─────────
+
+/**
+ * True while a shape is being drawn (terra-draw's circle / rectangle / polygon
+ * modes): map clicks then belong to the shape. A finished shape sits in
+ * `select` mode, where clicks are the map's again.
+ */
+export function isDrawMode(mode: string): boolean {
+  return mode === "circle" || mode === "rectangle" || mode === "polygon";
+}
 
 const TD_MODE: Record<SelectionShape, string> = {
   circle: "circle",
@@ -310,10 +321,9 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     //
     // Wheel zoom, pinch, keyboard, right-click rotate stay on in
     // every regime — they live on independent inputs.
-    const isDrawMode = drawing && mode !== "select";
     const competing = [map.dragPan, map.boxZoom, map.doubleClickZoom];
     for (const h of competing) {
-      if (isDrawMode) h.disable();
+      if (isDrawMode(mode)) h.disable();
       else h.enable();
     }
   };
@@ -434,6 +444,9 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     },
     getSelection(): SelectionGeometry | null {
       return _selection;
+    },
+    isDrawing(): boolean {
+      return isDrawMode(draw.getMode());
     },
     setCircleRing(ring: number[][]): void {
       if (_selection?.shape !== "circle") return;

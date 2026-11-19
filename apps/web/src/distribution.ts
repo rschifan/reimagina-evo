@@ -14,10 +14,10 @@
  *
  * ⚠ **The bins come from the server, and that is a constraint rather than a
  * preference.** The obvious implementation is `queryRenderedFeatures` over
- * the overlay source, and `selection-metrics` already abandoned exactly that:
- * it "silently undercounted whenever the renderer hadn't loaded the relevant
- * tiles (zoomed out, layer toggled off, slow tile fetches mid-drag)". For a
- * count that is an error; for a distribution it is worse, because the shape
+ * the overlay source, and it silently undercounts whenever the renderer has
+ * not loaded the relevant tiles (zoomed out, layer toggled off, slow tile
+ * fetches mid-drag). For a count that is an error; for a distribution it is
+ * worse, because the shape
  * would change while you read it and nothing would say which shape was real.
  * `/indicators/{slug}/stats?bins=N` answers from `curated_geo`, scoped to the
  * same AOI and feature type as every other number in the legend.

@@ -752,13 +752,14 @@ body {
 }
 
 /*
- * Metrics panel — one per selection, bottom-right of the map, across
- * from the legend card. main.ts toggles the
- * ``hidden`` attribute when the selection store emits null/non-null.
+ * Selection summary, bottom-right of the map, across from the legend. Stale
+ * numbers dim while the next answer is in flight; tabular figures keep their
+ * width from jumping when they change.
  */
-.selection-panel {
+.selection-card {
   position: absolute;
-  bottom: 12px;
+  /* Level with the legend, clear of the attribution button below it. */
+  bottom: 40px;
   right: 12px;
   z-index: 5;
   min-width: 200px;
@@ -766,60 +767,33 @@ body {
   background: rgba(17, 24, 39, 0.92);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   color: var(--sidebar-fg);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-}
-
-.selection-panel__title {
-  margin: 0 0 8px 0;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.selection-panel__metrics {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  row-gap: 4px;
-  column-gap: 12px;
   font-size: 13px;
-}
-
-.selection-panel__metrics dt {
-  margin: 0;
-  color: var(--muted);
-}
-
-.selection-panel__metrics dd {
-  margin: 0;
-  text-align: right;
   font-variant-numeric: tabular-nums;
+  transition: opacity 120ms;
 }
 
-.selection-panel__total {
-  margin: 0 0 8px 0;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 8px;
+.selection-card.is-stale {
+  opacity: 0.6;
 }
 
-.selection-panel__total-value {
-  font-size: 22px;
+.selection-card p {
+  margin: 0;
+}
+
+.selection-card .selection-card__title {
   font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--sidebar-fg);
+  margin-bottom: 4px;
 }
 
-.selection-panel__total-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.selection-card__value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.selection-card__note {
   color: var(--muted);
 }
 
