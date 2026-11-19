@@ -575,7 +575,6 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
         "num_levels",
         "unit_size",
         "people_per_household",
-        "lot_coverage",
     ]
 
     recomputed = client.post(f"/scenarios/{scenario_id}/recompute")
@@ -583,7 +582,7 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
     assert recomputed.status_code == 202, recomputed.text
     body = recomputed.json()
     assert body["matched_per_edit"] and set(body["matched_per_edit"].values()) == {2}
-    assert body["overrides_written"] == 10
+    assert body["overrides_written"] == 8
     assert body["run_id"] == "run-123"
     assert orchestrator[0]["scenario_id"] == scenario_id
     assert orchestrator[0]["aoi_id"] == territory.aoi_id
@@ -598,15 +597,14 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
             )
             assert cur.fetchall() == [
                 ("floors", 2),
-                ("lot_coverage", 2),
                 ("num_levels", 2),
                 ("people_per_household", 2),
                 ("unit_size", 2),
             ]
         shown = client.get(f"/scenarios/{scenario_id}").json()
-        assert shown["override_count"] == 10
+        assert shown["override_count"] == 8
         assert shown["materialized_at"] is not None
-        assert len(shown["edits"]) == 5
+        assert len(shown["edits"]) == 4
     finally:
         reader.close()
 
@@ -679,7 +677,7 @@ def test_an_edit_can_be_removed_and_only_from_its_own_scenario(
         client.delete(f"/scenarios/{other_id}/edits?edit_id={edit_id}").status_code
         == 404
     )
-    assert len(client.get(f"/scenarios/{scenario_id}").json()["edits"]) == 5
+    assert len(client.get(f"/scenarios/{scenario_id}").json()["edits"]) == 4
 
     assert (
         client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
@@ -690,7 +688,6 @@ def test_an_edit_can_be_removed_and_only_from_its_own_scenario(
         "num_levels",
         "unit_size",
         "people_per_household",
-        "lot_coverage",
     ]
     assert (
         client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
@@ -741,8 +738,8 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
     deleted = client.delete(f"/scenarios/{scenario_id}")
 
     assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["overrides"] == 10
-    assert deleted.json()["versions_retired"] == 5
+    assert deleted.json()["overrides"] == 8
+    assert deleted.json()["versions_retired"] == 4
     # Nothing computed this scenario here — the orchestrator is a fake — so
     # the other two counts are zero *for a reason*, which is a different claim
     # from being unasserted. Pinned non-zero in the test below.
@@ -787,8 +784,8 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
 
     deleted = client.delete(f"/scenarios/{scenario_id}").json()
 
-    assert deleted["overrides"] == 10
-    assert deleted["versions_retired"] == 5
+    assert deleted["overrides"] == 8
+    assert deleted["versions_retired"] == 4
     assert deleted["results_superseded"] == 1
     assert deleted["materializations"] == 1
 
@@ -950,12 +947,13 @@ def test_post_writes_coverage(client, territory):
         for e in _edits(client, sid)
         if e["attribute_key"] == "lot_coverage"
     ]
-    assert coverage == [1.0, 0.6]
+    # Omitted, coverage is not written: each block keeps its own.
+    assert coverage == [0.6]
 
 
 def test_values_update_in_place(client, territory):
     sid = _scenario(client, territory)
-    ids = _post(client, sid)
+    ids = _post(client, sid, lot_coverage=0.6)
     before = {e["id"]: e["ordinal"] for e in _edits(client, sid)}
 
     response = _patch(client, sid, ids)
@@ -974,7 +972,7 @@ def test_values_update_in_place(client, territory):
 
 def test_area_moves_every_edit(client, territory):
     sid = _scenario(client, territory)
-    ids = _post(client, sid)
+    ids = _post(client, sid, lot_coverage=0.6)
     old = {e["geometry_wkt"] for e in _edits(client, sid)}
     ordinals = sorted(e["ordinal"] for e in _edits(client, sid))
 
@@ -1008,28 +1006,17 @@ def test_foreign_or_mixed_ids_are_422(client, territory):
     assert _edits(client, sid) == before
 
 
-def test_pre_coverage_rule_gets_a_coverage_edit(client, territory, migrated_db):
+def test_a_number_set_later_is_added_to_the_rule(client, territory):
+    """A rule that did not set coverage gets a coverage edit when a PATCH sets it."""
     sid = _scenario(client, territory)
-    ids = _post(client, sid)
-    coverage_id = next(
-        e["id"] for e in _edits(client, sid) if e["attribute_key"] == "lot_coverage"
-    )
-    reader = _reader(migrated_db)
-    try:
-        with reader.cursor() as cur:
-            cur.execute(
-                "DELETE FROM curated_geo.scenario_edit WHERE id = %s", (coverage_id,)
-            )
-        reader.commit()
-    finally:
-        reader.close()
-    four = [i for i in ids if i != coverage_id]
+    four = _post(client, sid)
 
     response = _patch(client, sid, four)
 
     assert response.status_code == 200, response.text
     written = response.json()["edits"]
     assert len(written) == 5
+    assert {e["id"] for e in written} >= set(four)
     assert {e["attribute_key"] for e in written} >= {"lot_coverage"}
 
 
@@ -1054,17 +1041,47 @@ def test_patching_a_rule_of_an_unknown_scenario_is_404(client, territory):
     assert response.status_code == 404
 
 
-def test_a_rule_update_must_say_its_coverage(client, territory):
-    """Review: defaulting PATCH coverage to 1.0 turned a 60 % rule into 100 %
-    — two thirds more homes — for any caller that left it out."""
+def test_a_rule_writes_only_the_numbers_it_sets(client, territory):
+    """Changing household size alone must not flatten storeys, unit size and
+    coverage across the area: only that one edit is written."""
+    sid = _scenario(client, territory)
+    body = {
+        "area": PROPOSAL["area"],
+        "people_per_household": 5,
+        "type_slug": PROPOSAL["type_slug"],
+    }
+    response = client.post(f"/scenarios/{sid}/edits", json=body)
+    assert response.status_code == 201, response.text
+    assert [(e["attribute_key"], e["value_numeric"]) for e in _edits(client, sid)] == [
+        ("people_per_household", 5.0)
+    ]
+
+
+def test_a_rule_that_sets_nothing_is_refused(client, territory):
+    sid = _scenario(client, territory)
+    body = {"area": PROPOSAL["area"], "type_slug": PROPOSAL["type_slug"]}
+    response = client.post(f"/scenarios/{sid}/edits", json=body)
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "empty_proposal"
+    ids = _post(client, sid)
+    assert (
+        client.patch(f"/scenarios/{sid}/rules", json={"edit_ids": ids}).status_code
+        == 400
+    )
+
+
+def test_a_rule_update_sends_the_rules_full_set(client, territory):
+    """PATCH is the rule's whole set of numbers: a number left out is no
+    longer set by the rule, so each block keeps its own value for it."""
     sid = _scenario(client, territory)
     ids = _post(client, sid, lot_coverage=0.6)
-    body = {"edit_ids": ids, "levels": 4, "unit_size": 70, "people_per_household": 3.0}
-    response = client.patch(f"/scenarios/{sid}/rules", json=body)
-    assert response.status_code == 422
-    coverage = [
-        e["value_numeric"]
-        for e in _edits(client, sid)
-        if e["attribute_key"] == "lot_coverage"
+    response = client.patch(
+        f"/scenarios/{sid}/rules", json={"edit_ids": ids, "people_per_household": 4.0}
+    )
+    assert response.status_code == 200, response.text
+    assert [(e["attribute_key"], e["value_numeric"]) for e in _edits(client, sid)] == [
+        ("people_per_household", 4.0)
     ]
-    assert coverage == [0.6]
+    assert [e["attribute_key"] for e in response.json()["edits"]] == [
+        "people_per_household"
+    ]

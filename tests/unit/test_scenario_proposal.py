@@ -52,7 +52,6 @@ def test_levels_writes_both_floors_and_num_levels():
         "num_levels",
         "unit_size",
         "people_per_household",
-        "lot_coverage",
     }
     assert _value(edits, "floors") == _value(edits, "num_levels") == 6
 
@@ -61,7 +60,7 @@ def test_every_edit_key_is_authorable():
     """A key the authoring layer refuses is a four-way write that half-lands."""
     from reimagina.assets.registry import authorable_attributes
 
-    keys = {e["attribute_key"] for e in edits_for(6, 60, 3.6)}
+    keys = {e["attribute_key"] for e in edits_for(6, 60, 3.6, 0.6)}
     assert keys == set(authorable_attributes())
 
 

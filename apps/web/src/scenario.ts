@@ -129,12 +129,13 @@ export function maxLevelsFor(
 
 
 export interface ProposalValues {
-  levels: number;
-  unitSize: number;
-  peoplePerHousehold: number;
-  /** Share of the block built on, `0 < c ≤ 1`. Absent means 1, the whole
-   *  block — what the API assumes when it is not sent. */
-  lotCoverage?: number;
+  /** Each number is optional: null means the rule does not set it, and every
+   *  block keeps its own value. At least one must be set. */
+  levels: number | null;
+  unitSize: number | null;
+  peoplePerHousehold: number | null;
+  /** Share of the block built on, `0 < c ≤ 1`; null or absent means not set. */
+  lotCoverage?: number | null;
   /** `valid_max` of {@link DENSITY_INDICATOR_SLUG} from the catalog. Null or
    *  absent when `/indicators/{slug}` could not be read — the check is then
    *  the server's alone. */
@@ -166,13 +167,20 @@ export function validateEdit(values: ProposalValues): string | null {
   // raises about and the names the 400 carries in `field` — so a value refused
   // locally and the same value refused by the server read as the same refusal,
   // about the same thing, rather than as two unrelated complaints.
-  const fields: Array<[string, string, number]> = [
+  const fields: Array<[string, string, number | null]> = [
     ["Storeys", "levels", values.levels],
     ["m² per dwelling", "unit_size", values.unitSize],
     ["People per household", "people_per_household", values.peoplePerHousehold],
   ];
+  const coverageSet = values.lotCoverage !== null && values.lotCoverage !== undefined;
+  if (fields.every(([, , value]) => value === null) && !coverageSet) {
+    return (
+      "Set at least one number (levels, unit_size, people_per_household or " +
+      "lot_coverage): a rule with none changes nothing."
+    );
+  }
   for (const [label, field, value] of fields) {
-    if (!Number.isFinite(value) || value <= 0) {
+    if (value !== null && (!Number.isFinite(value) || value <= 0)) {
       return `${label} (${field}) must be a positive number, got ${value}.`;
     }
   }
@@ -180,6 +188,9 @@ export function validateEdit(values: ProposalValues): string | null {
   if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
     return `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`;
   }
+  // The rest needs storeys: without them each block keeps its own, which
+  // only the server can see.
+  if (values.levels === null) return null;
   const floorsBound = values.floorsValidMax;
   if (
     floorsBound !== null &&
@@ -200,6 +211,7 @@ export function validateEdit(values: ProposalValues): string | null {
   if (bound === null || bound === undefined || !Number.isFinite(bound) || bound <= 0) {
     return null;
   }
+  if (values.unitSize === null) return null;
   const density = (M2_PER_HECTARE * values.levels * coverage) / values.unitSize;
   if (density > bound) {
     const allowed = maxLevelsFor(values.unitSize, bound, coverage);
@@ -557,25 +569,20 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
   }
   for (const [wkt, group] of byArea) {
     const keys = seen.get(wkt) ?? new Set<string>();
-    group.complete =
-      keys.has("floors") &&
-      keys.has("num_levels") &&
-      keys.has("unit_size") &&
-      keys.has("people_per_household");
+    // A rule sets any of its numbers, but storeys are two edits that must
+    // travel together: one without the other makes the map contradict itself.
+    group.complete = keys.size > 0 && keys.has("floors") === keys.has("num_levels");
   }
   return [...byArea.values()].sort((a, b) => a.ordinal - b.ordinal);
 }
 
 
 export function describeGroup(group: EditGroup, position: number): string {
-  const parts = [
-    `Rule ${position}`,
-    group.levels === null ? "st —" : `${fmt(group.levels)} st`,
-    group.unitSize === null ? "m² —" : `${fmt(group.unitSize)} m²`,
-    group.peoplePerHousehold === null
-      ? "people —"
-      : `${fmt(group.peoplePerHousehold)} people`,
-  ];
+  // Only what the rule sets; everything else is each block's own value.
+  const parts = [`Rule ${position}`];
+  if (group.levels !== null) parts.push(`${fmt(group.levels)} st`);
+  if (group.unitSize !== null) parts.push(`${fmt(group.unitSize)} m²`);
+  if (group.peoplePerHousehold !== null) parts.push(`${fmt(group.peoplePerHousehold)} people`);
   if (group.lotCoverage !== null) parts.push(`${fmt(group.lotCoverage * 100)} %`);
   // An incomplete group is named as such rather than papered over: the
   // edificability family skips any feature missing any of the three, so a

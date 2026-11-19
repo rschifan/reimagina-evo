@@ -396,7 +396,9 @@ describe("editing on the map", () => {
     await settleRun(store.saveRule(GROUP, AREA, VALUES));
     expect(api.updateRule).toHaveBeenCalledTimes(2);
     const undo = api.updateRule.mock.calls[1][1];
-    expect(undo).toMatchObject({ levels: 6, unit_size: 60, people_per_household: 3.6, lot_coverage: 1 });
+    expect(undo).toMatchObject({ levels: 6, unit_size: 60, people_per_household: 3.6 });
+    // The rule did not set coverage before, so the restore does not either.
+    expect(undo).not.toHaveProperty("lot_coverage");
     expect(undo.area.type).toBe("Polygon");
     expect(store.ws.boxError).not.toBeNull();
   });
@@ -479,12 +481,18 @@ describe("editing on the map", () => {
     expect(api.getScenario).toHaveBeenCalledWith("A");
   });
 
-  it("values are remembered for the next rule", async () => {
+  it("a rule sends only the numbers it sets", async () => {
     store.select("A");
-    expect(store.ws.lastValues).toEqual({ levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 });
-    await settleRun(store.applyNewRule(AREA, VALUES));
-    expect(store.ws.lastValues).toEqual(VALUES);
+    api.addScenarioEdits.mockResolvedValue(written(["n1"]));
+    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 3 }));
+    await settleRun(
+      store.applyNewRule(AREA, { levels: null, unitSize: null, peoplePerHousehold: 5, lotCoverage: null }),
+    );
+    const body = api.addScenarioEdits.mock.calls[0][1];
+    expect(body).toEqual({ area: AREA, people_per_household: 5 });
   });
+
+
 
   it("the headline reads homes and people from the table's cells", () => {
     store.ws.cells = {
