@@ -14,25 +14,24 @@ describe("fmtNumber", () => {
     }));
   });
 
-  it("uses 2dp for 1 <= |n| < 100", () => {
-    expect(fmtNumber(12.345)).toBe((12.345).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }));
+  it("uses up to 2dp for 1 <= |n| < 100, without padding", () => {
+    expect(fmtNumber(12.345)).toBe((12.345).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+    expect(fmtNumber(12.5)).toBe("12.5");
   });
 
-  it("uses 3dp for sub-unit magnitudes", () => {
-    expect(fmtNumber(0.12345)).toBe((0.12345).toLocaleString(undefined, {
-      minimumFractionDigits: 3,
-      maximumFractionDigits: 3,
-    }));
+  it("uses up to 3dp for sub-unit magnitudes, without padding", () => {
+    expect(fmtNumber(0.12345)).toBe("0.123");
+    expect(fmtNumber(0.41)).toBe("0.41");
   });
 
   it("treats negatives by absolute magnitude", () => {
-    expect(fmtNumber(-0.5)).toBe((-0.5).toLocaleString(undefined, {
-      minimumFractionDigits: 3,
-      maximumFractionDigits: 3,
-    }));
+    expect(fmtNumber(-0.5)).toBe("-0.5");
+  });
+
+  it("is the digit rule formatValue prints with", () => {
+    for (const n of [12.5, 0.41, 1234.5, 3]) {
+      expect(formatValue(n, { unit: null })).toBe(fmtNumber(n));
+    }
   });
 });
 

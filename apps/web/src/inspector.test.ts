@@ -35,9 +35,19 @@ describe("rankText", () => {
     expect(rankText(row({ count: 1, count_below: 0 }))).toBe("");
   });
 
-  it("never claims every block or none", () => {
-    expect(rankText(row({ count_below: 19057 }))).toBe("Farther than >99% of blocks");
-    expect(rankText(row({ value: 1500, count_equal: 1, count: 300 }))).toBe("At the cap, with <1% of blocks");
+  it("never claims every block or none, and never doubles a comparative", () => {
+    expect(rankText(row({ count_below: 19057 }))).toBe("Farther than nearly all blocks");
+    expect(rankText(row({ count_below: 1, count: 300 }))).toBe("Farther than under 1% of blocks");
+    const density = { unit: "buildings_per_ha", cap_value: null };
+    expect(rankText(row({ ...density, count_below: 19057 }))).toBe("Higher than nearly all blocks");
+    expect(rankText(row({ ...density, count_below: 1, count: 300 }))).toBe("Higher than under 1% of blocks");
+    expect(rankText(row({ value: 1500, count_equal: 1, count: 300 }))).toBe("At the cap, with under 1% of blocks");
+    expect(rankText(row({ value: 1500, count_equal: 299, count: 300 }))).toBe("At the cap, with nearly all blocks");
+  });
+
+  it("keeps exact none and all as plain percentages", () => {
+    expect(rankText(row({ count_below: 0 }))).toBe("Farther than 0% of blocks");
+    expect(rankText(row({ value: 1500, count_equal: 300, count: 300 }))).toBe("At the cap, with 100% of blocks");
   });
 
   it("uses the grain it is given", () => {

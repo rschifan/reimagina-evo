@@ -148,6 +148,16 @@ describe("one number style in the legend", () => {
     expect(bounds).not.toMatch(/\d{4}/);
     expect(el.textContent ?? "").not.toContain("p05");
   });
+
+  it("prints a bound at the cap exactly as the median at the cap", () => {
+    const el = document.createElement("div");
+    const stats = spreadStats();
+    renderLegend(el, PARK, rampDomainFromStats(stats, PARK), stats.histogram, 11781, 19058);
+    const [lo, hi] = Array.from(el.querySelectorAll(".bounds span"), (s) => s.textContent);
+    expect(lo).toBe("400 m");
+    expect(hi).toBe("1,500 m+ (cap)");
+    expect(el.querySelector(".p50")?.textContent).toBe("median · 1,500 m+ (cap)");
+  });
 });
 
 describe("renderGrainToggle", () => {

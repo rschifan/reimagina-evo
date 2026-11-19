@@ -27,7 +27,7 @@
  * assistive technology and a hover tooltip both read for free.
  */
 import type { ValueHistogram } from "./api";
-import { fmtNumber as formatNumber } from "./format";
+import { fmtNumber } from "./format";
 
 /** Bins requested from the API. */
 export const HISTOGRAM_BINS = 24;
@@ -78,11 +78,11 @@ export function binLabel(
 ): string {
   const suffix = unit ? ` ${unit}` : "";
   if (histogram.width <= 0) {
-    return `${formatNumber(histogram.lo)}${suffix}`;
+    return `${fmtNumber(histogram.lo)}${suffix}`;
   }
   const lo = histogram.lo + index * histogram.width;
   const hi = lo + histogram.width;
-  return `${formatNumber(lo)} – ${formatNumber(hi)}${suffix}`;
+  return `${fmtNumber(lo)} – ${fmtNumber(hi)}${suffix}`;
 }
 
 function escapeAttr(value: string): string {

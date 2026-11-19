@@ -21,11 +21,15 @@ import { formatValue, shareText } from "./format";
 export function rankText(row: FeatureIndicatorValue, grain: string | null = "block"): string {
   if (row.count < 2) return "";
   const word = grainLabel(grain).toLowerCase();
-  const pct = (n: number): string => shareText(n, row.count);
+  // "nearly all" / "under 1%" rather than ">99%" / "<1%" spliced after "than".
+  const share = (n: number): string => {
+    const s = shareText(n, row.count);
+    return s === ">99" ? "nearly all" : s === "<1" ? "under 1% of" : `${s}% of`;
+  };
   if (row.cap_value !== null && row.value >= row.cap_value) {
-    return `At the cap, with ${pct(row.count_equal)}% of ${word}`;
+    return `At the cap, with ${share(row.count_equal)} ${word}`;
   }
-  return `${row.unit === "m" ? "Farther" : "Higher"} than ${pct(row.count_below)}% of ${word}`;
+  return `${row.unit === "m" ? "Farther" : "Higher"} than ${share(row.count_below)} ${word}`;
 }
 
 /**

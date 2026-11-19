@@ -403,7 +403,7 @@ export function deltaScopeText(domain: DeltaDomain, unit: string | null): string
   }
   const u = unit ? ` ${unit}` : "";
   return (
-    `ramp: ±${formatNumber(domain.limit)}${u} — 95th percentile of the ` +
+    `ramp: ±${fmtNumber(domain.limit)}${u} — 95th percentile of the ` +
     `change across ${fmtNumber(domain.changed)} changed blocks`
   );
 }
@@ -730,10 +730,9 @@ export function renderLegend(
 ): void {
   container.hidden = false;
   const unit = indicator.unit ? unitLabel(indicator.unit) : "";
-  // Every number in the legend reads like the cap swatch beside it: one
-  // formatter, unit attached. The bounds skip the cap wording, which belongs
-  // to the swatch.
-  const bound = (n: number): string => escapeHtml(formatValue(n, { unit: indicator.unit }));
+  // Every value the legend prints goes through one formatter with the
+  // indicator, so a bound at the cap reads "… (cap)" exactly as the median does.
+  const bound = (n: number): string => escapeHtml(formatValue(n, indicator));
   const p50Row =
     domain.fromStats && domain.p50 !== null
       ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
@@ -795,7 +794,7 @@ export function renderDeltaLegend(
   container.hidden = false;
   const unit = indicator.unit ?? "";
   const bound = (n: number, sign: string): string =>
-    domain.basis === "none" ? "" : `${sign}${formatNumber(n)}`;
+    domain.basis === "none" ? "" : `${sign}${fmtNumber(n)}`;
   container.innerHTML = `
     <div class="name">Change in ${escapeHtml(indicator.name)}</div>
     <div class="gradient" data-delta-gradient style="background: linear-gradient(to right, ${deltaStops(domain.higherIsBetter).join(", ")})"></div>
@@ -917,13 +916,3 @@ export function clearLegend(container: HTMLElement): void {
   container.innerHTML = "";
 }
 
-
-/** Legend-only formatter — uses ``toFixed`` (no locale separators) so
- *  the gradient endpoints read as compact engineering numbers rather
- *  than long thousand-separated strings. Distinct from ``fmtNumber``
- *  in ``./format`` which is locale-aware for tooltips / panel rows. */
-function formatNumber(value: number): string {
-  if (Math.abs(value) >= 100) return value.toFixed(0);
-  if (Math.abs(value) >= 1) return value.toFixed(2);
-  return value.toFixed(3);
-}

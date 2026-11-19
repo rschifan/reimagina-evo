@@ -394,6 +394,11 @@ describe("deltaDomainFromComparison", () => {
     expect(text).toContain("95th percentile");
     expect(text).toMatch(/8(\.0+)? m/);
   });
+
+  it("prints its span with the app's one digit rule", () => {
+    const d = deltaDomainFromComparison(comparison([{ delta: 1500, state: "changed" }]));
+    expect(deltaScopeText(d, "m")).toContain("±1,500 m");
+  });
 });
 
 // ── the uniform-values legend ──────────────────────────────────────────
@@ -454,6 +459,11 @@ describe("a layer whose values are all identical", () => {
     expect(d.basis).toBe("uniform");
     expect(rampScopeText(d)).toMatch(/all 16 values identical \(1,333\)/);
     expect(rampScopeText(d)).not.toMatch(/p05/);
+  });
+
+  it("prints the identical value without padded decimals", () => {
+    const d = rampDomainFromStats(stats({ count: 16, min: 12.5, max: 12.5, p05: 12.5, p50: 12.5, p95: 12.5 }), indicator());
+    expect(rampScopeText(d)).toContain("identical (12.5)");
   });
 
   it("is uniform at the epsilon the server really produces, at any magnitude", () => {

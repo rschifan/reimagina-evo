@@ -90,6 +90,10 @@ describe("binLabel", () => {
   it("names the single value when every value is identical", () => {
     expect(binLabel(0, FLAT, "m")).toBe("42 m");
   });
+
+  it("prints bin edges without padded decimals, like the rest of the legend", () => {
+    expect(binLabel(0, histogram({ width: 12.5 }), "m")).toBe("0 – 12.5 m");
+  });
 });
 
 describe("distributionSvg", () => {
