@@ -2261,14 +2261,15 @@ class PostgresIndicatorCatalogRepository:
         unit: str | None = None,
         valid_min: float | None = None,
         valid_max: float | None = None,
+        cap_value: float | None = None,
     ) -> str:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.indicator_catalog
                   (slug, name, description, model_family, computation_kind, value_type,
-                   unit, valid_min, valid_max, aggregation_method, applies_to)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   unit, valid_min, valid_max, cap_value, aggregation_method, applies_to)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slug) DO UPDATE SET
                     name               = EXCLUDED.name,
                     description        = EXCLUDED.description,
@@ -2278,6 +2279,7 @@ class PostgresIndicatorCatalogRepository:
                     unit               = EXCLUDED.unit,
                     valid_min          = EXCLUDED.valid_min,
                     valid_max          = EXCLUDED.valid_max,
+                    cap_value          = EXCLUDED.cap_value,
                     aggregation_method = EXCLUDED.aggregation_method,
                     applies_to         = EXCLUDED.applies_to
                 RETURNING id::text
@@ -2292,6 +2294,7 @@ class PostgresIndicatorCatalogRepository:
                     unit,
                     valid_min,
                     valid_max,
+                    cap_value,
                     aggregation_method,
                     applies_to,
                 ),
@@ -2305,7 +2308,7 @@ class PostgresIndicatorCatalogRepository:
             cur.execute(
                 """
                 SELECT id::text, slug, name, description, model_family, computation_kind,
-                       value_type, unit, valid_min, valid_max, aggregation_method, applies_to
+                       value_type, unit, valid_min, valid_max, cap_value, aggregation_method, applies_to
                 FROM curated_geo.indicator_catalog WHERE slug = %s
                 """,
                 (slug,),
@@ -2397,7 +2400,7 @@ class PostgresIndicatorCatalogRepository:
                 f"""
                 SELECT c.id::text, c.slug, c.name, c.description, c.model_family,
                        c.computation_kind, c.value_type, c.unit, c.valid_min,
-                       c.valid_max, c.aggregation_method, c.applies_to
+                       c.valid_max, c.cap_value, c.aggregation_method, c.applies_to
                 FROM curated_geo.indicator_catalog c
                 {clause}
                 ORDER BY c.slug

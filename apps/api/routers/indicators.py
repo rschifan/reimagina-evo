@@ -37,6 +37,7 @@ class IndicatorSummary(BaseModel):
     unit: str | None = None
     valid_min: float | None = None
     valid_max: float | None = None
+    cap_value: float | None = None
     aggregation_method: str
     applies_to: list[str]
 
@@ -497,6 +498,7 @@ def _catalog_row_to_dict(row: dict) -> dict:
         "unit": row.get("unit"),
         "valid_min": row.get("valid_min"),
         "valid_max": row.get("valid_max"),
+        "cap_value": row.get("cap_value"),
         "aggregation_method": row["aggregation_method"],
         "applies_to": list(row.get("applies_to") or []),
     }

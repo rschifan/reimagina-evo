@@ -189,6 +189,13 @@ def test_list_indicators_returns_seeded_catalog(client, conn):
     assert "block" in compactness["applies_to"]
 
 
+def test_indicator_list_exposes_cap_value(client, conn):
+    seed_catalog(conn)
+    by_slug = {r["slug"]: r for r in client.get("/indicators").json()}
+    assert by_slug["accessibility_block_park_network_m"]["cap_value"] == 1500.0
+    assert by_slug["urban_form_block_compactness"]["cap_value"] is None
+
+
 def test_get_indicator_404s_on_unknown_slug(client):
     response = client.get("/indicators/not_a_real_indicator")
     assert response.status_code == 404

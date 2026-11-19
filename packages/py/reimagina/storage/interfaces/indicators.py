@@ -27,6 +27,7 @@ class IndicatorCatalogRepository(Protocol):
         unit: str | None = None,
         valid_min: float | None = None,
         valid_max: float | None = None,
+        cap_value: float | None = None,
     ) -> str: ...
 
     def get_indicator(self, slug: str) -> dict[str, Any] | None: ...
