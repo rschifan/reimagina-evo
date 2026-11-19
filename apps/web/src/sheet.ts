@@ -18,16 +18,21 @@ export function sheetTop(
   return now.inspector ? "inspector" : now.selection ? "selection" : null;
 }
 
-/** Watch both cards' `hidden` and mark the one behind. */
-export function wireSheet(inspector: HTMLElement | null, selection: HTMLElement | null): void {
-  if (!inspector || !selection) return;
+/**
+ * Watch both cards' `hidden` and mark the one behind. Returns `raise`, which
+ * `pin()` calls on a real new pin: a re-render of the same pin (indicator
+ * switched, values arrived) must not jump over a newer selection card, and
+ * `hidden` alone cannot tell a re-pin (hide, then show in one task) from that.
+ */
+export function wireSheet(
+  inspector: HTMLElement | null,
+  selection: HTMLElement | null,
+): (card: SheetCard) => void {
+  if (!inspector || !selection) return () => undefined;
   const els = { inspector, selection };
   let prev = { inspector: !inspector.hidden, selection: !selection.hidden };
   let top: SheetCard | null = null;
-  const sync = (records: MutationRecord[] = []): void => {
-    // A pin on another block re-renders the card within one task (hide, then
-    // show), which `hidden` alone cannot tell from nothing happening.
-    if (records.some((r) => r.type === "childList")) prev = { ...prev, inspector: false };
+  const sync = (): void => {
     const now = { inspector: !inspector.hidden, selection: !selection.hidden };
     top = sheetTop(top, prev, now);
     prev = now;
@@ -37,5 +42,8 @@ export function wireSheet(inspector: HTMLElement | null, selection: HTMLElement 
   };
   const obs = new MutationObserver(sync);
   for (const el of [inspector, selection]) obs.observe(el, { attributes: true, attributeFilter: ["hidden"] });
-  obs.observe(inspector, { childList: true });
+  return (card) => {
+    top = card;
+    sync();
+  };
 }

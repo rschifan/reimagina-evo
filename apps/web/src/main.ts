@@ -329,7 +329,7 @@ async function main(): Promise<void> {
       aoiStats,
     }));
 
-    wireSheet(inspectorEl, document.getElementById("selection-panel"));
+    const raiseSheet = wireSheet(inspectorEl, document.getElementById("selection-panel"));
 
     const showInspector = (): void => {
       if (!inspectorEl || !pinned) return;
@@ -363,6 +363,7 @@ async function main(): Promise<void> {
       pinned = mine;
       setOverlayPinned(map, overlayConfig, id, true);
       showInspector();
+      raiseSheet("inspector");
       const ctrl = new AbortController();
       pinRequest = ctrl;
       try {
