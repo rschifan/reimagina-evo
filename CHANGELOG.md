@@ -38,7 +38,7 @@ delivery documentation.
 - The delivery documents (architecture map, database and API reference,
   technical documentation), their reproducible PDF renderer,
   the delivery manifest generator and `scripts/acceptance_run.sh`.
-- 62 API operations; database schema at migration `r051`.
+- 63 API operations; database schema at migration `r051`.
 
 ### Changed
 

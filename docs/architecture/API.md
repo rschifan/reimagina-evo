@@ -17,7 +17,7 @@ domain packages don't import app code") holds.
 
 ## Endpoints
 
-All 43 operations the project defines are below; the in-process titiler routes under `/cog` are titiler's own and are listed in the OpenAPI document. `docs/delivery/03_database_and_api_reference.md` is the generated reference, with every parameter and response model.
+All 44 operations the project defines are below; the in-process titiler routes under `/cog` are titiler's own and are listed in the OpenAPI document. `docs/delivery/03_database_and_api_reference.md` is the generated reference, with every parameter and response model.
 
 | Method | Path | Returns |
 |---|---|---|
@@ -50,6 +50,7 @@ All 43 operations the project defines are below; the in-process titiler routes u
 | GET | `/scenarios/{scenario_id}` | One scenario with its edits in order and its override count. |
 | DELETE | `/scenarios/{scenario_id}` | Delete a scenario and everything it wrote; answers the four counts removed. 404 for an unknown id. |
 | POST | `/scenarios/{scenario_id}/edits` | Draw one area and write the four edits of one rule over it, in one transaction. `201`; 422 on a value past the floor or density ceiling. |
+| PATCH | `/scenarios/{scenario_id}/rules` | Change one rule's numbers (`edit_ids`, `levels`, `unit_size`, `people_per_household`, `lot_coverage`), and optionally move or resize it (`area`), in place. Same refusals, in the same order, as `POST …/edits`; does not recompute. |
 | DELETE | `/scenarios/{scenario_id}/edits` | Remove one rule (`edit_id`) from this scenario. Its overrides are withdrawn on the next recompute. `204`. |
 | POST | `/scenarios/{scenario_id}/recompute` | Materialise the scenario's edits, then enqueue the recompute of what they changed. `202` with the run id, `null` when nothing needs recomputing. |
 | GET | `/scenarios/{scenario_id}/comparison` | One indicator under the scenario against the baseline: `{feature_id, baseline, scenario, delta, state}` per feature, `state` one of `changed`, `unchanged`, `new`. |

@@ -1181,11 +1181,11 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 Taken from the application's own OpenAPI document (`reimagina API` 1.0.0, OpenAPI 3.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-The API exposes **62 operations** in total. **43** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+The API exposes **63 operations** in total. **44** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 
 Each project operation below gives its description, its parameters (where they travel, their type and whether they are required), its request body and its responses, naming the schema of each JSON body; the schemas themselves follow in [Schemas](#schemas). Every operation that takes input can also answer 422 with FastAPI's `HTTPValidationError`; that response is not repeated per operation.
 
-### Project endpoints (43)
+### Project endpoints (44)
 
 #### `aois`
 
@@ -1579,6 +1579,17 @@ Materialise the scenario's edits, then enqueue the recompute.
 
 - Response 202: `RecomputeResponse`
 
+##### `PATCH /scenarios/{scenario_id}/rules`
+
+Change one rule's numbers, and optionally move or resize it, in place.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `scenario_id` (path, required) | string | — |
+
+- Request body (application/json, required): `UpdateRuleBody`
+- Response 200: `EditsWritten`
+
 #### `tiles`
 
 ##### `GET /tile-sources`
@@ -1633,7 +1644,7 @@ Serve one tile from a `serving_geo` tile function.
 
 ### Schemas
 
-The 54 component schemas the project endpoints use, directly or nested, with each field's type and whether it is required. Titiler's own schemas are omitted.
+The 55 component schemas the project endpoints use, directly or nested, with each field's type and whether it is required. Titiler's own schemas are omitted.
 
 #### `AOIRow`
 
@@ -1981,6 +1992,7 @@ One proposal: an area and the three numbers a planner proposes over it.
 | `levels` (required) | number | — |
 | `unit_size` (required) | number | — |
 | `people_per_household` (required) | number | — |
+| `lot_coverage` (optional) | number, default `1.0` | Share of the block built on (COS), 0 < c ≤ 1. Omitted means 1.0, the whole block — the formula as it was before coverage. |
 | `type_context` (optional) | string, default `"MEX"` | — |
 | `type_slug` (optional) | string, default `"block"` | — |
 
@@ -2184,6 +2196,21 @@ A list row: the scenario plus what a summary of every scenario needs.
 | `indicator` (required) | string | — |
 | `status` (required) | string | — |
 | `detail` (optional) | string or null | — |
+
+#### `UpdateRuleBody`
+
+One rule's new numbers, and optionally its new area.
+
+| Field | Type | Description |
+|---|---|---|
+| `edit_ids` (required) | list[string (uuid)] | — |
+| `area` (optional) | object or null | The moved or resized area; omitted keeps the area. |
+| `levels` (required) | number | — |
+| `unit_size` (required) | number | — |
+| `people_per_household` (required) | number | — |
+| `lot_coverage` (required) | number | — |
+| `type_context` (optional) | string, default `"MEX"` | — |
+| `type_slug` (optional) | string, default `"block"` | — |
 
 #### `ValidationError`
 
