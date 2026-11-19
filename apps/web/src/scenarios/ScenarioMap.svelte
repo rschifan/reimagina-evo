@@ -269,6 +269,7 @@
       aria-label="Draw the area a rule applies to"
       class="absolute top-3 left-3 flex flex-col gap-1 rounded border border-line bg-surface/95 p-1"
     >
+      <span class="text-center text-[10px] text-muted-foreground" aria-hidden="true">Draw</span>
       {#each SHAPES as item (item.shape)}
         <button
           type="button"

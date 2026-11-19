@@ -57,3 +57,28 @@ describe("the rule form", () => {
     });
   });
 });
+
+
+describe("before an area is drawn", () => {
+  it("says where the drawing tools are, and the apply button waits for one", () => {
+    const drawn = store.ws.drawn;
+    store.ws.drawn = null as never;
+    try {
+      const target = document.body.appendChild(document.createElement("div"));
+      component = mount(RulePanel, { target });
+      flushSync();
+      expect(target.textContent).toMatch(/draw an area on the map/i);
+      expect(target.textContent).toMatch(/top left/);
+      expect(target.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+    } finally {
+      store.ws.drawn = drawn;
+    }
+  });
+
+  it("drops the hint once an area is drawn", () => {
+    const target = document.body.appendChild(document.createElement("div"));
+    component = mount(RulePanel, { target });
+    flushSync();
+    expect(target.textContent).not.toMatch(/top left/);
+  });
+});

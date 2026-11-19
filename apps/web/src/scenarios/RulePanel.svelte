@@ -88,6 +88,12 @@
         <input class={input} type="number" min="0.1" step="0.1" bind:value={peoplePerHousehold} />
       </label>
       <p class="text-[11px] leading-snug text-muted-foreground">{CLIENT_PRECHECK_NOTE}</p>
+      {#if ws.drawn === null}
+        <p class="rounded border border-accent/40 bg-accent/5 p-2 text-xs">
+          Draw an area on the map first, with ● ▭ ⬠ at its top left: drag out a circle or
+          rectangle, or click each corner of a polygon and click the last one again to close it.
+        </p>
+      {/if}
       <button
         type="submit"
         class="rounded border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent disabled:opacity-50"
