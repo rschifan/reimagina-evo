@@ -23,6 +23,10 @@ export interface IndicatorSummary {
   applies_to: string[];
   valid_min: number | null;
   valid_max: number | null;
+  /** What the indicator measures and how to read it. */
+  description: string | null;
+  /** Null for indicators no family claims, which today are the composites. */
+  model_family: string | null;
   /** A bound that means "beyond measurement" (the distance indicators report
    *  1500 m for an unreachable block); ``null`` when there is none. Unlike
    *  ``valid_min``/``valid_max``, which only validate, this changes how a value
@@ -266,13 +270,23 @@ export async function fetchMetricsWithinPolygon(
 }
 
 
+/** Asked for on every download: the API's ceiling rather than its 100,000
+ *  default, which cut larger AOIs short without saying so. */
+export const DOWNLOAD_ROW_CAP = 500_000;
+
+/** Download URL for one indicator's values, scoped like the map or stats
+ *  beside it. Not fetched — handed to an anchor so the browser streams it and
+ *  the API sets Content-Disposition. */
 export function downloadUrl(
   slug: string,
   format: "csv" | "geojson" | "parquet",
-  scenarioId?: string | null,
+  scope: { aoiId: string | null; grain: string | null; scenarioId?: string | null },
 ): string {
-  const qs = scenarioId ? `?scenario_id=${encodeURIComponent(scenarioId)}` : "";
-  return `${API_BASE}/indicators/${encodeURIComponent(slug)}/values.${format}${qs}`;
+  const p = new URLSearchParams({ limit: String(DOWNLOAD_ROW_CAP) });
+  if (scope.aoiId) p.set("aoi_id", scope.aoiId);
+  if (scope.grain) p.set("feature_type", scope.grain);
+  if (scope.scenarioId) p.set("scenario_id", scope.scenarioId);
+  return `${API_BASE}/indicators/${encodeURIComponent(slug)}/values.${format}?${p}`;
 }
 
 

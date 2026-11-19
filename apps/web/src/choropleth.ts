@@ -670,16 +670,16 @@ export function setValueHoverListener(
 export function rampScopeText(domain: RampDomain): string {
   switch (domain.basis) {
     case "percentile":
-      return "ramp: observed p05\u2013p95";
+      return "Colours span the middle 90% of values";
     case "min-max":
-      return "ramp: observed min\u2013max (p05 = p95)";
+      return "Colours span the lowest to the highest value";
     case "uniform":
       return (
-        `ramp: catalog bounds \u2014 all ${fmtNumber(domain.count)} values ` +
-        `identical (${formatNumber(domain.p50 ?? domain.min)})`
+        `One colour: all ${fmtNumber(domain.count)} values ` +
+        `identical (${fmtNumber(domain.p50 ?? domain.min)})`
       );
     case "empty":
-      return "ramp: catalog bounds (no data yet)";
+      return "No colours: no data yet";
   }
 }
 
@@ -699,9 +699,13 @@ export function renderLegend(
 ): void {
   container.hidden = false;
   const unit = indicator.unit ? unitLabel(indicator.unit) : "";
+  // Every number in the legend reads like the cap swatch beside it: one
+  // formatter, unit attached. The bounds skip the cap wording, which belongs
+  // to the swatch.
+  const bound = (n: number): string => escapeHtml(formatValue(n, { unit: indicator.unit }));
   const p50Row =
     domain.fromStats && domain.p50 !== null
-      ? `<div class="p50">median · ${formatNumber(domain.p50)}</div>`
+      ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
       : "";
   const scopeRow = `<div class="scope">${rampScopeText(domain)}</div>`;
   // The distribution, and a slot the hover handler rewrites in place.
@@ -719,8 +723,7 @@ export function renderLegend(
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
     <div class="gradient" style="background: linear-gradient(to right, ${RAMP_STOPS.join(", ")})"></div>
-    <div class="bounds"><span>${formatNumber(domain.min)}</span><span>${formatNumber(domain.max)}</span></div>
-    <div class="unit">${escapeHtml(unit)}</div>
+    <div class="bounds"><span>${bound(domain.min)}</span><span>${bound(domain.max)}</span></div>
     ${capRows(indicator, countAtCap, total)}
     ${distBlock}
     ${p50Row}
@@ -740,7 +743,7 @@ function capRows(indicator: IndicatorSummary, countAtCap: number | null, total: 
   // A handful of capped blocks must not round to a claim of none.
   const share = countAtCap > 0 && pct < 1 ? "<1" : String(Math.round(pct));
   // ponytail: grain word from the finest declared grain; capped indicators are block-only today.
-  const grain = (GRAIN_LABELS[indicator.applies_to?.[0] ?? ""] ?? "features").toLowerCase();
+  const grain = grainLabel(indicator.applies_to?.[0] ?? null).toLowerCase();
   const capText = formatValue(cap, { ...indicator, cap_value: null });
   return swatch + `<div class="cap-share">${share}% of ${grain} at the ${escapeHtml(capText)} cap</div>`;
 }
@@ -821,19 +824,21 @@ const GRAIN_LABELS: Record<string, string> = {
   lot: "Lots",
 };
 
+/** Plural label for a grain: `block` → `Blocks`; `null` → `Features`. */
+export function grainLabel(grain: string | null): string {
+  return grain === null ? "Features" : (GRAIN_LABELS[grain] ?? grain);
+}
+
 
 /**
  * Render the grain switcher for ``indicator`` into ``container`` and
  * call ``onPick`` when the user changes it.
  *
- * Always rendered, including for the eleven of thirteen shipped
- * indicators published at ``block`` only — their single option shows
- * as a disabled chip. Hiding the row entirely made the control
- * invisible on most of the catalog, so nobody learned grain switching
- * existed; a disabled chip states the grain the numbers are at, which
- * is worth showing on its own. Coarser grains are served by the same
- * ``indicator_overlay_tile`` function via ``feature_type``, so
- * switching is a re-render, not a new code path.
+ * Only shown when there is a choice: a lone grain is stated by the
+ * downloads line ("19,058 blocks · Mexicali only"), so a disabled chip
+ * here would be a second copy of the same fact. Coarser grains are
+ * served by the same ``indicator_overlay_tile`` function via
+ * ``feature_type``, so switching is a re-render, not a new code path.
  */
 export function renderGrainToggle(
   container: HTMLElement,
@@ -842,13 +847,10 @@ export function renderGrainToggle(
   onPick: (grain: string) => void,
 ): void {
   const grains = indicator.applies_to ?? [];
-  if (grains.length === 0) {
-    // No declared grain at all — nothing truthful to show.
-    container.hidden = true;
-    container.replaceChildren();
+  if (grains.length < 2) {
+    clearGrainToggle(container);
     return;
   }
-  const single = grains.length === 1;
   container.hidden = false;
   const label = document.createElement("span");
   label.className = "grain-toggle__label";
@@ -858,15 +860,8 @@ export function renderGrainToggle(
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "grain-toggle__btn";
-    btn.textContent = GRAIN_LABELS[grain] ?? grain;
+    btn.textContent = grainLabel(grain);
     btn.setAttribute("aria-pressed", grain === active ? "true" : "false");
-    // A lone grain is a statement, not a choice: disabled so it can't
-    // be clicked, but still marked pressed so it reads as "this is
-    // what you are looking at" rather than as an unavailable option.
-    btn.disabled = single;
-    if (single) {
-      btn.title = `${indicator.name} is only published at this grain`;
-    }
     btn.addEventListener("click", () => {
       if (grain === active) return;
       onPick(grain);

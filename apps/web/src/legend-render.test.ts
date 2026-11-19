@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
-import { CAP_COLOR, markLegendValue, rampDomainFromStats, renderLegend } from "./choropleth";
+import { CAP_COLOR, markLegendValue, rampDomainFromStats, renderGrainToggle, renderLegend } from "./choropleth";
 
 const PARK = {
   slug: "accessibility_block_park_network_m",
@@ -128,5 +128,34 @@ describe("markLegendValue", () => {
     markLegendValue(el, PARK, domain, stats.histogram, 1500);
     expect(el.querySelector(".dist__cursor")).not.toBeNull();
     expect(el.textContent ?? "").not.toContain("higher than");
+  });
+});
+
+describe("one number style in the legend", () => {
+  it("prints the bounds like the cap swatch: separators and the unit as words", () => {
+    const el = document.createElement("div");
+    const stats = spreadStats();
+    renderLegend(el, PARK, rampDomainFromStats(stats, PARK), stats.histogram, 11781, 19058);
+    const bounds = el.querySelector(".bounds")?.textContent ?? "";
+    expect(bounds).toMatch(/ m/);
+    expect(bounds).not.toMatch(/\d{4}/);
+    expect(el.textContent ?? "").not.toContain("p05");
+  });
+});
+
+describe("renderGrainToggle", () => {
+  it("shows nothing when the indicator has one grain", () => {
+    const el = document.createElement("div");
+    renderGrainToggle(el, PARK, "block", () => undefined);
+    expect(el.hidden).toBe(true);
+    expect(el.children.length).toBe(0);
+  });
+
+  it("offers a choice when there is one", () => {
+    const el = document.createElement("div");
+    const two = { ...PARK, applies_to: ["block", "municipality"] } as IndicatorSummary;
+    renderGrainToggle(el, two, "block", () => undefined);
+    expect(el.hidden).toBe(false);
+    expect(el.querySelectorAll("button").length).toBe(2);
   });
 });

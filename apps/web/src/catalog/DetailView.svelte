@@ -148,7 +148,7 @@
           </a>
           {#each ["csv", "geojson", "parquet"] as const as fmt (fmt)}
             <a
-              href={downloadUrl(indicator.slug, fmt, { aoiId: catalog.activeAoiId, grain })}
+              href={downloadUrl(indicator.slug, fmt, { aoiId: catalog.activeAoiId, grain: grain ?? null })}
               class="inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised
                      px-2.5 py-1.5 text-xs hover:border-accent/50"
             >

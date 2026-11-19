@@ -247,7 +247,7 @@
         {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
           <a
             class="rounded border border-line px-2 py-0.5 hover:text-foreground"
-            href={downloadUrl(indicator.slug, format, ws.selectedId)}
+            href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
             rel="noopener"
           >
             {label}

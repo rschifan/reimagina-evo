@@ -40,6 +40,8 @@ const stats = (o: Partial<IndicatorValueStats> = {}): IndicatorValueStats => ({
 const indicator = (statistic: "sum" | "median"): ReachableIndicator => ({
   slug: "x",
   name: "X",
+  description: null,
+  model_family: null,
   unit: statistic === "sum" ? "units" : "units_per_ha",
   applies_to: ["block"],
   valid_min: 0,

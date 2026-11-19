@@ -117,15 +117,15 @@ describe("rampScopeText", () => {
     );
   });
 
-  it("names the percentile basis when the ramp came from spread", () => {
+  it("names the percentile basis in plain words when the ramp came from spread", () => {
     const text = rampScopeText(
       rampDomainFromStats(
         stats({ count: 19058, min: 0, p05: 90, p50: 410, p95: 1180, max: 1500 }),
         indicator(),
       ),
     );
-    expect(text).toContain("p05");
-    expect(text).toContain("p95");
+    expect(text).toContain("middle 90%");
+    expect(text).not.toContain("p05");
   });
 });
 

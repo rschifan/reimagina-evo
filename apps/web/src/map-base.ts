@@ -179,6 +179,9 @@ export function createMap(
     zoom,
     maxZoom: 18,
     minZoom: 5,
+    // `installMapControls` adds the one attribution control, carrying the
+    // data credits; MapLibre's default would be a second (i) button.
+    attributionControl: false,
   });
   installMapControls(map);
   return map;

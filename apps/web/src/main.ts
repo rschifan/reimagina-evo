@@ -10,8 +10,8 @@
  *   - Spatial-input layer toggles served by Martin's serving_geo.get_tile.
  *   - Indicator picker → server-side MVT choropleth via Martin's
  *     serving_geo.indicator_overlay_tile function.
- *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
- *     selected.
+ *   - CSV / GeoJSON / GeoParquet download links once an indicator is
+ *     selected, scoped to the AOI and grain on the map.
  */
 // The map itself — style, worker, controls, attribution — is built in
 // `map-base.ts`, which the scenario workspace's map shares.
@@ -44,6 +44,7 @@ import {
   clearGrainToggle,
   clearLegend,
   defaultGrain,
+  grainLabel,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
@@ -51,10 +52,7 @@ import {
   renderLegend,
 } from "./choropleth";
 import { HISTOGRAM_BINS } from "./distribution";
-import {
-  setDownloadAvailability,
-  wireDownloadButtons,
-} from "./download";
+import { renderDownloads } from "./download";
 import { escapeHtml } from "./format";
 import type { Command } from "./commands";
 import { enablePalette } from "./palette";
@@ -105,9 +103,13 @@ interface AppState {
 }
 
 
-function setStatus(message: string): void {
-  const el = document.getElementById("status");
-  if (el) el.textContent = message;
+/** The banner over the map: loading and errors only. `null` hides it. */
+function setBanner(message: string | null, kind: "loading" | "error" = "loading"): void {
+  const el = document.getElementById("map-banner");
+  if (!el) return;
+  el.hidden = message === null;
+  el.textContent = message ?? "";
+  el.dataset.kind = kind;
 }
 
 
@@ -131,20 +133,21 @@ async function loadInitialState(): Promise<{
 
 
 
-function renderAoiInfo(aoi: AOIRow | null): void {
-  const el = document.getElementById("aoi-info");
-  if (!el) return;
-  if (!aoi) {
-    el.hidden = true;
-    el.innerHTML = "";
-    return;
+/** The picked indicator's description and its catalog link, or nothing. */
+function renderIndicatorInfo(indicator: IndicatorSummary | null): void {
+  const desc = document.getElementById("indicator-description");
+  if (desc) {
+    desc.textContent = indicator?.description ?? "";
+    // Clamped to four lines in CSS; the title carries the rest.
+    desc.title = desc.textContent;
+    desc.hidden = !indicator?.description;
   }
-  el.hidden = false;
-  const desc = aoi.description ? `<div class="aoi-info-desc">${escapeHtml(aoi.description)}</div>` : "";
-  el.innerHTML = `<div class="aoi-info-name">${escapeHtml(aoi.name)}</div>${desc}`;
+  const about = document.getElementById("indicator-about") as HTMLAnchorElement | null;
+  if (about) {
+    about.hidden = indicator === null;
+    if (indicator) about.href = `/catalog.html#/i/${encodeURIComponent(indicator.slug)}`;
+  }
 }
-
-
 
 
 async function main(): Promise<void> {
@@ -153,7 +156,7 @@ async function main(): Promise<void> {
   const topbar = document.getElementById("topbar");
   if (topbar) mount(TopBar, { target: topbar, props: { current: "map" } });
 
-  setStatus("Connecting to reimagina API…");
+  setBanner("Connecting to the reimagina API…");
 
   // Show the spinner immediately so the user has feedback while the
   // first /aois + /tile-sources round-trip happens (before the map
@@ -170,10 +173,11 @@ async function main(): Promise<void> {
   try {
     ({ sources, indicators, aois } = await loadInitialState());
   } catch (err) {
-    setStatus(`Failed to load API: ${(err as Error).message}`);
+    setBanner(`Could not reach the API: ${(err as Error).message}`, "error");
     if (loadingHost) loadingHost.setAttribute("data-loading", "false");
     throw err;
   }
+  setBanner(null);
   const tileCatalog = extractTileSources(sources);
   const overlayConfig = choroplethConfig(sources);
 
@@ -263,9 +267,20 @@ async function main(): Promise<void> {
     if (initialAoi) flyToAoi(map, initialAoi);
 
     const toggleContainer = document.getElementById("layer-toggles");
+    // "N on" beside the collapsed Layers heading, so a layer left on is not
+    // hidden behind a closed group. Every toggle is a checkbox whose change
+    // bubbles here, the palette's included.
+    const updateLayersSummary = (): void => {
+      const el = document.getElementById("layers-summary");
+      if (el && toggleContainer) {
+        el.textContent = `${toggleContainer.querySelectorAll("input[type=checkbox]:checked").length} on`;
+      }
+    };
     if (toggleContainer) {
       wireLayerToggles(toggleContainer, map);
       wireRasterToggles(toggleContainer, map, sources, getActiveAoiId());
+      toggleContainer.addEventListener("change", updateLayersSummary);
+      updateLayersSummary();
     }
 
     const aoiSelect = document.getElementById("aoi-select") as HTMLSelectElement | null;
@@ -289,7 +304,6 @@ async function main(): Promise<void> {
     // future programmatic setActiveAoiId call. One central handler
     // keeps every consumer (map, tiles, ramp) in sync.
     subscribeToAoi(async (aoi) => {
-      renderAoiInfo(aoi);
       if (aoi) flyToAoi(map, aoi);
       // Baseline layers are AOI-scoped too (r039), so switching pilot
       // re-frames the spatial context instead of leaving every other
@@ -305,6 +319,7 @@ async function main(): Promise<void> {
       // (``source_config.aois``) hide on AOIs they don't apply to.
       if (toggleContainer) {
         wireRasterToggles(toggleContainer, map, sources, aoi?.aoi_id ?? null);
+        updateLayersSummary();
       }
       // The indicator list is AOI-scoped, so it has to be re-fetched: an
       // indicator computed for CDMX may have no values in Mexicali, and
@@ -342,23 +357,27 @@ async function main(): Promise<void> {
       populateIndicatorSelect(el, indicators);
       const stillListed = indicators.some((i) => i.slug === previous);
       el.value = stillListed ? previous : "";
-      if (previous && !stillListed) {
-        state.activeIndicator = null;
-        state.activeGrain = null;
-        removeIndicator(map);
-        const grainEl = document.getElementById("grain-toggle");
-        if (grainEl) clearGrainToggle(grainEl);
-        const legendEl = document.getElementById("legend");
-        if (legendEl) clearLegend(legendEl);
-        const downloadsEl = document.getElementById("downloads");
-        if (downloadsEl) setDownloadAvailability(downloadsEl, false);
-        setStatus("Indicator cleared — it has no values in the baseline city here.");
-      }
+      if (previous && !stillListed) clearIndicator();
+    }
+
+    /** Take the overlay and everything describing it off the page. Resolves
+     *  its elements by id for the same hoisting reason as above. */
+    function clearIndicator(): void {
+      state.activeIndicator = null;
+      state.activeGrain = null;
+      removeIndicator(map);
+      renderIndicatorInfo(null);
+      const grainEl = document.getElementById("grain-toggle");
+      if (grainEl) clearGrainToggle(grainEl);
+      const legendEl = document.getElementById("map-legend");
+      if (legendEl) clearLegend(legendEl);
+      const downloadsEl = document.getElementById("downloads");
+      if (downloadsEl) renderDownloads(downloadsEl, null, { aoiId: null, grain: null });
     }
 
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const grainToggle = document.getElementById("grain-toggle");
-    const legend = document.getElementById("legend");
+    const legend = document.getElementById("map-legend");
     const downloads = document.getElementById("downloads");
 
     // Monotonic token bumped on every renderIndicator entry so a slow
@@ -372,7 +391,8 @@ async function main(): Promise<void> {
       const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
       const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
-      setStatus(`Loading ${indicator.name} stats…`);
+      renderIndicatorInfo(indicator);
+      setBanner(`Loading ${indicator.name}…`);
       let stats = null;
       try {
         stats = await getIndicatorStats(indicator.slug, {
@@ -415,12 +435,19 @@ async function main(): Promise<void> {
         if (legend) markLegendValue(legend, indicator, domain, histogram, value);
       };
       setValueHoverListener((value) => state.markHovered?.(value));
-      if (downloads) setDownloadAvailability(downloads, true);
-      setStatus(
-        `Showing ${indicator.name} (${indicator.unit ?? "no unit"})` +
-          (domain.fromStats
-            ? ` · ramp ${domain.min.toFixed(2)}–${domain.max.toFixed(2)} (p05–p95).`
-            : "."),
+      if (downloads) renderDownloads(downloads, indicator.slug, { aoiId, grain: grain ?? null });
+      // What a download holds: the stats count is the same scoped population.
+      const scopeEl = document.getElementById("downloads-scope");
+      if (scopeEl) {
+        const aoiName = aois.find((a) => a.aoi_id === aoiId)?.name;
+        scopeEl.textContent = stats
+          ? `${stats.count.toLocaleString()} ${grainLabel(grain ?? null).toLowerCase()}` +
+            (aoiName ? ` · ${aoiName} only` : "")
+          : "";
+      }
+      setBanner(
+        stats ? null : `Could not load the values of ${indicator.name}; colours use the catalog range.`,
+        "error",
       );
     }
 
@@ -429,13 +456,7 @@ async function main(): Promise<void> {
       select.addEventListener("change", async () => {
         const slug = select.value;
         if (!slug) {
-          state.activeIndicator = null;
-          state.activeGrain = null;
-          removeIndicator(map);
-          if (grainToggle) clearGrainToggle(grainToggle);
-          if (legend) clearLegend(legend);
-          if (downloads) setDownloadAvailability(downloads, false);
-          setStatus("Indicator cleared.");
+          clearIndicator();
           return;
         }
         const indicator = indicators.find((i) => i.slug === slug);
@@ -455,8 +476,8 @@ async function main(): Promise<void> {
       // broken one.
       //
       // Dispatching the event rather than calling `renderIndicator` directly:
-      // the handler above already resets the grain, renders, wires the legend,
-      // enables the downloads and sets the status line. Reaching past it would
+      // the handler above already resets the grain, renders, wires the legend
+      // and points the downloads at it. Reaching past it would
       // mean keeping a second copy of that sequence in step with this one.
       //
       // `?indicator=<slug>` picks it instead — the catalog's "Open on map".
@@ -471,18 +492,13 @@ async function main(): Promise<void> {
       }
     }
 
-    if (downloads) {
-      wireDownloadButtons(downloads, () => state.activeIndicator?.slug ?? null);
-      setDownloadAvailability(downloads, false);
-    }
-
     // ── Command palette ───────────────────────────────────────────────
     //
     // Built after the catalogs resolve, because most of what it offers *is*
     // the catalogs: every AOI, every indicator, every layer toggle. It is
     // also the only surface in the app that can list what the app does —
-    // the draw tools are 28 px glyphs and the rest is three `<select>`s in
-    // a 1,173 px scroll.
+    // the draw tools are 28 px glyphs and the layer toggles sit in a
+    // collapsed group.
     //
     // Rebuilt whenever the AOI changes, since the indicator list is scoped
     // to the AOI and a palette offering an indicator with no values here
@@ -615,11 +631,9 @@ async function main(): Promise<void> {
       onClear: () => selectionController?.clear(),
       isPaletteOpen: () => palette.isOpen(),
     });
-
-    setStatus("Map ready. Press ⌘K for commands, ? for shortcuts.");
   });
   map.on("error", (e) => {
-    setStatus(`Map error: ${e.error?.message ?? "unknown"}`);
+    setBanner(`The map could not load some data: ${e.error?.message ?? "unknown error"}`, "error");
   });
 }
 

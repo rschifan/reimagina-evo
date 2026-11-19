@@ -452,7 +452,7 @@ describe("a layer whose values are all identical", () => {
   it("is uniform, not a percentile ramp over a single point", () => {
     const d = rampDomainFromStats(noisy, indicator());
     expect(d.basis).toBe("uniform");
-    expect(rampScopeText(d)).toMatch(/all 16 values identical \(1333\)/);
+    expect(rampScopeText(d)).toMatch(/all 16 values identical \(1,333\)/);
     expect(rampScopeText(d)).not.toMatch(/p05/);
   });
 
