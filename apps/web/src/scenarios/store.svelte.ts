@@ -439,6 +439,18 @@ export async function recompute(): Promise<void> {
     `${result.overrides_written} overrides written, ` +
     `${result.overrides_removed} removed.`;
   void loadScenarios();
+  // No edits on the server and nothing withdrawn: the planner pressed
+  // Recompute before writing a rule. Say how to write one; "0 blocks caught"
+  // reads as a broken compute.
+  if (matched.length === 0 && result.overrides_removed === 0 && result.run_id === null) {
+    if (shown()) {
+      say(
+        "This scenario has no rules yet, so nothing changed. Draw an area on the " +
+          "map with the tools at its top left, apply the numbers to it, then recompute.",
+      );
+    }
+    return;
+  }
   if (result.run_id === null) {
     if (shown()) say(`${materialised} Nothing needed recomputing.`);
     return;

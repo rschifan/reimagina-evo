@@ -278,6 +278,26 @@ describe("recompute", () => {
     expect(asked).toEqual(["A", "A"]);
   });
 
+  it("a scenario with no rules is told how to write one, not that nothing needed recomputing", async () => {
+    api.recomputeScenario.mockResolvedValue({
+      ...recomputed(null), matched_per_edit: {}, overrides_written: 0,
+    });
+    store.select("A");
+    await store.recompute();
+    expect(store.ws.message?.text).toMatch(/no rules yet/);
+    expect(store.ws.message?.text).toMatch(/draw an area on the map/i);
+  });
+
+  it("removing the last rule and recomputing still reports what it withdrew", async () => {
+    api.recomputeScenario.mockResolvedValue({
+      ...recomputed("run-1"), matched_per_edit: {}, overrides_written: 0, overrides_removed: 4,
+    });
+    api.getRun.mockResolvedValue({ run_id: "run-1", status: "running", units: [] });
+    store.select("A");
+    await store.recompute();
+    expect(store.ws.message?.text).toMatch(/4 removed/);
+  });
+
   it("a failed run leaves the overrides standing and says so", async () => {
     api.recomputeScenario.mockResolvedValue(recomputed("run-1"));
     api.getRun.mockResolvedValue({ run_id: "run-1", status: "failed", units: [] });
