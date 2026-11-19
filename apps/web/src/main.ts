@@ -13,23 +13,15 @@
  *   - CSV / GeoJSON / GeoParquet download buttons once an indicator is
  *     selected.
  */
-// ⚠ Namespace import, not a default one. maplibre-gl 6 dropped its default
-// export, so `import maplibregl from "maplibre-gl"` stops compiling (TS1192).
-// Every other module here imports only *types* from the package, so this one
-// line was the whole breaking change on the 5 → 6 upgrade.
-import * as maplibregl from "maplibre-gl";
-// maplibre-gl 6 ships its web worker as a separate module instead of
-// inlining it, so the bundler has to emit it and the library has to be
-// told where it landed. Without this the map renders its canvas and
-// controls, then fails at "Worker failed to load" and parses no tiles.
-import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
+// The map itself — style, worker, controls, attribution — is built in
+// `map-base.ts`, which the scenario workspace's map shares.
 import "maplibre-gl/dist/maplibre-gl.css";
 import { mount } from "svelte";
 
 import TopBar from "./lib/TopBar.svelte";
 import "./topbar.css";
 import type { AOIRow, IndicatorSummary, TileSource } from "./api";
-import type { StyleSpecification } from "maplibre-gl";
+import { createMap, flyToAoi } from "./map-base";
 
 import {
   getActiveAoiId,
@@ -38,10 +30,8 @@ import {
   subscribe as subscribeToAoi,
 } from "./aoi";
 import {
-  getComparison,
   getIndicatorStats,
   isAbortError,
-  listAttributions,
   listAois,
   listIndicators,
   listTileSources,
@@ -54,11 +44,6 @@ import {
   clearGrainToggle,
   clearLegend,
   defaultGrain,
-  deltaDomainFromComparison,
-  renderDeltaLegend,
-  renderModeToggle,
-  type DeltaDomain,
-  type ViewMode,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
@@ -74,7 +59,6 @@ import { escapeHtml } from "./format";
 import type { Command } from "./commands";
 import { enablePalette } from "./palette";
 import { SHORTCUTS, wireShortcuts } from "./shortcuts";
-import { enableScenarioPanel } from "./scenario";
 import { enableSidebar, type SidebarController } from "./sidebar";
 import {
   INPUT_LAYERS,
@@ -107,27 +91,10 @@ const FALLBACK_ZOOM = 12;
 
 interface AppState {
   activeIndicator: IndicatorSummary | null;
-  /**
-   * The scenario the map is showing, or null for the baseline city.
-   *
-   * Read in four places and owned here because they must agree: the
-   * indicator list (a scenario's results are what make the edificability
-   * indicators offerable at all), the overlay's tile URL, the ramp's stats,
-   * and the download URLs. A scenario resolved in one of them and not the
-   * others is a map whose legend, picker and export describe different
-   * cities.
-   */
-  activeScenarioId: string | null;
   /** Feature type the choropleth is currently drawn at. Defaults to
    *  the indicator's finest grain and is re-derived on every pick, so
    *  a coarse choice never leaks onto an indicator that lacks it. */
   activeGrain: string | null;
-  /**
-   * Whether the active scenario is drawn as values or as a difference from
-   * the baseline. Only ever `delta` while a scenario is active: the baseline
-   * city has nothing to differ from, and leaving a scenario resets it.
-   */
-  activeMode: ViewMode;
   /**
    * Places the hovered feature's value in the legend's distribution.
    *
@@ -146,20 +113,6 @@ function setStatus(message: string): void {
 }
 
 
-function emptyStyle(): StyleSpecification {
-  return {
-    version: 8,
-    name: "reimagina-empty",
-    sources: {},
-    layers: [
-      {
-        id: "background",
-        type: "background",
-        paint: { "background-color": "#0b1220" },
-      },
-    ],
-  };
-}
 
 
 async function loadInitialState(): Promise<{
@@ -178,29 +131,6 @@ async function loadInitialState(): Promise<{
 }
 
 
-function flyToAoi(map: maplibregl.Map, aoi: AOIRow): void {
-  // Prefer the features bbox over the AOI polygon bbox. For irregular
-  // AOIs (Mexicali muni — mostly desert with the urban core packed in
-  // one corner) the polygon bbox frames the whole muni and the user
-  // ends up looking at empty land. The features bbox is the envelope
-  // of actual loaded blocks, so fitBounds lands them on the urban
-  // extent. Fall back to the polygon bbox when no features have been
-  // loaded yet (e.g. fresh AOI before ingest).
-  const target = aoi.features_bbox ?? aoi.bbox;
-  if (!target) return;
-  const [minLon, minLat, maxLon, maxLat] = target;
-  // ``maxZoom`` caps the fit so a tiny AOI doesn't slingshot past
-  // street level (z=14 keeps analysis-unit layers above their
-  // minzoom=8 with comfortable density). ``padding`` reserves
-  // viewport edges so the polygon isn't clipped behind UI chrome.
-  map.fitBounds(
-    [
-      [minLon, minLat],
-      [maxLon, maxLat],
-    ],
-    { padding: 60, duration: 700, maxZoom: 14 },
-  );
-}
 
 
 function renderAoiInfo(aoi: AOIRow | null): void {
@@ -256,104 +186,9 @@ async function main(): Promise<void> {
   const state: AppState = {
     activeIndicator: null,
     activeGrain: null,
-    activeScenarioId: null,
-    activeMode: "value",
   };
 
-  maplibregl.setWorkerUrl(maplibreWorkerUrl);
-  const map = new maplibregl.Map({
-    container: "map",
-    style: emptyStyle(),
-    center: FALLBACK_CENTER,
-    zoom: FALLBACK_ZOOM,
-    maxZoom: 18,
-    minZoom: 5,
-  });
-  // ⚠ `showCompass: true`, which it was not.
-  //
-  // With no basemap there is nothing in the frame that says which way is
-  // north — no coastline, no street grid, no labels — so a rotated map is
-  // unrecoverable by looking at it. The compass is also the only way back
-  // from an accidental rotate, which a trackpad makes easy to do and hard
-  // to notice.
-  map.addControl(
-    new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }),
-    "top-right",
-  );
-  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
-
-  // ⚠ A licence obligation, not a nicety.
-  //
-  // OpenStreetMap is ODbL and displaying it without credit is a breach, and
-  // the reason this map has no external basemap in the first place is
-  // licence hygiene. Publishing OSM-derived streets without the credit
-  // would spend exactly what that decision was protecting.
-  //
-  // The text comes from the API, which derives it from the licence recorded
-  // against each source that actually has features. Hardcoding it here
-  // would credit OpenStreetMap on a synthetic territory — a false
-  // provenance claim in a product whose argument is that its provenance is
-  // checkable — and crediting a registered-but-unloaded source would claim
-  // the map shows data it does not.
-  void listAttributions()
-    .then((rows) => {
-      if (rows.length === 0) return;
-      map.addControl(
-        new maplibregl.AttributionControl({
-          customAttribution: rows.map((row) => row.text),
-          // ⚠ `compact: true`, and the text is NOT shortened to achieve it.
-          //
-          // Expanded, four real sources render as one 200-character line
-          // spanning the whole viewport:
-          //
-          //   © OpenStreetMap contributors | IMIP Mexicali (Datos abiertos
-          //   del IMIP) | Overture Maps Foundation (ODbL-1.0 / Overture
-          //   terms) | INEGI (Libre uso — Términos de Uso de la Información
-          //   del INEGI)
-          //
-          // The obvious fix is to trim each credit, and that is the wrong
-          // one: the wording comes from `data_source_catalog.license` via
-          // `attribution.py`, whose own comment warns that an entry claiming
-          // "this exact wording is what the licence asks for" is worse than
-          // the honest fallback when it is wrong. Editing four providers'
-          // credit lines for layout is a licence judgement, and not one to
-          // make for a line break.
-          //
-          // Compact keeps every word and moves it behind the standard
-          // MapLibre (i) control — the same affordance every multi-source
-          // map uses, one click away and always visible.
-          compact: true,
-        }),
-        "bottom-right",
-      );
-      // ⚠ `compact: true` is not enough on its own, and the reason is in
-      // MapLibre's `_updateCompact`:
-      //
-      //     this._container.classList.add(
-      //       'maplibregl-compact', 'maplibregl-compact-show')
-      //
-      // It adds BOTH classes, so a compact control renders *expanded* on
-      // load and only collapses once the user first interacts with the map.
-      // Until then four real sources are still a 200-character bar across
-      // the viewport — which is exactly what `compact: true` was added to
-      // stop, so without this the fix does nothing for anyone who has not
-      // panned yet.
-      //
-      // Removing `-show` is stable: `_updateCompact` only re-adds it when
-      // `maplibregl-compact` is absent, and that class stays. Done on the
-      // next frame so the control's own first pass has already run.
-      requestAnimationFrame(() => {
-        document
-          .querySelectorAll(".maplibregl-ctrl-attrib.maplibregl-compact-show")
-          .forEach((el) => el.classList.remove("maplibregl-compact-show"));
-      });
-    })
-    .catch((err) => {
-      // Loud, because silence here is a licence breach rather than a
-      // missing nicety: a map that drew OSM geometry and failed to credit
-      // it must say so somewhere a developer will see.
-      console.error("could not resolve data attribution", err);
-    });
+  const map = createMap("map", FALLBACK_CENTER, FALLBACK_ZOOM);
 
   // Collapsing the panel changes the canvas size, and MapLibre only learns
   // that when told. Without the resize the map keeps its old width and the
@@ -517,7 +352,7 @@ async function main(): Promise<void> {
      */
     async function refreshIndicatorList(aoiId: string | null): Promise<void> {
       try {
-        indicators = await listIndicators(aoiId, state.activeScenarioId);
+        indicators = await listIndicators(aoiId);
       } catch (err) {
         console.warn("indicator list refresh failed; keeping previous list", err);
         return;
@@ -534,24 +369,17 @@ async function main(): Promise<void> {
         removeIndicator(map);
         const grainEl = document.getElementById("grain-toggle");
         if (grainEl) clearGrainToggle(grainEl);
-        const modeEl = document.getElementById("mode-toggle");
-        if (modeEl) clearGrainToggle(modeEl);
         const legendEl = document.getElementById("legend");
         if (legendEl) clearLegend(legendEl);
         const downloadsEl = document.getElementById("downloads");
         if (downloadsEl) setDownloadAvailability(downloadsEl, false);
-        setStatus(
-          "Indicator cleared — it has no values in " +
-            (state.activeScenarioId ? "this scenario" : "the baseline city") +
-            " here.",
-        );
+        setStatus("Indicator cleared — it has no values in the baseline city here.");
       }
     }
 
     const select = document.getElementById("indicator-select") as HTMLSelectElement | null;
     const grainToggle = document.getElementById("grain-toggle");
     const legend = document.getElementById("legend");
-    const modeToggle = document.getElementById("mode-toggle");
     const downloads = document.getElementById("downloads");
 
     // Monotonic token bumped on every renderIndicator entry so a slow
@@ -565,77 +393,12 @@ async function main(): Promise<void> {
       const myToken = ++renderToken;
       const aoiId = getActiveAoiId();
       const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
-      // The mode toggle is per scenario, not per indicator: it is drawn on
-      // every render so it appears the moment a scenario becomes active and
-      // is gone the moment it is not.
-      if (!state.activeScenarioId) state.activeMode = "value";
-      if (modeToggle) {
-        renderModeToggle(modeToggle, state.activeScenarioId !== null, state.activeMode, (picked) => {
-          state.activeMode = picked;
-          void renderIndicator(indicator);
-        });
-      }
-
-      if (state.activeMode === "delta" && state.activeScenarioId) {
-        setStatus(`Loading ${indicator.name} difference…`);
-        let delta: DeltaDomain | null = null;
-        try {
-          delta = deltaDomainFromComparison(
-            await getComparison(state.activeScenarioId, {
-              indicator_slug: indicator.slug,
-              aoi_id: aoiId,
-            }),
-          );
-        } catch (err) {
-          console.warn("comparison fetch failed, falling back to values", err);
-        }
-        if (myToken !== renderToken) return;
-        if (delta) {
-          activateIndicator(
-            map, overlayConfig, indicator,
-            // The value domain is unused in delta mode; the baseline catalog
-            // bounds stand in so the signature stays one shape.
-            rampDomainFromStats(null, indicator),
-            tooltipController, aoiId, selectionController, grain,
-            state.activeScenarioId, delta,
-          );
-          if (grainToggle) {
-            renderGrainToggle(grainToggle, indicator, grain ?? null, (picked) => {
-              state.activeGrain = picked;
-              void renderIndicator(indicator);
-            });
-          }
-          if (legend) renderDeltaLegend(legend, indicator, delta);
-          // No value to place in a distribution: the cursor has nothing to say.
-          state.markHovered = undefined;
-          setValueHoverListener(null);
-          if (downloads) setDownloadAvailability(downloads, true);
-          setStatus(
-            `Showing the change in ${indicator.name} (${indicator.unit ?? "no unit"}): ` +
-              `${delta.changed} changed, ${delta.unchanged} unchanged, ${delta.new} new.`,
-          );
-          return;
-        }
-        // The comparison could not be read. Saying so and drawing values is
-        // better than a difference map with an invented scale.
-        state.activeMode = "value";
-        if (modeToggle) {
-          renderModeToggle(modeToggle, true, "value", (picked) => {
-            state.activeMode = picked;
-            void renderIndicator(indicator);
-          });
-        }
-      }
-
       setStatus(`Loading ${indicator.name} stats…`);
       let stats = null;
       try {
         stats = await getIndicatorStats(indicator.slug, {
           feature_type: grain,
           aoi_id: aoiId ?? undefined,
-          // The ramp is read under the same scenario the tiles are, or the
-          // colours describe a distribution the map is not drawing.
-          scenario_id: state.activeScenarioId ?? undefined,
           // Asked for alongside the percentiles rather than in a second
           // request: it is the same scoped population and the same scan, and
           // a legend whose shape arrives after its numbers reads as a bug.
@@ -652,7 +415,6 @@ async function main(): Promise<void> {
       activateIndicator(
         map, overlayConfig, indicator, domain,
         tooltipController, aoiId, selectionController, grain,
-        state.activeScenarioId,
       );
       // The ramp is per-grain — an AGEB mean spans a much narrower
       // range than its child blocks — so the toggle re-renders with
@@ -690,7 +452,6 @@ async function main(): Promise<void> {
           state.activeGrain = null;
           removeIndicator(map);
           if (grainToggle) clearGrainToggle(grainToggle);
-          if (modeToggle) clearGrainToggle(modeToggle);
           if (legend) clearLegend(legend);
           if (downloads) setDownloadAvailability(downloads, false);
           setStatus("Indicator cleared.");
@@ -723,48 +484,9 @@ async function main(): Promise<void> {
     }
 
     if (downloads) {
-      wireDownloadButtons(
-        downloads,
-        () => state.activeIndicator?.slug ?? null,
-        () => state.activeScenarioId,
-      );
+      wireDownloadButtons(downloads, () => state.activeIndicator?.slug ?? null);
       setDownloadAvailability(downloads, false);
     }
-
-    // ── Scenario authoring ────────────────────────────────────────────
-    //
-    // The panel owns creating a scenario, drawing rules on it and asking for
-    // the recompute; what it hands back is one fact — which scenario the map
-    // is showing — and this is where that fact turns into a view.
-    //
-    // Built after the indicator wiring above, because changing scenario
-    // re-runs both halves of it: the list (a scenario's results are what make
-    // the five edificability indicators offerable in the first place) and the
-    // active overlay (whose tile URL, ramp and exports all carry the id).
-    // Not captured, for the reason the selection wiring above gives: the
-    // controller's handle is a disposer for a teardown this page does not
-    // have. What the page needs from the panel arrives through the callback.
-    enableScenarioPanel(map, {
-      onScenarioChange: (scenarioId) => {
-        void (async () => {
-          state.activeScenarioId = scenarioId;
-          await refreshIndicatorList(getActiveAoiId());
-          if (state.activeIndicator) {
-            await renderIndicator(state.activeIndicator);
-          } else if (select && !select.value && indicators.length > 0) {
-            // The baseline may have had nothing to offer here while the
-            // scenario does — the edificability family exists only under one.
-            // Opening on its first indicator beats an empty overlay, which is
-            // the one view indistinguishable from a broken map.
-            select.value = indicators[0].slug;
-            select.dispatchEvent(new Event("change"));
-          }
-          refreshCommands();
-        })();
-      },
-      activeIndicatorSlug: () => state.activeIndicator?.slug ?? null,
-      activeIndicatorUnit: () => state.activeIndicator?.unit ?? null,
-    });
 
     // ── Command palette ───────────────────────────────────────────────
     //

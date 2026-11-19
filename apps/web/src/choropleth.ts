@@ -383,10 +383,6 @@ export function deltaScopeText(domain: DeltaDomain, unit: string | null): string
 }
 
 
-/** Which of the two views of a scenario the map is drawing. */
-export type ViewMode = "value" | "delta";
-
-
 /**
  * The baseline colour expression: `value_numeric` on a light-to-dark blue ramp.
  *
@@ -748,48 +744,6 @@ export function renderDeltaLegend(
     </div>
     <div class="scope">${escapeHtml(deltaScopeText(domain, indicator.unit ?? null))}</div>
   `.trim();
-}
-
-
-/**
- * The value / difference switch, shown only while a scenario is active.
- *
- * A baseline city has no difference to show, so the control is hidden rather
- * than disabled: a disabled "Difference" button next to a baseline map reads
- * as a feature that is broken.
- */
-export function renderModeToggle(
-  container: HTMLElement,
-  scenarioActive: boolean,
-  active: ViewMode,
-  onPick: (mode: ViewMode) => void,
-): void {
-  if (!scenarioActive) {
-    container.hidden = true;
-    container.replaceChildren();
-    return;
-  }
-  container.hidden = false;
-  const label = document.createElement("span");
-  label.className = "grain-toggle__label";
-  label.textContent = "View";
-  container.replaceChildren(label);
-  const modes: Array<[ViewMode, string]> = [
-    ["value", "Values"],
-    ["delta", "Difference"],
-  ];
-  for (const [mode, text] of modes) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "grain-toggle__btn";
-    btn.dataset.mode = mode;
-    btn.textContent = text;
-    btn.setAttribute("aria-pressed", mode === active ? "true" : "false");
-    btn.addEventListener("click", () => {
-      if (mode !== active) onPick(mode);
-    });
-    container.append(btn);
-  }
 }
 
 

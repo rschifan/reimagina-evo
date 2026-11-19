@@ -1,0 +1,13 @@
+/*
+ * Scenario workspace styles. Imported only by `src/scenarios/main.ts`, so
+ * nothing here — Tailwind's preflight reset included — reaches the map
+ * bundle. Same shape as `ops/ops.css`: `source(none)` and explicit `@source`
+ * lines keep Tailwind from scanning the map's TypeScript, and the shared
+ * tokens come from `ui.css`.
+ */
+@import "tailwindcss" source(none);
+@source "../../scenarios.html";
+@source "./**/*.{svelte,ts}";
+
+@import "../ui.css";
+@import "../map-overlay.css";

@@ -75,6 +75,8 @@ export interface IndicatorValueStats {
   p50: number | null;
   p95: number | null;
   max: number | null;
+  /** Over the same rows as ``count``; ``null`` when there are none. */
+  sum: number | null;
   /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
   histogram: ValueHistogram | null;
 }
@@ -101,22 +103,28 @@ export interface ValueHistogram {
 /** Catalog indicators. With ``aoiId``, only those holding current values in
  *  that AOI — the picker should not offer an indicator whose overlay would
  *  render empty, because an empty map reads as a broken indicator rather
- *  than an uncomputed one.
- *
- *  With ``scenarioId``, that scenario's results count toward ``aoiId`` as well
- *  as the baseline's. Both halves matter: without it the picker hides the five
- *  edificability indicators, which have no baseline rows at all and so exist
- *  only inside a scenario — exactly what a scenario is authored to show. It
- *  has no effect without ``aoiId``, which is what narrows. */
-export function listIndicators(
-  aoiId?: string | null,
-  scenarioId?: string | null,
-): Promise<IndicatorSummary[]> {
+ *  than an uncomputed one. The scenario workspace does not use this list:
+ *  it offers {@link listReachableIndicators}. */
+export function listIndicators(aoiId?: string | null): Promise<IndicatorSummary[]> {
   const params = new URLSearchParams();
   if (aoiId) params.set("aoi_id", aoiId);
-  if (scenarioId) params.set("scenario_id", scenarioId);
   const qs = params.toString();
   return jsonRequest<IndicatorSummary[]>(`/indicators${qs ? `?${qs}` : ""}`);
+}
+
+
+/** An indicator a scenario rule can change, and the number a summary table
+ *  shows for it: a total for counts, a median for rates. */
+export interface ReachableIndicator extends IndicatorSummary {
+  statistic: "sum" | "median";
+}
+
+
+/** What a scenario rule can change, inputs before dependents. Derived on the
+ *  server from the catalog, so the workspace never offers an indicator a rule
+ *  cannot move. */
+export function listReachableIndicators(): Promise<ReachableIndicator[]> {
+  return jsonRequest<ReachableIndicator[]>("/scenarios/indicators");
 }
 
 
@@ -285,6 +293,17 @@ export interface ScenarioRow {
 }
 
 
+/** A `GET /scenarios` row: the scenario plus what a summary of all of them
+ *  needs. Only the list carries these; a detail does not. */
+export interface ScenarioListRow extends ScenarioRow {
+  edit_count: number;
+  /** The newest run (its envelope, the id the Runs page uses), or null. A
+   *  queued run has no envelope until a worker opens it, so during that
+   *  window this names the previous run. */
+  latest_run: { id: string; status: string } | null;
+}
+
+
 export interface EditRow {
   id: string;
   ordinal: number;
@@ -399,12 +418,12 @@ export interface ComparisonResponse {
 
 export function listScenarios(
   filters: { projectId?: string | null; aoiId?: string | null } = {},
-): Promise<ScenarioRow[]> {
+): Promise<ScenarioListRow[]> {
   const params = new URLSearchParams();
   if (filters.projectId) params.set("project_id", filters.projectId);
   if (filters.aoiId) params.set("aoi_id", filters.aoiId);
   const qs = params.toString();
-  return jsonRequest<ScenarioRow[]>(`/scenarios${qs ? `?${qs}` : ""}`);
+  return jsonRequest<ScenarioListRow[]>(`/scenarios${qs ? `?${qs}` : ""}`);
 }
 
 

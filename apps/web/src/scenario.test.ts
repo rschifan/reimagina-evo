@@ -1,26 +1,21 @@
-// @vitest-environment jsdom
-//
-// jsdom for the whole file because two of the exports under test write into
-// elements (`renderScenarioOptions`, `renderEditGroups`). The rest is pure and
-// would run under `node`; one docblock is cheaper than splitting the module's
-// tests across two files by the environment they happen to need.
-import { describe, expect, it, vi } from "vitest";
+// `scenario.ts` is pure since the sidebar panel moved to the scenario
+// workspace, so these run under vitest's default `node` environment.
+import { describe, expect, it } from "vitest";
 
 import { ApiError } from "./http";
 import {
   CLIENT_PRECHECK_NOTE,
   comparisonHeadline,
+  describeGroup,
   groupEditsByArea,
   maxLevelsFor,
   isTerminalRunStatus,
   refusalText,
-  renderEditGroups,
-  renderScenarioOptions,
   runProducedResults,
   tileUrlFor,
   validateEdit,
 } from "./scenario";
-import type { ComparisonResponse, EditRow, ScenarioRow } from "./api";
+import type { ComparisonResponse, EditRow } from "./api";
 
 /**
  * ``valid_max`` of ``edificability_block_density`` in the shipped catalog
@@ -661,60 +656,24 @@ describe("groupEditsByArea", () => {
 });
 
 
-// ── the two renderers ──────────────────────────────────────────────────
-
-function scenario(id: string, name: string): ScenarioRow {
-  return {
-    id,
-    project_id: "p-1",
-    aoi_id: AOI,
-    name,
-    description: null,
-    created_at: "2026-11-12T00:00:00Z",
-    updated_at: "2026-11-12T00:00:00Z",
-    materialized_at: null,
-  };
-}
-
-describe("renderScenarioOptions", () => {
-  it("offers the baseline first and keeps it selectable", () => {
-    const select = document.createElement("select");
-    renderScenarioOptions(select, [scenario("s-1", "Upzone the corridor")], null);
-    expect(select.options).toHaveLength(2);
-    expect(select.options[0].value).toBe("");
-    expect(select.value).toBe("");
+describe("describeGroup", () => {
+  const group = (complete: boolean) => ({
+    areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
+    levels: 6,
+    unitSize: 60,
+    peoplePerHousehold: complete ? 3.6 : null,
+    editIds: ["e1"],
+    complete,
+    ordinal: 1,
   });
 
-  it("selects the active scenario", () => {
-    const select = document.createElement("select");
-    renderScenarioOptions(select, [scenario("s-1", "A"), scenario("s-2", "B")], "s-2");
-    expect(select.value).toBe("s-2");
+  it("names a rule by its position and its three numbers", () => {
+    expect(describeGroup(group(true), 2)).toBe(
+      "Area 2: 6 storeys · 60 m²/dwelling · 3.6 people/household",
+    );
   });
 
-  // A scenario name is user input and goes in as text, not as markup.
-  it("puts a name in as text", () => {
-    const select = document.createElement("select");
-    renderScenarioOptions(select, [scenario("s-1", "<img src=x onerror=alert(1)>")], null);
-    expect(select.querySelectorAll("img")).toHaveLength(0);
-    expect(select.options[1].textContent).toContain("<img");
-  });
-});
-
-describe("renderEditGroups", () => {
-  it("renders one row per drawn area and removes the whole proposal", () => {
-    const host = document.createElement("div");
-    const onRemove = vi.fn();
-    renderEditGroups(host, groupEditsByArea(proposalEdits(AREA_A, 1)), onRemove);
-    const buttons = host.querySelectorAll("button");
-    expect(buttons).toHaveLength(1);
-    buttons[0].dispatchEvent(new Event("click"));
-    // Every id of the group, because three edits of four is not a proposal.
-    expect(onRemove).toHaveBeenCalledWith(["e1", "e2", "e3", "e4"]);
-  });
-
-  it("says so when there is no rule yet, rather than rendering nothing", () => {
-    const host = document.createElement("div");
-    renderEditGroups(host, [], vi.fn());
-    expect(host.textContent).toMatch(/no rule|nothing drawn|draw/i);
+  it("flags an incomplete rule rather than papering over it", () => {
+    expect(describeGroup(group(false), 1)).toMatch(/incomplete, will not compute$/);
   });
 });

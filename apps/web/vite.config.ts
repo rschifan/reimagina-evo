@@ -14,23 +14,28 @@ import { defineConfig } from "vite";
 // Production deployments should serve the built artefacts behind a
 // reverse proxy that performs the same mapping.
 //
-// ── Two entries, one config ──────────────────────────────────────────
+// ── Four entries, one config ─────────────────────────────────────────
 //
-// `index.html` is the MapLibre app: vanilla TS, hand-written CSS, no
-// framework. `catalog.html` is the indicator catalog: Svelte 5 runes,
-// Tailwind, shadcn. They share `src/http.ts`, `src/format.ts` and
-// `src/theme.css`, and nothing else.
+// `index.html` is the MapLibre app: vanilla TS, hand-written CSS, plus the
+// shared Svelte `TopBar`. `catalog.html` (the indicator catalog),
+// `ops.html` (the run dashboard) and `scenarios.html` (the scenario
+// workspace) are Svelte 5 runes with Tailwind. The scenario workspace also
+// reuses the map's vanilla-TS modules (`choropleth.ts`, `selection.ts`,
+// `scenario.ts`) rather than re-implementing them.
 //
 // The Svelte plugin is deliberately NOT scoped with `include`. Scoping it to
-// `src/catalog/**` looks safer and is not: component libraries ship their own
-// `.svelte` sources (lucide, bits-ui) under node_modules, and excluding them
-// leaves rollup to parse a Svelte file as JavaScript. It also protects
+// one page's directory looks safer and is not: component libraries ship their
+// own `.svelte` sources (lucide, bits-ui) under node_modules, and excluding
+// them leaves rollup to parse a Svelte file as JavaScript. It also protects
 // nothing — a Svelte parse error fails the whole build whichever entry pulls
-// it in. What actually keeps the map bundle clean is that nothing in its
-// module graph imports Svelte or Tailwind; the plugin only transforms
-// `.svelte` files, and the map has none.
+// it in. What keeps Tailwind out of the map bundle is that only the Svelte
+// pages' own stylesheets import it.
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
+  // Under Vitest, resolve Svelte's browser build: the server build has no
+  // `mount`, and a component test that cannot mount is the gap a form the
+  // browser refused to submit slipped through (`scenarios/rule-panel.test.ts`).
+  resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
   server: {
     // `strictPort`, so a busy port is an error rather than a silent move to
     // 5174. Vite's default is to increment, which leaves the Makefile's
@@ -62,11 +67,12 @@ export default defineConfig({
       // ⚠ Naming `input` REPLACES Vite's default entry discovery. Omit
       // `index` here and the map app silently stops being built — and
       // `dist/` is gitignored, so nothing in review would show it. Both
-      // All three entries must stay listed.
+      // All four entries must stay listed.
       input: {
         index: new URL("./index.html", import.meta.url).pathname,
         catalog: new URL("./catalog.html", import.meta.url).pathname,
         ops: new URL("./ops.html", import.meta.url).pathname,
+        scenarios: new URL("./scenarios.html", import.meta.url).pathname,
       },
     },
   },

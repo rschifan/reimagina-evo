@@ -21,7 +21,9 @@ from reimagina.scenarios.proposal import (
     edits_for,
     polygon_wkt,
     precheck_ceilings,
+    reachable_indicators,
     require_positive,
+    table_statistic,
 )
 
 POLYGON = {
@@ -218,3 +220,34 @@ def test_polygon_wkt_refuses_input_with_no_polygonal_part():
         )
 
     assert "polygon" in str(caught.value).lower()
+
+
+# ── what a rule can reach ────────────────────────────────────────────────
+#
+# The scenario workspace offers only these, so the list is a promise to a
+# planner: an indicator missing from it is one they cannot ask about, and an
+# extra one is a map that never moves however many rules they draw.
+
+
+def test_a_rule_reaches_exactly_the_five_indicators():
+    assert set(reachable_indicators()) == {
+        "urban_form_block_planned_floors",
+        "edificability_block_housing_units",
+        "edificability_block_population",
+        "edificability_block_density",
+        "livability_block_score",
+    }
+
+
+def test_a_composite_comes_after_the_input_it_reads():
+    order = reachable_indicators()
+    assert order.index("livability_block_score") > order.index(
+        "edificability_block_density"
+    )
+
+
+def test_counts_are_summed_and_rates_are_medians():
+    assert table_statistic("units") == "sum"
+    assert table_statistic("people") == "sum"
+    for unit in ("units_per_ha", "floors", "score_0_1", None):
+        assert table_statistic(unit) == "median"
