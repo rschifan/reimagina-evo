@@ -32,6 +32,7 @@
   import { cn } from "../lib/utils";
   import { createMap, flyToAoi } from "../map-base";
   import { enableSelection, type SelectionController, type SelectionShape } from "../selection";
+  import { installSelectionHandle } from "../selection-handle";
   import { TooltipController } from "../tooltip";
 
   import { noValuesNote } from "./derive";
@@ -94,6 +95,9 @@
           map.setLayoutProperty("baseline_buildings__line", "visibility", "none");
         }
         selection = enableSelection(map);
+        // The rim handle that resizes a circle, as on the explore page; after
+        // enableSelection so it paints above terra-draw's outline.
+        installSelectionHandle(map, selection);
         selection.subscribe((sel) => {
           ws.drawn = sel?.feature ?? null;
           if (!sel) shape = null;
