@@ -181,6 +181,36 @@ def scenario_overlay(
     )
 
 
+def aoi_exists(alias: str, aoi_id: str) -> tuple[str, list]:
+    """``alias``'s feature is a member of AOI ``aoi_id``, as ``(sql, params)``.
+
+    EXISTS over JOIN: same shape as the tile functions in r022 / r023, keeps
+    cardinality stable when a feature belongs to multiple AOIs.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
+        f"WHERE af.feature_id = {alias}.feature_id AND af.aoi_id = %s::uuid)",
+        [aoi_id],
+    )
+
+
+#: A GeoJSON polygon (the one ``%s``) covers ``{centroid}``: the selection
+#: predicate, shared so block counts and selection stats agree.
+#:
+#: ``ST_Covers`` (not ``ST_Contains``) on purpose: ST_Contains uses DE-9IM
+#: exclusive-boundary semantics — a centroid that lands EXACTLY on the polygon
+#: boundary is excluded. For grid-aligned manzanas whose ``ST_PointOnSurface``
+#: can fall on a shared block edge, that produces silent undercount. ST_Covers
+#: is the standard PostGIS recommendation for inclusive containment.
+#:
+#: Trade-off: features that straddle the boundary count if their centroid is
+#: inside or on the boundary, miss otherwise — the approximation humans intuit
+#: as "did the circle catch this?".
+POLYGON_COVERS_CENTROID = (
+    "ST_Covers(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), {centroid})"
+)
+
+
 def encode_cursor(created_at: Any, feature_id: str) -> str:
     """Encode a (created_at, id) pair as an opaque, URL-safe pagination cursor."""
     ts = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)

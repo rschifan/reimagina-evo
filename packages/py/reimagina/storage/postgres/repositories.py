@@ -11,6 +11,8 @@ import geopandas as gpd
 import psycopg2.extras
 import pyarrow.parquet as pq
 
+from .._utils import POLYGON_COVERS_CENTROID as _POLYGON_COVERS_CENTROID
+from .._utils import aoi_exists as _aoi_exists
 from .._utils import is_run_id as _is_run_id
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
@@ -1784,17 +1786,7 @@ class PostgresServingReader:
         #   - the per-row test is point-in-polygon, not polygon-vs-
         #     polygon.
         #
-        # ``ST_Covers`` (not ``ST_Contains``) on purpose: ST_Contains
-        # uses DE-9IM exclusive-boundary semantics — a centroid that
-        # lands EXACTLY on the polygon boundary is excluded. For
-        # grid-aligned manzanas whose ``ST_PointOnSurface`` can fall
-        # on a shared block edge, that produces silent undercount.
-        # ST_Covers is the standard PostGIS recommendation for inclusive
-        # containment.
-        #
-        # Trade-off: features that straddle the boundary count if
-        # their centroid is inside or on the boundary, miss otherwise —
-        # the approximation humans intuit as "did the circle catch this?".
+        # Why ``ST_Covers``: see ``_utils.POLYGON_COVERS_CENTROID``.
         #
         # Bounded by aoi_id so a Mexicali selection doesn't
         # accidentally walk CDMX features. type_slug = ANY(%s) lets
@@ -1802,15 +1794,13 @@ class PostgresServingReader:
         # the panel.
         if not type_slugs:
             return {}
-        sql = """
+        covers = _POLYGON_COVERS_CENTROID.format(centroid="geometry_centroid")
+        sql = f"""
             SELECT type_slug, COUNT(*)::bigint AS n
             FROM serving_geo.feature_aoi_v
             WHERE aoi_id = %s
               AND type_slug = ANY(%s)
-              AND ST_Covers(
-                  ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
-                  geometry_centroid
-              )
+              AND {covers}
             GROUP BY type_slug
         """
         with self.connection.cursor() as cur:
@@ -2829,11 +2819,8 @@ class PostgresIndicatorResultRepository:
         aoi_clause = ""
         aoi_params: list = []
         if aoi_id is not None:
-            aoi_clause = (
-                "AND EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
-                "WHERE af.feature_id = p.feature_id AND af.aoi_id = %s::uuid)"
-            )
-            aoi_params = [aoi_id]
+            aoi_clause, aoi_params = _aoi_exists("p", aoi_id)
+            aoi_clause = f"AND {aoi_clause}"
         with self.connection.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM curated_geo.feature WHERE id = %s::uuid", (feature_id,)
@@ -2893,24 +2880,18 @@ class PostgresIndicatorResultRepository:
             clauses.append("ir.feature_type = %s")
             params.append(feature_type)
         if aoi_id is not None:
-            # EXISTS over JOIN: same shape as the tile functions in
-            # r022 / r023, keeps cardinality stable when a feature
-            # belongs to multiple AOIs.
-            clauses.append(
-                "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
-                "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
-            )
-            params.append(aoi_id)
+            clause, extra = _aoi_exists("ir", aoi_id)
+            clauses.append(clause)
+            params.extend(extra)
         if polygon_geojson is not None:
             if aoi_id is None:
                 raise ValueError("polygon_geojson needs aoi_id")
             # The same predicate as count_features_within_polygon, so block
             # counts and selection stats agree.
+            covers = _POLYGON_COVERS_CENTROID.format(centroid="fa.geometry_centroid")
             clauses.append(
                 "EXISTS (SELECT 1 FROM serving_geo.feature_aoi_v fa "
-                "WHERE fa.id = ir.feature_id AND fa.aoi_id = %s::uuid "
-                "AND ST_Covers(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), "
-                "fa.geometry_centroid))"
+                f"WHERE fa.id = ir.feature_id AND fa.aoi_id = %s::uuid AND {covers})"
             )
             params.extend([aoi_id, polygon_geojson])
         where = " AND ".join(clauses)
