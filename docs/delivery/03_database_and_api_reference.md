@@ -19,7 +19,7 @@ date: "20 November 2026"
 
 ## Database
 
-The delivered stack runs PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1 (`infra/docker/docker-compose.yml`). The schema below is at Alembic revision **`r051`**.
+The delivered stack runs PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1 (`infra/docker/docker-compose.yml`). The schema below is at Alembic revision **`r052`**.
 
 Types are as PostgreSQL prints them (`format_type`), so a geometry column shows its geometry type and SRID.
 
@@ -951,11 +951,11 @@ Indexes:
 
 #### Functions in `serving_geo`
 
-- **`serving_geo.aggregation_overlay_tile(z integer, x integer, y integer, query_params json)`** → bytea (sql). Martin function source — MVT choropleth for aggregation-recipe observations. Required: attribute_key, feature_type_slug. Optional: aoi_id (filters features to that AOI's membership). Returns empty below z=10.
+- **`serving_geo.aggregation_overlay_tile(z integer, x integer, y integer, query_params json)`** → bytea (sql). Martin function source — MVT choropleth for aggregation-recipe observations. Required: attribute_key, feature_type_slug. Optional: aoi_id (filters features to that AOI's membership). Returns empty below z=8.
 
 - **`serving_geo.get_tile(z integer, x integer, y integer, query_params json)`** → bytea (sql). Martin function source — returns a Mapbox Vector Tile for the requested z/x/y. Optional query params: type_slug, role. Geometry is simplified at z < 14 and attributes are omitted below z 12 to keep tiles small.
 
-- **`serving_geo.indicator_overlay_tile(z integer, x integer, y integer, query_params json)`** → bytea (sql). Martin function source — MVT choropleth for one indicator. Required: indicator_slug. Optional: scenario_id, feature_type, aoi_id (aoi_id filters features to that AOI's membership). Returns empty below z=10.
+- **`serving_geo.indicator_overlay_tile(z integer, x integer, y integer, query_params json)`** → bytea (sql). Martin function source — MVT choropleth for one indicator. Required: indicator_slug. Optional: scenario_id, feature_type, aoi_id (aoi_id filters features to that AOI's membership). Returns empty below z=8.
 
 ### `explore`
 
@@ -1551,7 +1551,7 @@ Remove one rule from this scenario.
 
 ##### `POST /scenarios/{scenario_id}/edits`
 
-Draw one area and write the four edits of one proposal over it.
+Draw one area and write the five edits of one proposal over it.
 
 | Parameter | Type | Description |
 |---|---|---|

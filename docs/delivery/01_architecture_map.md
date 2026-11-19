@@ -12,7 +12,7 @@ date: "20 November 2026"
 | **Version** | 1.0 |
 | **Date** | 20 November 2026 |
 | **Status** | Issued |
-| **System state** | Database migration `r051` |
+| **System state** | Database migration `r052` |
 | **Delivery identification** | Date, release tag, commit and SHA-256 of every delivered file are recorded in `docs/delivery/MANIFEST.md`, as Article 2.2 of the agreement requires |
 | **Audience** | Technical reviewers, maintainers and operators of the platform |
 
@@ -137,7 +137,7 @@ An attribute under a scenario resolves as override, then observation, then base 
 
 ## 7. Data model
 
-| Schema | Holds (at `r051`) | Written by | Read by |
+| Schema | Holds (at `r052`) | Written by | Read by |
 |---|---|---|---|
 | `curated_geo` | Source of truth: 25 tables | CLI pipelines and jobs; worker (`indicator_result`); API scenario routes (`scenario_edit`, `scenario_override`) | CLI, worker; API for catalogues (indicators, AOIs, sources, attribution) and scenario authoring |
 | `serving_geo` | Read contract: 23 views, one materialised view, three tile functions | Migrations; CLI refreshes the materialised view after a load | API, Martin, PMTiles export |

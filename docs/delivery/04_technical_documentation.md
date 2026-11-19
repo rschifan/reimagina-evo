@@ -129,7 +129,7 @@ make migrate
 ```
 
 This creates the application and test databases if they are absent, enables
-PostGIS and pgRouting, and migrates both to the latest revision (`r051`). It
+PostGIS and pgRouting, and migrates both to the latest revision (`r052`). It
 takes no arguments: every DSN is read from `.env`, including
 `DATABASE_URL_ADMIN`, which is the connection used to *create* the other two.
 
@@ -1033,7 +1033,7 @@ revision, in this order, and each step is reported with its actual result.
 |---|---|---|
 | 1 | `cp .env.example .env` (Path B, §3.1) | OK |
 | 2 | `make install` | OK; `npm ci` reports 0 vulnerabilities |
-| 3 | `make migrate` | Both databases created and migrated to `r051`; 25 tables in `curated_geo` |
+| 3 | `make migrate` | Both databases created and migrated to `r052`; 25 tables in `curated_geo` |
 | 3b | `uv run python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev API_PORT=8057 WEB_PORT=5197` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
 | 5 | `make test` | 1,034 passed |
