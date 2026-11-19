@@ -57,6 +57,7 @@ STEPS = [
     "the later rule wins in the overlap",
     "an earlier rule says which rule overrides it",
     "deleting every rule returns the scenario to the baseline",
+    "a rule that sets only household size keeps each block's density",
 ]
 
 

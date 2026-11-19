@@ -87,7 +87,13 @@ class CeilingPrecheckFailed(ValueError):
         self.unit_size = unit_size
         # Both area-independent bounds: density scales with unit size, the
         # floors bound does not. The smaller is what a form may offer.
-        self.allowed_levels = math.floor(min(max_levels_for(unit_size), max_floors()))
+        # Without a unit size (a rule that keeps each block's own) only the
+        # floors bound applies.
+        self.allowed_levels = math.floor(
+            min(max_levels_for(unit_size), max_floors())
+            if unit_size > 0
+            else max_floors()
+        )
         worst = breaches[0]
         if worst.indicator_slug == FLOORS:
             advice = (
@@ -109,40 +115,55 @@ class CeilingPrecheckFailed(ValueError):
         )
 
 
+class EmptyProposal(ValueError):
+    """A rule that sets no number at all — nothing to write."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "a rule must set at least one of levels, unit_size, "
+            "people_per_household, lot_coverage"
+        )
+
+
 def edits_for(
-    levels: float,
-    unit_size: float,
-    people_per_household: float,
-    lot_coverage: float = 1.0,
+    levels: float | None = None,
+    unit_size: float | None = None,
+    people_per_household: float | None = None,
+    lot_coverage: float | None = None,
 ) -> list[dict[str, Any]]:
-    """The five edits one proposal writes, in the order they are written.
+    """The edits one rule writes: one per number it sets, in a fixed order.
 
-    ``lot_coverage`` is the share of the block that is built on (COS). It
-    defaults to 1.0 — the whole block, today's meaning — so a caller that
-    never heard of it keeps the formula it had; the web page sends 0.6.
+    **Only the numbers given.** A number left out is not written, so every
+    block keeps its own value for it. Writing all of them flattened the area:
+    a rule meant to change household size also gave every block the same
+    storeys, unit size and coverage — and density, which is
+    ``coverage × levels × 10 000 / unit_size``, the same value everywhere.
 
-    Three numbers, four rules: ``levels`` sets both ``floors`` and
-    ``num_levels``, which are the same quantity under two names
-    (``seed_demo_attributes.py``). Writing one and not the other is the
-    failure this function exists to prevent — ``urban_form_block_planned_floors``
-    reads ``floors`` while the edificability family reads ``num_levels``, so a
-    half-written proposal makes the map contradict itself: planned floors stay
-    at the baseline while density moves.
+    ``levels`` sets both ``floors`` and ``num_levels``, which are the same
+    quantity under two names (``seed_demo_attributes.py``). Writing one and not
+    the other is the failure this function exists to prevent —
+    ``urban_form_block_planned_floors`` reads ``floors`` while the
+    edificability family reads ``num_levels``, so a half-written storey change
+    makes the map contradict itself.
 
-    All three are required of the caller (not defaulted) because
-    ``edificability.py`` skips any feature missing any of the three, and a
-    scenario that silently computed nothing is the hardest failure to see.
+    ⚠ A block whose baseline lacks one of the three edificability inputs is
+    still skipped by ``edificability.py`` unless the rule sets it; the
+    census-fitted baseline gives every Mexicali block all three.
     """
-    return [
-        {"attribute_key": "floors", "value_numeric": float(levels)},
-        {"attribute_key": "num_levels", "value_numeric": float(levels)},
-        {"attribute_key": "unit_size", "value_numeric": float(unit_size)},
-        {
-            "attribute_key": "people_per_household",
-            "value_numeric": float(people_per_household),
-        },
-        {"attribute_key": "lot_coverage", "value_numeric": float(lot_coverage)},
-    ]
+    edits: list[dict[str, Any]] = []
+    if levels is not None:
+        edits.append({"attribute_key": "floors", "value_numeric": float(levels)})
+        edits.append({"attribute_key": "num_levels", "value_numeric": float(levels)})
+    for key, value in (
+        ("unit_size", unit_size),
+        ("people_per_household", people_per_household),
+        ("lot_coverage", lot_coverage),
+    ):
+        if value is not None:
+            edits.append({"attribute_key": key, "value_numeric": float(value)})
+    if not edits:
+        raise EmptyProposal()
+    return edits
 
 
 def require_positive(**values: float) -> None:
@@ -168,10 +189,10 @@ def require_coverage(lot_coverage: float) -> None:
 
 
 def precheck_ceilings(
-    levels: float,
-    unit_size: float,
-    people_per_household: float,
-    lot_coverage: float = 1.0,
+    levels: float | None,
+    unit_size: float | None,
+    people_per_household: float | None,
+    lot_coverage: float | None = None,
 ) -> None:
     """Refuse a proposal the area-independent bounds already rule out.
 
@@ -183,21 +204,29 @@ def precheck_ceilings(
     selection. ``check_ceilings`` rather than a local comparison so the bound
     comes from the catalog at call time, through the one kernel that
     materialisation also uses.
+
+    A rule that leaves a number out takes each block's own value for it, which
+    only materialisation can see: without storeys there is nothing to check
+    here, and without a unit size only the floors bound can speak.
     """
+    if levels is None:
+        return
     breaches = check_ceilings(
         [
             BlockInputs(
                 feature_id=_PROPOSAL,
                 levels=levels,
-                unit_size=unit_size,
-                people_per_household=people_per_household,
+                # 0 makes check_ceilings skip the density bound, which needs
+                # the unit size; the floors bound does not.
+                unit_size=0.0 if unit_size is None else unit_size,
+                people_per_household=people_per_household or 0.0,
                 area_m2=0.0,
-                lot_coverage=lot_coverage,
+                lot_coverage=1.0 if lot_coverage is None else lot_coverage,
             )
         ]
     )
     if breaches:
-        raise CeilingPrecheckFailed(breaches, levels=levels, unit_size=unit_size)
+        raise CeilingPrecheckFailed(breaches, levels=levels, unit_size=unit_size or 0.0)
 
 
 def polygon_wkt(geojson: Any) -> str:

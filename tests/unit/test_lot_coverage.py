@@ -31,7 +31,10 @@ def test_edits_for_writes_coverage_last() -> None:
         "lot_coverage",
     ]
     assert edits[-1]["value_numeric"] == 0.6
-    assert edits_for(3, 66, 3.6)[-1]["value_numeric"] == 1.0
+    # Left out, coverage is not written: each block keeps its own.
+    assert [e["attribute_key"] for e in edits_for(3, 66, 3.6)][
+        -1
+    ] == "people_per_household"
 
 
 @pytest.mark.parametrize("bad", [0, -0.1, 1.2, math.nan, math.inf])

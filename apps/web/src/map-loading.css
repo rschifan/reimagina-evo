@@ -1,0 +1,45 @@
+/* ── Map loading indicator ──────────────────────────────────────── */
+
+/*
+ * Sits inside .map-panel as a sibling of #map. Hidden by default; the
+ * runtime sets ``data-loading`` on the host whenever MapLibre is
+ * fetching tiles or the page is awaiting an async data refresh, and
+ * the [data-loading] selector below makes it visible.
+ *
+ * Centered horizontally over the map, anchored to the top-right area
+ * to avoid covering the legend / sidebar overlap zone.
+ */
+.map-loading {
+  /* Centred over the map so the user's eye doesn't have to hunt for
+   * a tiny corner spinner. ``transform: translate(-50%, -50%)`` keeps
+   * the centring exact regardless of spinner size — top:50% / left:50%
+   * alone would offset by half the spinner's own width/height. Top-
+   * right was the wrong default: that's where MapLibre puts the
+   * NavigationControl, so the spinner overlapped the zoom buttons. */
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  display: none;
+  pointer-events: none;
+}
+
+.map-loading[data-loading="true"] {
+  display: block;
+}
+
+.map-loading__spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #22d3ee;       /* matches HOVER_OUTLINE_COLOR family */
+  border-radius: 50%;
+  animation: map-loading-spin 0.85s linear infinite;
+  background: rgba(17, 24, 39, 0.55);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+@keyframes map-loading-spin {
+  to { transform: rotate(360deg); }
+}

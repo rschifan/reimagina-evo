@@ -381,12 +381,14 @@ export interface EditsWritten {
 /** One proposal: the drawn area and the three numbers proposed over it.
  *  The field names are the API's, which are the domain's, so a refusal can
  *  name the field the form posted without a translation table. */
+/** Each number is optional: one left out is not set by the rule, and every
+ *  block keeps its own value. At least one must be sent. */
 export interface ProposalBody {
   area: GeoJSON.Feature | GeoJSON.FeatureCollection | GeoJSON.Geometry;
-  levels: number;
-  unit_size: number;
-  people_per_household: number;
-  /** Share of the block built on, `0 < c ≤ 1`; the API reads absent as 1. */
+  levels?: number;
+  unit_size?: number;
+  people_per_household?: number;
+  /** Share of the block built on, `0 < c ≤ 1`. */
   lot_coverage?: number;
 }
 
@@ -396,10 +398,11 @@ export interface ProposalBody {
 export interface UpdateRuleBody {
   edit_ids: string[];
   area?: GeoJSON.Feature | GeoJSON.Geometry;
-  levels: number;
-  unit_size: number;
-  people_per_household: number;
-  lot_coverage: number;
+  /** The rule's whole set: a number left out is no longer set by it. */
+  levels?: number;
+  unit_size?: number;
+  people_per_household?: number;
+  lot_coverage?: number;
 }
 
 

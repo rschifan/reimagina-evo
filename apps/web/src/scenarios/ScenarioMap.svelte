@@ -49,6 +49,7 @@
     saveRule,
     setIndicator,
     setMode,
+    EMPTY_RULE,
     ws,
     type RuleValues,
   } from "./store.svelte";
@@ -100,6 +101,9 @@
   /** The open rule was dragged or resized since it was opened. */
   let moved = false;
   let labels: maplibregl.Marker[] = [];
+  /** MapLibre is fetching tiles. With `ws.busy` (a recompute running), it
+   *  shows the map page's spinner — one look for "working" across the app. */
+  let tilesLoading = $state(false);
 
   const indicator = $derived(ws.indicators.find((i) => i.slug === ws.slug) ?? null);
 
@@ -160,6 +164,8 @@
           placeBox();
         }));
         map.on("move", placeBox);
+        map.on("dataloading", () => (tilesLoading = true));
+        map.on("idle", () => (tilesLoading = false));
         map.on("click", RULES_FILL, (e) => {
           if (editing || ws.busy || selection?.isDrawing()) return;
           const index = Number(e.features?.[0]?.properties?.index);
@@ -566,6 +572,13 @@
       </button>
     </div>
     <div
+      class="map-loading"
+      data-loading={ws.busy || tilesLoading ? "true" : "false"}
+      aria-hidden="true"
+    >
+      <div class="map-loading__spinner" role="progressbar" aria-label="Recomputing"></div>
+    </div>
+    <div
       bind:this={legend}
       class="legend absolute right-3 bottom-8 max-w-[280px] rounded border border-line bg-surface/95 p-2 text-xs"
       hidden
@@ -583,13 +596,12 @@
             mode={current.kind}
             values={current.kind === "rule"
               ? {
-                  levels: current.group.levels ?? ws.lastValues.levels,
-                  unitSize: current.group.unitSize ?? ws.lastValues.unitSize,
-                  peoplePerHousehold:
-                    current.group.peoplePerHousehold ?? ws.lastValues.peoplePerHousehold,
-                  lotCoverage: current.group.lotCoverage ?? 1,
+                  levels: current.group.levels,
+                  unitSize: current.group.unitSize,
+                  peoplePerHousehold: current.group.peoplePerHousehold,
+                  lotCoverage: current.group.lotCoverage,
                 }
-              : ws.lastValues}
+              : EMPTY_RULE}
             needsScenarioName={current.kind === "new" && ws.selectedId === null}
             defaultName={`Scenario ${ws.scenarios.length + 1}`}
             overriddenBy={current.kind === "rule" ? current.overriddenBy : null}

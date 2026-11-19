@@ -520,6 +520,21 @@ export function refreshAggregationOverlayAoi(
 }
 
 
+/**
+ * The three inputs of an aggregation overlay's colour ramp: low, middle, high.
+ *
+ * ⚠ Strictly ascending, always. MapLibre rejects an "interpolate" whose inputs
+ * are not, and drops the whole layer with a style error; an observation whose
+ * values are all equal (p05 = p95) did exactly that, and the map page opened
+ * with "The map could not load some data". A flat or inverted range is widened
+ * to one unit around its low end, so every block draws the lightest colour.
+ */
+export function aggregationRampStops(lo: number, hi: number): [number, number, number] {
+  if (!(hi > lo)) hi = lo + 1;
+  return [lo, (lo + hi) / 2, hi];
+}
+
+
 export function installAggregationOverlays(
   map: MapLibreMap,
   sources: TileSource[],
@@ -556,13 +571,10 @@ export function installAggregationOverlays(
     // value range so a few outliers don't flatten the palette. Fall
     // back to min/max if the percentiles are missing (tiny datasets).
     const range = cfg.value_range ?? null;
-    const lo = range?.p05 ?? range?.min ?? 0;
-    let hi = range?.p95 ?? range?.max ?? 1;
-    // ⚠ A constant range (every area the same value, or p05 and p95 a float
-    // ulp apart) gives stops that are not strictly ascending, and MapLibre
-    // rejects the whole layer with an error banner. Widen it as `valueRamp`
-    // does for the indicator.
-    if (!(lo < (lo + hi) / 2 && (lo + hi) / 2 < hi)) hi = lo + 1;
+    const [lo, mid, hi] = aggregationRampStops(
+      range?.p05 ?? range?.min ?? 0,
+      range?.p95 ?? range?.max ?? 1,
+    );
     const fillId = `${sourceName}__fill`;
     const lineId = `${sourceName}__line`;
     map.addLayer({
@@ -575,7 +587,7 @@ export function installAggregationOverlays(
         "fill-color": [
           "interpolate", ["linear"], ["to-number", ["get", "value_numeric"]],
           lo, "#fff5eb",
-          (lo + hi) / 2, "#f16913",
+          mid, "#f16913",
           hi, "#7f2704",
         ],
         "fill-opacity": DEFAULT_AGG_OPACITY,

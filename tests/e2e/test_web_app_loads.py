@@ -75,25 +75,21 @@ def test_the_map_is_tall_enough_to_see(probe, page):
 def test_the_map_asks_for_tiles_in_the_documented_shape(probe):
     """The tile contract, as the client actually spells it.
 
-    The map opens on the indicator alone, every spatial layer off, so the
-    first tiles it asks for are `serving_geo.indicator_overlay_tile`'s, named
-    by indicator. A layer switched on asks `serving_geo.get_tile(z, x, y,
-    query_params)` with the `type_slug` that function filters on. This asserts
-    the requests, not the responses — those need a tile server, and whether
-    one is running is a deployment question rather than a property of the app.
+    `serving_geo.get_tile(z, x, y, query_params)` is published over HTTP by
+    the tile server, and the client has to call it with the path and
+    parameters that function expects. This asserts the request, not the
+    response — the response needs a tile server, and whether one is running is
+    a deployment question rather than a property of the app.
+
+    Every spatial layer starts off (#112: the map opens on the indicator
+    alone), so the probe turns Streets on through its checkbox first, as a
+    planner would.
     """
-    opening = probe["pages"]["map"]["requests"]
-    overlay = [u for u in opening if "/indicator_overlay_tile/" in u]
-    assert overlay, "the map requested no indicator tiles on open"
-    assert all("indicator_slug=" in u for u in overlay), overlay[:3]
-    assert not [u for u in opening if "/get_tile/" in u], (
-        "the map asked for layer tiles on open, with every layer off"
-    )
-    layers = probe["interaction"]["layerTileRequests"]
-    assert layers, "switching the streets on requested no vector tiles"
-    assert all("type_slug=" in u for u in layers), (
-        "a layer tile request carried no type_slug filter, so the layer "
-        f"toggles are not reaching the tile function: {layers[:3]}"
+    tiles = [u for u in probe["pages"]["map"]["requests"] if "/get_tile/" in u]
+    assert tiles, "the map requested no vector tiles"
+    assert any("type_slug=" in u for u in tiles), (
+        "no tile request carried a type_slug filter, so the layer toggles are "
+        f"not reaching the tile function: {tiles[:3]}"
     )
 
 
@@ -217,11 +213,10 @@ class TestStreetContext:
     tile path the other baseline layers already use.
     """
 
-    def test_the_street_layer_is_offered_first_and_starts_off(self, probe) -> None:
-        """First in the list, so it draws beneath the analysis layers. Off on
-        open like every spatial layer: the opening view is the indicator
-        alone, and the streets are one click away."""
-        assert probe["interaction"]["streetsOnAtOpen"] is False
+    def test_the_street_layer_is_offered_first(self, probe) -> None:
+        """Offered, and first in the list. It starts off like every spatial
+        layer since #112 — the map opens on the indicator alone — and is the
+        first switch a planner reaches for orientation."""
         labels = probe["interaction"]["streetToggle"]
         assert any("street" in label.lower() for label in labels), labels
         assert labels[0].lower().startswith("street"), (
@@ -230,9 +225,7 @@ class TestStreetContext:
         )
 
     def test_street_tiles_come_back_with_linework(self, probe) -> None:
-        """Once the Streets toggle is switched on.
-
-        ⚠ The failure this catches is silent.
+        """⚠ The failure this catches is silent.
 
         `get_tile` scopes by AOI through an EXISTS against `aoi_feature`, so
         roads published *after* the membership pass get no row there and

@@ -648,8 +648,8 @@ rolling forward to a new Overture release.
 
 Lot coverage (`lot_coverage`, the share of a block that is built on) is not
 seeded: a block without it is computed at 1.0, the whole block, so the fitted
-baseline still equals the census. Scenario rules carry it — 60 % unless the
-planner changes it — and `housing_units = area × lot_coverage × storeys ÷
+baseline still equals the census. A scenario rule sets it only when the
+planner types one, and `housing_units = area × lot_coverage × storeys ÷
 m² per home`.
 
 ## 8. How the platform works

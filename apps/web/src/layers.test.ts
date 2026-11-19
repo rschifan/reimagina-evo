@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  INPUT_LAYERS,
-  groupRastersAndOverlays,
-  installAggregationOverlays,
-  minzoomForGrain,
-} from "./layers";
+import { INPUT_LAYERS, aggregationRampStops, groupRastersAndOverlays, minzoomForGrain } from "./layers";
 
 /**
  * The zoom at which `serving_geo.get_tile` starts serving
@@ -98,30 +93,21 @@ describe("INPUT_LAYERS", () => {
 });
 
 
-describe("aggregation overlay colour ramp", () => {
-  // A territory where every area has the same value is a real case (one
-  // AGEB, a uniform raster), and MapLibre rejects interpolate stops that are
-  // not strictly ascending: the whole layer then fails with a banner.
-  it("keeps its stops strictly ascending when the range is constant", () => {
-    const layers: { paint?: Record<string, unknown> }[] = [];
-    const map = {
-      getSource: () => undefined,
-      addSource: () => undefined,
-      addLayer: (l: { paint?: Record<string, unknown> }) => layers.push(l),
-      getLayer: () => undefined,
-    };
-    // Measured on the synthetic territory: four AGEBs, one population each.
-    const v = 1795.2482855523704;
-    installAggregationOverlays(map as never, [{
-      layer_id: "a",
-      source_mode: "aggregation_overlay",
-      source_config: {
-        tiles_url_template: "/t/{z}/{x}/{y}",
-        value_range: { count: 4, min: v, p05: v, p50: v, p95: v, max: v },
-      },
-    } as never]);
-    const ramp = layers[0].paint!["fill-color"] as number[];
-    expect(ramp[3]).toBeLessThan(ramp[5]);
-    expect(ramp[5]).toBeLessThan(ramp[7]);
+// MapLibre refuses an "interpolate" whose inputs are not strictly ascending,
+// and the whole layer with it: an overlay whose values are all equal
+// (p05 = p95) put "The map could not load some data" on the map page.
+describe("aggregationRampStops", () => {
+  const ascending = (stops: number[]) => stops.every((v, i) => i === 0 || v > stops[i - 1]);
+
+  it("keeps a real range as it is", () => {
+    expect(aggregationRampStops(10, 30)).toEqual([10, 20, 30]);
+  });
+
+  it("stays strictly ascending when every value is the same", () => {
+    for (const v of [0, 5, -3, 1e6]) expect(ascending(aggregationRampStops(v, v))).toBe(true);
+  });
+
+  it("stays strictly ascending when the range is upside down", () => {
+    expect(ascending(aggregationRampStops(8, 2))).toBe(true);
   });
 });
