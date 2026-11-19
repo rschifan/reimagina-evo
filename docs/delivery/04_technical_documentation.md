@@ -2,7 +2,7 @@
 title: "Technical documentation"
 subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 4"
 author: "Rossano Schifanella"
-date: "13 November 2026"
+date: "20 November 2026"
 ---
 
 ## Document control
@@ -11,7 +11,8 @@ date: "13 November 2026"
 |---|---|
 | **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |
 | **Deliverable** | Schedule A, Work 4 — Technical documentation |
-| **Status** | Draft for review |
+| **Version** | 1.0 |
+| **Status** | Issued |
 | **Audience** | A technically competent reader installing, configuring and operating the platform |
 
 | Version | Date | Author | Summary |
@@ -19,17 +20,22 @@ date: "13 November 2026"
 | 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
 | 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
 | 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
-| 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface (§6.3); corrected DSN ports (§4.1); re-measured install appendix |
+| 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface; corrected DSN ports (§4.1); re-measured install appendix |
 | 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
 | 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
 | 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
 | 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
+| 1.0 | 2026-11-20 | Rossano Schifanella | Issued. Prerequisites corrected (Python 3.12, the Node versions the web app accepts, GDAL only for PMTiles export); every Python command runs through `uv run`; ports and `API_PORT`/`WEB_PORT` (§1, §4.2, §5); every environment variable with its default (§4); tile serving under `make dev` (§6.2); the crash-recovery remedy corrected (§6.1); a complete data-load runbook (§7.2); an operating chapter for each page and every CLI group (§8); troubleshooting renumbered (§9); §10 re-measured at `r051` |
 
 ### Provenance of the figures
 
-Re-measured on 19 November 2026, at migration `r050`: the install appendix in §10 (revision, table count, every test count). Carried forward from an earlier measurement and not re-measured for this revision: the acceptance run's duration in §7.1 (13 November, `r049`), the "22,500 blocks, ~40 s" generation time in §6.1, and the third-party dependency inventory.
+Re-measured on 19 November 2026, at migration `r051`: the install appendix in
+§10 (revision, table count, every test count), the acceptance run's duration
+in §7.1 and the size and generation time of the recovery territory in §6.1.
+Carried forward from an earlier measurement and not re-measured for this
+revision: the tile timing in §6.2 and the third-party dependency inventory.
 
 ### About this document
 
@@ -37,10 +43,9 @@ This document covers installation, configuration and operation. It assumes
 familiarity with PostgreSQL, Python and the command line, but no prior
 knowledge of this system.
 
-Every command here was executed against a clean clone while writing it, and
-§9 records the failures that were met and what they mean. Commands that could
-not be executed in that environment are marked, rather than presented as
-though they had been.
+The commands were executed against a clean clone of the delivered revision;
+§10 records that run, and §9 the failures met while writing it and what they
+mean.
 
 Architecture is Work 1; the schema and endpoint reference is Work 3.
 
@@ -48,41 +53,54 @@ Architecture is Work 1; the schema and endpoint reference is Work 3.
 
 ## 1. What you will end up with
 
-A working installation serves four things:
+A working installation is a database, three processes — the API, the web
+application and the worker — and, in the container stack, two optional tile
+hosts:
 
-| Surface | Address | Purpose |
+| Part | Address | Purpose |
 |---|---|---|
-| API | `http://localhost:8001` | Features, indicators, downloads, job control; OpenAPI at `/docs` |
-| Web application | `http://localhost:5173` | Map, scenario workspace (`/scenarios.html`), indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`). Press `⌘K` for the command palette, `?` for the shortcut list |
-| Vector tiles | `http://localhost:3000` | Live MVT tiles, served by Martin (the default) |
-| Vector tiles, in-process | `http://localhost:8001/tiles` | The same tiles from the API itself, behind the same URL contract. §6.2 says when to use which |
-| Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers (Path A only) |
+| API | `http://localhost:8001` (`API_PORT`) | Features, indicators, downloads, scenarios, run control; OpenAPI at `/docs` |
+| Web application | `http://localhost:5173` (`WEB_PORT`) | Map (`/`), scenario workspace (`/scenarios.html`), indicator catalogue (`/catalog.html`), run dashboard (`/ops.html`). Press `⌘K` for the command palette, `?` for the shortcut list |
+| Worker | no port | Executes the runs the API and the CLI submit. Without it runs stay queued |
+| Vector tiles, from the API | `/api/tiles` through the web application; `http://localhost:8001/tiles` directly | Live MVT tiles served by the API itself. What `make dev` uses (§6.2) |
+| Vector tiles, from Martin | `http://localhost:3000` | The same tiles from a dedicated tile server. Path A only, optional (§6.2) |
+| Snapshot tiles | `http://localhost:3001` | PMTiles exports of stable reference layers. Path A only |
 | Database, pooled | `localhost:5432` | Path A: the **connection pooler**, holding one database only. The API reads through it. Path B: PostgreSQL itself |
 | Database, direct | `localhost:5433` | Path A only: PostgreSQL behind the pooler. Migrations, bootstrap, the test suites and the ops plane all connect here, not to `5432` — §4.1 says why |
 
+`8001` and `5173` are defaults. Every `make` target that starts a server
+takes `API_PORT` and `WEB_PORT`, and checks the ports are free before it
+starts (§5).
+
 An installation without access to the source data lake still runs: you can
-install, migrate, start every process, run the test suites and build the web
-application. You cannot load the territory. §7 says what that needs.
+install, migrate, start every process, run the test suites, build the web
+application and load a generated territory (§7.1). Loading the real territory
+needs the lake mirror and internet access (§7.2).
 
 ## 2. Prerequisites
 
 | Requirement | Version | Why |
 |---|---|---|
-| Python | 3.11 or later | The backend; CI gates on 3.12 |
-| Node.js | 20 or later | The web application |
-| `uv` | recent | Dependency installation; CI installs from `uv.lock` |
-| PostgreSQL | 16 | The database |
+| Python | 3.12 or later | The backend (`requires-python = ">=3.12"`). `uv` provides it if the system has none |
+| `uv` | recent | Creates the project environment from `uv.lock` |
+| Node.js | `^22.22.2 \|\| ^24.15.0 \|\| >=26` | The web application (`engines` in `apps/web/package.json`); 23.x and 25.x are not accepted. CI uses 22 |
+| PostgreSQL | 16 or later | The database. The container stack and CI use 16 |
 | PostGIS | 3.4 or later | All spatial types and functions |
 | pgRouting | 3.6 or later | Network-distance indicators (migration `r037`) |
-| GDAL | 3.6 or later | Native dependency of `fiona` and `rasterio` |
-| Docker | recent | Only for the container stack in §3.1 |
-
-On Debian or Ubuntu, GDAL headers come from `libgdal-dev`; on macOS, `brew
-install gdal`.
+| GDAL (`ogr2ogr`) | 3.8 or later | **Only** for `tiles export` (PMTiles snapshots), which needs the PMTiles driver. The Python packages (`rasterio`, `pyogrio`) bundle their own GDAL |
+| Docker with Compose | recent | **Optional**: only for the container stack (Path A, §3.1) |
+| `make`, `bash`, `curl` | any | The `make` targets and scripts below |
 
 > **PostGIS and pgRouting are not in the Ubuntu archive.** They come from the
 > PostgreSQL Global Development Group repository. pgRouting is also not a
 > *trusted* extension, so `CREATE EXTENSION` requires a superuser — see §9.4.
+
+**Every Python command in this document runs through `uv run`**, which uses the
+project environment `make install` creates in `.venv`. A bare `python` or
+`pytest` resolves to whatever interpreter is first on `PATH`, which does not
+have the project's dependencies (or, on many systems, does not exist). If you
+prefer, run `source .venv/bin/activate` once per shell and drop the `uv run`
+prefix.
 
 ## 3. Installation
 
@@ -91,35 +109,43 @@ install gdal`.
 Two paths are supported, and the choice only affects where PostgreSQL comes
 from.
 
-**Path A — container stack (recommended).** Brings up PostgreSQL with PostGIS
-and pgRouting, a connection pooler, Martin and a static tile host:
+**Path A — container stack.** Brings up PostgreSQL with PostGIS and
+pgRouting, a connection pooler, Martin and a static tile host:
 
 ```bash
-cp .env.example .env     # then set POSTGRES_PASSWORD
+cp .env.example .env
+# edit .env: set POSTGRES_PASSWORD, and the same password in the five DSNs
 make stack-up
 ```
 
-**Path B — host PostgreSQL.** If you already run PostgreSQL locally, comment
-out the Path A block in `.env`, uncomment Path B, and create the databases
-yourself:
+The password appears six times in `.env`: once in `POSTGRES_PASSWORD` and
+once in each of the five DSNs (§4.1). Change all six together. The stack
+publishes host ports `5432`, `5433`, `3000` and `3001`; they must be free —
+see §9.10.
+
+**Path B — host PostgreSQL.** If you already run PostgreSQL locally, copy
+`.env.example` to `.env`, comment out the Path A block and uncomment Path B.
+`make migrate` (§3.3) creates both databases if they are absent; to create
+them yourself instead:
 
 ```bash
-createdb reimagina_app reimagina_test
+createdb reimagina_app
+createdb reimagina_test
 ```
 
 > Path B's DSNs name no user, so they assume your own operating-system
 > username is a PostgreSQL role that can connect without a password and create
 > databases — the usual Homebrew or Postgres.app arrangement. If yours is not,
-> put a user and password into the four Path B DSNs.
+> put a user and password into the five Path B DSNs.
 
 ### 3.2 Install dependencies
 
 ```bash
-make install        # uv sync --extra dev, then npm install in apps/web
+make install        # uv sync --extra dev, then npm ci in apps/web
 ```
 
-This prints an `npm audit` summary on completion. §9.6 explains what it
-reports and why one entry matters.
+`npm ci` installs exactly what `apps/web/package-lock.json` records and never
+rewrites it. It ends with an `npm audit` summary; §9.6 says how to read one.
 
 ### 3.3 Create and migrate the databases
 
@@ -128,42 +154,46 @@ make migrate
 ```
 
 This creates the application and test databases if they are absent, enables
-PostGIS and pgRouting, and migrates both to the latest revision. It takes no
-arguments: every DSN is read from `.env`, including `DATABASE_URL_ADMIN`,
-which is the connection used to *create* the other two databases.
+PostGIS and pgRouting, and migrates both to the latest revision (`r051`). It
+takes no arguments: every DSN is read from `.env`, including
+`DATABASE_URL_ADMIN`, which is the connection used to *create* the other two.
 
 A successful run prints, for each database, whether it was created and that it
-was migrated:
+was migrated. On Path A the application database already exists — the
+container created it as `POSTGRES_DB` — so it reports `created: false`:
 
 ```json
-{"app":  {"created": true, "dsn": "…/reimagina_app",  "migrated": true},
- "test": {"created": true, "dsn": "…/reimagina_test", "migrated": true}}
+{"app":  {"created": false, "dsn": "…/reimagina",      "migrated": true},
+ "test": {"created": true,  "dsn": "…/reimagina_test", "migrated": true}}
 ```
 
 Confirm the schema landed:
 
 ```bash
-python -m apps.cli.app verify-schema
+uv run python -m apps.cli.app verify-schema
 ```
 
 Every CLI command reads `.env`, so no connection flags are needed. `--dsn`
-remains available and overrides the environment when given.
+remains available and overrides the environment when given. One exception:
+`raster fetch-worldpop` does not read `.env` for its `--dsn`; pass it when you
+pass `--aoi-id` (§7.2).
 
 ## 4. Configuration
 
 All configuration is environment variables, read from `.env` at the
 repository root. `.env.example` is the template; it is never read at runtime.
+A variable already set in the shell wins over `.env`.
 
 ### 4.1 Database connections
 
-Four DSNs, deliberately distinct so that one tool never takes another's pool.
+Five DSNs, deliberately distinct so that one tool never takes another's pool.
 
 | Variable | Read by | Port in Path A | Notes |
 |---|---|---|---|
 | `DATABASE_URL` | Migrations, loaders, CLI, workers | `5433` | The default DSN for the storage layer. Carries DDL and `CREATE EXTENSION` |
-| `REIMAGINA_APP_DSN` | The API only | `5432` | The one pooled DSN, and the one the pooler is for: short read-only handlers, `SET LOCAL` only |
-| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY`, Martin | `5433` | **Must bypass the pooler.** See §9.2 |
-| `TEST_DATABASE_URL` | The integration and conformance suites | `5433` | Must end in `_test`; the fixture creates and drops schemas |
+| `REIMAGINA_APP_DSN` | The API only | `5432` | The one pooled DSN, and the one the pooler is for: short read-only handlers, `SET LOCAL` only. Default `postgresql://localhost/reimagina_app`; `make dev` and `make dev-api` fall back to `DATABASE_URL` |
+| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY` | `5433` | **Must bypass the pooler.** See §9.2 |
+| `TEST_DATABASE_URL` | The integration, conformance and recovery suites | `5433` | The database name must contain `test` (or equal `REIMAGINA_TEST_DB_ALLOW_NAME`); the fixture refuses anything else, because its teardown drops every schema — §9.5 |
 | `DATABASE_URL_ADMIN` | `make migrate` only | `5433` | The database connected to in order to *create* the other two. Needs a role that may create databases and extensions |
 
 Only one of the five is pooled, and that is not an oversight. In Path A,
@@ -179,19 +209,73 @@ is written around both:
    is session-scoped, and a migration lock has to outlive its statement. None
    of those survive transaction pooling.
 
-### 4.2 Ops plane
+Path A also reads `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD`; the
+container stack creates its role and database from them.
+
+### 4.2 Ports and the API process
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `API_PORT` (`make` variable) | `8001` | The API's port for `make dev`, `make dev-api` and `make check-ports`. `make dev` and `make dev-web` pass it to Vite's proxy. Set it on the command line: `make dev API_PORT=8123` |
+| `WEB_PORT` (`make` variable) | `5173` | The web dev server's port for `make dev` and `make dev-web` |
+| `REIMAGINA_API_URL` | `http://127.0.0.1:8001` | Where Vite's `/api` proxy sends requests. The `make` targets set it from `API_PORT` |
+| `REIMAGINA_API_HOST` | `127.0.0.1` | Bind address for `uv run python -m apps.api`. ⚠ The API has no authentication; do not bind it beyond loopback |
+| `REIMAGINA_API_PORT` | `8001` | Bind port for `uv run python -m apps.api` (the `make` targets use `API_PORT`) |
+| `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn's log level for `python -m apps.api` |
+| `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed to call the API from a browser. Only matters for an absolute tile or API URL; the `/api` proxy is same-origin |
+| `REIMAGINA_API_POOL_MIN` | `1` | Minimum connections in the API's pool |
+| `REIMAGINA_API_POOL_MAX` | `16` | Maximum connections in the API's pool |
+| `REIMAGINA_API_POOL_WAIT_S` | `30` | How long a request waits for a free connection before answering 503 with `Retry-After` |
+| `REIMAGINA_LOG_LEVEL` | `INFO` | Log level of the `reimagina` packages (CLI, worker) |
+
+### 4.3 Tiles and files
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` (Martin) | Where the browser fetches live vector tiles. `/api/tiles` serves them from the API. **`make dev` and `make dev-api` set `/api/tiles` and ignore this variable in `.env`**; only the invoking shell can override it — §6.2 |
+| `REIMAGINA_MARTIN_URL` | `http://localhost:3000` | Where `GET /health/tile-server` probes Martin |
+| `REIMAGINA_TILE_SNAPSHOT_BASE_URL` | `http://localhost:3001` | Static host serving PMTiles snapshots |
+| `REIMAGINA_TILE_RASTER_BASE_URL` | derived | Base URL of raster (COG) tiles. Unset, it is `REIMAGINA_API_BASE_URL` + `/cog`, else `http://localhost:8001/cog` |
+| `REIMAGINA_API_BASE_URL` | unset | The API's public base URL; only used to derive the raster tile URL. Set it when the API is not on `localhost:8001` |
+| `REIMAGINA_TILE_MAX_AGE_S` | `60` | `Cache-Control: max-age` on API-served tiles |
+| `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S` | `300` | `stale-while-revalidate` on API-served tiles |
+| `REIMAGINA_TILE_TIMEOUT_MS` | `5000` | Statement timeout of one API-served tile |
+| `REIMAGINA_DATA_DIR` | `<repository>/data` | Root of downloaded sources, staged files and COGs. `data/` is git-ignored |
+| `REIMAGINA_OVERTURE_RELEASE` | `2026-10-21.0` | The Overture release the extract commands read. Overture removes old releases; `docs/BOOTSTRAP.md` says how to find a current one |
+
+### 4.4 Ops plane
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `REIMAGINA_ORCHESTRATOR` | `dbos` | Which orchestrator the factory builds. `dbos` is the only deployable value |
+| `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | `client` submits and reads runs but executes nothing (the API); `executor` executes them (`python -m apps.worker` sets this itself); `dev` does both in one process |
 | `REIMAGINA_EXECUTOR_ID` | `<hostname>:<role>` | Identifies this process to crash recovery. Must be **stable** across restarts and **unique** between concurrent processes — see §9.3 |
 | `REIMAGINA_EXECUTOR_ROLE` | `app` | Distinguishes co-located processes. `python -m apps.worker` sets `worker` itself |
-| `REIMAGINA_UNIT_CONCURRENCY` | `2` | How many indicator units one process runs at once |
-| `REIMAGINA_APP_VERSION` | derived | Pins the version gating recovery. Set deliberately or not at all — see §9.3 |
+| `REIMAGINA_RUN_CONCURRENCY` | `2` | How many runs one worker executes at once (the `runs` queue) |
+| `REIMAGINA_UNIT_CONCURRENCY` | `8` | How many indicator units one worker executes at once (the `units` queue) |
+| `REIMAGINA_POLL_INTERVAL_SEC` | `0.1` | How often a worker polls its queues |
+| `REIMAGINA_APP_VERSION` | derived | Pins the version gating recovery. Set deliberately or not at all — see §9.9 |
 | `REIMAGINA_EXECUTOR_HEARTBEAT_S` | `30` | How often a process publishes liveness |
 | `REIMAGINA_EXECUTOR_STALE_S` | `300` | How silent an executor must be before a peer presumes it dead — see §9.9 |
-| `REIMAGINA_RECLAIM_SWEEP_S` | half the window | How often the worker looks for dead executors |
+| `REIMAGINA_RECLAIM_SWEEP_S` | half the window, at least 60 | How often the worker looks for dead executors |
 | `REIMAGINA_RECLAIM_ENABLED` | `1` | Set `0` to disable the sweep entirely |
+| `REIMAGINA_PROGRESS_SUBSCRIBERS` | `32` | How many live-progress streams (`/jobs/{run_id}/events`) one API process serves at once |
+| `REIMAGINA_RUN_PLAN_TTL_HOURS` | `24` | Age after which an orphaned run plan is swept |
+| `REIMAGINA_HAMILTON_CACHE` | off | `1` enables the indicator dataflow's result cache. Development only |
+
+### 4.5 Test and benchmark switches
+
+These are read only by the test suites and benchmark scripts.
+
+| Variable | Purpose |
+|---|---|
+| `REIMAGINA_REQUIRE_DB=1` | A database-backed suite fails, instead of skipping, when the test database is unreachable. CI sets it |
+| `REIMAGINA_TEST_DB_ALLOW_NAME` | Allows one exact `TEST_DATABASE_URL` database name that does not contain `test` |
+| `REIMAGINA_POOLED_TEST_DSN` | A DSN through a transaction-mode PgBouncer; enables the one integration test that needs one |
+| `REIMAGINA_RECOVERY_TEST=1` | Enables `tests/recovery` (`make test-recovery` sets it) |
+| `REIMAGINA_E2E=1` | Enables `tests/e2e` (`make test-e2e` sets it) |
+| `REIMAGINA_E2E_API`, `REIMAGINA_E2E_WEB` | Where the browser suite finds the API and the web app; default `http://127.0.0.1:8001` and `http://localhost:5173` |
+| `REIMAGINA_BENCH=1`, `REIMAGINA_BENCH_SCALE`, `REIMAGINA_BENCH_REPS` | Enable and size `tests/workloads` and the benchmark scripts |
 
 ## 5. Running the platform
 
@@ -201,58 +285,116 @@ The whole platform is one command:
 make dev
 ```
 
-It starts the API on `:8001`, the web app on `:5173` and the worker, and
-Ctrl-C stops all three. It reads `REIMAGINA_APP_DSN`, falling back to `DATABASE_URL` from
-`.env`, and refuses to start rather than silently serving the API's own
-default database — an empty database looks like a broken frontend, not a
-missing variable.
+It starts the API on `:8001`, the web application on `:5173` and the worker,
+and Ctrl-C stops all three. It reads `REIMAGINA_APP_DSN`, falling back to
+`DATABASE_URL` from `.env`, and refuses to start rather than silently serving
+the API's own default database — an empty database looks like a broken
+frontend, not a missing variable. It points the map's tiles at the API
+(`/api/tiles`, §6.2).
 
-The split is a development artefact, not architecture: Vite serves the
-frontend itself because it does hot module replacement and TypeScript and
-Svelte transforms that the API cannot. A deployment runs `make build-web`
-and serves the static output behind one reverse proxy that maps `/api`, which
-is the mapping `vite.config.ts` performs in development.
+Open the web application at **`http://localhost:5173`**. Use `localhost`, not
+`127.0.0.1`: on machines where `localhost` resolves to IPv6, Vite listens on
+`[::1]` only and `127.0.0.1:5173` does not answer.
 
-To run them in separate terminals:
+Before it starts anything it checks that both ports are free and names the
+process holding one if not. To use other ports:
 
 ```bash
-make dev-api      # FastAPI on :8001
-make dev-web      # Vite on :5173
+make dev API_PORT=8123 WEB_PORT=5199
+make check-ports API_PORT=8123 WEB_PORT=5199   # the check on its own
+```
+
+To run the three processes in separate terminals:
+
+```bash
+make dev-api      # FastAPI on API_PORT; same DSN and tiles as make dev
+make dev-web      # Vite on WEB_PORT; proxies /api to API_PORT
 make dev-worker   # drains runs; reads DATABASE_URL_DIRECT from .env
 ```
 
+Pass the same `API_PORT` to `make dev-api` and `make dev-web`.
+
 The worker is required for anything to compute. Without it the run dashboard
-shows submitted runs that never progress, which looks like a hang and is not.
+shows submitted runs that never progress, which looks like a hang and is not;
+the dashboard says so in its health strip.
+
+The split between the API and Vite is a development artefact, not
+architecture: Vite serves the frontend itself because it does hot module
+replacement and the TypeScript and Svelte transforms that the API cannot. A
+deployment runs `make build-web` and serves the static output in
+`apps/web/dist/` behind one reverse proxy that maps `/api` to the API, which is
+the mapping `vite.config.ts` performs in development.
 
 ## 6. Verifying the installation
+
+With `make dev` running:
 
 ```bash
 curl -s localhost:8001/health          # {"status":"ok","db":"reachable"}
 curl -s localhost:8001/openapi.json | head -c 80
-open http://localhost:5173
+open http://localhost:5173             # xdg-open on Linux
 ```
 
-Then the suites. Four are gated in CI; three are hand-run.
+Then the suites. Four Python suites and the web unit tests are gated in CI;
+four further suites are run by hand.
 
 ```bash
-pytest tests/unit tests/contract       # fast, no services
-pytest tests/integration               # needs PostgreSQL + PostGIS
-pytest tests/conformance               # needs PostgreSQL + PostGIS
-cd apps/web && npm test                # web unit tests
+make test                # unit + contract: no services needed
+make test-integration    # needs PostgreSQL + PostGIS (TEST_DATABASE_URL)
+make test-conformance    # needs PostgreSQL + PostGIS (TEST_DATABASE_URL)
+make test-web            # the web unit tests (vitest)
+make build-web           # typecheck + production build of the web app
 ```
 
-> **Do not run a bare `pytest`.** It collects every suite, including
-> `tests/integration`, whose session fixture ends by dropping every managed
-> schema from `TEST_DATABASE_URL`. Name the suites you want.
+The `make` targets call `uv run pytest`; to call pytest yourself, name the
+suites, e.g. `uv run pytest tests/integration`.
+
+> **Do not run a bare `pytest`, and run the suites as separate processes.** A
+> bare `pytest` collects every suite, including `tests/integration`, whose
+> session fixture ends by dropping every managed schema from
+> `TEST_DATABASE_URL`; a suite collected after it in the same process finds no
+> schema. CI runs each suite as its own process, and so do the `make` targets.
 
 For an end-to-end check that the platform *does* something rather than merely
-starts — a populated database, twelve computed indicators, tiles with features
-in them — run `scripts/acceptance_run.sh` (§7.1). It needs no credentials.
+starts — a populated database, every shipped indicator computed, tiles with
+features in them, a run drained by the worker — run `scripts/acceptance_run.sh`
+(§7.1). It needs no credentials.
 
-The three hand-run suites are `performance` (benchmark budgets and
-explain-plan shape), `workloads` (how an ops plane schedules, over synthetic
-DAG topologies) and `recovery` (crash recovery across a real process kill;
-opt-in through `REIMAGINA_RECOVERY_TEST=1`).
+The four hand-run suites:
+
+| Suite | Command | What it needs |
+|---|---|---|
+| `tests/performance` | `uv run pytest tests/performance` | The test database; benchmark budgets and explain-plan shape |
+| `tests/workloads` | `make test-workloads` | Nothing; measures how the ops plane schedules synthetic DAGs (`tests/workloads/README.md`) |
+| `tests/recovery` | `make test-recovery` | A test database with at least 20,000 blocks — §6.1 |
+| `tests/e2e` | `make test-e2e` | Both servers running and Playwright — below |
+
+**The browser suite** opens every page in a real Chromium and asserts what the
+page reports about itself. One-time setup, inside the web application so its
+driver resolves Playwright:
+
+```bash
+cd apps/web
+npm install --no-save playwright
+npx playwright install chromium
+cd ../..
+```
+
+Then, with a populated database (§7.1) and `make dev` running in another
+terminal:
+
+```bash
+make test-e2e
+```
+
+It expects the API on `http://127.0.0.1:8001` and the web application on
+`http://localhost:5173`. If you moved the ports, say where they are:
+
+```bash
+REIMAGINA_E2E_API=http://127.0.0.1:8123 REIMAGINA_E2E_WEB=http://localhost:5199 make test-e2e
+```
+
+`tests/e2e/README.md` describes what it checks.
 
 ### 6.1 Verifying the orchestration module
 
@@ -264,21 +406,27 @@ order of what they cost you.
 
 | Check | Command | What a pass means |
 |---|---|---|
-| The port contract | `make test-conformance` | 17 behaviours — submit, retrieve, cancel, subscribe, partial failure — hold against **both** shipped implementations. A new engine that cannot satisfy them is rejected by a test rather than by an argument |
+| The port contract | `make test-conformance` | 11 behaviours — submit, retrieve, cancel, subscribe, partial failure and the rest — hold against **both** shipped implementations: 22 items, one of which skips because it does not apply to the synchronous orchestrator. A new engine that cannot satisfy them is rejected by a test rather than by an argument |
 | It runs through the queue | `scripts/acceptance_run.sh`, step 12 | A separate `python -m apps.worker` process announced itself, dequeued a run, and drained it. Step 12b prints each unit's start offset: units at the same offset ran concurrently, a later one waited for a dependency |
 | A resubmission is not a second run | `scripts/acceptance_run.sh`, step 12c | The same request submitted twice returned one run id, the second flagged `deduplicated` |
 | It survives its executor dying | `make test-recovery` | A process `SIGKILL`ed mid-compute was resumed — by itself on restart, and by a *different* executor through the liveness sweep |
 
-⚠ **`make test-recovery` needs a database with at least 20,000 blocks and
-skips below that.** The territory in §7.1 has sixteen, so running it against
-that database skips both tests — and a skip is one character away from a pass
-in pytest's output. The skip message names the remedy; it is:
+⚠ **`make test-recovery` runs against `TEST_DATABASE_URL`, needs at least
+20,000 blocks there, and skips below that.** The territory in §7.1 has
+sixteen, and the integration suite leaves the test database without schemas —
+and a skip is one character away from a pass in pytest's output. Prepare the
+test database first:
 
 ```bash
-DATABASE_URL=$TEST_DATABASE_URL python scripts/synthetic_territory.py \
-    --blocks 150 --ageb-side 10          # 22,500 blocks, ~40 s, no credentials
-REIMAGINA_RECOVERY_TEST=1 make test-recovery
+make migrate                                     # restores the test DB's schemas
+DATABASE_URL=$TEST_DATABASE_URL uv run python -m apps.cli.app indicators seed-catalog
+DATABASE_URL=$TEST_DATABASE_URL uv run python scripts/synthetic_territory.py \
+    --blocks 150 --ageb-side 10                  # 22,500 blocks, under a minute, no credentials
+make test-recovery                               # 2 passed
 ```
+
+`$TEST_DATABASE_URL` must be set in the shell for the two middle commands —
+`set -a; . ./.env; set +a` exports everything in `.env`.
 
 The size is not arbitrary. The suite kills a worker *while a unit is
 running*, so the run has to take long enough for the kill to land inside it.
@@ -289,11 +437,10 @@ of what the test claims.
 **What none of these cover.** `scenario recompute --sync` (and
 `evaluate-scenario --sync`) runs the coordinator in-process with no ops plane
 at all. It is the path that still works when the engine is down, and steps 10
-and 11 of the acceptance run use it — so a green
-acceptance run before step 12 says nothing about the orchestrator. That is
-why step 12 exists.
+and 11 of the acceptance run use it — so a green acceptance run before step 12
+says nothing about the orchestrator. That is why step 12 exists.
 
-### 6.2 Verifying live vector tiles, with or without Martin
+### 6.2 Live vector tiles: the API or Martin
 
 Live vector tiles are a Postgres function plus an HTTP wrapper, and the
 wrapper is interchangeable. The contract is the **function signature** —
@@ -303,110 +450,68 @@ implementing it is a drop-in.
 
 | Server | Address | What it is |
 |---|---|---|
-| **Martin** | `:3000` | `ghcr.io/maplibre/martin`, connecting to PostgreSQL directly. The default |
-| **The API** | `:8001/tiles` | `apps/api/routers/mvt.py`, same functions, same process as the rest of the API |
+| **The API** | `/api/tiles` through the web app; `:8001/tiles` directly | `apps/api/routers/mvt.py`, same functions, same process as the rest of the API. What `make dev` uses |
+| **Martin** | `:3000` | `ghcr.io/maplibre/martin`, started by the container stack (Path A) and connecting to PostgreSQL directly. Optional |
 
-Choosing between them is one environment variable:
+**What `make dev` does.** `make dev` and `make dev-api` start no tile server,
+so they point the map at the API: they set
+`REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles` and ignore that variable in `.env`.
+Only the invoking shell can override it. To use Martin from the container
+stack instead:
 
 ```bash
-REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000   # Martin (default)
-REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles              # the API, same-origin
+REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000 make dev
 ```
 
-Nothing else changes: not `infra/tiles/layers.json`, not `/tile-sources`, not
-the frontend.
+A process started any other way (`uv run python -m apps.api`) reads the
+variable from the environment or `.env`, and its default is Martin's
+`http://localhost:3000/get_tile`. Nothing else changes between the two: not
+`infra/tiles/layers.json`, not `/tile-sources`, not the frontend.
+`GET /health/tile-server` reports whether Martin answers.
 
-⚠ Use the **relative** form for the API. An absolute URL such as
+⚠ **Use the relative form for the API.** An absolute URL such as
 `http://localhost:8001/tiles` makes every tile request cross-origin from the
-web application, so it depends on the API's CORS allowlist — which defaults
-to `http://localhost:5173` and rejects a browser that opened the page as
-`http://127.0.0.1:5173`. The symptom is a map that draws nothing, with no
+web application, so it depends on the API's CORS allowlist
+(`REIMAGINA_API_CORS_ORIGINS`), which by default names
+`http://localhost:5173` and therefore rejects a browser that opened the page
+as `http://127.0.0.1:5173`. The symptom is a map that draws nothing, with no
 console error naming the cause. `/api/tiles` is served through the same proxy
-the rest of the API uses, so the question does not arise. A contract test asserts both forms resolve to the same URL
-shape, because that property is the only thing that makes two
-implementations safe to keep.
+the rest of the API uses, so the question does not arise. A contract test
+asserts both forms resolve to the same URL shape, because that property is
+the only thing that makes two implementations safe to keep.
 
 **Which to use.** Martin in production: a Rust tile server with its own
-connection pool is the better machine when many clients pan at once.
-Measured here, `serving_geo.get_tile` answers a populated z16 tile in
-**~1.5 ms**, so at the scale of a single reviewer or a demo neither Postgres
-nor the API is the constraint, and running one fewer service is worth more
-than the headroom.
+connection pool is the better machine when many clients pan at once. At the
+scale of a single reviewer or a demo, the API is enough — measured here,
+`serving_geo.get_tile` answers a populated z16 tile in **~1.5 ms** — and
+running one fewer service is worth more than the headroom.
 
 **Verify a tile without a browser:**
 
 ```bash
 # A tile with features: 200, and a vector-tile content type
-curl -sD- -o /tmp/tile.mvt   "http://localhost:8001/tiles/get_tile/16/11748/26478" | head -5
+curl -sD- -o /tmp/tile.mvt "http://localhost:8001/tiles/get_tile/16/11748/26478" | head -5
 
 # Decode it — no dependencies, the decoder is in this repository
-python scripts/mvt_inspect.py /tmp/tile.mvt
+uv run python scripts/mvt_inspect.py /tmp/tile.mvt
 
 # A tile outside the loaded territory: 204 No Content, empty by design
-curl -s -o /dev/null -w '%{http_code}
-'   "http://localhost:8001/tiles/get_tile/14/0/0"
+curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:8001/tiles/get_tile/14/0/0"
 
 # TileJSON, for a client that prefers discovery
-curl -s "http://localhost:8001/tiles/get_tile" | python -m json.tool
+curl -s "http://localhost:8001/tiles/get_tile" | uv run python -m json.tool
 ```
 
+The z16 tile above lies on the generated territory of §7.1.
 `scripts/mvt_inspect.py` prints the layer name, the spec version, the extent,
 and a breakdown by geometry type and `type_slug` — so "the tile has features"
 is a statement about decoded content rather than about a byte count.
 
-This path is covered end-to-end by
+The API path is covered end-to-end by
 `tests/integration/test_mvt_route_serves_tiles.py`, which fetches real tiles
 over HTTP and decodes them. Martin is an external binary and has no
-equivalent coverage here, which is the other reason both exist:
-`docs/architecture/TILE_SERVING.md` has the full argument.
-
-### 6.3 Using the map
-
-The map page is driven by the keyboard as well as the mouse, and the
-shortest route to everything it can do is the command palette:
-
-| Key | |
-|---|---|
-| `⌘K` / `Ctrl-K` | Command palette — every AOI, indicator, layer, draw mode and page |
-| `?` | The shortcut list |
-| `\` | Show or hide the panel |
-| `f` | Fit the map to the active AOI |
-| `r` / `p` / `c` | Draw a rectangle, polygon or circle selection |
-| `esc` | Clear the selection |
-
-The palette is also the only surface that *lists* what the application does,
-which matters because the draw tools are icons and the rest is three menus
-in a long panel.
-
-**Spatial context.** There is no external basemap, on purpose — no tile
-provider to depend on and no third-party licence to carry. Orientation comes
-from the platform's own street network: the routing graph in
-`curated_geo.road_edge` is published as `global:road` features and served
-through the same tile path as the blocks, appearing from zoom 12. The
-`Streets` layer is on by default.
-
-The map credits whatever data it is showing, bottom-right. That line is
-derived from the licence recorded against each loaded source, not written
-into the frontend — so a real OpenStreetMap network is credited as ODbL
-requires, and a generated territory credits the generator instead of
-claiming OSM data it does not have.
-
-**Reading the legend.** The colour ramp answers "what does this colour
-mean". Below it, the distribution strip answers "how many are like this" —
-the grey bars are the indicator's values across the AOI, the dashed rule is
-the median, and the lighter band is the span the colour ramp resolves
-(outside it the choropleth saturates, so two very different values share a
-colour). Hovering a feature marks its bin and reports its rank, e.g.
-*613 m · higher than 91% of features*.
-
-The distribution is computed by the server over the same scoped population
-as the percentiles, not from what the map has drawn. That is deliberate: a
-shape derived from rendered tiles changes as tiles load, and a reader cannot
-tell which shape was the real one.
-
-**Below 860 px** the panel becomes a drawer and starts closed, so the map
-gets the whole viewport. The toggle is top-left, and `esc` or a tap outside
-closes it.
+equivalent coverage here; `docs/architecture/TILE_SERVING.md` has the full
+argument for keeping both.
 
 ## 7. Loading data
 
@@ -419,20 +524,25 @@ system. It takes about a minute and a half and needs no network:
 scripts/acceptance_run.sh
 ```
 
-The script drops the database named in `DATABASE_URL`, migrates it from
-empty, generates a small territory on Mexicali coordinates — AGEBs containing
-blocks containing buildings, a pedestrian street graph, four amenities, an
-area of interest and a single-band population raster — and then runs every
-analysis stage over it: feature overlaps, all twelve indicators including the
-pgRouting network family, raster ingest through COG staging, zonal
-statistics, an observation rollup, a scenario, and the live tile functions.
-Any failure stops the run.
+⚠ **The script drops and recreates the database named in `DATABASE_URL`.**
+Point `DATABASE_URL` at a database you can lose — on Path A the stack's own
+`reimagina` database is fine on a fresh install; never a database holding a
+real load. `--keep` skips the drop.
+
+It migrates the database from empty, generates a small territory on Mexicali
+coordinates — AGEBs containing blocks containing buildings, a pedestrian
+street graph, four amenities, an area of interest and a single-band population
+raster — and then runs every analysis stage over it: feature overlaps, every
+shipped indicator (all twelve) including the pgRouting network family, raster ingest
+through COG staging, zonal statistics, an observation rollup, a scenario, a
+run drained by a separate worker process, and the live tile functions. Any
+failure stops the run.
 
 To generate the territory without the rest:
 
 ```bash
-python scripts/synthetic_territory.py --blocks 6
-python scripts/synthetic_territory.py --raster-out /tmp/population.tif
+uv run python scripts/synthetic_territory.py --blocks 6
+uv run python scripts/synthetic_territory.py --raster-out /tmp/population.tif
 ```
 
 Everything is written through the production loaders, so what lands passes
@@ -445,78 +555,326 @@ produced, capability by capability.
 
 ### 7.2 With credentials — the real dataset
 
-The pipeline ingests from a private Azure data lake (`cfcetlsadls/raw`) that
-mirrors INEGI 2024 marco geoestadístico, INEGI 2020 census, SIGCDMX/EXE
-amenities, Overture and WorldPop. `docs/AZURE_DATA_INVENTORY.md` documents
-the expected layout under `data/sources/azure/`.
+The real territory comes from two kinds of source:
 
-**You need read access to that container to reproduce the dataset.** Without
-it, ingestion fails at the source-existence check; §7.1 is the alternative.
-`docs/BOOTSTRAP.md` is the full fresh-machine runbook.
+| Source | Where it comes from | Needs |
+|---|---|---|
+| INEGI Marco Geoestadístico 2024 (blocks, AGEBs, municipalities, states) | The lake mirror on disk | Lake credentials, once |
+| INEGI 2020 census (block attributes) | The lake mirror on disk | Lake credentials, once |
+| Municipal amenities (health, schools, …) | The lake mirror on disk | Lake credentials, once |
+| Overture buildings, places and administrative divisions | Overture's public S3 bucket, at load time | Internet access |
+| OpenStreetMap pedestrian network | Overpass, through `osmnx`, at load time | Internet access |
+| WorldPop population raster (optional) | WorldPop's public REST API, at load time | Internet access |
 
-The shape of a load, once the mirror is in place:
+**The lake mirror is an offline copy.** The private Azure data lake
+(`cfcetlsadls/raw`) is copied once to `data/sources/azure/` with the
+credentials; the loaders then read those files and never contact the lake.
+`docs/AZURE_DATA_INVENTORY.md` documents the expected layout. `data/` is
+git-ignored, so a fresh clone has none of it.
+
+Without the mirror there are no blocks, so no indicator can run on real data;
+§7.1 is the alternative. Overture alone still gives a real municipal boundary
+and real buildings on the map (`overture divisions`, `overture
+aoi-from-division`, `overture extract`, `overture load`; see
+`docs/BOOTSTRAP.md`).
+
+**`scripts/mexicali_run.sh` is the runbook**, as one command. It checks the
+mirror first and names each missing path, drops and rebuilds the database
+named in `DATABASE_URL` (unless `--keep`), keeps the step order that matters,
+and treats the optional sources as non-fatal so a rate-limited Overpass does
+not discard the INEGI load:
 
 ```bash
-python -m apps.cli.app feat seed-types
-python -m apps.cli.app inegi-marco bootstrap --cve-ent 02
-python -m apps.cli.app points bootstrap
-python -m apps.cli.app indicators seed-catalog
-python -m apps.cli.app indicators compute --slug urban_form_block_compactness
+scripts/mexicali_run.sh                  # drops and rebuilds $DATABASE_URL
+scripts/mexicali_run.sh --skip-network   # without OSM: no network-distance indicators
 ```
 
-The indicators a scenario rule changes need a baseline for the rule's inputs.
-After the census, the buildings and the AOI are loaded:
+The steps it runs, for running a part of it or another municipality:
 
 ```bash
-python -m apps.cli.app inegi-censo bootstrap --cve-ent 02 --columns prom_ocup
-python -m apps.cli.app overture block-storeys --aoi-id "$AOI_ID"
-python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
+CLI="uv run python -m apps.cli.app"
+BBOX=-115.70,32.40,-115.20,32.80          # Mexicali's urban core
+
+$CLI data verify-sources                  # mirror paths, Overture S3, WorldPop reachable
+$CLI feat seed-types
+$CLI indicators seed-catalog
+
+# INEGI geometry for Baja California (state 02)
+$CLI inegi-marco bootstrap --cve-ent 02 \
+  --layers areas_estatales,areas_municipales,agebs_urbanas,manzanas_urbanas
+
+# The area of interest: the INEGI municipality polygon. Prints the AOI id.
+$CLI cdmx aoi-from-alcaldia --cve-ent 02 --cve-mun 002 \
+  --name Mexicali --project-name "Mexicali Pilot"
+export AOI_ID=…                           # the aoi_id it printed
+
+# Attributes and destinations
+$CLI inegi-censo bootstrap --cve-ent 02
+$CLI points bootstrap --layers mexicali_amenities
+$CLI overture places --bbox $BBOX --country MX --aoi-id "$AOI_ID" \
+  --output-path data/overture_places_mexicali.parquet
+
+# Buildings (Overture) and the street network (OSM)
+$CLI overture extract --bbox $BBOX --output-path data/overture_buildings_mexicali.parquet
+$CLI overture load --raw-path data/overture_buildings_mexicali.parquet \
+  --source-name "Overture Buildings - Mexicali BBox" --aoi-id "$AOI_ID"
+$CLI network bootstrap --aoi-id "$AOI_ID" --clip-bbox $BBOX
+
+# Membership, after every feature exists; then overlaps
+$CLI aoi compute-features --aoi-id "$AOI_ID"
+$CLI overlap declare-pair --source-context global --source-slug building \
+  --target-context MEX --target-slug block
+$CLI overlap declare-pair --source-context MEX --source-slug block \
+  --target-context MEX --target-slug ageb
+$CLI overlap compute-all --aoi-id "$AOI_ID"
+
+# Baseline of the scenario inputs
+$CLI inegi-censo bootstrap --cve-ent 02 --columns prom_ocup
+$CLI overture block-storeys --aoi-id "$AOI_ID"
+uv run python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
+
+# Indicators, inputs before the indicators that read them
+$CLI indicators compute --slug urban_form_block_compactness --aoi-id "$AOI_ID"
 ```
 
-Household size comes from the census and storeys from Overture where they
-exist; the rest is synthetic, fitted so each block's dwellings equal the
-census count. `scripts/mexicali_run.sh` runs all three (step 9b), and
-`docs/delivery/05_capability_proof.md` §A.2 records what they produced.
+Three ordering rules matter:
+
+- **`aoi compute-features` runs after every load.** Area membership is what
+  AOI-scoped reads, tiles and indicators filter on; a feature loaded after it
+  belongs to no area, and its tiles come back empty.
+- **`--country MX` on `overture places` is not optional.** The Mexicali box
+  crosses the border, and without it a block is reported near a park in
+  California.
+- **Indicators compute inputs first.** The order is the one in
+  `scripts/mexicali_run.sh` step 10: the three urban-form indicators, then
+  planned floors, the edificability family, the four network-distance
+  indicators and the livability score. With the worker running, a run of
+  "what is out of date" on the run dashboard (§8.4) computes all of them in
+  dependency order instead.
+
+The scenario inputs need a baseline, which the "baseline of the scenario
+inputs" block supplies: household size comes from the census and storeys from
+Overture where they exist; the rest is synthetic, fitted so each block's
+dwellings equal the census count. `docs/delivery/05_capability_proof.md` §A.2
+records what they produced.
+
+**WorldPop (optional).** A population raster, fetched from WorldPop (the
+country file, about 1 GB for Mexico, is cached under `data/cache/worldpop/`),
+clipped to the AOI and ingested as a COG:
+
+```bash
+$CLI raster fetch-worldpop --country MEX --year 2020 --aoi-id "$AOI_ID" \
+  --dsn "$DATABASE_URL" --output-path data/worldpop_mexicali_2020_100m.tif
+$CLI raster ingest --raw-path data/worldpop_mexicali_2020_100m.tif \
+  --layer-slug worldpop_mexicali_2020_100m --aggregation-kind extensive \
+  --source-name "WorldPop · MEX · 2020 (100m, Mexicali clip)" \
+  --provider WorldPop --version 2020-100m
+```
+
+`docs/BOOTSTRAP.md` is the longer runbook, including Mexico City, WorldPop and
+rolling forward to a new Overture release.
 
 ## 8. Operating the platform
 
-### 8.1 Inspection
+The four pages share one top bar that links them. Every page reads the API
+through the web application's `/api` proxy; none needs anything but `make dev`.
 
-Inspection goes through the `explore` schema, which exists for humans and is
-never an application dependency:
+### 8.1 Map (`/`)
 
-```bash
-python -m apps.cli.app explore layers
-python -m apps.cli.app explore sources
-python -m apps.cli.app explore feature-stats
-python -m apps.cli.app explore serving-stats
-python -m apps.cli.app explore executor-health
-```
+The map shows one indicator over one area of interest.
 
-### 8.2 Runs
+1. **Pick the area** under *Area*; the map fits to it (`f` refits).
+2. **Pick the indicator** under *Indicator*. The map opens on the first
+   indicator that has values, so it never opens blank. *About this indicator*
+   opens its catalogue entry (§8.3). Where an indicator exists at more than
+   one grain, a toggle switches between them (blocks, AGEBs).
+3. **Read the legend**, on the map. The colour ramp spans the middle 90 % of
+   values, so one outlier cannot flatten it; outside that span colours
+   saturate. Below the ramp, the distribution strip shows the indicator's
+   values across the area (grey bars), the median (dashed rule) and the span
+   the ramp resolves (lighter band). The distribution is computed by the
+   server over the whole area, not from what the map has drawn. An indicator
+   with a **cap** — a distance indicator truncated at, say, 1,500 m, where a
+   reading means "this far or more" — draws capped blocks in a separate cap
+   colour (amber) that belongs to neither end of the ramp, and the legend
+   states the share of blocks at the cap.
+4. **Hover** a block to see its value; **click** it to pin the block
+   inspector on the map. The inspector shows the block's id (click it to
+   select and copy), its value with its **exact rank** among the area's blocks
+   ("Higher than 31% of blocks", "Farther than …" for distances, "At the cap,
+   with …" at the cap), and its other indicator values; click one of those to
+   switch the map to it. `esc` or ✕ closes it.
+5. **Draw a selection** with the circle, rectangle or polygon tool at the
+   top left of the map (`c`, `r`, `p`). The selection card shows how many
+   blocks fall inside and their median, beside the whole area's median.
+   `esc` closes the block inspector first, then clears the selection.
+6. **Layers** lists the spatial layers — buildings, blocks, municipalities,
+   streets and any raster overlays. All are **off by default**: the opening
+   view is the indicator alone. Streets appear from zoom 12.
+7. **Download** the indicator on the map as CSV, GeoJSON or GeoParquet. The
+   files are scoped to the area and grain drawn, not the whole database.
 
-Runs are submitted, observed and controlled through the API and the run
-dashboard at `/ops.html`:
+There is no external basemap, on purpose — no tile provider to depend on and
+no third-party licence to carry. Orientation comes from the platform's own
+street network, published as `global:road` features and served through the
+same tile path as the blocks. The map credits whatever data it is showing,
+bottom-right, from the licence recorded against each loaded source — so a
+real OpenStreetMap network is credited as ODbL requires, and a generated
+territory credits the generator instead.
+
+**On a phone or narrow window.** Below 860 px the panel becomes a drawer that
+starts closed, so the map gets the whole screen; the toggle is top-left, and
+`esc` or a tap outside closes it. Below 768 px the legend becomes a one-line
+strip, and the block inspector and the selection card share one bottom sheet:
+the one opened last is in front.
+
+**Keyboard.** The command palette (`⌘K`, `Ctrl-K`) lists every area,
+indicator, layer, draw mode and page, and is the shortest route to all of
+them.
+
+| Key | |
+|---|---|
+| `⌘K` / `Ctrl-K` | Command palette |
+| `?` | The shortcut list |
+| `\` | Show or hide the panel |
+| `f` | Fit the map to the active area |
+| `r` / `p` / `c` | Draw a rectangle, polygon or circle selection |
+| `esc` | Close the block inspector, then clear the selection |
+
+### 8.2 Scenarios (`/scenarios.html`)
+
+A scenario is a named what-if over a pilot area: rules that change the
+storeys, dwelling size and household size of the blocks inside a drawn area,
+and the indicators those changes recompute.
+
+1. **Pick a pilot.** The table lists every scenario on it side by side, with
+   the baseline city first, on the indicators a rule can change — one number
+   per cell, a total for counts and a median for rates.
+2. **Create a scenario**: type a name under *New scenario name* and submit.
+3. **Select a scenario** (click its row) and pick an indicator. The map draws
+   the scenario's difference from the baseline city — green is an
+   improvement, red is worse, and the legend states which direction is
+   better for that indicator — and the panel lists its rules. The URL records
+   the selection, so a link reopens it.
+4. **Write a rule.** Draw an area with the tools at the map's top left: drag
+   out a circle or rectangle, or click each corner of a polygon and click the
+   last one again to close it. Set *Storeys*, *m² per dwelling* and *People
+   per household*, then *Apply to drawn area*. The storeys field will not
+   exceed what the floor and density ceilings allow. Each rule appears under
+   *Rules*; × removes the area and all its edits.
+5. **Recompute.** This materialises the rules and submits a run that
+   recomputes only what they changed; the worker executes it. The page
+   follows the run and refreshes when it lands; a recompute that takes longer
+   is handed over to the run dashboard (§8.4), where every run is followed.
+6. **Compare to baseline** summarises, in one line, how the chosen indicator
+   under the scenario differs from the baseline.
+7. **Delete** removes the scenario and everything it wrote, after a
+   confirmation.
+
+The same operations are in the CLI (`scenario create`, `set-attribute`,
+`recompute`, `compare`) and the API (`/scenarios`); `scripts/acceptance_run.sh`
+steps 10 and 11 use the CLI.
+
+### 8.3 Catalogue (`/catalog.html`)
+
+What each indicator is and where it comes from.
+
+- **Find an indicator**: search by name, slug or description, and filter by
+  family, kind and grain.
+- **Open one** (click its row) for its definition, the values observed in
+  the active area (percentiles against the declared range, and a histogram),
+  its lineage — the indicators it is computed from and those computed from
+  it — and the datasets upstream of it with their freshness. *Open on map*
+  shows it on the map page; the download links give its values as CSV,
+  GeoJSON or GeoParquet.
+- **Ask what would recompute.** The impact check takes a change — an
+  attribute of a dataset, or a whole dataset — and lists the indicators that
+  would recompute, without submitting anything.
+
+### 8.4 Runs (`/ops.html`)
+
+Every computation — an indicator, a scenario recompute — is a run of units,
+one unit per indicator, executed by the worker.
+
+- **The health strip** at the top says whether a worker is alive. If none
+  is, nothing will run until one is started (`make dev-worker`).
+- **The run list** shows every run with its status and unit counts; filter by
+  status, *Clear* to reset.
+- **Launch a run** under *New run*: recompute *what is out of date*, *what
+  changed* (pick the attributes or datasets that changed), or *indicators I
+  choose*; optionally for one scenario (by id; the baseline if empty) and one
+  area (the whole dataset if none). Before you submit, the form shows what the
+  planner would recompute, so an empty run is visible in advance.
+- **Open a run** for its units — status, duration and in-run prerequisites —
+  and its timeline. The timeline draws each unit as a bar that grows from left
+  to right while it runs, on a time axis that starts at 10 s and doubles each
+  time the run reaches its edge. Rows are ordered by dependency depth and
+  never move. Nothing is predicted: there is no estimated duration, and no
+  progress number other than finished units over total units.
+- **Act on a run.** *Cancel run* stops a live run (it asks for confirmation;
+  a cancelled unit is not resumed). *Rerun N unfinished* submits a new run
+  for the units that did not succeed. *Delete run* forgets a finished run's
+  history; the indicator values it produced are kept.
+
+The same actions through the API:
 
 | Action | Endpoint |
 |---|---|
 | Submit | `POST /jobs` |
+| Preview what would recompute | `POST /jobs/preview` |
 | List, with filters | `GET /jobs` |
 | Detail, including units | `GET /jobs/{run_id}/detail` |
 | Live progress | `GET /jobs/{run_id}/events` (server-sent events) |
 | Cancel | `POST /jobs/{run_id}/cancel` |
 | Re-run | `POST /jobs/{run_id}/rerun` |
+| Delete one finished run, or all | `DELETE /jobs/{run_id}`, `DELETE /jobs` |
 
-There is no numeric progress field anywhere in the system. Progress is
-derivable only as terminal units over total units, and the dashboard computes
-it that way.
+### 8.5 The command line
 
-### 8.3 Command groups
+`uv run python -m apps.cli.app --help` lists everything; each group takes
+`--help` too. Top-level commands:
 
-`python -m apps.cli.app --help` lists them all. The groups are: `explore`,
-`tiles`, `assets`, `feat`, `overlap`, `indicators`, `raster`, `aoi`, `data`,
-`perf`, and the per-source ingest groups `cdmx`, `inegi-marco`, `inegi-censo`,
-`points`, `overture`.
+| Command | What it does |
+|---|---|
+| `status` | Prints the CLI's status |
+| `bootstrap-db` | Creates the application database if needed and migrates it (`--with-test-db` for both). `make migrate` runs it |
+| `verify-schema` | Checks that the canonical schemas, tables and views exist |
+| `evaluate-scenario` | Recomputes the indicators a scenario edit affects |
+
+The seventeen command groups:
+
+| Group | What it holds |
+|---|---|
+| `explore` | Read-only inspection: layers, sources, feature and serving statistics, executor health (§8.6) |
+| `feat` | The feature-type catalogue (`seed-types`) |
+| `inegi-marco` | INEGI Marco Geoestadístico 2024 ingest from the lake mirror |
+| `inegi-censo` | INEGI 2020 census ingest, block grain |
+| `cdmx` | INEGI-derived areas of interest (`aoi-from-alcaldia`, `aoi-from-state`) and the Mexico City open-data layers |
+| `points` | Per-city amenity ingest from the lake mirror |
+| `overture` | Overture buildings, places and divisions; block storeys |
+| `network` | The OSM pedestrian network of an area, loaded and published as roads |
+| `aoi` | Areas of interest: list, delete, compute membership |
+| `overlap` | Feature-to-feature overlap pairs: declare and compute |
+| `raster` | Raster ingest (COG), WorldPop fetch, zonal statistics, derivations |
+| `indicators` | Indicator catalogue (`seed-catalog`), compute, area summaries |
+| `scenario` | Create a scenario, draw rules, recompute, compare |
+| `tiles` | The tile manifest, resolved tile sources, PMTiles export and snapshots |
+| `assets` | The asset graph: lineage, freshness, observation of external sources |
+| `data` | Cross-source checks (`verify-sources`) |
+| `perf` | Performance benchmarks and observability |
+
+### 8.6 Inspection
+
+Inspection goes through the `explore` schema, which exists for humans and is
+never an application dependency:
+
+```bash
+uv run python -m apps.cli.app explore layers
+uv run python -m apps.cli.app explore sources
+uv run python -m apps.cli.app explore feature-stats
+uv run python -m apps.cli.app explore serving-stats
+uv run python -m apps.cli.app explore executor-health
+```
 
 ## 9. Troubleshooting
 
@@ -532,12 +890,15 @@ may create databases and extensions.
 
 ### 9.2 Runs are submitted but nothing computes; or checkpoints vanish
 
-`DATABASE_URL_DIRECT` is unset or points at the pooler. The ops plane needs a
-real server connection: progress streams use `LISTEN`/`NOTIFY`, which cannot
-cross a transaction-mode pooler. When the variable is missing entirely, DBOS
-falls back to a local SQLite file — the process works, and its checkpoints are
-private and unrecoverable. The code raises rather than allow this, so the
-symptom is a loud error naming the variable.
+First, is a worker running? Without one, runs stay queued; the run
+dashboard's health strip says so.
+
+If one is, `DATABASE_URL_DIRECT` is unset or points at the pooler. The ops
+plane needs a real server connection: progress streams use `LISTEN`/`NOTIFY`,
+which cannot cross a transaction-mode pooler. When the variable is missing
+entirely, DBOS would fall back to a local SQLite file — the process works, and
+its checkpoints are private and unrecoverable. The code raises rather than
+allow this, so the symptom is a loud error naming the variable.
 
 ⚠ **Changing `DATABASE_URL_DIRECT` after the process has started does not
 move it.** The ops plane builds a pooled DBOS client the first time it needs
@@ -546,14 +907,6 @@ pointing the variable somewhere else and re-running a command in the same
 process gets a client for the new database — but a long-lived process that
 already launched against the old one keeps its executor and its queues there.
 Restart it.
-
-This was worse until recently: the client was a single global built on first
-use, so the *first* DSN a process ever saw became the database every later
-query read. Nothing raised. `get_run` uses the engine as its existence oracle,
-so a client bound to the wrong database reported a live run as absent, `cancel`
-returned false for a run that was running, and a progress subscription yielded
-`unknown` and closed — three confident wrong answers and no error. It is fixed
-and covered by `tests/unit/test_dbos_client_cache.py`.
 
 ### 9.3 A restarted worker reclaims nothing, or two processes fight over work
 
@@ -572,50 +925,44 @@ that hands out a non-superuser role, migration `r037` cannot run.
 
 ### 9.5 The integration suite drops your schemas
 
-That is by design, and it is why `TEST_DATABASE_URL` must name a database
-ending in `_test` — the fixture refuses anything else. Never point it at a
-database you care about.
+That is by design, and it is why the database `TEST_DATABASE_URL` names must
+contain `test` — the fixture refuses anything else unless
+`REIMAGINA_TEST_DB_ALLOW_NAME` names it exactly. Never point it at a database
+you care about. `make migrate` restores the test database's schemas
+afterwards.
 
 ### 9.6 `npm audit` reports vulnerabilities after installation
 
-It currently reports eight, **none critical**. Only one is reported against
-the production tree, and it does not reach the browser: `devalue` arrives
-through `svelte`, and no `devalue` code appears anywhere in `dist/` — verified
-by searching the built output rather than assumed. The rest are build-time
-only.
+At this revision it reports none. Advisories published later will appear in
+the summary `npm ci` prints. `npm audit` does not distinguish what ships to
+the browser from what only builds it; `docs/THIRD_PARTY_LICENSES.md` does, in
+its `Distribution` column, and that is the first thing to check before acting
+on an entry.
 
-`npm audit` does not distinguish what ships from what builds;
-`docs/THIRD_PARTY_LICENSES.md` does, in its `Distribution` column.
+### 9.7 `make stack-up` fails before any container starts
 
-### 9.7 Path A requires `DATABASE_URL_DIRECT` before the stack will start
+`make stack-up` reads `.env`, and Compose refuses the stack definition at
+configuration time — before any container is created, naming the variable —
+if a variable it requires is unset. Copy `.env.example` to `.env` first and
+keep the Path A block uncommented. In Path A, `DATABASE_URL_DIRECT` must name
+port **5433**, PostgreSQL behind the pooler, not 5432, which is the pooler
+itself.
 
-Martin's service definition interpolates `DATABASE_URL_DIRECT`, so
-`make stack-up` fails at configuration time if it is unset — before any
-container is created. In Path A it must name port **5433**, PostgreSQL
-behind the pooler, not 5432, which is the pooler itself.
+### 9.8 The map draws no tiles
 
-### 9.9bis The map has no tiles and Martin is not running
-
-Nothing is broken; the deployment simply has no tile server at `:3000`. Live
-vector tiles have two servers behind one contract, and the API can serve them
-itself:
+The map asks for tiles at `REIMAGINA_TILE_LIVE_BASE_URL` (§6.2). Under
+`make dev` that is the API (`/api/tiles`) and nothing else needs to run. If
+the API process was started another way, its default is Martin at
+`localhost:3000`; with no Martin running, nothing draws. Restart it under
+`make dev-api`, or set the variable to `/api/tiles`:
 
 ```bash
-REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:8001/tiles python -m apps.api
+REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles uv run python -m apps.api
 ```
 
-That is the whole change. §6.2 explains the choice.
-
-### 9.8 Known verification caveat
-
-The containers themselves were never started in the environment used to verify
-this document: Docker Hub refused anonymous image pulls with HTTP 429. What
-*was* verified there is that the stack definition parses and that every
-variable it requires resolves — `docker compose config` validates clean with a
-complete Path A environment, and the service, image and port mapping in §1 is
-read from that resolved configuration rather than from the file by eye.
-
-Everything else in this document was executed end to end.
+If tiles are requested but empty, the area has no members: run
+`aoi compute-features` after the last load (§7.2). An area outside the loaded
+territory is empty by design — the API answers `204`.
 
 ### 9.9 A dead worker's run is stuck at `running` forever
 
@@ -635,14 +982,14 @@ which executors have stopped publishing liveness for longer than
 itself. So the first thing to check is whether a worker is running at all:
 
 ```bash
-python -m apps.cli.app explore executor-health
+uv run python -m apps.cli.app explore executor-health
 ```
 
 If the dead executor is still listed with a large `heartbeat_age`, no live
 worker has swept it yet — wait one sweep interval. If it is not listed and the
-run is still `running`, the executor died before it ever published liveness,
-which means it was running code older than this feature; restart a worker with
-that same `REIMAGINA_EXECUTOR_ID` and `launch()` will reclaim it directly.
+run is still `running`, the executor died before it ever published liveness;
+restart a worker with that same `REIMAGINA_EXECUTOR_ID` and `launch()` will
+reclaim it directly.
 
 ⚠ **Do not lower `REIMAGINA_EXECUTOR_STALE_S` to make the sweep react faster.**
 The window must stay at least 4x the heartbeat interval, and startup refuses a
@@ -675,54 +1022,69 @@ GROUP BY 1, 2, 3 ORDER BY 1, 2;
 Or cancel the runs and resubmit — writes are replace-in-place, so a
 resubmission is safe.
 
+### 9.10 The container stack will not start, or starts slowly
+
+- **A port is taken.** The stack publishes fixed host ports — `5432`
+  (pooler), `5433` (PostgreSQL), `3000` (Martin) and `3001` (snapshots). A
+  host PostgreSQL already on `5432` makes the stack fail to start. Stop it, or
+  use Path B with that PostgreSQL instead.
+- **Apple silicon.** The PostgreSQL + PostGIS + pgRouting image is published
+  for `amd64` only, so on an ARM Mac Docker runs it under emulation. It works;
+  it is slower than a native PostgreSQL, which is a reason to prefer Path B
+  there.
+- **Credentials.** The pooler authenticates with SCRAM against the role the
+  stack creates from `POSTGRES_USER` and `POSTGRES_PASSWORD`. A password
+  changed in `POSTGRES_PASSWORD` but not in the DSNs (or the reverse) is
+  refused — change all six together (§3.1). A password changed after the
+  first `make stack-up` does not reach the existing data volume; remove the
+  volume (`docker compose -f infra/docker/docker-compose.yml down -v`, which
+  deletes the database) or change the role's password in PostgreSQL.
+
 ## 10. Appendix — a verified clean install
 
-The sequence below was executed in a fresh clone, in this order, and each step
-is reported with its actual result.
+The sequence below was executed in a fresh checkout of the delivered
+revision, in this order, and each step is reported with its actual result.
 
 | Step | Command | Result |
 |---|---|---|
-| 1 | `cp .env.example .env` | OK |
-| 2 | `make install` | OK |
-| 3 | `make migrate` | Both databases created and migrated to `r050`; 25 tables in `curated_geo` |
-| 3b | `python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
-| 4 | `make dev-api` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200 |
-| 5 | `make dev-web` | Vite ready; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
-| 6 | `pytest tests/unit tests/contract` | 1,013 passed |
-| 7 | `pytest tests/integration` | 525 passed, 1 skipped |
-| 8 | `pytest tests/conformance` | 21 passed, 1 skipped |
-| 8b | `pytest tests/performance` | 6 passed, 1 skipped |
-| 9 | `pytest tests/unit tests/contract tests/integration tests/conformance` | 1,559 passed, 2 skipped |
-| 10 | `cd apps/web && npm test` | 325 passed |
-| 11 | `REIMAGINA_E2E=1 pytest tests/e2e` | 31 passed, in a real browser against both servers |
+| 1 | `cp .env.example .env` (Path B, §3.1) | OK |
+| 2 | `make install` | OK; `npm ci` reports 0 vulnerabilities |
+| 3 | `make migrate` | Both databases created and migrated to `r051`; 25 tables in `curated_geo` |
+| 3b | `uv run python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
+| 4 | `make dev API_PORT=8057 WEB_PORT=5197` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
+| 5 | `make test` | 1,025 passed |
+| 6 | `make test-integration` | 548 passed, 1 skipped |
+| 7 | `make test-conformance` | 21 passed, 1 skipped |
+| 8 | `uv run pytest tests/performance` | 6 passed, 1 skipped |
+| 9 | `make test-web` | 401 passed (28 files) |
+| 10 | `make build-web` | OK |
+| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 27 s |
+| 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 16 s; 2 passed |
+| 13 | `make test-e2e` | <<E2E>> of 33 passed, in a real browser against both servers |
 
-Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3. CI pins
-PostGIS 3.4 and pgRouting 3.6.1; the schema is identical across both.
+Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3, with
+Python 3.12.11 (from `uv`) and Node.js 24.22.2. CI and the container stack use
+PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1; the schema is identical
+across both.
 
-Three things about this run differ from a fresh machine, and are stated rather
-than smoothed over. It used Path B (§3.1) with the databases named
-`reimagina_install` and `reimagina_install_test`, because the machine's other
-work already uses the default names and the integration suite drops schemas
-(§9.5). The API and Vite ran on ports 8041 and 5193 (`API_PORT`, `WEB_PORT`),
-because 8001 and 5173 were in use. And step 11 ran after loading the generated
-territory (§7.1, `scripts/acceptance_run.sh`) with tiles served by the API
-(`REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles`, §6.2): the browser suite asserts
-that streets draw and that the legend shows a distribution, and an empty
-database with no tile server has neither — on it those two tests fail and the
-other 29 pass.
+Three things about this run differ from a fresh machine, and are stated
+rather than smoothed over. It used Path B (§3.1) with the databases named
+`reimagina_wse_app_test` and `reimagina_wse_test`, because the machine's
+other work already uses the default names and the integration suite drops
+schemas (§9.5). The API and Vite ran on ports 8057 and 5197 (`API_PORT`,
+`WEB_PORT`, §5), because 8001 and 5173 were in use. And step 13 ran after
+loading the generated territory (§7.1): the browser suite asserts on what the
+map draws and on the legend's distribution, and an empty database has
+neither.
 
-Step 9 is the whole tree in one process, and it is listed separately because
-it is a different assertion from steps 6–8 run in sequence. CI runs each suite
-as its own process, so nothing there exercises state cached across suites — and
-a reader's first instinct is `pytest`, not four invocations. One such leak
-existed and is fixed (`dbos_orchestrator._client()` cached a client against
-the first DSN the process saw; see §9.2). The two skips are one integration test that needs a database reached through a
-transaction-mode pgbouncer (`REIMAGINA_POOLED_TEST_DSN`), and one conformance
-test that does not apply to the synchronous orchestrator, which finishes a run
-before `submit_run` returns. On a machine whose `ogr2ogr` lacks the PMTiles
-driver (GDAL older than 3.8) one more integration test skips.
+The skips: one integration test needs a database reached through a
+transaction-mode PgBouncer (`REIMAGINA_POOLED_TEST_DSN`); one conformance
+test does not apply to the synchronous orchestrator, which finishes a run
+before `submit_run` returns; one performance test benchmarks overlaps on the
+real Mexico City dataset and skips without it. On a machine whose `ogr2ogr` lacks the PMTiles driver (GDAL
+older than 3.8) one more integration test skips.
 
 The database-backed suites are run with `REIMAGINA_REQUIRE_DB=1`. Without it
-`pytest` exits 0 when every database test *skips*, and "322 skipped, 6 passed"
-reads as success in every summary anyone looks at. With it, an unreachable
-database fails instead of skipping.
+`pytest` exits 0 when every database test *skips*, and a summary of skips
+reads as success to anyone who looks only at the exit code. With it, an
+unreachable database fails instead of skipping.
