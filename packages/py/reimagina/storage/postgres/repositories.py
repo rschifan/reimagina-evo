@@ -1787,16 +1787,13 @@ class PostgresServingReader:
         # uses DE-9IM exclusive-boundary semantics — a centroid that
         # lands EXACTLY on the polygon boundary is excluded. For
         # grid-aligned manzanas whose ``ST_PointOnSurface`` can fall
-        # on a shared block edge, that produces silent undercount. The
-        # client-side ray-cast PIP in selection-filter.ts is also
-        # ambiguous at the boundary, so the two implementations could
-        # disagree on the same polygon. ST_Covers is the standard
-        # PostGIS recommendation for inclusive containment.
+        # on a shared block edge, that produces silent undercount.
+        # ST_Covers is the standard PostGIS recommendation for inclusive
+        # containment.
         #
         # Trade-off: features that straddle the boundary count if
-        # their centroid is inside or on the boundary, miss otherwise.
-        # Same approximation the legacy client-side path used and the
-        # same one humans intuit as "did the circle catch this?".
+        # their centroid is inside or on the boundary, miss otherwise —
+        # the approximation humans intuit as "did the circle catch this?".
         #
         # Bounded by aoi_id so a Mexicali selection doesn't
         # accidentally walk CDMX features. type_slug = ANY(%s) lets

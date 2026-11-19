@@ -189,11 +189,10 @@ class IndicatorResultRepository(Protocol):
 
         The histogram is server-side rather than derived from what the map
         has rendered, and that is a constraint rather than a preference:
-        ``selection-metrics`` in the web app abandoned
-        ``queryRenderedFeatures`` precisely because it "silently undercounted
-        whenever the renderer hadn't loaded the relevant tiles". A
-        distribution that changes shape while tiles load is worse than none,
-        because a reader cannot tell which shape was the real one.
+        ``queryRenderedFeatures`` sees only the tiles the renderer has
+        loaded, so it undercounts until they arrive. A distribution that
+        changes shape while tiles load is worse than none, because a reader
+        cannot tell which shape was the real one.
         """
         ...
 

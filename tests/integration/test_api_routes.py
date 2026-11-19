@@ -358,10 +358,9 @@ class TestStatsHistogram:
     a pattern without letting anyone place a value inside it.
 
     ⚠ Server-side by necessity, not preference. The obvious client
-    implementation is `queryRenderedFeatures`, and `selection-metrics`
-    already abandoned exactly that because it "silently undercounted whenever
-    the renderer hadn't loaded the relevant tiles". A histogram that changes
-    shape while tiles load is worse than none, because a reader cannot tell
+    implementation is `queryRenderedFeatures`, which sees only the tiles the
+    renderer has loaded and so undercounts until they arrive. A histogram that
+    changes shape while tiles load is worse than none, because a reader cannot tell
     which shape was the real one.
     """
 
