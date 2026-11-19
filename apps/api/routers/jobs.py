@@ -116,10 +116,6 @@ class UnitDetail(BaseModel):
     # it — that input was already materialised — so showing the whole graph
     # would misrepresent why a unit started when it did.
     depends_on: list[str] = []
-    # How long this indicator took on its last successful run on the same AOI,
-    # before this run was submitted (``OpsRunReader.expected_durations``). The
-    # page shows progress against it; None means no history to compare with.
-    expected_ms: int | None = None
 
 
 class RunDetailResponse(BaseModel):
@@ -128,7 +124,7 @@ class RunDetailResponse(BaseModel):
     server_now: datetime
     # Per-worker unit concurrency, not multiplied by live workers: heartbeats
     # are current-only, so that product would change mid-run and could not be
-    # rebuilt for a finished one. With more workers a run beats its forecast.
+    # rebuilt for a finished one.
     unit_slots: int = 1
 
 
@@ -802,14 +798,12 @@ def get_run_detail(
         return _detail_before_envelope(conn, run_id)
     units = reader.list_units_detailed(run_id)
     within = {u["indicator"] for u in units}
-    expected = reader.expected_durations(run_id)
     return RunDetailResponse(
         run=RunRow(**row),
         units=[
             UnitDetail(
                 **unit,
                 depends_on=_prerequisites(unit["indicator"], within),
-                expected_ms=expected.get(unit["indicator"]),
             )
             for unit in units
         ],

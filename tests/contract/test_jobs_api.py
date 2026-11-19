@@ -256,9 +256,8 @@ def test_events_404s_for_an_unknown_run(monkeypatch):
 class _FakeOpsReader:
     """Records what the route asked for, so the binding can be asserted."""
 
-    def __init__(self, runs=None, expected=None):
+    def __init__(self, runs=None):
         self.runs = runs or []
-        self.expected = expected or {}
         self.calls: list[dict] = []
 
     def list_runs(self, *, statuses=None, limit=50, offset=0):
@@ -285,9 +284,6 @@ class _FakeOpsReader:
                 "completed_at": "2026-08-20T10:00:09+00:00",
             }
         ]
-
-    def expected_durations(self, run_id):
-        return self.expected
 
     def list_executor_health(self):
         return [
@@ -460,11 +456,11 @@ def test_run_detail_carries_unit_timings(monkeypatch):
     assert unit["started_at"] and unit["completed_at"]
 
 
-def test_run_detail_carries_expected_ms_and_unit_slots(monkeypatch):
+def test_run_detail_carries_unit_slots_and_no_prediction(monkeypatch):
+    """The timeline predicts nothing: bars grow on a doubling axis, so the
+    detail carries the slot count and no per-unit duration estimate."""
     monkeypatch.setenv("REIMAGINA_UNIT_CONCURRENCY", "8")
-    reader = _FakeOpsReader(
-        [_run_row()], expected={"urban_form_block_compactness": 5000}
-    )
+    reader = _FakeOpsReader([_run_row()])
     reader.list_units_detailed = lambda run_id: [
         {
             "indicator": slug,
@@ -481,10 +477,7 @@ def test_run_detail_carries_expected_ms_and_unit_slots(monkeypatch):
     app.dependency_overrides.clear()
 
     assert body["unit_slots"] == 8
-    assert {u["indicator"]: u["expected_ms"] for u in body["units"]} == {
-        "urban_form_block_compactness": 5000,
-        "urban_form_block_composite": None,
-    }
+    assert all("expected_ms" not in u for u in body["units"])
 
 
 def test_run_detail_stamps_server_now_before_reading_units(monkeypatch):
@@ -547,8 +540,6 @@ def test_run_detail_falls_back_to_the_port_before_the_envelope_exists(monkeypatc
     # The engine's creation time, not this request's clock — otherwise a run
     # queued for hours reads as 0.0 s old on every poll.
     assert resp.json()["run"]["submitted_at"].startswith("2026-08-20T10:00:00")
-    # No AOI reaches this path, so no estimate either.
-    assert resp.json()["units"][0]["expected_ms"] is None
     # Prerequisites do: without them every row sits at depth 0 here and moves
     # once the envelope row appears.
     deps = {u["indicator"]: u["depends_on"] for u in resp.json()["units"]}
