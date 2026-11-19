@@ -35,6 +35,15 @@ function emptyStyle(): StyleSpecification {
 }
 
 
+/** The lowest zoom at which the indicator overlay tile function serves tiles. */
+export const OVERLAY_MIN_ZOOM = 8;
+
+
+export function clampZoom<T extends { zoom: number }>(camera: T, floor: number): T {
+  return { ...camera, zoom: Math.max(camera.zoom, floor) };
+}
+
+
 export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   // Prefer the features bbox over the AOI polygon bbox. For irregular
   // AOIs (Mexicali muni — mostly desert with the urban core packed in
@@ -47,16 +56,17 @@ export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   if (!target) return;
   const [minLon, minLat, maxLon, maxLat] = target;
   // ``maxZoom`` caps the fit so a tiny AOI doesn't slingshot past
-  // street level (z=14 keeps analysis-unit layers above their
-  // minzoom=8 with comfortable density). ``padding`` reserves
-  // viewport edges so the polygon isn't clipped behind UI chrome.
-  map.fitBounds(
+  // street level; ``padding`` keeps the polygon clear of UI chrome. The
+  // floor keeps a wide AOI or a phone screen where the overlay draws.
+  const camera = map.cameraForBounds(
     [
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    { padding: 60, duration: 700, maxZoom: 14 },
+    { padding: 60, maxZoom: 14 },
   );
+  if (!camera) return;
+  map.easeTo({ ...clampZoom({ ...camera, zoom: camera.zoom ?? OVERLAY_MIN_ZOOM }, OVERLAY_MIN_ZOOM), duration: 700 });
 }
 
 

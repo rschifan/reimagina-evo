@@ -98,10 +98,8 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
       16, 1.8,
       18, 3.0,
     ],
-    // On by default, alone among the optional layers. Orientation is the
-    // problem this solves, and a context layer nobody switches on provides
-    // none.
-    visible: true,
+    // Off like every spatial layer; the opening view is the indicator alone.
+    visible: false,
     // ⚠ 12 matches `serving_geo.get_tile`'s role gate exactly: roads carry
     // `role = 'infrastructure'`, which the function serves only from z12
     // (`WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')`). Measured
@@ -120,11 +118,9 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    // On by default now that r038 bounds the cost. Previously this layer
-    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
-    // was the only thing keeping the map usable; with footprints served
-    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
-    visible: true,
+    // Off by default. r038 bounds the cost (footprints served only from
+    // z14; below that a request is a 204 and a z14 tile is ~31 KB).
+    visible: false,
     // z14 because get_tile (migration r038) stops serving building
     // footprints below it — a request at 11-13 returns an empty tile, so a
     // lower floor here only buys wasted round-trips.
@@ -159,7 +155,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.01,
     lineColor: "#9ca3af",
     lineWidth: 0.6,
-    visible: true,
+    visible: false,
     // z=8 is the floor the tile function honours for analysis_unit
     // features (r010 caps role='analysis_unit' at z>=8). The
     // simplification ladder collapses sub-50m manzanas at z<10, so in
@@ -181,7 +177,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     sourceName: "baseline_municipalities",
     sourceLayerName: "features",
     typeSlug: "municipality",
-    label: "Municipalities (alcaldías)",
+    label: "Municipalities",
     fillColor: "#475569",
     fillOpacity: 0.30,
     lineColor: "#e5e7eb",
@@ -399,7 +395,7 @@ function rasterSourceName(layerId: string): string {
 }
 
 
-function _baselineMinzoomForGrain(typeSlug: string | null | undefined): number | undefined {
+export function _baselineMinzoomForGrain(typeSlug: string | null | undefined): number | undefined {
   // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches.
   // Used by aggregation overlays so a block-grain choropleth lights up
   // at the same zoom the underlying blocks are visible — the catalog
@@ -805,11 +801,11 @@ interface RasterGroup {
 }
 
 
-function groupRastersAndOverlays(sources: TileSource[]): RasterGroup[] {
+export function groupRastersAndOverlays(sources: TileSource[]): RasterGroup[] {
   const bySlug = new Map<string, RasterGroup>();
   const orphans: RasterGroup = {
     parentSlug: "__orphans__",
-    parentLabel: "Derived overlays (no parent raster)",
+    parentLabel: "",  // listed directly, no heading
     raster: null,
     aggregations: [],
   };
@@ -930,14 +926,14 @@ export function wireRasterToggles(
   };
 
   for (const group of groups) {
-    const details = document.createElement("details");
+    const details = document.createElement(group.parentLabel ? "details" : "div");
     details.className = "raster-group";
-    details.open = true;
+    if (details instanceof HTMLDetailsElement) details.open = true;
 
     const summary = document.createElement("summary");
     summary.className = "raster-group-summary";
     summary.textContent = group.parentLabel;
-    details.append(summary);
+    if (group.parentLabel) details.append(summary);
 
     if (group.raster) {
       const rasterLayerId = `${rasterSourceName(group.raster.layer_id)}__raster`;
