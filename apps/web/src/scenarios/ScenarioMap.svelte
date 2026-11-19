@@ -85,14 +85,11 @@
         }
         if (!map) return;
         tooltips = new TooltipController(map, map.getContainer());
-        installInputLayers(map, catalog, tooltips, ws.aoiId);
-        // Buildings are the map page's business; here they bury the blocks
-        // a rule selects. Streets stay: with no basemap they are the only
-        // way to tell where you are.
-        if (map.getLayer("baseline_buildings__fill")) {
-          map.setLayoutProperty("baseline_buildings__fill", "visibility", "none");
-          map.setLayoutProperty("baseline_buildings__line", "visibility", "none");
-        }
+        // This page has no layer toggles, so it picks what starts on: streets
+        // only. With no basemap they are the only way to tell where you are;
+        // everything else stays off, buildings included, since they bury the
+        // blocks a rule selects.
+        installInputLayers(map, catalog, tooltips, ws.aoiId, (layer) => layer.typeSlug === "road");
         selection = enableSelection(map);
         selection.subscribe((sel) => {
           ws.drawn = sel?.feature ?? null;
@@ -157,10 +154,9 @@
       // whole: drawing it would put one scenario's change on another's map.
       if (myToken !== renderToken || !map) return;
       if (delta) {
-        activateIndicator(
-          map, config, current, rampDomainFromStats(null, current),
-          tooltips, aoiId, selection, grain, scenarioId, delta,
-        );
+        activateIndicator(map, config, current, rampDomainFromStats(null, current), {
+          tooltips, aoiId, grain, scenarioId, delta,
+        });
         renderDeltaLegend(legend, current, delta);
         mapNote =
           `Change in ${current.name} against the baseline city: ` +
@@ -183,8 +179,10 @@
     }
     if (myToken !== renderToken || !map) return;
     const domain = rampDomainFromStats(stats, current);
-    activateIndicator(map, config, current, domain, tooltips, aoiId, selection, grain, scenarioId);
-    renderLegend(legend, current, domain, stats?.histogram ?? null);
+    activateIndicator(map, config, current, domain, { tooltips, aoiId, grain, scenarioId });
+    renderLegend(
+      legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
+    );
     mapNote = stats && stats.count === 0 ? noValuesNote(current.name, scenarioId !== null) : "";
   }
 
@@ -245,7 +243,7 @@
         {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
           <a
             class="rounded border border-line px-2 py-0.5 hover:text-foreground"
-            href={downloadUrl(indicator.slug, format, ws.selectedId)}
+            href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
             rel="noopener"
           >
             {label}

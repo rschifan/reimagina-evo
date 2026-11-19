@@ -59,22 +59,9 @@ export function getStats(
   );
 }
 
-/** Download URL for one indicator's values, scoped like the stats beside it.
- *  Not fetched — handed to an anchor so the browser streams it and the API
- *  sets Content-Disposition. Asks for the API's ceiling rather than its
- *  100,000 default, which cut larger AOIs short without saying so. */
-export const DOWNLOAD_ROW_CAP = 500_000;
-
-export function downloadUrl(
-  slug: string,
-  format: "csv" | "geojson" | "parquet",
-  scope: { aoiId: string | null; grain: string | undefined },
-): string {
-  const p = new URLSearchParams({ limit: String(DOWNLOAD_ROW_CAP) });
-  if (scope.aoiId) p.set("aoi_id", scope.aoiId);
-  if (scope.grain) p.set("feature_type", scope.grain);
-  return `/api/indicators/${encodeURIComponent(slug)}/values.${format}?${p}`;
-}
+// Shared with the map page, so a catalog download and a map download of the
+// same view are the same file.
+export { DOWNLOAD_ROW_CAP, downloadUrl } from "../api";
 
 
 export interface DependencyEdge {

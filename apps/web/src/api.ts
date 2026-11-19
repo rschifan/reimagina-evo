@@ -23,6 +23,15 @@ export interface IndicatorSummary {
   applies_to: string[];
   valid_min: number | null;
   valid_max: number | null;
+  /** What the indicator measures and how to read it. */
+  description: string | null;
+  /** Null for indicators no family claims, which today are the composites. */
+  model_family: string | null;
+  /** A bound that means "beyond measurement" (the distance indicators report
+   *  1500 m for an unreachable block); ``null`` when there is none. Unlike
+   *  ``valid_min``/``valid_max``, which only validate, this changes how a value
+   *  reads and paints. */
+  cap_value: number | null;
 }
 
 export interface TileSource {
@@ -77,6 +86,10 @@ export interface IndicatorValueStats {
   max: number | null;
   /** Over the same rows as ``count``; ``null`` when there are none. */
   sum: number | null;
+  /** Rows ``>= cap_value`` over the same rows as ``count``; ``null`` when the
+   *  indicator has no cap. Optional only so fixtures written before the field
+   *  still type; the API always sends it. */
+  count_at_cap?: number | null;
   /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
   histogram: ValueHistogram | null;
 }
@@ -160,6 +173,34 @@ export function getIndicatorStats(
   );
 }
 
+/** One feature's value for one indicator, with its exact rank among the
+ *  AOI's features of the same grain (`count` 0 when there are none). */
+export interface FeatureIndicatorValue {
+  slug: string;
+  name: string;
+  unit: string | null;
+  cap_value: number | null;
+  value: number;
+  count_below: number;
+  count_equal: number;
+  count: number;
+}
+
+/** Every current indicator value of one feature; `[]` when it has none. */
+export function getFeatureIndicators(
+  featureId: string,
+  options: { aoi_id?: string; scenario_id?: string; signal?: AbortSignal } = {},
+): Promise<FeatureIndicatorValue[]> {
+  const params = new URLSearchParams();
+  if (options.aoi_id) params.set("aoi_id", options.aoi_id);
+  if (options.scenario_id) params.set("scenario_id", options.scenario_id);
+  const qs = params.toString();
+  return jsonRequest<FeatureIndicatorValue[]>(
+    `/features/${encodeURIComponent(featureId)}/indicators${qs ? `?${qs}` : ""}`,
+    { signal: options.signal },
+  );
+}
+
 /** A credit line the licence of some loaded source requires. */
 export interface AttributionRow {
   provider: string;
@@ -228,42 +269,44 @@ export interface WithinPolygonResponse {
 }
 
 
-export async function fetchMetricsWithinPolygon(
+/** Features of each type intersecting ``polygon``. POST, not GET: the polygon
+ *  does not fit a query string, and a GET cached by URL would answer a redrawn
+ *  shape at the same vertices with a stale 304. */
+export function fetchMetricsWithinPolygon(
   body: WithinPolygonRequest,
   init: { signal?: AbortSignal } = {},
 ): Promise<WithinPolygonResponse> {
-  // POST not GET because the polygon payload doesn't fit cleanly in a
-  // query string and (more importantly) browsers cache GETs by URL —
-  // we don't want a re-drawn polygon at the same vertices to read a
-  // stale 304. POST + AbortController is also the standard pattern
-  // for "supersede an in-flight request when a newer selection
-  // arrives".
-  const response = await fetch(`${API_BASE}/metrics/within-polygon`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: init.signal,
-  });
-  if (!response.ok) {
-    throw new ApiError(
-      `${response.status} ${response.statusText} on /metrics/within-polygon`,
-      response,
-    );
-  }
-  return response.json() as Promise<WithinPolygonResponse>;
+  return jsonRequest<WithinPolygonResponse>("/metrics/within-polygon", { body, signal: init.signal });
 }
 
 
+/** An indicator's ``/stats`` numbers over the features whose centroid lies in
+ *  ``polygon`` (no histogram). */
+export function indicatorWithinPolygon(
+  body: { aoi_id: string; polygon: GeoJSON.Polygon; indicator_slug: string; feature_type?: string },
+  init: { signal?: AbortSignal } = {},
+): Promise<IndicatorValueStats> {
+  return jsonRequest<IndicatorValueStats>("/metrics/indicator-within-polygon", { body, signal: init.signal });
+}
+
+
+/** Asked for on every download: the API's ceiling rather than its 100,000
+ *  default, which cut larger AOIs short without saying so. */
+export const DOWNLOAD_ROW_CAP = 500_000;
+
+/** Download URL for one indicator's values, scoped like the map or stats
+ *  beside it. Not fetched — handed to an anchor so the browser streams it and
+ *  the API sets Content-Disposition. */
 export function downloadUrl(
   slug: string,
   format: "csv" | "geojson" | "parquet",
-  scenarioId?: string | null,
+  scope: { aoiId: string | null; grain: string | null; scenarioId?: string | null },
 ): string {
-  const qs = scenarioId ? `?scenario_id=${encodeURIComponent(scenarioId)}` : "";
-  return `${API_BASE}/indicators/${encodeURIComponent(slug)}/values.${format}${qs}`;
+  const p = new URLSearchParams({ limit: String(DOWNLOAD_ROW_CAP) });
+  if (scope.aoiId) p.set("aoi_id", scope.aoiId);
+  if (scope.grain) p.set("feature_type", scope.grain);
+  if (scope.scenarioId) p.set("scenario_id", scope.scenarioId);
+  return `${API_BASE}/indicators/${encodeURIComponent(slug)}/values.${format}?${p}`;
 }
 
 

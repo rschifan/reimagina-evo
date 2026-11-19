@@ -10,6 +10,15 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
+class FeatureNotFound(LookupError):
+    """A feature id that names no feature.
+
+    Raised so a caller can catch *this* and not ``LookupError``, which also
+    catches the ``KeyError``/``IndexError`` of a genuine defect and would
+    report it as "unknown feature". Same reasoning as ``ScenarioNotFound``.
+    """
+
+
 class IndicatorCatalogRepository(Protocol):
     """CRUD for indicator_catalog + indicator_dependency rows."""
 
@@ -27,6 +36,7 @@ class IndicatorCatalogRepository(Protocol):
         unit: str | None = None,
         valid_min: float | None = None,
         valid_max: float | None = None,
+        cap_value: float | None = None,
     ) -> str: ...
 
     def get_indicator(self, slug: str) -> dict[str, Any] | None: ...
@@ -137,6 +147,23 @@ class IndicatorResultRepository(Protocol):
         """
         ...
 
+    def feature_indicator_ranks(
+        self,
+        *,
+        feature_id: str,
+        aoi_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One feature's current values with their exact rank.
+
+        Each dict: `slug, name, unit, cap_value, value, count_below,
+        count_equal, count`. The counts are over the same population
+        `value_stats` describes (same indicator, the feature's own type, same
+        AOI and scenario scoping). Raises `FeatureNotFound` when the feature
+        does not exist; a feature without values yields `[]`.
+        """
+        ...
+
     def value_stats(
         self,
         *,
@@ -145,17 +172,24 @@ class IndicatorResultRepository(Protocol):
         feature_type: str | None = None,
         aoi_id: str | None = None,
         bins: int = 0,
+        polygon_geojson: str | None = None,
     ) -> dict[str, Any]:
         """Summary statistics for a numeric indicator's current values.
 
         Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`, `sum`
-        (all `None` when there are no rows). Intended to drive the
+        (all `None` when there are no rows) and `count_at_cap`: the rows with
+        `value >= cap_value` from the catalog, over the same rows as `count`
+        (`None` when the indicator has no cap). Intended to drive the
         frontend's choropleth colour ramp from the real distribution
         rather than the catalog's safety bounds.
 
         ``aoi_id`` scopes the stats to that AOI's features only via
         ``curated_geo.aoi_feature``. Multi-site UIs need this so
         Mexicali's colour ramp doesn't get pulled by CDMX's distribution.
+
+        ``polygon_geojson`` (requires ``aoi_id``) keeps only features whose
+        centroid the GeoJSON polygon covers, as ``count_features_within_polygon``
+        does.
 
         ``bins`` greater than zero adds a ``histogram`` key:
         ``{bins, lo, hi, width, counts}``, equal-width over the **full**
@@ -164,11 +198,10 @@ class IndicatorResultRepository(Protocol):
 
         The histogram is server-side rather than derived from what the map
         has rendered, and that is a constraint rather than a preference:
-        ``selection-metrics`` in the web app abandoned
-        ``queryRenderedFeatures`` precisely because it "silently undercounted
-        whenever the renderer hadn't loaded the relevant tiles". A
-        distribution that changes shape while tiles load is worse than none,
-        because a reader cannot tell which shape was the real one.
+        ``queryRenderedFeatures`` sees only the tiles the renderer has
+        loaded, so it undercounts until they arrive. A distribution that
+        changes shape while tiles load is worse than none, because a reader
+        cannot tell which shape was the real one.
         """
         ...
 

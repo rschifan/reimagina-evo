@@ -106,13 +106,6 @@ export function slugFromHash(hash: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-/** The catalog's unit codes as words: `buildings_per_ha` → `buildings / ha`,
- *  `ratio_0_1` → `ratio 0–1`. */
-export function unitLabel(unit: string | null): string {
-  if (!unit) return "unitless";
-  return unit.replace(/_0_1$/, " 0–1").replaceAll("_per_", " / ").replaceAll("_", " ");
-}
-
 /**
  * Plain warnings when the observed values pile up on a declared bound.
  *

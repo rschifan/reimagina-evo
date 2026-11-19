@@ -43,7 +43,8 @@ import type { SelectionController, SelectionGeometry } from "./selection";
 // dark stroke matches the app background so the dot reads as "raised"
 // against whatever feature colour sits under it.
 const SOURCE_ID = "__selection_handle";
-const LAYER_ID = "__selection_handle__dot";
+export const SELECTION_HANDLE_LAYER_ID = "__selection_handle__dot";
+const LAYER_ID = SELECTION_HANDLE_LAYER_ID;
 const RADIUS = 8;
 const COLOR = "#22d3ee";
 const OUTLINE_COLOR = "#0b1220";

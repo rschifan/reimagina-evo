@@ -616,9 +616,10 @@ def _resolve_edits(
 
     ``ST_Covers(e.geometry, f.geometry_centroid)`` is the platform's one answer
     to "did my drawn shape catch this?" — the same predicate
-    ``count_features_within_polygon`` uses (r027) and the same one
-    ``selection-filter.ts`` mirrors client-side, so the count the user saw
-    while drawing is the count they get here. ``ST_Covers`` rather than
+    ``count_features_within_polygon`` uses (r027), which the map's selection
+    card counts through ``POST /metrics/within-polygon`` and
+    ``/metrics/indicator-within-polygon``, so the count the user saw while
+    drawing is the count they get here. ``ST_Covers`` rather than
     ``ST_Contains`` because a grid-aligned manzana's ``ST_PointOnSurface`` can
     land exactly on a shared block edge, which DE-9IM's exclusive boundary
     would silently drop.

@@ -330,3 +330,76 @@ def test_within_polygon_includes_boundary_touching_centroid(
     )
     assert response.status_code == 200
     assert response.json() == {"results": [{"type_slug": "block", "count": 1}]}
+
+
+@pytest.fixture
+def indicator_in_both_aois(conn, two_aois_two_blocks):
+    """The compactness indicator computed for both blocks (CDMX + Mexicali)."""
+    from reimagina.indicators.catalog import seed_catalog
+    from reimagina.indicators.compactness import compute_block_compactness
+
+    seed_catalog(conn)
+    compute_block_compactness(conn, code_version="test")
+    return {**two_aois_two_blocks, "slug": "urban_form_block_compactness"}
+
+
+def _indicator_within(client, fixture, polygon, **overrides):
+    body = {
+        "aoi_id": fixture["aoi_cdmx"],
+        "polygon": polygon,
+        "indicator_slug": fixture["slug"],
+        **overrides,
+    }
+    return client.post("/metrics/indicator-within-polygon", json=body)
+
+
+def test_indicator_within_polygon_scopes_stats_to_the_selection(
+    client, indicator_in_both_aois
+):
+    response = _indicator_within(
+        client, indicator_in_both_aois, _POLYGON_OVER_CDMX_BLOCK
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["p50"] is not None
+    assert body["histogram"] is None
+    # The Mexicali block is outside the polygon and the AOI: still one row.
+    assert body["min"] == body["max"]
+
+
+def test_indicator_within_polygon_empty_selection_has_no_percentiles(
+    client, indicator_in_both_aois
+):
+    response = _indicator_within(client, indicator_in_both_aois, _POLYGON_OVER_OCEAN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 0
+    assert body["min"] is None and body["p50"] is None and body["max"] is None
+
+
+def test_indicator_within_polygon_respects_aoi_scope(client, indicator_in_both_aois):
+    response = _indicator_within(
+        client,
+        indicator_in_both_aois,
+        _POLYGON_OVER_CDMX_BLOCK,
+        aoi_id=indicator_in_both_aois["aoi_mex"],
+    )
+    assert response.json()["count"] == 0
+
+
+def test_indicator_within_polygon_rejects_non_polygon(client, indicator_in_both_aois):
+    response = _indicator_within(
+        client, indicator_in_both_aois, {"type": "Point", "coordinates": [-99.1, 19.4]}
+    )
+    assert response.status_code == 422
+
+
+def test_indicator_within_polygon_unknown_slug_is_404(client, indicator_in_both_aois):
+    response = _indicator_within(
+        client,
+        indicator_in_both_aois,
+        _POLYGON_OVER_CDMX_BLOCK,
+        indicator_slug="no_such_indicator",
+    )
+    assert response.status_code == 404

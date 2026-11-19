@@ -4,7 +4,8 @@
   import Badge from "../lib/components/ui/Badge.svelte";
   import FacetBar from "./FacetBar.svelte";
   import { catalog } from "./store.svelte";
-  import { familyOf, filtersToHash, unitLabel, type Filters } from "./derive";
+  import { familyOf, filtersToHash, type Filters } from "./derive";
+  import { unitLabel } from "../format";
 
   const rows = $derived(catalog.visible);
   const withValues = $derived(catalog.indicators.filter((i) => i.has_values).length);
