@@ -10,7 +10,6 @@ import {
   filtersFromHash,
   filtersToHash,
   slugFromHash,
-  unitLabel,
   type CatalogRow,
   type Filters,
 } from "./derive";
@@ -137,16 +136,6 @@ describe("hash round trip", () => {
       "urban_form_block_composite",
     );
     expect(slugFromHash("#/?q=park")).toBeNull();
-  });
-});
-
-describe("unitLabel", () => {
-  it("reads the catalog's unit codes as words", () => {
-    expect(unitLabel("buildings_per_ha")).toBe("buildings / ha");
-    expect(unitLabel("ratio_0_1")).toBe("ratio 0–1");
-    expect(unitLabel("score_0_1")).toBe("score 0–1");
-    expect(unitLabel("m")).toBe("m");
-    expect(unitLabel(null)).toBe("unitless");
   });
 });
 

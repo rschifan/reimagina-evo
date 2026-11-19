@@ -151,7 +151,7 @@ from reimagina.scenarios.proposal import (
 )
 
 from ..deps import api_dsn, get_backend
-from .indicators import IndicatorSummary, _catalog_row_to_dict
+from .indicators import IndicatorSummary, catalog_row_to_dict
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -657,7 +657,7 @@ def reachable_indicators_route() -> list[ReachableIndicator]:
     order = reachable_indicators()
     with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
         rows = get_backend(conn).indicator_catalog_repo().list_indicators()
-    by_slug = {row["slug"]: _catalog_row_to_dict(row) for row in rows}
+    by_slug = {row["slug"]: catalog_row_to_dict(row) for row in rows}
     return [
         ReachableIndicator(
             **by_slug[slug], statistic=table_statistic(by_slug[slug]["unit"])

@@ -60,6 +60,9 @@ QUERY_AND_BODY = [
     ("GET", f"/indicators/{SLUG}/values.geojson?aoi_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values.parquet?aoi_id={BAD}", None),
     ("GET", f"/features?aoi_id={BAD}", None),
+    ("GET", f"/features/{BAD}/indicators", None),
+    ("GET", f"/features/{WELL_FORMED}/indicators?aoi_id={BAD}", None),
+    ("GET", f"/features/{WELL_FORMED}/indicators?scenario_id={BAD}", None),
     ("GET", f"/aois/{BAD}/summaries", None),
     (
         "POST",

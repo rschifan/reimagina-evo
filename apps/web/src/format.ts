@@ -1,15 +1,25 @@
-/** Format an arbitrary number with adaptive decimal places — integers
- *  pass through, ``|n|>=100`` rounds to 0dp, ``|n|>=1`` to 2dp, smaller
- *  to 3dp. Locale-aware (uses ``toLocaleString``) so thousands
- *  separators match the user's runtime locale. */
+/** The app's one digit rule: ``|n|>=100`` rounds to 0dp, ``|n|>=1`` to at
+ *  most 2dp, smaller to at most 3dp, trailing zeros dropped (`12.5`, not
+ *  `12.50`). Locale-aware (uses ``toLocaleString``) so thousands separators
+ *  match the user's runtime locale. */
 export function fmtNumber(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
   const abs = Math.abs(value);
-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 3;
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
+  return value.toLocaleString(undefined, { maximumFractionDigits: abs >= 100 ? 0 : abs >= 1 ? 2 : 3 });
+}
+
+
+/**
+ * `n` of `total` as a percentage, without the sign: `62`, `<1`, `>99`.
+ * `0` and `100` only when they are exact, so one capped block in 300 never
+ * reads as none and 199 of 200 never as all.
+ */
+export function shareText(n: number, total: number): string {
+  if (n <= 0) return "0";
+  if (n >= total) return "100";
+  const pct = (n / total) * 100;
+  if (pct < 1) return "<1";
+  if (pct > 99) return ">99";
+  return String(Math.round(pct));
 }
 
 
@@ -23,4 +33,60 @@ export function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+
+/** The catalog's unit codes as words: `buildings_per_ha` → `buildings / ha`,
+ *  `ratio_0_1` → `ratio 0–1`. */
+export function unitLabel(unit: string | null): string {
+  if (!unit) return "unitless";
+  return unit.replace(/_0_1$/, " 0–1").replaceAll("_per_", " / ").replaceAll("_", " ");
+}
+
+
+/**
+ * One indicator value as a reader sees it: `1,234 m`, `12.5 units / ha`,
+ * `0.41`, and at or past a declared cap `1,500 m+ (cap)`.
+ *
+ * A value at the cap is not a measurement: the distance indicators report the
+ * cutoff for a block nothing is reachable from, so it reads as "the cap or
+ * more", never as a distance. Only `cap_value` triggers this; `valid_min` /
+ * `valid_max` are validation ranges and say nothing about meaning.
+ *
+ * A 0–1 score or ratio is shown bare: its unit is a scale, not a suffix.
+ * Digits follow {@link fmtNumber}.
+ */
+export function formatValue(
+  value: number,
+  indicator: { unit: string | null; cap_value?: number | null },
+): string {
+  const cap = indicator.cap_value ?? null;
+  const unit = indicator.unit && !indicator.unit.endsWith("_0_1") ? ` ${unitLabel(indicator.unit)}` : "";
+  if (cap !== null && value >= cap) return `${fmtNumber(cap)}${unit}+ (cap)`;
+  return `${fmtNumber(value)}${unit}`;
+}
+
+
+/** Human label for a feature-type slug. Falls back to the slug so a
+ *  new grain shows up readable-ish rather than not at all. */
+const GRAIN_LABELS: Record<string, string> = {
+  block: "Blocks",
+  municipality: "Municipalities",
+  lot: "Lots",
+};
+
+/** Plural label for a grain: `block` → `Blocks`; `null` → `Features`. */
+export function grainLabel(grain: string | null): string {
+  return grain === null ? "Features" : (GRAIN_LABELS[grain] ?? grain);
+}
+
+/** A grain as a noun in running text: `block` / `blocks`; no grain is
+ *  `feature` / `features`. */
+export function grainNoun(grain: string | null, plural: boolean): string {
+  return plural ? grainLabel(grain).toLowerCase() : (grain || "feature");
+}
+
+/** A count of features with its noun: `1 block`, `19,058 blocks`, `2 features`. */
+export function grainCount(n: number, grain: string | null): string {
+  return `${fmtNumber(n)} ${grainNoun(grain, n !== 1)}`;
 }

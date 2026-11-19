@@ -23,6 +23,8 @@ export interface TooltipContent {
   title: string;
   /** Optional value/detail line under the title. */
   detail?: string;
+  /** Optional muted line under the detail: what a click would do. */
+  hint?: string;
 }
 
 
@@ -48,10 +50,10 @@ export interface TooltipProvider {
 //
 // Same pattern as :func:`setHoverGloballySuspended` in
 // hover-highlight.ts. Tooltips are suspended together with hover
-// while the user is drawing or editing a selection shape — modes
-// are mutually exclusive in production map tools (Felt, Mapbox
-// Studio): if you're committed to a draw gesture, no other mousemove
-// affordance should fire.
+// while the user is drawing a selection shape — modes are mutually
+// exclusive in production map tools (Felt, Mapbox Studio): if you're
+// committed to a draw gesture, no other mousemove affordance should
+// fire.
 let _tooltipGloballySuspended = false;
 const _liveTooltipInstances = new Set<TooltipController>();
 
@@ -152,6 +154,12 @@ export class TooltipController {
       detail.className = "map-tooltip-detail";
       detail.textContent = content.detail;
       this.element.append(detail);
+    }
+    if (content.hint) {
+      const hint = document.createElement("div");
+      hint.className = "map-tooltip-hint";
+      hint.textContent = content.hint;
+      this.element.append(hint);
     }
     // Position near the cursor; MapLibre's event.point is in pixel
     // coords relative to the map container, matching our parent.

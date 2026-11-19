@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.indicators.catalog import ACCESSIBILITY_CUTOFF_M, SHIPPED_INDICATORS
 from reimagina.orchestration.runners import default_runners
 
 _COMPOSITES = [s for s in SHIPPED_INDICATORS if s.computation_kind == "composite"]
@@ -311,3 +311,11 @@ def test_seeding_a_subset_reports_the_missing_asset(monkeypatch):
 
     with pytest.raises(RuntimeError, match="has no registered asset"):
         registry.seed_asset_edges(conn)
+
+
+def test_only_accessibility_network_distances_are_capped():
+    for spec in SHIPPED_INDICATORS:
+        capped = spec.slug.startswith("accessibility_block_") and spec.slug.endswith(
+            "_network_m"
+        )
+        assert spec.cap_value == (ACCESSIBILITY_CUTOFF_M if capped else None), spec.slug

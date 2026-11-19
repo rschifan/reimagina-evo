@@ -15,8 +15,6 @@ import type {
 import type { TileSource } from "./api";
 import { fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
-import type { SelectionController } from "./selection";
-import { registerValueAwareLayer } from "./selection-filter";
 import {
   cogPointProvider,
   mvtProvider,
@@ -98,10 +96,8 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
       16, 1.8,
       18, 3.0,
     ],
-    // On by default, alone among the optional layers. Orientation is the
-    // problem this solves, and a context layer nobody switches on provides
-    // none.
-    visible: true,
+    // Off like every spatial layer; the opening view is the indicator alone.
+    visible: false,
     // ⚠ 12 matches `serving_geo.get_tile`'s role gate exactly: roads carry
     // `role = 'infrastructure'`, which the function serves only from z12
     // (`WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')`). Measured
@@ -120,11 +116,9 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.35,
     lineColor: "#60a5fa",
     lineWidth: 0,
-    // On by default now that r038 bounds the cost. Previously this layer
-    // could request 1.3-2.6 MB tiles at overview zoom, so shipping it off
-    // was the only thing keeping the map usable; with footprints served
-    // only from z14 a request below that is a 204 and a z14 tile is ~31 KB.
-    visible: true,
+    // Off by default. r038 bounds the cost (footprints served only from
+    // z14; below that a request is a 204 and a z14 tile is ~31 KB).
+    visible: false,
     // z14 because get_tile (migration r038) stops serving building
     // footprints below it — a request at 11-13 returns an empty tile, so a
     // lower floor here only buys wasted round-trips.
@@ -159,7 +153,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     fillOpacity: 0.01,
     lineColor: "#9ca3af",
     lineWidth: 0.6,
-    visible: true,
+    visible: false,
     // z=8 is the floor the tile function honours for analysis_unit
     // features (r010 caps role='analysis_unit' at z>=8). The
     // simplification ladder collapses sub-50m manzanas at z<10, so in
@@ -181,7 +175,7 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     sourceName: "baseline_municipalities",
     sourceLayerName: "features",
     typeSlug: "municipality",
-    label: "Municipalities (alcaldías)",
+    label: "Municipalities",
     fillColor: "#475569",
     fillOpacity: 0.30,
     lineColor: "#e5e7eb",
@@ -255,14 +249,18 @@ export function refreshBaselineAoi(
 }
 
 
+/** `visible` decides each layer's starting visibility; a page with no
+ *  toggles passes its own, the default is each spec's `visible`. */
 export function installInputLayers(
   map: MapLibreMap,
   catalog: TileSourceCatalog,
   tooltips?: TooltipController,
   aoiId: string | null = null,
+  visible: (layer: InputLayerSpec) => boolean = (layer) => layer.visible,
 ): void {
   for (const layer of INPUT_LAYERS) {
     const tileUrl = _baselineTileUrl(catalog, layer, aoiId);
+    const visibility = visible(layer) ? "visible" : "none";
     // promoteId surfaces the MVT 'feature_id' property as feature.id so
     // setFeatureState({...id}) can find the right feature for hover
     // highlighting. Every reimagina tile function emits feature_id.
@@ -298,7 +296,7 @@ export function installInputLayers(
         type: "fill",
         source: layer.sourceName,
         "source-layer": layer.sourceLayerName,
-        layout: { visibility: layer.visible ? "visible" : "none" },
+        layout: { visibility },
         paint: {
           "fill-color": layer.fillColor,
           "fill-opacity": layer.fillOpacity,
@@ -310,7 +308,7 @@ export function installInputLayers(
       type: "line",
       source: layer.sourceName,
       "source-layer": layer.sourceLayerName,
-      layout: { visibility: layer.visible ? "visible" : "none" },
+      layout: { visibility },
       paint: {
         "line-color": layer.lineColor,
         "line-width": layer.lineWidth,
@@ -399,12 +397,13 @@ function rasterSourceName(layerId: string): string {
 }
 
 
-function _baselineMinzoomForGrain(typeSlug: string | null | undefined): number | undefined {
-  // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches.
-  // Used by aggregation overlays so a block-grain choropleth lights up
-  // at the same zoom the underlying blocks are visible — the catalog
-  // default of 10 was hiding the censo overlay even at z=8 where
-  // blocks already render.
+export function minzoomForGrain(typeSlug: string | null | undefined): number | undefined {
+  // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches:
+  // the one zoom floor for a grain. Aggregation overlays and the indicator
+  // overlay use it so a block-grain choropleth lights up at the same zoom
+  // the underlying blocks are visible — the catalog default of 10 was
+  // hiding the censo overlay even at z=8 where blocks already render —
+  // and `flyToAoi` never lands below the block floor.
   if (!typeSlug) return undefined;
   const match = INPUT_LAYERS.find((l) => l.typeSlug === typeSlug);
   return match?.minzoom;
@@ -521,11 +520,6 @@ export function refreshAggregationOverlayAoi(
 }
 
 
-// Disposers for the per-overlay value-aware filter registrations.
-// Mirrors ``choropleth.ts``'s _activeDisposers idiom.
-const _aggregationFilterDisposers: Array<() => void> = [];
-
-
 export function installAggregationOverlays(
   map: MapLibreMap,
   sources: TileSource[],
@@ -549,7 +543,7 @@ export function installAggregationOverlays(
     // we deliberately *override* it here when we have a baseline
     // anchor — otherwise the catalog wins and the user has to zoom in
     // past the baseline floor before the choropleth lights up.
-    const targetMinzoom = _baselineMinzoomForGrain(cfg.target_feature_type_slug);
+    const targetMinzoom = minzoomForGrain(cfg.target_feature_type_slug);
     const minzoom = targetMinzoom ?? cfg.minzoom ?? 10;
     map.addSource(sourceName, {
       type: "vector",
@@ -631,60 +625,6 @@ export function installAggregationOverlays(
       hoverFillOpacity: 0.85,
     });
 
-  }
-}
-
-
-/**
- * Drain and call every disposer accumulated by
- * :func:`wireAggregationOverlayClipping`. Call BEFORE re-wiring on
- * AOI change so ``sourcedata`` listeners don't pile up across
- * switches.
- */
-export function clearAggregationOverlayClipping(): void {
-  for (const dispose of _aggregationFilterDisposers) {
-    try {
-      dispose();
-    } catch (err) {
-      // Disposers should never throw; swallow so one bad dispose
-      // doesn't strand the rest with stale filters.
-      console.warn("aggregation clipping dispose:", err);
-    }
-  }
-  _aggregationFilterDisposers.length = 0;
-}
-
-
-/**
- * Wire every aggregation-overlay layer to clip-on-selection. Called
- * once after ``enableSelection`` creates the controller. Split from
- * ``installAggregationOverlays`` because the controller doesn't
- * exist at install time — terra-draw layers must paint on top of
- * the mask, mask install happens between data and terra-draw, and
- * the controller is the output of ``enableSelection`` (which adds
- * terra-draw's layers).
- */
-export function wireAggregationOverlayClipping(
-  map: MapLibreMap,
-  sources: TileSource[],
-  controller: SelectionController,
-): void {
-  for (const src of sources) {
-    if (src.source_mode !== "aggregation_overlay") continue;
-    if (src.available === false) continue;
-    const cfg = src.source_config;
-    const sourceName = aggSourceName(src.layer_id);
-    if (!map.getSource(sourceName)) continue;
-    const fillId = `${sourceName}__fill`;
-    const lineId = `${sourceName}__line`;
-    if (!map.getLayer(fillId) && !map.getLayer(lineId)) continue;
-    _aggregationFilterDisposers.push(
-      registerValueAwareLayer(map, controller, {
-        layerIds: [fillId, lineId],
-        sourceName,
-        sourceLayer: cfg.source_layer ?? "aggregation_overlay",
-      }),
-    );
   }
 }
 
@@ -805,11 +745,11 @@ interface RasterGroup {
 }
 
 
-function groupRastersAndOverlays(sources: TileSource[]): RasterGroup[] {
+export function groupRastersAndOverlays(sources: TileSource[]): RasterGroup[] {
   const bySlug = new Map<string, RasterGroup>();
   const orphans: RasterGroup = {
     parentSlug: "__orphans__",
-    parentLabel: "Derived overlays (no parent raster)",
+    parentLabel: "",  // listed directly, no heading
     raster: null,
     aggregations: [],
   };
@@ -930,14 +870,14 @@ export function wireRasterToggles(
   };
 
   for (const group of groups) {
-    const details = document.createElement("details");
+    const details = document.createElement(group.parentLabel ? "details" : "div");
     details.className = "raster-group";
-    details.open = true;
+    if (details instanceof HTMLDetailsElement) details.open = true;
 
     const summary = document.createElement("summary");
     summary.className = "raster-group-summary";
     summary.textContent = group.parentLabel;
-    details.append(summary);
+    if (group.parentLabel) details.append(summary);
 
     if (group.raster) {
       const rasterLayerId = `${rasterSourceName(group.raster.layer_id)}__raster`;
