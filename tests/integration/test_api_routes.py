@@ -685,6 +685,27 @@ def two_aois_one_block_each(conn):
     }
 
 
+def test_feature_indicators_rank_within_the_aoi(client, two_aois_one_block_each):
+    f = two_aois_one_block_each
+    scoped = client.get(
+        f"/features/{f['block_a']}/indicators?aoi_id={f['aoi_a']}"
+    ).json()
+    assert [r["slug"] for r in scoped] == [f["slug"]]
+    assert (scoped[0]["count"], scoped[0]["count_below"], scoped[0]["count_equal"]) == (
+        1,
+        0,
+        1,
+    )
+    unscoped = client.get(f"/features/{f['block_a']}/indicators").json()
+    assert unscoped[0]["count"] == 2
+
+
+def test_feature_indicators_404_on_unknown_feature(client, conn):
+    seed_catalog(conn)
+    response = client.get("/features/00000000-0000-0000-0000-000000000000/indicators")
+    assert response.status_code == 404
+
+
 def test_stats_endpoint_includes_aoi_id_in_response(client, two_aois_one_block_each):
     """The response model echoes the requested aoi_id so clients can
     correlate the percentiles with the AOI they're rendering."""

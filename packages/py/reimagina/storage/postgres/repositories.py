@@ -2814,6 +2814,60 @@ class PostgresIndicatorResultRepository:
                 for row in cur.fetchall()
             ]
 
+    def feature_indicator_ranks(
+        self,
+        *,
+        feature_id: str,
+        aoi_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict]:
+        # The population is scoped exactly as value_stats scopes it (same
+        # indicator, same feature type, current non-null rows, scenario
+        # overlay, aoi_feature EXISTS) so the inspector agrees with /stats.
+        mine_clause, mine_params = _scenario_overlay("m", scenario_id)
+        pop_clause, pop_params = _scenario_overlay("p", scenario_id)
+        aoi_clause = ""
+        aoi_params: list = []
+        if aoi_id is not None:
+            aoi_clause = (
+                "AND EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
+                "WHERE af.feature_id = p.feature_id AND af.aoi_id = %s::uuid)"
+            )
+            aoi_params = [aoi_id]
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM curated_geo.feature WHERE id = %s::uuid", (feature_id,)
+            )
+            if cur.fetchone() is None:
+                raise LookupError(feature_id)
+            cur.execute(
+                f"""
+                SELECT c.slug, c.name, c.unit, c.cap_value,
+                       m.value_numeric AS value,
+                       COUNT(*) FILTER (WHERE p.value_numeric < m.value_numeric) AS count_below,
+                       COUNT(*) FILTER (WHERE p.value_numeric = m.value_numeric) AS count_equal,
+                       COUNT(*) AS count
+                FROM curated_geo.indicator_result m
+                JOIN curated_geo.indicator_catalog c ON c.slug = m.indicator_slug
+                JOIN curated_geo.indicator_result p
+                  ON p.indicator_slug = m.indicator_slug
+                 AND p.feature_type = m.feature_type
+                 AND p.status = 'current'
+                 AND p.value_numeric IS NOT NULL
+                 AND {pop_clause}
+                 {aoi_clause}
+                WHERE m.feature_id = %s::uuid
+                  AND m.status = 'current'
+                  AND m.value_numeric IS NOT NULL
+                  AND {mine_clause}
+                GROUP BY c.slug, c.name, c.unit, c.cap_value, m.value_numeric
+                ORDER BY c.name
+                """,
+                [*pop_params, *aoi_params, feature_id, *mine_params],
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+
     def value_stats(
         self,
         *,

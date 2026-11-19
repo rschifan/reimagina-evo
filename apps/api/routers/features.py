@@ -79,3 +79,39 @@ def _feature_row(row: dict) -> FeatureRow:
         name=row.get("name"),
         attributes=row.get("attributes"),
     )
+
+
+class FeatureIndicatorValue(BaseModel):
+    """One indicator's value on one feature, with its exact rank."""
+
+    slug: str
+    name: str
+    unit: str | None = None
+    cap_value: float | None = None
+    value: float
+    count_below: int
+    count_equal: int
+    count: int
+
+
+@router.get("/{feature_id}/indicators", response_model=list[FeatureIndicatorValue])
+def get_feature_indicators(
+    feature_id: UUID,
+    aoi_id: UUID | None = Query(default=None),
+    scenario_id: UUID | None = Query(default=None),
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> list[FeatureIndicatorValue]:
+    """The feature's current values, each ranked among its peers in the AOI."""
+    try:
+        rows = (
+            get_backend(conn)
+            .indicator_result_repo()
+            .feature_indicator_ranks(
+                feature_id=str(feature_id),
+                aoi_id=None if aoi_id is None else str(aoi_id),
+                scenario_id=None if scenario_id is None else str(scenario_id),
+            )
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Unknown feature") from exc
+    return [FeatureIndicatorValue(**row) for row in rows]

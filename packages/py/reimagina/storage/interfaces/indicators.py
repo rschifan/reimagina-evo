@@ -138,6 +138,23 @@ class IndicatorResultRepository(Protocol):
         """
         ...
 
+    def feature_indicator_ranks(
+        self,
+        *,
+        feature_id: str,
+        aoi_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One feature's current values with their exact rank.
+
+        Each dict: `slug, name, unit, cap_value, value, count_below,
+        count_equal, count`. The counts are over the same population
+        `value_stats` describes (same indicator, the feature's own type, same
+        AOI and scenario scoping). Raises `LookupError` when the feature does
+        not exist; a feature without values yields `[]`.
+        """
+        ...
+
     def value_stats(
         self,
         *,
