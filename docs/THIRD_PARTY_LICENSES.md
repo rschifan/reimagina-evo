@@ -36,7 +36,7 @@ packages compile or test the web application and are not shipped.
 | weak copyleft | 4 | 4 | 8 |
 | strong copyleft | 0 | 0 | 0 |
 
-Also listed: 60 native-library rows vendored in 10 Python wheels, 9 system components, 9 data sources.
+Also listed: 60 native-library rows vendored in 10 Python wheels, 9 system components, 6 data sources.
 
 ## Copyleft components
 
@@ -223,9 +223,6 @@ per-theme terms below are Overture's own.
 | Overture Maps — `divisions` theme | municipal boundary (area of interest) | ODbL-1.0 (geoBoundaries and other sources CC-BY-4.0) | as for buildings |
 | Overture Maps — `places` theme | park, recreation and cultural destinations | per source: CDLA-Permissive-2.0 (most), Apache-2.0 (Foursquare), CC0-1.0 (AllThePlaces) | per source, e.g. "Data from Meta. Available under CDLA Permissive 2.0." |
 | INEGI — Marco Geoestadístico, Censo de Población 2020, DENUE | municipalities, AGEBs, blocks, census attributes; DENUE within the amenity layers | Términos de Libre Uso de la Información del INEGI (https://www.inegi.org.mx/inegi/terminos.html) | credit INEGI and cite the product ("Fuente: INEGI, <producto>"); commercial use and adaptation permitted |
-| Gobierno de la Ciudad de México — Colonias (datos.cdmx.gob.mx) | neighbourhood boundaries | recorded in code as "Licencia CDMX Open Data"; **not verified**: datos.cdmx.gob.mx refused connections on 2026-11-19, the archived copies of its home and about pages (Wayback Machine, October 2026) state no licence, and no archived copy of the dataset page exists | provider and licence, shown on the map |
-| SIG-CDMX equipamientos (with DENUE) | Tlalpan amenities | recorded in code as "Datos abiertos de la CDMX"; not independently verified | provider and licence, shown on the map |
-| IMIP Mexicali (with DENUE) | Mexicali amenities | recorded in code as "Datos abiertos del IMIP"; not independently verified | provider and licence, shown on the map |
 | WorldPop (`raster fetch-worldpop`) | gridded population rasters | CC-BY-4.0 (datasets derived from OSM or Microsoft footprints/roads: ODbL-1.0) | credit WorldPop; the licence is recorded per raster at `raster ingest --license` |
 
 ## Python packages

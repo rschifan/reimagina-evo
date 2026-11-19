@@ -911,26 +911,6 @@ DATA: list[tuple[str, str, str, str]] = [
         'credit INEGI and cite the product ("Fuente: INEGI, <producto>"); commercial use and adaptation permitted',
     ),
     (
-        "Gobierno de la Ciudad de México — Colonias (datos.cdmx.gob.mx)",
-        "neighbourhood boundaries",
-        'recorded in code as "Licencia CDMX Open Data"; **not verified**: datos.cdmx.gob.mx refused '
-        "connections on 2026-11-19, the archived copies of its home and about pages (Wayback Machine, "
-        "October 2026) state no licence, and no archived copy of the dataset page exists",
-        "provider and licence, shown on the map",
-    ),
-    (
-        "SIG-CDMX equipamientos (with DENUE)",
-        "Tlalpan amenities",
-        'recorded in code as "Datos abiertos de la CDMX"; not independently verified',
-        "provider and licence, shown on the map",
-    ),
-    (
-        "IMIP Mexicali (with DENUE)",
-        "Mexicali amenities",
-        'recorded in code as "Datos abiertos del IMIP"; not independently verified',
-        "provider and licence, shown on the map",
-    ),
-    (
         "WorldPop (`raster fetch-worldpop`)",
         "gridded population rasters",
         "CC-BY-4.0 (datasets derived from OSM or Microsoft footprints/roads: ODbL-1.0)",
