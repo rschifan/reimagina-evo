@@ -103,6 +103,20 @@ export function formatCell(value: number | null, indicator: ReachableIndicator):
   return indicator.statistic === "sum" ? Math.round(value).toLocaleString() : fmtNumber(value);
 }
 
+/** The baseline has nothing for an indicator: say what is missing. Every
+ *  indicator this page offers is computed from storeys, dwelling size and
+ *  household size, so a blank baseline means those inputs are absent from the
+ *  pilot's blocks, not that a computation failed. */
+export const NO_BASELINE =
+  "these blocks carry no storeys, dwelling size or household size";
+
+export function noValuesNote(indicatorName: string, inScenario: boolean): string {
+  return inScenario
+    ? `${indicatorName} has no values in this scenario here yet.`
+    : `${indicatorName} has no baseline values here: ${NO_BASELINE}. ` +
+        "A scenario's rules supply them inside the areas they cover.";
+}
+
 /** `#/<scenario>/<indicator>`, both optional — the Runs page keeps its open
  *  run the same way, so a reload or a shared link keeps the place. */
 export function parseHash(hash: string): { scenarioId: string | null; slug: string | null } {

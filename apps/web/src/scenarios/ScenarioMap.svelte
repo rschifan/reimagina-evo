@@ -34,6 +34,7 @@
   import { enableSelection, type SelectionController, type SelectionShape } from "../selection";
   import { TooltipController } from "../tooltip";
 
+  import { noValuesNote } from "./derive";
   import { onMapRefresh, setIndicator, setMode, ws } from "./store.svelte";
 
   /**
@@ -184,10 +185,7 @@
     const domain = rampDomainFromStats(stats, current);
     activateIndicator(map, config, current, domain, tooltips, aoiId, selection, grain, scenarioId);
     renderLegend(legend, current, domain, stats?.histogram ?? null);
-    mapNote =
-      stats && stats.count === 0
-        ? `${current.name} has no values ${scenarioId ? "in this scenario" : "on the baseline city"} here yet.`
-        : "";
+    mapNote = stats && stats.count === 0 ? noValuesNote(current.name, scenarioId !== null) : "";
   }
 
   function draw(next: SelectionShape) {
@@ -258,7 +256,14 @@
   </div>
 
   <div class="relative h-[60vh] min-h-[420px] overflow-hidden rounded-lg border border-line">
-    <div bind:this={container} class="absolute inset-0"></div>
+    <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
+         relative }` to the element it mounts on, and that unlayered rule beats
+         Tailwind's layered `absolute`, so a container that was itself
+         `absolute inset-0` collapsed to 0 px and the map drew nothing. The
+         outer div keeps the position MapLibre never sees. -->
+    <div class="absolute inset-0">
+      <div bind:this={container} class="h-full w-full"></div>
+    </div>
     <div
       role="toolbar"
       aria-label="Draw the area a rule applies to"

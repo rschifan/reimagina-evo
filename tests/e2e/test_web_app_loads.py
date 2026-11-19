@@ -57,6 +57,21 @@ def test_the_page_reached_the_api(probe, page):
     assert api_calls, f"/{page} made no API request at all: {requests[:5]}"
 
 
+@pytest.mark.parametrize("page", ("map", "scenarios"))
+def test_the_map_is_tall_enough_to_see(probe, page):
+    """A map whose box collapsed to 0 px draws nothing and raises nothing.
+
+    That is how the scenarios page shipped: Tailwind's ``absolute inset-0`` on
+    the map's container lost to MapLibre's own ``.maplibregl-map { position:
+    relative }`` (unlayered CSS beats a cascade layer), so the container was
+    1,210 x 0 inside a 568 px frame. Tiles loaded, no error was logged, and
+    every other test here passed.
+    """
+    box = probe["pages"][page]["mapBox"]
+    assert box is not None, f"{page}: no MapLibre container"
+    assert box["height"] >= 300, f"{page}: map box is {box}"
+
+
 def test_the_map_asks_for_tiles_in_the_documented_shape(probe):
     """The tile contract, as the client actually spells it.
 

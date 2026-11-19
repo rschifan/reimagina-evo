@@ -4,6 +4,7 @@ import type { IndicatorValueStats, ReachableIndicator, ScenarioListRow } from ".
 import {
   cellValue,
   formatCell,
+  noValuesNote,
   formatHash,
   parseHash,
   statusFor,
@@ -121,6 +122,19 @@ describe("cells", () => {
     const s = stats({ count: 3, sum: 30, p50: 7 });
     expect(cellValue(s, "sum")).toBe(30);
     expect(cellValue(s, "median")).toBe(7);
+  });
+
+  it("noValuesNote names the missing inputs on the baseline", () => {
+    // Every indicator this page offers is computed from these three; a blank
+    // baseline means they are absent, not that anything failed.
+    expect(noValuesNote("Planned Floors", false)).toBe(
+      "Planned Floors has no baseline values here: these blocks carry no storeys, " +
+        "dwelling size or household size. A scenario's rules supply them inside the " +
+        "areas they cover.",
+    );
+    expect(noValuesNote("Planned Floors", true)).toBe(
+      "Planned Floors has no values in this scenario here yet.",
+    );
   });
 
   it("formatCell shows a dash for null", () => {
