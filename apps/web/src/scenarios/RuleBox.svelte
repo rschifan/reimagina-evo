@@ -47,25 +47,38 @@
   // Seeded once from the props: the box is remounted for every shape, and
   // a prop change mid-typing must not overwrite what is being typed.
   const initial = (() => values)();
-  let levels = $state(initial.levels);
-  let unitSize = $state(initial.unitSize);
-  let people = $state(initial.peoplePerHousehold);
-  let coveragePct = $state(Math.round(initial.lotCoverage * 100));
+  // Empty means "not set by this rule": every block keeps its own value.
+  let levels = $state<number | null>(initial.levels);
+  let unitSize = $state<number | null>(initial.unitSize);
+  let people = $state<number | null>(initial.peoplePerHousehold);
+  let coveragePct = $state<number | null>(
+    initial.lotCoverage === null ? null : Math.round(initial.lotCoverage * 100),
+  );
   let name = $state((() => defaultName)());
   let localError = $state<string | null>(null);
 
+  /** A number input's value, or null when it is empty. */
+  const set = (v: number | null | undefined | string): number | null =>
+    v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v);
+
   function read(): RuleValues | null {
-    if (!Number.isFinite(coveragePct) || coveragePct < 1 || coveragePct > 100) {
+    const next: RuleValues = {
+      levels: set(levels),
+      unitSize: set(unitSize),
+      peoplePerHousehold: set(people),
+      lotCoverage: set(coveragePct) === null ? null : (set(coveragePct) as number) / 100,
+    };
+    if (Object.values(next).every((v) => v === null)) {
+      localError = "Set at least one number: a rule changes only what you type.";
+      return null;
+    }
+    const pct = set(coveragePct);
+    if (pct !== null && (pct < 1 || pct > 100)) {
       localError = "Lot coverage must be between 1 and 100 %.";
       return null;
     }
     localError = null;
-    return {
-      levels,
-      unitSize,
-      peoplePerHousehold: people,
-      lotCoverage: coveragePct / 100,
-    };
+    return next;
   }
 
   function submit(event: SubmitEvent) {
@@ -100,11 +113,12 @@
       <input class="rounded border border-line bg-surface px-1.5 py-0.5 text-xs" aria-label="Scenario name" bind:value={name} />
     </label>
   {/if}
+  <p class="mb-2 text-muted-foreground">Set what this area changes. A number left empty keeps each block's own value.</p>
   <div class="flex flex-col gap-1.5">
-    <label class={row}>Storeys <input class={input} type="number" min="1" step="1" aria-label="Storeys" bind:value={levels} /></label>
-    <label class={row}>m² per home <input class={input} type="number" min="1" step="1" aria-label="m² per home" bind:value={unitSize} /></label>
-    <label class={row}>People per home <input class={input} type="number" min="0.1" step="0.1" aria-label="People per home" bind:value={people} /></label>
-    <label class={row}>Lot coverage <input class={input} type="number" min="1" max="100" step="5" aria-label="Lot coverage (%)" bind:value={coveragePct} /></label>
+    <label class={row}>Storeys <input class={input} type="number" min="1" step="1" aria-label="Storeys" placeholder="as is" bind:value={levels} /></label>
+    <label class={row}>m² per home <input class={input} type="number" min="1" step="1" aria-label="m² per home" placeholder="as is" bind:value={unitSize} /></label>
+    <label class={row}>People per home <input class={input} type="number" min="0.1" step="0.1" aria-label="People per home" placeholder="as is" bind:value={people} /></label>
+    <label class={row}>Lot coverage <input class={input} type="number" min="1" max="100" step="5" aria-label="Lot coverage (%)" placeholder="as is" bind:value={coveragePct} /></label>
   </div>
   {#if mode === "rule" && overriddenBy !== null}
     <p class="mt-2 text-muted-foreground">Rule {overriddenBy} overrides this one where they overlap.</p>

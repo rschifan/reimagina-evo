@@ -49,6 +49,7 @@
     saveRule,
     setIndicator,
     setMode,
+    EMPTY_RULE,
     ws,
     type RuleValues,
   } from "./store.svelte";
@@ -583,13 +584,12 @@
             mode={current.kind}
             values={current.kind === "rule"
               ? {
-                  levels: current.group.levels ?? ws.lastValues.levels,
-                  unitSize: current.group.unitSize ?? ws.lastValues.unitSize,
-                  peoplePerHousehold:
-                    current.group.peoplePerHousehold ?? ws.lastValues.peoplePerHousehold,
-                  lotCoverage: current.group.lotCoverage ?? 1,
+                  levels: current.group.levels,
+                  unitSize: current.group.unitSize,
+                  peoplePerHousehold: current.group.peoplePerHousehold,
+                  lotCoverage: current.group.lotCoverage,
                 }
-              : ws.lastValues}
+              : EMPTY_RULE}
             needsScenarioName={current.kind === "new" && ws.selectedId === null}
             defaultName={`Scenario ${ws.scenarios.length + 1}`}
             overriddenBy={current.kind === "rule" ? current.overriddenBy : null}

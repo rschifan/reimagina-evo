@@ -55,12 +55,41 @@ export interface Message {
 }
 
 /** The four numbers a rule carries, as the rule box edits them. */
+/** The numbers a rule sets, as the rule box edits them. Null: the rule does
+ *  not set it, and every block keeps its own value. */
 export interface RuleValues {
-  levels: number;
-  unitSize: number;
-  peoplePerHousehold: number;
+  levels: number | null;
+  unitSize: number | null;
+  peoplePerHousehold: number | null;
   /** Share of the block built on, `0 < c ≤ 1`. */
-  lotCoverage: number;
+  lotCoverage: number | null;
+}
+
+/** A new rule's box starts empty. Pre-filled numbers were what flattened an
+ *  area: a planner changing household size also set every block's storeys,
+ *  unit size and coverage to the same values. */
+export const EMPTY_RULE: RuleValues = {
+  levels: null,
+  unitSize: null,
+  peoplePerHousehold: null,
+  lotCoverage: null,
+};
+
+/** The request fields of the numbers set, and only those. */
+function ruleFields(values: RuleValues): {
+  levels?: number;
+  unit_size?: number;
+  people_per_household?: number;
+  lot_coverage?: number;
+} {
+  return {
+    ...(values.levels !== null ? { levels: values.levels } : {}),
+    ...(values.unitSize !== null ? { unit_size: values.unitSize } : {}),
+    ...(values.peoplePerHousehold !== null
+      ? { people_per_household: values.peoplePerHousehold }
+      : {}),
+    ...(values.lotCoverage !== null ? { lot_coverage: values.lotCoverage } : {}),
+  };
 }
 
 export interface WorkspaceState {
@@ -88,8 +117,6 @@ export interface WorkspaceState {
   /** An apply, save or delete is in flight (it ends when its run lands).
    *  One at a time: the box's buttons are disabled meanwhile. */
   busy: boolean;
-  /** What the last applied rule used, so the next box starts from it. */
-  lastValues: RuleValues;
   /** Why the open rule box's last action was refused, if it was. */
   boxError: { field: string | null; text: string } | null;
   /** False until the route a page opened with has been applied. Whatever
@@ -116,7 +143,6 @@ export const ws: WorkspaceState = $state({
   densityValidMax: null,
   floorsValidMax: null,
   busy: false,
-  lastValues: { levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 },
   boxError: null,
   routeReady: false,
 });
@@ -538,10 +564,7 @@ export async function applyNewRule(
     try {
       const result = await addScenarioEdits(scenarioId, {
         area,
-        levels: values.levels,
-        unit_size: values.unitSize,
-        people_per_household: values.peoplePerHousehold,
-        lot_coverage: values.lotCoverage,
+        ...ruleFields(values),
       });
       written = result.edits.map((e) => e.id);
     } catch (err) {
@@ -572,7 +595,6 @@ export async function applyNewRule(
       }
       return false;
     }
-    ws.lastValues = { ...values };
     await afterLanding(scenarioId, landing, "Rule added.");
     return true;
   } finally {
@@ -614,10 +636,7 @@ export async function saveRule(
       const result = await updateRule(scenarioId, {
         edit_ids: group.editIds,
         ...(area ? { area } : {}),
-        levels: values.levels,
-        unit_size: values.unitSize,
-        people_per_household: values.peoplePerHousehold,
-        lot_coverage: values.lotCoverage,
+        ...ruleFields(values),
       });
       ids = result.edits.map((e) => e.id);
     } catch (err) {
@@ -631,10 +650,13 @@ export async function saveRule(
         await updateRule(scenarioId, {
           edit_ids: ids,
           ...(area ? { area: wktToGeometry(group.areaWkt) } : {}),
-          levels: group.levels ?? values.levels,
-          unit_size: group.unitSize ?? values.unitSize,
-          people_per_household: group.peoplePerHousehold ?? values.peoplePerHousehold,
-          lot_coverage: group.lotCoverage ?? 1,
+          // The rule's previous set, exactly: what it did not set stays unset.
+          ...ruleFields({
+            levels: group.levels,
+            unitSize: group.unitSize,
+            peoplePerHousehold: group.peoplePerHousehold,
+            lotCoverage: group.lotCoverage,
+          }),
         });
       } catch (err) {
         console.warn("could not restore the rule", err);
@@ -663,7 +685,6 @@ export async function saveRule(
       }
       return false;
     }
-    ws.lastValues = { ...values };
     await afterLanding(scenarioId, landing, "Rule saved.");
     return true;
   } finally {

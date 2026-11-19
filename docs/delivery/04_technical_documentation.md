@@ -27,6 +27,7 @@ date: "13 November 2026"
 | 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
 | 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
 | 0.11 | 2026-11-19 | Rossano Schifanella | §6.4: rules are drawn and edited on the scenarios map; §7.2: lot coverage, and why the baseline carries none |
+| 0.12 | 2026-11-19 | Rossano Schifanella | §6.4, §7.2: a rule sets only the numbers typed; the rest keep each block's own value |
 
 ### Provenance of the figures
 
@@ -386,10 +387,12 @@ The scenario workspace (`/scenarios.html`) is edited on its map:
 1. Draw an area with the tools at the map's top left (or `r` / `p` / `c`):
    drag out a rectangle or circle, or click a polygon's corners and click the
    last one again to close it.
-2. A box opens beside the shape with the rule's four numbers — storeys, m²
+2. A box opens beside the shape, empty, for the rule's numbers — storeys, m²
    per home, people per home and lot coverage (the share of the block built
-   on) — prefilled with the last numbers used. On the baseline city it also
-   asks for the new scenario's name.
+   on). Type only what this area changes: a number left empty keeps each
+   block's own value, so changing household size alone leaves storeys, unit
+   size, coverage and density as they were, block by block. On the baseline
+   city the box also asks for the new scenario's name.
 3. **Apply** writes the rule, recomputes and switches the map to **Change**
    against the baseline. The bar above the map shows the change in homes and
    people, and says while a recompute is running.
@@ -504,8 +507,8 @@ census count. `scripts/mexicali_run.sh` runs all three (step 9b), and
 
 Lot coverage (`lot_coverage`, the share of a block that is built on) is not
 seeded: a block without it is computed at 1.0, the whole block, so the fitted
-baseline still equals the census. Scenario rules carry it — 60 % unless the
-planner changes it — and `housing_units = area × lot_coverage × storeys ÷
+baseline still equals the census. A scenario rule sets it only when the
+planner types one, and `housing_units = area × lot_coverage × storeys ÷
 m² per home`.
 
 ## 8. Operating the platform
