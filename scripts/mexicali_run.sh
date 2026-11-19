@@ -444,15 +444,38 @@ $CLI overlap declare-pair \
 $CLI overlap list-pairs
 $CLI overlap compute-all --aoi-id "$AOI_ID"
 
+# ── 9b. The baseline of the scenario inputs ──────────────────────────────────
+#
+# A scenario rule overrides storeys, m² per dwelling and people per household;
+# the scenario workspace compares it against the baseline, so the baseline
+# needs them too. Real where a source has them, synthetic and fitted to the
+# census where not (scripts/seed_demo_attributes.py says how):
+#
+#   people per household  INEGI 2020 `prom_ocup`, ~71% of Mexicali's blocks
+#   storeys               Overture `num_floors`, median per block — 83 blocks
+#   everything else       synthetic: storeys from the tagged buildings' mix,
+#                         m² per dwelling so each block's dwellings equal the
+#                         census count (340,169 over Mexicali)
+#
+# Real values land as observations and shadow the synthetic jsonb, so the
+# order of these three does not matter; the fit reads the real heights, so it
+# runs last. Non-fatal like the other optional inputs: without it the
+# edificability family reports unavailable, as it did before.
+step "9b. Loading the baseline of the scenario inputs"
+if ! { $CLI inegi-censo bootstrap --cve-ent "$CVE_ENT" --columns prom_ocup \
+    && $CLI overture block-storeys --aoi-id "$AOI_ID" \
+    && $PY scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census; }; then
+  note "the scenario-input baseline failed — continuing; the edificability family will report unavailable"
+fi
+
 # ── 10. Indicators ───────────────────────────────────────────────────────────
 #
 # ⚠ Unlike acceptance_run.sh, this does NOT require all eleven to produce rows,
 # and the difference is not laziness. The synthetic territory is built to
-# satisfy every indicator's inputs; a real city is not. `planned_floors` reads
-# a `floors` attribute and the edificability family reads `num_levels`,
-# `unit_size` and `people_per_household` — scenario inputs that no INEGI or
-# Overture layer carries. Demanding rows from those would mean inventing the
-# attributes, which is worse than reporting them unavailable.
+# satisfy every indicator's inputs; a real city is not. `planned_floors` and
+# the edificability family read scenario inputs that step 9b supplies, mostly
+# synthetically; if 9b failed they have nothing to read, and that is a fact
+# about the inputs rather than a broken run.
 #
 # So: REQUIRED must produce rows, because their inputs were just loaded.
 # ATTEMPTED are tried and reported either way. A failure there is information
@@ -556,6 +579,6 @@ if (( NETWORK_FAILED || CENSUS_FAILED || AMENITIES_FAILED || PLACES_FAILED )); t
 fi
 if (( ${#SKIPPED[@]} )); then
   note "unavailable on real data (${#SKIPPED[@]}): ${SKIPPED[*]}"
-  note "each needs an attribute no INEGI or Overture layer carries; see step 10's comment"
+  note "each reads a scenario input step 9b supplies; if 9b failed, see its comment"
 fi
 note "map: REIMAGINA_APP_DSN=$DATABASE_URL $PY -m apps.api  +  (cd apps/web && npm run dev)"
