@@ -926,12 +926,14 @@ def recompute_route(scenario_id: str) -> RecomputeResponse:
     Read before, it could be moved by a concurrent writer in between and the
     evaluation would be scoped to the other one.
 
-    **The dirty set is left empty on purpose.** The materialisation's
-    ``publish_scenario_version`` has just moved the version of every override
-    asset this scenario touches, so a submit with no attributes and no
-    features resolves the work from freshness at this scenario's partition —
-    which also covers an attribute whose *last* edit was removed, something a
-    list of the surviving edits' keys could not name.
+    **The dirty set is the scenario's footprint**, not freshness. Planned from
+    freshness, every indicator reading a changed attribute recomputed every
+    block of the AOI under the scenario — 19,058 in Mexicali for a rule over
+    2,400, about 20 s a run — though a block without an override reads the
+    baseline through the overlay anyway. The footprint is every block a current
+    rule overrides plus every block whose override this materialisation removed
+    (so a rule's old place is recomputed when it moves or goes), with their
+    attributes — removed ones included, which is what freshness was covering.
 
     202, not 200: the materialisation is done and committed, the indicator
     recompute is accepted. ``run_id`` is what follows it.
@@ -969,8 +971,8 @@ def recompute_route(scenario_id: str) -> RecomputeResponse:
         # A second connection, because the first is gone: see above.
         handle = get_orchestrator().submit_run(
             conn,
-            changed_attributes=[],
-            edited_features=[],
+            changed_attributes=list(result.footprint_attributes),
+            edited_features=list(result.footprint_features),
             scenario_id=resolved,
             aoi_id=aoi_id,
             code_version=code_version(),
