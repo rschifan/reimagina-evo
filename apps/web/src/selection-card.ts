@@ -8,8 +8,8 @@
  * the request (one per settled change, the previous one aborted).
  */
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
-import { grainLabel } from "./choropleth";
-import { formatValue } from "./format";
+import { grainCount, grainLabel } from "./choropleth";
+import { formatValue, shareText } from "./format";
 
 /** `/stats`-shaped numbers for the selection; just `count` with no indicator. */
 export type SelectionStats = Pick<IndicatorValueStats, "count">
@@ -73,14 +73,13 @@ export function renderSelectionCard(
     return;
   }
   const word = grainLabel(grain).toLowerCase();
-  const lines = [line("selection-card__title", `Selection · ${stats.count.toLocaleString()} ${word}`)];
+  const lines = [line("selection-card__title", `Selection · ${grainCount(stats.count, grain)}`)];
   if (indicator && stats.count === 0) {
     lines.push(line("selection-card__note", `No ${word} inside`));
   } else if (indicator && stats.p50 != null) {
     lines.push(line("selection-card__value", `Median ${formatValue(stats.p50, indicator)}`));
     if (indicator.cap_value != null) {
-      const share = Math.round(((stats.count_at_cap ?? 0) / stats.count) * 100);
-      lines.push(line("selection-card__note", `${share}% at the cap`));
+      lines.push(line("selection-card__note", `${shareText(stats.count_at_cap ?? 0, stats.count)}% at the cap`));
     } else if (stats.p05 != null && stats.p95 != null) {
       lines.push(line(
         "selection-card__note",

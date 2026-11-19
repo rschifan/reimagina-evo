@@ -35,6 +35,11 @@ describe("rankText", () => {
     expect(rankText(row({ count: 1, count_below: 0 }))).toBe("");
   });
 
+  it("never claims every block or none", () => {
+    expect(rankText(row({ count_below: 19057 }))).toBe("Farther than >99% of blocks");
+    expect(rankText(row({ value: 1500, count_equal: 1, count: 300 }))).toBe("At the cap, with <1% of blocks");
+  });
+
   it("uses the grain it is given", () => {
     expect(rankText(row(), "municipality")).toBe("Farther than 31% of municipalities");
   });

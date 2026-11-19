@@ -66,6 +66,19 @@ describe("renderSelectionCard", () => {
     expect(host.hidden).toBe(false);
   });
 
+  it("never rounds the share at the cap to all or none", () => {
+    const most = render(shown({ count: 200, p05: 1500, p50: 1500, p95: 1500, count_at_cap: 199 }), PARK).textContent ?? "";
+    expect(most).toContain(">99% at the cap");
+    const few = render(shown({ count: 300, p05: 100, p50: 400, p95: 900, count_at_cap: 1 }), PARK).textContent ?? "";
+    expect(few).toContain("<1% at the cap");
+  });
+
+  it("counts one block in the singular", () => {
+    const text = render(shown({ count: 1, p05: 400, p50: 400, p95: 400, count_at_cap: 0 }), PARK).textContent ?? "";
+    expect(text).toContain("Selection · 1 block");
+    expect(text).not.toContain("1 blocks");
+  });
+
   it("shows the p05–p95 range and no cap for an uncapped indicator", () => {
     const text = render(shown({ count: 40, p05: 2, p50: 10, p95: 48.5, count_at_cap: null }), DENSITY).textContent ?? "";
     expect(text).toContain("Median 10 buildings / ha");

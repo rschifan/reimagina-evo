@@ -95,6 +95,13 @@ describe("the cap in the legend", () => {
     expect(el.innerHTML).toContain(CAP_COLOR);
   });
 
+  it("does not claim every block when one is short of the cap", () => {
+    const el = document.createElement("div");
+    const stats = spreadStats();
+    renderLegend(el, PARK, rampDomainFromStats(stats, PARK), stats.histogram, 19057, 19058);
+    expect(el.textContent).toContain(">99% of blocks at the 1,500 m cap");
+  });
+
   it("keeps the swatch but claims no share when the count is unknown", () => {
     const el = document.createElement("div");
     renderLegend(el, PARK, rampDomainFromStats(null, PARK), null, null, 0);

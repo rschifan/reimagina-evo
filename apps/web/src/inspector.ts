@@ -8,7 +8,7 @@
  */
 import type { FeatureIndicatorValue } from "./api";
 import { grainLabel } from "./choropleth";
-import { formatValue } from "./format";
+import { formatValue, shareText } from "./format";
 
 /**
  * Where a value sits among the AOI's features of the same grain, in words.
@@ -21,7 +21,7 @@ import { formatValue } from "./format";
 export function rankText(row: FeatureIndicatorValue, grain: string | null = "block"): string {
   if (row.count < 2) return "";
   const word = grainLabel(grain).toLowerCase();
-  const pct = (n: number): number => Math.round((n / row.count) * 100);
+  const pct = (n: number): string => shareText(n, row.count);
   if (row.cap_value !== null && row.value >= row.cap_value) {
     return `At the cap, with ${pct(row.count_equal)}% of ${word}`;
   }

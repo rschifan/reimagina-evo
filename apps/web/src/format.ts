@@ -13,6 +13,21 @@ export function fmtNumber(value: number): string {
 }
 
 
+/**
+ * `n` of `total` as a percentage, without the sign: `62`, `<1`, `>99`.
+ * `0` and `100` only when they are exact, so one capped block in 300 never
+ * reads as none and 199 of 200 never as all.
+ */
+export function shareText(n: number, total: number): string {
+  if (n <= 0) return "0";
+  if (n >= total) return "100";
+  const pct = (n / total) * 100;
+  if (pct < 1) return "<1";
+  if (pct > 99) return ">99";
+  return String(Math.round(pct));
+}
+
+
 /** Escape the five HTML-significant characters for safe insertion
  *  into innerHTML / template-literal markup. Use when a user-supplied
  *  string is concatenated into HTML rather than set via textContent. */

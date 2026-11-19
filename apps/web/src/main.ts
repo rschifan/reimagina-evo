@@ -47,7 +47,7 @@ import {
   clearGrainToggle,
   clearLegend,
   defaultGrain,
-  grainLabel,
+  grainCount,
   overlayFeatureAt,
   populateIndicatorSelect,
   rampDomainFromStats,
@@ -558,7 +558,7 @@ async function main(): Promise<void> {
       if (scopeEl) {
         const aoiName = aois.find((a) => a.aoi_id === aoiId)?.name;
         scopeEl.textContent = stats
-          ? `${stats.count.toLocaleString()} ${grainLabel(grain ?? null).toLowerCase()}` +
+          ? grainCount(stats.count, grain ?? null) +
             (aoiName ? ` · ${aoiName} only` : "")
           : "";
       }

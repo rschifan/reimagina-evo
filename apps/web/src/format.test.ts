@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { escapeHtml, fmtNumber, formatValue, unitLabel } from "./format";
+import { escapeHtml, fmtNumber, formatValue, shareText, unitLabel } from "./format";
 
 describe("fmtNumber", () => {
   it("passes integers through with thousands separators", () => {
@@ -96,5 +96,26 @@ describe("formatValue", () => {
 
   it("shows a unitless value bare", () => {
     expect(formatValue(3, { unit: null, cap_value: null })).toBe("3");
+  });
+});
+
+
+describe("shareText", () => {
+  it("says 0 and 100 only when they are exact", () => {
+    expect(shareText(0, 300)).toBe("0");
+    expect(shareText(300, 300)).toBe("100");
+  });
+
+  it("never rounds a few to none or almost all to all", () => {
+    expect(shareText(1, 300)).toBe("<1");
+    expect(shareText(1, 200)).toBe("<1");
+    expect(shareText(199, 200)).toBe(">99");
+    expect(shareText(19057, 19058)).toBe(">99");
+  });
+
+  it("rounds everything in between", () => {
+    expect(shareText(3, 300)).toBe("1");
+    expect(shareText(124, 200)).toBe("62");
+    expect(shareText(297, 300)).toBe("99");
   });
 });

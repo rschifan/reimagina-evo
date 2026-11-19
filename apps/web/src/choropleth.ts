@@ -32,7 +32,7 @@ import type {
 } from "./api";
 import { _baselineMinzoomForGrain } from "./layers";
 import { distributionSvg } from "./distribution";
-import { escapeHtml, fmtNumber, formatValue, unitLabel } from "./format";
+import { escapeHtml, fmtNumber, formatValue, shareText, unitLabel } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -770,9 +770,7 @@ function capRows(indicator: IndicatorSummary, countAtCap: number | null, total: 
     `<div class="cap-key"><i class="cap-key__swatch" style="background: ${CAP_COLOR}"></i>` +
     `${escapeHtml(formatValue(cap, indicator))}</div>`;
   if (countAtCap === null || total <= 0) return swatch;
-  const pct = (countAtCap / total) * 100;
-  // A handful of capped blocks must not round to a claim of none.
-  const share = countAtCap > 0 && pct < 1 ? "<1" : String(Math.round(pct));
+  const share = escapeHtml(shareText(countAtCap, total));
   // ponytail: grain word from the finest declared grain; capped indicators are block-only today.
   const grain = grainLabel(indicator.applies_to?.[0] ?? null).toLowerCase();
   const capText = formatValue(cap, { ...indicator, cap_value: null });
@@ -858,6 +856,12 @@ const GRAIN_LABELS: Record<string, string> = {
 /** Plural label for a grain: `block` → `Blocks`; `null` → `Features`. */
 export function grainLabel(grain: string | null): string {
   return grain === null ? "Features" : (GRAIN_LABELS[grain] ?? grain);
+}
+
+/** A count of features with its noun: `1 block`, `19,058 blocks`, `2 features`. */
+export function grainCount(n: number, grain: string | null): string {
+  const noun = n === 1 ? (grain ?? "feature") : grainLabel(grain).toLowerCase();
+  return `${n.toLocaleString()} ${noun}`;
 }
 
 
