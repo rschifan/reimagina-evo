@@ -1,6 +1,5 @@
 ---
 title: "Software and systems architecture map"
-subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 1"
 author: "Rossano Schifanella"
 date: "20 November 2026"
 ---
@@ -9,7 +8,6 @@ date: "20 November 2026"
 
 | | |
 |---|---|
-| **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |
 | **Deliverable** | Schedule A, Work 1 — Software and systems architecture map |
 | **Version** | 1.0 |
 | **Date** | 20 November 2026 |
@@ -20,30 +18,7 @@ date: "20 November 2026"
 
 | Version | Date | Author | Summary |
 |---|---|---|---|
-| 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
-| 0.2 | 2026-11-08 | Rossano Schifanella | Indicator count corrected to eleven, measured against the running system |
-| 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented; current dependency set |
-| 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
-| 0.5 | 2026-11-10 | Rossano Schifanella | Constraint C6 (no third-party runtime service); the tile server is interchangeable; street context in place of a basemap |
-| 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the 11 November delivery; no change to this document's content |
-| 0.7 | 2026-11-13 | Rossano Schifanella | T3 resolved: a scenario edit can be authored through the API, the CLI and the map |
-| 1.0 | 2026-11-20 | Rossano Schifanella | Issued for delivery, checked against migration `r051`; the corrections are listed below |
-
-Corrections in version 1.0:
-
-- External integrations: Overture, OpenStreetMap, WorldPop and the INEGI and SIGCDMX portals are called directly at ingestion; the private data lake is an offline mirror the code never calls (§2, §3).
-- An end-to-end data-flow description (§6).
-- The worker runs indicator units only; pipelines and derivation jobs run in the CLI (§5).
-- Scenario rules are recorded in `scenario_edit` and materialised into `scenario_override` on recompute (§6.2).
-- The orchestration port has six methods and two implementations (§8).
-- Deployment: pgbouncer 1.26.1, the API's direct connection for the orchestration module, plain HTTP, `make dev` serving the pages through Vite, API and worker as host processes, ports (§9).
-- The schema rule restated against what the code reads (§7); 24 geometry columns.
-- The web application, its four pages and the API's endpoint groups described (§5).
-- The indicator catalogue holds twelve indicators, not the eleven of version 0.2; test counts removed.
-- Diagrams replaced by one overview diagram and tables.
-
-
-This document describes the system at migration `r051`, as derived from the packages, a database migrated to `r051`, the OpenAPI document, `infra/docker/docker-compose.yml` and the `Makefile`. It carries no timings and no test counts. Where it and the code disagree, the code is authoritative.
+| 1.0 | 2026-11-20 | Rossano Schifanella | Issued |
 
 ---
 
@@ -219,7 +194,7 @@ The reference installation is one host. `infra/docker/docker-compose.yml` runs t
 |---|---|
 | Authentication | None in the API; CORS and request-id middleware only (T1) |
 | Raster access | `apps/api/cog_security.py` replaces titiler's `DatasetPathParams`, which accepts any `url`, with a validator accepting only `file://` URLs beneath the data root, symlinks resolved, escapes rejected |
-| Row-level security | `tenant_isolation` policies on `app_core.project`, `app_core.scenario` and `curated_geo.area_of_interest` (migrations `r011`, `r048`) are enabled, not forced, and permissive while `app.current_project_id` is unset; no code sets it. They are not a tenancy boundary (T6) |
+| Row-level security | `tenant_isolation` policies on `app_core.project`, `app_core.scenario` and `curated_geo.area_of_interest` (migrations `r011`, `r048`) are enabled, not forced, and permissive while `app.current_project_id` is unset; no code sets it. They are not a tenancy boundary (T4) |
 | Injection | Request values are query parameters. Dynamic SQL composes identifiers with `psycopg2.sql.Identifier` / `sql.SQL` or selects fixed code-controlled fragments |
 | Configuration | Environment: `REIMAGINA_APP_DSN`, `DATABASE_URL_DIRECT`, `REIMAGINA_API_POOL_MAX`, `REIMAGINA_API_POOL_WAIT_S`, `REIMAGINA_TILE_LIVE_BASE_URL`, `REIMAGINA_ORCHESTRATOR` (default `dbos`); `API_PORT`, `WEB_PORT` in the `Makefile` |
 | Observability | Health endpoints (`/health/live`, `/health/ready`, `/health/tile-server`); executor heartbeats; SSE run progress; the runs page; the `explore` schema; lineage and asset freshness per indicator |
@@ -234,7 +209,7 @@ The reference installation is one host. `infra/docker/docker-compose.yml` runs t
 | AD2 | Separate schemas per audience (§7) | Source of truth and inspection evolve without breaking the map | More views to maintain |
 | AD3 | Scenarios as overrides resolved at read time | `feature` and `observation` carry no scenario identifier, so the baseline cannot be written | A resolution step on scenario reads |
 | AD4 | Per-attribute dependency graph drives recomputation | An edit recomputes only what it affects | The graph must match what indicators read |
-| AD5 | DBOS durable execution in the same database | No second system; checkpoints transactional with data | Coupled to PostgreSQL and one DBOS major version (T11) |
+| AD5 | DBOS durable execution in the same database | No second system; checkpoints transactional with data | Coupled to PostgreSQL and one DBOS major version (T8) |
 | AD6 | Live vector tiles primary; PMTiles for stable layers | Scenario-aware and filtered layers cannot be static | Two tile paths |
 | AD7 | Tile contract as a SQL function signature | Martin and the API are interchangeable; development needs no Martin | One variable selects the source |
 | AD8 | No hosted basemap | No runtime third-party service or extra licence (C6) | Context comes from the platform's street network |
@@ -244,16 +219,13 @@ The reference installation is one host. `infra/docker/docker-compose.yml` runs t
 | # | Risk or debt | Assessment |
 |---|---|---|
 | T1 | No API authentication; anyone reaching the port can read all data and delete job history | Private deployment only; authentication and TLS required before network exposure |
-| T2 | Resolved: `maplibre-gl` 5.24.0 critical sanitiser-bypass advisory | 6.18.0 in use; no critical or high advisory reaches the shipped bundle |
-| T3 | Resolved: no user-facing scenario authoring | Available through the API, the CLI and the scenario workspace |
-| T4 | Scenarios cannot edit geometry; overrides carry numeric and text values | Geometric scenarios are future work |
-| T5 | One database is the scaling bound | Adequate at delivered scale; revisit before a multi-city deployment |
-| T6 | Row-level security is inert | Required before several projects share a database |
-| T7 | Resolved: `storage_uri` recorded two different things | `data_source_catalog.storage_uri` records the data's origin for every source |
-| T8 | Geometry validity is enforced only in the pipeline (`silver.clean_vector`) | Failure is a loud GEOS `TopologyException`, not a wrong number; an `explore` view of invalid geometries fits better than a per-row `ST_IsValid` check |
-| T9 | `ST_Intersection` evaluated three times per candidate pair in the overlap query | A `LATERAL` rewrite is equivalent; change only against `docs/architecture/PERFORMANCE.md` benchmarks |
-| T10 | Stacks differ: Compose and CI run PostgreSQL 16 / PostGIS 3.4 / pgRouting 3.6.1; performance baselines PostgreSQL 17 / PostGIS 3.4; the development database checked for this document PostgreSQL 17.10 / PostGIS 3.5.6 / pgRouting 3.6.3 | GEOS behaviour on invalid input varies across PostGIS minors (T8); align stacks and re-measure |
-| T11 | DBOS major-version coupling: version 3 reads version 2 workflows, not the reverse | Upgrades require draining in-flight runs; no rollback. The port permits replacing the engine |
+| T2 | Scenarios cannot edit geometry; overrides carry numeric and text values | Geometric scenarios are future work |
+| T3 | One database is the scaling bound | Adequate at delivered scale; revisit before a multi-city deployment |
+| T4 | Row-level security is inert | Required before several projects share a database |
+| T5 | Geometry validity is enforced only in the pipeline (`silver.clean_vector`) | Failure is a loud GEOS `TopologyException`, not a wrong number; an `explore` view of invalid geometries fits better than a per-row `ST_IsValid` check |
+| T6 | `ST_Intersection` evaluated three times per candidate pair in the overlap query | A `LATERAL` rewrite is equivalent; change only against `docs/architecture/PERFORMANCE.md` benchmarks |
+| T7 | Stacks differ: Compose and CI run PostgreSQL 16 / PostGIS 3.4 / pgRouting 3.6.1; performance baselines PostgreSQL 17 / PostGIS 3.4; the development database checked for this document PostgreSQL 17.10 / PostGIS 3.5.6 / pgRouting 3.6.3 | GEOS behaviour on invalid input varies across PostGIS minors (T5); align stacks and re-measure |
+| T8 | DBOS major-version coupling: version 3 reads version 2 workflows, not the reverse | Upgrades require draining in-flight runs; no rollback. The port permits replacing the engine |
 
 ## Glossary
 

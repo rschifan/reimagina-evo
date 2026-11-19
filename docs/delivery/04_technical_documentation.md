@@ -1,6 +1,5 @@
 ---
 title: "Technical documentation"
-subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 4"
 author: "Rossano Schifanella"
 date: "20 November 2026"
 ---
@@ -9,7 +8,6 @@ date: "20 November 2026"
 
 | | |
 |---|---|
-| **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |
 | **Deliverable** | Schedule A, Work 4 — Technical documentation |
 | **Version** | 1.0 |
 | **Status** | Issued |
@@ -17,33 +15,14 @@ date: "20 November 2026"
 
 | Version | Date | Author | Summary |
 |---|---|---|---|
-| 0.1 | 2026-11-08 | Rossano Schifanella | First complete draft |
-| 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
-| 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
-| 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface; corrected DSN ports (§4.1); re-measured install appendix |
-| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the 11 November delivery |
-| 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
-| 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
-| 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
-| 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
-| 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
-| 0.11 | 2026-11-19 | Rossano Schifanella | §6.4: rules are drawn and edited on the scenarios map; §7.2: lot coverage, and why the baseline carries none |
-| 1.0 | 2026-11-20 | Rossano Schifanella | Issued. Prerequisites corrected (Python 3.12, the Node versions the web app accepts, GDAL only for PMTiles export); every Python command runs through `uv run`; ports and `API_PORT`/`WEB_PORT` (§1, §4.2, §5); every environment variable with its default (§4); tile serving under `make dev` (§6.2); the crash-recovery remedy corrected (§6.1); a complete data-load runbook (§7.2); an operating chapter for each page and every CLI group (§8); troubleshooting renumbered (§9); §10 re-measured at `r051`; the map and scenario guides of 0.9–0.11 (§6.3, §6.4) are now §8.1 and §8.2 |
-
-### Provenance of the figures
-
-Re-measured on 19 November 2026, at migration `r051`: the install appendix in
-§10 (revision, table count, every test count), the acceptance run's duration
-in §7.1 and the size and generation time of the recovery territory in §6.1.
-Carried forward from an earlier measurement: the tile timing in §6.2.
+| 1.0 | 2026-11-20 | Rossano Schifanella | Issued |
 
 ### About this document
 
 This document covers installation, configuration and operation; architecture
 is Work 1, and the schema and endpoint reference Work 3. It assumes
 familiarity with PostgreSQL, Python and the command line, but no prior
-knowledge of this system. §10 records an install from a clean clone of the
-delivered revision; §9 the failures met while writing it and what they mean.
+knowledge of this system.
 
 ---
 
@@ -89,7 +68,7 @@ needs the lake mirror and internet access (§7.2).
 
 > **PostGIS and pgRouting are not in the Ubuntu archive.** They come from the
 > PostgreSQL Global Development Group repository. pgRouting is also not a
-> *trusted* extension, so `CREATE EXTENSION` requires a superuser — see §9.4.
+> *trusted* extension, so `CREATE EXTENSION` requires a superuser — see §10.4.
 
 **Every Python command in this document runs through `uv run`**, which uses the
 project environment `make install` creates in `.venv`. A bare `python` or
@@ -117,7 +96,7 @@ make stack-up
 The password appears six times in `.env`: once in `POSTGRES_PASSWORD` and
 once in each of the five DSNs (§4.1). Change all six together. The stack
 publishes host ports `5432`, `5433`, `3000` and `3001`; they must be free —
-see §9.10.
+see §10.10.
 
 **Path B — host PostgreSQL.** If you already run PostgreSQL locally, copy
 `.env.example` to `.env`, comment out the Path A block and uncomment Path B.
@@ -141,7 +120,7 @@ make install        # uv sync --extra dev, then npm ci in apps/web
 ```
 
 `npm ci` installs exactly what `apps/web/package-lock.json` records and never
-rewrites it. It ends with an `npm audit` summary; §9.6 says how to read one.
+rewrites it. It ends with an `npm audit` summary; §10.6 says how to read one.
 
 ### 3.3 Create and migrate the databases
 
@@ -188,8 +167,8 @@ Five DSNs, deliberately distinct so that one tool never takes another's pool.
 |---|---|---|---|
 | `DATABASE_URL` | Migrations, loaders, CLI, workers | `5433` | The default DSN for the storage layer. Carries DDL and `CREATE EXTENSION` |
 | `REIMAGINA_APP_DSN` | The API only | `5432` | The one pooled DSN, and the one the pooler is for: short read-only handlers, `SET LOCAL` only. Default `postgresql://localhost/reimagina_app`; `make dev` and `make dev-api` fall back to `DATABASE_URL` |
-| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY` | `5433` | **Must bypass the pooler.** See §9.2 |
-| `TEST_DATABASE_URL` | The integration, conformance and recovery suites | `5433` | The database name must contain `test` (or equal `REIMAGINA_TEST_DB_ALLOW_NAME`); the fixture refuses anything else, because its teardown drops every schema — §9.5 |
+| `DATABASE_URL_DIRECT` | Ops plane, Alembic, `LISTEN`/`NOTIFY` | `5433` | **Must bypass the pooler.** See §10.2 |
+| `TEST_DATABASE_URL` | The integration, conformance and recovery suites | `5433` | The database name must contain `test` (or equal `REIMAGINA_TEST_DB_ALLOW_NAME`); the fixture refuses anything else, because its teardown drops every schema — §10.5 |
 | `DATABASE_URL_ADMIN` | `make migrate` only | `5433` | The database connected to in order to *create* the other two. Needs a role that may create databases and extensions |
 
 Only one of the five is pooled, and that is not an oversight. In Path A,
@@ -245,14 +224,14 @@ container stack creates its role and database from them.
 |---|---|---|
 | `REIMAGINA_ORCHESTRATOR` | `dbos` | Which orchestrator the factory builds. `dbos` is the only deployable value |
 | `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | `client` submits and reads runs but executes nothing (the API); `executor` executes them (`python -m apps.worker` sets this itself); `dev` does both in one process |
-| `REIMAGINA_EXECUTOR_ID` | `<hostname>:<role>` | Identifies this process to crash recovery. Must be **stable** across restarts and **unique** between concurrent processes — see §9.3 |
+| `REIMAGINA_EXECUTOR_ID` | `<hostname>:<role>` | Identifies this process to crash recovery. Must be **stable** across restarts and **unique** between concurrent processes — see §10.3 |
 | `REIMAGINA_EXECUTOR_ROLE` | `app` | Distinguishes co-located processes. `python -m apps.worker` sets `worker` itself |
 | `REIMAGINA_RUN_CONCURRENCY` | `2` | How many runs one worker executes at once (the `runs` queue) |
 | `REIMAGINA_UNIT_CONCURRENCY` | `8` | How many indicator units one worker executes at once (the `units` queue) |
 | `REIMAGINA_POLL_INTERVAL_SEC` | `0.1` | How often a worker polls its queues |
-| `REIMAGINA_APP_VERSION` | derived | Pins the version gating recovery. Set deliberately or not at all — see §9.9 |
+| `REIMAGINA_APP_VERSION` | derived | Pins the version gating recovery. Set deliberately or not at all — see §10.9 |
 | `REIMAGINA_EXECUTOR_HEARTBEAT_S` | `30` | How often a process publishes liveness |
-| `REIMAGINA_EXECUTOR_STALE_S` | `300` | How silent an executor must be before a peer presumes it dead — see §9.9 |
+| `REIMAGINA_EXECUTOR_STALE_S` | `300` | How silent an executor must be before a peer presumes it dead — see §10.9 |
 | `REIMAGINA_RECLAIM_SWEEP_S` | half the window, at least 60 | How often the worker looks for dead executors |
 | `REIMAGINA_RECLAIM_ENABLED` | `1` | Set `0` to disable the sweep entirely |
 | `REIMAGINA_PROGRESS_SUBSCRIBERS` | `32` | How many live-progress streams (`/jobs/{run_id}/events`) one API process serves at once |
@@ -643,7 +622,7 @@ Three ordering rules matter:
   `scripts/mexicali_run.sh` step 10: the three urban-form indicators, then
   planned floors, the edificability family, the four network-distance
   indicators and the livability score. With the worker running, a run of
-  "what is out of date" on the run dashboard (§8.4) computes all of them in
+  "what is out of date" on the run dashboard (§9.4) computes all of them in
   dependency order instead.
 
 The scenario inputs need a baseline, which the "baseline of the scenario
@@ -673,19 +652,19 @@ baseline still equals the census. Scenario rules carry it — 60 % unless the
 planner changes it — and `housing_units = area × lot_coverage × storeys ÷
 m² per home`.
 
-## 8. Operating the platform
+## 9. Operating the platform
 
 The four pages share one top bar that links them. Every page reads the API
 through the web application's `/api` proxy; none needs anything but `make dev`.
 
-### 8.1 Map (`/`)
+### 9.1 Map (`/`)
 
 The map shows one indicator over one area of interest.
 
 1. **Pick the area** under *Area*; the map fits to it (`f` refits).
 2. **Pick the indicator** under *Indicator*. The map opens on the first
    indicator that has values, so it never opens blank. *About this indicator*
-   opens its catalogue entry (§8.3). Where an indicator exists at more than
+   opens its catalogue entry (§9.3). Where an indicator exists at more than
    one grain, a toggle switches between them (blocks, AGEBs).
 3. **Read the legend**, on the map. The colour ramp spans the middle 90 % of
    values, so one outlier cannot flatten it; outside that span colours
@@ -740,7 +719,7 @@ them.
 | `r` / `p` / `c` | Draw a rectangle, polygon or circle selection |
 | `esc` | Close the block inspector, then clear the selection |
 
-### 8.2 Scenarios (`/scenarios.html`)
+### 9.2 Scenarios (`/scenarios.html`)
 
 A scenario is a named what-if over a pilot area: rules that change the
 storeys, dwelling size, household size and lot coverage of the blocks inside
@@ -765,7 +744,7 @@ a drawn area, and the indicators those changes recompute.
    the rule and recomputes; the bar above the map shows the change in homes
    and people, and says *Recomputing…* while the run is in progress. A
    recompute that outlives the page's wait is handed to the run dashboard
-   (§8.4).
+   (§9.4).
 5. **Edit a rule.** Every rule stays outlined on the map. Click one to change
    its numbers, drag or resize it, or delete it; each is followed by a
    recompute, and the rule keeps its place in "later wins" (a box opened on
@@ -780,7 +759,7 @@ The same operations are in the CLI (`scenario create`, `set-attribute`,
 `recompute`, `compare`) and the API (`/scenarios`); `scripts/acceptance_run.sh`
 steps 10 and 11 use the CLI.
 
-### 8.3 Catalogue (`/catalog.html`)
+### 9.3 Catalogue (`/catalog.html`)
 
 What each indicator is and where it comes from.
 
@@ -796,7 +775,7 @@ What each indicator is and where it comes from.
   attribute of a dataset, or a whole dataset — and lists the indicators that
   would recompute, without submitting anything.
 
-### 8.4 Runs (`/ops.html`)
+### 9.4 Runs (`/ops.html`)
 
 Every computation — an indicator, a scenario recompute — is a run of units,
 one unit per indicator, executed by the worker.
@@ -834,7 +813,7 @@ The same actions through the API:
 | Re-run | `POST /jobs/{run_id}/rerun` |
 | Delete one finished run, or all | `DELETE /jobs/{run_id}`, `DELETE /jobs` |
 
-### 8.5 The command line
+### 9.5 The command line
 
 `uv run python -m apps.cli.app --help` lists everything; each group takes
 `--help` too. Top-level commands:
@@ -850,7 +829,7 @@ The seventeen command groups:
 
 | Group | What it holds |
 |---|---|
-| `explore` | Read-only inspection: layers, sources, feature and serving statistics, executor health (§8.6) |
+| `explore` | Read-only inspection: layers, sources, feature and serving statistics, executor health (§9.6) |
 | `feat` | The feature-type catalogue (`seed-types`) |
 | `inegi-marco` | INEGI Marco Geoestadístico 2024 ingest from the lake mirror |
 | `inegi-censo` | INEGI 2020 census ingest, block grain |
@@ -868,7 +847,7 @@ The seventeen command groups:
 | `data` | Cross-source checks (`verify-sources`) |
 | `perf` | Performance benchmarks and observability |
 
-### 8.6 Inspection
+### 9.6 Inspection
 
 Inspection goes through the `explore` schema, which exists for humans and is
 never an application dependency:
@@ -881,11 +860,11 @@ uv run python -m apps.cli.app explore serving-stats
 uv run python -m apps.cli.app explore executor-health
 ```
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 Each of these was encountered while verifying this document.
 
-### 9.1 `make migrate` fails with `fe_sendauth: no password supplied`
+### 10.1 `make migrate` fails with `fe_sendauth: no password supplied`
 
 The admin connection has no credentials. `make migrate` reads
 `DATABASE_URL_ADMIN` from `.env`; if it is absent the built-in default is
@@ -893,7 +872,7 @@ The admin connection has no credentials. `make migrate` reads
 will be refused by any PostgreSQL that asks for one. Set it, with a role that
 may create databases and extensions.
 
-### 9.2 Runs are submitted but nothing computes; or checkpoints vanish
+### 10.2 Runs are submitted but nothing computes; or checkpoints vanish
 
 First, is a worker running? Without one, runs stay queued; the run
 dashboard's health strip says so.
@@ -913,7 +892,7 @@ process gets a client for the new database — but a long-lived process that
 already launched against the old one keeps its executor and its queues there.
 Restart it.
 
-### 9.3 A restarted worker reclaims nothing, or two processes fight over work
+### 10.3 A restarted worker reclaims nothing, or two processes fight over work
 
 `REIMAGINA_EXECUTOR_ID` identifies a process to crash recovery, which reclaims
 only work recorded against that exact id. It must be stable across restarts,
@@ -922,13 +901,13 @@ processes, or one reclaims work another is still running — a double execution.
 Unset, it derives `<hostname>:<role>`, which is correct for at most one
 process per role per host.
 
-### 9.4 `CREATE EXTENSION pgrouting` is refused
+### 10.4 `CREATE EXTENSION pgrouting` is refused
 
 pgRouting is not a trusted extension, so it needs a superuser. This holds for
 the container stack, for CI, and for a local install. On a managed instance
 that hands out a non-superuser role, migration `r037` cannot run.
 
-### 9.5 The integration suite drops your schemas
+### 10.5 The integration suite drops your schemas
 
 That is by design, and it is why the database `TEST_DATABASE_URL` names must
 contain `test` — the fixture refuses anything else unless
@@ -936,7 +915,7 @@ contain `test` — the fixture refuses anything else unless
 you care about. `make migrate` restores the test database's schemas
 afterwards.
 
-### 9.6 `npm audit` reports vulnerabilities after installation
+### 10.6 `npm audit` reports vulnerabilities after installation
 
 At this revision it reports none. Advisories published later will appear in
 the summary `npm ci` prints. `npm audit` does not distinguish what ships to
@@ -944,7 +923,7 @@ the browser from what only builds it; `docs/THIRD_PARTY_LICENSES.md` does, in
 its `Distribution` column, and that is the first thing to check before acting
 on an entry.
 
-### 9.7 `make stack-up` fails before any container starts
+### 10.7 `make stack-up` fails before any container starts
 
 `make stack-up` reads `.env`, and Compose refuses the stack definition at
 configuration time — before any container is created, naming the variable —
@@ -953,7 +932,7 @@ keep the Path A block uncommented. In Path A, `DATABASE_URL_DIRECT` must name
 port **5433**, PostgreSQL behind the pooler, not 5432, which is the pooler
 itself.
 
-### 9.8 The map draws no tiles
+### 10.8 The map draws no tiles
 
 The map asks for tiles at `REIMAGINA_TILE_LIVE_BASE_URL` (§6.2). Under
 `make dev` that is the API (`/api/tiles`) and nothing else needs to run. If
@@ -969,7 +948,7 @@ If tiles are requested but empty, the area has no members: run
 `aoi compute-features` after the last load (§7.2). An area outside the loaded
 territory is empty by design — the API answers `204`.
 
-### 9.9 A dead worker's run is stuck at `running` forever
+### 10.9 A dead worker's run is stuck at `running` forever
 
 Two different recoveries exist and they cover different failures.
 
@@ -1027,7 +1006,7 @@ GROUP BY 1, 2, 3 ORDER BY 1, 2;
 Or cancel the runs and resubmit — writes are replace-in-place, so a
 resubmission is safe.
 
-### 9.10 The container stack will not start, or starts slowly
+### 10.10 The container stack will not start, or starts slowly
 
 - **A port is taken.** The stack publishes fixed host ports — `5432`
   (pooler), `5433` (PostgreSQL), `3000` (Martin) and `3001` (snapshots). A
@@ -1045,7 +1024,7 @@ resubmission is safe.
   volume (`docker compose -f infra/docker/docker-compose.yml down -v`, which
   deletes the database) or change the role's password in PostgreSQL.
 
-## 10. Appendix — a verified clean install
+## 11. Appendix — a verified clean install
 
 The sequence below was executed in a fresh checkout of the delivered
 revision, in this order, and each step is reported with its actual result.
@@ -1072,11 +1051,10 @@ Python 3.12.11 (from `uv`) and Node.js 24.22.2. CI and the container stack use
 PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1; the schema is identical
 across both.
 
-Three things about this run differ from a fresh machine, and are stated
-rather than smoothed over. It used Path B (§3.1) with the databases named
+Three things about this run differ from a fresh machine. It used Path B (§3.1) with the databases named
 `reimagina_rel_app_test` and `reimagina_rel_test`, because the machine's
 other work already uses the default names and the integration suite drops
-schemas (§9.5). The API and Vite ran on ports 8057 and 5197 (`API_PORT`,
+schemas (§10.5). The API and Vite ran on ports 8057 and 5197 (`API_PORT`,
 `WEB_PORT`, §5), because 8001 and 5173 were in use. And step 13 ran after
 loading the generated territory (§7.1): the browser suite asserts on what the
 map draws and on the legend's distribution, and an empty database has

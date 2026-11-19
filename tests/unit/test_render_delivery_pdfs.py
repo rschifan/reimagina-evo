@@ -18,7 +18,6 @@ import render_delivery_pdfs as r  # noqa: E402
 
 DOC = """---
 title: "Technical documentation"
-subtitle: "Reimagina · Project — Schedule A, Work 4"
 date: "20 November 2026"
 ---
 

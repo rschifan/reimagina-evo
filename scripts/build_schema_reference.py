@@ -168,10 +168,8 @@ def database_section(dsn: str) -> list[str]:
             "## Database",
             "",
             f"The delivered stack runs {deployed_stack(COMPOSE.read_text())} "
-            "(`infra/docker/docker-compose.yml`). This section was introspected "
-            f"from a database migrated to Alembic revision **`{head}`**; the "
-            "server version of the host it was introspected on is deliberately "
-            "not recorded, because it is not part of the delivery.",
+            "(`infra/docker/docker-compose.yml`). The schema below is at "
+            f"Alembic revision **`{head}`**.",
             "",
             "Types are as PostgreSQL prints them (`format_type`), so a geometry "
             "column shows its geometry type and SRID.",
@@ -660,8 +658,6 @@ def main(argv: list[str] | None = None) -> int:
     document = [
         "---",
         'title: "Database and API reference"',
-        'subtitle: "Reimagina · Conceptualización y diseño de una centralidad '
-        'urbana en Mexicali — Schedule A, Work 3"',
         f'author: "{author}"',
         f'date: "{issued.day} {issued:%B %Y}"',
         "---",
@@ -670,8 +666,6 @@ def main(argv: list[str] | None = None) -> int:
         "",
         "| | |",
         "|---|---|",
-        "| **Project** | Conceptualización y diseño de una centralidad urbana "
-        "en Mexicali |",
         "| **Deliverable** | Schedule A, Work 3 — Database/API schemas and "
         "documentation |",
         f"| **Version** | {VERSION} |",
@@ -681,13 +675,6 @@ def main(argv: list[str] | None = None) -> int:
         "| Version | Date | Author | Summary |",
         "|---|---|---|---|",
         *(f"| {v} | {when} | {author} | {summary} |" for v, when, summary in REVISIONS),
-        "",
-        "> **Generated — do not edit.** Regenerate with",
-        "> `python scripts/build_schema_reference.py --dsn … --date …`. The",
-        "> schema is introspected from a migrated database and the endpoints",
-        "> come from the application's own OpenAPI document, so this reference",
-        "> describes the delivered system by construction rather than by",
-        "> assertion.",
         "",
         *database_section(args.dsn),
         *api_section(),

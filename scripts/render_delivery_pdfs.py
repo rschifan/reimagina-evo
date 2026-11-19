@@ -9,8 +9,7 @@ Chromium prints it.
 Every document gets the same report template, and everything on it comes from
 the document itself — nothing here is written per document:
 
-* a cover: the project line from the front matter's ``subtitle`` (the part
-  before " — "), ``title``, the **Deliverable**, **Version** and **Status**
+* a cover: ``title``, the **Deliverable**, **Version** and **Status**
   rows of the document-control table, ``date`` and ``author``. A document
   missing any of them stops the render, naming what is missing;
 * the document-control section the document opens with (everything before
@@ -140,10 +139,8 @@ hr {{ border: none; border-top: .5pt solid {_RULE}; margin: 1.6em 0; }}
 
 /* ── Cover ─────────────────────────────────────────────────────────── */
 .cover {{ height: 248mm; display: flex; flex-direction: column;
-         break-after: page; }}
-.cover .project {{ border-top: 3pt solid {_ACCENT}; padding-top: 4mm;
-                  font-size: 9.5pt; letter-spacing: .02em; color: {_MUTED}; }}
-.cover h1 {{ margin: 62mm 0 0; font-size: 27pt; font-weight: 600;
+         border-top: 3pt solid {_ACCENT}; break-after: page; }}
+.cover h1 {{ margin: 66mm 0 0; font-size: 27pt; font-weight: 600;
             line-height: 1.15; letter-spacing: -.01em; color: {_ACCENT};
             text-wrap: balance; }}
 .cover .deliverable {{ margin: 5mm 0 0; font-size: 12.5pt; color: #3d4654; }}
@@ -501,7 +498,6 @@ def render(source: Path, css: Path, js: Path, template: Path) -> Path:
 
     wanted = {
         "title": meta.get("title"),
-        "subtitle": meta.get("subtitle"),
         "author": meta.get("author"),
         "date": meta.get("date"),
         "Deliverable": rows.get("Deliverable"),
@@ -514,7 +510,6 @@ def render(source: Path, css: Path, js: Path, template: Path) -> Path:
             "(front matter, or a **row** of the document-control table)"
         )
     title, version = meta["title"], rows["Version"]
-    project = meta["subtitle"].split(" — ")[0]
     work = rows["Deliverable"].split(" — ")[0]
 
     toc, main_html = _pandoc(
@@ -530,8 +525,7 @@ def render(source: Path, css: Path, js: Path, template: Path) -> Path:
         return text.replace("\\", "\\\\").replace('"', '\\"')
 
     cover = (
-        f'<section class="cover"><div class="project">{escape(project)}</div>'
-        f"<h1>{escape(title)}</h1>"
+        f'<section class="cover"><h1>{escape(title)}</h1>'
         f'<p class="deliverable">{escape(rows["Deliverable"])}</p><dl>'
         + "".join(
             f"<dt>{label}</dt><dd>{escape(value)}</dd>"

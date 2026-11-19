@@ -1,6 +1,5 @@
 ---
 title: "Database and API reference"
-subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"
 author: "Rossano Schifanella"
 date: "20 November 2026"
 ---
@@ -9,7 +8,6 @@ date: "20 November 2026"
 
 | | |
 |---|---|
-| **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |
 | **Deliverable** | Schedule A, Work 3 — Database/API schemas and documentation |
 | **Version** | 1.0 |
 | **Status** | Issued |
@@ -19,16 +17,9 @@ date: "20 November 2026"
 |---|---|---|---|
 | 1.0 | 2026-11-20 | Rossano Schifanella | Issued with the v1.0.0 delivery |
 
-> **Generated — do not edit.** Regenerate with
-> `python scripts/build_schema_reference.py --dsn … --date …`. The
-> schema is introspected from a migrated database and the endpoints
-> come from the application's own OpenAPI document, so this reference
-> describes the delivered system by construction rather than by
-> assertion.
-
 ## Database
 
-The delivered stack runs PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1 (`infra/docker/docker-compose.yml`). This section was introspected from a database migrated to Alembic revision **`r051`**; the server version of the host it was introspected on is deliberately not recorded, because it is not part of the delivery.
+The delivered stack runs PostgreSQL 16, PostGIS 3.4 and pgRouting 3.6.1 (`infra/docker/docker-compose.yml`). The schema below is at Alembic revision **`r051`**.
 
 Types are as PostgreSQL prints them (`format_type`), so a geometry column shows its geometry type and SRID.
 
