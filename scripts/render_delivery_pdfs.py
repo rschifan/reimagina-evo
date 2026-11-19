@@ -1,4 +1,4 @@
-"""Render the delivery documents to PDF (Schedule A, Works 1, 3 and 4).
+"""Render the delivery documents to PDF (Schedule A, Works 1, 3 and 4, and the annex).
 
 Three of the four Works are accepted as PDFs, and one criterion is simply that
 the result is *legible*. So this renders through a pipeline that gives control
@@ -12,7 +12,22 @@ default failure is a table that runs off the right edge of the page, taking
 the text with it. Code wraps rather than overflows, tables are laid out to the
 page width, and headings are kept with the content beneath them.
 
-Chromium and Playwright are already installed; nothing is downloaded.
+Toolchain (nothing here is declared in the repository's own dependencies; the
+committed hashes in ``docs/delivery/SHA256SUMS`` were produced with exactly
+these, on macOS):
+
+* ``pandoc`` 3.6.3
+* Node.js >= 22 (24 was used)
+* Playwright 1.64.x with its Chromium. Provide it without touching the
+  lockfile, from ``apps/web``::
+
+      cd apps/web
+      npm i --no-save playwright@1.64.1 && npx playwright install chromium
+      cd ../..
+      export NODE_PATH="$PWD/apps/web/node_modules"
+
+Another pandoc or Playwright version may lay the pages out differently, so the
+PDFs would be correct but would not match ``SHA256SUMS`` byte for byte.
 
 Usage::
 
@@ -24,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -312,6 +328,27 @@ def render(source: Path, css: Path, js: Path) -> Path:
     return pdf
 
 
+def _missing_tools() -> list[str]:
+    """What the pipeline needs and cannot find, each with how to provide it."""
+    missing = []
+    if shutil.which("pandoc") is None:
+        missing.append("pandoc 3.6.3 (https://pandoc.org/installing.html)")
+    if shutil.which("node") is None:
+        missing.append("Node.js >= 22")
+    elif (
+        subprocess.run(
+            ["node", "-e", "require.resolve('playwright')"], capture_output=True
+        ).returncode
+        != 0
+    ):
+        missing.append(
+            "Playwright 1.64.x with Chromium: in apps/web run "
+            "`npm i --no-save playwright@1.64.1 && npx playwright install chromium`, "
+            'then `export NODE_PATH="$PWD/apps/web/node_modules"`'
+        )
+    return missing
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render delivery docs to PDF.")
     parser.add_argument("names", nargs="*", help="Markdown files; default all.")
@@ -328,6 +365,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not sources:
         print(f"no Markdown in {DELIVERY.relative_to(ROOT)}", file=sys.stderr)
+        return 2
+
+    if missing_tools := _missing_tools():
+        print(
+            "cannot render; missing:\n  - " + "\n  - ".join(missing_tools),
+            file=sys.stderr,
+        )
         return 2
 
     BUILD.mkdir(parents=True, exist_ok=True)

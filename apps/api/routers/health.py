@@ -8,7 +8,7 @@
 /health → alias for /health/ready, kept for backwards compatibility
    with the earlier single-endpoint shape.
 /health/tile-server → reports Martin connectivity AND a sanity check
-   that Martin's database matches the API's. Codex review surfaced
+   that Martin's database matches the API's. A review found
    that the multi-site work shipped twice with the API and Martin
    pointing at different Postgres databases — this endpoint exposes
    that drift instead of letting it manifest as silent empty tiles.
@@ -74,7 +74,7 @@ def health(response: Response) -> ReadinessResponse:
 def tile_server(response: Response) -> TileServerResponse:
     """Report Martin connectivity + flag API/Martin DB drift.
 
-    The HIGH-severity finding from Codex was that nothing prevented
+    The high-severity review finding was that nothing prevented
     the API and Martin from connecting to different Postgres
     databases — exactly the bug we hit during the live test. We can't
     introspect Martin's DSN over HTTP (Martin doesn't expose it), but

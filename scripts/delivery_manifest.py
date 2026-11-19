@@ -23,22 +23,34 @@ by the commit the tag points at. That is the ordinary resolution of the
 circularity, and it is written into the generated document rather than left
 for a reviewer to notice.
 
-**What is not hashed:** the source tree. The tag identifies it, and a tree
-hash stored in a file inside that tree is a circularity with no reader. What
-makes the *documents* verifiable is something better than a hash anyway —
-they are byte-reproducible, so a recipient can rebuild them from the tagged
-commit and compare rather than trust. See ``render_delivery_pdfs._pin_timestamps``.
+**The source code (Schedule A Work 2)** is hashed too, but not as "the tag":
+the tag's commit contains this very file, so a hash of it cannot be written
+inside it. The manifest hashes the *source commit* — the commit it was
+generated from, which is the tag's parent — as an uncompressed
+``git archive`` tar. Uncompressed because a ``.tar.gz`` depends on the gzip
+implementation; the tar's bytes depend only on the commit (its entries carry
+the commit time). The tag's commit differs from the source commit by exactly
+``docs/delivery/MANIFEST.md`` and ``docs/delivery/SHA256SUMS``.
+
+Generate on a clean ``main``, never on a feature branch: the recorded commit
+must be one the recipient can reach from the tag.
+
+The *documents* are verifiable by something better than a hash as well: they
+are byte-reproducible, so a recipient can rebuild them and compare rather than
+trust. See ``render_delivery_pdfs._pin_timestamps``.
 
 Usage::
 
-    python scripts/delivery_manifest.py            # write both files
-    python scripts/delivery_manifest.py --check    # fail if either is stale
+    python scripts/delivery_manifest.py --tag v1.0.0   # write both files
+    python scripts/delivery_manifest.py --check        # fail if either is stale
+    python scripts/delivery_manifest.py --print-commit # the source commit recorded
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -93,6 +105,28 @@ def _git(*args: str) -> str:
         return ""
 
 
+def _version(explicit: str | None) -> str:
+    """The delivery version: `--version`, else `pyproject.toml`."""
+    if explicit:
+        return explicit.removeprefix("v")
+    text = (ROOT / "pyproject.toml").read_text()
+    found = re.search(r'^version = "([^"]+)"', text, re.M)
+    return found.group(1) if found else "(unknown)"
+
+
+def _source_archive(commit: str, version: str) -> tuple[str, int]:
+    """SHA-256 and size of the uncompressed `git archive` of `commit`."""
+    if not commit:
+        return "(not a git repository)", 0
+    tar = subprocess.run(
+        ["git", "archive", "--format=tar", f"--prefix=reimagina-v{version}/", commit],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+    return hashlib.sha256(tar).hexdigest(), len(tar)
+
+
 def _delivery_date() -> str:
     """The date the documents themselves declare.
 
@@ -142,9 +176,13 @@ def _sums(rows: list[tuple[str, str, int, str]]) -> str:
 
 
 def _manifest(
-    rows: list[tuple[str, str, int, str]], date: str, tag: str | None = None
+    rows: list[tuple[str, str, int, str]],
+    date: str,
+    tag: str | None = None,
+    version: str = "(unknown)",
 ) -> str:
     commit = _git("rev-parse", "HEAD")
+    src_sha, src_size = _source_archive(commit, version)
     # Discovered when the tag already exists, stated when it does not.
     # The tag has to name the commit whose tree contains this file, so it
     # cannot exist when the file is generated — the ordering is: state the
@@ -152,8 +190,6 @@ def _manifest(
     # would permanently read "(untagged)", which is the one field a
     # recipient is most likely to need.
     tag = tag or _git("describe", "--tags", "--exact-match") or "(untagged)"
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
-    dirty = bool(_git("status", "--porcelain"))
     # What a recipient checks out. Both verification procedures start from a
     # checkout, and "(untagged)" names nothing to check out, so an untagged
     # manifest has to say what stands in for the tag. It is a git row, like
@@ -162,9 +198,8 @@ def _manifest(
     if tag == "(untagged)":
         checkout = (
             "⚠ untagged, so not yet an issued delivery: the commit that adds "
-            f"this file, the first after `{(commit or '?')[:12]}` on "
-            f"`{branch or '?'}` to touch `docs/delivery/MANIFEST.md`. Tag that "
-            "commit before issuing."
+            f"this file, the first after `{(commit or '?')[:12]}` to touch "
+            "`docs/delivery/MANIFEST.md`. Tag that commit before issuing."
         )
     else:
         checkout = f"`git checkout {tag}`"
@@ -172,16 +207,16 @@ def _manifest(
     lines = [
         "# Delivery manifest",
         "",
-        "Issued under Article 2.2 of the agreement, which identifies a delivery",
-        "by its date, version, commit or tag, and SHA-256 hash.",
+        "Delivered under Article 2.1, identified under Article 2.2 of the",
+        "agreement, which identifies a delivery by its date, version, commit or",
+        "tag, and SHA-256 hash.",
         "",
         "| | |",
         "|---|---|",
         f"| **Date** | {date} |",
+        f"| **Version** | {version} |",
         f"| **Tag** | `{tag}` |",
         f"| **Generated from commit** | `{commit or '(not a git repository)'}` |",
-        f"| **Branch** | `{branch or '—'}` |",
-        f"| **Working tree at generation** | {'MODIFIED — not a clean delivery' if dirty else 'clean'} |",
         f"| **Check out** | {checkout} |",
         "",
         "⚠ The tag is the authoritative identifier, and the **Check out** row",
@@ -201,20 +236,45 @@ def _manifest(
 
     lines += [
         "",
+        "## Source code (Schedule A Work 2)",
+        "",
+        "| Schedule A | Source commit | Bytes | SHA-256 |",
+        "|---|---|---:|---|",
+        "| Work 2 — source code, `git archive` of the source commit | "
+        f"`{commit or '(not a git repository)'}` | {src_size:,} | `{src_sha}` |",
+        "",
+        "The hash is of the commit named above — the one this manifest was",
+        "generated from, which is the tag's parent — not of the tag itself: the",
+        "tag's commit contains this file, and a file cannot hold the hash of",
+        "something that contains it. The tag's commit differs from the source",
+        "commit by exactly `docs/delivery/MANIFEST.md` and",
+        "`docs/delivery/SHA256SUMS`. The archive is the *uncompressed* tar,",
+        "because a `.tar.gz` also depends on the gzip implementation. To",
+        "recompute it from any clone:",
+        "",
+        "```bash",
+        f"git archive --format=tar --prefix=reimagina-v{version}/ "
+        f"{commit or '<commit>'} | sha256sum",
+        "```",
+        "",
+        f"The release also carries `reimagina-v{version}.tar.gz`, the same",
+        "archive compressed with `gzip -n`; its own hash is in the release asset",
+        "`SHA256SUMS-assets`, which lists every file of the release.",
+        "",
         "## Verifying this",
         "",
-        "⚠ **The four PDFs are not in the repository.** They are generated, and",
-        "`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the delivery",
-        "contains the Markdown sources that produce them and not the PDFs",
-        "themselves. `sha256sum -c` on a bare checkout therefore reports four",
-        "`FAILED open or read` lines, and that is the expected result, not a",
-        "corrupt delivery. Use whichever of the two procedures below matches",
-        "what you have.",
+        "The four PDFs are **not in the repository**: they are generated, and",
+        "`.gitignore` excludes `docs/delivery/pdf/`. They travel as assets of",
+        f"the GitHub release of tag `{tag}`, together with `MANIFEST.md`,",
+        "`SHA256SUMS` and the source archive. A bare checkout therefore reports",
+        "four `FAILED open or read` lines from `sha256sum -c`, which is expected,",
+        "not a corrupt delivery. Use whichever of the two procedures below",
+        "matches what you have.",
         "",
         "### If you have the delivered PDFs",
         "",
-        "Put them in a checkout of the delivery (the **Check out** row above)",
-        "at the paths the table above gives",
+        "Download them from the release, put them in a checkout of the delivery",
+        "(the **Check out** row above) at the paths the table above gives",
         "(`docs/delivery/pdf/`), then:",
         "",
         "```bash",
@@ -238,9 +298,11 @@ def _manifest(
         "",
         "All nine lines then read `OK`. This is the stronger of the two checks:",
         "it needs no trust in the delivered files at all, only in the sources",
-        "the checkout holds. It needs `pandoc` and the Chromium that",
-        "`scripts/render_delivery_pdfs.py` drives; the script names what is",
-        "missing if it cannot find them.",
+        "the checkout holds. The hashes were produced with pandoc 3.6.3,",
+        "Node 24, and Playwright 1.64.1 with its Chromium; the render script's",
+        "docstring says how to provide them (`npm i --no-save playwright@1.64.1",
+        "&& npx playwright install chromium` in `apps/web`, then",
+        "`NODE_PATH=apps/web/node_modules`).",
         "",
         "### What a hash does and does not establish",
         "",
@@ -275,9 +337,9 @@ def _manifest(
 _GIT_ROWS = (
     "| **Tag** |",
     "| **Generated from commit** |",
-    "| **Branch** |",
-    "| **Working tree at generation** |",
     "| **Check out** |",
+    "| Work 2 ",
+    "git archive ",
 )
 
 
@@ -304,11 +366,18 @@ def main(argv: list[str] | None = None) -> int:
             "exist yet when the manifest is written."
         ),
     )
+    parser.add_argument("--version", default=None, help="Default: pyproject.toml.")
+    parser.add_argument(
+        "--print-commit", action="store_true", help="Print the source commit and exit."
+    )
     args = parser.parse_args(argv)
 
+    if args.print_commit:
+        print(_git("rev-parse", "HEAD"))
+        return 0
     rows = _rows()
     sums = _sums(rows)
-    manifest = _manifest(rows, _delivery_date(), args.tag)
+    manifest = _manifest(rows, _delivery_date(), args.tag, _version(args.version))
 
     if args.check:
         # SHA256SUMS compares exactly — it carries nothing but hashes and

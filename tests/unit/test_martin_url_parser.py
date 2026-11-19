@@ -1,6 +1,6 @@
 """Unit tests for ``_martin_base_and_default_function`` URL parsing.
 
-Codex review flagged that the original parser split *any* tail-like
+Review flagged that the original parser split *any* tail-like
 URL segment into ``(base, function_name)``. That broke under reverse-
 proxy deployments where the Martin URL is served at a path prefix
 (e.g. ``https://host/martin``): the parser would emit base=

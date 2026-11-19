@@ -477,7 +477,7 @@ async function main(): Promise<void> {
     // stats fetch from request N doesn't overwrite the result of a
     // newer request N+1. Without this, switching AOI or indicator
     // rapidly leaves the map showing the older combination's ramp +
-    // tile source — a subtle "stale state" bug Codex flagged.
+    // tile source — a subtle "stale state" bug.
     let renderToken = 0;
 
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
