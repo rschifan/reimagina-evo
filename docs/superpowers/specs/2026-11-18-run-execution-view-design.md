@@ -2,6 +2,17 @@
 
 Date: 2026-11-18 · Status: draft for approval
 
+> **Amended 2026-11-19 — no prediction.** The timeline no longer forecasts
+> anything. A2 is the only axis rule: a live run starts on a 10 s axis that
+> doubles each time the run reaches 95 % of it, so every bar shrinks at once
+> and the run continues left to right; a finished run fits its axis to its
+> length. Removed with it: A1 and `forecastMs`, the dashed "expected (last
+> run)" outline and its legend entry, the "· 40%" / "+1.0s over" running
+> numbers (a running unit shows its elapsed time), `UnitDetail.expected_ms`
+> and `OpsRunReader.expected_durations`. Sections below that describe those
+> are kept as history and superseded by this note. The `job_unit_success_by_slug_idx`
+> index (r050) now serves no query; dropping it needs its own migration.
+
 ## Intent
 
 The run page's execution panel must answer two questions at a glance, live
@@ -50,8 +61,8 @@ repeat the same facts in different colours.
 | | Axis rule | Trade-off |
 |---|---|---|
 | A0 | `max(10 s, now × 1.25)` (old mockup; today is the 10 s-step version) | bars shrink continuously — rejected |
-| **A1** | fixed at forecast finish, ×1.25 only when exceeded | needs expected durations; never rescales in a normal run — **chosen** |
-| A2 | doubling 10/20/40 s | no data needed; visible jumps — **chosen as fallback** |
+| A1 | fixed at forecast finish, ×1.25 only when exceeded | needs expected durations; never rescales in a normal run — chosen, then removed 2026-11-19 |
+| **A2** | doubling 10/20/40 s | no data needed; visible jumps — **the only rule since 2026-11-19** |
 | A3 | fixed px/s, 20 s scrolling window | never rescales; early bars scroll away, no overview — rejected |
 
 Layouts B (slot lanes) and C (dependency stages) were shown and rejected in
