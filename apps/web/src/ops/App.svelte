@@ -1,5 +1,6 @@
 <script lang="ts">
 
+  import { untrack } from "svelte";
   import TopBar from "../lib/TopBar.svelte";
 
   import { RUN_STATUSES, type RunStatus } from "./api";
@@ -35,6 +36,12 @@
   // Monotonic, so a jittery offset never moves a relative time backward.
   let now = $state(Date.now());
   const tick = () => (now = monotonicNow(now, serverNow(Date.now(), ops.offsetMs)));
+  // Re-read the clock the moment an offset arrives. Waiting for the next
+  // one-second tick drew the first data against the uncorrected client clock.
+  $effect(() => {
+    void ops.offsetMs;
+    untrack(tick);
+  });
 
   let refresh: (() => void) | null = null;
   /** Announced transitions only. Marking the table itself polite would
