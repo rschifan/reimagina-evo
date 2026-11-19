@@ -128,6 +128,7 @@ from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
+    RuleNotFound,
     ScenarioHasNoAOI,
     ScenarioNotFound,
     add_edit,
@@ -137,6 +138,7 @@ from reimagina.scenarios.authoring import (
     list_scenarios,
     materialize_scenario,
     remove_edit,
+    update_rule,
 )
 from reimagina.scenarios.comparison import compare
 from reimagina.scenarios.proposal import (
@@ -146,6 +148,7 @@ from reimagina.scenarios.proposal import (
     polygon_wkt,
     precheck_ceilings,
     reachable_indicators,
+    require_coverage,
     require_positive,
     table_statistic,
 )
@@ -219,6 +222,31 @@ class ProposalBody(BaseModel):
     levels: float
     unit_size: float
     people_per_household: float
+    lot_coverage: float = Field(
+        1.0,
+        description="Share of the block built on (COS), 0 < c ≤ 1. Omitted "
+        "means 1.0, the whole block — the formula as it was before coverage.",
+    )
+    type_context: str = DEFAULT_TYPE_CONTEXT
+    type_slug: str = DEFAULT_TYPE_SLUG
+
+
+class UpdateRuleBody(BaseModel):
+    """One rule's new numbers, and optionally its new area.
+
+    ``edit_ids`` are the rule's edits as ``GET /scenarios/{id}`` lists them —
+    every edit of one area. They are updated in place, so the rule keeps its
+    position in "later wins".
+    """
+
+    edit_ids: list[UUID] = Field(min_length=1)
+    area: dict[str, Any] | None = Field(
+        None, description="The moved or resized area; omitted keeps the area."
+    )
+    levels: float
+    unit_size: float
+    people_per_household: float
+    lot_coverage: float = 1.0
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
 
@@ -395,6 +423,11 @@ def _refusals() -> Iterator[None]:
         yield
     except ScenarioNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuleNotFound as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "not_one_rule", "field": "edit_ids", "message": str(exc)},
+        ) from exc
     except DuplicateScenarioName as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScenarioHasNoAOI as exc:
@@ -727,9 +760,14 @@ def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
             unit_size=body.unit_size,
             people_per_household=body.people_per_household,
         )
-        precheck_ceilings(body.levels, body.unit_size, body.people_per_household)
+        require_coverage(body.lot_coverage)
+        precheck_ceilings(
+            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+        )
         geometry_wkt = polygon_wkt(body.area)
-        proposed = edits_for(body.levels, body.unit_size, body.people_per_household)
+        proposed = edits_for(
+            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+        )
 
         written: list[WrittenEdit] = []
         with contextlib.closing(connect(api_dsn())) as conn, conn:
@@ -754,6 +792,54 @@ def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
         scenario_id=resolved,
         feature_type=f"{body.type_context}:{body.type_slug}",
         edits=written,
+    )
+
+
+@router.patch("/{scenario_id}/rules", response_model=EditsWritten)
+def update_rule_route(scenario_id: str, body: UpdateRuleBody) -> EditsWritten:
+    """Change one rule's numbers, and optionally move or resize it, in place.
+
+    Same refusals, in the same order, as ``POST …/edits``. Does not
+    recompute: the caller does, as after a POST.
+    """
+    with _refusals():
+        resolved = _scenario_id(scenario_id)
+        require_positive(
+            levels=body.levels,
+            unit_size=body.unit_size,
+            people_per_household=body.people_per_household,
+        )
+        require_coverage(body.lot_coverage)
+        precheck_ceilings(
+            body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+        )
+        geometry_wkt = None if body.area is None else polygon_wkt(body.area)
+        values = {
+            edit["attribute_key"]: edit["value_numeric"]
+            for edit in edits_for(
+                body.levels,
+                body.unit_size,
+                body.people_per_household,
+                body.lot_coverage,
+            )
+        }
+        with contextlib.closing(connect(api_dsn())) as conn, conn:
+            type_id = _feature_type_id(conn, body.type_context, body.type_slug)
+            rows = update_rule(
+                conn,
+                scenario_id=resolved,
+                edit_ids=[str(edit_id) for edit_id in body.edit_ids],
+                geometry_wkt=geometry_wkt,
+                values=values,
+                type_id=type_id,
+            )
+    return EditsWritten(
+        scenario_id=resolved,
+        feature_type=f"{body.type_context}:{body.type_slug}",
+        edits=[
+            WrittenEdit(id=edit_id, attribute_key=key, value_numeric=value)
+            for edit_id, key, value in rows
+        ],
     )
 
 

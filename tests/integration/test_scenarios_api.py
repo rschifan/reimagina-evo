@@ -907,3 +907,148 @@ def test_the_comparison_refuses_an_unknown_indicator_and_an_unknown_aoi(
         ).status_code
         == 404
     )
+
+
+# ── PATCH /scenarios/{id}/rules: a rule changed in place ─────────────────
+#
+# In place means the rule keeps its edit ids and its ordinals, so it keeps its
+# position in "later wins" — editing rule 1 must not make it beat rule 2.
+
+_MOVED = _as_geojson(-99.1930, -99.1850, _LAT0 - 0.001, _LAT1 + 0.001)
+
+
+def _edits(client, scenario_id) -> list[dict]:
+    return client.get(f"/scenarios/{scenario_id}").json()["edits"]
+
+
+def _post(client, scenario_id, **overrides) -> list[str]:
+    response = client.post(
+        f"/scenarios/{scenario_id}/edits", json={**PROPOSAL, **overrides}
+    )
+    assert response.status_code == 201, response.text
+    return [e["id"] for e in response.json()["edits"]]
+
+
+def _patch(client, scenario_id, ids, **values):
+    body = {
+        "edit_ids": ids,
+        "levels": 4,
+        "unit_size": 70,
+        "people_per_household": 3.0,
+        "lot_coverage": 0.5,
+        **values,
+    }
+    return client.patch(f"/scenarios/{scenario_id}/rules", json=body)
+
+
+def test_post_writes_coverage(client, territory):
+    sid = _scenario(client, territory)
+    _post(client, sid)
+    _post(client, sid, lot_coverage=0.6)
+    coverage = [
+        e["value_numeric"]
+        for e in _edits(client, sid)
+        if e["attribute_key"] == "lot_coverage"
+    ]
+    assert coverage == [1.0, 0.6]
+
+
+def test_values_update_in_place(client, territory):
+    sid = _scenario(client, territory)
+    ids = _post(client, sid)
+    before = {e["id"]: e["ordinal"] for e in _edits(client, sid)}
+
+    response = _patch(client, sid, ids)
+
+    assert response.status_code == 200, response.text
+    after = _edits(client, sid)
+    assert {e["id"]: e["ordinal"] for e in after} == before
+    assert {e["attribute_key"]: e["value_numeric"] for e in after} == {
+        "floors": 4.0,
+        "num_levels": 4.0,
+        "unit_size": 70.0,
+        "people_per_household": 3.0,
+        "lot_coverage": 0.5,
+    }
+
+
+def test_area_moves_every_edit(client, territory):
+    sid = _scenario(client, territory)
+    ids = _post(client, sid)
+    old = {e["geometry_wkt"] for e in _edits(client, sid)}
+    ordinals = sorted(e["ordinal"] for e in _edits(client, sid))
+
+    assert _patch(client, sid, ids, area=_MOVED).status_code == 200
+
+    after = _edits(client, sid)
+    moved = {e["geometry_wkt"] for e in after}
+    assert len(moved) == 1 and moved != old
+    assert sorted(e["ordinal"] for e in after) == ordinals
+
+
+def test_an_earlier_rule_stays_earlier_after_an_edit(client, territory):
+    sid = _scenario(client, territory)
+    first = _post(client, sid)
+    second = _post(client, sid, levels=2)
+    assert _patch(client, sid, first, levels=5).status_code == 200
+    by_id = {e["id"]: e["ordinal"] for e in _edits(client, sid)}
+    assert max(by_id[i] for i in first) < min(by_id[i] for i in second)
+
+
+def test_foreign_or_mixed_ids_are_422(client, territory):
+    sid = _scenario(client, territory)
+    other = _scenario(client, territory, name="Otro")
+    mine = _post(client, sid)
+    theirs = _post(client, other)
+    second_rule = _post(client, sid, area=_MOVED)
+    before = _edits(client, sid)
+
+    assert _patch(client, sid, theirs).status_code == 422
+    assert _patch(client, sid, mine[:2] + second_rule[:2]).status_code == 422
+    assert _edits(client, sid) == before
+
+
+def test_pre_coverage_rule_gets_a_coverage_edit(client, territory, migrated_db):
+    sid = _scenario(client, territory)
+    ids = _post(client, sid)
+    coverage_id = next(
+        e["id"] for e in _edits(client, sid) if e["attribute_key"] == "lot_coverage"
+    )
+    reader = _reader(migrated_db)
+    try:
+        with reader.cursor() as cur:
+            cur.execute(
+                "DELETE FROM curated_geo.scenario_edit WHERE id = %s", (coverage_id,)
+            )
+        reader.commit()
+    finally:
+        reader.close()
+    four = [i for i in ids if i != coverage_id]
+
+    response = _patch(client, sid, four)
+
+    assert response.status_code == 200, response.text
+    written = response.json()["edits"]
+    assert len(written) == 5
+    assert {e["attribute_key"] for e in written} >= {"lot_coverage"}
+
+
+def test_refusals_match_post(client, territory):
+    sid = _scenario(client, territory)
+    ids = _post(client, sid)
+    zero = _patch(client, sid, ids, levels=0)
+    assert zero.status_code == 400 and zero.json()["detail"]["field"] == "levels"
+    over = _patch(client, sid, ids, lot_coverage=1.5)
+    assert over.status_code == 400 and over.json()["detail"]["field"] == "lot_coverage"
+    ceiling = _patch(client, sid, ids, levels=40, unit_size=60, lot_coverage=1.0)
+    assert ceiling.status_code == 422
+    assert ceiling.json()["detail"]["error"] == "ceiling_precheck_failed"
+
+
+def test_patching_a_rule_of_an_unknown_scenario_is_404(client, territory):
+    response = _patch(
+        client,
+        "00000000-0000-0000-0000-000000000000",
+        ["00000000-0000-0000-0000-000000000001"],
+    )
+    assert response.status_code == 404
