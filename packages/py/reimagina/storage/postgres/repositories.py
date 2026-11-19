@@ -2916,6 +2916,9 @@ class PostgresIndicatorResultRepository:
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
+                WITH cap AS (
+                  SELECT cap_value FROM curated_geo.indicator_catalog WHERE slug = %s
+                )
                 SELECT
                   COUNT(*)::bigint                                               AS count,
                   MIN(ir.value_numeric)                                          AS min,
@@ -2924,33 +2927,18 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
                   MAX(ir.value_numeric)                                          AS max,
                   SUM(ir.value_numeric)                                          AS sum,
-                  cap.cap_value                                                  AS cap_value,
-                  COUNT(*) FILTER (WHERE ir.value_numeric >= cap.cap_value)      AS at_cap
+                  (SELECT cap_value FROM cap)                                    AS cap_value,
+                  COUNT(*) FILTER (
+                    WHERE ir.value_numeric >= (SELECT cap_value FROM cap)
+                  )                                                              AS at_cap
                 FROM curated_geo.indicator_result ir
-                CROSS JOIN (
-                  SELECT cap_value FROM curated_geo.indicator_catalog WHERE slug = %s
-                ) cap
                 WHERE {where}
-                GROUP BY cap.cap_value
                 """,
                 [indicator_slug, *params],
             )
-            # GROUP BY the cap so the empty population still has no row.
-            row = cur.fetchone()
-        if row is None:
-            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = (
-                0,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                0,
-            )
-        else:
-            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = row
+            # No GROUP BY and the cap as a scalar subquery: always one row, so
+            # an empty population still knows its cap (count_at_cap 0, not None).
+            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = cur.fetchone()
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,

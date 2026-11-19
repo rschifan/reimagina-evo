@@ -845,6 +845,46 @@ def test_stats_count_at_cap_counts_rows_on_the_cap(
     assert client.get(url).json()["count_at_cap"] == 1
 
 
+def test_stats_count_at_cap_is_zero_for_a_capped_indicator_with_no_rows(
+    client, conn, two_aois_one_block_each
+):
+    """A cap with nothing under it is zero at the cap, not "no cap"."""
+    from tests.integration._helpers import insert_project as _insert_project
+
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.indicator_catalog SET cap_value = 1 WHERE slug = %s",
+            (fixture["slug"],),
+        )
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-cap-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    payload = client.get(
+        f"/indicators/{fixture['slug']}/stats?aoi_id={empty_aoi}"
+    ).json()
+    assert (payload["count"], payload["count_at_cap"]) == (0, 0)
+
+
+def test_stats_count_at_cap_stays_null_without_a_cap_and_no_rows(
+    client, conn, two_aois_one_block_each
+):
+    from tests.integration._helpers import insert_project as _insert_project
+
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-nocap-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    slug = two_aois_one_block_each["slug"]
+    payload = client.get(f"/indicators/{slug}/stats?aoi_id={empty_aoi}").json()
+    assert (payload["count"], payload["count_at_cap"]) == (0, None)
+
+
 @pytest.mark.parametrize("fmt", ["csv", "geojson", "parquet"])
 def test_downloads_scope_rows_to_picked_aoi(client, two_aois_one_block_each, fmt):
     """The catalog's stats say "this AOI", so its downloads must hold the same
