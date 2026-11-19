@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
-import { CAP_COLOR, markLegendValue, rampDomainFromStats, renderGrainToggle, renderLegend } from "./choropleth";
+import { CAP_COLOR, rampDomainFromStats, renderGrainToggle, renderLegend } from "./choropleth";
+import { markLegendValue } from "./distribution";
 
 const PARK = {
   slug: "accessibility_block_park_network_m",
@@ -127,14 +128,36 @@ describe("the cap in the legend", () => {
 });
 
 describe("markLegendValue", () => {
-  it("marks the hovered value without a bin-level rank", () => {
+  const rendered = () => {
     const el = document.createElement("div");
     const stats = spreadStats();
-    const domain = rampDomainFromStats(stats, PARK);
-    renderLegend(el, PARK, domain, stats.histogram, 11781, 19058);
-    markLegendValue(el, PARK, domain, stats.histogram, 1500);
-    expect(el.querySelector(".dist__cursor")).not.toBeNull();
+    renderLegend(el, PARK, rampDomainFromStats(stats, PARK), stats.histogram, 11781, 19058);
+    return { el, histogram: stats.histogram! };
+  };
+  const current = (el: HTMLElement) =>
+    Array.from(el.querySelectorAll(".dist__bar"), (b) => b.classList.contains("dist__bar--current"));
+
+  it("marks the hovered value without a bin-level rank", () => {
+    const { el, histogram } = rendered();
+    markLegendValue(el, histogram, 1500);
+    const cursor = el.querySelector(".dist__cursor")!;
+    expect(cursor.getAttribute("visibility")).toBeNull();
+    expect(cursor.getAttribute("x1")).toBe("240.00");
+    expect(current(el)).toEqual([false, true]);
     expect(el.textContent ?? "").not.toContain("higher than");
+  });
+
+  it("moves the one cursor in place and hides it on leave, without redrawing", () => {
+    const { el, histogram } = rendered();
+    const svg = el.querySelector("svg");
+    markLegendValue(el, histogram, 375);
+    expect(el.querySelector(".dist__cursor")?.getAttribute("x1")).toBe("60.00");
+    expect(current(el)).toEqual([true, false]);
+    markLegendValue(el, histogram, null);
+    expect(el.querySelector("svg")).toBe(svg);
+    expect(el.querySelectorAll(".dist__cursor")).toHaveLength(1);
+    expect(el.querySelector(".dist__cursor")?.getAttribute("visibility")).toBe("hidden");
+    expect(current(el)).toEqual([false, false]);
   });
 });
 

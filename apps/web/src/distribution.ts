@@ -42,8 +42,6 @@ export interface DistributionMarks {
   rampMax: number;
   /** Observed median, when known. */
   median: number | null;
-  /** The feature currently under the cursor, when there is one. */
-  hovered?: number | null;
 }
 
 /** Fraction of the way across the histogram's range, clamped to [0, 1]. */
@@ -124,19 +122,14 @@ export function distributionSvg(
   const barFor = (count: number): number =>
     count === 0 ? 0 : Math.max(1.5, (count / peak) * (VIEW_H - 6));
 
-  const hoveredBin =
-    marks.hovered != null ? binOf(marks.hovered, histogram) : null;
-
   const bars = histogram.counts
     .map((count, index) => {
       const h = barFor(count);
       const x = index * slot;
       const y = VIEW_H - h;
-      const current = hoveredBin === index;
-      const cls = current ? "dist__bar dist__bar--current" : "dist__bar";
       const label = `${count} at ${binLabel(index, histogram, indicator)}`;
       return (
-        `<rect class="${cls}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" ` +
+        `<rect class="dist__bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" ` +
         `width="${Math.max(0, slot - 1).toFixed(2)}" height="${h.toFixed(2)}">` +
         `<title>${escapeAttr(label)}</title></rect>`
       );
@@ -164,12 +157,10 @@ export function distributionSvg(
         `y1="0" y2="${VIEW_H}"></line>`
       : "";
 
+  // The hovered feature's mark, drawn once and hidden; `markLegendValue`
+  // moves it.
   const cursor =
-    marks.hovered != null
-      ? `<line class="dist__cursor" x1="${(positionOf(marks.hovered, histogram) * VIEW_W).toFixed(2)}" ` +
-        `x2="${(positionOf(marks.hovered, histogram) * VIEW_W).toFixed(2)}" ` +
-        `y1="0" y2="${VIEW_H}"></line>`
-      : "";
+    `<line class="dist__cursor" x1="0" x2="0" y1="0" y2="${VIEW_H}" visibility="hidden"></line>`;
 
   return (
     `<svg class="dist" viewBox="0 0 ${VIEW_W} ${VIEW_H}" ` +
@@ -177,4 +168,38 @@ export function distributionSvg(
     `aria-label="Distribution of ${escapeAttr(histogram.counts.reduce((a, b) => a + b, 0).toString())} values">` +
     `${ramp}${bars}${median}${cursor}</svg>`
   );
+}
+
+
+/**
+ * Move the legend's cursor to ``value``, or hide it when ``null``, and mark
+ * the bin it falls in.
+ *
+ * Called from the hover path, so it must be cheap and must not re-render the
+ * strip: rebuilding it on every mousemove would drop the `<title>` tooltips
+ * mid-hover and churn the DOM at pointer rate. It moves the one cursor line
+ * {@link distributionSvg} drew and toggles one class on the bars.
+ *
+ * Only a mark, no rank: the client has 24 histogram bins, and a bin-level rank
+ * would disagree with the exact one the server gives elsewhere.
+ */
+export function markLegendValue(
+  container: ParentNode,
+  histogram: ValueHistogram | null,
+  value: number | null,
+): void {
+  const cursor = container.querySelector(".dist__cursor");
+  if (!cursor || !histogram) return;
+  const bin = value === null ? null : binOf(value, histogram);
+  container.querySelectorAll(".dist__bar").forEach((bar, index) => {
+    bar.classList.toggle("dist__bar--current", index === bin);
+  });
+  if (value === null) {
+    cursor.setAttribute("visibility", "hidden");
+    return;
+  }
+  const x = (positionOf(value, histogram) * VIEW_W).toFixed(2);
+  cursor.setAttribute("x1", x);
+  cursor.setAttribute("x2", x);
+  cursor.removeAttribute("visibility");
 }

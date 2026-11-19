@@ -740,7 +740,7 @@ export function renderLegend(
       ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
       : "";
   const scopeRow = `<div class="scope">${escapeHtml(rampScopeText(domain, indicator))}</div>`;
-  // The distribution, and a slot the hover handler rewrites in place.
+  // The distribution, drawn once; the hover handler only moves its cursor.
   //
   // Kept as a sibling of the gradient rather than replacing it: the gradient
   // answers "what does this colour mean" and the histogram answers "how many
@@ -751,7 +751,7 @@ export function renderLegend(
     rampMax: domain.max,
     median: domain.p50,
   }, indicator);
-  const distBlock = dist ? `<div class="dist-wrap" data-distribution>${dist}</div>` : "";
+  const distBlock = dist ? `<div class="dist-wrap">${dist}</div>` : "";
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
     <div class="gradient" style="background: linear-gradient(to right, ${RAMP_STOPS.join(", ")})"></div>
@@ -811,38 +811,6 @@ export function renderDeltaLegend(
     </div>
     <div class="scope">${escapeHtml(deltaScopeText(domain, indicator.unit ?? null))}</div>
   `.trim();
-}
-
-
-/**
- * Move the legend's cursor to ``value``, or clear it when ``null``.
- *
- * Called from the hover path, so it must be cheap and must not re-render the
- * whole legend: rebuilding `innerHTML` on every mousemove would drop the
- * `<title>` tooltips mid-hover and churn the DOM at pointer rate.
- *
- * Only a mark, no rank: the client has 24 histogram bins, and a bin-level rank
- * would disagree with the exact one the server gives elsewhere.
- */
-export function markLegendValue(
-  container: HTMLElement,
-  indicator: IndicatorSummary,
-  domain: RampDomain,
-  histogram: ValueHistogram | null,
-  value: number | null,
-): void {
-  const wrap = container.querySelector<HTMLElement>("[data-distribution]");
-  if (!wrap || !histogram) return;
-  wrap.innerHTML = distributionSvg(
-    histogram,
-    {
-      rampMin: domain.min,
-      rampMax: domain.max,
-      median: domain.p50,
-      hovered: value,
-    },
-    indicator,
-  );
 }
 
 

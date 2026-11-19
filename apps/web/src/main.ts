@@ -43,7 +43,6 @@ import {
 import {
   activateIndicator,
   choroplethConfig,
-  markLegendValue,
   setValueHoverListener,
   clearGrainToggle,
   clearLegend,
@@ -56,7 +55,7 @@ import {
   renderLegend,
   setOverlayPinned,
 } from "./choropleth";
-import { HISTOGRAM_BINS } from "./distribution";
+import { HISTOGRAM_BINS, markLegendValue } from "./distribution";
 import { grainCount } from "./format";
 import { renderDownloads } from "./download";
 import { renderInspector } from "./inspector";
@@ -550,7 +549,7 @@ async function main(): Promise<void> {
       // the legend exists, and re-registered per render so it closes over
       // this indicator's histogram rather than a stale one.
       state.markHovered = (value: number | null): void => {
-        if (legend) markLegendValue(legend, indicator, domain, histogram, value);
+        if (legend) markLegendValue(legend, histogram, value);
       };
       setValueHoverListener((value) => state.markHovered?.(value));
       if (downloads) renderDownloads(downloads, indicator.slug, { aoiId, grain: grain ?? null });

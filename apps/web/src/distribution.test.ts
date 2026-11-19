@@ -129,26 +129,14 @@ describe("distributionSvg", () => {
     expect(Math.min(...heights.filter((h) => h > 0))).toBeGreaterThanOrEqual(1.5);
   });
 
-  it("marks exactly the hovered value's bin", () => {
+  it("draws one hidden cursor and no current bin, for the hover to move", () => {
     const svg = distributionSvg(histogram(), {
       rampMin: 0,
       rampMax: 100,
       median: 20,
-      hovered: 30,
-    });
-    expect(svg.match(/dist__bar--current/g)).toHaveLength(1);
-    expect(svg).toContain("dist__cursor");
-  });
-
-  it("marks no bin when nothing is hovered", () => {
-    const svg = distributionSvg(histogram(), {
-      rampMin: 0,
-      rampMax: 100,
-      median: 20,
-      hovered: null,
     });
     expect(svg).not.toContain("dist__bar--current");
-    expect(svg).not.toContain("dist__cursor");
+    expect(svg.match(/class="dist__cursor"[^>]*visibility="hidden"/g)).toHaveLength(1);
   });
 
   it("shows the span the colour ramp resolves", () => {
