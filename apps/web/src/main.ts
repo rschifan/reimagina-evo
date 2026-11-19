@@ -87,6 +87,7 @@ import {
   renderSelectionCard,
   type SelectionStats,
 } from "./selection-card";
+import { wireSheet } from "./sheet";
 import { TooltipController } from "./tooltip";
 
 // Fallback centre when no AOIs come back from the API. CDMX-Cuauhtémoc
@@ -327,6 +328,8 @@ async function main(): Promise<void> {
       grain: state.activeIndicator ? drawnGrain : "block",
       aoiStats,
     }));
+
+    wireSheet(inspectorEl, document.getElementById("selection-panel"));
 
     const showInspector = (): void => {
       if (!inspectorEl || !pinned) return;

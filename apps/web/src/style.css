@@ -1047,3 +1047,69 @@ body {
   }
 }
 
+
+/*
+ * Phone (< 768 px). The drawer keeps its 860 px breakpoint above: it is where
+ * a panel and a map stop fitting side by side, and everything between 768 and
+ * 860 px is still better served by the drawer. Below 768 px the legend is a
+ * one-line strip and the inspector and selection card share one bottom sheet
+ * (sheet.ts marks the older of the two `data-behind`), both clear of the draw
+ * tools (top-left) and MapLibre's navigation control (top-right).
+ */
+@media (max-width: 767px) {
+  .map-legend {
+    left: 8px;
+    right: 8px;
+    bottom: 28px;
+    width: auto;
+    max-width: none;
+    padding: 6px 10px;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .map-legend .name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-legend .gradient {
+    flex: 1 1 60px;
+    min-width: 40px;
+  }
+
+  .map-legend .cap-key {
+    flex: none;
+  }
+
+  .map-legend .bounds,
+  .map-legend .dist-wrap,
+  .map-legend .p50,
+  .map-legend .scope,
+  .map-legend .cap-share,
+  .map-legend .delta-meaning {
+    display: none;
+  }
+
+  .inspector,
+  .selection-card {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 72px;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    max-height: 38%;
+    overflow-y: auto;
+  }
+
+  .inspector[data-behind],
+  .selection-card[data-behind] {
+    display: none;
+  }
+}
