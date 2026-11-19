@@ -30,7 +30,7 @@ import type {
   TileSource,
   ValueHistogram,
 } from "./api";
-import { _baselineMinzoomForGrain } from "./layers";
+import { minzoomForGrain } from "./layers";
 import { distributionSvg } from "./distribution";
 import { escapeHtml, fmtNumber, formatValue, shareText } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
@@ -164,13 +164,6 @@ export function choroplethConfig(sources: TileSource[]): ChoroplethConfig {
     minzoom: (overlay.source_config.minzoom as number) ?? 10,
     maxzoom: (overlay.source_config.maxzoom as number) ?? 16,
   };
-}
-
-
-/** The overlay draws from the same zoom as the blocks it paints (blocks: 8),
- *  not the catalog's legacy 10 — the same rule aggregation overlays follow. */
-export function overlayMinzoom(config: ChoroplethConfig, grain?: string | null): number {
-  return _baselineMinzoomForGrain(grain) ?? config.minzoom;
 }
 
 
@@ -479,7 +472,9 @@ export function activateIndicator(
   map.addSource(OVERLAY_SOURCE, {
     type: "vector",
     tiles: [tileUrl],
-    minzoom: overlayMinzoom(config, grain),
+    // From the zoom the painted grain's own layer draws at (blocks: 8), not
+    // the catalog's legacy 10 — the rule aggregation overlays follow too.
+    minzoom: minzoomForGrain(grain) ?? config.minzoom,
     maxzoom: config.maxzoom,
     promoteId: "feature_id",
   });

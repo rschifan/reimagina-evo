@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { INPUT_LAYERS, groupRastersAndOverlays, _baselineMinzoomForGrain } from "./layers";
+import { INPUT_LAYERS, groupRastersAndOverlays, minzoomForGrain } from "./layers";
 
 /**
  * The zoom at which `serving_geo.get_tile` starts serving
@@ -68,7 +68,8 @@ describe("INPUT_LAYERS", () => {
   });
 
   it("starts block overlays where blocks render", () => {
-    expect(_baselineMinzoomForGrain("block")).toBe(8);
+    expect(minzoomForGrain("block")).toBe(8);
+    expect(minzoomForGrain(null)).toBeUndefined();
   });
 
   it("gives streets a zoom-dependent width", () => {

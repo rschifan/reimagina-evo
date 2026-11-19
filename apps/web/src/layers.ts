@@ -393,12 +393,13 @@ function rasterSourceName(layerId: string): string {
 }
 
 
-export function _baselineMinzoomForGrain(typeSlug: string | null | undefined): number | undefined {
-  // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches.
-  // Used by aggregation overlays so a block-grain choropleth lights up
-  // at the same zoom the underlying blocks are visible — the catalog
-  // default of 10 was hiding the censo overlay even at z=8 where
-  // blocks already render.
+export function minzoomForGrain(typeSlug: string | null | undefined): number | undefined {
+  // Returns the minzoom of the INPUT_LAYERS row whose typeSlug matches:
+  // the one zoom floor for a grain. Aggregation overlays and the indicator
+  // overlay use it so a block-grain choropleth lights up at the same zoom
+  // the underlying blocks are visible — the catalog default of 10 was
+  // hiding the censo overlay even at z=8 where blocks already render —
+  // and `flyToAoi` never lands below the block floor.
   if (!typeSlug) return undefined;
   const match = INPUT_LAYERS.find((l) => l.typeSlug === typeSlug);
   return match?.minzoom;
@@ -538,7 +539,7 @@ export function installAggregationOverlays(
     // we deliberately *override* it here when we have a baseline
     // anchor — otherwise the catalog wins and the user has to zoom in
     // past the baseline floor before the choropleth lights up.
-    const targetMinzoom = _baselineMinzoomForGrain(cfg.target_feature_type_slug);
+    const targetMinzoom = minzoomForGrain(cfg.target_feature_type_slug);
     const minzoom = targetMinzoom ?? cfg.minzoom ?? 10;
     map.addSource(sourceName, {
       type: "vector",

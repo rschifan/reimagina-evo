@@ -17,6 +17,7 @@ import type { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 import { listAttributions, type AOIRow } from "./api";
+import { minzoomForGrain } from "./layers";
 
 /** No basemap: licence hygiene, see the attribution note in `installMapControls`. */
 function emptyStyle(): StyleSpecification {
@@ -32,15 +33,6 @@ function emptyStyle(): StyleSpecification {
       },
     ],
   };
-}
-
-
-/** The lowest zoom at which the indicator overlay tile function serves tiles. */
-export const OVERLAY_MIN_ZOOM = 8;
-
-
-export function clampZoom<T extends { zoom: number }>(camera: T, floor: number): T {
-  return { ...camera, zoom: Math.max(camera.zoom, floor) };
 }
 
 
@@ -87,7 +79,8 @@ export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   const [minLon, minLat, maxLon, maxLat] = target;
   // ``maxZoom`` caps the fit so a tiny AOI doesn't slingshot past
   // street level; ``padding`` keeps the polygon clear of UI chrome. The
-  // floor keeps a wide AOI or a phone screen where the overlay draws.
+  // floor keeps a wide AOI or a phone screen where blocks (and the overlay
+  // painting them) draw.
   const camera = map.cameraForBounds(
     [
       [minLon, minLat],
@@ -96,7 +89,8 @@ export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
     { padding: 60, maxZoom: 14 },
   );
   if (!camera) return;
-  map.easeTo({ ...clampZoom({ ...camera, zoom: camera.zoom ?? OVERLAY_MIN_ZOOM }, OVERLAY_MIN_ZOOM), duration: 700 });
+  const zoom = Math.max(camera.zoom ?? 0, minzoomForGrain("block") ?? 0);
+  map.easeTo({ ...camera, zoom, duration: 700 });
 }
 
 
