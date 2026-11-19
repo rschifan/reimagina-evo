@@ -717,7 +717,7 @@ function _formatPopulationLine(props: Record<string, unknown>): string | undefin
   const pob = _readNumber(props, "censo_2020_pobtot");
   if (pob === null) return undefined;
   const viv = _readNumber(props, "censo_2020_vivtot");
-  const parts = [`Pop. 2010: ${fmtNumber(pob)}`];
+  const parts = [`Pop. 2020: ${fmtNumber(pob)}`];
   if (viv !== null) parts.push(`viv: ${fmtNumber(viv)}`);
   return parts.join(" · ");
 }

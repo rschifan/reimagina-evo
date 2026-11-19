@@ -1887,6 +1887,7 @@ def raster_fetch_worldpop(
     dsn: str = typer.Option(
         DEFAULT_APP_DSN,
         "--dsn",
+        envvar="DATABASE_URL",
         help="DSN used to read the AOI polygon when --aoi-id is given.",
     ),
     force: bool = typer.Option(

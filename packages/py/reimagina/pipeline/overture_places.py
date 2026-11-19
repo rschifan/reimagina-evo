@@ -59,7 +59,6 @@ from . import bronze, silver
 from .loader import load_vector_source
 from .overture import (
     OVERTURE_DEFAULT_RELEASE,
-    OVERTURE_LICENSE,
     OVERTURE_PROVIDER,
     OVERTURE_S3_REGION,
     available_overture_releases,
@@ -93,6 +92,12 @@ _SELECT_COLUMNS = (
 _REQUIRED_COLUMNS = ("id", "basic_category", "geometry", "bbox")
 
 PLACES_SOURCE_NAME = "Overture Places — park, recreation and cultural sites"
+#: Places are not ODbL like buildings and divisions: each record carries its
+#: own source's licence, and Overture lists these three for the theme.
+OVERTURE_PLACES_LICENSE = (
+    "CDLA-Permissive-2.0 / Apache-2.0 / CC0-1.0 (per source; Overture terms)"
+)
+
 PLACES_BRONZE_FILENAME = "overture_places.parquet"
 PLACES_NOTES = (
     "Park, recreation and cultural destinations extracted from the Overture "
@@ -311,7 +316,7 @@ def ensure_places_source(
         integration_role="enrichment",
         storage_uri=storage_uri,
         version=version,
-        license=OVERTURE_LICENSE,
+        license=OVERTURE_PLACES_LICENSE,
         notes=notes,
     )
 

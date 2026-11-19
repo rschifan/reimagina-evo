@@ -1,6 +1,6 @@
 {
   "name": "@reimagina/web",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Reimagina read-side web app — MapLibre + vanilla TS.",
   "private": true,
   "type": "module",
