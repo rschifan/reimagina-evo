@@ -23,7 +23,7 @@ date: "20 November 2026"
 | 0.3 | 2026-11-09 | Rossano Schifanella | Orchestration module documented (§5.5, Figure 5); current dependency set |
 | 0.4 | 2026-11-09 | Rossano Schifanella | Run-level deduplication |
 | 0.5 | 2026-11-10 | Rossano Schifanella | Constraint C6 (no third-party runtime service); the tile server is interchangeable (§5.1); street context in place of a basemap (§3.3) |
-| 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof; no change to this document's content |
+| 0.6 | 2026-11-11 | Rossano Schifanella | Re-issued with the 11 November delivery; no change to this document's content |
 | 0.7 | 2026-11-13 | Rossano Schifanella | T3 resolved: a scenario edit can now be authored through the API, the CLI and the map |
 | 1.0 | 2026-11-20 | Rossano Schifanella | Issued for delivery, checked against migration `r051`; the corrections are listed below |
 
@@ -41,7 +41,7 @@ Corrections in version 1.0:
 
 ### Provenance of the figures
 
-This document describes the system at migration `r051` as of 20 November 2026. It carries no timings and no test counts; those are in the technical documentation and the capability proof.
+This document describes the system at migration `r051` as of 20 November 2026. It carries no timings and no test counts; those are in the technical documentation.
 
 ### About this document
 
@@ -405,8 +405,8 @@ is correctly one.
   be silent for several heartbeat intervals before it is presumed dead, and
   the system refuses to start with a window narrower than that.
 
-Both are proven against a real `SIGKILL` in `tests/recovery`, and the
-transcripts are in the capability-proof annex.
+Both are proven against a real `SIGKILL` in `tests/recovery`
+(`make test-recovery`).
 
 ## 6. Runtime View
 

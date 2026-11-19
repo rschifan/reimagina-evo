@@ -76,8 +76,6 @@ ARTEFACTS: tuple[tuple[str, str], ...] = (
         "Work 4 — technical documentation",
     ),
     ("docs/delivery/04_technical_documentation.md", "Work 4 — source"),
-    ("docs/delivery/pdf/05_capability_proof.pdf", "Annex — capability proof"),
-    ("docs/delivery/05_capability_proof.md", "Annex — source"),
     ("docs/THIRD_PARTY_LICENSES.md", "Article 4.1 — dependency inventory"),
 )
 

@@ -21,7 +21,7 @@ date: "20 November 2026"
 | 0.2 | 2026-11-08 | Rossano Schifanella | Added the credential-free install path (§7.1) and the acceptance run |
 | 0.3 | 2026-11-09 | Rossano Schifanella | How to verify the orchestration module (§6.1) |
 | 0.4 | 2026-11-10 | Rossano Schifanella | Verifying live tiles with or without Martin (§6.2); using the map, including the keyboard surface; corrected DSN ports (§4.1); re-measured install appendix |
-| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the completed Appendix A in the capability proof |
+| 0.5 | 2026-11-11 | Rossano Schifanella | Re-issued with the 11 November delivery |
 | 0.6 | 2026-11-11 | Rossano Schifanella | §5 leads with `make dev`, the single command for the read side, and says why the dev split is not architecture |
 | 0.7 | 2026-11-13 | Rossano Schifanella | Install appendix re-measured at `r049`; acceptance run timing and the scenario-authoring steps brought up to date; a note on which figures were re-measured |
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
@@ -550,9 +550,6 @@ the same triggers and carries the same provenance columns as an ingested
 dataset. ⚠ **The geometry is a regular grid, not a city.** Use it to exercise
 and demonstrate the platform; never to draw a conclusion about Mexicali.
 
-`docs/delivery/05_capability_proof.md` records what one run of the script
-produced, capability by capability.
-
 ### 7.2 With credentials — the real dataset
 
 The real territory comes from two kinds of source:
@@ -655,8 +652,7 @@ Three ordering rules matter:
 The scenario inputs need a baseline, which the "baseline of the scenario
 inputs" block supplies: household size comes from the census and storeys from
 Overture where they exist; the rest is synthetic, fitted so each block's
-dwellings equal the census count. `docs/delivery/05_capability_proof.md` §A.2
-records what they produced.
+dwellings equal the census count.
 
 **WorldPop (optional).** A population raster, fetched from WorldPop (the
 country file, about 1 GB for Mexico, is cached under `data/cache/worldpop/`),

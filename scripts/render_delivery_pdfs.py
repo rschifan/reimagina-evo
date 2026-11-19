@@ -1,4 +1,4 @@
-"""Render the delivery documents to PDF (Schedule A, Works 1, 3 and 4, and the annex).
+"""Render the delivery documents to PDF (Schedule A, Works 1, 3 and 4).
 
 Three of the four Works are accepted as PDFs, and one criterion is simply that
 the result is *legible*. So this renders through a pipeline that gives control

@@ -7,7 +7,7 @@
 Urban planning scenario modelling platform. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (from the API itself, or Martin behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL web application.
 
 > **Release 1.0.0.** The delivery documents — architecture, database and API
-> reference, technical documentation, capability proof — are in
+> reference, technical documentation — are in
 > [`docs/delivery/`](docs/delivery). Installation, configuration and operation
 > are covered in full by the
 > [technical documentation](docs/delivery/04_technical_documentation.md);

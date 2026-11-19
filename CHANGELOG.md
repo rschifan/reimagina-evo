@@ -36,7 +36,7 @@ delivery documentation.
 - Pilot data pipelines: INEGI Marco Geoestadístico, census observations and
   roll-ups, per-city amenity ingest, WorldPop and raster zonal statistics.
 - The delivery documents (architecture map, database and API reference,
-  technical documentation, capability proof), their reproducible PDF renderer,
+  technical documentation), their reproducible PDF renderer,
   the delivery manifest generator and `scripts/acceptance_run.sh`.
 - 62 API operations; database schema at migration `r051`.
 
