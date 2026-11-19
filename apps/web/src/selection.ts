@@ -29,10 +29,11 @@ import {
   TerraDrawSelectMode,
 } from "terra-draw";
 import { TerraDrawMapLibreGLAdapter } from "terra-draw-maplibre-gl-adapter";
-import type { Map as MapLibreMap } from "maplibre-gl";
+import type { Map as MapLibreMap, PointLike } from "maplibre-gl";
 import type { Feature, Polygon } from "geojson";
 
 import { setHoverGloballySuspended } from "./hover-highlight";
+import { SELECTION_HANDLE_LAYER_ID } from "./selection-handle";
 import { setTooltipGloballySuspended } from "./tooltip";
 
 
@@ -70,8 +71,14 @@ export interface SelectionController {
   startDrawing(shape: SelectionShape): void;
   clear(): void;
   getSelection(): SelectionGeometry | null;
-  /** A shape is being drawn right now (not merely selected). */
-  isDrawing(): boolean;
+  /**
+   * The map click at `point` belongs to the selection, not to the map. A
+   * click that began while a shape was being drawn belongs to the shape, the
+   * one that finishes it included (terra-draw is in select mode by the time
+   * the click lands, hence the capture at pointerdown). A finished selection
+   * owns only clicks on its handles (see {@link hitsSelectionHandle}).
+   */
+  ownsClick(point: PointLike): boolean;
   /** Subscribe to selection changes. Fires immediately with the
    *  current state so consumers can bootstrap without an extra
    *  ``getSelection()`` call. Returns an unsubscribe function. */
@@ -134,6 +141,24 @@ function _ensureClosedPolygonFeature(
  */
 export function isDrawMode(mode: string): boolean {
   return mode === "circle" || mode === "rectangle" || mode === "polygon";
+}
+
+/** terra-draw's vertex and midpoint dots (its default `td` prefix), and the
+ *  radius handle. */
+const HANDLE_LAYERS = ["td-point", "td-point-marker", SELECTION_HANDLE_LAYER_ID];
+
+/**
+ * True when `point` is on a shape's vertex handle or on the radius handle. A
+ * click there edits the shape and must not pin the block underneath. The
+ * shape's interior is not a handle: a click inside the selection still pins.
+ */
+export function hitsSelectionHandle(
+  map: Pick<MapLibreMap, "getLayer" | "queryRenderedFeatures">,
+  point: PointLike,
+): boolean {
+  // Only layers in the style: querying a missing one fires a map `error`.
+  const layers = HANDLE_LAYERS.filter((id) => map.getLayer(id));
+  return layers.length > 0 && map.queryRenderedFeatures(point, { layers }).length > 0;
 }
 
 const TD_MODE: Record<SelectionShape, string> = {
@@ -324,6 +349,14 @@ export function enableSelection(map: MapLibreMap): SelectionController {
   draw.start();
   syncMapGestures(map, "static");
 
+  // Whether the click now landing began while drawing; see `ownsClick`.
+  let _drawingAtPointerDown = false;
+  map.getContainer().addEventListener(
+    "pointerdown",
+    () => { _drawingAtPointerDown = isDrawMode(draw.getMode()); },
+    { capture: true },
+  );
+
   // ── terra-draw → store bridge ────────────────────────────────────
   //
   // ``finish`` fires when the user closes a draw gesture (releases
@@ -440,8 +473,8 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     getSelection(): SelectionGeometry | null {
       return _selection;
     },
-    isDrawing(): boolean {
-      return isDrawMode(draw.getMode());
+    ownsClick(point: PointLike): boolean {
+      return _drawingAtPointerDown || hitsSelectionHandle(map, point);
     },
     setCircleRing(ring: number[][]): void {
       if (_selection?.shape !== "circle") return;

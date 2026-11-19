@@ -79,7 +79,7 @@ import {
   type SelectionGeometry,
   type SelectionShape,
 } from "./selection";
-import { clickHitsSelectionHandle, installSelectionHandle } from "./selection-handle";
+import { installSelectionHandle } from "./selection-handle";
 import { installSelectionMask } from "./selection-mask";
 import {
   INITIAL_CARD,
@@ -377,20 +377,11 @@ async function main(): Promise<void> {
       showInspector();
     }
 
-    // A click on a block pins it; a click on empty map closes the card.
-    // A click that began while a shape was being drawn belongs to the shape,
-    // the one that finishes it included (terra-draw is in select mode by the
-    // time the click lands, hence the capture at pointerdown). A finished
-    // selection does not block pinning, except a click on one of its vertices
-    // or on the radius handle, which belongs to the shape too.
-    let clickBelongsToDraw = false;
-    map.getContainer().addEventListener(
-      "pointerdown",
-      () => { clickBelongsToDraw = selectionController.isDrawing(); },
-      { capture: true },
-    );
+    // A click on a block pins it; a click on empty map closes the card. A
+    // click the selection owns (drawing, or on one of its handles) does
+    // neither.
     map.on("click", (e) => {
-      if (clickBelongsToDraw || clickHitsSelectionHandle(map, e.point)) return;
+      if (selectionController.ownsClick(e.point)) return;
       const id = overlayFeatureAt(map, e.point);
       if (id === null) closeInspector();
       else if (id !== pinned?.id) void pin(id);

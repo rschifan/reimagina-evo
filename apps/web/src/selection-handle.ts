@@ -34,7 +34,7 @@
  * Reuse: nothing here is specific to ``INPUT_LAYERS``. The module
  * speaks to the controller and the map only.
  */
-import type { GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent, PointLike } from "maplibre-gl";
+import type { GeoJSONSource, Map as MapLibreMap, MapLayerMouseEvent } from "maplibre-gl";
 
 import type { SelectionController, SelectionGeometry } from "./selection";
 
@@ -43,26 +43,11 @@ import type { SelectionController, SelectionGeometry } from "./selection";
 // dark stroke matches the app background so the dot reads as "raised"
 // against whatever feature colour sits under it.
 const SOURCE_ID = "__selection_handle";
-const LAYER_ID = "__selection_handle__dot";
+export const SELECTION_HANDLE_LAYER_ID = "__selection_handle__dot";
+const LAYER_ID = SELECTION_HANDLE_LAYER_ID;
 const RADIUS = 8;
 const COLOR = "#22d3ee";
 const OUTLINE_COLOR = "#0b1220";
-
-
-/**
- * True when `point` is on a shape's vertex handle (terra-draw's `td-point*`
- * layers: selection points and midpoints) or on the radius handle. A click
- * there edits the shape and must not pin the block underneath. The shape's
- * interior is not a handle: a click inside the selection still pins.
- */
-export function clickHitsSelectionHandle(
-  map: Pick<MapLibreMap, "queryRenderedFeatures">,
-  point: PointLike,
-): boolean {
-  return map.queryRenderedFeatures(point).some(
-    (f) => f.layer.id === LAYER_ID || f.layer.id.startsWith("td-point"),
-  );
-}
 
 
 export function installSelectionHandle(
