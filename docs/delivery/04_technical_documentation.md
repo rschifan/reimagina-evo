@@ -652,6 +652,1002 @@ baseline still equals the census. Scenario rules carry it — 60 % unless the
 planner changes it — and `housing_units = area × lot_coverage × storeys ÷
 m² per home`.
 
+## 8. How the platform works
+
+This chapter explains the mechanisms behind what §9 operates: how the
+database is organised (§8.1), how the API and the workers coordinate a run
+(§8.2), how the indicator catalogue decides what a run recomputes (§8.3), and
+how a scenario is written, materialised, recomputed and compared (§8.4).
+Work 3 gives every table, column and endpoint; Work 1 places the components
+in the architecture.
+
+### 8.1 Database structure
+
+All persistent state lives in one PostgreSQL database with the PostGIS and pgRouting
+extensions. That database holds six schemas. Five of them are created and versioned by the
+platform's Alembic migrations. The sixth, `dbos`, belongs to the workflow library.
+
+#### 8.1.1 The six schemas
+
+| Schema | Purpose | Written by | Read by |
+|---|---|---|---|
+| `curated_geo` | Source of truth: features, observations, overlaps, indicator results, provenance, AOIs, assets, road network, scenario rows | Loaders, CLI, worker jobs, API (scenario authoring) | Everything |
+| `serving_geo` | Read contract: 23 views, 1 materialized view, 3 tile functions. Holds no tables | Migrations only (DDL) | API, worker, Martin |
+| `explore` | Inspection contract for engineers reading SQL: 11 views and `layer_catalog` | Migrations (catalogue rows) | CLI `explore` commands, `psql` users, one API read |
+| `app_core` | Tenancy: `project`, `scenario` | CLI/loaders (project), API (scenarios) | API, worker |
+| `jobs_runtime` | Run bookkeeping: runs, job units, per-unit job runs, run plans, executor heartbeats | API (submit, cancel, delete), worker | API, worker |
+| `dbos` | Workflow checkpoints, queues, notifications (14 tables) | The DBOS library (worker executors, API client) | Same, plus reclaim and plan-sweep queries |
+
+`r001` creates `app_core`, `jobs_runtime`, `curated_geo` and `serving_geo`. `r006` creates
+`explore`. DBOS's own migrations create `dbos` (§8.1.7). §8.2 covers how `jobs_runtime` and
+`dbos` are used.
+
+**The `serving_geo` rule and its exceptions.** `serving_geo` is the read contract for map
+geometry, feature lists and per-feature indicator values. Its scope is narrower than "all
+reads", though. Here is what each part of the application actually reads:
+
+- **Through `serving_geo`:** feature lists (`GET /features` reads `feature_v` or
+  `feature_aoi_v`), polygon counts (`POST /metrics/within-polygon` reads `feature_aoi_v`),
+  indicator values (`GET /indicators/{slug}/values` reads `current_indicator_v`), raster
+  layer and aggregation-recipe metadata (`raster_layer_v`, `aggregation_recipe_v`), asset
+  lineage (`asset_lineage_v`), and every vector tile. Martin publishes only `serving_geo`
+  functions (`infra/docker/martin.yaml`). The API's `/tiles` router accepts only the three
+  names in `TILE_FUNCTIONS` (`packages/py/reimagina/tiles/functions.py`).
+- **Directly from `curated_geo`:** the API reads these tables directly:
+  - the indicator catalogue and its dependencies;
+  - AOIs and their membership;
+  - AOI summaries (`aoi_indicator_summary`, not `aoi_summary_v`);
+  - value statistics and histograms;
+  - feature ranks;
+  - CSV/GeoJSON/Parquet exports (`indicator_result` joined to `feature`);
+  - tile-source discovery;
+  - source attribution;
+  - scenario authoring and comparison.
+
+  Worker jobs and indicator SQL also read `curated_geo` directly.
+- **From `explore`:** one application read. The lineage endpoint
+  (`GET /indicators/{slug}/lineage`) reads `explore.asset_freshness_v`. Executor health on
+  the Runs page reads `jobs_runtime.ops_executor_heartbeat` directly, not the `explore`
+  view.
+
+The three tile functions sit in `serving_geo`, but they read `curated_geo` tables inside
+their bodies. The per-role and per-type views (`admin_v`, `analysis_units_v`, `blocks`,
+`lots`, `roads`, `trees` and others) are a convenience for SQL users. No application code
+reads them.
+
+#### 8.1.2 Canonical model
+
+**Feature types.** `feature_type_catalog` holds one row per type, keyed by
+`(context, type_slug)`. Two contexts are seeded, 15 types in total:
+
+- **`MEX`** holds the administrative hierarchy: `state`, `municipality`, `neighborhood`,
+  `ageb`, `block`, `lot`. Each has an `admin_level` from 1 to 6.
+- **`global`** holds types that exist in any country: `building`, `tree`, `bus_stop`,
+  `station`, `establishment`, `road`, `sidewalk`, `bike_lane`, `crossing`. These have no
+  `admin_level`.
+
+Each type also declares a `geometry_family` (`point`, `line`, `polygon`, `geometry`) and a
+`role` (`analysis_unit`, `context`, `infrastructure`, `poi`, `detection`). The tile function
+filters by role.
+
+**Features.** `feature` holds one geometry per entity, in `geometry(Geometry,4326)`, and a
+generated `geometry_centroid` (`ST_PointOnSurface`). Every geometry column in the database
+uses SRID 4326, so any two layers can be compared without reprojecting. Lengths and areas
+are computed on `::geography`, in metres and square metres.
+
+The before-write trigger copies `type_slug` and `role` from the type. Rows can therefore be
+filtered without a join, and the copies cannot drift from the catalogue. Static attributes
+live in `attributes` (jsonb). `parent_id` links a feature into the administrative hierarchy.
+The unique key `(source_id, dataset_version, source_record_ref)` makes a re-load at the same
+version a no-op.
+
+**Observations.** `observation` stores time-varying attribute values: one row per
+`(feature_id, attribute_key)` value. Exactly one of `value_numeric`, `value_text` or
+`value_json` is set. Writing a new value does two things:
+
+1. It retires the previous row (`is_current = false`, `valid_to = now()`).
+2. It inserts the new row with `is_current = true`.
+
+The partial unique index `obs_one_current` allows only one current row per key. A check
+constraint ties `is_current` to `valid_to IS NULL`. Retired rows are kept as history.
+
+**Indicator results.** `indicator_result` holds one value per feature, indicator and
+scenario. `scenario_id IS NULL` is the baseline. Each row records:
+
+- the `job_run_id` that produced it;
+- a `quality_flag` (`measured`, `estimated`, `imputed`, `missing`, `not_applicable`);
+- a `status` (`current`, `stale`, `failed`).
+
+A writer first marks the existing current row `stale`, then inserts the new one. Two partial
+unique indexes allow at most one current row:
+
+- `ir_one_current_base` on `(feature_id, indicator_id)` where `scenario_id IS NULL`;
+- `ir_one_current_scenario` on `(feature_id, scenario_id, indicator_id)` where
+  `scenario_id IS NOT NULL`.
+
+Stale rows remain as history. `serving_geo.current_indicator_v` shows only
+`status = 'current'`. The foreign key to `jobs_runtime.job_run` is `ON DELETE CASCADE`, so
+deleting a job run deletes the results it wrote. `indicator_catalog` (including `valid_min`,
+`valid_max`, `applies_to` and `cap_value`) and `indicator_dependency` define what can be
+written. §8.3 covers how they are used.
+
+**Provenance.** Every feature, observation and file asset carries:
+
+- a `source_id` pointing to `data_source_catalog`. That table is unique on
+  `(provider, name, version)` and records `storage_type`, `integration_role`,
+  `storage_uri` and `license`;
+- an `ingestion_run_id` pointing to `ingestion_run`, which records the orchestrator, the
+  transformation step, the code version and the status.
+
+`GET /tile-sources/attribution` builds the map's credit line from the `license` of every
+source that has features loaded (`packages/py/reimagina/data/attribution.py`). It is not
+hard-coded in the frontend.
+
+**Areas of interest.** `area_of_interest` is a polygon owned by an `app_core.project`.
+`aoi_feature` stores membership: one row per `(aoi_id, feature_id)` with an `overlap_basis`
+(`area`, `length` or `presence`), the overlap and feature measures, and `overlap_ratio`.
+The rows are recomputed by deleting and re-inserting; `compute_overlaps` in
+`packages/py/reimagina/storage/postgres/repositories.py` does this.
+
+- **Polygons and lines** become members when at least a fraction of 1e-9 of their area or
+  length lies inside the AOI.
+- **Points** become members when they lie inside the AOI.
+- **Identifier rule.** When the AOI has a `membership_key` (for example
+  `{"CVE_ENT": "09", "CVE_MUN": "012"}`), a feature whose attributes carry all of those keys
+  must match them exactly. Features without the keys, such as buildings, are placed by
+  geometry alone.
+
+`aoi_indicator_summary` caches one aggregated value per AOI and indicator, and one per AOI,
+scenario and indicator. Partial unique indexes enforce this.
+
+**Overlaps.** `feature_overlap` stores the geodesic overlap between pairs of features of two
+types (source and target). Only type pairs declared in `feature_overlap_type_pair` are
+computed. Each row records the measure and the ratio relative to the source feature. The
+table is unique on `(source_feature_id, target_feature_id)`, and a recomputation updates
+rows in place. Roll-ups from child features to parent features read it.
+
+**Assets and files.** Two groups of tables share the word "asset":
+
+- **Files:** `file_asset` registers one stored raster, imagery or point-cloud file per
+  source. `raster_layer` publishes such a file as a map layer.
+- **The asset graph:** `asset`, `asset_dependency`, `asset_version` and
+  `asset_materialization` record what each derived product reads and which input versions
+  it was built from. `asset_version_one_current` keeps one current version per
+  `(asset_id, partition_key)`. §8.3 explains how freshness is derived from this.
+
+`tile_snapshot_registry` records exported tile files.
+
+**Road network.** `road_node` and `road_edge` hold the pedestrian graph in the shape
+pgRouting expects:
+
+- node ids are OpenStreetMap ids;
+- each edge has `source` and `target` node ids, plus `cost` and `reverse_cost` in metres;
+- each edge is a `LINESTRING`, SRID 4326.
+
+A load replaces the whole network (`TRUNCATE curated_geo.road_node CASCADE`). Accessibility
+indicators route over these tables. `publish_road_features` then projects the edges into
+`feature` as `global:road` rows so they can be drawn on the map.
+
+**Scenario tables** are listed here as structure only; §8.4 explains the mechanism.
+
+- `app_core.scenario` holds one row per scenario, unique on `(project_id, name)`.
+- `curated_geo.scenario_edit` holds drawn rules, ordered by `ordinal`.
+- `curated_geo.scenario_override` holds per-feature attribute values, unique on
+  `(scenario_id, feature_id, attribute_key)`.
+- `indicator_result.scenario_id` marks results computed under a scenario.
+
+#### 8.1.3 Triggers that enforce invariants
+
+These checks run in the database, so they hold for every writer, whether loader, worker, CLI
+or a hand-written `psql` session. A row that breaks one is rejected with an exception.
+
+| Trigger (table) | When | Guarantees |
+|---|---|---|
+| `feature_before_write` (`feature`) | before insert/update | The type exists. `type_slug` and `role` are copied from it. The geometry matches the type's family. `source_id` equals the ingestion run's source. There is no self-parent. Non-hierarchical types have no parent. The parent's `admin_level` is strictly lower. The hierarchy has no cycle |
+| `observation_before_write` (`observation`) | before insert/update | Exactly one value column is set, and it matches `value_type`. `source_id` equals the run's source |
+| `file_asset_before_write` (`file_asset`) | before insert/update | The source stores raster, imagery or point-cloud data. `source_id` equals the run's source |
+| `aoi_feature_before_write` (`aoi_feature`) | before insert | The `overlap_basis` fits the feature geometry: `presence` for points, `length` for lines, `area` for polygons |
+| `indicator_result_before_write_trigger` (`indicator_result`) | before insert/update | See the list below |
+| `indicator_dependency_validate_trigger` | deferred, at commit | Only composite indicators have dependencies. The graph is acyclic. One parent's weights are all null or sum to 1 |
+| `asset_dependency_validate_trigger` | deferred, at commit | Only derived assets consume other assets. The graph is acyclic. `derived_from` weights are all null or sum to 1 |
+
+On every insert or update, `indicator_result_before_write_trigger` enforces the following:
+
+- **On insert,** it fills `feature_type`, `indicator_slug` and a default `model_version`.
+  `feature_type` and `indicator_slug` cannot change afterwards.
+- `scenario_id` equals the job run's scenario.
+- The feature's type is in the indicator's `applies_to`, unless the row is flagged
+  `not_applicable`.
+- A `measured`, `estimated` or `imputed` row has exactly one value; other rows have none.
+- A `missing` row has a `missing_reason`.
+- A numeric value lies within `valid_min` and `valid_max`.
+
+The two dependency triggers are `DEFERRABLE INITIALLY DEFERRED` constraint triggers. A
+transaction may therefore pass through intermediate states while it replaces a set of edges,
+as long as the graph is valid at commit.
+
+#### 8.1.4 Tile functions and the materialized view
+
+| Function | Draws | Notes |
+|---|---|---|
+| `serving_geo.get_tile` | Features by role and zoom | Context only below z8. Analysis units added at z8–z11. All roles from z12. Buildings only from z14. Attributes from z12. Current observations merged in at z14 and above. Optional `type_slug`, `role`, `aoi_id` |
+| `serving_geo.indicator_overlay_tile` | One indicator as a choropleth | Requires `indicator_slug`. Optional `scenario_id`, `feature_type`, `aoi_id`, `delta`. Empty below z8 |
+| `serving_geo.aggregation_overlay_tile` | Current observations of one `attribute_key` | Requires `attribute_key` and `feature_type_slug`. Optional `aoi_id`. Empty below z8 |
+
+All three functions follow Martin's `/{function}/{z}/{x}/{y}` contract, are
+`STABLE PARALLEL SAFE`, and simplify geometry below z14. The API runs them under
+`SET LOCAL transaction_read_only = on` and a statement timeout.
+
+`serving_geo.feature_current_attributes_mv` holds, for each feature, a jsonb object with its
+current observations. `feature_v` merges this object into `attributes`, and so does
+`get_tile` at z14 and above. The view is refreshed only when an ingestion run completes with
+status `succeeded` (`complete_ingestion_run`). The refresh is non-concurrent and runs in the
+completing transaction, holding an exclusive lock on the view until commit. Between
+refreshes, the view may lag `observation`. The overlay functions and
+`current_indicator_v` read the base tables and do not lag.
+
+#### 8.1.5 Tenancy and row-level security
+
+`app_core.project` is the tenant root. Areas of interest and scenarios belong to a project,
+and deleting a project removes them (`ON DELETE CASCADE`). Migrations `r011` and `r048`
+enable row-level security on three tables: `app_core.project`, `app_core.scenario` and
+`curated_geo.area_of_interest`. Each table gets one policy, `tenant_isolation`:
+
+- If the setting `app.current_project_id` is unset or empty, every row is visible.
+- Otherwise, only that project's rows are visible.
+
+No code sets `app.current_project_id`. Security is also **enabled, not forced**. PostgreSQL
+exempts a table's owner from policies that are only enabled, and superusers bypass
+row-level security in every case. Migrations create the tables as the role in the DSNs, and
+every DSN in `.env.example` uses that same role. The policies therefore filter nothing in a
+standard deployment.
+
+> ⚠ Row-level security is not a tenancy boundary in this delivery. For it to act as one,
+> three conditions must all hold:
+>
+> - the API connects as a separate non-owner role without `BYPASSRLS`;
+> - the tables are set to `FORCE ROW LEVEL SECURITY`;
+> - each request sets `app.current_project_id`.
+
+#### 8.1.6 Main tables at a glance
+
+Work 3 (`docs/delivery/03_database_and_api_reference.md`) gives every column, constraint and
+index.
+
+| Schema | Table | Holds |
+|---|---|---|
+| `curated_geo` | `feature_type_catalog` | Feature types per `(context, type_slug)` |
+| `curated_geo` | `feature` | One geometry per entity, with provenance |
+| `curated_geo` | `observation` | Attribute values with history; one current per key |
+| `curated_geo` | `indicator_catalog`, `indicator_dependency` | Indicator definitions and composition |
+| `curated_geo` | `indicator_result` | Indicator values per feature and scenario; one current |
+| `curated_geo` | `data_source_catalog`, `ingestion_run` | Source, licence, version; each load |
+| `curated_geo` | `area_of_interest`, `aoi_feature` | AOIs and measured membership |
+| `curated_geo` | `aoi_indicator_summary` | One aggregate per AOI, scenario and indicator |
+| `curated_geo` | `feature_overlap`, `feature_overlap_type_pair` | Pairwise overlaps; declared pairs |
+| `curated_geo` | `asset`, `asset_dependency` | Registered assets and their edges |
+| `curated_geo` | `asset_version`, `asset_materialization` | Input versions; what each build read |
+| `curated_geo` | `file_asset`, `raster_layer` | Stored files; published raster layers |
+| `curated_geo` | `aggregation_recipe` | Raster or feature to feature aggregations |
+| `curated_geo` | `road_node`, `road_edge` | Routing graph for pgRouting |
+| `curated_geo` | `scenario_edit`, `scenario_override` | Scenario rules and attribute values |
+| `curated_geo` | `tile_snapshot_registry` | Exported tile files |
+| `app_core` | `project`, `scenario` | Tenants and scenarios |
+| `jobs_runtime` | `orchestration_run`, `job_unit`, `job_run` | A run, its units, each unit's job run |
+| `jobs_runtime` | `run_plan`, `ops_executor_heartbeat` | Planned feature sets; live executors |
+| `explore` | `layer_catalog` | Descriptions of the inspection views |
+
+#### 8.1.7 Migrations
+
+The schema is defined by 51 Alembic revisions in `infra/db/migrations/versions/`, from
+`r001` to the head `r052`. They form a single linear chain; there is no `r033`, because
+`r034` follows `r032`. `alembic.ini` points at that directory. The URL comes from the
+caller, or from `DATABASE_URL` when none is given. Each run executes in one transaction, and
+every index is built with a plain `CREATE INDEX`, never `CONCURRENTLY`. `r001` creates
+PostGIS. `r037` creates pgRouting, which needs a superuser (§10.4).
+
+`make migrate` runs `apps.cli.app bootstrap-db --with-test-db`, which does the following in
+order (`packages/py/reimagina/db/bootstrap.py`):
+
+1. Through `DATABASE_URL_ADMIN`, it creates the application database if it is absent.
+2. It upgrades that database to head over `DATABASE_URL_DIRECT`, or over `DATABASE_URL`
+   when no direct DSN is set. If both DSNs are set, they must name the same database.
+3. It creates and upgrades the test database named by `TEST_DATABASE_URL`.
+4. It seeds the application database idempotently with the feature types, the indicator
+   catalogue and the asset registry.
+5. It installs the `dbos` schema in the application database over the direct DSN.
+
+Without `--with-test-db`, `bootstrap-db` touches only the application database.
+
+The test database is migrated to head once per pytest session (`tests/conftest.py`). At
+teardown the fixture runs `alembic downgrade base`, which drops the platform's schemas. For
+that reason the fixture refuses any database whose name lacks `test`, unless
+`REIMAGINA_TEST_DB_ALLOW_NAME` names it exactly (§10.5). To restore the test database's
+schemas afterwards, run `make migrate` again. To check which revision a database is on, run
+`SELECT version_num FROM alembic_version;`.
+
+
+### 8.2 Coordination and orchestration
+
+The API and the workers never talk to each other. They coordinate through
+two schemas in the one domain database: `dbos`, owned by the DBOS
+durable-execution library (3.5), which holds queues, checkpoints and progress
+streams; and `jobs_runtime`, the platform's own record of each run. There is no
+broker or scheduler service.
+
+#### 8.2.1 The orchestrator port
+
+Every caller (API routes, CLI) depends on one interface, `Orchestrator`, in
+`packages/py/reimagina/orchestration/port.py`, which exposes no engine types.
+
+| Method | What it does |
+|---|---|
+| `submit_run` | Plans the run and enqueues it; returns a `RunHandle` (`run_id`, `deduplicated`) |
+| `get_run` | Run and unit statuses; `None` if the run does not exist |
+| `list_enqueued_runs` | Runs the engine holds that no worker has opened yet |
+| `cancel_run` | Stops a live run; `False` if unknown or already terminal |
+| `subscribe_progress` | Async stream of `RunEvent`s, ending with the run-level terminal event |
+| `forget_runs` | Removes runs from the engine after their rows were deleted |
+
+Implementations are obtained only through `get_orchestrator` in
+`orchestration/factory.py`:
+
+- **`DBOSOrchestrator`** (`dbos_orchestrator.py`, with the workflows in
+  `dbos_app.py`) is the production implementation and the default.
+  `REIMAGINA_ORCHESTRATOR` accepts only `dbos`.
+- **`SynchronousOrchestrator`** (`synchronous.py`) computes in the calling
+  process and keeps run state in memory, so configuration cannot select it;
+  the conformance suite (§6.1) and integration tests construct it explicitly.
+  The CLI's `--sync` flag runs the same in-process coordinator without the
+  port: units one after another in dependency order, with no queue, worker or
+  run tables.
+
+`REIMAGINA_DBOS_EXECUTION_MODE` decides what a process using the DBOS
+implementation may do:
+
+| Mode | Used by | Behaviour |
+|---|---|---|
+| `client` (default) | API | Enqueues, reads, cancels, streams; executes nothing |
+| `executor` | `python -m apps.worker` | Launches DBOS, recovers, heartbeats, executes units |
+| `dev` | CLI `evaluate-scenario`, tests | Executes inside the submitting process |
+
+If the `dbos` schema has never been created, every submit fails with
+`OpsPlaneNotProvisioned`, which the API answers with `503`. `make migrate`
+creates the schema (`bootstrap-db`); so does the first worker launch.
+
+#### 8.2.2 Runs, units and queues
+
+A run is one DBOS workflow, `run_workflow`, enqueued on the `runs` queue. Its
+id is a fresh UUID and is also the DBOS workflow id, so any process can read,
+stream or cancel it without a mapping table. The planner (§8.3) returns the
+units, one per indicator; each unit becomes a child workflow,
+`unit_workflow`, enqueued on the `units` queue with the id `{run_id}-{slug}`.
+
+| Variable | Default | Limit |
+|---|---|---|
+| `REIMAGINA_RUN_CONCURRENCY` | `2` | Runs one worker drives at once |
+| `REIMAGINA_UNIT_CONCURRENCY` | `8` | Units one worker computes at once |
+| `REIMAGINA_POLL_INTERVAL_SEC` | `0.1` | Queue and child-wait polling interval |
+
+Both limits are per worker, not global: each added worker adds capacity. A
+run holds its `runs` slot until it ends.
+
+Units start as they unblock, not in fixed levels. After each child finishes,
+`plan_wave` (`orchestration/wave.py`) returns the queued units whose
+prerequisites *within this run* have all succeeded (dispatched now) and those
+with a prerequisite that failed, was skipped or was cancelled (marked
+`skipped`). A prerequisite outside the run is an already-materialised input
+and never blocks. A dependency cycle among the units is rejected at submit.
+
+A failed unit is not retried (its exception is deterministic): it is marked
+`failed`, its dependents are skipped, independent units continue.
+
+#### 8.2.3 Statuses
+
+| Level | Status | Meaning |
+|---|---|---|
+| Unit | `queued` | Recorded, waiting for its prerequisites or a slot |
+| Unit | `running` | Its child workflow has started |
+| Unit | `succeeded` / `failed` | Compute committed / raised |
+| Unit | `skipped` | A prerequisite in the run did not succeed |
+| Unit | `cancelled` | The run was cancelled before the unit finished |
+| Run | `queued` | Enqueued, not yet opened by a worker (read from DBOS) |
+| Run | `running` | Opened by a worker |
+| Run | `succeeded` / `partial` / `failed` / `cancelled` | Terminal |
+
+The run's terminal status is derived from its units (`overall_status` in
+`port.py`): all succeeded gives `succeeded`; some succeeded gives `partial`;
+none succeeded, none failed and at least one cancelled gives `cancelled`;
+anything else, including a run whose units were all skipped, gives `failed`.
+Writes are guarded: once a unit or a run is terminal, no later write moves it
+(`orchestration/runstore.py`). A submit whose plan is empty returns `noop`
+with `run_id` null and persists nothing. The `cancelling` value permitted by
+the `orchestration_run` CHECK constraint is never written.
+
+#### 8.2.4 Deduplication of identical submissions
+
+`submit_run` computes a deduplication id (`orchestration/dedup.py`) and passes
+it to the enqueue with the policy `return-existing`. While a run with the same id
+is outstanding, DBOS returns that run instead of starting another, and the
+response carries `deduplicated: true`. The id is cleared when the run becomes
+terminal, so a later resubmission starts a new run.
+
+Two submissions are identical when all of the following match: the set of
+planned unit slugs; the changed attributes; the edited feature ids (as a
+SHA-256 digest); `scenario_id`; `aoi_id`; the code version (the git commit);
+the explicit indicator list; and, for each unit, the content fingerprint of its
+whole upstream closure from `serving_geo.asset_expected_version_v`, so a
+scenario edit between two submissions yields a new run. If any unit lacks a
+fingerprint (missing or NULL), no id is produced and nothing is deduplicated.
+
+#### 8.2.5 Cancellation, rerun and deletion
+
+`POST /jobs/{run_id}/cancel` (404 if unknown, 409 if already terminal) applies
+three mechanisms, because each stops something the others cannot:
+
+1. `cancel_workflow` with `cancel_children` stops DBOS scheduling the run and
+   its units. DBOS observes it only at the next step boundary.
+2. `pg_cancel_backend` is sent to every backend recorded in
+   `jobs_runtime.job_run.backend_pid` for a live unit of the run, interrupting
+   the PostGIS statement in progress.
+3. Every non-terminal unit is set to `cancelled` and the run is closed with
+   the status derived from its units. A run where some units had already
+   succeeded therefore closes as `partial`.
+
+A unit's compute step, `s_compute`, writes in one transaction committed at
+the end, so an interrupted unit leaves no partial result, and it re-checks the
+run status first, so a unit dequeued after the cancel computes nothing. A
+cancelled workflow is never resumed. A run cancelled before any worker opened
+it gets a terminal run row with `code_version` `cancelled-before-start`.
+
+`POST /jobs/{run_id}/rerun` is accepted only for a terminal run (409
+otherwise). It submits a **new** run for every unit that did not succeed
+(failed, skipped and cancelled) with the original scenario and area. The old run
+cannot be resumed: its child workflow ids already exist in DBOS.
+
+`DELETE /jobs/{run_id}` (terminal runs only, 409 otherwise) and
+`DELETE /jobs` (all terminal runs) remove the `orchestration_run` row and,
+by cascade, its `job_unit` rows, and delete the workflows and their children
+from DBOS before committing. Computed values (`indicator_result`) and
+provenance (`job_run`) are kept.
+
+#### 8.2.6 Observing a run
+
+| Table | One row per | Written by |
+|---|---|---|
+| `orchestration_run` | Run | The workflow's first step; closed by its last |
+| `job_unit` | Unit of a run | Same; status per transition |
+| `job_run` | Indicator execution, with `backend_pid` | The indicator runner |
+| `run_plan` | Unit feature set of an open run | `submit_run`; deleted at run end |
+| `ops_executor_heartbeat` | Executor process | Every launched executor |
+
+All five are in `jobs_runtime`; Work 3 lists their columns. Because the run
+row is written by the worker, not at submit, `get_run` falls back to DBOS for
+a run no worker has opened yet, and `GET /jobs` merges such runs into its
+list as `queued`.
+
+- **`GET /jobs/{run_id}/events`** streams Server-Sent Events. The first event
+  is a snapshot of the run status; then one event per unit that settles or is
+  skipped; then a run-level event (`indicator` null) that ends the stream.
+  Events are written exactly once from the workflow body and read through
+  `LISTEN`/`NOTIFY`. Keep-alive every 15 s; at most 300 s per stream and
+  `REIMAGINA_PROGRESS_SUBSCRIBERS` (32) streams per API process.
+- **`latest_run`** on each scenario in `GET /scenarios` is `{id, status}` of its
+  newest `orchestration_run`; until a worker opens a new run it names the
+  previous one.
+- **The Runs page** (§9.4) polls `GET /jobs` once a second while visible; one
+  response carries runs, status counts and executor health
+  (`explore.ops_executor_health_v`). `GET /jobs/{run_id}/detail` adds unit
+  timings and in-run prerequisites. The Scenarios page polls its own recompute
+  every 2 s for up to two minutes, then defers to the Runs page.
+
+#### 8.2.7 Durability and recovery
+
+Each workflow step's result is checkpointed in the `dbos` schema. On recovery
+DBOS replays the workflow: completed steps return their recorded results and
+execution resumes at the first incomplete one. Replay matches
+steps by position, so the workflow body branches only on its inputs and on
+recorded step results: the unit list and dependencies are workflow input, not
+read from the catalogue, and the order in which children finished is itself
+recorded (`DBOS.wait_first`). A child handle whose id is not the expected
+`{run_id}-{slug}` fails the run rather than misattribute a result.
+
+**Executor identity.** Recovery reclaims only workflows recorded against the
+recovering process's `executor_id`. It is `REIMAGINA_EXECUTOR_ID`, or
+`<hostname>:<role>` with `REIMAGINA_EXECUTOR_ROLE` (default `app`; the worker
+sets `worker`). It must be stable across restarts and unique between
+concurrent processes (§10.3).
+
+**Application version.** Recovery is also scoped by DBOS application version.
+`REIMAGINA_APP_VERSION` pins it; unset, DBOS derives it from the workflow
+source and the launching executor records itself as the latest version. Runs
+enqueued by the API carry no version and are dequeued by executors of the
+latest one. Pin it when two different builds run at once.
+
+**Liveness.** Every launched executor upserts its row in
+`ops_executor_heartbeat` every `REIMAGINA_EXECUTOR_HEARTBEAT_S` (30 s). The
+first beat is unguarded: a process that cannot record it does not start.
+
+**Reclaim sweep.** Only the worker sweeps. Every `REIMAGINA_RECLAIM_SWEEP_S`
+(default half the staleness window, at least 60 s: 150 s) it finds executors
+whose heartbeat is older than `REIMAGINA_EXECUTOR_STALE_S` (300 s), excluding
+itself, and has DBOS recover their pending workflows onto itself. The window
+must be at least 4 times the heartbeat interval; startup refuses otherwise. An
+executor with no heartbeat row is never swept. Its row is deleted only once
+nothing unfinished remains against it; work of another application version is
+left, and logged, for a process of that version (§10.9). Recovered workflows
+pass through the queue's atomic dequeue, so racing sweepers admit one runner.
+`REIMAGINA_RECLAIM_ENABLED=0` disables the sweep.
+
+**A worker killed mid-unit.** The unit's open transaction is rolled back by
+the server when the connection drops, so no partial result is written. Its
+workflows stay `PENDING` against the dead executor's id. If a process with the
+same id starts, `DBOS.launch()` recovers them; otherwise a live worker's sweep
+does after the staleness window. Replay skips the steps and units that had
+completed, and the interrupted unit's `s_compute` runs again from the start.
+`make test-recovery` (§6.1) proves both paths with a real `SIGKILL` while a
+unit runs (restart under the same id; a peer's sweep under another id),
+requiring the run to end `succeeded` with no unit `queued` or `running`.
+
+#### 8.2.8 Connection paths
+
+| Connection | Variable | Through PgBouncer |
+|---|---|---|
+| API requests, planning, cancel, delete | `REIMAGINA_APP_DSN` | Yes (5432 in the stack) |
+| API `DBOSClient`, plan write, SSE | `DATABASE_URL_DIRECT` | No (5433) |
+| Worker: queues, checkpoints, compute, heartbeat, sweep | `DATABASE_URL_DIRECT` | No |
+| Migrations, loaders, CLI commands | `DATABASE_URL` | No |
+
+DBOS needs session features a transaction-mode pooler cannot carry: progress
+streams use `LISTEN`/`NOTIFY`, and its schema migration holds a session
+advisory lock across statements (`bootstrap-db` refuses a pooled DSN). With
+`DATABASE_URL_DIRECT` unset the ops plane refuses to start rather than let DBOS
+fall back to SQLite. Each submit checks that both connections reach the same
+database, so a run is never planned in one and executed in another.
+
+#### 8.2.9 One run, from submit to landed
+
+1. A client calls `POST /jobs`, `POST /scenarios/{id}/recompute` or
+   `POST /jobs/{run_id}/rerun`. The API opens a connection on
+   `REIMAGINA_APP_DSN` and calls `submit_run`.
+2. `submit_run` checks both DSNs name the same database, mints the run id and
+   gets the units from the planner (§8.3). An empty plan returns `noop`.
+3. It commits each unit's feature set to `jobs_runtime.run_plan` under the run
+   id, validates the workflow input and computes the deduplication id.
+4. `DBOSClient` enqueues `run_workflow` on `runs` with the run id; DBOS stores
+   the workflow and its input in one transaction. The API answers `202` with
+   status `queued`, or the existing run with `deduplicated: true`.
+5. A worker with a free `runs` slot dequeues it. Step `s_open_run` writes the
+   `orchestration_run` row (`running`) and one `job_unit` per unit (`queued`).
+6. `plan_wave` marks units with an unsatisfied prerequisite `skipped` and
+   enqueues ready units on `units` as `{run_id}-{slug}`.
+7. A worker with a free `units` slot runs the unit: `running`, then
+   `s_compute` reads the unit's feature set from `run_plan`, runs the
+   indicator in one transaction and commits; the unit becomes `succeeded` or
+   `failed`.
+8. The parent takes the next finished child, records its status
+   (`s_settle_unit`), emits a progress event and returns to step 6.
+9. With nothing outstanding or left to skip, the parent derives the run
+   status, closes the run (`s_finalize`), deletes its `run_plan` rows and
+   emits the run-level event. `GET /jobs/{run_id}` and the scenario's
+   `latest_run` now report the terminal status: the run has landed.
+
+
+### 8.3 Indicator catalogue and selective recomputation
+
+An indicator is a number computed per feature (here, per block), stored in
+`curated_geo.indicator_result` (structure in §8.1) and recomputed only when
+something it depends on has changed. This section covers where indicators are
+declared, how they are computed, how their dependencies are recorded, and how
+the planner decides what a run recomputes. Queueing and execution are covered
+in §8.2; how a scenario records its edits is covered in §8.4.
+
+#### 8.3.1 Where indicators are declared
+
+The source of truth is Python code: one `IndicatorSpec` per indicator in
+`packages/py/reimagina/indicators/catalog.py`, collected in the
+`SHIPPED_INDICATORS` tuple. Two database structures are generated from that
+tuple, never edited by hand:
+
+| Seeder | Writes | Used by |
+|---|---|---|
+| `seed_catalog` | `indicator_catalog`, `indicator_dependency` | write trigger, API, web pages |
+| `seed_assets` | `asset`, `asset_dependency` | freshness views, scenario planning |
+
+`bootstrap-db` runs both (after `seed_feature_types`) in one transaction.
+`indicators seed-catalog` and `assets seed` re-run them individually. Both are
+idempotent upserts keyed on `slug` and `asset_key`, so ids and history survive
+a re-seed. They must run in one transaction because the dependency triggers
+are deferred to commit (§8.3.5). The CLI commands do this.
+
+Adding an indicator means adding a spec, a compute function in the runner
+registry (`orchestration/runners.py`), and re-seeding. No migration is
+needed. A composite needs no compute code: every spec with
+`computation_kind = 'composite'` is bound to the generic `compute_composite`.
+
+#### 8.3.2 What a catalogue entry carries
+
+| Field | Meaning |
+|---|---|
+| `slug`, `name`, `description` | Identity; the description is served by the API |
+| `computation_kind` | `direct` or `composite` |
+| `model_family` | Required for `direct`, must be NULL for `composite` (CHECK) |
+| `value_type`, `unit` | `numeric`/`text`/`json`; unit label, e.g. `m`, `score_0_1` |
+| `valid_min`, `valid_max` | Accepted range, enforced on write |
+| `cap_value` | A clamp meaning "at least this", not a measurement |
+| `aggregation_method` | `mean`, `weighted_mean`, `sum`, `min`, `max`, `none` |
+| `applies_to` | Feature types (grains) the indicator may be written for |
+| `inputs` | Typed edges to datasets, attributes and other indicators |
+| `higher_is_better` | Direction; Python-only, not a column |
+
+`inputs` is the single declaration of what an indicator consumes. Each
+`AssetEdge` names an asset key (`mex.block`, `global.poi`,
+`indicator.<slug>`), a relation (`self`, `child_in_parent`, `within_radius`,
+`derived_from`), optionally the attributes read and a weight. Two projections
+are derived from it and cannot be declared separately: `reads` (attribute
+keys) and `depends_on` (component indicators with weights). The catalogue has
+no "statistic" field. `aggregation_method` controls how area summaries
+(`indicators aoi-summary`) combine block values.
+
+#### 8.3.3 The shipped indicators
+
+All twelve are computed at the `block` grain (`applies_to = {block}`) and
+aggregate by `weighted_mean`.
+
+| Slug | Family | Measures (unit, range) | Main inputs |
+|---|---|---|---|
+| `urban_form_block_compactness` | urban_form | Polsby-Popper (ratio, 0–1) | block `geometry` |
+| `urban_form_block_building_density` | urban_form | Buildings/ha (0–500) | block `geometry`, buildings |
+| `urban_form_block_planned_floors` | urban_form | Planned floors (0–200) | `floors` |
+| `urban_form_block_composite` | — | 0.5 compactness + 0.5 density (0–1) | the two above |
+| `edificability_block_housing_units` | urban_form | Potential dwellings (0–200,000) | `num_levels`, `unit_size`, `lot_coverage`, `people_per_household` |
+| `edificability_block_population` | urban_form | Potential residents (0–750,000) | same four attributes |
+| `edificability_block_density` | urban_form | Dwellings/ha (0–2,000) | same four attributes |
+| `accessibility_block_school_network_m` | accessibility | Walk distance to a school (m, cap 1,500) | POIs, road network |
+| `accessibility_block_health_network_m` | accessibility | Walk distance to health care (m, cap 1,500) | POIs, road network |
+| `accessibility_block_park_network_m` | accessibility | Walk distance to a park or recreation site (m, cap 1,500) | POIs, road network |
+| `accessibility_block_culture_network_m` | accessibility | Walk distance to a cultural venue (m, cap 1,500) | POIs, road network |
+| `livability_block_score` | — | 0.4 housing density + 0.2 per school/health/park distance (0–1) | four indicators |
+
+The three edificability indicators declare the same four attributes, although
+only population uses `people_per_household`. Editing that attribute therefore
+recomputes all three. The four accessibility distances are lower-is-better.
+`compute_composite` normalises each input to 0–1 against its own
+`valid_min`/`valid_max`, inverts lower-is-better inputs, and then applies the
+weights. A composite value is written only for features where every input has
+a value. The accessibility indicators also declare the attributes
+`poi_version` and `network_version`. These are version markers that are bumped
+by hand and stand in for a dataset change. They are not policy levers, and a
+scenario cannot set them.
+
+#### 8.3.4 How an indicator is computed and written
+
+Each direct indicator has three stages:
+
+1. **Read**: SQL against PostGIS or pgRouting, scoped by `aoi_id` and/or
+   `feature_ids`. Compactness and the edificability family use geodesic
+   `ST_Area`/`ST_Perimeter` on `geography`. Building density counts building
+   centroids inside each block. Accessibility runs one multi-source
+   `pgr_drivingDistance` per category over `curated_geo.road_edge`. Attribute
+   reads resolve the *effective* value: scenario override, then observation,
+   then base attribute (§8.4).
+2. **Kernel**: pure Python functions (`indicators/kernels.py`) run as nodes of
+   a Hamilton dataflow (`indicators/dataflow.py`). Each node returns a
+   `(feature_id, value_numeric)` frame with a Pandera `@check_output` bounds
+   schema derived from the catalogue range. An out-of-range value fails the
+   unit before anything is written. `planned_floors` and the composites write
+   without a Hamilton stage.
+3. **Write**: inside a `job_run` context, `bulk_write_numeric_results` marks
+   the feature's existing `current` row for that indicator and scenario as
+   `stale` and inserts a new `current` row. Partial unique indexes allow one
+   current row per (feature, indicator) for the baseline and one per
+   (feature, scenario, indicator) for scenarios. The trigger
+   `indicator_result_before_write` re-checks range, `applies_to`, value-column
+   cardinality and that `scenario_id` matches the job run. It is the database
+   backstop for the same rules as `indicators/validation.py`.
+
+An indicator whose input layer is empty, or matches nothing in scope, raises
+`MissingInputData` instead of writing zeros. A scenario reads indicator
+results as an overlay: its own row where one exists, the baseline row
+otherwise.
+
+#### 8.3.5 The dependency graph
+
+There are two graphs, both seeded from `inputs`:
+
+- **`indicator_dependency`**: composite to component, with a weight. The
+  deferred trigger `indicator_dependency_validate` rejects a non-composite
+  parent, a cycle (recursive walk, depth 50), a mix of weighted and NULL
+  weights, and weights that do not sum to 1.0 (tolerance 1e-9). A CHECK
+  constraint keeps each weight in 0–1. Six rows are shipped: two for
+  `urban_form_block_composite`, four for `livability_block_score`.
+- **`asset_dependency`**: every edge from each indicator asset
+  (`indicator.<slug>`) to the datasets, the other indicators, and one
+  `scenario.override.<attribute>` asset per attribute it reads. Each edge
+  carries a `partition_mapping`. The value is `identity` when the producer is
+  partitioned by scenario (override assets, indicators) and `baseline`
+  otherwise, so a scenario's results read the single shared copy of the source
+  layers. `asset_dependency_validate` applies the same cycle and weight rules
+  to `derived_from` edges. The release seeds 48 edges.
+
+In Python, `orchestration/graph.py` orders the graph with
+`graphlib.TopologicalSorter`, which raises `CycleError` on a cycle. Nodes and
+prerequisites are sorted first, so the order is identical in every process.
+The durable executor depends on this when it replays a run (§8.2).
+
+#### 8.3.6 Freshness
+
+An indicator is out of date when the version it was computed against differs
+from the version its inputs now imply.
+
+- **Source versions.** A feature layer gets a new `asset_version` (its version
+  string is the ingestion run id) only when an ingest actually wrote rows.
+  `global.road_network` is `observed`: `assets observe` runs its `probe_sql`
+  (edge count and maximum OSM id) and publishes a new version if the result
+  changed. A scenario edit publishes a version of
+  `scenario.override.<attribute>` in partition `scenario=<id>` (§8.4).
+- **Expected version.** `serving_geo.asset_expected_version_v` is an MD5
+  over everything upstream of an asset. That includes each source's current
+  version (`missing` if none), each derived asset's `code_version` and
+  `params_digest`, and every edge. `params_digest` hashes `computation_kind`,
+  `value_type`, `unit`, `aggregation_method`, `valid_min`, `valid_max` and
+  `applies_to`. Changing a range therefore invalidates the indicator, but
+  editing its description does not. `code_version` is maintained by hand
+  (currently `1` for every indicator), so a commit alone invalidates nothing.
+- **Materialised version.** Each unit records an `asset_materialization` row
+  through the runner wrapper (`runners._recording`). The row holds the
+  expected version captured *before* the compute starts, the input versions
+  read, and `coverage_scope.complete`. A failed compute records nothing.
+- **State.** `serving_geo.asset_freshness_v` reports `absent` (never
+  computed), `stale` (versions differ), `partial` (the last run was
+  feature-scoped or AOI-scoped), or `fresh`. `assets stale` lists the out-of-date
+  assets. `assets consumers <key>` lists everything downstream of an asset.
+
+⚠ A run scoped by `aoi_id` or by edited features records `complete = false`.
+The indicator stays `partial`, and the next "what is out of date" request
+recomputes it over the whole grain.
+
+⚠ A road network reloaded outside the ingest path (raw SQL, a restored dump)
+is invisible to freshness until you run `assets observe`.
+
+#### 8.3.7 Planning a run
+
+`plan_run` (`packages/py/reimagina/orchestration/plan.py`) turns a request
+into an ordered list of `DirtyUnit(indicator, features)`. Every entry point
+calls it: `POST /jobs`, the scenario recompute, and `evaluate-scenario` on
+the CLI. An empty `features` set means every feature the indicator applies
+to. The request selects one of three paths:
+
+| Request | Dirty set | Order |
+|---|---|---|
+| `indicators` (named list) | Exactly those; unknown slugs → 422 | Topological on the induced subgraph |
+| `changed_attributes` / `edited_features` | Indicators whose `reads` meet the attributes, plus the downstream closure | Topological; features passed down |
+| Nothing named | Freshness: baseline `stale`/`partial`; with `scenario_id`, that partition, `absent` included | Topological |
+
+`changed_datasets` (for example `["global.road_network"]`) is resolved by
+`indicators_for_datasets` to every indicator with an edge to that dataset,
+plus the downstream closure. The result is submitted as a named list. The
+downstream closure (`downstream_closure`) walks the reverse dependency edges
+from the seed set, so a composite becomes dirty when any of its components is
+dirty. During execution a unit runs only after every prerequisite *in the same
+run* has succeeded. A unit with a failed prerequisite is skipped (§8.2). A
+prerequisite outside the run is treated as already materialised.
+
+Scope: `aoi_id` is passed to every compute and restricts its read to
+features in the AOI. `scenario_id` makes the computes read effective values
+for that scenario and write rows tagged with it. Neither ever touches the
+baseline rows. With `scenario_id` and nothing else named, freshness returns
+only the indicators that the scenario's published overrides reach through
+`identity` edges.
+
+⚠ On a database where nothing has been computed, every indicator is
+`absent`, and a baseline request that names nothing is a `noop`. To build
+everything the first time, name the indicators, as §7.2 does with
+`indicators compute`. A `noop` returns no `run_id`.
+
+#### 8.3.8 Impact check
+
+`POST /jobs/preview` takes the same body as `POST /jobs`, runs `plan_run` on a
+read-only pooled connection, and returns `indicators`, `count`, `noop` and a
+`reason` naming which path answered. It persists and enqueues nothing.
+`GET /jobs/attributes` lists what a change set can name: each
+`dataset · attribute` pair with the indicators that read it, each
+whole-dataset edge, and the registered datasets that no indicator consumes.
+The Impact check panel on the Catalogue page (§9.3) is built on these two
+endpoints and can submit the previewed run.
+
+#### 8.3.9 Worked example: a scenario changes `num_levels`
+
+The edge rows for this example can be listed with:
+
+```sql
+SELECT c.asset_key AS consumer, p.asset_key AS producer, d.relation, d.attributes
+FROM curated_geo.asset_dependency d
+JOIN curated_geo.asset c ON c.id = d.consumer_asset_id
+JOIN curated_geo.asset p ON p.id = d.producer_asset_id
+WHERE p.asset_key = 'scenario.override.num_levels'
+   OR c.asset_key = 'indicator.livability_block_score';
+```
+
+1. The edit publishes a new version of `scenario.override.num_levels` in
+   partition `scenario=S`.
+2. Three indicators have an `identity` edge from that asset:
+   `edificability_block_density`, `edificability_block_housing_units` and
+   `edificability_block_population`. The partition propagates to them.
+3. `livability_block_score` has a `derived_from` edge (weight 0.4) from
+   `edificability_block_density`, so the partition propagates to it as well.
+   `urban_form_block_composite`, `planned_floors` and the accessibility
+   indicators are not reached.
+4. The planner returns, in order: `edificability_block_density`,
+   `edificability_block_housing_units`, `edificability_block_population`,
+   `livability_block_score`. The first three are independent and may run
+   concurrently. The score runs after all three succeed. For blocks with no
+   scenario value of their own, it reads the accessibility inputs from the
+   baseline.
+
+The same four indicators result from naming the attribute explicitly
+(`changed_attributes: ["num_levels"]`). By contrast, `["geometry"]` yields
+compactness, building density and `urban_form_block_composite`.
+`["floors"]` yields `urban_form_block_planned_floors` alone.
+`changed_datasets: ["global.road_network"]` yields the four accessibility
+distances followed by `livability_block_score`.
+
+
+### 8.4 Scenario making
+
+This section describes how a scenario works underneath. The page that drives it is described in §9.2.
+
+#### 8.4.1 Scenario, baseline and rules
+
+A scenario is a row of `app_core.scenario` with four fields that matter here: a project (`project_id`), an area of interest (`aoi_id`), a `name` that is unique within the project (`UNIQUE (project_id, name)`), and `materialized_at`. The *baseline city* is not a scenario row. It is the data with no scenario applied: `indicator_result` rows whose `scenario_id IS NULL`. A scenario stores only what it changes and reads everything else through to the baseline.
+
+The `aoi_id` is optional when the scenario is created but required at recompute. The foreign key is `ON DELETE SET NULL`, so deleting the AOI leaves the scenario unable to recompute. `create_scenario` also checks that the AOI belongs to the scenario's project, because the schema does not enforce that link.
+
+A *rule* is a drawn area plus the edits that one proposal writes over it. Each edit is a row of `curated_geo.scenario_edit` with a polygon (EPSG:4326), a feature type (`MEX:block` by default), an `attribute_key`, a `value_numeric` and an `ordinal`. One proposal takes four numbers and writes five edits (`edits_for`, `packages/py/reimagina/scenarios/proposal.py`):
+
+| Proposal field | Edits written | Unit | Valid values |
+|---|---|---|---|
+| `levels` | `floors` and `num_levels` | storeys | finite, > 0 |
+| `unit_size` | `unit_size` | m² per dwelling | finite, > 0 |
+| `people_per_household` | `people_per_household` | people | finite, > 0 |
+| `lot_coverage` | `lot_coverage` | share of block | 0 < c ≤ 1 |
+
+`floors` and `num_levels` are the same quantity under two names. Planned floors reads `floors` and the edificability family reads `num_levels`, so a proposal always writes both. The API defaults `lot_coverage` to 1.0 on `POST`, the web page sends 0.6, and `PATCH` requires it. The authorable set is derived from the attributes that the catalogue's indicators read, minus `geometry`, `poi_version` and `network_version` (`authorable_attributes`, `reimagina/assets/registry.py`). `add_edit` refuses any other key.
+
+`ordinal` is `max + 1` within the scenario, assigned under a `FOR UPDATE` lock on the scenario row. Where two edits of the same attribute catch the same block, the higher ordinal wins. Precedence is decided per attribute, not per rule.
+
+`PATCH /scenarios/{id}/rules` edits a rule in place. It takes the rule's `edit_ids`, the complete set of four numbers and, optionally, a new area. The ids must all belong to this scenario and share one geometry; otherwise the call is refused with 422. The edits keep their ids and ordinals, so the rule keeps its place in "later wins". An attribute that the rule has no edit for (for example `lot_coverage` on an older rule) is appended with a new ordinal. It therefore beats earlier and later rules on that attribute.
+
+`DELETE /scenarios/{id}/edits?edit_id=…` removes one edit, so removing a rule means one call per edit. Ordinals are not renumbered. The removed rule's overrides stay in place until the next recompute.
+
+#### 8.4.2 Validation and refusals
+
+`POST /scenarios/{id}/edits` and `PATCH …/rules` check the request in this order. A refused proposal opens no connection and leaves no partial rule.
+
+| # | Check | Refusal | HTTP |
+|---|---|---|---|
+| 1 | Scenario id is a UUID | `ScenarioNotFound` | 404 |
+| 2 | Three numbers finite and > 0; coverage in (0, 1] | `ProposalValueError` (names `field`) | 400 |
+| 3 | Area-independent ceilings: density and planned floors | `CeilingPrecheckFailed` (`allowed_levels`) | 422 |
+| 4 | Area is GeoJSON with a polygonal part; repairable | `InvalidGeometry` | 400 |
+| 5 | Per-block ceilings, at recompute | `CeilingExceeded` (≤ 20 blocks listed) | 422 |
+
+A missing AOI at recompute is refused with `ScenarioHasNoAOI` (409).
+
+The ceilings exist because a trigger on `curated_geo.indicator_result` raises when a value exceeds the catalogue's `valid_max`; it does not clamp the value. A value over a ceiling would therefore abort the whole run. The bounds are read from the catalogue at call time (`reimagina/scenarios/ceilings.py`):
+
+| Indicator | `valid_max` | Depends on block area |
+|---|---|---|
+| `urban_form_block_planned_floors` | 200 storeys | no |
+| `edificability_block_density` | 2,000 units/ha | no |
+| `edificability_block_housing_units` | 200,000 units | yes |
+| `edificability_block_population` | 750,000 people | yes |
+
+The precheck can test only the two bounds that do not depend on area. `allowed_levels` is `min(0.2 × unit_size, 200)`, computed at full coverage; at 60 m² that is 12 storeys. The area-dependent bounds are checked during materialisation, block by block, with each block's own area and its effective inputs after the rules are applied.
+
+Geometry is repaired on write: several polygons are unioned into one area, then the area goes through `ST_MakeValid`, and the polygonal part is kept.
+
+A rule whose area catches no block is not refused by the server. Recompute reports `matched_per_edit` = 0 for it. The web page treats a rule whose edits all caught zero blocks as empty and undoes its own write.
+
+#### 8.4.3 Materialisation
+
+`materialize_scenario` (`reimagina/scenarios/authoring.py`) turns the edits into per-feature rows of `curated_geo.scenario_override`, keyed by `UNIQUE (scenario_id, feature_id, attribute_key)`. It runs seven steps in one transaction:
+
+1. Lock the scenario row and refuse if it has no AOI.
+2. Select, for each edit in ordinal order, the features of the edit's type that are AOI members (`aoi_feature`) and whose `geometry_centroid` the area covers (`ST_Covers`). Later edits overwrite earlier ones per feature and attribute.
+3. Check every selected block against the ceilings. Nothing has been written yet, so a refusal leaves the previous materialisation intact.
+4. Delete the overrides that no surviving edit implies any more.
+5. Upsert the resolved overrides (`apply_overrides`).
+6. Publish one version per attribute (`publish_scenario_version`) and retire the versions of attributes that are no longer edited.
+7. Mark `stale` the scenario results that depended on deleted overrides, then set `materialized_at`.
+
+`geometry_centroid` is a generated `ST_PointOnSurface(geometry)`. A block is in or out as a whole: a block whose point-on-surface lies inside the area takes the full value, and a block partly inside whose point lies outside is untouched. No value is apportioned by area. This is the same predicate the map's selection card uses for its counts.
+
+Materialisation is idempotent. Each version is an MD5 digest of the attribute's override rows (asset `scenario.override.<attribute>`, partition `scenario=<id>`). Re-materialising unchanged rules therefore publishes nothing, and the following submit answers `run_status: "noop"` with no `run_id`.
+
+The effective value of an input under a scenario is the first non-null of the override, the current observation, and the base `feature.attributes` value (`effective_numeric`, `reimagina/scenarios/overrides.py`). Reads of indicator results apply the same rule to outputs (`scenario_overlay`, `reimagina/storage/_utils.py`): a scenario read returns the scenario's row where it carries a value and the baseline row otherwise.
+
+#### 8.4.4 Derived quantities and the fitted baseline
+
+The edificability family (`reimagina/indicators/edificability.py`) computes, per block, with the block's geodesic area in m² (A):
+
+- `housing_units` = A × `lot_coverage` × `num_levels` ÷ `unit_size`
+- `population` = `housing_units` × `people_per_household`
+- `density` = `housing_units` ÷ (A ÷ 10,000), which is 10,000 × `lot_coverage` × `num_levels` ÷ `unit_size`
+
+A block missing any of `num_levels`, `unit_size` or `people_per_household` is skipped, not zeroed. A block without `lot_coverage` is computed at 1.0.
+
+The census-fitted baseline (§7.2, `scripts/seed_demo_attributes.py --fit-to-census`) sets `unit_size` = A × `num_levels` ÷ census dwellings (`censo_2020_vivtot`) for each block. It seeds no `lot_coverage`. The baseline formula therefore returns the census dwelling count exactly, and a rule's change is measured against the existing city.
+
+#### 8.4.5 Recompute
+
+`POST /scenarios/{id}/recompute` (CLI `scenario recompute`) runs in two transactions. The first materialises and commits. The second submits a run for the scenario and its AOI with an empty change set; the planner then derives the work from freshness at the scenario's partition (§8.2, §8.3). The API needs a running worker. The CLI runs the coordinator embedded by default, or with `--detach` / `--sync`.
+
+The indicators a rule can make stale are listed by `GET /scenarios/indicators`, which is derived from the catalogue:
+
+- `urban_form_block_planned_floors`, from `floors`;
+- the three edificability indicators;
+- `livability_block_score`, which depends on edificability density.
+
+Results are written as `indicator_result` rows carrying the scenario's `scenario_id`. The baseline partition of an override asset never receives a version, so no scenario edit can change a baseline result.
+
+#### 8.4.6 Comparison
+
+`GET /scenarios/{id}/comparison?indicator_slug=…[&aoi_id][&limit]` (`reimagina/scenarios/comparison.py`) full-outer-joins the current baseline and scenario rows that carry values. A block's scenario value is the scenario's value, or the baseline's where the scenario has none. Each block falls into one state:
+
+| State | Condition | `delta` |
+|---|---|---|
+| `changed` | Has a baseline; scenario value differs | scenario − baseline |
+| `unchanged` | Has a baseline; same value or no scenario row | 0 |
+| `new` | Scenario row only | null |
+
+The summary gives the three counts and `higher_is_better`, taken from the catalogue. It also gives `mean_delta`, averaged over every block that has a baseline, untouched blocks included, so it is the mean shift across the territory. `limit` truncates only `rows`; `row_count` and `summary` always cover the whole comparison.
+
+The scenarios page uses two reads:
+
+- **The table** shows one cell per scenario and indicator, read from `GET /indicators/{slug}/stats` with `scenario_id`, which applies the overlay. A cell is a total (`sum`) for indicators whose unit is `units` or `people`, and a median otherwise (`table_statistic`).
+- **The map** has two modes. *Change* paints `delta` from the comparison on a diverging ramp that spans ±p95 of |delta| over changed blocks; the side coloured green follows `higher_is_better`. *Values* colours a scenario on the baseline city's range, so a colour means the same number in every scenario; values above the range show in the darkest colour.
+
+Scenario tiles are served with `Cache-Control: no-cache` plus an ETag, because the URL stays the same across recomputes. Baseline tiles are served as `public, max-age=60, stale-while-revalidate=300` (`REIMAGINA_TILE_MAX_AGE_S`, `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S`).
+
+#### 8.4.7 Deletion
+
+`DELETE /scenarios/{id}` runs five steps in one transaction:
+
+1. Delete the scenario's overrides.
+2. Retire its override versions.
+3. Mark all of its current results `stale`.
+4. Delete the `asset_materialization` rows of its partition.
+5. Delete the scenario row, which cascades to its edits.
+
+The response returns four counts: `overrides`, `versions_retired`, `results_superseded` and `materializations`. An unknown id answers 404. Stale results and retired versions are kept: an operator querying `indicator_result` without a `status = 'current'` filter will still see rows of deleted scenarios. The CLI has no delete command.
+
+#### 8.4.8 The same operations from the CLI and the API
+
+All CLI commands are `scenario …` subcommands; their flags are given in `--help`.
+
+| Operation | CLI | API |
+|---|---|---|
+| Create | `create --name --aoi-id` (`--project-id` optional) | `POST /scenarios` |
+| List, show | `list`, `show` | `GET /scenarios`, `GET /scenarios/{id}` |
+| Add a rule | `set-attribute --geojson --levels --unit-size --people-per-household [--lot-coverage]` | `POST /scenarios/{id}/edits` |
+| Edit, remove a rule | (none) | `PATCH …/rules`, `DELETE …/edits?edit_id=` |
+| Recompute | `recompute [--detach\|--sync]` | `POST /scenarios/{id}/recompute` (202) |
+| Compare | `compare --slug [--limit 20]` | `GET /scenarios/{id}/comparison` |
+| Delete | (none) | `DELETE /scenarios/{id}` |
+
+The CLI `set-attribute` defaults `--lot-coverage` to 1.0.
+
+#### 8.4.9 Worked example
+
+These are real values from the acceptance database, which holds a synthetic territory of 16 blocks of 12,150.9 m² each. The baseline storeys run from 2 to 5, with 65 m² per dwelling and 3.2 people per household; these blocks carry no census count.
+
+1. **Rule.** One rule draws an area of 18,982 m² and proposes 12 storeys, 80 m² per dwelling, 3.2 people and coverage 1.0. That writes five edits, ordinals 1–5.
+2. **Materialisation.** The area covers the point-on-surface of 4 blocks, which together cover more than twice the drawn area. The step writes 4 × 5 = 20 overrides.
+3. **Per-block values.** Each of the four blocks gets housing units = 12,150.9 × 1.0 × 12 ÷ 80 = 1,822.6; population = 1,822.6 × 3.2 = 5,832.4; density = 1,500 units/ha, under the 2,000 bound.
+4. **Recompute.** The run writes scenario rows for the five reachable indicators.
+5. **Comparison.** `edificability_block_housing_units` reports 4 `changed`, 12 `unchanged` and `mean_delta` 292.09. The table total rises from 11,287.6 to 15,961.0 dwellings and population from 36,120.4 to 51,075.3. The median of planned floors rises from 4 to 5.
+
 ## 9. Operating the platform
 
 The four pages share one top bar that links them. Every page reads the API

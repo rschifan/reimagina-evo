@@ -377,7 +377,7 @@ def ensure_system_database(dsn: str | None = None) -> None:
 
     ⚠ ``SystemDatabase`` is DBOS-internal. It is reached directly because the
     public surface offers no provision-without-executing entry point, and the
-    dependency is pinned (``dbos>=2.28,<3``) for unrelated reasons that happen
+    dependency is pinned (``dbos>=3.4,<3.6``) for unrelated reasons that happen
     to bound this one too. `tests/integration/test_dbos_system_schema_bootstrap`
     asserts the schema really appears, so an upstream move breaks a test rather
     than quietly reverting us to a 500 on first submit.
