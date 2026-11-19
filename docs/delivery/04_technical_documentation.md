@@ -419,14 +419,14 @@ test database first:
 
 ```bash
 make migrate                                     # restores the test DB's schemas
-DATABASE_URL=$TEST_DATABASE_URL uv run python -m apps.cli.app indicators seed-catalog
-DATABASE_URL=$TEST_DATABASE_URL uv run python scripts/synthetic_territory.py \
+uv run python scripts/synthetic_territory.py --dsn "$TEST_DATABASE_URL" \
     --blocks 150 --ageb-side 10                  # 22,500 blocks, under a minute, no credentials
 make test-recovery                               # 2 passed
 ```
 
-`$TEST_DATABASE_URL` must be set in the shell for the two middle commands —
-`set -a; . ./.env; set +a` exports everything in `.env`.
+The suite seeds the indicator catalogue itself. `$TEST_DATABASE_URL` must be
+set in the shell for the middle command — `set -a; . ./.env; set +a` exports
+everything in `.env`.
 
 The size is not arbitrary. The suite kills a worker *while a unit is
 running*, so the run has to take long enough for the kill to land inside it.
@@ -1048,15 +1048,15 @@ revision, in this order, and each step is reported with its actual result.
 | 3 | `make migrate` | Both databases created and migrated to `r051`; 25 tables in `curated_geo` |
 | 3b | `uv run python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev API_PORT=8057 WEB_PORT=5197` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
-| 5 | `make test` | 1,025 passed |
+| 5 | `make test` | 1,017 passed |
 | 6 | `make test-integration` | 548 passed, 1 skipped |
 | 7 | `make test-conformance` | 21 passed, 1 skipped |
 | 8 | `uv run pytest tests/performance` | 6 passed, 1 skipped |
-| 9 | `make test-web` | 401 passed (28 files) |
+| 9 | `make test-web` | 402 passed (28 files) |
 | 10 | `make build-web` | OK |
-| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 27 s |
-| 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 16 s; 2 passed |
-| 13 | `make test-e2e` | <<E2E>> of 33 passed, in a real browser against both servers |
+| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 21 s |
+| 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 13 s; 2 passed |
+| 13 | `make test-e2e` | 33 of 33 passed, in a real browser against both servers |
 
 Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3, with
 Python 3.12.11 (from `uv`) and Node.js 24.22.2. CI and the container stack use
@@ -1065,7 +1065,7 @@ across both.
 
 Three things about this run differ from a fresh machine, and are stated
 rather than smoothed over. It used Path B (§3.1) with the databases named
-`reimagina_wse_app_test` and `reimagina_wse_test`, because the machine's
+`reimagina_rel_app_test` and `reimagina_rel_test`, because the machine's
 other work already uses the default names and the integration suite drops
 schemas (§9.5). The API and Vite ran on ports 8057 and 5197 (`API_PORT`,
 `WEB_PORT`, §5), because 8001 and 5173 were in use. And step 13 ran after
