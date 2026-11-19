@@ -3,7 +3,6 @@ import type { UnitDetail } from "./api";
 import fixture from "./fixtures/run-12-units.json";
 import {
   axisMs,
-  forecastMs,
   rowOrder,
   rowState,
   ticks,
@@ -16,7 +15,6 @@ const RECORDED = fixture.units as UnitDetail[];
 const ms = (iso: string | null) => (iso ? Date.parse(iso) : null);
 const T0 = Math.min(...RECORDED.map((u) => ms(u.queued_at)!));
 const END = Math.max(...RECORDED.map((u) => ms(u.completed_at)!));
-const actual = (u: UnitDetail) => ms(u.completed_at)! - ms(u.started_at)!;
 
 /** The recorded run as it stood at absolute time `at`. */
 function frameAt(units: UnitDetail[], at: number): UnitDetail[] {
@@ -39,7 +37,6 @@ function unit(indicator: string, over: Partial<UnitDetail> = {}): UnitDetail {
     started_at: null,
     completed_at: null,
     depends_on: [],
-    expected_ms: null,
     ...over,
   };
 }
@@ -80,39 +77,19 @@ describe("row order", () => {
   });
 });
 
-describe("forecast", () => {
-  test("reproduces the recorded run within 1 s when expected = actual", () => {
-    const units = RECORDED.map((u) => ({ ...u, expected_ms: actual(u) }));
-    expect(Math.abs(forecastMs(units, 8)! - (END - T0))).toBeLessThan(1_000);
-  });
-
-  test("is null when any unit lacks expected_ms", () => {
-    const units = RECORDED.map((u, i) => ({ ...u, expected_ms: i ? actual(u) : null }));
-    expect(forecastMs(units, 8)).toBeNull();
-    expect(forecastMs([], 8)).toBeNull();
-  });
-
-  test("respects the slot count", () => {
-    const units = ["a", "b", "c"].map((s) => unit(s, { expected_ms: 1_000 }));
-    expect(forecastMs(units, 1)).toBe(3_000);
-    expect(forecastMs(units, 3)).toBe(1_000);
-  });
-});
-
 describe("axis", () => {
-  test("forecast axis holds, then grows x1.25 past 98 %", () => {
-    expect(axisMs(20_000, 26_500, true)).toBe(26_500);
-    expect(axisMs(26_000, 26_500, true)).toBe(33_125);
-  });
-
-  test("doubling axis without a forecast", () => {
-    expect(axisMs(9_000, null, true)).toBe(10_000);
-    expect(axisMs(9_600, null, true)).toBe(20_000);
+  // No prediction: the live axis starts at 10 s and doubles each time the
+  // run reaches its edge, so everything drawn shrinks and the run continues.
+  test("live axis starts at 10 s and doubles at the edge", () => {
+    expect(axisMs(0, true)).toBe(10_000);
+    expect(axisMs(9_000, true)).toBe(10_000);
+    expect(axisMs(9_600, true)).toBe(20_000);
+    expect(axisMs(39_000, true)).toBe(80_000);
   });
 
   test("finished run fits the run", () => {
-    expect(axisMs(29_800, 26_500, false)).toBe(29_800);
-    expect(axisMs(20_000, 26_500, false)).toBe(26_500);
+    expect(axisMs(29_800, false)).toBe(29_800);
+    expect(axisMs(0, false)).toBe(1);
   });
 
   test("last tick sits at 100 %", () => {
@@ -123,8 +100,8 @@ describe("axis", () => {
 });
 
 describe("nothing drawn moves left or shrinks while live", () => {
-  test("replay of the recorded run every 100 ms, with one overrun", () => {
-    const units = RECORDED.map((u) => ({ ...u, expected_ms: Math.round(actual(u) * 0.9) }));
+  test("replay of the recorded run every 100 ms", () => {
+    const units = RECORDED;
     let prev: ReturnType<typeof timelineModel> | null = null;
     let rescales = 0;
     for (let t = T0; t < END; t += 100) {
@@ -146,42 +123,33 @@ describe("nothing drawn moves left or shrinks while live", () => {
       }
       prev = m;
     }
-    expect(rescales).toBe(1);
+    // Each rescale is a doubling: the run outgrew the edge, nothing else.
+    expect(rescales).toBeGreaterThanOrEqual(1);
+    expect(prev!.axis % 10_000).toBe(0);
   });
 });
 
 describe("numbers", () => {
-  const running = (expected: number | null) =>
-    timelineModel([unit("a", { status: "running", started_at: iso(0), expected_ms: expected })], 8, at(4), true)
-      .rows[0];
-
-  test("percent of expected", () => {
-    expect(running(10_000).numbers).toBe("4.0s · 40%");
-    expect(running(10_000).over).toBe(false);
-  });
-
-  test("past expected", () => {
-    expect(running(3_000).numbers).toBe("+1.0s over");
-    expect(running(3_000).over).toBe(true);
-  });
-
-  test("no estimate", () => {
-    expect(running(null).numbers).toBe("4.0s");
-    expect(running(null).expectedPct).toBeNull();
+  test("a running unit shows its elapsed time and nothing predicted", () => {
+    const row = timelineModel(
+      [unit("a", { status: "running", started_at: iso(0) })], 8, at(4), true,
+    ).rows[0];
+    expect(row.numbers).toBe("4.0s");
+    expect(row).not.toHaveProperty("expectedPct");
+    expect(row).not.toHaveProperty("over");
   });
 });
 
 describe("chips", () => {
   const texts = (m: ReturnType<typeof timelineModel>) => m.chips.map((c) => c.text);
-  const one = (over: Partial<UnitDetail>) => [unit("a", { expected_ms: 10_000, ...over })];
+  const one = (over: Partial<UnitDetail>) => [unit("a", over)];
 
-  // The forecast only fixes the axis; it is not shown, inside or past it.
-  test("live, inside the forecast", () => {
+  test("live", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(4), true);
     expect(texts(m)).toEqual(["4.0s elapsed", "1 running", "0 of 1 done"]);
   });
 
-  test("live, past the forecast", () => {
+  test("live, past the first axis", () => {
     const m = timelineModel(one({ status: "running", started_at: iso(0) }), 8, at(12), true);
     expect(texts(m)).toEqual(["12.0s elapsed", "1 running", "0 of 1 done"]);
   });
@@ -207,7 +175,6 @@ describe("degenerate input", () => {
   test("pre-envelope units: queued, no timings, no prerequisites", () => {
     const m = timelineModel([unit("a"), unit("b")], 8, at(1), true);
     expect(m.rows.map((r) => r.state)).toEqual(["ready", "ready"]);
-    expect(m.forecast).toBeNull();
     expect(m.axis).toBe(10_000);
   });
 });
@@ -225,21 +192,6 @@ describe("review fixes", () => {
     const right = (m: ReturnType<typeof timelineAt>) => m.rows[0].leftPct + m.rows[0].widthPct;
     expect(right(before)).toBeCloseTo((5 / before.axis) * 100e3, 6);
     expect(right(after)).toBeGreaterThanOrEqual(right(before));
-  });
-
-  test("the expected outline stays inside the track on a fallback axis", () => {
-    const m = timelineModel(
-      [
-        unit("a", { status: "running", started_at: iso(1), expected_ms: 60_000 }),
-        unit("b", { status: "running", started_at: iso(0) }),
-      ],
-      8,
-      at(2),
-      true,
-    );
-    const a = m.rows.find((r) => r.unit.indicator === "a")!;
-    expect(m.axis).toBe(10_000);
-    expect(a.leftPct + a.expectedPct!).toBeLessThanOrEqual(100);
   });
 
   test("'done' counts what the legend calls done", () => {
@@ -300,19 +252,6 @@ describe("edge cases", () => {
     );
     expect(notes.get("c")).toBe("won't start: f failed");
     expect(notes.get("g")).toBe("won't start: f failed");
-  });
-
-  test("a zero-millisecond estimate shows a plain duration, never NaN", () => {
-    const row = (startS: number) =>
-      timelineModel(
-        [unit("a", { status: "running", started_at: iso(startS), expected_ms: 0 })],
-        8,
-        at(4),
-        true,
-      ).rows[0];
-    expect(row(4).numbers).toBe("0.0s");
-    expect(row(0).numbers).toBe("4.0s");
-    expect(row(4).expectedPct).toBeNull();
   });
 
   test("a stalled run (every unit ended, run still open) stops growing", () => {

@@ -22,8 +22,7 @@
       "queued_at": "2026-11-18T17:42:04.836797+01:00",
       "started_at": "2026-11-18T17:42:04.899793+01:00",
       "completed_at": "2026-11-18T17:42:23.383210+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "accessibility_block_school_network_m",
@@ -32,8 +31,7 @@
       "queued_at": "2026-11-18T17:42:04.839357+01:00",
       "started_at": "2026-11-18T17:42:04.900499+01:00",
       "completed_at": "2026-11-18T17:42:23.383159+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "accessibility_block_health_network_m",
@@ -42,8 +40,7 @@
       "queued_at": "2026-11-18T17:42:04.838442+01:00",
       "started_at": "2026-11-18T17:42:04.901082+01:00",
       "completed_at": "2026-11-18T17:42:25.123187+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "accessibility_block_park_network_m",
@@ -52,8 +49,7 @@
       "queued_at": "2026-11-18T17:42:04.838944+01:00",
       "started_at": "2026-11-18T17:42:04.901539+01:00",
       "completed_at": "2026-11-18T17:42:25.123171+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "edificability_block_density",
@@ -62,8 +58,7 @@
       "queued_at": "2026-11-18T17:42:04.839952+01:00",
       "started_at": "2026-11-18T17:42:04.902118+01:00",
       "completed_at": "2026-11-18T17:42:05.470773+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "urban_form_block_building_density",
@@ -72,8 +67,7 @@
       "queued_at": "2026-11-18T17:42:04.841167+01:00",
       "started_at": "2026-11-18T17:42:04.903857+01:00",
       "completed_at": "2026-11-18T17:42:20.167192+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "edificability_block_housing_units",
@@ -82,8 +76,7 @@
       "queued_at": "2026-11-18T17:42:04.840412+01:00",
       "started_at": "2026-11-18T17:42:04.903881+01:00",
       "completed_at": "2026-11-18T17:42:05.470802+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "edificability_block_population",
@@ -92,8 +85,7 @@
       "queued_at": "2026-11-18T17:42:04.840843+01:00",
       "started_at": "2026-11-18T17:42:04.904062+01:00",
       "completed_at": "2026-11-18T17:42:05.470817+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "urban_form_block_planned_floors",
@@ -102,8 +94,7 @@
       "queued_at": "2026-11-18T17:42:04.842164+01:00",
       "started_at": "2026-11-18T17:42:05.483919+01:00",
       "completed_at": "2026-11-18T17:42:05.534471+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "urban_form_block_compactness",
@@ -112,8 +103,7 @@
       "queued_at": "2026-11-18T17:42:04.841884+01:00",
       "started_at": "2026-11-18T17:42:05.483967+01:00",
       "completed_at": "2026-11-18T17:42:18.738824+01:00",
-      "depends_on": [],
-      "expected_ms": null
+      "depends_on": []
     },
     {
       "indicator": "urban_form_block_composite",
@@ -125,8 +115,7 @@
       "depends_on": [
         "urban_form_block_building_density",
         "urban_form_block_compactness"
-      ],
-      "expected_ms": null
+      ]
     },
     {
       "indicator": "livability_block_score",
@@ -140,8 +129,7 @@
         "accessibility_block_park_network_m",
         "accessibility_block_school_network_m",
         "edificability_block_density"
-      ],
-      "expected_ms": null
+      ]
     }
   ],
   "server_now": "2026-11-18T16:42:34.996266Z",
