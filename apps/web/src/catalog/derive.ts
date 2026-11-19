@@ -5,62 +5,75 @@
  * unit-testing, and they run under the default `node` environment with no
  * DOM. Anything here must stay free of Svelte and of `document`.
  */
-import type { IndicatorSummary } from "./api";
+import type { IndicatorSummary, IndicatorStats } from "./api";
 
-export interface Facets {
-  family: Record<string, number>;
-  grain: Record<string, number>;
+/** A catalog row plus whether it holds values in the active AOI. `null` when
+ *  no AOI is active, so there is nothing to be missing from. */
+export type CatalogRow = IndicatorSummary & { has_values: boolean | null };
+
+export const FACETS = ["family", "kind", "grain", "values"] as const;
+export type FacetKey = (typeof FACETS)[number];
+
+/** The catalog's own family. Composites carry none, and saying so beats the
+ *  slug-prefix guess this replaced, which filed `urban_form_*` as "urban" and
+ *  split `edificability_*` away from the family it belongs to. */
+export function familyOf(row: Pick<IndicatorSummary, "model_family">): string {
+  return row.model_family ?? "unassigned";
 }
 
-/** The slug's leading segment — `accessibility_block_park_network_m` is the
- *  accessibility family. The API exposes `model_family` on the detail route
- *  but not on the list, and the prefix is how the shipped slugs are named. */
-export function familyOf(slug: string): string {
-  const head = slug.split("_")[0];
-  return head || "other";
+function facetValues(row: CatalogRow, key: FacetKey): string[] {
+  switch (key) {
+    case "family":
+      return [familyOf(row)];
+    case "kind":
+      return [row.computation_kind];
+    case "grain":
+      return row.applies_to;
+    case "values":
+      return row.has_values === null ? [] : [row.has_values ? "has values" : "no values"];
+  }
 }
+
+export type Facets = Record<FacetKey, Record<string, number>>;
 
 /** Counts for each facet value, computed over the UNFILTERED set so a count
  *  never collapses to zero just because the user narrowed by something else. */
-export function facetsOf(items: IndicatorSummary[]): Facets {
-  const family: Record<string, number> = {};
-  const grain: Record<string, number> = {};
-  for (const item of items) {
-    const f = familyOf(item.slug);
-    family[f] = (family[f] ?? 0) + 1;
-    for (const g of item.applies_to) grain[g] = (grain[g] ?? 0) + 1;
+export function facetsOf(rows: CatalogRow[]): Facets {
+  const out = Object.fromEntries(FACETS.map((k) => [k, {}])) as Facets;
+  for (const row of rows) {
+    for (const key of FACETS) {
+      for (const v of facetValues(row, key)) out[key][v] = (out[key][v] ?? 0) + 1;
+    }
   }
-  return { family, grain };
+  return out;
 }
 
 export interface Filters {
   q: string;
-  families: string[];
-  grains: string[];
+  facets: Record<FacetKey, string[]>;
 }
 
-export const EMPTY_FILTERS: Filters = { q: "", families: [], grains: [] };
+export const EMPTY_FILTERS: Filters = {
+  q: "",
+  facets: { family: [], kind: [], grain: [], values: [] },
+};
 
-/** Substring match on slug or name, plus any-of semantics within a facet and
- *  and-of across facets — the behaviour every faceted list has, so it needs
- *  no explanation in the UI. */
-export function applyFilters(
-  items: IndicatorSummary[],
-  filters: Filters,
-): IndicatorSummary[] {
+export function isFiltered(f: Filters): boolean {
+  return f.q !== "" || FACETS.some((k) => f.facets[k].length > 0);
+}
+
+/** Substring match on slug, name or description, plus any-of within a facet
+ *  and and-of across facets — the behaviour every faceted list has. */
+export function applyFilters(rows: CatalogRow[], filters: Filters): CatalogRow[] {
   const q = filters.q.trim().toLowerCase();
-  return items.filter((item) => {
-    if (q && !`${item.slug} ${item.name}`.toLowerCase().includes(q)) return false;
-    if (filters.families.length && !filters.families.includes(familyOf(item.slug))) {
+  return rows.filter((row) => {
+    if (q && !`${row.slug} ${row.name} ${row.description ?? ""}`.toLowerCase().includes(q)) {
       return false;
     }
-    if (
-      filters.grains.length &&
-      !item.applies_to.some((g) => filters.grains.includes(g))
-    ) {
-      return false;
-    }
-    return true;
+    return FACETS.every((key) => {
+      const picked = filters.facets[key];
+      return !picked.length || facetValues(row, key).some((v) => picked.includes(v));
+    });
   });
 }
 
@@ -69,8 +82,9 @@ export function applyFilters(
 export function filtersToHash(filters: Filters): string {
   const p = new URLSearchParams();
   if (filters.q) p.set("q", filters.q);
-  if (filters.families.length) p.set("family", filters.families.join(","));
-  if (filters.grains.length) p.set("grain", filters.grains.join(","));
+  for (const key of FACETS) {
+    if (filters.facets[key].length) p.set(key, filters.facets[key].join(","));
+  }
   const qs = p.toString();
   return qs ? `#/?${qs}` : "#/";
 }
@@ -80,7 +94,10 @@ export function filtersFromHash(hash: string): Filters {
   const p = new URLSearchParams(qs);
   const list = (key: string) =>
     (p.get(key) ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return { q: p.get("q") ?? "", families: list("family"), grains: list("grain") };
+  return {
+    q: p.get("q") ?? "",
+    facets: Object.fromEntries(FACETS.map((k) => [k, list(k)])) as Filters["facets"],
+  };
 }
 
 /** `#/i/<slug>` → slug, anything else → null. */
@@ -89,10 +106,48 @@ export function slugFromHash(hash: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/** The catalog's unit codes as words: `buildings_per_ha` → `buildings / ha`,
+ *  `ratio_0_1` → `ratio 0–1`. */
+export function unitLabel(unit: string | null): string {
+  if (!unit) return "unitless";
+  return unit.replace(/_0_1$/, " 0–1").replaceAll("_per_", " / ").replaceAll("_", " ");
+}
+
+/**
+ * Plain warnings when the observed values pile up on a declared bound.
+ *
+ * A bound is often a cap that also encodes "could not be measured" — the
+ * distance indicators report 1500 m for an unreachable block — so a median on
+ * the bound means the typical value is the cap, not a measurement. The band
+ * on the detail page shows it; this says it.
+ */
+export function capNotes(
+  stats: Pick<IndicatorStats, "p05" | "p50" | "p95">,
+  min: number | null,
+  max: number | null,
+): string[] {
+  const notes: string[] = [];
+  const { p05, p50, p95 } = stats;
+  if (max !== null) {
+    if (p50 !== null && p50 >= max) {
+      notes.push(`Half or more of the values sit at the declared maximum, ${max}.`);
+    } else if (p95 !== null && p95 >= max) {
+      notes.push(`At least 5% of the values sit at the declared maximum, ${max}.`);
+    }
+  }
+  if (min !== null) {
+    if (p50 !== null && p50 <= min) {
+      notes.push(`Half or more of the values sit at the declared minimum, ${min}.`);
+    } else if (p05 !== null && p05 <= min) {
+      notes.push(`At least 5% of the values sit at the declared minimum, ${min}.`);
+    }
+  }
+  return notes;
+}
+
 /** Where a value sits inside its declared safety bounds, 0–1, or null when
  *  the catalog declares no bounds. Drives the reference band on the detail
- *  page: a p95 sitting at 0.04 of the declared range is the visual tell that
- *  the bound is a safety cap, not a realistic maximum. */
+ *  page. */
 export function boundsFraction(
   value: number | null,
   min: number | null,

@@ -1,20 +1,25 @@
 /**
  * Catalog API client.
  *
- * Deliberately not importing `../api.ts`: that module's types describe what
- * the *map* reads (tile sources, AOI bboxes), and coupling the catalog to it
- * would make every map change a catalog change. Both import `../http.ts`
- * instead, so request and abort semantics stay identical.
- *
- * Today this reads the endpoints that exist on main. The asset-graph
- * endpoints (freshness, lineage, materializations) attach here when r041
- * lands; the shapes below are the half that needs no migration.
+ * Indicator endpoints only. AOIs come from `../api.ts` and `../aoi.ts`, the
+ * map's own list and active-AOI store, so the catalog and the map open on the
+ * same AOI. Everything else stays here rather than in `../api.ts`, whose
+ * types describe what the map reads; both go through `../http.ts`, so
+ * request and abort semantics stay identical.
  */
 import { jsonRequest } from "../http";
 
 export interface IndicatorSummary {
   slug: string;
   name: string;
+  /** What the indicator measures and how to read it — caps included. */
+  description: string | null;
+  /** Null for indicators no family claims, which today are the composites. */
+  model_family: string | null;
+  /** `direct` reads features; `composite` weights other indicators. */
+  computation_kind: string;
+  value_type: string;
+  aggregation_method: string;
   unit: string | null;
   applies_to: string[];
   valid_min: number | null;
@@ -30,11 +35,6 @@ export interface IndicatorStats {
   max: number | null;
 }
 
-export interface AOIRow {
-  aoi_id: string;
-  name: string;
-}
-
 /** Indicators, optionally only those with values in `aoiId`. */
 export function listIndicators(
   aoiId: string | null,
@@ -42,10 +42,6 @@ export function listIndicators(
 ): Promise<IndicatorSummary[]> {
   const qs = aoiId ? `?aoi_id=${encodeURIComponent(aoiId)}` : "";
   return jsonRequest<IndicatorSummary[]>(`/indicators${qs}`, init);
-}
-
-export function listAois(init: { signal?: AbortSignal } = {}): Promise<AOIRow[]> {
-  return jsonRequest<AOIRow[]>("/aois", init);
 }
 
 export function getStats(
@@ -63,10 +59,21 @@ export function getStats(
   );
 }
 
-/** Download URL for one indicator's values. Not fetched — handed to an
- *  anchor so the browser streams it and the API sets Content-Disposition. */
-export function downloadUrl(slug: string, format: "csv" | "geojson" | "parquet"): string {
-  return `/api/indicators/${encodeURIComponent(slug)}/values.${format}`;
+/** Download URL for one indicator's values, scoped like the stats beside it.
+ *  Not fetched — handed to an anchor so the browser streams it and the API
+ *  sets Content-Disposition. Asks for the API's ceiling rather than its
+ *  100,000 default, which cut larger AOIs short without saying so. */
+export const DOWNLOAD_ROW_CAP = 500_000;
+
+export function downloadUrl(
+  slug: string,
+  format: "csv" | "geojson" | "parquet",
+  scope: { aoiId: string | null; grain: string | undefined },
+): string {
+  const p = new URLSearchParams({ limit: String(DOWNLOAD_ROW_CAP) });
+  if (scope.aoiId) p.set("aoi_id", scope.aoiId);
+  if (scope.grain) p.set("feature_type", scope.grain);
+  return `/api/indicators/${encodeURIComponent(slug)}/values.${format}?${p}`;
 }
 
 

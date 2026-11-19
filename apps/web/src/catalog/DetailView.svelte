@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { ArrowLeft, Download } from "@lucide/svelte";
+  import { ArrowLeft, Download, Map as MapIcon } from "@lucide/svelte";
 
   import Badge from "../lib/components/ui/Badge.svelte";
   import Card from "../lib/components/ui/Card.svelte";
   import DatasetPanel from "./DatasetPanel.svelte";
   import LineageGraph from "./LineageGraph.svelte";
   import {
+    DOWNLOAD_ROW_CAP,
     downloadUrl,
     getDependencies,
     getLineage,
@@ -13,7 +14,7 @@
     type IndicatorLineage,
     type IndicatorStats,
   } from "./api";
-  import { boundsFraction, familyOf } from "./derive";
+  import { boundsFraction, capNotes, familyOf, unitLabel } from "./derive";
   import { isAbortError } from "../http";
   import { fmtNumber } from "../format";
   import { catalog, statsFor } from "./store.svelte";
@@ -24,6 +25,10 @@
   // The finest declared grain is what the map draws and what the stats
   // endpoint is asked for, so the two agree by construction.
   const grain = $derived(indicator?.applies_to[0]);
+  // The fetches below key on this string, not on `indicator`: every poll
+  // replaces the row object, and keying on it re-ran all three fetches and
+  // blanked the cards to skeletons each time.
+  const known = $derived(indicator ? indicator.slug : null);
 
   let stats = $state<IndicatorStats | null>(null);
   let statsError = $state<string | null>(null);
@@ -33,9 +38,13 @@
   let lineageError = $state<string | null>(null);
 
   $effect(() => {
-    if (!indicator || !grain) return;
+    if (!known || !grain) return;
     let live = true;
-    statsFor(indicator.slug, grain)
+    // Cleared first: a lineage link swaps the slug in place, and the previous
+    // indicator's numbers stayed on screen until the new ones arrived.
+    stats = null;
+    statsError = null;
+    statsFor(known, grain)
       .then((s) => live && (stats = s))
       .catch((e) => live && (statsError = e instanceof Error ? e.message : String(e)));
     return () => {
@@ -44,11 +53,11 @@
   });
 
   $effect(() => {
-    if (!indicator) return;
+    if (!known) return;
     const ctrl = new AbortController();
     deps = null;
     depsError = null;
-    getDependencies(indicator.slug, { signal: ctrl.signal })
+    getDependencies(known, { signal: ctrl.signal })
       .then((d) => (deps = d))
       .catch((e) => {
         if (!isAbortError(e)) depsError = e instanceof Error ? e.message : String(e);
@@ -57,11 +66,11 @@
   });
 
   $effect(() => {
-    if (!indicator) return;
+    if (!known) return;
     const ctrl = new AbortController();
     lineage = null;
     lineageError = null;
-    getLineage(indicator.slug, { signal: ctrl.signal })
+    getLineage(known, { signal: ctrl.signal })
       .then((l) => (lineage = l))
       .catch((e) => {
         if (!isAbortError(e)) lineageError = e instanceof Error ? e.message : String(e);
@@ -78,6 +87,12 @@
   const p95Pos = $derived(
     boundsFraction(stats?.p95 ?? null, indicator?.valid_min ?? null, indicator?.valid_max ?? null),
   );
+  const notes = $derived(
+    stats && indicator ? capNotes(stats, indicator.valid_min, indicator.valid_max) : [],
+  );
+  const aoiName = $derived(catalog.activeAoi?.name ?? null);
+  // Nothing to open or export where the indicator holds no values.
+  const exportable = $derived(indicator?.has_values !== false && (stats?.count ?? 1) > 0);
 </script>
 
 <div class="flex flex-col gap-5">
@@ -90,41 +105,91 @@
     <div class="rounded-lg border border-dashed border-line p-8">
       <p class="text-sm">No indicator called <code class="font-mono">{slug}</code>.</p>
       <p class="mt-1 text-xs text-muted-foreground">
-        It may exist in the catalog but hold no values in this AOI, in which case
-        the list does not offer it.
+        The catalog has no such slug. It may have been renamed or removed.
       </p>
     </div>
   {:else}
-    <header class="flex flex-wrap items-start gap-x-4 gap-y-2">
-      <div>
-        <h1 class="text-xl font-semibold tracking-tight">{indicator.name}</h1>
-        <p class="mt-1 font-mono text-[11px] text-muted-foreground">{indicator.slug}</p>
+    <header class="flex flex-col gap-3">
+      <div class="flex flex-wrap items-start gap-x-4 gap-y-2">
+        <div>
+          <h1 class="text-xl font-semibold tracking-tight">{indicator.name}</h1>
+          <p class="mt-1 font-mono text-[11px] text-muted-foreground">{indicator.slug}</p>
+        </div>
+        <div class="flex flex-wrap gap-1.5 pt-1">
+          <Badge>{familyOf(indicator)}</Badge>
+          <Badge>{indicator.computation_kind}</Badge>
+          {#each indicator.applies_to as g (g)}
+            <Badge tone="accent">{g}</Badge>
+          {/each}
+        </div>
       </div>
-      <div class="flex flex-wrap gap-1.5 pt-1">
-        <Badge>{familyOf(indicator.slug)}</Badge>
-        {#each indicator.applies_to as g (g)}
-          <Badge tone="accent">{g}</Badge>
-        {/each}
-      </div>
+
+      {#if indicator.description}
+        <p class="max-w-3xl text-[13px] leading-relaxed text-muted-foreground">
+          {indicator.description}
+        </p>
+      {/if}
+
+      {#if indicator.has_values === false}
+        <p class="w-fit rounded border border-state-stale/40 px-2.5 py-1.5 text-xs text-state-stale">
+          No values in {aoiName ?? "this AOI"} — nothing has computed it here yet.
+        </p>
+      {/if}
+
+      {#if exportable}
+        <div class="flex flex-wrap items-center gap-2">
+          <a
+            href={`/index.html?indicator=${encodeURIComponent(indicator.slug)}`}
+            class="inline-flex items-center gap-1.5 rounded border border-accent/40 bg-accent/10
+                   px-2.5 py-1.5 text-xs text-accent hover:bg-accent/20"
+          >
+            <MapIcon class="size-3.5" aria-hidden="true" />
+            Open on map
+          </a>
+          {#each ["csv", "geojson", "parquet"] as const as fmt (fmt)}
+            <a
+              href={downloadUrl(indicator.slug, fmt, { aoiId: catalog.activeAoiId, grain })}
+              class="inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised
+                     px-2.5 py-1.5 text-xs hover:border-accent/50"
+            >
+              <Download class="size-3.5" aria-hidden="true" />
+              {fmt}
+            </a>
+          {/each}
+          <span class="font-mono text-[10.5px] text-muted-foreground" data-numeric>
+            {#if stats && stats.count > DOWNLOAD_ROW_CAP}
+              downloads stop at {DOWNLOAD_ROW_CAP.toLocaleString()} of {stats.count.toLocaleString()} rows
+            {:else if stats}
+              {stats.count.toLocaleString()} rows{aoiName ? ` · ${aoiName} only` : ""}
+            {/if}
+          </span>
+        </div>
+      {/if}
     </header>
 
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="grid items-start gap-4 lg:grid-cols-2">
       <Card title="Definition">
         <dl class="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2 text-[13px]">
           <dt class="text-muted-foreground">Unit</dt>
-          <dd class="font-mono text-[11.5px]">{indicator.unit ?? "unitless"}</dd>
+          <dd class="font-mono text-[11.5px]">{unitLabel(indicator.unit)}</dd>
           <dt class="text-muted-foreground">Declared range</dt>
           <dd class="font-mono text-[11.5px]" data-numeric>
             {indicator.valid_min ?? "—"} – {indicator.valid_max ?? "—"}
           </dd>
-          <dt class="text-muted-foreground">Grains</dt>
-          <dd class="font-mono text-[11.5px]">{indicator.applies_to.join(", ")}</dd>
-          <dt class="text-muted-foreground">Drawn at</dt>
-          <dd class="font-mono text-[11.5px]">{grain}</dd>
+          <dt class="text-muted-foreground">Kind</dt>
+          <dd class="font-mono text-[11.5px]">{indicator.computation_kind}</dd>
+          <dt class="text-muted-foreground">Aggregation</dt>
+          <dd class="font-mono text-[11.5px]">{indicator.aggregation_method.replaceAll("_", " ")}</dd>
+          <dt class="text-muted-foreground">Grain</dt>
+          <dd class="font-mono text-[11.5px]">
+            {grain}{indicator.applies_to.length > 1
+              ? ` (also ${indicator.applies_to.slice(1).join(", ")})`
+              : ""}
+          </dd>
         </dl>
       </Card>
 
-      <Card title="Observed values · this AOI">
+      <Card title={`Observed values · ${aoiName ?? "all AOIs"}`}>
         {#if statsError}
           <p class="text-xs text-state-stale">Stats unavailable: {statsError}</p>
         {:else if !stats}
@@ -168,11 +233,18 @@
                 </div>
                 <div class="mt-1 flex justify-between font-mono text-[10px] text-muted-foreground" data-numeric>
                   <span>{indicator.valid_min ?? "—"}</span>
-                  <span>observed p05–p95 within declared range</span>
+                  <span>p05–p95 on the declared range</span>
                   <span>{indicator.valid_max ?? "—"}</span>
                 </div>
               </div>
             {/if}
+
+            {#each notes as note (note)}
+              <p class="rounded border border-state-stale/40 px-2.5 py-1.5 text-xs text-state-stale" role="note">
+                {note}
+                {#if indicator.description}The description above says what the bound stands for.{/if}
+              </p>
+            {/each}
 
             <p class="font-mono text-[11px] text-muted-foreground" data-numeric>
               {stats.count.toLocaleString()} values ·
@@ -208,20 +280,6 @@
         {/if}
       </Card>
 
-      <Card title="Download">
-        <div class="flex flex-wrap gap-2">
-          {#each ["csv", "geojson", "parquet"] as const as fmt (fmt)}
-            <a
-              href={downloadUrl(indicator.slug, fmt)}
-              class="inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised
-                     px-2.5 py-1.5 text-xs hover:border-accent/50"
-            >
-              <Download class="size-3.5" aria-hidden="true" />
-              {fmt}
-            </a>
-          {/each}
-        </div>
-      </Card>
     </div>
   {/if}
 </div>

@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { RefreshCw } from "@lucide/svelte";
-
   import TopBar from "../lib/TopBar.svelte";
 
   import DetailView from "./DetailView.svelte";
@@ -48,6 +46,10 @@
           {/each}
         </select>
       </label>
+    {:else if catalog.activeAoi}
+      <span class="text-xs text-muted-foreground">
+        AOI <span class="text-foreground">{catalog.activeAoi.name}</span>
+      </span>
     {/if}
 
     {#if catalog.error}
@@ -59,10 +61,6 @@
         updated {catalog.lastLoadedAt.toLocaleTimeString()}
       </span>
     {/if}
-    <RefreshCw
-      class={`size-3.5 text-muted-foreground ${catalog.refreshing ? "animate-spin" : ""}`}
-      aria-hidden="true"
-    />
   {/snippet}
 </TopBar>
 
