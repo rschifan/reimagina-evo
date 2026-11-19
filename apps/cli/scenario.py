@@ -19,7 +19,7 @@ the state between runs (edits drawn, and whether a materialisation has seen
 them) is visible without recomputing anything.
 
 **The rules of a proposal are not in this file.** ``reimagina.scenarios.proposal``
-owns them — the four edits three numbers write, the refusal of a non-positive
+owns them — the five edits four numbers write, the refusal of a non-positive
 or non-finite value, the density precheck, and the unioning of a drawn
 FeatureCollection into one area. They are domain policy, and the API router
 needs the same ones; a router that imported them from ``apps/cli`` would have
@@ -210,8 +210,8 @@ def set_attribute(
 
     The refusals come first and in this order — values, then ceiling, then
     geometry — so a proposal that cannot be stored costs no connection and
-    leaves no partial rule behind. The four writes then share one
-    transaction: three edits of four is not a proposal, it is a block the
+    leaves no partial rule behind. The five writes then share one
+    transaction: some edits of five is not a proposal, it is a block the
     edificability family skips.
     """
     _require_positive(

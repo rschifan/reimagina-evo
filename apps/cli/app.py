@@ -1578,7 +1578,7 @@ def scenario_show(
 
 @scenario_app.command(
     "set-attribute",
-    help="Draw an area and set the three policy inputs over it (four edits)",
+    help="Draw an area and set the four policy inputs over it (five edits)",
 )
 def scenario_set_attribute(
     scenario_id: str = typer.Option(..., "--scenario-id"),

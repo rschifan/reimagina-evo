@@ -1,11 +1,11 @@
 """Scenario authoring over HTTP: create it, draw rules on it, recompute, compare.
 
 The same six operations ``apps/cli/scenario.py`` offers, for the map. Nothing
-here owns a rule: the four edits one proposal writes, the refusal of a
+here owns a rule: the five edits one proposal writes, the refusal of a
 degenerate value, the density precheck and the unioning of a drawn
 FeatureCollection all come from ``reimagina.scenarios.proposal``, which exists
 so that this router and the CLI refuse the same things for the same reasons.
-A router that re-derived them would bring back the failure the four-edit rule
+A router that re-derived them would bring back the failure the five-edit rule
 prevents — planned floors frozen on the baseline while edificability moves —
 and one that imported them from ``apps/cli`` would make a deployable app
 depend on another deployable app, which is the mistake
@@ -747,12 +747,12 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
 
 @router.post("/{scenario_id}/edits", status_code=201, response_model=EditsWritten)
 def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
-    """Draw one area and write the four edits of one proposal over it.
+    """Draw one area and write the five edits of one proposal over it.
 
     The refusals come first, and in this order — the id, then the values, then
     the ceiling, then the geometry — so a proposal that cannot be stored costs
-    no connection and leaves no half-written rule behind. The four writes then
-    share one transaction: three edits of four is not a proposal, it is a
+    no connection and leaves no half-written rule behind. The five writes then
+    share one transaction: some edits of five is not a proposal, it is a
     block the edificability family skips while planned floors moves.
     """
     with _refusals():
