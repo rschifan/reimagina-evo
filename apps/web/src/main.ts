@@ -21,7 +21,7 @@ import { mount } from "svelte";
 import TopBar from "./lib/TopBar.svelte";
 import "./topbar.css";
 import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
-import { createMap, flyToAoi } from "./map-base";
+import { createMap, flyToAoi, mapErrorBanner } from "./map-base";
 
 import {
   getActiveAoiId,
@@ -118,6 +118,8 @@ function setBanner(message: string | null, kind: "loading" | "error" = "loading"
   const el = document.getElementById("map-banner");
   if (!el) return;
   el.hidden = message === null;
+  // Errors interrupt; loading messages wait their turn.
+  el.setAttribute("role", kind === "error" ? "alert" : "status");
   el.textContent = message ?? "";
   el.dataset.kind = kind;
 }
@@ -752,9 +754,15 @@ async function main(): Promise<void> {
       isPaletteOpen: () => palette.isOpen(),
     });
   });
-  map.on("error", (e) => {
-    setBanner(`The map could not load some data: ${e.error?.message ?? "unknown error"}`, "error");
-  });
+  // Cleared only if the banner still says this; a later message is not ours to hide.
+  const mapError = mapErrorBanner(
+    (message) => setBanner(message, "error"),
+    (message) => {
+      if (document.getElementById("map-banner")?.textContent === message) setBanner(null);
+    },
+  );
+  map.on("error", (e) => mapError.error(`The map could not load some data: ${e.error?.message ?? "unknown error"}`));
+  map.on("idle", () => mapError.idle());
 }
 
 

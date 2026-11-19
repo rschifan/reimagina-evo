@@ -44,6 +44,36 @@ export function clampZoom<T extends { zoom: number }>(camera: T, floor: number):
 }
 
 
+/**
+ * When a map error stops being shown. MapLibre emits `error` per failed
+ * request (one tile timeout is enough) and nothing when it recovers, so the
+ * message goes on the first `idle` that ends a render cycle with no new
+ * error: it stays while the failing cycle's data is missing and clears once
+ * the map has drawn cleanly again (a pan, a zoom, a hover repaint).
+ */
+export function mapErrorBanner(
+  show: (message: string) => void,
+  hide: (message: string) => void,
+): { error: (message: string) => void; idle: () => void } {
+  let shown: string | null = null;
+  let errorSinceIdle = false;
+  return {
+    error(message) {
+      shown = message;
+      errorSinceIdle = true;
+      show(message);
+    },
+    idle() {
+      if (shown !== null && !errorSinceIdle) {
+        hide(shown);
+        shown = null;
+      }
+      errorSinceIdle = false;
+    },
+  };
+}
+
+
 export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   // Prefer the features bbox over the AOI polygon bbox. For irregular
   // AOIs (Mexicali muni — mostly desert with the urban core packed in
