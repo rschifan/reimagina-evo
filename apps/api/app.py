@@ -105,7 +105,7 @@ def create_app(
                 deps.shutdown_pool()
 
     app = FastAPI(
-        title="reimagina API",
+        title="Urban indicators and scenarios API",
         version="1.0.0",
         description=(
             "Read-side for the reimagina urban-planning platform. "

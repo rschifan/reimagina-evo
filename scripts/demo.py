@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """The orchestration demo, on real Tlalpan data.
 
-Answers the four questions the Reimagina collaborators asked, by running them
+Answers the four questions the collaborators asked, by running them
 rather than describing them:
 
   mapping        which attribute edits trigger which runs

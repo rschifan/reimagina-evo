@@ -1,6 +1,6 @@
 # First Source Example: Overture Buildings for Mexico City
 
-This document makes the first example source concrete for the current Reimagina system.
+This document makes the first example source concrete for the current system.
 
 ## Chosen source
 

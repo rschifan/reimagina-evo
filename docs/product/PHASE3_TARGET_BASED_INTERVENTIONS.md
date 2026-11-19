@@ -1,7 +1,7 @@
-# Reimagina Phase 3 — Target-Based Interventions (Draft Proposal)
+# Phase 3 — Target-Based Interventions (Draft Proposal)
 
 > Status: draft for discussion. Nothing here is committed to implementation.
-> Audience: Reimagina core team + client (Uriel). Scope: intervention
+> Audience: core team and client. Scope: intervention
 > attributes that act as *spatial targets*, with specialized models that
 > allocate geospatial elements to satisfy those targets — and a plug-and-play
 > path for adding new allocation models and use cases.

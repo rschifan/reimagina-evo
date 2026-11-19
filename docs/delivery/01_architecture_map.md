@@ -24,7 +24,7 @@ date: "20 November 2026"
 
 ## 1. Purpose and scope
 
-Reimagina is an urban-planning data platform. It ingests geospatial data about a territory into one canonical model, computes urban indicators and serves them to a web map. It evaluates **scenarios**: hypothetical attribute edits whose effect on the indicators is compared against the baseline. The delivered configuration covers two pilot territories, Tlalpan (Mexico City) and Mexicali.
+This repository is an architectural prototype of a platform that computes urban indicators and explores planning scenarios. It ingests geospatial data about a territory into one canonical model, computes urban indicators and serves them to a web map. It evaluates **scenarios**: hypothetical attribute edits whose effect on the indicators is compared against the baseline. The delivered configuration covers two pilot territories, Tlalpan (Mexico City) and Mexicali.
 
 | # | Quality goal, in priority order | Meaning |
 |---|---|---|

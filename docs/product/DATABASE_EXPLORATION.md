@@ -1,4 +1,4 @@
-# Database Exploration for Reimagina
+# Database Exploration
 
 This project uses three different database layers for three different reasons:
 

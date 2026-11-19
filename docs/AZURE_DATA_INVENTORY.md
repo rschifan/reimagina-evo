@@ -182,7 +182,7 @@ reimagina-cli cdmx aoi-from-alcaldia \
 # Mexicali — Baja California, paired with phone-data + amenities in the lake.
 reimagina-cli cdmx aoi-from-alcaldia \
     --cve-ent 02 --cve-mun 002 --name "Mexicali" \
-    --project-name "Reimagina pilots"
+    --project-name "Pilots"
 ```
 
 The subcommand still says `cdmx aoi-from-alcaldia` for back-compat, but

@@ -1,5 +1,5 @@
 ---
-# Local development stack for Reimagina.
+# Local development stack of the prototype.
 #
 # Services:
 #   postgres   — PostgreSQL 16 + PostGIS 3.4 + pgRouting 3.6

@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   const topbar = document.getElementById("topbar");
   if (topbar) mount(TopBar, { target: topbar, props: { current: "map" } });
 
-  setBanner("loading", "Connecting to the reimagina API…");
+  setBanner("loading", "Connecting to the API…");
 
   // Show the spinner immediately so the user has feedback while the
   // first /aois + /tile-sources round-trip happens (before the map

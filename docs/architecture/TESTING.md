@@ -1,6 +1,6 @@
 # Testing
 
-SQL-level contract tests for the Reimagina database schema. These tests verify that the triggers, constraints, indexes, and serving views enforce the guarantees described in the layer documents.
+SQL-level contract tests for the database schema. These tests verify that the triggers, constraints, indexes, and serving views enforce the guarantees described in the layer documents.
 
 **Framework:** [`pgTAP`](https://pgtap.org/) — a TAP-compliant PostgreSQL testing framework. Tests run against a disposable PostgreSQL + PostGIS database seeded with the schema and minimal reference data.
 

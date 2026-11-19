@@ -1,1 +1,1 @@
-"""Shared Python namespace for Reimagina backend services and workers."""
+"""Shared Python namespace for the prototype's backend services and workers."""

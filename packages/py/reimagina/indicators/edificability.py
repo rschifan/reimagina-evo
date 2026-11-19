@@ -1,6 +1,6 @@
 """Buildable capacity from construction and land-use attributes.
 
-Three indicators, one calculation — the worked example the Reimagina
+Three indicators, one calculation — the worked example the
 collaborators supplied:
 
     housing_units = (lot_size × lot_coverage × num_levels) / unit_size

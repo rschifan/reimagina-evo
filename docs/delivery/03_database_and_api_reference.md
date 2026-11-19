@@ -1170,7 +1170,7 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 ## API
 
-Taken from the application's own OpenAPI document (`reimagina API` 1.0.0, OpenAPI 3.1.0), served at `/openapi.json` and rendered at `/docs`.
+Taken from the application's own OpenAPI document (`Urban indicators and scenarios API` 1.0.0, OpenAPI 3.1.0), served at `/openapi.json` and rendered at `/docs`.
 
 The API exposes **63 operations** in total. **44** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 

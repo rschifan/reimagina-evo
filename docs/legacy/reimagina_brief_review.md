@@ -1,8 +1,8 @@
-# Reimagina Phase 2 — Design Review
+# Phase 2 — Design Review
 
 ## What we're building
 
-Reimagina is an urban-planning platform. Phase 2 adds the ability for users to draft hypothetical changes to a real territory and see how indicators (housing density, population, accessibility, COS, CUS, total housing units, etc.) change as a result. The expected user journey:
+Phase 2 adds the ability for users to draft hypothetical changes to a real territory and see how indicators (housing density, population, accessibility, COS, CUS, total housing units, etc.) change as a result. The expected user journey:
 
 1. Open a project; the territory is shown as it is today — the **baseline**.
 2. Create a **scenario** to explore a hypothesis ("what if we add 200 new buildings in this block?", "what if we rezone this land?").

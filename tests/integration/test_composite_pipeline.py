@@ -154,7 +154,7 @@ _SCORE = IndicatorSpec(
 
 
 def test_a_score_mixing_a_distance_ranks_nearer_blocks_higher(conn):
-    """The shape Uriel asked for: density/form combined with accessibility.
+    """The shape the collaborators asked for: density/form combined with accessibility.
 
     Exercised through `compute_composite` rather than a helper mirroring it,
     because the whole risk here is that the real path forgets to orient. With
