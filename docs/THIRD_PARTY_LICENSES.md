@@ -36,7 +36,7 @@ packages compile or test the web application and are not shipped.
 | weak copyleft | 4 | 4 | 8 |
 | strong copyleft | 0 | 0 | 0 |
 
-Also listed: 39 native-library rows vendored in 10 Python wheels, 9 system components, 9 data sources.
+Also listed: 60 native-library rows vendored in 10 Python wheels, 9 system components, 9 data sources.
 
 ## Copyleft components
 
@@ -66,8 +66,9 @@ as statically linked:
 - libgfortran (GCC runtime) — GPL-3.0-or-later WITH GCC-exception-3.1 — in `numpy`
 - libquadmath — LGPL-2.1-or-later — in `numpy`
 - GEOS 3.14.1 — LGPL-2.1-only — in `rasterio`
-- GEOS (statically linked into libgdal) — LGPL-2.1-only — in `pyogrio`
-- libkeyutils, libcrypt — LGPL-2.1-or-later — in `psycopg-binary, psycopg2-binary`
+- GEOS 3.14.1 (statically linked into libgdal) — LGPL-2.1-only — in `pyogrio`
+- keyutils 1.5.x (libkeyutils; minor not embedded) — LGPL-2.1-or-later — in `psycopg-binary, psycopg2-binary`
+- libcrypt (glibc 2.17) — LGPL-2.1-or-later — in `psycopg-binary, psycopg2-binary`
 
 **System components** — PostGIS and pgRouting (GPL-2.0-or-later) are
 extensions loaded by the PostgreSQL server process. The Works reach them
@@ -120,51 +121,73 @@ No package in either lockfile is under a strong-copyleft licence.
 
 Read from the Linux x86_64 CPython 3.12 wheels `uv.lock` names. Package
 metadata names only the package's own licence (shapely says BSD-3-Clause
-while shipping GEOS), so these are listed separately. *Licence* is the
-library's upstream licence; where the wheel carries the text, *Source*
-says where.
+while shipping GEOS), so these are listed separately. Library versions
+are those embedded in the binaries. *Source* is the licence text each
+row was verified against: the text inside the wheel, or the library's
+own licence file at the bundled release's tag.
 
 | Wheel | Checked at | Library | Licence | Source |
 |---|---|---|---|---|
-| `shapely` | 2.2.0 | GEOS 3.14.1 | LGPL-2.1-only | wheel's LICENSE_GEOS |
-| `exactextract` | 0.3.0 | GEOS 3.14.1 | LGPL-2.1-only | wheel's LICENSE_GEOS |
-| `numpy` | 2.5.4 | OpenBLAS (with LAPACK) | BSD-3-Clause AND BSD-3-Clause-Open-MPI | wheel's LICENSE.txt |
-| `numpy` | 2.5.4 | libgfortran (GCC runtime) | GPL-3.0-or-later WITH GCC-exception-3.1 | wheel's LICENSE.txt |
-| `numpy` | 2.5.4 | libquadmath | LGPL-2.1-or-later | wheel's LICENSE.txt |
-| `rasterio` | 1.5.2 | GDAL 3.12.2 | MIT | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | GEOS 3.14.1 | LGPL-2.1-only | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | PROJ 9.8.1 | MIT | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | OpenSSL 3 (libssl, libcrypto) | Apache-2.0 | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | libcurl | curl | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | nghttp2, json-c, libdeflate, giflib | MIT | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | SQLite | blessing | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | libtiff | libtiff | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | libpng | libpng-2.0 | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | libjpeg-turbo | IJG AND BSD-3-Clause AND Zlib | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | OpenJPEG, libaec (libsz) | BSD-2-Clause | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | libwebp, libsharpyuv, netCDF-C, c-blosc | BSD-3-Clause | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | zstd | BSD-3-Clause OR GPL-2.0-only | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | liblzma (XZ Utils) | 0BSD | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | PCRE2 | BSD-3-Clause WITH PCRE2-exception | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | LERC | Apache-2.0 | upstream licence; text not in the wheel |
-| `rasterio` | 1.5.2 | HDF5 | HDF5 licence (BSD-style) | https://github.com/HDFGroup/hdf5/blob/develop/LICENSE |
-| `pyogrio` | 0.13.0 | GDAL 3.12.4 | MIT | upstream licence; text not in the wheel |
-| `pyogrio` | 0.13.0 | GEOS (statically linked into libgdal) | LGPL-2.1-only | upstream licence; text not in the wheel |
-| `pyogrio` | 0.13.0 | PROJ, expat, libxml2 (static) | MIT | upstream licence; text not in the wheel |
-| `pyogrio` | 0.13.0 | SQLite, libcurl, OpenSSL, libtiff, libjpeg, libpng, zlib (static) | blessing AND curl AND Apache-2.0 AND libtiff AND IJG AND libpng-2.0 AND Zlib | upstream licence; text not in the wheel |
-| `pyproj` | 3.8.0 | PROJ 9.8.1 | MIT | wheel's LICENSE_proj |
-| `pyproj` | 3.8.0 | libcurl, nghttp2, SQLite, libtiff | curl AND MIT AND blessing AND libtiff | upstream licence; text not in the wheel |
-| `psycopg-binary` | 3.3.8 | libpq 18 | PostgreSQL | upstream licence; text not in the wheel |
-| `psycopg2-binary` | 2.9.13 | libpq 17 | PostgreSQL | upstream licence; text not in the wheel |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | OpenSSL 3 (libssl, libcrypto) | Apache-2.0 | upstream licence; text not in the wheel |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | MIT Kerberos (libkrb5, libgssapi_krb5, libk5crypto, libkrb5support, libcom_err) | MIT Kerberos licence (permissive) | https://web.mit.edu/kerberos/krb5-latest/doc/mitK5license.html |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | OpenLDAP (libldap, liblber) | OLDAP-2.8 | upstream licence; text not in the wheel |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | Cyrus SASL (libsasl2) | Cyrus SASL licence (BSD-style) | https://github.com/cyrusimap/cyrus-sasl/blob/master/COPYING |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | libkeyutils, libcrypt | LGPL-2.1-or-later | upstream licence; text not in the wheel |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | PCRE (libpcre) | BSD-3-Clause | upstream licence; text not in the wheel |
-| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | libselinux | public domain | https://github.com/SELinuxProject/selinux/blob/main/libselinux/LICENSE |
-| `pyarrow` | 26.0.1 | Arrow C++ third-party code, statically linked (OpenSSL, libcurl, zlib, zstd, lz4, snappy, brotli, jemalloc, mimalloc, protobuf, abseil, gRPC, AWS and Google Cloud SDKs, xsimd, utf8proc) | permissive; texts in the wheel's LICENSE.txt and NOTICE.txt | upstream licence; text not in the wheel |
-| `uvloop` | 0.23.0 | libuv (statically linked) | MIT | upstream licence; text not in the wheel |
+| `shapely` | 2.2.0 | GEOS 3.14.1 | LGPL-2.1-only | text in the wheel (`LICENSE_GEOS`) |
+| `exactextract` | 0.3.0 | GEOS 3.14.1 | LGPL-2.1-only | text in the wheel (`LICENSE_GEOS`) |
+| `numpy` | 2.5.4 | OpenBLAS (with LAPACK) | BSD-3-Clause AND BSD-3-Clause-Open-MPI | text in the wheel (`LICENSE.txt`) |
+| `numpy` | 2.5.4 | libgfortran (GCC runtime) | GPL-3.0-or-later WITH GCC-exception-3.1 | text in the wheel (`LICENSE.txt`) |
+| `numpy` | 2.5.4 | libquadmath | LGPL-2.1-or-later | text in the wheel (`LICENSE.txt`) |
+| `rasterio` | 1.5.2 | GDAL 3.12.2 | MIT | https://github.com/OSGeo/gdal/blob/v3.12.2/LICENSE.TXT |
+| `rasterio` | 1.5.2 | GEOS 3.14.1 | LGPL-2.1-only | https://github.com/libgeos/geos/blob/3.14.1/COPYING |
+| `rasterio` | 1.5.2 | PROJ 9.8.1 | MIT | https://github.com/OSGeo/PROJ/blob/9.8.1/COPYING |
+| `rasterio` | 1.5.2 | OpenSSL 3.6.2 (libssl, libcrypto) | Apache-2.0 | https://github.com/openssl/openssl/blob/openssl-3.6.2/LICENSE.txt |
+| `rasterio` | 1.5.2 | libcurl 8.20.0 | curl | https://github.com/curl/curl/blob/curl-8_20_0/COPYING |
+| `rasterio` | 1.5.2 | nghttp2 1.69.0 | MIT | https://github.com/nghttp2/nghttp2/blob/v1.69.0/COPYING |
+| `rasterio` | 1.5.2 | json-c 0.18 | MIT | https://github.com/json-c/json-c/blob/json-c-0.18-20240915/COPYING |
+| `rasterio` | 1.5.2 | libdeflate (version not embedded) | MIT | https://github.com/ebiggers/libdeflate/blob/master/COPYING |
+| `rasterio` | 1.5.2 | giflib 5.x (soname 7; version not embedded) | MIT | https://sourceforge.net/p/giflib/code/ci/master/tree/COPYING |
+| `rasterio` | 1.5.2 | SQLite 3.53.1 | blessing | https://www.sqlite.org/copyright.html (public domain) |
+| `rasterio` | 1.5.2 | libtiff 4.7.1 | libtiff | https://gitlab.com/libtiff/libtiff/-/blob/v4.7.1/LICENSE.md |
+| `rasterio` | 1.5.2 | libpng 1.6.58 | libpng-2.0 | https://github.com/pnggroup/libpng/blob/v1.6.58/LICENSE |
+| `rasterio` | 1.5.2 | libjpeg-turbo 3.1.4 | IJG AND BSD-3-Clause AND Zlib | https://github.com/libjpeg-turbo/libjpeg-turbo/blob/3.1.4/LICENSE.md |
+| `rasterio` | 1.5.2 | OpenJPEG 2.5.4 | BSD-2-Clause | https://github.com/uclouvain/openjpeg/blob/v2.5.4/LICENSE |
+| `rasterio` | 1.5.2 | libaec 1.1.7 (libaec, libsz) | BSD-2-Clause | https://github.com/MathisRosenhauer/libaec/blob/v1.1.7/LICENSE.txt |
+| `rasterio` | 1.5.2 | libwebp, libsharpyuv (version not embedded) | BSD-3-Clause | https://github.com/webmproject/libwebp/blob/main/COPYING |
+| `rasterio` | 1.5.2 | netCDF-C 4.10.1 | BSD-3-Clause | https://github.com/Unidata/netcdf-c/blob/v4.10.1/COPYRIGHT |
+| `rasterio` | 1.5.2 | c-blosc 1.21.6 | BSD-3-Clause | https://github.com/Blosc/c-blosc/blob/v1.21.6/LICENSE.txt |
+| `rasterio` | 1.5.2 | zstd 1.5.7 | BSD-3-Clause OR GPL-2.0-only | https://github.com/facebook/zstd/blob/v1.5.7/LICENSE and COPYING |
+| `rasterio` | 1.5.2 | liblzma (XZ Utils 5.8.3) | 0BSD | https://github.com/tukaani-project/xz/blob/v5.8.3/COPYING |
+| `rasterio` | 1.5.2 | PCRE2 10.47 | BSD-3-Clause WITH PCRE2-exception | https://github.com/PCRE2Project/pcre2/blob/pcre2-10.47/LICENCE.md |
+| `rasterio` | 1.5.2 | LERC 4 (soname 4; minor not embedded) | Apache-2.0 | https://github.com/Esri/lerc/blob/v4.0.0/LICENSE |
+| `rasterio` | 1.5.2 | HDF5 2.2.0 | HDF5 licence (BSD-3-Clause-style) | https://github.com/HDFGroup/hdf5/blob/2.2.0/LICENSE |
+| `pyogrio` | 0.13.0 | GDAL 3.12.4 | MIT | https://github.com/OSGeo/gdal/blob/v3.12.4/LICENSE.TXT |
+| `pyogrio` | 0.13.0 | GEOS 3.14.1 (statically linked into libgdal) | LGPL-2.1-only | https://github.com/libgeos/geos/blob/3.14.1/COPYING |
+| `pyogrio` | 0.13.0 | PROJ 9.8.1 (static) | MIT | https://github.com/OSGeo/PROJ/blob/9.8.1/COPYING |
+| `pyogrio` | 0.13.0 | OpenSSL 3.6.2 (static) | Apache-2.0 | https://github.com/openssl/openssl/blob/openssl-3.6.2/LICENSE.txt |
+| `pyogrio` | 0.13.0 | libcurl 8.20.0 (static) | curl | https://github.com/curl/curl/blob/curl-8_20_0/COPYING |
+| `pyogrio` | 0.13.0 | SQLite 3.53.1 (static) | blessing | https://www.sqlite.org/copyright.html (public domain) |
+| `pyogrio` | 0.13.0 | expat 2.8.1 (static) | MIT | https://github.com/libexpat/libexpat/blob/R_2_8_1/expat/COPYING |
+| `pyogrio` | 0.13.0 | libxml2 2.15.3 (static) | MIT | https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.15.3/Copyright |
+| `pyogrio` | 0.13.0 | libtiff 4.7.1 (static) | libtiff | https://gitlab.com/libtiff/libtiff/-/blob/v4.7.1/LICENSE.md |
+| `pyogrio` | 0.13.0 | libjpeg-turbo 3.1.4 (static) | IJG AND BSD-3-Clause AND Zlib | https://github.com/libjpeg-turbo/libjpeg-turbo/blob/3.1.4/LICENSE.md |
+| `pyogrio` | 0.13.0 | libpng 1.6.58 (static) | libpng-2.0 | https://github.com/pnggroup/libpng/blob/v1.6.58/LICENSE |
+| `pyogrio` | 0.13.0 | zlib (static; reports deflate 1.2.5.2) | Zlib | https://github.com/madler/zlib/blob/v1.2.5.2/README (licence section) |
+| `pyproj` | 3.8.0 | PROJ 9.8.1 | MIT | text in the wheel (`LICENSE_proj`) |
+| `pyproj` | 3.8.0 | libcurl 8.22.0 | curl | https://github.com/curl/curl/blob/curl-8_22_0/COPYING |
+| `pyproj` | 3.8.0 | OpenSSL 3.2.1 (statically linked into libcurl) | Apache-2.0 | https://github.com/openssl/openssl/blob/openssl-3.2.1/LICENSE.txt |
+| `pyproj` | 3.8.0 | nghttp2 1.70.0 | MIT | https://github.com/nghttp2/nghttp2/blob/v1.70.0/COPYING |
+| `pyproj` | 3.8.0 | SQLite 3.53.4 | blessing | https://www.sqlite.org/copyright.html (public domain) |
+| `pyproj` | 3.8.0 | libtiff 4.7.2 | libtiff | https://gitlab.com/libtiff/libtiff/-/blob/v4.7.2/LICENSE.md |
+| `psycopg-binary` | 3.3.8 | libpq 18 (soname 5.18) | PostgreSQL | https://github.com/postgres/postgres/blob/REL_18_STABLE/COPYRIGHT |
+| `psycopg2-binary` | 2.9.13 | libpq 17 (soname 5.17) | PostgreSQL | https://github.com/postgres/postgres/blob/REL_17_STABLE/COPYRIGHT |
+| `psycopg-binary` | 3.3.8 | OpenSSL 3.5.8 (libssl, libcrypto) | Apache-2.0 | https://github.com/openssl/openssl/blob/openssl-3.5.8/LICENSE.txt |
+| `psycopg2-binary` | 2.9.13 | OpenSSL 3.5.8 (libssl, libcrypto) | Apache-2.0 | https://github.com/openssl/openssl/blob/openssl-3.5.8/LICENSE.txt |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | OpenLDAP 2.6.14 (libldap, liblber) | OLDAP-2.8 | https://github.com/openldap/openldap/blob/OPENLDAP_REL_ENG_2_6_14/LICENSE |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | MIT Kerberos 1.15.1 (libkrb5, libgssapi_krb5, libk5crypto, libkrb5support) | MIT Kerberos licence (BSD-style) | https://github.com/krb5/krb5/blob/krb5-1.15.1-final/NOTICE |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | com_err (libcom_err; e2fsprogs 1.42.x of the CentOS 7 image, version not embedded) | MIT-style (MIT SIPB notice) | https://github.com/tytso/e2fsprogs/blob/v1.42.9/lib/et/com_err.c |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | Cyrus SASL 2.1.26 (libsasl2) | CMU licence (BSD-style, with acknowledgement clause) | https://github.com/cyrusimap/cyrus-sasl/blob/cyrus-sasl-2.1.26/COPYING |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | keyutils 1.5.x (libkeyutils; minor not embedded) | LGPL-2.1-or-later | https://git.kernel.org/pub/scm/linux/kernel/git/dhowells/keyutils.git/tree/LICENCE.LGPL?h=v1.5.8 |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | libcrypt (glibc 2.17) | LGPL-2.1-or-later | https://sourceware.org/git/?p=glibc.git;a=blob;f=COPYING.LIB;hb=glibc-2.17 |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | PCRE 8.32 (libpcre) | BSD-3-Clause | https://github.com/PCRE2Project/pcre1/blob/master/LICENCE (release 8 licence) |
+| `psycopg-binary, psycopg2-binary` | 3.3.8 / 2.9.13 | libselinux (CentOS 7 image; version not embedded) | public domain | https://github.com/SELinuxProject/selinux/blob/libselinux-2.5/libselinux/LICENSE |
+| `pyarrow` | 26.0.1 | Arrow C++ third-party code, statically linked (OpenSSL, libcurl, zlib, zstd, lz4, snappy, brotli, jemalloc, mimalloc, protobuf, abseil, gRPC, AWS and Google Cloud SDKs, xsimd, utf8proc) | permissive (no copyleft text in the notices) | text in the wheel (`LICENSE.txt`, `NOTICE.txt`) |
+| `uvloop` | 0.23.0 | libuv 1.52.1 (statically linked) | MIT AND BSD-2-Clause AND ISC | https://github.com/libuv/libuv/blob/v1.52.1/LICENSE and LICENSE-extra |
 
 ## System components
 
@@ -200,9 +223,9 @@ per-theme terms below are Overture's own.
 | Overture Maps — `divisions` theme | municipal boundary (area of interest) | ODbL-1.0 (geoBoundaries and other sources CC-BY-4.0) | as for buildings |
 | Overture Maps — `places` theme | park, recreation and cultural destinations | per source: CDLA-Permissive-2.0 (most), Apache-2.0 (Foursquare), CC0-1.0 (AllThePlaces) | per source, e.g. "Data from Meta. Available under CDLA Permissive 2.0." |
 | INEGI — Marco Geoestadístico, Censo de Población 2020, DENUE | municipalities, AGEBs, blocks, census attributes; DENUE within the amenity layers | Términos de Libre Uso de la Información del INEGI (https://www.inegi.org.mx/inegi/terminos.html) | credit INEGI and cite the product ("Fuente: INEGI, <producto>"); commercial use and adaptation permitted |
-| Gobierno de la Ciudad de México — Colonias (datos.cdmx.gob.mx) | neighbourhood boundaries | terms published on the CDMX open-data portal (recorded in code as "Licencia CDMX Open Data") | provider and licence, shown on the map |
-| SIG-CDMX equipamientos (with DENUE) | Tlalpan amenities | CDMX open-data terms (recorded as "Datos abiertos de la CDMX") | provider and licence, shown on the map |
-| IMIP Mexicali (with DENUE) | Mexicali amenities | IMIP open data (recorded as "Datos abiertos del IMIP") | provider and licence, shown on the map |
+| Gobierno de la Ciudad de México — Colonias (datos.cdmx.gob.mx) | neighbourhood boundaries | recorded in code as "Licencia CDMX Open Data"; **not verified**: datos.cdmx.gob.mx refused connections on 2026-11-19, the archived copies of its home and about pages (Wayback Machine, October 2026) state no licence, and no archived copy of the dataset page exists | provider and licence, shown on the map |
+| SIG-CDMX equipamientos (with DENUE) | Tlalpan amenities | recorded in code as "Datos abiertos de la CDMX"; not independently verified | provider and licence, shown on the map |
+| IMIP Mexicali (with DENUE) | Mexicali amenities | recorded in code as "Datos abiertos del IMIP"; not independently verified | provider and licence, shown on the map |
 | WorldPop (`raster fetch-worldpop`) | gridded population rasters | CC-BY-4.0 (datasets derived from OSM or Microsoft footprints/roads: ODbL-1.0) | credit WorldPop; the licence is recorded per raster at `raster ingest --license` |
 
 ## Python packages
