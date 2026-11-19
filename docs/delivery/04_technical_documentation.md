@@ -2084,8 +2084,8 @@ revision, in this order, and each step is reported with its actual result.
 | 8 | `uv run pytest tests/performance` | 6 passed, 1 skipped |
 | 9 | `make test-web` | 430 passed (30 files) |
 | 10 | `make build-web` | OK |
-| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 28 s |
-| 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 16 s; 2 passed |
+| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 27 s |
+| 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 15 s; 2 passed |
 | 13 | `REIMAGINA_E2E_WRITES=1 make test-e2e` | 40 of 40 passed, in a real browser against both servers, including the scenario editor flow |
 
 Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3, with
