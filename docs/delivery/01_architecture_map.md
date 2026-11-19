@@ -129,7 +129,7 @@ Pipelines that fetch from upstream land bronze (`cdmx`, `overture`, `overture_pl
 |---|---|---|
 | 1 | Author a rule (area, feature type, attribute, value) through the API, CLI or scenario workspace | Stored in `curated_geo.scenario_edit`; nothing is computed |
 | 2 | Recompute | Rules are materialised into per-feature `curated_geo.scenario_override` rows; each value is checked against its ceiling and one failure refuses the whole set |
-| 3 | Impact analysis | The asset graph records which indicators read which attribute: an edit to `floors` marks one of twelve indicators; an edit to `num_levels` marks four (three edificability indicators, and the livability score through them) |
+| 3 | Impact analysis | The asset graph records which indicators read which attribute: an edit to `floors` marks one of twelve indicators; an edit to `num_levels` marks four (three edificability indicators, and the livability score through them). From the API each marked unit covers only the blocks the rules override or have just released; the CLI covers the whole area of interest |
 | 4 | Execution | The marked units run on the worker and write rows carrying the `scenario_id` |
 | 5 | Comparison | `GET /scenarios/{scenario_id}/comparison` reads scenario and baseline side by side |
 

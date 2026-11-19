@@ -648,9 +648,9 @@ rolling forward to a new Overture release.
 
 Lot coverage (`lot_coverage`, the share of a block that is built on) is not
 seeded: a block without it is computed at 1.0, the whole block, so the fitted
-baseline still equals the census. A scenario rule sets it only when the
-planner types one, and `housing_units = area × lot_coverage × storeys ÷
-m² per home`.
+baseline still equals the census. A rule drawn on the scenarios page sets it
+only when the planner types one (§8.4.1), and `housing_units = area ×
+lot_coverage × storeys ÷ m² per home`.
 
 ## 8. How the platform works
 
@@ -1155,7 +1155,7 @@ list as `queued`.
   response carries runs, status counts and executor health (read from
   `jobs_runtime.ops_executor_heartbeat`). `GET /jobs/{run_id}/detail` adds unit
   timings and in-run prerequisites. The Scenarios page polls its own recompute
-  every 2 s for up to two minutes, then defers to the Runs page.
+  every 0.5 s for up to two minutes, then defers to the Runs page.
 
 #### 8.2.7 Durability and recovery
 
@@ -1439,9 +1439,10 @@ from the version its inputs now imply.
 ⚠ A run scoped by `aoi_id` or by edited features records `complete = false`,
 and the indicator stays `partial`. A later baseline request that names nothing
 and has no `aoi_id` recomputes it over the whole grain. A scenario recompute
-is always scoped to the scenario's AOI, so a scenario partition never becomes
-`fresh`. Each recompute therefore reruns every indicator the scenario reaches,
-even when its rules have not changed.
+is always scoped to the scenario's AOI, and from the API also to the blocks
+its rules touch (§8.4.5), so a scenario partition never becomes `fresh`. Each
+recompute therefore reruns every indicator the scenario's rules reach, even
+when the rules have not changed.
 
 ⚠ Loading the road network, including `network bootstrap`, publishes no
 version. Run `assets observe` after every load; until then freshness does not
@@ -1474,12 +1475,15 @@ prerequisite outside the run is treated as already materialised.
 Scope: `aoi_id` is passed to every compute. Compactness, building density,
 the edificability family and the accessibility family restrict their read to
 blocks that intersect the AOI polygon. Planned floors and the two composites
-ignore it and cover every block. `scenario_id` makes the computes read
-effective values for that scenario and write rows tagged with it. Neither ever
-touches the baseline rows. With `scenario_id` and nothing else named,
-freshness returns the indicators that the scenario's published overrides
-reach through `identity` edges. It also returns any indicator already
-materialised in that scenario's partition.
+ignore it and cover every block. A non-empty `features` set restricts every
+compute, these three included, to those blocks. `scenario_id` makes the
+computes read effective values for that scenario and write rows tagged with
+it. Neither ever touches the baseline rows. With `scenario_id` and nothing
+else named, freshness returns the indicators that the scenario's published
+overrides reach through `identity` edges. It also returns any indicator
+already materialised in that scenario's partition. The API's scenario
+recompute names attributes and blocks, and so takes the change-set path; the
+CLI's `scenario recompute` names nothing, and so takes freshness (§8.4.5).
 
 ⚠ On a database where nothing has been computed, every indicator is
 `absent`, and a baseline request that names nothing is a `noop`. To build
@@ -1530,8 +1534,11 @@ WHERE p.asset_key = 'scenario.override.num_levels'
    scenario rows just written. The scenario has no accessibility rows, so it
    reads the three distances from the baseline.
 
-The same four indicators result from naming the attribute explicitly
-(`changed_attributes: ["num_levels"]`). By contrast, `["geometry"]` yields
+Steps 1–3 are the freshness path, which the CLI's `scenario recompute`
+takes. The same four indicators result from naming the attribute explicitly
+(`changed_attributes: ["num_levels"]`). The API's recompute takes this path:
+it names the attributes and the blocks the rules touch, so each unit computes
+only those blocks (§8.4.5). By contrast, `["geometry"]` yields
 compactness, building density and `urban_form_block_composite`.
 `["floors"]` yields `urban_form_block_planned_floors` alone.
 `changed_datasets: ["global.road_network"]` yields the four accessibility
@@ -1548,7 +1555,7 @@ A scenario is a row of `app_core.scenario` with four fields that matter here: a 
 
 The `aoi_id` is optional when the scenario is created but required at recompute. The foreign key is `ON DELETE SET NULL`, so deleting the AOI leaves the scenario unable to recompute. `create_scenario` also checks that the AOI belongs to the scenario's project, because the schema does not enforce that link.
 
-A *rule* is a drawn area plus the edits that one proposal writes over it. Each edit is a row of `curated_geo.scenario_edit` with a polygon (EPSG:4326), a feature type (`MEX:block` by default), an `attribute_key`, a `value_numeric` and an `ordinal`. One proposal takes four numbers and writes five edits (`edits_for`, `packages/py/reimagina/scenarios/proposal.py`):
+A *rule* is a drawn area plus the edits that one proposal writes over it. Each edit is a row of `curated_geo.scenario_edit` with a polygon (EPSG:4326), a feature type (`MEX:block` by default), an `attribute_key`, a `value_numeric` and an `ordinal`. A proposal carries up to four numbers, at least one, and writes one edit per number it sets, two for `levels` (`edits_for`, `packages/py/reimagina/scenarios/proposal.py`):
 
 | Proposal field | Edits written | Unit | Valid values |
 |---|---|---|---|
@@ -1557,11 +1564,11 @@ A *rule* is a drawn area plus the edits that one proposal writes over it. Each e
 | `people_per_household` | `people_per_household` | people | finite, > 0 |
 | `lot_coverage` | `lot_coverage` | share of block | 0 < c ≤ 1 |
 
-`floors` and `num_levels` are the same quantity under two names. Planned floors reads `floors` and the edificability family reads `num_levels`, so a proposal always writes both. The API defaults `lot_coverage` to 1.0 on `POST`, the web page's form starts at 0.6, and `PATCH` requires it. The authorable set is derived from the attributes that the catalogue's indicators read, minus `geometry`, `poi_version` and `network_version` (`authorable_attributes`, `reimagina/assets/registry.py`). `add_edit` refuses any other key.
+`floors` and `num_levels` are the same quantity under two names. Planned floors reads `floors` and the edificability family reads `num_levels`, so a proposal that sets `levels` always writes both. A number the proposal leaves out is not written: each block keeps its own value for it (§8.4.3), and a block without `lot_coverage` is computed at 1.0. A rule that sets household size alone therefore leaves every block's storeys, unit size, coverage and density as they were. The API writes only the numbers in the request; the web page sends only the numbers typed; the CLI `set-attribute` requires the three numbers and writes `lot_coverage` 1.0 unless `--lot-coverage` is given. The authorable set is derived from the attributes that the catalogue's indicators read, minus `geometry`, `poi_version` and `network_version` (`authorable_attributes`, `reimagina/assets/registry.py`). `add_edit` refuses any other key.
 
 `ordinal` is `max + 1` within the scenario, assigned under a `FOR UPDATE` lock on the scenario row. Where two edits of the same attribute catch the same block, the higher ordinal wins. Precedence is decided per attribute, not per rule.
 
-`PATCH /scenarios/{id}/rules` edits a rule in place. It takes the rule's `edit_ids`, the complete set of four numbers and, optionally, a new area. The ids must all belong to this scenario and share one geometry; otherwise the call is refused with 422. The edits keep their ids and ordinals, so the rule keeps its place in "later wins". An attribute that the rule has no edit for (for example `lot_coverage` on an older rule) is appended with a new ordinal. On that attribute it therefore beats every rule that exists at that moment, including rules drawn after this one. A rule added later still wins over it.
+`PATCH /scenarios/{id}/rules` edits a rule in place. It takes the rule's `edit_ids`, the rule's whole set of numbers (at least one) and, optionally, a new area. The ids must all belong to this scenario and share one geometry; otherwise the call is refused with 422. The edits of numbers still in the set keep their ids and ordinals, so the rule keeps its place in "later wins". The edit of a number left out is deleted: the rule no longer sets it, and each block keeps its own value. A number that the rule has no edit for is appended over the rule's area with a new ordinal. On that attribute it therefore beats every rule that exists at that moment, including rules drawn after this one. A rule added later still wins over it.
 
 `DELETE /scenarios/{id}/edits?edit_id=…` removes one edit, so removing a rule means one call per edit. Ordinals are not renumbered. The removed rule's overrides stay in place until the next recompute.
 
@@ -1572,10 +1579,11 @@ A *rule* is a drawn area plus the edits that one proposal writes over it. Each e
 | # | Check | Refusal | HTTP |
 |---|---|---|---|
 | 1 | Scenario id is a UUID | `ScenarioNotFound` | 404 |
-| 2 | Three numbers finite and > 0; coverage in (0, 1] | `ProposalValueError` (names `field`) | 400 |
-| 3 | Area-independent ceilings: density and planned floors | `CeilingPrecheckFailed` (`allowed_levels`) | 422 |
-| 4 | Area is GeoJSON with a polygonal part; repairable | `InvalidGeometry` | 400 |
-| 5 | Per-block ceilings, at recompute | `CeilingExceeded` (exact `breach_count`; at most 20 breaches listed) | 422 |
+| 2 | At least one number set | `EmptyProposal` (`empty_proposal`) | 400 |
+| 3 | Each number set: storeys, unit size and household size finite and > 0; coverage in (0, 1] | `ProposalValueError` (names `field`) | 400 |
+| 4 | Area-independent ceilings: density and planned floors | `CeilingPrecheckFailed` (`allowed_levels`) | 422 |
+| 5 | Area is GeoJSON with a polygonal part; repairable | `InvalidGeometry` | 400 |
+| 6 | Per-block ceilings, at recompute | `CeilingExceeded` (exact `breach_count`; at most 20 breaches listed) | 422 |
 
 A missing AOI at recompute is refused with `ScenarioHasNoAOI` (409).
 
@@ -1588,7 +1596,7 @@ The ceilings exist because a trigger on `curated_geo.indicator_result` raises wh
 | `edificability_block_housing_units` | 200,000 units | yes |
 | `edificability_block_population` | 750,000 people | yes |
 
-The precheck can test only the two bounds that do not depend on area. `allowed_levels` is `min(0.2 × unit_size, 200)` rounded down, computed at full coverage; at 60 m² that is 12 storeys. The area-dependent bounds are checked during materialisation, block by block, with each block's own area and its effective inputs after the rules are applied.
+The precheck can test only the two bounds that do not depend on area. `allowed_levels` is `min(0.2 × unit_size, 200)` rounded down, computed at full coverage; at 60 m² that is 12 storeys. A number the proposal leaves out takes each block's own value, which only materialisation sees: a proposal without storeys is not prechecked, and one without a unit size is checked against the floors bound alone (`allowed_levels` 200). The area-dependent bounds are checked during materialisation, block by block, with each block's own area and its effective inputs after the rules are applied.
 
 Geometry is repaired on write: several polygons are unioned into one area, then the area goes through `ST_MakeValid`, and the polygonal part is kept.
 
@@ -1606,9 +1614,11 @@ A rule whose area catches no block is not refused by the server. Recompute repor
 6. Publish one version per attribute (`publish_scenario_version`) and retire the versions of attributes that are no longer edited.
 7. Mark `stale` the scenario results that depended on deleted overrides, then set `materialized_at`.
 
+Besides its counts, it returns the scenario's *footprint*: every block a current rule overrides plus every block whose override step 4 deleted, and the attributes involved (`footprint_features`, `footprint_attributes`). A block outside the footprint carries no override and reads the baseline through the overlay.
+
 `geometry_centroid` is a generated `ST_PointOnSurface(geometry)`. A block is in or out as a whole: a block whose point-on-surface lies inside the area takes the full value, and a block partly inside whose point lies outside is untouched. No value is apportioned by area. This is the same predicate the map's selection card uses for its counts.
 
-Materialisation is idempotent. Each version is an MD5 digest of the attribute's override rows (asset `scenario.override.<attribute>`, partition `scenario=<id>`). Re-materialising unchanged rules therefore publishes no new override version. The following submit still recomputes the reachable indicators. A scenario run is always scoped to the scenario's AOI, so its results are recorded as `partial`, and the scenario planner counts `partial` as out of date (§8.3.6).
+Materialisation is idempotent. Each version is an MD5 digest of the attribute's override rows (asset `scenario.override.<attribute>`, partition `scenario=<id>`). Re-materialising unchanged rules therefore publishes no new override version. The following submit still recomputes the reachable indicators: from the API, because it names the footprint (§8.4.5); from the CLI, because a scenario run is always scoped to the scenario's AOI, so its results are recorded as `partial`, and the scenario planner counts `partial` as out of date (§8.3.6).
 
 The effective value of an input under a scenario is the first non-null of the override, the current observation, and the base `feature.attributes` value (`effective_numeric`, `reimagina/scenarios/overrides.py`). Reads of indicator results apply the same rule to outputs (`scenario_overlay`, `reimagina/storage/_utils.py`): a scenario read returns the scenario's row where it carries a value and the baseline row otherwise.
 
@@ -1626,7 +1636,12 @@ The census-fitted baseline (§7.2, `scripts/seed_demo_attributes.py --fit-to-cen
 
 #### 8.4.5 Recompute
 
-`POST /scenarios/{id}/recompute` (CLI `scenario recompute`) runs in two transactions. The first materialises and commits. The second submits a run for the scenario and its AOI with an empty change set; the planner then derives the work from freshness at the scenario's partition (§8.2, §8.3). The API needs a running worker. The CLI runs the coordinator embedded by default, or with `--detach` / `--sync`.
+`POST /scenarios/{id}/recompute` (CLI `scenario recompute`) runs in two transactions. The first materialises and commits. The second submits a run for the scenario and its AOI (§8.2, §8.3), and here the two entry points differ:
+
+- **The API** submits the footprint the materialisation returned (§8.4.3) as `changed_attributes` and `edited_features`. The planner takes the indicators that read those attributes plus their downstream closure (§8.3.7), and each unit computes only the footprint's blocks; the rest of the AOI keeps reading the baseline through the overlay. An empty footprint (no rule catches a block and no override was deleted) names nothing, and the planner falls back to freshness.
+- **The CLI** submits an empty change set, so the planner derives the work from freshness at the scenario's partition, and each unit is scoped by the AOI alone (§8.3.7).
+
+The API needs a running worker. The CLI runs the coordinator embedded by default, or with `--detach` / `--sync`.
 
 The indicators a rule can make stale are listed by `GET /scenarios/indicators`, which is derived from the catalogue:
 
@@ -1681,16 +1696,16 @@ All CLI commands are `scenario …` subcommands; their flags are given in `--hel
 | Compare | `compare --slug [--limit 20]` | `GET /scenarios/{id}/comparison` |
 | Delete | (none) | `DELETE /scenarios/{id}` |
 
-The CLI `set-attribute` defaults `--lot-coverage` to 1.0.
+The CLI `set-attribute` requires the three numbers and defaults `--lot-coverage` to 1.0, so it always writes five edits; `POST …/edits` writes only the numbers sent. The CLI `recompute` plans from freshness over the AOI; the API's recompute plans the footprint (§8.4.5).
 
 #### 8.4.9 Worked example
 
-These are real values from the acceptance database, which holds a synthetic territory of 16 blocks of about 12,150 m² each. The baseline storeys run from 2 to 6 and the unit sizes from 65 to 80 m² per dwelling, with 3.2 people per household throughout; these blocks carry no census count.
+These are real values from the acceptance database, produced through the CLI as `scripts/acceptance_run.sh` steps 10 and 11 run it. The database holds a synthetic territory of 16 blocks of about 12,150 m² each. The baseline storeys run from 2 to 6 and the unit sizes from 65 to 80 m² per dwelling, with 3.2 people per household throughout; these blocks carry no census count.
 
 1. **Rule.** One rule draws an area of 18,982 m² and proposes 12 storeys, 80 m² per dwelling, 3.2 people and coverage 1.0. That writes five edits, ordinals 1–5.
 2. **Materialisation.** The area covers the point-on-surface of 4 blocks of 12,150.9 m² each, with 2–5 storeys at 65 m² per dwelling. Together they cover more than twice the drawn area. The step writes 4 × 5 = 20 overrides.
 3. **Per-block values.** Each of the four blocks gets housing units = 12,150.9 × 1.0 × 12 ÷ 80 = 1,822.63; population = 1,822.63 × 3.2 = 5,832.4; density = 1,500 units/ha, under the 2,000 bound.
-4. **Recompute.** The run writes scenario rows for the five reachable indicators.
+4. **Recompute.** `scenario recompute --sync` plans from freshness; the run writes scenario rows for the five reachable indicators.
 5. **Comparison.** `edificability_block_housing_units` reports 4 `changed`, 12 `unchanged` and `mean_delta` 292.09. The table total rises from 11,287.6 to 15,961.0 dwellings and population from 36,120.4 to 51,075.3. The median of planned floors rises from 4 to 5.
 
 ## 9. Operating the platform
@@ -1762,7 +1777,7 @@ them.
 
 ### 9.2 Scenarios (`/scenarios.html`)
 
-A scenario is a named what-if over a pilot area: rules that change the
+A scenario is a named what-if over a pilot area: rules that set any of the
 storeys, dwelling size, household size and lot coverage of the blocks inside
 a drawn area, and the indicators those changes recompute.
 
@@ -1778,16 +1793,21 @@ a drawn area, and the indicators those changes recompute.
 3. **Draw a rule's area** with the tools at the map's top left (or `r` / `p`
    / `c`): drag out a rectangle or circle, or click a polygon's corners and
    click the last one again to close it.
-4. **Set the rule.** A box opens beside the shape with four numbers —
-   *Storeys*, *m² per home*, *People per home* and *Lot coverage* (the share
-   of the block built on) — prefilled with the last numbers used. On the
-   baseline city it also asks for the new scenario's name. **Apply** writes
-   the rule and recomputes; the bar above the map shows the change in homes
-   and people, and says *Recomputing…* while the run is in progress. A
-   recompute that outlives the page's wait is handed to the run dashboard
-   (§9.4).
-5. **Edit a rule.** Every rule stays outlined on the map. Click one to change
-   its numbers, drag or resize it, or delete it; each is followed by a
+4. **Set the rule.** A box opens beside the shape with four empty numbers,
+   each marked *as is* — *Storeys*, *m² per home*, *People per home* and
+   *Lot coverage* (the share of the block built on, in %). Type only what
+   this area changes: a number left empty keeps each block's own value, so
+   changing household size alone leaves storeys, unit size, coverage and
+   density as they were, block by block. At least one number is needed. On
+   the baseline city the box also asks for the new scenario's name.
+   **Apply** writes the rule and recomputes; the bar above the map shows the
+   change in homes and people, the bar and the box say *Recomputing…*, and a
+   spinner sits at the centre of the map while the run is in progress or
+   tiles load. A recompute that outlives the page's two-minute wait is handed
+   to the run dashboard (§9.4).
+5. **Edit a rule.** Every rule stays outlined on the map, labelled with the
+   numbers it sets. Click one to change its numbers (clearing one stops the
+   rule setting it), drag or resize it, or delete it; each is followed by a
    recompute, and the rule keeps its place in "later wins" (a box opened on
    an earlier rule says which later rule overrides it). `esc` cancels. If the
    recompute refuses the rule — a per-block ceiling — or the area catches no

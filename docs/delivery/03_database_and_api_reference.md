@@ -1980,10 +1980,10 @@ One proposal: an area and the three numbers a planner proposes over it.
 | Field | Type | Description |
 |---|---|---|
 | `area` (required) | object | The drawn area as GeoJSON: a FeatureCollection, a Feature, or a bare geometry. Several polygons are unioned into one area, because a selection made with two strokes is one rule. |
-| `levels` (required) | number | — |
-| `unit_size` (required) | number | — |
-| `people_per_household` (required) | number | — |
-| `lot_coverage` (optional) | number, default `1.0` | Share of the block built on (COS), 0 < c ≤ 1. Omitted means 1.0, the whole block — the formula as it was before coverage. |
+| `levels` (optional) | number or null | — |
+| `unit_size` (optional) | number or null | — |
+| `people_per_household` (optional) | number or null | — |
+| `lot_coverage` (optional) | number or null | Share of the block built on (COS), 0 < c ≤ 1. Like every number here, omitted means the rule does not set it and each block keeps its own (1.0, the whole block, when it has none). At least one number must be set. |
 | `type_context` (optional) | string, default `"MEX"` | — |
 | `type_slug` (optional) | string, default `"block"` | — |
 
@@ -2196,10 +2196,10 @@ One rule's new numbers, and optionally its new area.
 |---|---|---|
 | `edit_ids` (required) | list[string (uuid)] | — |
 | `area` (optional) | object or null | The moved or resized area; omitted keeps the area. |
-| `levels` (required) | number | — |
-| `unit_size` (required) | number | — |
-| `people_per_household` (required) | number | — |
-| `lot_coverage` (required) | number | — |
+| `levels` (optional) | number or null | — |
+| `unit_size` (optional) | number or null | — |
+| `people_per_household` (optional) | number or null | — |
+| `lot_coverage` (optional) | number or null | — |
 | `type_context` (optional) | string, default `"MEX"` | — |
 | `type_slug` (optional) | string, default `"block"` | — |
 
