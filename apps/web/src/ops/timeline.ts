@@ -5,9 +5,9 @@
  * Two invariants the design rests on (docs/superpowers/specs/
  * 2026-11-18-run-execution-view-design.md):
  * - Rows never move: order is dependency depth, then slug — never start time.
- * - Nothing drawn shrinks while the run is live: the axis is the forecast
- *   finish and grows only when the run passes it (A1), or doubles from 10 s
- *   when there is no forecast (A2). Positions are fractions of a fixed axis.
+ * - Nothing drawn moves left: bars grow left to right on an axis that starts
+ *   at 10 s and doubles each time the run reaches its edge, so everything
+ *   shrinks at once and the run continues. Nothing is predicted.
  */
 import type { Tone } from "../lib/components/ui/tone";
 import type { RunDetailResponse, UnitDetail } from "./api";
@@ -94,37 +94,11 @@ export function rowOrder(units: UnitDetail[]): UnitDetail[] {
   );
 }
 
-/** List-scheduling simulation of the run over last-run durations. Null without
- *  an estimate for every unit: a partial forecast would be a confident guess. */
-export function forecastMs(units: UnitDetail[], slots: number): number | null {
-  if (!units.length || units.some((u) => u.expected_ms === null)) return null;
-  const ids = new Set(units.map((u) => u.indicator));
-  const finished = new Set<string>();
-  const pending = rowOrder(units);
-  const running: { id: string; end: number }[] = [];
-  let now = 0;
-  while (pending.length || running.length) {
-    for (let i = 0; i < pending.length && running.length < slots; ) {
-      const u = pending[i];
-      if (u.depends_on.every((d) => !ids.has(d) || finished.has(d))) {
-        running.push({ id: u.indicator, end: now + u.expected_ms! });
-        pending.splice(i, 1);
-      } else i++;
-    }
-    if (!running.length) return null; // nothing can start: a cycle
-    running.sort((a, b) => a.end - b.end);
-    const next = running.shift()!;
-    now = next.end;
-    finished.add(next.id);
-  }
-  return now;
-}
-
-export function axisMs(elapsed: number, forecast: number | null, live: boolean): number {
-  if (!live) return Math.max(elapsed, forecast ?? 0, 1);
-  let axis = forecast && forecast > 0 ? forecast : 10_000;
-  const [grow, headroom] = forecast && forecast > 0 ? [1.25, 0.98] : [2, 0.95];
-  while (elapsed > headroom * axis) axis *= grow;
+/** Live: 10 s, doubled whenever the run reaches 95 % of it. Finished: the run. */
+export function axisMs(elapsed: number, live: boolean): number {
+  if (!live) return Math.max(elapsed, 1);
+  let axis = 10_000;
+  while (elapsed > 0.95 * axis) axis *= 2;
   return axis;
 }
 
@@ -155,19 +129,14 @@ export interface Row {
   leftPct: number;
   /** 0 when the unit has no bar. */
   widthPct: number;
-  /** Running only: the last run's duration, as an outline. */
-  expectedPct: number | null;
   numbers: string;
   note: string | null;
-  over: boolean;
 }
 
 export interface TimelineModel {
   rows: Row[];
   axis: number;
   elapsedMs: number;
-  /** Only fixes the axis; not drawn. */
-  forecast: number | null;
   /** Null once the run has finished. */
   nowPct: number | null;
   ticks: { pct: number; label: string }[];
@@ -213,8 +182,7 @@ export function timelineModel(
   // closed): its time stops at the last finish instead of growing the axis.
   const settled = units.every((u) => ENDED.has(u.status) || u.status === "succeeded");
   const elapsedMs = units.length ? Math.max(0, (live && !settled ? now : lastEnd) - t0) : 0;
-  const forecast = forecastMs(units, slots);
-  const axis = axisMs(elapsedMs, forecast, live);
+  const axis = axisMs(elapsedMs, live);
   const pct = (ms: number) => Math.min(100, Math.max(0, (ms / axis) * 100));
 
   const spans = units.flatMap((u) => {
@@ -229,29 +197,13 @@ export function timelineModel(
     // Queued in a finished run means it never ran: drawn and counted as skipped.
     const state = !live && unit.status === "queued" ? "skipped" : rowState(unit, by);
     const s = span.get(unit.indicator);
-    // A 0 ms estimate gives no percentage (0/0); treat it as none.
-    const exp = unit.expected_ms ? unit.expected_ms : null;
-    let numbers = "–";
-    let over = false;
-    if (s && state === "running") {
-      const el = s.end - s.start;
-      if (exp === null) numbers = formatDuration(el);
-      else if (el <= exp) numbers = `${formatDuration(el)} · ${Math.round((el / exp) * 100)}%`;
-      else [numbers, over] = [`+${formatDuration(el - exp)} over`, true];
-    } else if (s) numbers = formatDuration(s.end - s.start);
     return {
       unit,
       state,
       leftPct: s ? pct(s.start) : 0,
       widthPct: s ? pct(s.end) - pct(s.start) : 0,
-      // Clamped: on a fallback axis a long estimate would run off the track.
-      expectedPct:
-        state === "running" && exp !== null && s
-          ? Math.min((exp / axis) * 100, 100 - pct(s.start))
-          : null,
-      numbers,
+      numbers: s ? formatDuration(s.end - s.start) : "–",
       note: note(unit, state, by, live),
-      over,
     };
   });
 
@@ -285,7 +237,6 @@ export function timelineModel(
     rows,
     axis,
     elapsedMs,
-    forecast,
     nowPct: live ? pct(elapsedMs) : null,
     ticks: ticks(axis),
     strip,
