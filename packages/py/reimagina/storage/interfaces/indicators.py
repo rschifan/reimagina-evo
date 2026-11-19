@@ -10,6 +10,15 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
+class FeatureNotFound(LookupError):
+    """A feature id that names no feature.
+
+    Raised so a caller can catch *this* and not ``LookupError``, which also
+    catches the ``KeyError``/``IndexError`` of a genuine defect and would
+    report it as "unknown feature". Same reasoning as ``ScenarioNotFound``.
+    """
+
+
 class IndicatorCatalogRepository(Protocol):
     """CRUD for indicator_catalog + indicator_dependency rows."""
 
@@ -150,8 +159,8 @@ class IndicatorResultRepository(Protocol):
         Each dict: `slug, name, unit, cap_value, value, count_below,
         count_equal, count`. The counts are over the same population
         `value_stats` describes (same indicator, the feature's own type, same
-        AOI and scenario scoping). Raises `LookupError` when the feature does
-        not exist; a feature without values yields `[]`.
+        AOI and scenario scoping). Raises `FeatureNotFound` when the feature
+        does not exist; a feature without values yields `[]`.
         """
         ...
 

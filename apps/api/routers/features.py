@@ -13,6 +13,8 @@ import psycopg2
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from reimagina.storage.interfaces import FeatureNotFound
+
 from ..deps import get_backend, get_db_conn
 
 router = APIRouter(prefix="/features", tags=["features"])
@@ -112,6 +114,6 @@ def get_feature_indicators(
                 scenario_id=None if scenario_id is None else str(scenario_id),
             )
         )
-    except LookupError as exc:
+    except FeatureNotFound as exc:
         raise HTTPException(status_code=404, detail="Unknown feature") from exc
     return [FeatureIndicatorValue(**row) for row in rows]

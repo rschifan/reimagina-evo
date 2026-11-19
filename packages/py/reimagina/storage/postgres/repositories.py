@@ -15,6 +15,7 @@ from .._utils import is_run_id as _is_run_id
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 from .._utils import scenario_overlay as _scenario_overlay
+from ..interfaces import FeatureNotFound
 
 
 #: Smallest share of a feature that must fall inside an AOI for it to count as a
@@ -2838,7 +2839,7 @@ class PostgresIndicatorResultRepository:
                 "SELECT 1 FROM curated_geo.feature WHERE id = %s::uuid", (feature_id,)
             )
             if cur.fetchone() is None:
-                raise LookupError(feature_id)
+                raise FeatureNotFound(feature_id)
             cur.execute(
                 f"""
                 SELECT c.slug, c.name, c.unit, c.cap_value,
