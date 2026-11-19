@@ -1,27 +1,40 @@
-flowchart LR
-  subgraph browser["Client device [Deployment node: web browser]"]
-    webi["Web application<br/>[Container: static bundle]"]
+---
+title: "Figure 8 — Deployment: the reference single-host installation"
+config:
+  flowchart:
+    wrappingWidth: 520
+    nodeSpacing: 30
+    rankSpacing: 45
+  themeCSS: ".flowchartTitleText{font-size:30px;font-weight:600;fill:#16181d}"
+---
+flowchart TB
+  subgraph browser["Web browser [Deployment node]"]
+    webi["Web application<br/>[four HTML pages<br/>and ES modules]"]
   end
 
-  subgraph host["Application host [Deployment node: Linux]"]
-    apii["API application<br/>[Container: uvicorn]"]
-    workeri["Recomputation worker<br/>[Container: Python process]"]
+  subgraph host["Host [Deployment node: macOS or Linux]"]
+    vite["Web dev server<br/>[Vite 8, :5173]<br/>Serves the pages,<br/>proxies /api"]
+    apii["API application<br/>[uvicorn, :8001]<br/>Pool of 16<br/>connections"]
+    workeri["Recomputation<br/>worker<br/>[python -m<br/>apps.worker]"]
+    clii["Operator CLI<br/>[Typer,<br/>on demand]"]
   end
 
-  subgraph infra["Data services [Deployment node: Docker Compose]"]
-    pool["Connection pooler<br/>[Container: pgbouncer 1.23]<br/>Transaction-mode pooling<br/>for the API only"]
-    dbi[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]")]
-    martini["Vector tile server<br/>[Container: Martin 0.14]"]
-    static["Snapshot tile host<br/>[Container: nginx 1.27]<br/>Serves PMTiles exports of<br/>stable reference layers"]
+  subgraph infra["Docker Compose [Deployment node]"]
+    pool["Pooler<br/>[pgbouncer 1.26.1,<br/>:5432]<br/>Transaction mode"]
+    dbi[("Database<br/>[PostgreSQL 16,<br/>PostGIS 3.4,<br/>pgRouting 3.6.1,<br/>:5433]")]
+    martini["Tile server<br/>[Martin 0.14,<br/>:3000]"]
+    static["Snapshot host<br/>[nginx 1.27,<br/>:3001]<br/>PMTiles for<br/>GIS clients"]
   end
 
-  webi -->|"[JSON/HTTPS]"| apii
-  webi -->|"[MVT/HTTPS]"| martini
-  webi -->|"[HTTPS]"| static
-  apii -->|"Pooled reads [SQL]"| pool
+  webi -->|"[HTTP]"| vite
+  vite -->|"/api<br/>[HTTP]"| apii
+  webi -.->|"MVT [HTTP],<br/>when chosen"| martini
+  apii -->|"Pooled<br/>[SQL]"| pool
   pool -->|"[SQL]"| dbi
-  workeri -->|"Direct connection: LISTEN/NOTIFY<br/>cannot cross the pooler [SQL]"| dbi
-  martini -->|"[SQL]"| dbi
+  apii -->|"DBOS client<br/>[SQL direct,<br/>LISTEN/<br/>NOTIFY]"| dbi
+  workeri -->|"[SQL direct]"| dbi
+  clii -->|"[SQL]"| dbi
+  martini -->|"[SQL direct]"| dbi
 
   classDef container fill:#438dd5,stroke:#2e6295,color:#fff
-  class webi,apii,workeri,pool,dbi,martini,static container
+  class webi,vite,apii,workeri,clii,pool,dbi,martini,static container

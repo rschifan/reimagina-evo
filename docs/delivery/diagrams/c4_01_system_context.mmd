@@ -1,20 +1,33 @@
+---
+title: "Figure 2 — System context: Reimagina, its users and the external systems it depends on"
+config:
+  flowchart:
+    wrappingWidth: 520
+  themeCSS: ".flowchartTitleText{font-size:30px;font-weight:600;fill:#16181d}"
+---
 flowchart LR
-  planner["Urban planner / analyst<br/>[Person]<br/>Explores the territory and<br/>compares what-if scenarios"]
-  operator["Platform operator<br/>[Person]<br/>Runs ingestion, inspects data,<br/>triggers recomputation"]
+  planner["Urban planner / analyst<br/>[Person]<br/>Explores the territory,<br/>authors and compares<br/>what-if scenarios"]
+  operator["Platform operator<br/>[Person]<br/>Loads data, launches<br/>and watches runs,<br/>inspects the catalogue"]
 
-  reimagina["Reimagina<br/>[Software System]<br/>Ingests territorial data, computes<br/>urban indicators, and evaluates<br/>scenario edits against a baseline"]
+  reimagina["Reimagina<br/>[Software System]<br/>Ingests territorial data,<br/>computes urban indicators,<br/>evaluates scenario edits<br/>against a baseline and<br/>serves them to a web map"]
 
-  lake["Azure data lake<br/>[Software System]<br/>Immutable mirror of the<br/>upstream open-data sources"]
-  inegi["INEGI / SIGCDMX / Overture / WorldPop<br/>[Software System]<br/>Upstream publishers of census,<br/>boundary, amenity and raster data"]
+  overture["Overture Maps<br/>[External: public S3 bucket]<br/>Buildings, places and<br/>administrative divisions<br/>as GeoParquet"]
+  osm["OpenStreetMap<br/>[External: Overpass API]<br/>Walking network,<br/>fetched with osmnx"]
+  worldpop["WorldPop<br/>[External: REST API]<br/>Gridded population<br/>rasters (GeoTIFF)"]
+  portals["INEGI and CDMX portals<br/>[External: HTTPS downloads]<br/>Marco geoestadístico (CDMX),<br/>colonias (SIGCDMX ArcGIS)"]
+  lake["Private data lake<br/>[External: Azure storage]<br/>INEGI marco 2024, INEGI<br/>census 2020, amenity layers"]
 
-  planner -->|"Views maps and indicator<br/>comparisons using"| reimagina
-  operator -->|"Loads data and triggers<br/>recomputation using"| reimagina
-  reimagina -->|"Reads source datasets from<br/>[HTTPS]"| lake
-  inegi -->|"Publishes datasets mirrored into"| lake
+  planner -->|"Explores,<br/>edits scenarios<br/>[HTTP]"| reimagina
+  operator -->|"Ingests,<br/>runs, inspects<br/>[CLI, HTTP]"| reimagina
+  reimagina -->|"Reads<br/>GeoParquet<br/>[S3, no auth]"| overture
+  reimagina -->|"Fetches<br/>the network<br/>[Overpass]"| osm
+  reimagina -->|"Downloads<br/>rasters<br/>[HTTPS]"| worldpop
+  reimagina -->|"Downloads<br/>archives<br/>[HTTPS]"| portals
+  lake -.->|"Copied by hand<br/>to local disk;<br/>never called"| reimagina
 
   classDef person fill:#0b4884,stroke:#073962,color:#fff
   classDef focus fill:#1168bd,stroke:#0b4884,color:#fff
   classDef external fill:#8a8a8a,stroke:#6b6b6b,color:#fff
   class planner,operator person
   class reimagina focus
-  class lake,inegi external
+  class overture,osm,worldpop,portals,lake external

@@ -1,34 +1,54 @@
-flowchart LR
-  db[("Database<br/>[Container: PostgreSQL 16]")]
+---
+title: "Figure 5 — Components of the orchestration module: one port, two implementations"
+config:
+  flowchart:
+    wrappingWidth: 520
+    nodeSpacing: 30
+    rankSpacing: 45
+  themeCSS: ".flowchartTitleText{font-size:30px;font-weight:600;fill:#16181d}"
+---
+flowchart TB
+  port["Orchestrator port<br/>[Code: port.py, factory.py]<br/>Six methods over plain dataclasses,<br/>used by the API routers and the CLI"]
 
-  subgraph orch["Orchestration module [Component: reimagina.orchestration]"]
+  subgraph engine["DBOS implementation: replaceable"]
     direction TB
-    port["Orchestrator port<br/>[Code: port.py, factory.py]<br/>The interface callers depend on.<br/>Plain dataclasses, no engine types"]
-
-    subgraph durable["Survives an engine change"]
-      direction TB
-      impact["Impact engine<br/>[Code: impact.py]<br/>Which indicators an<br/>attribute edit invalidates"]
-      plan["Planner and graph<br/>[Code: plan.py, graph.py]<br/>Dirty set to ordered units,<br/>touching no run table"]
-      wavemod["Wave scheduler<br/>[Code: wave.py]<br/>Given these statuses,<br/>what may start now"]
-    end
-
-    subgraph engine["DBOS adapter — replaceable"]
-      direction TB
-      adapter["Adapter<br/>[Code: dbos_orchestrator.py]<br/>Implements the port over<br/>durable execution"]
-      app["Workflows and steps<br/>[Code: dbos_app.py]<br/>run_workflow, unit_workflow,<br/>every write"]
-      reclaimmod["Reclaim and liveness<br/>[Code: reclaim.py, executor_health.py]<br/>Recovers a dead executor's work"]
-    end
+    adapter["Adapter<br/>[dbos_orchestrator.py]<br/>The port over<br/>durable execution"]
+    app["Workflows, queues<br/>[dbos_app.py]<br/>runs and units<br/>queues"]
+    runstore["Run envelope<br/>[runstore.py]<br/>Rows in<br/>jobs_runtime"]
+    reclaimmod["Reclaim, liveness<br/>[reclaim.py,<br/>executor_health.py]"]
   end
 
-  port -->|"Is implemented by"| adapter
-  adapter -->|"Asks what the edit dirties"| impact
-  adapter -->|"Resolves units with"| plan
-  adapter -->|"Enqueues those units as"| app
-  app -->|"Asks what may start now"| wavemod
-  app -->|"Checkpoints and writes<br/>status to [SQL/TCP]"| db
-  reclaimmod -->|"Reads liveness and recovers<br/>workflows via [SQL/TCP]"| db
+  subgraph syncimpl["Synchronous: reference"]
+    direction TB
+    sync["Orchestrator<br/>[synchronous.py,<br/>intake.py]<br/>Runs inline"]
+    mem["Run store<br/>[memstore.py]<br/>In memory"]
+  end
+
+  subgraph durable["Survives an engine change"]
+    direction TB
+    dedup["Run identity<br/>[dedup.py]<br/>Request plus a<br/>content fingerprint"]
+    plan["Planner, graph<br/>[plan.py, graph.py]<br/>Dirty set to<br/>ordered units"]
+    impact["Impact engine<br/>[impact.py]<br/>What an attribute<br/>edit invalidates"]
+    wavemod["Wave scheduler<br/>[wave.py]<br/>What may<br/>start now"]
+    runners["Runners<br/>[runners.py,<br/>coordinator.py]<br/>Slug to compute"]
+    frames["Progress framing<br/>[frames.py]<br/>Run events<br/>as SSE"]
+  end
+
+  db[("Database<br/>[Container: PostgreSQL]")]
+
+  port -->|"Implemented<br/>by"| adapter
+  port -->|"Implemented<br/>by"| sync
+  adapter -->|"Records"| runstore
+  adapter -->|"Enqueues on"| app
+  sync -->|"Keeps state in"| mem
+  engine -->|"Uses"| durable
+  syncimpl -->|"Uses"| durable
+  plan -->|"Asks"| impact
+  runstore -->|"[SQL]"| db
+  app -->|"Checkpoints<br/>[SQL]"| db
+  reclaimmod -->|"Recovers<br/>[SQL]"| db
 
   classDef component fill:#85bbf0,stroke:#5d82a8,color:#000
   classDef container fill:#438dd5,stroke:#2e6295,color:#fff
-  class port,impact,plan,wavemod,adapter,app,reclaimmod component
+  class port,adapter,runstore,app,reclaimmod,dedup,plan,impact,wavemod,runners,frames,sync,mem component
   class db container
