@@ -3,7 +3,7 @@
   import Card from "../lib/components/ui/Card.svelte";
   import { cn } from "../lib/utils";
 
-  import { formatCell, statusFor, statusLabel, statusTone } from "./derive";
+  import { formatCell, NO_BASELINE, statusFor, statusLabel, statusTone } from "./derive";
   import { BASELINE, select, ws, type Cell } from "./store.svelte";
 
   /**
@@ -68,7 +68,11 @@
             </th>
             {#each ws.indicators as indicator (indicator.slug)}
               {@const cell = ws.cells[BASELINE]?.[indicator.slug]}
-              <td class="py-2 pr-4 text-right font-mono tabular-nums" title={cell?.error ?? undefined}>
+              <td
+                class="py-2 pr-4 text-right font-mono tabular-nums"
+                title={cell?.error ??
+                  (cell && cell.value === null ? `No baseline: ${NO_BASELINE}` : undefined)}
+              >
                 {cellText(cell, indicator.slug)}
               </td>
             {/each}
