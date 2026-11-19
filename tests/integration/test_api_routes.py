@@ -709,6 +709,33 @@ def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_ea
     assert resp_b.json()["count"] == 1
 
 
+@pytest.mark.parametrize("fmt", ["csv", "geojson", "parquet"])
+def test_downloads_scope_rows_to_picked_aoi(client, two_aois_one_block_each, fmt):
+    """The catalog's stats say "this AOI", so its downloads must hold the same
+    rows. Without the scope a Mexicali download carried every AOI's values."""
+    import io as _io
+
+    import geopandas as gpd
+
+    fixture = two_aois_one_block_each
+    url = f"/indicators/{fixture['slug']}/values.{fmt}"
+    resp_all = client.get(url)
+    resp_a = client.get(f"{url}?aoi_id={fixture['aoi_a']}")
+    assert resp_all.status_code == resp_a.status_code == 200
+
+    def feature_ids(resp) -> list[str]:
+        if fmt == "csv":
+            return [line.split(",")[0] for line in resp.text.splitlines()[1:]]
+        if fmt == "geojson":
+            return [f["properties"]["feature_id"] for f in resp.json()["features"]]
+        return list(gpd.read_parquet(_io.BytesIO(resp.content))["feature_id"])
+
+    assert sorted(feature_ids(resp_all)) == sorted(
+        [fixture["block_a"], fixture["block_b"]]
+    )
+    assert feature_ids(resp_a) == [fixture["block_a"]]
+
+
 def test_list_aois_returns_bbox_envelope(client, two_aois_one_block_each):
     """The /aois endpoint exposes ST_Envelope-derived bounds so the web
     picker can fly the map without a separate geometry round-trip."""

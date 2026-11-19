@@ -2758,13 +2758,16 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
         feature_type: str | None = None,
+        aoi_id: str | None = None,
         limit: int = 100_000,
     ) -> list[dict]:
         """Current indicator rows joined with EPSG:4326 geometry (WKB bytes).
 
         Backs the GeoJSON / GeoParquet download paths — one query, no
         extra round-trip for geometry. Feature-type filter is optional;
-        omitting it returns every grain the indicator applies to.
+        omitting it returns every grain the indicator applies to. ``aoi_id``
+        scopes rows exactly as ``value_stats`` does, so a download holds the
+        rows its stats describe.
         """
         # Build the predicate progressively so NULL-safe scenario matching
         # and the optional feature_type filter compose cleanly.
@@ -2776,6 +2779,12 @@ class PostgresIndicatorResultRepository:
         if feature_type is not None:
             clauses.append("ir.feature_type = %s")
             params.append(feature_type)
+        if aoi_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
+                "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
+            )
+            params.append(aoi_id)
         params.append(limit)
 
         with self.connection.cursor(

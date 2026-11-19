@@ -5,38 +5,33 @@
  * `$state` is shared by every importer, and `$derived` recomputes without a
  * subscription. No `svelte/store`, no manual unsubscribe.
  */
+import { getActiveAoiId, setActiveAoiId, setKnownAois } from "../aoi";
+import { listAois, type AOIRow } from "../api";
 import { isAbortError } from "../http";
-import {
-  getStats,
-  listAois,
-  listIndicators,
-  type AOIRow,
-  type IndicatorStats,
-  type IndicatorSummary,
-} from "./api";
+import { getStats, listIndicators, type IndicatorStats } from "./api";
 import {
   applyFilters,
   facetsOf,
   EMPTY_FILTERS,
+  type CatalogRow,
   type Filters,
 } from "./derive";
 
-/** How often to re-read the catalog while the tab is visible. Freshness is
- *  what an operator watches here, so this is tighter than the 30 s the tile
- *  and AOI caches use. Hidden tabs poll not at all. */
-const POLL_MS = 5_000;
+/** How often to re-read the catalog while the tab is visible. The list only
+ *  changes when a run adds values to an AOI, so this matches the 30 s the
+ *  tile and AOI caches use. Hidden tabs poll not at all. */
+const POLL_MS = 30_000;
 /** Backoff ceiling after repeated failed polls — so an API restart doesn't
  *  turn every open tab into a retry storm. Reset to POLL_MS on success. */
 const BACKOFF_MAX_MS = 60_000;
 
 // `$state.raw` because these arrays are replaced wholesale on each fetch;
 // deep proxying every row would cost more than it buys.
-let indicators = $state.raw<IndicatorSummary[]>([]);
+let indicators = $state.raw<CatalogRow[]>([]);
 let aois = $state.raw<AOIRow[]>([]);
 let activeAoiId = $state<string | null>(null);
 let filters = $state<Filters>({ ...EMPTY_FILTERS });
 let loading = $state(false);
-let refreshing = $state(false);
 let error = $state<string | null>(null);
 let lastLoadedAt = $state<Date | null>(null);
 
@@ -50,17 +45,17 @@ export const catalog = {
   get activeAoiId() {
     return activeAoiId;
   },
+  get activeAoi() {
+    return aois.find((a) => a.aoi_id === activeAoiId) ?? null;
+  },
   get filters() {
     return filters;
   },
   /** True only on the first load, when there is nothing to show yet. A
-   *  background refresh sets `refreshing` instead, so the table never
-   *  blanks out under a reader mid-scan. */
+   *  background refresh changes nothing visible, so the table never blanks
+   *  out under a reader mid-scan. */
   get loading() {
     return loading;
-  },
-  get refreshing() {
-    return refreshing;
   },
   get error() {
     return error;
@@ -82,12 +77,15 @@ export const catalog = {
     filters = next;
   },
 
+  /** Shared with the map through `../aoi`, so both pages open on the AOI
+   *  last picked on either. */
   async setAoi(id: string | null) {
-    activeAoiId = id;
+    setActiveAoiId(id);
+    activeAoiId = getActiveAoiId();
     await load({ background: false });
   },
 
-  bySlug(slug: string): IndicatorSummary | null {
+  bySlug(slug: string): CatalogRow | null {
     return indicators.find((i) => i.slug === slug) ?? null;
   },
 };
@@ -98,12 +96,18 @@ async function load({ background }: { background: boolean }): Promise<void> {
   inFlight?.abort();
   const ctrl = new AbortController();
   inFlight = ctrl;
-  if (background) refreshing = true;
-  else loading = true;
+  if (!background) loading = true;
   try {
-    const next = await listIndicators(activeAoiId, { signal: ctrl.signal });
+    // Every indicator, marked with whether it has values here. The AOI-scoped
+    // list alone hid the rest without a word, and a link to one of them
+    // landed on "No indicator called …".
+    const [all, scoped] = await Promise.all([
+      listIndicators(null, { signal: ctrl.signal }),
+      activeAoiId ? listIndicators(activeAoiId, { signal: ctrl.signal }) : null,
+    ]);
     if (inFlight !== ctrl) return;
-    indicators = next;
+    const here = scoped && new Set(scoped.map((i) => i.slug));
+    indicators = all.map((i) => ({ ...i, has_values: here ? here.has(i.slug) : null }));
     lastLoadedAt = new Date();
     error = null;
   } catch (err) {
@@ -115,7 +119,6 @@ async function load({ background }: { background: boolean }): Promise<void> {
     if (inFlight === ctrl) {
       inFlight = null;
       loading = false;
-      refreshing = false;
     }
   }
 }
@@ -127,7 +130,8 @@ export async function boot(): Promise<void> {
   try {
     const rows = await listAois();
     aois = rows;
-    activeAoiId = rows[0]?.aoi_id ?? null;
+    setKnownAois(rows);
+    activeAoiId = getActiveAoiId();
   } catch {
     // An AOI list we cannot read is not fatal — the unscoped catalog is
     // still worth showing.
