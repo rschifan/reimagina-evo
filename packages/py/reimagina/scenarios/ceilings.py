@@ -62,6 +62,9 @@ class BlockInputs:
     #: The effective ``floors`` value, when it is known separately from
     #: ``levels``. ``None`` means "the same as ``levels``".
     floors: float | None = None
+    #: Share of the block built on (COS). 1.0 — the whole block — is what a
+    #: block with no ``lot_coverage`` is computed with.
+    lot_coverage: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -126,8 +129,11 @@ def check_ceilings(blocks: Iterable[BlockInputs]) -> list[CeilingBreach]:
             breaches.append(CeilingBreach(b.feature_id, FLOORS, floors_bound, floors))
         if b.levels <= 0 or b.unit_size <= 0:
             continue
-        density = _M2_PER_HECTARE * b.levels / b.unit_size
-        units = b.area_m2 * b.levels / b.unit_size if b.area_m2 > 0 else 0.0
+        # CUS = COS × levels: the floor area per unit of block area, which is
+        # what the edificability read hands the kernels.
+        cus = b.levels * b.lot_coverage
+        density = _M2_PER_HECTARE * cus / b.unit_size
+        units = b.area_m2 * cus / b.unit_size if b.area_m2 > 0 else 0.0
         population = (
             units * b.people_per_household if b.people_per_household > 0 else 0.0
         )

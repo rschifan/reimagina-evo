@@ -85,8 +85,16 @@ GZIP_MIN_BYTES = 1024
 GZIP_LEVEL = 6
 
 
-def _cache_control() -> str:
+def _cache_control(*, scenario: bool = False) -> str:
     """How long a tile may be reused, and for how long while revalidating.
+
+    ⚠ **Never for a scenario tile.** A scenario's tiles change under the same
+    URL every time it is recomputed, and the map rebuilds its source with that
+    URL as soon as the run lands. With a lifetime, the browser handed it the
+    previous run's tile for up to ``max-age + stale-while-revalidate`` — the
+    table showed the new totals while the map painted the old rules. So a
+    scenario tile is ``no-cache``: stored, but revalidated on every use, and
+    the content-derived ETag keeps an unchanged one at a 304.
 
     Tiles derive from mutable data, so this is deliberately short. The second
     directive is the one that matters for a map: ``stale-while-revalidate``
@@ -99,6 +107,8 @@ def _cache_control() -> str:
     already keys on it; nothing served here is per-user, and this API has no
     authentication to leak across.
     """
+    if scenario:
+        return "no-cache"
     max_age = os.environ.get("REIMAGINA_TILE_MAX_AGE_S", "60")
     swr = os.environ.get("REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S", "300")
     return f"public, max-age={max_age}, stale-while-revalidate={swr}"
@@ -194,6 +204,7 @@ def get_vector_tile(  # noqa: PLR0913 — every parameter is part of the URL con
         )
 
     payload = _fetch_tile(conn, function, z, x, y, _query_params(request))
+    cache_control = _cache_control(scenario="scenario_id" in request.query_params)
 
     if not payload:
         # ⚠ Empty, not absent, and the distinction is the whole reason this
@@ -208,7 +219,7 @@ def get_vector_tile(  # noqa: PLR0913 — every parameter is part of the URL con
         # 404 would make a map log an error for every tile beyond the data,
         # which is most of the world. MapLibre treats both as "nothing to
         # draw"; only one of them is true.
-        return Response(status_code=204, headers={"Cache-Control": _cache_control()})
+        return Response(status_code=204, headers={"Cache-Control": cache_control})
 
     wants_gzip = "gzip" in (accept_encoding or "").lower()
     compress = wants_gzip and len(payload) >= GZIP_MIN_BYTES
@@ -217,7 +228,7 @@ def get_vector_tile(  # noqa: PLR0913 — every parameter is part of the URL con
 
     headers = {
         "ETag": etag,
-        "Cache-Control": _cache_control(),
+        "Cache-Control": cache_control,
         # Paired with the encoding-specific ETag above. Without it a shared
         # cache may serve either body under either tag.
         "Vary": "Accept-Encoding",
