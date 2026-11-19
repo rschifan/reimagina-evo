@@ -451,15 +451,15 @@ export function activateIndicator(
 
   const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
-  // Insert below the selection mask so the dim wash sits ON TOP of
-  // the choropleth fill — without ``beforeId`` MapLibre appends the
-  // layer to the end of the stack and the choropleth paints over the
-  // mask, leaving the indicator at full opacity outside the
-  // selection. Falls back to ``undefined`` (top of stack) when no
-  // mask is installed (tests, embedded maps).
-  const maskBeforeId = map.getLayer(SELECTION_MASK_LAYER_ID)
-    ? SELECTION_MASK_LAYER_ID
-    : undefined;
+  // Insert below the selection stack: the spotlight mask, then terra-draw's
+  // shapes (its MapLibre adapter names them ``td-*``). Without ``beforeId``
+  // MapLibre appends the layer to the top, so the choropleth painted over the
+  // mask (the indicator at full opacity outside the selection) and, on the
+  // scenarios page, which has no mask, over the drawn area itself. Falls back
+  // to ``undefined`` (top of stack) when neither is installed.
+  const maskBeforeId = map
+    .getStyle()
+    ?.layers.find((l) => l.id === SELECTION_MASK_LAYER_ID || l.id.startsWith("td-"))?.id;
 
   map.addLayer({
     id: OVERLAY_LAYER,
