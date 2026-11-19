@@ -3,8 +3,9 @@
 Complete inventory of the third-party and open-source components this
 platform incorporates or requires, with the licence terms of each:
 Python and npm packages, native libraries vendored inside Python wheels,
-system software the platform runs beside, and — listed separately, as
-data rather than code — the data sources it loads.
+system software the platform runs beside, the fonts vendored for the
+delivery documents, and — listed separately, as data rather than
+code — the data sources it loads.
 
 > **Generated — do not edit.** Regenerate with
 > `uv run python scripts/third_party_licences.py`; a contract test runs it
@@ -36,7 +37,7 @@ packages compile or test the web application and are not shipped.
 | weak copyleft | 4 | 4 | 8 |
 | strong copyleft | 0 | 0 | 0 |
 
-Also listed: 60 native-library rows vendored in 10 Python wheels, 9 system components, 6 data sources.
+Also listed: 60 native-library rows vendored in 10 Python wheels, 9 system components, 6 data sources, 1 vendored asset.
 
 ## Copyleft components
 
@@ -69,6 +70,12 @@ as statically linked:
 - GEOS 3.14.1 (statically linked into libgdal) — LGPL-2.1-only — in `pyogrio`
 - keyutils 1.5.x (libkeyutils; minor not embedded) — LGPL-2.1-or-later — in `psycopg-binary, psycopg2-binary`
 - libcrypt (glibc 2.17) — LGPL-2.1-or-later — in `psycopg-binary, psycopg2-binary`
+
+**Vendored assets** — fonts, unmodified; the OFL lets them be
+bundled and embedded in documents of any licence, and binds only
+the font files themselves:
+
+- IBM Plex Sans (Regular, Italic, SemiBold, Bold) and IBM Plex Mono (Regular, SemiBold), WOFF2 — OFL-1.1 — `docs/delivery/fonts/`
 
 **System components** — PostGIS and pgRouting (GPL-2.0-or-later) are
 extensions loaded by the PostgreSQL server process. The Works reach them
@@ -111,6 +118,7 @@ No package in either lockfile is under a strong-copyleft licence.
 | `MIT` | MIT License | https://spdx.org/licenses/MIT.html |
 | `MPL-2.0` | Mozilla Public License 2.0 | https://spdx.org/licenses/MPL-2.0.html |
 | `ODbL-1.0` | Open Data Commons Open Database License v1.0 | https://spdx.org/licenses/ODbL-1.0.html |
+| `OFL-1.1` | SIL Open Font License 1.1 | https://spdx.org/licenses/OFL-1.1.html |
 | `OLDAP-2.8` | Open LDAP Public License v2.8 | https://spdx.org/licenses/OLDAP-2.8.html |
 | `PCRE2-exception` | PCRE2 exception | https://spdx.org/licenses/PCRE2-exception.html |
 | `PostgreSQL` | PostgreSQL License | https://spdx.org/licenses/PostgreSQL.html |
@@ -206,6 +214,15 @@ containerised services are the image tags in
 | GDAL command-line tools (`ogr2ogr`) | >= 3.8 | MIT | external program, used only by PMTiles export |
 | CPython | 3.12 | PSF-2.0 | interpreter running the server code |
 | Node.js | 24 (LTS) | MIT | build only: compiles the web application |
+
+## Vendored assets
+
+Third-party files committed to this repository rather than installed
+by a package manager.
+
+| Asset | Version | Path | Licence | Note |
+|---|---|---|---|---|
+| IBM Plex Sans (Regular, Italic, SemiBold, Bold) and IBM Plex Mono (Regular, SemiBold), WOFF2 | Plex Sans 2.0.0, Plex Mono 2.5.0 (npm `@ibm/plex-sans`, `@ibm/plex-mono`) | `docs/delivery/fonts/` | OFL-1.1 | licence text beside the fonts (`docs/delivery/fonts/LICENSE.txt`); type of the delivery PDFs, embedded in them by `scripts/render_delivery_pdfs.py`; not used by the platform |
 
 ## Data sources (data, not code)
 
