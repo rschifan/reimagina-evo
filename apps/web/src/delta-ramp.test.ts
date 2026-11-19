@@ -627,14 +627,14 @@ describe("where the indicator is drawn in the layer stack", () => {
   // of everything and hid the area a rule is drawn over.
   it("goes under a drawn area, which stays on top", () => {
     const { map, order } = fakeMap(["basemap", "td-polygon", "td-polygon-outline", "td-point"]);
-    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    activateIndicator(map, config, indicator(), value, { aoiId: "a-1", grain: "block" });
     expect(order.slice(-3)).toEqual(["td-polygon", "td-polygon-outline", "td-point"]);
     expect(order.indexOf("basemap")).toBe(0);
   });
 
   it("goes under the spotlight mask, which sits under the drawn area", () => {
     const { map, order } = fakeMap(["basemap", "__selection_mask__fill", "td-polygon"]);
-    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    activateIndicator(map, config, indicator(), value, { aoiId: "a-1", grain: "block" });
     expect(order.slice(-2)).toEqual(["__selection_mask__fill", "td-polygon"]);
   });
 });
