@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { INITIAL_CARD, nextCardState, renderSelectionCard, type CardEvent } from "./selection-card";
+import { INITIAL_CARD, nextCardState, renderSelectionCard, renderingContext, type CardEvent } from "./selection-card";
 import { wireSheet } from "./sheet";
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -49,7 +49,7 @@ describe("wireSheet", () => {
     let card = INITIAL_CARD;
     const step = async (event: CardEvent): Promise<void> => {
       card = nextCardState(card, event);
-      renderSelectionCard(selection, card, null, null);
+      renderSelectionCard(selection, card, renderingContext(null, null));
       await tick();
     };
     await step({ type: "selection-changed" });

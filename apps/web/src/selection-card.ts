@@ -71,16 +71,14 @@ export function renderingContext(indicator: IndicatorSummary | null, grain: stri
 }
 
 /**
- * Fill `container` from `state`. `indicator` is the one the stats were
- * fetched for (`null`: block count only); `aoiStats` are the legend's
+ * Fill `container` from `state`. `ctx` is what the stats were fetched for:
+ * its indicator (`null`: block count only), its grain, and the legend's
  * AOI-wide numbers, for the comparison line.
  */
 export function renderSelectionCard(
   container: HTMLElement,
   state: CardState,
-  indicator: IndicatorSummary | null,
-  aoiStats: { p50: number | null } | null,
-  grain: string | null = "block",
+  { indicator, grain, aoiStats }: CardContext,
 ): void {
   // Hidden only before the first answer: re-hiding a shown card while a
   // request is pending would re-open it on the phone sheet over a later pin.

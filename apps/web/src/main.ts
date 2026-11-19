@@ -851,8 +851,7 @@ function _wireSelectionCard(
   // What the numbers on screen were fetched for: stale numbers keep their unit.
   let shown: CardContext = renderingContext(null, null);
   let inFlight: AbortController | null = null;
-  const paint = (): void =>
-    renderSelectionCard(card, state, shown.indicator, shown.aoiStats, shown.grain);
+  const paint = (): void => renderSelectionCard(card, state, shown);
 
   const update = async (selection: SelectionGeometry | null): Promise<void> => {
     inFlight?.abort();

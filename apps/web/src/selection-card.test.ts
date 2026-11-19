@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import type { IndicatorSummary } from "./api";
+import type { IndicatorSummary, IndicatorValueStats } from "./api";
 import { INITIAL_CARD, nextCardState, renderSelectionCard, renderingContext, type CardState } from "./selection-card";
 import { isDrawMode } from "./selection";
 
@@ -25,7 +25,7 @@ const shown = (stats: CardState["stats"]): CardState => ({ visible: true, answer
 
 function render(state: CardState, indicator: IndicatorSummary | null, aoiStats: { p50: number | null } | null = null): HTMLElement {
   const host = document.createElement("div");
-  renderSelectionCard(host, state, indicator, aoiStats);
+  renderSelectionCard(host, state, { indicator, grain: "block", aoiStats: aoiStats as IndicatorValueStats | null });
   return host;
 }
 
