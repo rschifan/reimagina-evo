@@ -48,6 +48,17 @@ describe("nextCardState", () => {
     });
   });
 
+  it("dims a shown card on a context change and drops the answer in flight", () => {
+    const before = shown({ count: 12 });
+    const after = nextCardState(before, { type: "context-changed" });
+    expect(after).toEqual({ ...before, stale: true, token: 2 });
+    expect(nextCardState(after, { type: "response", token: 1, stats: { count: 99 } })).toBe(after);
+  });
+
+  it("ignores a context change with no selection", () => {
+    expect(nextCardState(INITIAL_CARD, { type: "context-changed" })).toBe(INITIAL_CARD);
+  });
+
   it("hides and forgets on clear, so a late response cannot reopen it", () => {
     const cleared = nextCardState(shown({ count: 12 }), { type: "cleared" });
     expect(cleared).toEqual({ visible: false, answered: false, stale: false, token: 2, stats: null });

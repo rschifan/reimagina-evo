@@ -48,4 +48,20 @@ describe("createBanner", () => {
     set("values", null);
     expect(el.hidden).toBe(true);
   });
+
+  it("does not rewrite a standing message, so it is not announced again", () => {
+    const { el, set } = setup();
+    set("map", "tile timed out");
+    const watch = new MutationObserver(() => undefined);
+    watch.observe(el, { attributes: true, childList: true, characterData: true, subtree: true });
+    set("loading", "Loading…");
+    set("loading", null);
+    set("values", null);
+    expect(watch.takeRecords()).toEqual([]);
+    set("values", "Could not load the values of Park");
+    expect(watch.takeRecords()).toEqual([]);
+    set("map", null);
+    expect(watch.takeRecords().length).toBeGreaterThan(0);
+    expect(el.textContent).toBe("Could not load the values of Park");
+  });
 });

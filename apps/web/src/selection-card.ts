@@ -31,6 +31,8 @@ export interface CardState {
 
 export type CardEvent =
   | { type: "selection-changed" }
+  /** The indicator or grain is changing under a standing selection. */
+  | { type: "context-changed" }
   | { type: "response"; token: number; stats: SelectionStats | null }
   | { type: "cleared" };
 
@@ -40,6 +42,10 @@ export function nextCardState(state: CardState, event: CardEvent): CardState {
   switch (event.type) {
     case "selection-changed":
       return { ...state, visible: true, stale: true, token: state.token + 1 };
+    case "context-changed":
+      // Dim what is shown and drop any answer in flight; ask nothing yet.
+      if (!state.visible) return state;
+      return { ...state, stale: true, token: state.token + 1 };
     case "response":
       if (event.token !== state.token || !state.visible) return state;
       return { ...state, answered: true, stale: false, stats: event.stats };

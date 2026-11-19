@@ -321,7 +321,7 @@ async function main(): Promise<void> {
     // grain, and once its stats arrive, the legend's AOI-wide median.
     let cardContext: CardContext = renderingContext(null, null);
 
-    const refreshSelectionCard = _wireSelectionCard(selectionController, () => cardContext);
+    const selectionCard = _wireSelectionCard(selectionController, () => cardContext);
 
     const raiseSheet = wireSheet(inspectorEl, document.getElementById("selection-panel"));
 
@@ -464,7 +464,8 @@ async function main(): Promise<void> {
       state.activeIndicator = null;
       state.activeGrain = null;
       cardContext = renderingContext(null, null);
-      refreshSelectionCard();
+      selectionCard.refresh();
+      setBanner("values", null);
       removeIndicator(map);
       renderIndicatorInfo(null);
       const grainEl = document.getElementById("grain-toggle");
@@ -492,10 +493,10 @@ async function main(): Promise<void> {
       const aoiId = getActiveAoiId();
       const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
       renderIndicatorInfo(indicator);
-      // The selection card switches now: it dims, and its next answer is about
-      // this indicator at this grain, with no AOI median until the stats land.
+      // The selection card dims now and asks once the stats land, so its numbers
+      // never arrive ahead of the legend and map they are read against.
       cardContext = renderingContext(indicator, grain ?? null);
-      refreshSelectionCard();
+      selectionCard.dim();
       setBanner("loading", `Loading ${indicator.name}…`);
       let stats = null;
       try {
@@ -568,7 +569,7 @@ async function main(): Promise<void> {
         stats ? null : `Could not load the values of ${indicator.name}; colours use the catalog range.`,
       );
       cardContext = { ...cardContext, aoiStats: stats };
-      refreshSelectionCard();
+      selectionCard.refresh();
     }
 
     if (select) {
@@ -837,15 +838,16 @@ function _wireSelectionToolbar(controller: SelectionController): () => void {
 /**
  * Keep the selection card in step with the selection: one request per settled
  * change (150 ms debounce), the previous one aborted, the previous numbers
- * kept on screen, dimmed, until the answer replaces them. Returns a refresh
- * for when the indicator or its AOI stats change under a standing selection.
+ * kept on screen, dimmed, until the answer replaces them. Returns `dim`, for
+ * when the indicator or grain starts changing under a standing selection (no
+ * request), and `refresh`, to ask again once its AOI stats are in.
  */
 function _wireSelectionCard(
   controller: SelectionController,
   current: () => CardContext,
-): () => void {
+): { dim: () => void; refresh: () => void } {
   const card = document.getElementById("selection-panel");
-  if (!card) return () => undefined;
+  if (!card) return { dim: () => undefined, refresh: () => undefined };
   let state = INITIAL_CARD;
   // What the numbers on screen were fetched for: stale numbers keep their unit.
   let shown: CardContext = renderingContext(null, null);
@@ -899,7 +901,15 @@ function _wireSelectionCard(
   };
 
   controller.subscribe((sel) => { void update(sel); }, { debounceMs: 150 });
-  return () => { void update(controller.getSelection()); };
+  return {
+    dim: () => {
+      inFlight?.abort();
+      inFlight = null;
+      state = nextCardState(state, { type: "context-changed" });
+      paint();
+    },
+    refresh: () => { void update(controller.getSelection()); },
+  };
 }
 
 
