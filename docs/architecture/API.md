@@ -175,7 +175,7 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level. |
 | `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for live MVT. Must be reachable by the end user's browser in deployed environments. **This is the whole switch between tile servers:** `http://localhost:3000` for Martin, `/api/tiles` for the API's own route through the web app's proxy (the absolute `http://localhost:8001/tiles` is cross-origin and depends on CORS). `make dev` and `make dev-api` set `/api/tiles` regardless of `.env`. |
 | `REIMAGINA_TILE_SNAPSHOT_BASE_URL` | `http://localhost:3001` | Static host serving PMTiles snapshot artifacts. |
-| `REIMAGINA_TILE_MAX_AGE_S` | `60` | `Cache-Control: max-age` on API-served tiles. |
+| `REIMAGINA_TILE_MAX_AGE_S` | `60` | `Cache-Control: max-age` on API-served tiles. Scenario tiles (`scenario_id` in the query) are always `no-cache`. |
 | `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S` | `300` | `stale-while-revalidate` on API-served tiles — what lets a map pan instead of blink. |
 | `REIMAGINA_TILE_TIMEOUT_MS` | `5000` | Per-request `statement_timeout` for an API-served tile, so a pathological tile fails its own request rather than holding a pooled connection. |
 

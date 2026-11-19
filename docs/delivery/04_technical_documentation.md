@@ -27,7 +27,8 @@ date: "20 November 2026"
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
 | 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
 | 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
-| 1.0 | 2026-11-20 | Rossano Schifanella | Issued. Prerequisites corrected (Python 3.12, the Node versions the web app accepts, GDAL only for PMTiles export); every Python command runs through `uv run`; ports and `API_PORT`/`WEB_PORT` (§1, §4.2, §5); every environment variable with its default (§4); tile serving under `make dev` (§6.2); the crash-recovery remedy corrected (§6.1); a complete data-load runbook (§7.2); an operating chapter for each page and every CLI group (§8); troubleshooting renumbered (§9); §10 re-measured at `r051` |
+| 0.11 | 2026-11-19 | Rossano Schifanella | §6.4: rules are drawn and edited on the scenarios map; §7.2: lot coverage, and why the baseline carries none |
+| 1.0 | 2026-11-20 | Rossano Schifanella | Issued. Prerequisites corrected (Python 3.12, the Node versions the web app accepts, GDAL only for PMTiles export); every Python command runs through `uv run`; ports and `API_PORT`/`WEB_PORT` (§1, §4.2, §5); every environment variable with its default (§4); tile serving under `make dev` (§6.2); the crash-recovery remedy corrected (§6.1); a complete data-load runbook (§7.2); an operating chapter for each page and every CLI group (§8); troubleshooting renumbered (§9); §10 re-measured at `r051`; the map and scenario guides of 0.9–0.11 (§6.3, §6.4) are now §8.1 and §8.2 |
 
 ### Provenance of the figures
 
@@ -670,6 +671,12 @@ $CLI raster ingest --raw-path data/worldpop_mexicali_2020_100m.tif \
 `docs/BOOTSTRAP.md` is the longer runbook, including Mexico City, WorldPop and
 rolling forward to a new Overture release.
 
+Lot coverage (`lot_coverage`, the share of a block that is built on) is not
+seeded: a block without it is computed at 1.0, the whole block, so the fitted
+baseline still equals the census. Scenario rules carry it — 60 % unless the
+planner changes it — and `housing_units = area × lot_coverage × storeys ÷
+m² per home`.
+
 ## 8. Operating the platform
 
 The four pages share one top bar that links them. Every page reads the API
@@ -740,31 +747,37 @@ them.
 ### 8.2 Scenarios (`/scenarios.html`)
 
 A scenario is a named what-if over a pilot area: rules that change the
-storeys, dwelling size and household size of the blocks inside a drawn area,
-and the indicators those changes recompute.
+storeys, dwelling size, household size and lot coverage of the blocks inside
+a drawn area, and the indicators those changes recompute.
 
 1. **Pick a pilot.** The table lists every scenario on it side by side, with
    the baseline city first, on the indicators a rule can change — one number
-   per cell, a total for counts and a median for rates.
-2. **Create a scenario**: type a name under *New scenario name* and submit.
-3. **Select a scenario** (click its row) and pick an indicator. The map draws
-   the scenario's difference from the baseline city — green is an
-   improvement, red is worse, and the legend states which direction is
-   better for that indicator — and the panel lists its rules. The URL records
-   the selection, so a link reopens it.
-4. **Write a rule.** Draw an area with the tools at the map's top left: drag
-   out a circle or rectangle, or click each corner of a polygon and click the
-   last one again to close it. Set *Storeys*, *m² per dwelling* and *People
-   per household*, then *Apply to drawn area*. The storeys field will not
-   exceed what the floor and density ceilings allow. Each rule appears under
-   *Rules*; × removes the area and all its edits.
-5. **Recompute.** This materialises the rules and submits a run that
-   recomputes only what they changed; the worker executes it. The page
-   follows the run and refreshes when it lands; a recompute that takes longer
-   is handed over to the run dashboard (§8.4), where every run is followed.
-6. **Compare to baseline** summarises, in one line, how the chosen indicator
-   under the scenario differs from the baseline.
-7. **Delete** removes the scenario and everything it wrote, after a
+   per cell, a total for counts and a median for rates. Click a row to select
+   a scenario; the URL records the selection, so a link reopens it.
+2. **Pick an indicator** above the map. **Change** draws the selected
+   scenario's difference from the baseline city — green is an improvement,
+   red is worse, and the legend states which direction is better; **Values**
+   colours every scenario on the baseline city's scale, so a colour means the
+   same number everywhere.
+3. **Draw a rule's area** with the tools at the map's top left (or `r` / `p`
+   / `c`): drag out a rectangle or circle, or click a polygon's corners and
+   click the last one again to close it.
+4. **Set the rule.** A box opens beside the shape with four numbers —
+   *Storeys*, *m² per home*, *People per home* and *Lot coverage* (the share
+   of the block built on) — prefilled with the last numbers used. On the
+   baseline city it also asks for the new scenario's name. **Apply** writes
+   the rule and recomputes; the bar above the map shows the change in homes
+   and people, and says *Recomputing…* while the run is in progress. A
+   recompute that outlives the page's wait is handed to the run dashboard
+   (§8.4).
+5. **Edit a rule.** Every rule stays outlined on the map. Click one to change
+   its numbers, drag or resize it, or delete it; each is followed by a
+   recompute, and the rule keeps its place in "later wins" (a box opened on
+   an earlier rule says which later rule overrides it). `esc` cancels. If the
+   recompute refuses the rule — a per-block ceiling — or the area catches no
+   block, the page undoes its own write and says why in the box.
+6. **Create or delete a scenario** from the bar: *New scenario* with a name,
+   or *Delete scenario*, which removes it, its rules and its results after a
    confirmation.
 
 The same operations are in the CLI (`scenario create`, `set-attribute`,

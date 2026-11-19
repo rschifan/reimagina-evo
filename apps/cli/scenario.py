@@ -70,6 +70,7 @@ from reimagina.scenarios.proposal import (
     edits_for,
     polygon_wkt,
     precheck_ceilings,
+    require_coverage,
     require_positive,
 )
 
@@ -95,8 +96,21 @@ def _require_positive(**values: float) -> None:
         ) from exc
 
 
+def _require_coverage(lot_coverage: float) -> None:
+    """``require_coverage``, with the refusal spelled as its flag."""
+    try:
+        require_coverage(lot_coverage)
+    except ProposalValueError as exc:
+        raise ValueError(
+            f"--lot-coverage must be a share between 0 and 1, got {exc.value!r}"
+        ) from exc
+
+
 def _precheck_ceilings(
-    levels: float, unit_size: float, people_per_household: float
+    levels: float,
+    unit_size: float,
+    people_per_household: float,
+    lot_coverage: float = 1.0,
 ) -> None:
     """``precheck_ceilings``, with the two flags and the next command named.
 
@@ -106,7 +120,7 @@ def _precheck_ceilings(
     command, so this is where those words go.
     """
     try:
-        precheck_ceilings(levels, unit_size, people_per_household)
+        precheck_ceilings(levels, unit_size, people_per_household, lot_coverage)
     except CeilingPrecheckFailed as exc:
         raise ValueError(
             f"{exc} Lower --levels (or, for the density ceiling, raise "
@@ -188,10 +202,11 @@ def set_attribute(
     levels: float,
     unit_size: float,
     people_per_household: float,
+    lot_coverage: float = 1.0,
     type_context: str = DEFAULT_TYPE_CONTEXT,
     type_slug: str = DEFAULT_TYPE_SLUG,
 ) -> dict[str, Any]:
-    """Draw one area and write the four edits of one proposal over it.
+    """Draw one area and write the five edits of one proposal over it.
 
     The refusals come first and in this order — values, then ceiling, then
     geometry — so a proposal that cannot be stored costs no connection and
@@ -202,13 +217,14 @@ def set_attribute(
     _require_positive(
         levels=levels, unit_size=unit_size, people_per_household=people_per_household
     )
-    _precheck_ceilings(levels, unit_size, people_per_household)
+    _require_coverage(lot_coverage)
+    _precheck_ceilings(levels, unit_size, people_per_household, lot_coverage)
     geometry_wkt = _polygon_wkt(geojson)
 
     written = []
     with contextlib.closing(connect(dsn)) as conn:
         type_id = get_type_id(conn, type_context, type_slug)
-        for edit in edits_for(levels, unit_size, people_per_household):
+        for edit in edits_for(levels, unit_size, people_per_household, lot_coverage):
             edit_id = add_edit(
                 conn,
                 scenario_id=scenario_id,

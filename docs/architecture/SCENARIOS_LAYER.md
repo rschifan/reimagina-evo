@@ -167,7 +167,11 @@ A named what-if inside a project (r048). `project_id` is required and `aoi_id` i
 
 ### curated_geo.scenario_edit
 
-One drawn area carrying one attribute value, ordered by `ordinal` ("later edits win"; not `created_at`, because `now()` is transaction-start time). The geometry CHECK is a type check only. One proposal (levels, unit size, people per household) writes four edits. Deleting the scenario cascades them.
+One drawn area carrying one attribute value, ordered by `ordinal` ("later edits win"; not `created_at`, because `now()` is transaction-start time). The geometry CHECK is a type check only. One proposal (levels, unit size, people per household, lot coverage) writes five edits — `floors` and `num_levels` both carry the storeys. Deleting the scenario cascades them.
+
+**A rule is the edits one proposal wrote over one area.** `PATCH /scenarios/{id}/rules` changes a rule's numbers, and optionally its area, **in place**: the edits keep their ids and ordinals, so the rule keeps its position in "later wins" (deleting and re-adding would renumber it after every other rule, and editing rule 1 would make it beat rule 2 where they overlap). Ids that are not one rule of the scenario are a 422. A rule written before lot coverage existed gets a `lot_coverage` edit appended.
+
+**Lot coverage.** `lot_coverage` is the share of the block that is built on (COS, `0 < c ≤ 1`). The edificability family computes `housing_units = area × lot_coverage × num_levels / unit_size`; a block without `lot_coverage` is computed at 1.0, the whole block — the collaborators' formula exactly — so the census-fitted baseline does not move. The API and the CLI default a proposal's coverage to 1.0; the scenarios page sends 0.6. The ceiling checks (precheck and materialisation) count it.
 
 ### The scenario id — what the schema does not tie together
 
@@ -340,18 +344,21 @@ A background job then populates `curated_geo.aoi_feature` with the intersection 
 
 ### Authoring a scenario
 
-Create the scenario, draw an area with the three policy inputs, then recompute:
+Create the scenario, draw an area with the policy inputs, then recompute:
 
 ```bash
 python -m apps.cli.app scenario create --name "Upzoning" --aoi-id <uuid>
 python -m apps.cli.app scenario set-attribute --scenario-id <uuid> \
-    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2
+    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2 \
+    [--lot-coverage 0.6]
 python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
 python -m apps.cli.app scenario compare --scenario-id <uuid> \
     --slug urban_form_block_planned_floors
 python -m apps.cli.app scenario list      # reads explore.scenario_v
 python -m apps.cli.app scenario show --scenario-id <uuid>
 ```
+
+On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an area, type the numbers in the box that opens beside it, Apply. Apply writes the rule, recomputes and switches the map to the change; on the baseline city it creates the scenario first. A saved rule is clicked to change its numbers, dragged or resized, or deleted, each followed by a recompute. When the recompute refuses (a per-block ceiling) or the rule catches no block, the page undoes its own write.
 
 `recompute` materialises the edits into override rows (selecting blocks with `ST_Covers(area, geometry_centroid)`) and then runs the selective recompute. `scripts/acceptance_run.sh` step 10 exercises exactly this path.
 

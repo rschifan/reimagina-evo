@@ -486,15 +486,21 @@ export function activateIndicator(
 
   const defaultOutline = "rgba(17, 24, 39, 0.7)";
 
-  // Insert below the selection stack: the spotlight mask, then terra-draw's
-  // shapes (its MapLibre adapter names them ``td-*``). Without ``beforeId``
+  // Insert below everything drawn over the data: a scenario's rule outlines
+  // (``scenario-rules-*``), the spotlight mask, then terra-draw's shapes (its
+  // MapLibre adapter names them ``td-*``). Without ``beforeId``
   // MapLibre appends the layer to the top, so the choropleth painted over the
   // mask (the indicator at full opacity outside the selection) and, on the
   // scenarios page, which has no mask, over the drawn area itself. Falls back
   // to ``undefined`` (top of stack) when neither is installed.
   const maskBeforeId = map
     .getStyle()
-    ?.layers.find((l) => l.id === SELECTION_MASK_LAYER_ID || l.id.startsWith("td-"))?.id;
+    ?.layers.find(
+      (l) =>
+        l.id === SELECTION_MASK_LAYER_ID ||
+        l.id.startsWith("td-") ||
+        l.id.startsWith("scenario-rules"),
+    )?.id;
 
   map.addLayer({
     id: OVERLAY_LAYER,

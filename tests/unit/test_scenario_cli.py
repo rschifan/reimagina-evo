@@ -156,12 +156,13 @@ def test_set_attribute_writes_one_edit_per_attribute(monkeypatch, tmp_path, caps
         "num_levels",
         "unit_size",
         "people_per_household",
+        "lot_coverage",
     ]
-    assert [c["value_numeric"] for c in calls] == [6.0, 6.0, 60.0, 3.6]
-    # One drawn area, four rules over it — not four areas.
+    assert [c["value_numeric"] for c in calls] == [6.0, 6.0, 60.0, 3.6, 1.0]
+    # One drawn area, five rules over it — not five areas.
     assert {c["geometry_wkt"] for c in calls} == {"POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"}
     assert {c["type_id"] for c in calls} == {TYPE_ID}
-    assert len(_out(capsys)["edits"]) == 4
+    assert len(_out(capsys)["edits"]) == 5
 
 
 def test_set_attribute_writes_all_four_edits_in_one_transaction(monkeypatch, tmp_path):
@@ -185,7 +186,7 @@ def test_set_attribute_writes_all_four_edits_in_one_transaction(monkeypatch, tmp
 
     assert _set_attribute(tmp_path, levels=6) == 0
 
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert conn.events.count("commit") == 1
     assert conn.events[-1] == "close"
 
