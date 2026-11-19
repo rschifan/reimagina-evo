@@ -1052,3 +1052,19 @@ def test_patching_a_rule_of_an_unknown_scenario_is_404(client, territory):
         ["00000000-0000-0000-0000-000000000001"],
     )
     assert response.status_code == 404
+
+
+def test_a_rule_update_must_say_its_coverage(client, territory):
+    """Review: defaulting PATCH coverage to 1.0 turned a 60 % rule into 100 %
+    — two thirds more homes — for any caller that left it out."""
+    sid = _scenario(client, territory)
+    ids = _post(client, sid, lot_coverage=0.6)
+    body = {"edit_ids": ids, "levels": 4, "unit_size": 70, "people_per_household": 3.0}
+    response = client.patch(f"/scenarios/{sid}/rules", json=body)
+    assert response.status_code == 422
+    coverage = [
+        e["value_numeric"]
+        for e in _edits(client, sid)
+        if e["attribute_key"] == "lot_coverage"
+    ]
+    assert coverage == [0.6]

@@ -8,7 +8,8 @@ const SQUARE = "POLYGON((0 0,1 0,1 1,0 1,0 0))";
 function circleRing(n = 64, r = 0.01): number[][] {
   const ring = Array.from({ length: n }, (_, i) => {
     const a = (2 * Math.PI * i) / n;
-    return [10 + r * Math.cos(a), 20 + r * Math.sin(a)];
+    // At the equator, where round in degrees is round on the ground.
+    return [10 + r * Math.cos(a), r * Math.sin(a)];
   });
   return [...ring, ring[0]];
 }
@@ -44,6 +45,19 @@ describe("inferShape", () => {
 
   it("knows a circle", () => {
     expect(inferShape({ type: "Polygon", coordinates: [circleRing()] })).toBe("circle");
+  });
+
+  // Review: terra-draw's circles are round on the ground, so at Mexicali's
+  // 32.6° they are ~1.19× wider than tall in degrees; a test in degrees
+  // called every saved circle a polygon and lost its rim handle.
+  it("knows a circle drawn at Mexicali's latitude", () => {
+    const lat = 32.6;
+    const scale = 1 / Math.cos((lat * Math.PI) / 180);
+    const ring = Array.from({ length: 64 }, (_, i) => {
+      const a = (2 * Math.PI * i) / 64;
+      return [-115.47 + 0.004 * scale * Math.cos(a), lat + 0.004 * Math.sin(a)];
+    });
+    expect(inferShape({ type: "Polygon", coordinates: [[...ring, ring[0]]] })).toBe("circle");
   });
 
   it("calls anything else a polygon", () => {

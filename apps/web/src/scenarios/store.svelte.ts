@@ -296,8 +296,16 @@ async function loadRules(scenarioId: string, token: number): Promise<void> {
 }
 
 /** Show `scenarioId` (null: the baseline city). */
-export function select(scenarioId: string | null): void {
+export function select(
+  scenarioId: string | null,
+  options: { duringGesture?: boolean } = {},
+): void {
   if (scenarioId === ws.selectedId) return;
+  // A gesture holds the selection until it ends: switching mid-recompute left
+  // its box, shape and refusal on the other scenario, and the next Apply
+  // wrote there. Only the gesture itself (creating, or undoing, a scenario)
+  // may move it.
+  if (ws.busy && !options.duringGesture) return;
   ++selection;
   const token = selection;
   ws.selectedId = scenarioId;
@@ -524,7 +532,7 @@ export async function applyNewRule(
         return false;
       }
       await loadScenarios();
-      select(created);
+      select(created, { duringGesture: true });
       scenarioId = created;
     }
     try {
@@ -543,11 +551,25 @@ export async function applyNewRule(
     }
     const landing = await recomputeAndWait(scenarioId, written);
     if (landing.outcome === "refused" || landing.outcome === "empty") {
-      await removeRule(scenarioId, written);
+      const undo = await removeRule(scenarioId, written);
       if (landing.outcome === "refused") await boxRefusal(landing.error, "recompute");
       else ws.boxError = { field: null, text: NO_BLOCKS };
-      await undoCreated(created);
-      if (created === null) await loadScenarios();
+      if (created !== null) {
+        // Deleting the scenario takes every edit with it.
+        await undoCreated(created);
+      } else {
+        if (undo.error) {
+          ws.boxError = {
+            field: null,
+            text:
+              `${ws.boxError?.text ?? ""} The rule could not be fully undone: ` +
+              `${undo.removed} of ${written.length} of its edits were removed. ` +
+              "It is on the map — click it and delete it.",
+          };
+        }
+        await loadScenarios();
+        if (ws.selectedId === scenarioId) await loadRules(scenarioId, selection);
+      }
       return false;
     }
     ws.lastValues = { ...values };
@@ -566,7 +588,7 @@ async function undoCreated(created: string | null): Promise<void> {
   } catch (err) {
     console.warn("could not delete the scenario the refused rule created", err);
   }
-  if (ws.selectedId === created) select(null);
+  if (ws.selectedId === created) select(null, { duringGesture: true });
   delete ws.cells[created];
   await loadScenarios();
 }
@@ -604,6 +626,7 @@ export async function saveRule(
     }
     const landing = await recomputeAndWait(scenarioId, area ? ids : []);
     if (landing.outcome === "refused" || landing.outcome === "empty") {
+      let restored = true;
       try {
         await updateRule(scenarioId, {
           edit_ids: ids,
@@ -615,10 +638,29 @@ export async function saveRule(
         });
       } catch (err) {
         console.warn("could not restore the rule", err);
+        restored = false;
       }
+      // A refused recompute changed nothing; an empty one did — it withdrew
+      // the rule's overrides at its old place — so the restored rule must be
+      // recomputed, or the data says it does nothing while its outline is back.
+      const after = landing.outcome === "empty" && restored
+        ? await recomputeAndWait(scenarioId)
+        : null;
       if (landing.outcome === "refused") await boxRefusal(landing.error, "recompute");
       else ws.boxError = { field: null, text: NO_BLOCKS };
-      if (ws.selectedId === scenarioId) await loadRules(scenarioId, selection);
+      if (!restored) {
+        ws.boxError = {
+          field: null,
+          text:
+            `${ws.boxError?.text ?? ""} Its previous shape and numbers could not be put back: ` +
+            "the rule now has the refused values — change it or delete it.",
+        };
+      }
+      if (after) void refreshRow(scenarioId);
+      if (ws.selectedId === scenarioId) {
+        await loadRules(scenarioId, selection);
+        refreshMap();
+      }
       return false;
     }
     ws.lastValues = { ...values };

@@ -419,7 +419,9 @@ describe("editing on the map", () => {
     expect(api.addScenarioEdits).toHaveBeenCalledTimes(1);
   });
 
-  it("switching scenario mid-apply writes nothing to the new one", async () => {
+  // Review: a switch mid-gesture left the box open on B with A's shape and
+  // error, and the next Apply wrote to B. A gesture now holds the selection.
+  it("the selection holds until the gesture ends", async () => {
     store.select("A");
     let release!: () => void;
     api.addScenarioEdits.mockImplementation(
@@ -428,12 +430,53 @@ describe("editing on the map", () => {
     api.recomputeScenario.mockResolvedValue(recomputed({ n1: 2 }));
     const pending = store.applyNewRule(AREA, VALUES);
     store.select("B");
-    store.ws.message = { text: "about B", tone: "ok" };
+    expect(store.ws.selectedId).toBe("A");
     release();
     await settleRun(pending);
     expect(api.recomputeScenario.mock.calls.every((c) => c[0] === "A")).toBe(true);
-    expect(store.ws.message?.text).toBe("about B");
-    expect(store.ws.mode).toBe("value");
+    store.select("B");
+    expect(store.ws.selectedId).toBe("B");
+  });
+
+  // Review: the recompute had already withdrawn the rule's overrides at its
+  // old place; writing the area back without recomputing left the data
+  // saying the rule did nothing while its outline was back on the map.
+  it("a moved rule that catches no block is put back and recomputed", async () => {
+    store.select("A");
+    api.recomputeScenario
+      .mockResolvedValueOnce(recomputed({ e1: 0, e2: 0, e3: 0, e4: 0 }))
+      .mockResolvedValueOnce(recomputed({ e1: 4, e2: 4, e3: 4, e4: 4 }));
+    const ok = await settleRun(store.saveRule(GROUP, AREA, VALUES));
+    expect(ok).toBe(false);
+    expect(api.updateRule).toHaveBeenCalledTimes(2);
+    expect(api.recomputeScenario).toHaveBeenCalledTimes(2);
+    expect(store.ws.boxError?.text).toMatch(/No blocks fall inside this area/);
+  });
+
+  // Review: a failed undo was a console warning, leaving a refused rule half
+  // in the database and undrawn.
+  it("a refused rule whose undo fails says what is left and shows it", async () => {
+    store.select("A");
+    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.removeScenarioEdit
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("network"));
+    api.getScenario.mockClear();
+    await settleRun(store.applyNewRule(AREA, VALUES));
+    expect(store.ws.boxError?.text).toMatch(/1 of 5 .*removed.*delete it/i);
+    expect(api.getScenario).toHaveBeenCalledWith("A");
+  });
+
+  it("a refused save whose restore fails says so and shows the rule", async () => {
+    store.select("A");
+    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.updateRule
+      .mockResolvedValueOnce(written(GROUP.editIds))
+      .mockRejectedValueOnce(new Error("network"));
+    api.getScenario.mockClear();
+    await settleRun(store.saveRule(GROUP, AREA, VALUES));
+    expect(store.ws.boxError?.text).toMatch(/could not be put back/);
+    expect(api.getScenario).toHaveBeenCalledWith("A");
   });
 
   it("values are remembered for the next rule", async () => {

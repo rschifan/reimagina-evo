@@ -246,7 +246,9 @@ class UpdateRuleBody(BaseModel):
     levels: float
     unit_size: float
     people_per_household: float
-    lot_coverage: float = 1.0
+    #: Required, unlike on POST: a default here would reset a 60 % rule to
+    #: 100 % — two thirds more homes — for any caller that left it out.
+    lot_coverage: float
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
 

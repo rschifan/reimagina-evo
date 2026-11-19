@@ -65,7 +65,11 @@ function isAxisAligned(ring: Position[]): boolean {
 function isRound(ring: Position[]): boolean {
   const cx = ring.reduce((sum, p) => sum + p[0], 0) / ring.length;
   const cy = ring.reduce((sum, p) => sum + p[1], 0) / ring.length;
-  const radii = ring.map((p) => Math.hypot(p[0] - cx, p[1] - cy));
+  // On the ground, not in degrees: terra-draw's circles are round in metres,
+  // so a degree of longitude is shrunk by cos(latitude) — at Mexicali's 32.6°
+  // a circle is ~1.19× wider than tall in raw degrees.
+  const kx = Math.cos((cy * Math.PI) / 180);
+  const radii = ring.map((p) => Math.hypot((p[0] - cx) * kx, p[1] - cy));
   const mean = radii.reduce((sum, r) => sum + r, 0) / radii.length;
   return mean > 0 && radii.every((r) => Math.abs(r - mean) <= 0.02 * mean);
 }
