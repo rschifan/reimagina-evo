@@ -24,6 +24,7 @@ function stats(overrides: Partial<IndicatorValueStats> = {}): IndicatorValueStat
     p50: null,
     p95: null,
     max: null,
+    sum: null,
     histogram: null,
     ...overrides,
   };

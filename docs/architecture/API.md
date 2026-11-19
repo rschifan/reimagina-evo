@@ -25,7 +25,7 @@ domain packages don't import app code") holds.
 | GET | `/indicators` | Every indicator in `indicator_catalog`. |
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). |
-| GET | `/indicators/{slug}/stats` | Count and percentiles over the scoped population. `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. |
+| GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`sum` is `null` with no rows — no values is no total). `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. |
 | GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
 | GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. |
 | GET | `/indicators/{slug}/values.parquet` | GeoParquet byte payload (CRS=4326). |
@@ -36,6 +36,8 @@ domain packages don't import app code") holds.
 | GET | `/tile-sources/attribution` | Credit lines for every source that actually has features, from `data_source_catalog.license`. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
 | GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |
 | GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. |
+| GET | `/scenarios` | Scenarios, newest first, by `project_id` and/or `aoi_id`. Each row carries `edit_count` and `latest_run` (`{id, status}` of its newest run envelope in `orchestration_run` — the id `GET /jobs/{run_id}` takes — or `null`) — a failed recompute still sets `materialized_at`, so only the run tells it from a good one. A run still queued has no envelope yet. The other scenario routes are in `SCENARIOS_LAYER.md`. |
+| GET | `/scenarios/indicators` | The indicators a scenario rule can change, inputs before dependents, each with `statistic` (`sum` or `median`). Derived from the catalog, not listed. Declared before `/scenarios/{scenario_id}`, which would otherwise read `indicators` as an id. |
 | POST | `/jobs` | Submit a run. Scope it with `changed_attributes`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with the run id, or `status:"noop"` and a **null** run id when the dirty set was empty. |
 | GET | `/jobs` | Run list for the dashboard: rows with unit counts, `total`, unfiltered `status_counts`, executor health and `server_now`, in one response. Repeatable `status=`, `limit=1..200`, `offset`. |
 | GET | `/jobs/{run_id}` | Run status through the orchestrator port. Unchanged. |

@@ -295,6 +295,9 @@ class IndicatorValueStats(BaseModel):
     p50: float | None = None
     p95: float | None = None
     max: float | None = None
+    #: Over the same rows as ``count``. A scenario table's total for counts
+    #: (dwellings, people); ``None`` when there are no values.
+    sum: float | None = None
     histogram: ValueHistogram | None = None
 
 

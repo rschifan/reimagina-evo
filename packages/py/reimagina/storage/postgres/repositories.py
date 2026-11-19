@@ -2844,13 +2844,14 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.05) WITHIN GROUP (ORDER BY ir.value_numeric) AS p05,
                   percentile_cont(0.50) WITHIN GROUP (ORDER BY ir.value_numeric) AS p50,
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
-                  MAX(ir.value_numeric)                                          AS max
+                  MAX(ir.value_numeric)                                          AS max,
+                  SUM(ir.value_numeric)                                          AS sum
                 FROM curated_geo.indicator_result ir
                 WHERE {where}
                 """,
                 params,
             )
-            count, vmin, p05, p50, p95, vmax = cur.fetchone()
+            count, vmin, p05, p50, p95, vmax, vsum = cur.fetchone()
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
@@ -2858,6 +2859,9 @@ class PostgresIndicatorResultRepository:
             "p50": float(p50) if p50 is not None else None,
             "p95": float(p95) if p95 is not None else None,
             "max": float(vmax) if vmax is not None else None,
+            # Over the same rows as `count`: the scenario overlay included, each
+            # feature once. None with no rows — no values is no total.
+            "sum": float(vsum) if vsum is not None else None,
         }
         if bins > 0:
             stats["histogram"] = self._value_histogram(

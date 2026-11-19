@@ -194,6 +194,41 @@ def test_value_stats_counts_each_feature_once(blocks, conn):
     assert stats["min"] == pytest.approx(2.0), "and the baseline's, exactly once"
 
 
+def test_value_stats_sums_the_effective_values_once_each(blocks, conn):
+    """The total a scenario table shows: each feature's effective value, once.
+
+    Baseline everywhere, a scenario value on one block — the sum is the
+    baseline's two untouched blocks plus the scenario's one, never both rows
+    of the overridden block.
+    """
+    slug = URBAN_FORM_BLOCK_PLANNED_FLOORS.slug
+    for fid in blocks:
+        _write(conn, slug=slug, feature_id=fid, value=2.0)
+    _write(conn, slug=slug, feature_id=blocks[0], value=8.0, scenario_id=SCENARIO)
+
+    stats = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .value_stats(indicator_slug=slug, scenario_id=SCENARIO)
+    )
+
+    assert stats["sum"] == pytest.approx(2.0 + 2.0 + 8.0)
+
+
+def test_value_stats_sum_is_none_with_no_rows(blocks, conn):
+    """No values is no total — not a total of zero, which reads as a fact."""
+    stats = (
+        backend_for_connection(conn)
+        .indicator_result_repo()
+        .value_stats(
+            indicator_slug=URBAN_FORM_BLOCK_PLANNED_FLOORS.slug, scenario_id=OTHER
+        )
+    )
+
+    assert stats["count"] == 0
+    assert stats["sum"] is None
+
+
 def test_the_overlay_tile_falls_back_too(blocks, conn):
     """The map path, which is where the hole was visible."""
     slug = URBAN_FORM_BLOCK_COMPACTNESS.slug

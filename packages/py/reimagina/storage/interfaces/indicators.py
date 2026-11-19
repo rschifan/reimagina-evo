@@ -147,7 +147,7 @@ class IndicatorResultRepository(Protocol):
     ) -> dict[str, Any]:
         """Summary statistics for a numeric indicator's current values.
 
-        Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`
+        Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`, `sum`
         (all `None` when there are no rows). Intended to drive the
         frontend's choropleth colour ramp from the real distribution
         rather than the catalog's safety bounds.
