@@ -1,32 +1,46 @@
-flowchart LR
+---
+title: "Figure 3 — Containers of Reimagina and how they communicate"
+config:
+  flowchart:
+    wrappingWidth: 520
+    nodeSpacing: 20
+    rankSpacing: 50
+  themeCSS: ".flowchartTitleText{font-size:30px;font-weight:600;fill:#16181d}"
+---
+flowchart TB
   planner["Urban planner / analyst<br/>[Person]"]
   operator["Platform operator<br/>[Person]"]
 
   subgraph sys["Reimagina [Software System]"]
-    web["Web application<br/>[Container: TypeScript, Vite,<br/>MapLibre GL]<br/>Map, indicator catalogue<br/>and run dashboard"]
-    api["API application<br/>[Container: Python, FastAPI,<br/>titiler]<br/>Features, indicators, downloads,<br/>job control, raster and<br/>vector tiles"]
-    worker["Recomputation worker<br/>[Container: Python, DBOS]<br/>Executes indicator runs<br/>durably and resumably"]
-    cli["Operator CLI<br/>[Container: Python, Typer]<br/>Ingestion, publishing<br/>and inspection"]
-    martin["Vector tile server<br/>[Container: Martin 0.14]<br/>Default live-MVT publisher.<br/>Interchangeable with the API,<br/>which serves the same contract"]
-    db[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]<br/>Curated, serving, explore<br/>and job-runtime schemas")]
+    web["Web application<br/>[Container: TypeScript,<br/>Svelte 5, MapLibre GL 6]<br/>Pages: map, scenarios,<br/>catalogue, runs"]
+    cli["Operator CLI<br/>[Container: Python, Typer]<br/>Ingestion, derivations,<br/>scenarios, run dispatch,<br/>PMTiles export,<br/>inspection, bootstrap-db"]
+    api["API application<br/>[Container: Python,<br/>FastAPI, titiler]<br/>Features, indicators,<br/>AOIs, scenarios, runs,<br/>run events, tiles,<br/>downloads"]
+    martin["Vector tile server<br/>[Container: Martin 0.14]<br/>Default MVT publisher;<br/>the API can serve<br/>the same contract"]
+    worker["Recomputation worker<br/>[Container: Python, DBOS]<br/>Executes indicator<br/>units durably"]
+    db[("Database<br/>[Container: PostgreSQL 16,<br/>PostGIS, pgRouting]<br/>curated_geo, serving_geo,<br/>explore, app_core,<br/>jobs_runtime, dbos")]
+    files[("File store<br/>[Container: disk, data/]<br/>Source mirror, bronze,<br/>silver GeoParquet, COG,<br/>PMTiles snapshots")]
   end
 
-  lake["Azure data lake<br/>[Software System]"]
+  sources["Data publishers<br/>[External, Figure 2]"]
 
-  planner -->|"Loads the map<br/>application [HTTPS]"| web
-  operator -->|"Runs commands with"| cli
-  web -->|"Reads indicators and<br/>features [JSON/HTTPS]"| api
-  web -->|"Requests tiles [MVT/HTTPS]<br/>— one of the two, by config"| martin
-  web -.->|"Requests tiles [MVT/HTTPS]<br/>— same URL contract"| api
-  api -->|"Reads serving views,<br/>submits runs [SQL]"| db
-  worker -->|"Reads plan, writes results<br/>[SQL, LISTEN/NOTIFY]"| db
-  martin -->|"Queries geometry [SQL]"| db
-  cli -->|"Loads data, reads<br/>inspection views [SQL]"| db
-  cli -->|"Downloads datasets<br/>[HTTPS]"| lake
+  planner -->|"Uses<br/>[HTTP]"| web
+  operator -->|"Watches runs,<br/>browses<br/>[HTTP]"| web
+  operator -->|"Runs<br/>commands"| cli
+  web -->|"Reads, edits,<br/>submits runs<br/>[JSON, SSE,<br/>COG; HTTP]"| api
+  web -->|"MVT tiles<br/>[HTTP]"| martin
+  web -.->|"MVT tiles<br/>[HTTP], when<br/>configured"| api
+  api -->|"Reads and<br/>writes [SQL,<br/>pooled]"| db
+  api -->|"Enqueues,<br/>streams events<br/>[SQL direct,<br/>LISTEN/<br/>NOTIFY]"| db
+  api -->|"Reads COGs<br/>[file]"| files
+  martin -->|"Calls tile<br/>functions<br/>[SQL]"| db
+  worker -->|"Dequeues,<br/>writes results,<br/>checkpoints<br/>[SQL direct]"| db
+  cli -->|"Loads, derives,<br/>submits runs<br/>[SQL]"| db
+  cli -->|"Writes bronze,<br/>silver, PMTiles<br/>[file]"| files
+  sources -->|"Fetched by<br/>[HTTPS, S3]"| cli
 
   classDef person fill:#0b4884,stroke:#073962,color:#fff
   classDef container fill:#438dd5,stroke:#2e6295,color:#fff
   classDef external fill:#8a8a8a,stroke:#6b6b6b,color:#fff
   class planner,operator person
-  class web,api,worker,cli,martin,db container
-  class lake external
+  class web,api,worker,cli,martin,db,files container
+  class sources external
