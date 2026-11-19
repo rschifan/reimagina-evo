@@ -2878,6 +2878,7 @@ class PostgresIndicatorResultRepository:
         feature_type: str | None = None,
         aoi_id: str | None = None,
         bins: int = 0,
+        polygon_geojson: str | None = None,
     ) -> dict:
         # Aliased so the optional aoi_id EXISTS subquery can reference
         # the row's feature_id column without column-name shadowing.
@@ -2902,6 +2903,18 @@ class PostgresIndicatorResultRepository:
                 "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
             )
             params.append(aoi_id)
+        if polygon_geojson is not None:
+            if aoi_id is None:
+                raise ValueError("polygon_geojson needs aoi_id")
+            # The same predicate as count_features_within_polygon, so block
+            # counts and selection stats agree.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM serving_geo.feature_aoi_v fa "
+                "WHERE fa.id = ir.feature_id AND fa.aoi_id = %s::uuid "
+                "AND ST_Covers(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), "
+                "fa.geometry_centroid))"
+            )
+            params.extend([aoi_id, polygon_geojson])
         where = " AND ".join(clauses)
         with self.connection.cursor() as cur:
             cur.execute(

@@ -163,6 +163,7 @@ class IndicatorResultRepository(Protocol):
         feature_type: str | None = None,
         aoi_id: str | None = None,
         bins: int = 0,
+        polygon_geojson: str | None = None,
     ) -> dict[str, Any]:
         """Summary statistics for a numeric indicator's current values.
 
@@ -176,6 +177,10 @@ class IndicatorResultRepository(Protocol):
         ``aoi_id`` scopes the stats to that AOI's features only via
         ``curated_geo.aoi_feature``. Multi-site UIs need this so
         Mexicali's colour ramp doesn't get pulled by CDMX's distribution.
+
+        ``polygon_geojson`` (requires ``aoi_id``) keeps only features whose
+        centroid the GeoJSON polygon covers, as ``count_features_within_polygon``
+        does.
 
         ``bins`` greater than zero adds a ``histogram`` key:
         ``{bins, lo, hi, width, counts}``, equal-width over the **full**
