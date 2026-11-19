@@ -2,7 +2,7 @@
   import type { Feature, Polygon } from "geojson";
   import * as maplibregl from "maplibre-gl";
   import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   import {
     downloadUrl,
@@ -140,7 +140,11 @@
         // enableSelection so it paints above terra-draw's outline.
         installSelectionHandle(map, selection);
         installRulesLayer(map);
-        selection.subscribe((sel) => {
+        // ⚠ untrack: the controller publishes synchronously from inside
+        // whatever called it, effects included. Read tracked, `editing` here
+        // became a dependency of the pilot effect (which clears the
+        // selection), so opening a box re-ran it and wiped the shape.
+        selection.subscribe((sel) => untrack(() => {
           ws.drawn = sel?.feature ?? null;
           if (!sel) {
             shape = null;
@@ -157,7 +161,7 @@
           }
           shape = null;
           placeBox();
-        });
+        }));
         map.on("move", placeBox);
         map.on("click", RULES_FILL, (e) => {
           if (editing || ws.busy || selection?.isDrawing()) return;
@@ -223,10 +227,14 @@
   });
 
   // Another scenario or pilot on screen: whatever was being edited is gone.
+  // ⚠ Only the selection and the pilot are dependencies: read tracked,
+  // `editing` made opening a box re-run this and close it at once.
   $effect(() => {
     void ws.selectedId;
     void ws.aoiId;
-    if (!ws.busy && editing) closeBox(true);
+    untrack(() => {
+      if (!ws.busy && editing) closeBox(true);
+    });
   });
 
   function bboxOf(geometry: Polygon | GeoJSON.MultiPolygon): [[number, number], [number, number]] {

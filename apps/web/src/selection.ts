@@ -410,9 +410,14 @@ export function enableSelection(map: MapLibreMap): SelectionController {
   };
 
   let _activeShape: SelectionShape | null = null;
+  /** A drawing was started and has not finished. Not terra-draw's mode:
+   *  ``finish`` publishes before the switch to select mode, so the mode
+   *  still says "drawing" when the finished shape arrives. */
+  let _drawing = false;
 
   draw.on("finish", (id) => {
     if (_activeShape === null) return;
+    _drawing = false;
     _publishLatest(_activeShape);
     // Auto-enter select mode + pre-select the shape we just drew, so
     // the very next mousedown on the shape's interior or vertex
@@ -454,10 +459,12 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       // the metrics + dimming math unambiguous.
       controller.clear();
       _activeShape = shape;
+      _drawing = true;
       draw.setMode(TD_MODE[shape]);
       _syncMapGestures(TD_MODE[shape]);
     },
     clear(): void {
+      _drawing = false;
       _activeShape = null;
       _activeSelectedShape = null;
       draw.clear();
@@ -470,8 +477,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       return _selection;
     },
     isDrawing(): boolean {
-      const mode = draw.getMode();
-      return mode === "circle" || mode === "rectangle" || mode === "polygon";
+      return _drawing;
     },
     edit(feature: Feature<Polygon>, shape: SelectionShape): void {
       controller.clear();
