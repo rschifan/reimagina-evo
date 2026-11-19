@@ -575,6 +575,7 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
         "num_levels",
         "unit_size",
         "people_per_household",
+        "lot_coverage",
     ]
 
     recomputed = client.post(f"/scenarios/{scenario_id}/recompute")
@@ -582,7 +583,7 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
     assert recomputed.status_code == 202, recomputed.text
     body = recomputed.json()
     assert body["matched_per_edit"] and set(body["matched_per_edit"].values()) == {2}
-    assert body["overrides_written"] == 8
+    assert body["overrides_written"] == 10
     assert body["run_id"] == "run-123"
     assert orchestrator[0]["scenario_id"] == scenario_id
     assert orchestrator[0]["aoi_id"] == territory.aoi_id
@@ -597,14 +598,15 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
             )
             assert cur.fetchall() == [
                 ("floors", 2),
+                ("lot_coverage", 2),
                 ("num_levels", 2),
                 ("people_per_household", 2),
                 ("unit_size", 2),
             ]
         shown = client.get(f"/scenarios/{scenario_id}").json()
-        assert shown["override_count"] == 8
+        assert shown["override_count"] == 10
         assert shown["materialized_at"] is not None
-        assert len(shown["edits"]) == 4
+        assert len(shown["edits"]) == 5
     finally:
         reader.close()
 
@@ -677,7 +679,7 @@ def test_an_edit_can_be_removed_and_only_from_its_own_scenario(
         client.delete(f"/scenarios/{other_id}/edits?edit_id={edit_id}").status_code
         == 404
     )
-    assert len(client.get(f"/scenarios/{scenario_id}").json()["edits"]) == 4
+    assert len(client.get(f"/scenarios/{scenario_id}").json()["edits"]) == 5
 
     assert (
         client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
@@ -688,6 +690,7 @@ def test_an_edit_can_be_removed_and_only_from_its_own_scenario(
         "num_levels",
         "unit_size",
         "people_per_household",
+        "lot_coverage",
     ]
     assert (
         client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
@@ -738,8 +741,8 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
     deleted = client.delete(f"/scenarios/{scenario_id}")
 
     assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["overrides"] == 8
-    assert deleted.json()["versions_retired"] == 4
+    assert deleted.json()["overrides"] == 10
+    assert deleted.json()["versions_retired"] == 5
     # Nothing computed this scenario here — the orchestrator is a fake — so
     # the other two counts are zero *for a reason*, which is a different claim
     # from being unasserted. Pinned non-zero in the test below.
@@ -784,8 +787,8 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
 
     deleted = client.delete(f"/scenarios/{scenario_id}").json()
 
-    assert deleted["overrides"] == 8
-    assert deleted["versions_retired"] == 4
+    assert deleted["overrides"] == 10
+    assert deleted["versions_retired"] == 5
     assert deleted["results_superseded"] == 1
     assert deleted["materializations"] == 1
 

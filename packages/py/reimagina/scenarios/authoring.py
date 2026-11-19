@@ -709,7 +709,7 @@ def _refuse_ceiling_breaches(
     # `floors` beside the three ceiling inputs: the planned-floors bound is
     # checked against the attribute that indicator reads, and `floors` is
     # authorable on its own, so it can differ from `num_levels`.
-    checked = (*_CEILING_ATTRIBUTES, "floors")
+    checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
     baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
     for type_id, ids in by_type.items():
         for key in checked:
@@ -732,7 +732,9 @@ def _refuse_ceiling_breaches(
         areas = dict(cur.fetchall())
 
     def _value(feature_id: str, key: str) -> float:
-        return resolved.get((feature_id, key), baseline[key].get(feature_id, 0.0))
+        # A block with no lot_coverage is the whole block, not none of it.
+        absent = 1.0 if key == "lot_coverage" else 0.0
+        return resolved.get((feature_id, key), baseline[key].get(feature_id, absent))
 
     breaches = check_ceilings(
         BlockInputs(
@@ -742,6 +744,7 @@ def _refuse_ceiling_breaches(
             people_per_household=_value(feature_id, "people_per_household"),
             area_m2=float(areas.get(feature_id, 0.0)),
             floors=_value(feature_id, "floors"),
+            lot_coverage=_value(feature_id, "lot_coverage"),
         )
         for feature_id in feature_ids
     )

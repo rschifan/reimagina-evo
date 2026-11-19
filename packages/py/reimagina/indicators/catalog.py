@@ -260,7 +260,12 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 # whose assertion that all non-poison units end `skipped` is meant to read
 # identically on both ops-plane branches.
 
-_EDIFICABILITY_READS = ("num_levels", "unit_size", "people_per_household")
+_EDIFICABILITY_READS = (
+    "num_levels",
+    "unit_size",
+    "people_per_household",
+    "lot_coverage",
+)
 
 #: One block edge carrying all three attributes. `geometry` stays off it for the
 #: reason above: these divide by block area, but declaring it would drag them
@@ -272,8 +277,10 @@ EDIFICABILITY_BLOCK_HOUSING_UNITS = IndicatorSpec(
     slug="edificability_block_housing_units",
     name="Housing Units (potential)",
     description=(
-        "Dwellings the block's envelope supports: (block area × num_levels) / "
-        "unit_size. Block area stands in for lot area until a cadastral lot "
+        "Dwellings the block's envelope supports: (block area × lot_coverage × "
+        "num_levels) / unit_size, where lot_coverage, the share of the block "
+        "built on, is 1.0 when a block has none. Block area stands in for lot "
+        "area until a cadastral lot "
         "layer exists — the formula is unchanged, only the denominator's grain."
     ),
     computation_kind="direct",

@@ -1598,6 +1598,12 @@ def scenario_set_attribute(
         ..., "--unit-size", help="Square metres per dwelling."
     ),
     people_per_household: float = typer.Option(..., "--people-per-household"),
+    lot_coverage: float = typer.Option(
+        1.0,
+        "--lot-coverage",
+        help="Share of the block built on (COS), 0 < c ≤ 1. 1.0, the whole "
+        "block, is the formula without it.",
+    ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     type_context: str = typer.Option(DEFAULT_TYPE_CONTEXT, "--type-context"),
     type_slug: str = typer.Option(
@@ -1615,6 +1621,7 @@ def scenario_set_attribute(
             levels=levels,
             unit_size=unit_size,
             people_per_household=people_per_household,
+            lot_coverage=lot_coverage,
             type_context=type_context,
             type_slug=type_slug,
         )
