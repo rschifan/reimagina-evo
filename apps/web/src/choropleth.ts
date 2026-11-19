@@ -34,8 +34,6 @@ import { distributionSvg } from "./distribution";
 import { escapeHtml, fmtNumber, formatValue, unitLabel } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
-import type { SelectionController } from "./selection";
-import { registerValueAwareLayer } from "./selection-filter";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
 import { mvtProvider, type TooltipController } from "./tooltip";
 
@@ -444,7 +442,6 @@ export function activateIndicator(
   domain: RampDomain,
   tooltips?: TooltipController,
   aoiId?: string | null,
-  selectionController?: SelectionController,
   grain?: string | null,
   // The active scenario, or null/absent for the baseline city. Only the tile
   // URL reads it; everything else about the layer is the same either way,
@@ -571,21 +568,6 @@ export function activateIndicator(
     // indicator's value is worse than no cursor, because it looks current.
     _valueHoverListener?.(null);
   });
-
-  // Clip the choropleth to the active selection (if any). Value
-  // layers should render features ONLY where the user has selected
-  // — outside the selection, they don't render at all (the spotlight
-  // mask still dims the spatial baseline beneath). When the user
-  // clears the selection, the disposer restores the layer's filter.
-  if (selectionController) {
-    _activeDisposers.push(
-      registerValueAwareLayer(map, selectionController, {
-        layerIds: [OVERLAY_LAYER, OVERLAY_LINE_LAYER],
-        sourceName: OVERLAY_SOURCE,
-        sourceLayer: config.sourceLayer,
-      }),
-    );
-  }
 
   if (tooltips) {
     _activeDisposers.push(

@@ -64,10 +64,8 @@ import {
   INPUT_LAYERS,
   extractTileSources,
   installInputLayers,
-  clearAggregationOverlayClipping,
   installAggregationOverlays,
   installRasterLayers,
-  wireAggregationOverlayClipping,
   refreshAggregationOverlayAoi,
   refreshBaselineAoi,
   wireLayerToggles,
@@ -255,15 +253,6 @@ async function main(): Promise<void> {
     // top of terra-draw's outline (it should — adding later means it
     // paints on top in MapLibre's default ordering).
     installSelectionHandle(map, selectionController);
-    // Clip aggregation overlays to the active selection. Called
-    // after the controller exists so ordering is: data layers →
-    // mask → terra-draw layers, with the value-clipping wired in
-    // after the fact (only mutates layer filters + feature-state).
-    wireAggregationOverlayClipping(map, sources, selectionController);
-    // The wiring functions return disposers for future SPA-teardown
-    // / embed-remount paths. Today the map lives for the lifetime of
-    // the page so we don't store them — call sites in the wiring
-    // functions are testable in isolation against a stub map.
     _wireSelectionToolbar(selectionController);
     _wireSelectionPanel(selectionController);
     // Selection lives at session-only scope; switching AOI clears it
@@ -302,13 +291,6 @@ async function main(): Promise<void> {
     subscribeToAoi(async (aoi) => {
       renderAoiInfo(aoi);
       if (aoi) flyToAoi(map, aoi);
-      // Drain prior aggregation-overlay clipping disposers BEFORE the
-      // selection clear and the rewire below, so each per-overlay
-      // ``sourcedata`` listener is unbound exactly once. Without this
-      // drain, every AOI switch leaks one listener per overlay —
-      // benign at low-AOI counts, but a real per-tile cost over a
-      // long session.
-      clearAggregationOverlayClipping();
       // Baseline layers are AOI-scoped too (r039), so switching pilot
       // re-frames the spatial context instead of leaving every other
       // alcaldía drawn around the new AOI.
@@ -319,9 +301,6 @@ async function main(): Promise<void> {
       // with a Mexicali viewport. Clear up-front so the metrics panel
       // doesn't keep showing stale numbers.
       selectionController.clear();
-      // Re-wire the clipping for the new AOI's overlays. Mirrors the
-      // initial install in the map.on("load") block.
-      wireAggregationOverlayClipping(map, sources, selectionController);
       // Re-render the picker so AOI-scoped observation overlays
       // (``source_config.aois``) hide on AOIs they don't apply to.
       if (toggleContainer) {
@@ -414,7 +393,7 @@ async function main(): Promise<void> {
       const domain = rampDomainFromStats(stats, indicator);
       activateIndicator(
         map, overlayConfig, indicator, domain,
-        tooltipController, aoiId, selectionController, grain,
+        tooltipController, aoiId, grain,
       );
       // The ramp is per-grain — an AGEB mean spans a much narrower
       // range than its child blocks — so the toggle re-renders with

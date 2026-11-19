@@ -78,7 +78,7 @@ export default defineConfig({
   },
   test: {
     // Vitest reads this file — there is no vitest.config.ts. The default
-    // environment stays `node` so the pure suites (format, selection-geom)
+    // environment stays `node` so the pure suites (format)
     // keep running without a DOM. A catalog test that needs one opts in
     // per file with a `// @vitest-environment jsdom` docblock; Vitest 4
     // removed `environmentMatchGlobs`, and one docblock per DOM test is

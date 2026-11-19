@@ -552,7 +552,7 @@ describe("activateIndicator", () => {
     const { map, added } = fakeMap();
     activateIndicator(
       map, config, indicator(), value,
-      undefined, "a-1", undefined, "block", "s-1", deltaDomain,
+      undefined, "a-1", "block", "s-1", deltaDomain,
     );
     expect(String((added.sources[0].tiles as string[])[0])).toContain("&delta=true");
     const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
@@ -564,7 +564,7 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", undefined, "block", "s-1", { ...deltaDomain, higherIsBetter: higher },
+        undefined, "a-1", "block", "s-1", { ...deltaDomain, higherIsBetter: higher },
       );
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
       expect(fill).toEqual(deltaFill({ min: -40, max: 40 }, higher));
@@ -576,7 +576,7 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", undefined, "block", scenario, delta,
+        undefined, "a-1", "block", scenario, delta,
       );
       expect(String((added.sources[0].tiles as string[])[0])).not.toContain("delta");
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];

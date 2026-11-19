@@ -15,8 +15,6 @@ import type {
 import type { TileSource } from "./api";
 import { fmtNumber } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
-import type { SelectionController } from "./selection";
-import { registerValueAwareLayer } from "./selection-filter";
 import {
   cogPointProvider,
   mvtProvider,
@@ -517,11 +515,6 @@ export function refreshAggregationOverlayAoi(
 }
 
 
-// Disposers for the per-overlay value-aware filter registrations.
-// Mirrors ``choropleth.ts``'s _activeDisposers idiom.
-const _aggregationFilterDisposers: Array<() => void> = [];
-
-
 export function installAggregationOverlays(
   map: MapLibreMap,
   sources: TileSource[],
@@ -627,60 +620,6 @@ export function installAggregationOverlays(
       hoverFillOpacity: 0.85,
     });
 
-  }
-}
-
-
-/**
- * Drain and call every disposer accumulated by
- * :func:`wireAggregationOverlayClipping`. Call BEFORE re-wiring on
- * AOI change so ``sourcedata`` listeners don't pile up across
- * switches.
- */
-export function clearAggregationOverlayClipping(): void {
-  for (const dispose of _aggregationFilterDisposers) {
-    try {
-      dispose();
-    } catch (err) {
-      // Disposers should never throw; swallow so one bad dispose
-      // doesn't strand the rest with stale filters.
-      console.warn("aggregation clipping dispose:", err);
-    }
-  }
-  _aggregationFilterDisposers.length = 0;
-}
-
-
-/**
- * Wire every aggregation-overlay layer to clip-on-selection. Called
- * once after ``enableSelection`` creates the controller. Split from
- * ``installAggregationOverlays`` because the controller doesn't
- * exist at install time — terra-draw layers must paint on top of
- * the mask, mask install happens between data and terra-draw, and
- * the controller is the output of ``enableSelection`` (which adds
- * terra-draw's layers).
- */
-export function wireAggregationOverlayClipping(
-  map: MapLibreMap,
-  sources: TileSource[],
-  controller: SelectionController,
-): void {
-  for (const src of sources) {
-    if (src.source_mode !== "aggregation_overlay") continue;
-    if (src.available === false) continue;
-    const cfg = src.source_config;
-    const sourceName = aggSourceName(src.layer_id);
-    if (!map.getSource(sourceName)) continue;
-    const fillId = `${sourceName}__fill`;
-    const lineId = `${sourceName}__line`;
-    if (!map.getLayer(fillId) && !map.getLayer(lineId)) continue;
-    _aggregationFilterDisposers.push(
-      registerValueAwareLayer(map, controller, {
-        layerIds: [fillId, lineId],
-        sourceName,
-        sourceLayer: cfg.source_layer ?? "aggregation_overlay",
-      }),
-    );
   }
 }
 

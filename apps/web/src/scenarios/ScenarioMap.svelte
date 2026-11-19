@@ -159,7 +159,7 @@
       if (delta) {
         activateIndicator(
           map, config, current, rampDomainFromStats(null, current),
-          tooltips, aoiId, selection, grain, scenarioId, delta,
+          tooltips, aoiId, grain, scenarioId, delta,
         );
         renderDeltaLegend(legend, current, delta);
         mapNote =
@@ -183,7 +183,7 @@
     }
     if (myToken !== renderToken || !map) return;
     const domain = rampDomainFromStats(stats, current);
-    activateIndicator(map, config, current, domain, tooltips, aoiId, selection, grain, scenarioId);
+    activateIndicator(map, config, current, domain, tooltips, aoiId, grain, scenarioId);
     renderLegend(
       legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
     );
