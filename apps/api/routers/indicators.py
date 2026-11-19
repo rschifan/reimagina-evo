@@ -357,7 +357,7 @@ def get_values_stats(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> IndicatorValueStats:
     """Return count + percentiles for an indicator's current numeric values."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     aoi_id_str = _as_str(aoi_id)
     scenario_id_str = _as_str(scenario_id)
     stats = (
@@ -398,7 +398,7 @@ def download_values_csv(
     schema additions — richer fields belong to the GeoJSON / GeoParquet
     downloads.
     """
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -430,7 +430,7 @@ def download_values_geojson(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
     """Return a GeoJSON FeatureCollection in one response."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -463,7 +463,7 @@ def download_values_parquet(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
     """Return a GeoParquet byte payload (EPSG:4326)."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -484,7 +484,8 @@ def download_values_parquet(
     )
 
 
-def _ensure_indicator_exists(conn, slug: str) -> None:
+def ensure_indicator_exists(conn, slug: str) -> None:
+    """404 unless the catalog carries `slug`; shared by every route that takes one."""
     if get_backend(conn).indicator_catalog_repo().get_indicator(slug) is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
 

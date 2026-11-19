@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..deps import get_backend, get_db_conn
-from .indicators import IndicatorValueStats, _ensure_indicator_exists
+from .indicators import IndicatorValueStats, ensure_indicator_exists
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -117,7 +117,7 @@ def indicator_within_polygon(
 ) -> IndicatorValueStats:
     """An indicator's stats over the features whose centroid is in the polygon."""
     polygon_json = _validated_polygon_json(payload.polygon)
-    _ensure_indicator_exists(conn, payload.indicator_slug)
+    ensure_indicator_exists(conn, payload.indicator_slug)
     try:
         stats = (
             get_backend(conn)
