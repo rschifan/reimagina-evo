@@ -1,16 +1,16 @@
 # Delivery manifest
 
-Issued under Article 2.2 of the agreement, which identifies a delivery
-by its date, version, commit or tag, and SHA-256 hash.
+Delivered under Article 2.1, identified under Article 2.2 of the
+agreement, which identifies a delivery by its date, version, commit or
+tag, and SHA-256 hash.
 
 | | |
 |---|---|
-| **Date** | 13 November 2026 |
-| **Tag** | `(untagged)` |
-| **Generated from commit** | `27a0632493dd26f728e72bc5fcf87eee91fe4422` |
-| **Branch** | `fix/scenario-map-and-baseline` |
-| **Working tree at generation** | MODIFIED — not a clean delivery |
-| **Check out** | ⚠ untagged, so not yet an issued delivery: the commit that adds this file, the first after `27a0632493dd` on `fix/scenario-map-and-baseline` to touch `docs/delivery/MANIFEST.md`. Tag that commit before issuing. |
+| **Date** | 20 November 2026 |
+| **Version** | 1.0.0 |
+| **Tag** | `v1.0.0` |
+| **Generated from commit** | `fc74d6b76ac6b1a29db2b395be29157769188ca3` |
+| **Check out** | `git checkout v1.0.0` |
 
 ⚠ The tag is the authoritative identifier, and the **Check out** row
 names what to check out for the procedures below. The commit above is
@@ -23,30 +23,51 @@ commit that contains it. Resolve a tag to its commit with
 
 | Schedule A | File | Bytes | SHA-256 |
 |---|---|---:|---|
-| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 717,426 | `e86ab522f975a5175bff20dc95a71bcd852734040bcc1087727206ebe2cb6c0d` |
-| Work 1 — source | `docs/delivery/01_architecture_map.md` | 27,908 | `628a4b4f23778df0bb41645688b6572300b6416f589d68ce76163bdee357d0d9` |
-| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 781,563 | `77f891c4a66f3a0ca09f77c2c45303b471b27b413f9c00279a928d8cfd8b86fc` |
-| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 74,834 | `fb74dbc1555d6d8515a237c707b822a8643adaf5247c5196c57d8b431e985f9b` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 400,286 | `28d7f3f701cbaeecae80c4d26ff3ab2c38e95ad3c23e819755fa8a759f6ff0cb` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 34,915 | `f2b7b5c07bb4829ebac170f41ff941741ccf9223b110f59747c5d1fb3e74fc83` |
-| Annex — capability proof | `docs/delivery/pdf/05_capability_proof.pdf` | 539,675 | `d983dbd5ecbaca2c3fb09563fb73805d44a02c3827186dfd923f06e2f70b729e` |
-| Annex — source | `docs/delivery/05_capability_proof.md` | 70,707 | `2fa754e8dc5adf454efa43c96fb6054f3aaab51e73f203398a8eace84d2b1122` |
-| Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 16,430 | `0b1d6ebf66d01ac752656109b69236473e2ae0b33913119cb994cf11c48efa91` |
+| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 222,976 | `cd23e234110e3f0855fee961c7dcb5ca4ab9c0aae09dac3f1b3eb52b9e1fe1ea` |
+| Work 1 — source | `docs/delivery/01_architecture_map.md` | 28,050 | `f1a8c736c1272ed545242e78a5010f572555fbf5d82b4a6420f53bdcafcf7146` |
+| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 918,705 | `4cfcae83d5a690d425cd8697bf5a3c13e9ac58fa793843e99e08bc8d1858dd25` |
+| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 112,793 | `878bf1a0028b03612cfa3ba999cd1a205e9722b7fea4056757002e28fbfeb2cb` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 393,775 | `19d5ad2a455c662c3bcfeed3f9d5dbd7bc1efe2a34e128c37647dad7e97740e8` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 57,465 | `0f252d8f1035e5627bad538204777578aa3b6a7dbd5999f252e1fd7d4d869fca` |
+| Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 38,709 | `fc95e762ee6eae07bd8cce22beaaec6bd807df76503594eced04595961103c51` |
+
+## Source code (Schedule A Work 2)
+
+| Schedule A | Source commit | Bytes | SHA-256 |
+|---|---|---:|---|
+| Work 2 — source code, `git archive` of the source commit | `fc74d6b76ac6b1a29db2b395be29157769188ca3` | 9,052,160 | `be77d82305f764871d7beace6ae6efde4262212e366694c8f9e6311a5e6c5f08` |
+
+The hash is of the commit named above — the one this manifest was
+generated from, which is the tag's parent — not of the tag itself: the
+tag's commit contains this file, and a file cannot hold the hash of
+something that contains it. The tag's commit differs from the source
+commit by exactly `docs/delivery/MANIFEST.md` and
+`docs/delivery/SHA256SUMS`. The archive is the *uncompressed* tar,
+because a `.tar.gz` also depends on the gzip implementation. To
+recompute it from any clone:
+
+```bash
+git archive --format=tar --prefix=reimagina-v1.0.0/ fc74d6b76ac6b1a29db2b395be29157769188ca3 | sha256sum
+```
+
+The release also carries `reimagina-v1.0.0.tar.gz`, the same
+archive compressed with `gzip -n`; its own hash is in the release asset
+`SHA256SUMS-assets`, which lists every file of the release.
 
 ## Verifying this
 
-⚠ **The four PDFs are not in the repository.** They are generated, and
-`.gitignore` excludes `docs/delivery/pdf/`, so a checkout of the delivery
-contains the Markdown sources that produce them and not the PDFs
-themselves. `sha256sum -c` on a bare checkout therefore reports four
-`FAILED open or read` lines, and that is the expected result, not a
-corrupt delivery. Use whichever of the two procedures below matches
-what you have.
+The four PDFs are **not in the repository**: they are generated, and
+`.gitignore` excludes `docs/delivery/pdf/`. They travel as assets of
+the GitHub release of tag `v1.0.0`, together with `MANIFEST.md`,
+`SHA256SUMS` and the source archive. A bare checkout therefore reports
+four `FAILED open or read` lines from `sha256sum -c`, which is expected,
+not a corrupt delivery. Use whichever of the two procedures below
+matches what you have.
 
 ### If you have the delivered PDFs
 
-Put them in a checkout of the delivery (the **Check out** row above)
-at the paths the table above gives
+Download them from the release, put them in a checkout of the delivery
+(the **Check out** row above) at the paths the table above gives
 (`docs/delivery/pdf/`), then:
 
 ```bash
@@ -70,9 +91,11 @@ sha256sum -c docs/delivery/SHA256SUMS
 
 All nine lines then read `OK`. This is the stronger of the two checks:
 it needs no trust in the delivered files at all, only in the sources
-the checkout holds. It needs `pandoc` and the Chromium that
-`scripts/render_delivery_pdfs.py` drives; the script names what is
-missing if it cannot find them.
+the checkout holds. The hashes were produced with pandoc 3.6.3,
+Node 24, and Playwright 1.64.1 with its Chromium; the render script's
+docstring says how to provide them (`npm i --no-save playwright@1.64.1
+&& npx playwright install chromium` in `apps/web`, then
+`NODE_PATH=apps/web/node_modules`).
 
 ### What a hash does and does not establish
 
