@@ -74,15 +74,15 @@ Reimagina is an urban-planning data platform. It ingests geospatial data about a
 
 External systems are reached only at ingestion, by the CLI, and are read-only. The licence of each loaded source is recorded in `curated_geo.data_source_catalog` and credited on the map; full terms are in `docs/THIRD_PARTY_LICENSES.md`.
 
-| System | Direction | Protocol | Data | Used by | Licence / terms |
-|---|---|---|---|---|---|
-| Overture Maps | In | Anonymous S3 (`s3://overturemaps-us-west-2/release`), GeoParquet | Buildings, places, administrative divisions | `pipeline/overture.py`, `overture_places.py`, `overture_divisions.py` | ODbL-1.0 (buildings, divisions); per source (places) |
-| OpenStreetMap | In | Overpass API over HTTPS, through `osmnx` | Walking network into `road_node` / `road_edge` | `pipeline/osm_network.py` | ODbL-1.0 |
-| WorldPop | In | REST API over HTTPS | Gridded population rasters | `pipeline/worldpop.py` | CC-BY-4.0, recorded per raster |
-| INEGI portal | In | HTTPS archive download (`inegi.org.mx`) | CDMX marco geoestadístico: municipalities, AGEBs, blocks | `pipeline/inegi.py` | INEGI Términos de Libre Uso |
-| SIGCDMX portal | In | ArcGIS REST over HTTPS | Colonias | `pipeline/cdmx.py` | — |
-| Offline data mirror | In | Local files; no call at run time | INEGI marco 2024, census 2020, Tlalpan (SIGCDMX) and Mexicali amenities | `pipeline/inegi_marco.py`, `inegi_censo.py`, `points.py` | INEGI Términos de Libre Uso |
-| Browsers and GIS clients | Out | HTTP: JSON, SSE, MVT, raster tiles, PMTiles | Pages, features, indicators, runs, downloads | API, Martin, nginx | Credit line from `GET /tile-sources/attribution` |
+| System | Direction | Protocol | Data | Used by |
+|---|---|---|---|---|
+| Overture Maps | In | Anonymous S3 (`s3://overturemaps-us-west-2/release`), GeoParquet | Buildings, places, administrative divisions | `pipeline/overture.py`, `overture_places.py`, `overture_divisions.py` |
+| OpenStreetMap | In | Overpass API over HTTPS, through `osmnx` | Walking network into `road_node` / `road_edge` | `pipeline/osm_network.py` |
+| WorldPop | In | REST API over HTTPS | Gridded population rasters | `pipeline/worldpop.py` |
+| INEGI portal | In | HTTPS archive download (`inegi.org.mx`) | CDMX marco geoestadístico: municipalities, AGEBs, blocks | `pipeline/inegi.py` |
+| SIGCDMX portal | In | ArcGIS REST over HTTPS | Colonias | `pipeline/cdmx.py` |
+| Offline data mirror | In | Local files; no call at run time | INEGI marco 2024, census 2020, Tlalpan (SIGCDMX) and Mexicali amenities | `pipeline/inegi_marco.py`, `inegi_censo.py`, `points.py` |
+| Browsers and GIS clients | Out | HTTP: JSON, SSE, MVT, raster tiles, PMTiles | Pages, features, indicators, runs, downloads | API, Martin, nginx |
 
 `make verify-sources` checks the offline data mirror, Overture and WorldPop before an ingestion. The PMTiles export runs GDAL's `ogr2ogr` locally. All serving interfaces are plain HTTP; TLS and authentication belong to a reverse proxy in front of a networked deployment (T1).
 
@@ -90,9 +90,9 @@ Build-time integrations, outside the runtime: GitHub Actions (CI); PyPI through 
 
 ## 4. Architecture overview
 
-![Architecture overview](diagrams/architecture_overview.svg)
-
 The CLI ingests external data into PostgreSQL. The database holds the source of truth (`curated_geo`), the read contract (`serving_geo`), run state (`jobs_runtime`, `dbos`) and projects and scenarios (`app_core`). The API serves the web application from `serving_geo` and enqueues runs on DBOS queues; the worker executes the queued indicator units and writes results to `curated_geo`. Vector tiles come from `serving_geo` tile functions, through the API or Martin. The API's pool passes through pgbouncer; the worker, Martin, migrations and the API's orchestration client connect directly.
+
+![Architecture overview](diagrams/architecture_overview.svg)
 
 ## 5. Components
 
