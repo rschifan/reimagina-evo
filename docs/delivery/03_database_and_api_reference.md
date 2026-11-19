@@ -1116,9 +1116,9 @@ Every geometry column, with the SRID and dimension enforced by its type. A singl
 
 Taken from the application's own OpenAPI document (`reimagina API` 0.1.0), served at `/openapi.json` and rendered at `/docs`.
 
-The API exposes **60 operations** in total. **41** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
+The API exposes **61 operations** in total. **42** are written for this project; the remaining **19** belong to titiler's raster router, which is mounted in-process rather than deployed separately, and are listed apart for that reason.
 
-### Project endpoints (41)
+### Project endpoints (42)
 
 #### `aois`
 
@@ -1143,9 +1143,9 @@ The API exposes **60 operations** in total. **41** are written for this project;
 | `GET` | `/indicators/{slug}/lineage` | Get Indicator Lineage | `slug` | no |
 | `GET` | `/indicators/{slug}/stats` | Get Values Stats | `slug`, `scenario_id`, `feature_type`, `aoi_id`, `bins` | no |
 | `GET` | `/indicators/{slug}/values` | List Values | `slug`, `scenario_id`, `limit` | no |
-| `GET` | `/indicators/{slug}/values.csv` | Download Values Csv | `slug`, `scenario_id`, `feature_type`, `limit` | no |
-| `GET` | `/indicators/{slug}/values.geojson` | Download Values Geojson | `slug`, `scenario_id`, `feature_type`, `limit` | no |
-| `GET` | `/indicators/{slug}/values.parquet` | Download Values Parquet | `slug`, `scenario_id`, `feature_type`, `limit` | no |
+| `GET` | `/indicators/{slug}/values.csv` | Download Values Csv | `slug`, `scenario_id`, `feature_type`, `aoi_id`, `limit` | no |
+| `GET` | `/indicators/{slug}/values.geojson` | Download Values Geojson | `slug`, `scenario_id`, `feature_type`, `aoi_id`, `limit` | no |
+| `GET` | `/indicators/{slug}/values.parquet` | Download Values Parquet | `slug`, `scenario_id`, `feature_type`, `aoi_id`, `limit` | no |
 
 #### `jobs`
 
@@ -1191,6 +1191,7 @@ The API exposes **60 operations** in total. **41** are written for this project;
 | `DELETE` | `/scenarios/{scenario_id}/edits` | Remove Edit Route | `scenario_id`, `edit_id` | no |
 | `POST` | `/scenarios/{scenario_id}/edits` | Add Edits Route | `scenario_id` | yes |
 | `POST` | `/scenarios/{scenario_id}/recompute` | Recompute Route | `scenario_id` | no |
+| `PATCH` | `/scenarios/{scenario_id}/rules` | Update Rule Route | `scenario_id` | yes |
 
 #### `tiles`
 

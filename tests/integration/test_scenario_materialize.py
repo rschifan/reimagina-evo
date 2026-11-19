@@ -433,6 +433,19 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
     assert _materialized_at(conn, sid) is None
 
 
+def test_lot_coverage_counts_towards_the_ceiling(conn):
+    """13 storeys at 60 m² breach density at full coverage (2166 > 2000);
+    at half coverage the same rule is 1083 units/ha and materialises."""
+    t = _Territory(conn, attributes=_BASE)
+    sid = t.scenario()
+    t.edit(sid, _AREA_0_3, "num_levels", 13)
+    t.edit(sid, _AREA_0_3, "lot_coverage", 0.5)
+
+    materialize_scenario(conn, scenario_id=sid)
+
+    assert _override_count(conn, sid) > 0
+
+
 def test_a_floors_edit_is_judged_on_floors_not_on_num_levels(conn):
     """``floors=201`` over ``num_levels=6`` is refused.
 

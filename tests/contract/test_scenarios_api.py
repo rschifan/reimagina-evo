@@ -813,7 +813,7 @@ def test_one_proposal_writes_all_four_edits_over_one_area_in_one_transaction(
     assert {c["geometry_wkt"] for c in calls} == {"POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"}
     assert {c["type_id"] for c in calls} == {TYPE_ID}
     assert events.count("commit") == 1
-    assert len(response.json()["edits"]) == 4
+    assert len(response.json()["edits"]) == 5
     # Block grain by default, because every shipped indicator is block-grain.
     assert asked == [("MEX", "block")]
     assert response.json()["feature_type"] == "MEX:block"

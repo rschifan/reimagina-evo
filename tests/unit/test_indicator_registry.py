@@ -229,6 +229,7 @@ def test_projections_match_the_literals_they_replaced():
             "num_levels",
             "unit_size",
             "people_per_household",
+            "lot_coverage",
         )
     assert by_slug["accessibility_block_school_network_m"].reads == (
         "poi_version",

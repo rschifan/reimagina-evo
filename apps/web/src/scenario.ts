@@ -30,13 +30,9 @@
  * abort a city-scale compute inside a plpgsql trigger. When the catalog could
  * not be read the check is skipped rather than guessed: the server still
  * refuses, with the numbers.
- *
- * ## What is deliberately not here
- *
- * A **total** on the comparison strip. See {@link comparisonHeadline}.
  */
 
-import type { ComparisonResponse, EditRow, IndicatorSummary } from "./api";
+import type { EditRow, IndicatorSummary } from "./api";
 import { ApiError } from "./http";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
@@ -121,8 +117,14 @@ export function tileUrlFor(options: TileUrlOptions): string {
  * buildable. The bound is a parameter rather than a constant for the reason
  * the module docstring gives.
  */
-export function maxLevelsFor(unitSize: number, densityValidMax: number): number {
-  return Math.floor((densityValidMax * unitSize) / M2_PER_HECTARE);
+export function maxLevelsFor(
+  unitSize: number,
+  densityValidMax: number,
+  lotCoverage = 1,
+): number {
+  // density = coverage × levels × 10000 / unit_size, so coverage divides the
+  // storeys the bound allows. 1, the whole block, is the formula without it.
+  return Math.floor((densityValidMax * unitSize) / M2_PER_HECTARE / lotCoverage);
 }
 
 
@@ -130,6 +132,9 @@ export interface ProposalValues {
   levels: number;
   unitSize: number;
   peoplePerHousehold: number;
+  /** Share of the block built on, `0 < c ≤ 1`. Absent means 1, the whole
+   *  block — what the API assumes when it is not sent. */
+  lotCoverage?: number;
   /** `valid_max` of {@link DENSITY_INDICATOR_SLUG} from the catalog. Null or
    *  absent when `/indicators/{slug}` could not be read — the check is then
    *  the server's alone. */
@@ -171,6 +176,10 @@ export function validateEdit(values: ProposalValues): string | null {
       return `${label} (${field}) must be a positive number, got ${value}.`;
     }
   }
+  const coverage = values.lotCoverage ?? 1;
+  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
+    return `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`;
+  }
   const floorsBound = values.floorsValidMax;
   if (
     floorsBound !== null &&
@@ -191,9 +200,9 @@ export function validateEdit(values: ProposalValues): string | null {
   if (bound === null || bound === undefined || !Number.isFinite(bound) || bound <= 0) {
     return null;
   }
-  const density = (M2_PER_HECTARE * values.levels) / values.unitSize;
+  const density = (M2_PER_HECTARE * values.levels * coverage) / values.unitSize;
   if (density > bound) {
-    const allowed = maxLevelsFor(values.unitSize, bound);
+    const allowed = maxLevelsFor(values.unitSize, bound, coverage);
     return (
       `${fmt(values.levels)} storeys at ${fmt(values.unitSize)} m² per dwelling ` +
       `is ${density.toFixed(0)} dwellings/ha, over the density ceiling of ` +
@@ -467,51 +476,7 @@ function fmt(value: number): string {
 
 // ── the comparison strip ────────────────────────────────────────────────
 
-export interface ComparisonHeadline {
-  /** "12 changed · 3 unchanged · 1 new". */
-  counts: string;
-  /** What those counts are *of*. See the warning below. */
-  denominator: string;
-  /** The mean shift and its direction, or that there is no baseline. */
-  shift: string;
-}
 
-
-/**
- * The comparison, as three lines for a header strip.
- *
- * ⚠ **The denominator is the response's own `row_count` and nothing else.**
- * `changed + unchanged + new === row_count` always, and that sum is *less*
- * than the number of blocks in the AOI whenever the baseline indicator has
- * gaps: a feature with no numeric value on either side is absent from the
- * comparison by design, and the response carries no total for exactly that
- * reason. Taking the denominator from the AOI or from the tile layer would
- * make the arithmetic visibly fail to add up, and the first conclusion a
- * reader draws from that is that the comparison is broken. Taking it from
- * `rows.length` is the same mistake one step smaller — `rows` is whatever
- * `limit` left behind.
- *
- * So the strip says what the number is of, in words, rather than leaving the
- * reader to assume it is the territory.
- */
-export function comparisonHeadline(
-  response: ComparisonResponse,
-  unit?: string | null,
-): ComparisonHeadline {
-  const { changed, unchanged, new: added, mean_delta, higher_is_better } = response.summary;
-  const direction = higher_is_better ? "higher is better" : "lower is better";
-  return {
-    counts: `${changed} changed · ${unchanged} unchanged · ${added} new`,
-    denominator:
-      `of ${response.row_count} features with a value on either side ` +
-      "(not the AOI's block count)",
-    shift:
-      mean_delta === null
-        ? "no baseline to subtract from"
-        : `mean ${mean_delta >= 0 ? "+" : ""}${mean_delta.toFixed(2)}` +
-          `${unit ? ` ${unit}` : ""} · ${direction}`,
-  };
-}
 
 
 // ── a scenario's rules ──────────────────────────────────────────────────
@@ -522,6 +487,9 @@ export interface EditGroup {
   levels: number | null;
   unitSize: number | null;
   peoplePerHousehold: number | null;
+  /** Share of the block built on. Null for a rule written before lot
+   *  coverage existed, which computes at 1, the whole block. */
+  lotCoverage: number | null;
   /** Every edit in the group, in the order they were written. The remove
    *  button passes all of them. */
   editIds: string[];
@@ -556,6 +524,7 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
         levels: null,
         unitSize: null,
         peoplePerHousehold: null,
+        lotCoverage: null,
         editIds: [],
         complete: false,
         ordinal: edit.ordinal,
@@ -579,6 +548,9 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
       case "people_per_household":
         group.peoplePerHousehold = edit.value_numeric;
         break;
+      case "lot_coverage":
+        group.lotCoverage = edit.value_numeric;
+        break;
       default:
         break;
     }
@@ -597,15 +569,17 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
 
 export function describeGroup(group: EditGroup, position: number): string {
   const parts = [
-    group.levels === null ? "storeys —" : `${fmt(group.levels)} storeys`,
-    group.unitSize === null ? "m²/dwelling —" : `${fmt(group.unitSize)} m²/dwelling`,
+    `Rule ${position}`,
+    group.levels === null ? "st —" : `${fmt(group.levels)} st`,
+    group.unitSize === null ? "m² —" : `${fmt(group.unitSize)} m²`,
     group.peoplePerHousehold === null
-      ? "people/household —"
-      : `${fmt(group.peoplePerHousehold)} people/household`,
+      ? "people —"
+      : `${fmt(group.peoplePerHousehold)} people`,
   ];
+  if (group.lotCoverage !== null) parts.push(`${fmt(group.lotCoverage * 100)} %`);
   // An incomplete group is named as such rather than papered over: the
   // edificability family skips any feature missing any of the three, so a
   // partial rule computes nothing and that is invisible on the map.
   const flag = group.complete ? "" : " · incomplete, will not compute";
-  return `Area ${position}: ${parts.join(" · ")}${flag}`;
+  return `${parts.join(" · ")}${flag}`;
 }

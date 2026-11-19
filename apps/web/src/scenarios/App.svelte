@@ -5,10 +5,10 @@
   import TopBar from "../lib/TopBar.svelte";
 
   import { formatHash, parseHash } from "./derive";
-  import RulePanel from "./RulePanel.svelte";
+  import ScenarioBar from "./ScenarioBar.svelte";
   import ScenarioMap from "./ScenarioMap.svelte";
   import ScenarioTable from "./ScenarioTable.svelte";
-  import { applyRoute, boot, create, ws } from "./store.svelte";
+  import { applyRoute, boot, ws } from "./store.svelte";
 
   /**
    * The workspace shell: the route in the URL hash, and the three parts the
@@ -16,14 +16,6 @@
    * hash and the selection in step, in both directions.
    */
   let hash = $state(location.hash);
-  let newName = $state("");
-
-  async function submitNew(event: SubmitEvent) {
-    event.preventDefault();
-    await create(newName);
-    if (ws.message?.tone !== "bad") newName = "";
-  }
-
   $effect(() => {
     const onHash = () => (hash = location.hash);
     window.addEventListener("hashchange", onHash);
@@ -70,40 +62,24 @@
         {/each}
       </select>
     </label>
-    <form class="flex items-center gap-2" onsubmit={submitNew}>
-      <input
-        class="w-44 rounded border border-line bg-surface px-2 py-1 text-xs"
-        placeholder="New scenario name"
-        aria-label="New scenario name"
-        bind:value={newName}
-        disabled={!ws.projectId}
-      />
-      <button
-        type="submit"
-        class="rounded border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent disabled:opacity-50"
-        disabled={!ws.projectId || !newName.trim()}
-        title={ws.projectId ? "Create a scenario on this pilot" : "Pick a pilot first"}
-      >
-        New scenario
-      </button>
-    </form>
   {/snippet}
 </TopBar>
 
 <main class="mx-auto flex max-w-[1600px] flex-col gap-4 p-4">
   <!-- Always in the DOM: a live region inserted with its text is not
        announced by every screen reader; one whose text changes is. -->
+  <!-- min-h: an empty line still holds its height, or every message pushes
+       the map down under the planner's cursor mid-gesture. -->
   <p
     role="status"
-    class={ws.message?.tone === "bad" ? "text-sm text-state-error" : "text-sm text-muted-foreground"}
+    class={ws.message?.tone === "bad"
+      ? "min-h-5 text-sm text-state-error"
+      : "min-h-5 text-sm text-muted-foreground"}
   >
     {ws.message?.text ?? ""}
   </p>
+  <ScenarioBar />
+  <!-- Rules are drawn, edited and deleted on the map itself. -->
+  <ScenarioMap />
   <ScenarioTable />
-  <!-- Map first in the document, so below 1024 px the rules stack under the
-       map they are drawn on; beside it, the rules come first. -->
-  <div class="grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)]">
-    <ScenarioMap />
-    <div class="lg:order-first"><RulePanel /></div>
-  </div>
 </main>

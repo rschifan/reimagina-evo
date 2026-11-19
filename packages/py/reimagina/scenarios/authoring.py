@@ -399,58 +399,181 @@ def add_edit(
         )
 
     with conn.cursor() as cur:
-        cur.execute("SAVEPOINT add_edit_geometry")
-        try:
-            cur.execute(
-                """
-                SELECT ST_AsEWKB(g)
-                FROM (SELECT ST_CollectionExtract(
-                          ST_MakeValid(ST_SetSRID(ST_GeomFromText(%s), 4326)), 3
-                      ) AS g) r
-                WHERE NOT ST_IsEmpty(g)
-                """,
-                (geometry_wkt,),
-            )
-        except (
-            psycopg2.errors.InvalidParameterValue,
-            psycopg2.errors.InternalError_,
-        ) as exc:
-            cur.execute("ROLLBACK TO SAVEPOINT add_edit_geometry")
-            raise InvalidGeometry(f"geometry could not be parsed: {exc}") from exc
-        repaired = cur.fetchone()
-        cur.execute("RELEASE SAVEPOINT add_edit_geometry")
-        if repaired is None:
-            raise InvalidGeometry(
-                "geometry has no polygonal area after repair "
-                "(empty, or a point or line rather than a polygon)"
-            )
+        repaired = _repair_geometry(cur, geometry_wkt)
+        _lock_scenario(cur, scenario_id)
+        edit_id = _insert_edit(
+            cur,
+            scenario_id=scenario_id,
+            geometry_ewkb=repaired,
+            type_id=type_id,
+            attribute_key=attribute_key,
+            value_numeric=value_numeric,
+        )
+        _touch(cur, scenario_id)
+        return edit_id
 
+
+def _repair_geometry(cur: Any, geometry_wkt: str) -> bytes:
+    """``ST_MakeValid`` then the polygonal part, as EWKB; see ``add_edit``."""
+    cur.execute("SAVEPOINT add_edit_geometry")
+    try:
+        cur.execute(
+            """
+            SELECT ST_AsEWKB(g)
+            FROM (SELECT ST_CollectionExtract(
+                      ST_MakeValid(ST_SetSRID(ST_GeomFromText(%s), 4326)), 3
+                  ) AS g) r
+            WHERE NOT ST_IsEmpty(g)
+            """,
+            (geometry_wkt,),
+        )
+    except (
+        psycopg2.errors.InvalidParameterValue,
+        psycopg2.errors.InternalError_,
+    ) as exc:
+        cur.execute("ROLLBACK TO SAVEPOINT add_edit_geometry")
+        raise InvalidGeometry(f"geometry could not be parsed: {exc}") from exc
+    repaired = cur.fetchone()
+    cur.execute("RELEASE SAVEPOINT add_edit_geometry")
+    if repaired is None:
+        raise InvalidGeometry(
+            "geometry has no polygonal area after repair "
+            "(empty, or a point or line rather than a polygon)"
+        )
+    return bytes(repaired[0])
+
+
+def _insert_edit(
+    cur: Any,
+    *,
+    scenario_id: str,
+    geometry_ewkb: bytes,
+    type_id: str,
+    attribute_key: str,
+    value_numeric: float,
+) -> str:
+    """Append one edit at ``max(ordinal) + 1``. The caller holds the scenario lock."""
+    cur.execute(
+        """
+        INSERT INTO curated_geo.scenario_edit
+          (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+        SELECT %(s)s,
+               COALESCE(max(ordinal), 0) + 1,
+               ST_GeomFromEWKB(%(g)s), %(t)s, %(k)s, %(v)s
+        FROM curated_geo.scenario_edit
+        WHERE scenario_id = %(s)s
+        RETURNING id
+        """,
+        {
+            "s": scenario_id,
+            "g": geometry_ewkb,
+            "t": type_id,
+            "k": attribute_key,
+            "v": value_numeric,
+        },
+    )
+    return str(cur.fetchone()[0])
+
+
+def _touch(cur: Any, scenario_id: str) -> None:
+    cur.execute(
+        "UPDATE app_core.scenario SET updated_at = now() WHERE id = %s",
+        (scenario_id,),
+    )
+
+
+class RuleNotFound(LookupError):
+    """The edit ids are not one rule of this scenario.
+
+    A rule is the edits one proposal wrote: one geometry, one scenario. Ids
+    from another scenario, or from two different areas, are not something to
+    update together — the edit would land on a rule nobody pointed at.
+    """
+
+
+def update_rule(
+    conn: Any,
+    *,
+    scenario_id: str,
+    edit_ids: list[str],
+    geometry_wkt: str | None,
+    values: dict[str, float],
+    type_id: str,
+) -> list[tuple[str, str, float]]:
+    """Change one rule's numbers, and optionally its area, **in place**.
+
+    In place is the point: the edits keep their ids and their ordinals, so
+    the rule keeps its position in "later wins". Deleting and re-adding would
+    renumber it after every other rule, and editing rule 1 would silently make
+    it beat rule 2 where they overlap.
+
+    An attribute in ``values`` that the rule has no edit for — ``lot_coverage``
+    on a rule written before coverage existed — is appended over the rule's
+    area. It takes the next ordinal; it only competes with another rule's
+    edit of the same attribute.
+
+    Returns ``(edit_id, attribute_key, value_numeric)`` for every edit of the
+    rule after the update.
+    """
+    _require_postgres(conn)
+    allowed = authorable_attributes()
+    unknown = sorted(set(values) - set(allowed))
+    if unknown:
+        raise ValueError(
+            f"{', '.join(unknown)} not authorable; choose from {', '.join(allowed)}"
+        )
+    with conn.cursor() as cur:
+        repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
         cur.execute(
             """
-            INSERT INTO curated_geo.scenario_edit
-              (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
-            SELECT %(s)s,
-                   COALESCE(max(ordinal), 0) + 1,
-                   ST_GeomFromEWKB(%(g)s), %(t)s, %(k)s, %(v)s
+            SELECT id::text, attribute_key, ST_AsEWKB(geometry)
             FROM curated_geo.scenario_edit
-            WHERE scenario_id = %(s)s
-            RETURNING id
+            WHERE scenario_id = %s AND id = ANY(%s::uuid[])
+            FOR UPDATE
             """,
-            {
-                "s": scenario_id,
-                "g": repaired[0],
-                "t": type_id,
-                "k": attribute_key,
-                "v": value_numeric,
-            },
+            (scenario_id, list(edit_ids)),
         )
-        edit_id = str(cur.fetchone()[0])
+        rows = cur.fetchall()
+        geometries = {bytes(g) for _, _, g in rows}
+        if not rows or len(rows) != len(set(edit_ids)) or len(geometries) != 1:
+            raise RuleNotFound(
+                f"edits {sorted(edit_ids)} are not one rule of scenario {scenario_id}"
+            )
+        ids = [edit_id for edit_id, _, _ in rows]
+        for edit_id, key, _ in rows:
+            if key in values:
+                cur.execute(
+                    "UPDATE curated_geo.scenario_edit SET value_numeric = %s "
+                    "WHERE id = %s",
+                    (values[key], edit_id),
+                )
+        if repaired is not None:
+            cur.execute(
+                "UPDATE curated_geo.scenario_edit "
+                "SET geometry = ST_GeomFromEWKB(%s) WHERE id = ANY(%s::uuid[])",
+                (repaired, ids),
+            )
+        area = repaired if repaired is not None else geometries.pop()
+        present = {key for _, key, _ in rows}
+        for key in (k for k in values if k not in present):
+            ids.append(
+                _insert_edit(
+                    cur,
+                    scenario_id=scenario_id,
+                    geometry_ewkb=area,
+                    type_id=type_id,
+                    attribute_key=key,
+                    value_numeric=values[key],
+                )
+            )
+        _touch(cur, scenario_id)
         cur.execute(
-            "UPDATE app_core.scenario SET updated_at = now() WHERE id = %s",
-            (scenario_id,),
+            "SELECT id::text, attribute_key, value_numeric "
+            "FROM curated_geo.scenario_edit WHERE id = ANY(%s::uuid[]) ORDER BY ordinal",
+            (ids,),
         )
-        return edit_id
+        return [(str(i), str(k), float(v)) for i, k, v in cur.fetchall()]
 
 
 def remove_edit(conn: Any, *, edit_id: str) -> bool:
@@ -710,7 +833,7 @@ def _refuse_ceiling_breaches(
     # `floors` beside the three ceiling inputs: the planned-floors bound is
     # checked against the attribute that indicator reads, and `floors` is
     # authorable on its own, so it can differ from `num_levels`.
-    checked = (*_CEILING_ATTRIBUTES, "floors")
+    checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
     baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
     for type_id, ids in by_type.items():
         for key in checked:
@@ -733,7 +856,9 @@ def _refuse_ceiling_breaches(
         areas = dict(cur.fetchall())
 
     def _value(feature_id: str, key: str) -> float:
-        return resolved.get((feature_id, key), baseline[key].get(feature_id, 0.0))
+        # A block with no lot_coverage is the whole block, not none of it.
+        absent = 1.0 if key == "lot_coverage" else 0.0
+        return resolved.get((feature_id, key), baseline[key].get(feature_id, absent))
 
     breaches = check_ceilings(
         BlockInputs(
@@ -743,6 +868,7 @@ def _refuse_ceiling_breaches(
             people_per_household=_value(feature_id, "people_per_household"),
             area_m2=float(areas.get(feature_id, 0.0)),
             floors=_value(feature_id, "floors"),
+            lot_coverage=_value(feature_id, "lot_coverage"),
         )
         for feature_id in feature_ids
     )

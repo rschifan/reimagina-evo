@@ -101,9 +101,13 @@ The bytes are one function call; the HTTP is the work.
   `Vary: Accept-Encoding`. A shared cache must not be able to serve a gzip
   body under an identity validator.
 - **`Cache-Control`** `public, max-age=60, stale-while-revalidate=300`,
-  configurable. `public` is right even for scenario overlays: they vary by
-  `scenario_id`, which is in the query string, so a shared cache already
-  keys on it.
+  configurable, for every tile **except a scenario's** (any request carrying
+  `scenario_id`), which is `no-cache`. A scenario changes under the same URL
+  each time it is recomputed, and the map rebuilds its source with that URL
+  when the run lands; with a lifetime the browser painted the previous run's
+  tiles for up to six minutes while the table already showed the new totals.
+  `no-cache` still stores the tile, and the ETag keeps an unchanged one at a
+  `304`.
 - **gzip** above 1 KiB only. Measured: 1.86x on a real tile — MVT is already
   a packed protobuf, so a `304` is worth far more than compression, which is
   why conditional requests are in scope and a tile cache is not.
