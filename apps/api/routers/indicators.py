@@ -157,7 +157,7 @@ def list_indicators(
             scenario_id=_as_str(scenario_id),
         )
     )
-    return [IndicatorSummary(**_catalog_row_to_dict(row)) for row in rows]
+    return [IndicatorSummary(**catalog_row_to_dict(row)) for row in rows]
 
 
 @router.get("/{slug}", response_model=IndicatorSummary)
@@ -169,7 +169,7 @@ def get_indicator(
     row = get_backend(conn).indicator_catalog_repo().get_indicator(slug)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
-    return IndicatorSummary(**_catalog_row_to_dict(row))
+    return IndicatorSummary(**catalog_row_to_dict(row))
 
 
 @router.get("/{slug}/dependencies", response_model=IndicatorDependencies)
@@ -490,7 +490,7 @@ def ensure_indicator_exists(conn, slug: str) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
 
 
-def _catalog_row_to_dict(row: dict) -> dict:
+def catalog_row_to_dict(row: dict) -> dict:
     """Normalise the RealDictCursor/tuple-dict shape into kwargs for IndicatorSummary."""
     return {
         "slug": row["slug"],
