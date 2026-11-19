@@ -249,14 +249,18 @@ export function refreshBaselineAoi(
 }
 
 
+/** `visible` decides each layer's starting visibility; a page with no
+ *  toggles passes its own, the default is each spec's `visible`. */
 export function installInputLayers(
   map: MapLibreMap,
   catalog: TileSourceCatalog,
   tooltips?: TooltipController,
   aoiId: string | null = null,
+  visible: (layer: InputLayerSpec) => boolean = (layer) => layer.visible,
 ): void {
   for (const layer of INPUT_LAYERS) {
     const tileUrl = _baselineTileUrl(catalog, layer, aoiId);
+    const visibility = visible(layer) ? "visible" : "none";
     // promoteId surfaces the MVT 'feature_id' property as feature.id so
     // setFeatureState({...id}) can find the right feature for hover
     // highlighting. Every reimagina tile function emits feature_id.
@@ -292,7 +296,7 @@ export function installInputLayers(
         type: "fill",
         source: layer.sourceName,
         "source-layer": layer.sourceLayerName,
-        layout: { visibility: layer.visible ? "visible" : "none" },
+        layout: { visibility },
         paint: {
           "fill-color": layer.fillColor,
           "fill-opacity": layer.fillOpacity,
@@ -304,7 +308,7 @@ export function installInputLayers(
       type: "line",
       source: layer.sourceName,
       "source-layer": layer.sourceLayerName,
-      layout: { visibility: layer.visible ? "visible" : "none" },
+      layout: { visibility },
       paint: {
         "line-color": layer.lineColor,
         "line-width": layer.lineWidth,

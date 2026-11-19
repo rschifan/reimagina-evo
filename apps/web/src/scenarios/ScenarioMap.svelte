@@ -85,18 +85,11 @@
         }
         if (!map) return;
         tooltips = new TooltipController(map, map.getContainer());
-        installInputLayers(map, catalog, tooltips, ws.aoiId);
-        // The input layers start off for the map page, which has toggles to
-        // switch them on; this page has none. Streets go on: with no basemap
-        // they are the only way to tell where you are. Buildings stay off:
-        // they bury the blocks a rule selects.
-        if (map.getLayer("baseline_roads__line")) {
-          map.setLayoutProperty("baseline_roads__line", "visibility", "visible");
-        }
-        if (map.getLayer("baseline_buildings__fill")) {
-          map.setLayoutProperty("baseline_buildings__fill", "visibility", "none");
-          map.setLayoutProperty("baseline_buildings__line", "visibility", "none");
-        }
+        // This page has no layer toggles, so it picks what starts on: streets
+        // only. With no basemap they are the only way to tell where you are;
+        // everything else stays off, buildings included, since they bury the
+        // blocks a rule selects.
+        installInputLayers(map, catalog, tooltips, ws.aoiId, (layer) => layer.typeSlug === "road");
         selection = enableSelection(map);
         selection.subscribe((sel) => {
           ws.drawn = sel?.feature ?? null;
