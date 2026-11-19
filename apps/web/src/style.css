@@ -524,6 +524,10 @@ body {
   font-size: 12px;
   line-height: 1.4;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* A message can carry a long unbroken token (a layer id, a slug); without
+     this it spilled out of the box and the whole page scrolled sideways on a
+     phone. */
+  overflow-wrap: anywhere;
 }
 
 .map-banner[hidden] {

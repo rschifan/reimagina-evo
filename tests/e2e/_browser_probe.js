@@ -14,6 +14,27 @@ const PAGES = [
   { name: 'ops',       path: '/ops.html' },
 ];
 
+// Every spatial layer starts off since #112 — the map opens on the indicator
+// alone — so the probe turns streets on, as a planner would, before it reads
+// what the map asked the tile server for.
+async function showStreets(tab) {
+  const streets = tab.getByLabel('Streets', { exact: true });
+  // The switch sits in a collapsed section of the panel: open every closed
+  // section around it first, outermost first, as a person would.
+  const sections = tab.locator('details').filter({ has: streets });
+  for (let i = 0; i < await sections.count(); i += 1) {
+    const section = sections.nth(i);
+    if (!(await section.evaluate((d) => d.open))) {
+      await section.locator(':scope > summary').click().catch(() => {});
+    }
+  }
+  await streets.check({ timeout: 10000 }).catch(() => {});
+  // Leave the checkbox, as a person moving on would: shortcuts are ignored
+  // while an input has focus, and the probe presses keys after this.
+  await tab.evaluate(() => document.activeElement && document.activeElement.blur());
+  await tab.waitForLoadState('networkidle').catch(() => {});
+}
+
 (async () => {
   const browser = await chromium.launch();
   const report = { pages: {} };
@@ -28,6 +49,7 @@ const PAGES = [
     let navigation = null;
     await tab.goto(WEB + page.path, { waitUntil: 'networkidle', timeout: 60000 })
       .catch(e => { navigation = e.message; });
+    if (page.name === 'map') await showStreets(tab);
     await tab.waitForTimeout(2500);
     report.pages[page.name] = {
       navigation,
@@ -65,6 +87,7 @@ const PAGES = [
     else roadTiles.other.push(r.status());
   });
   await tab.goto(WEB + '/', { waitUntil: 'networkidle', timeout: 60000 });
+  await showStreets(tab);
   await tab.waitForTimeout(3000);
 
   const visible = (sel) => tab.evaluate(
