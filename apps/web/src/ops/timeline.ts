@@ -179,7 +179,15 @@ export interface TimelineModel {
   chips: { text: string; tone: Tone }[];
 }
 
-function note(unit: UnitDetail, state: RowState, by: Map<string, UnitDetail>): string | null {
+function note(
+  unit: UnitDetail,
+  state: RowState,
+  by: Map<string, UnitDetail>,
+  live: boolean,
+): string | null {
+  // A finished run's queued units will never run: not "next", not "after".
+  if (!live && unit.status === "queued") return "never started";
+  if (state === "cancelled" && !unit.started_at) return "cancelled before it started";
   if (state === "ready") return "next · waits for a free slot";
   if (state === "skipped") return unit.detail ? `skipped · ${unit.detail}` : "skipped";
   if (state !== "blocked") return null;
@@ -218,7 +226,8 @@ export function timelineModel(
   const span = new Map(spans.map((s) => [s.unit.indicator, s]));
 
   const rows: Row[] = rowOrder(units).map((unit) => {
-    const state = rowState(unit, by);
+    // Queued in a finished run means it never ran: drawn and counted as skipped.
+    const state = !live && unit.status === "queued" ? "skipped" : rowState(unit, by);
     const s = span.get(unit.indicator);
     // A 0 ms estimate gives no percentage (0/0); treat it as none.
     const exp = unit.expected_ms ? unit.expected_ms : null;
@@ -241,7 +250,7 @@ export function timelineModel(
           ? Math.min((exp / axis) * 100, 100 - pct(s.start))
           : null,
       numbers,
-      note: note(unit, state, by),
+      note: note(unit, state, by, live),
       over,
     };
   });

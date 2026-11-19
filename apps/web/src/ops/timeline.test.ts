@@ -327,3 +327,17 @@ describe("edge cases", () => {
     expect(late.nowPct).toBe(early.nowPct);
   });
 });
+
+describe("finished runs", () => {
+  test("a unit that never started says so, not 'next'", () => {
+    const a = unit("a", { status: "succeeded", started_at: iso(0), completed_at: iso(2) });
+    const leftover = unit("b", { depends_on: ["a"] });
+    const cancelled = unit("c", { status: "cancelled", detail: "run cancelled" });
+    const m = timelineModel([a, leftover, cancelled], 8, at(30), false);
+    const row = (id: string) => m.rows.find((r) => r.unit.indicator === id)!;
+    expect(row("b").note).toBe("never started");
+    expect(row("b").state).not.toBe("ready");
+    expect(row("c").note).toBe("cancelled before it started");
+    expect(m.chips.map((c) => c.text).join()).not.toMatch(/next in line|waiting on/);
+  });
+});
