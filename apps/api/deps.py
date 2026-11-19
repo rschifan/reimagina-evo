@@ -2,7 +2,8 @@
 
 A process-wide ThreadedConnectionPool is created on app startup (see
 app.lifespan) and torn down on shutdown. Each request checks a connection
-out, runs inside a transaction, and rolls back on teardown — so handlers
+out — waiting for one when all are busy — runs inside a transaction, and
+rolls back on teardown — so handlers
 never see data leaked from other requests and nothing ever commits by
 accident. Routers get the backend via get_backend(conn), which keeps
 every route architecturally inside reimagina.storage (no raw SQL in the
@@ -13,9 +14,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 
 import psycopg2
+from fastapi import HTTPException
 from psycopg2.pool import ThreadedConnectionPool
 
 from reimagina.storage import backend_for_connection
@@ -50,6 +52,11 @@ def _pool_max() -> int:
     return int(os.environ.get("REIMAGINA_API_POOL_MAX", "16"))
 
 
+def _pool_wait_s() -> float:
+    """How long a request waits for a free connection before a 503."""
+    return float(os.environ.get("REIMAGINA_API_POOL_WAIT_S", "30"))
+
+
 # Re-exported so importers of apps.api.deps keep working after helpers
 # moved into reimagina.tiles.defaults.
 __all__ = [
@@ -66,6 +73,12 @@ __all__ = [
 
 
 _pool: ThreadedConnectionPool | None = None
+#: One permit per pooled connection. ⚠ psycopg2's pool never blocks: past
+#: ``maxconn`` it raises ``PoolError``, so a burst wider than the pool failed
+#: instead of queueing. A map loading at a new zoom is exactly that burst —
+#: measured, 40 concurrent tile requests came back 16 x 200 and 24 x 500 on an
+#: idle server. Taking a permit before ``getconn`` makes the excess wait.
+_slots: BoundedSemaphore | None = None
 _pool_lock = Lock()
 
 
@@ -85,25 +98,28 @@ def initialise_pool(
     tests and deployments can steer the pool through environment
     overrides without reloading this module.
     """
-    global _pool
+    global _pool, _slots
     with _pool_lock:
         if _pool is not None:
             return
+        size = _pool_max() if maxconn is None else maxconn
         _pool = ThreadedConnectionPool(
             _pool_min() if minconn is None else minconn,
-            _pool_max() if maxconn is None else maxconn,
+            size,
             api_dsn() if dsn is None else dsn,
         )
+        _slots = BoundedSemaphore(size)
 
 
 def shutdown_pool() -> None:
     """Close every connection in the pool. Safe to call when no pool exists."""
-    global _pool
+    global _pool, _slots
     with _pool_lock:
         if _pool is None:
             return
         _pool.closeall()
         _pool = None
+        _slots = None
 
 
 def get_db_conn() -> Iterator[psycopg2.extensions.connection]:
@@ -112,13 +128,27 @@ def get_db_conn() -> Iterator[psycopg2.extensions.connection]:
     Returns the connection to the pool even when the handler raises. If
     the rollback itself fails (connection is broken), the connection is
     closed rather than returned so the pool self-heals.
+
+    When every connection is out, waits up to ``REIMAGINA_API_POOL_WAIT_S``
+    for one, then answers 503 with ``Retry-After`` rather than hanging.
     """
-    if _pool is None:
+    pool, slots = _pool, _slots
+    if pool is None or slots is None:
         raise PoolNotInitialised(
             "API connection pool is not initialised; "
             "apps.api.app.create_app() must run before any request arrives."
         )
-    connection = _pool.getconn()
+    if not slots.acquire(timeout=_pool_wait_s()):
+        raise HTTPException(
+            status_code=503,
+            detail="Every database connection is busy; try again shortly.",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        connection = pool.getconn()
+    except BaseException:
+        slots.release()
+        raise
     broken = False
     try:
         connection.autocommit = False
@@ -135,7 +165,8 @@ def get_db_conn() -> Iterator[psycopg2.extensions.connection]:
         except psycopg2.Error:
             broken = True
     finally:
-        _pool.putconn(connection, close=broken)
+        pool.putconn(connection, close=broken)
+        slots.release()
 
 
 def get_backend(
