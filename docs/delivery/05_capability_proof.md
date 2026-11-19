@@ -28,6 +28,7 @@ date: "13 November 2026"
 | 0.10 | 2026-11-11 | Rossano Schifanella | §A.1 — the culture indicator computed on real data (60.8 % at the cutoff) and the seven-of-twelve real-data coverage picture |
 | 0.11 | 2026-11-13 | Rossano Schifanella | The acceptance run re-measured at `r049`: the scenario is authored through the CLI (§9), the territory carries streets (§2, §10), and the environment of record, wall time and API operation count are current |
 | 0.12 | 2026-11-16 | Rossano Schifanella | The feature-provenance count re-measured over the street-carrying territory (108 of 108, replacing 67 of 67); the introduction no longer claims every figure comes from one sitting |
+| 0.13 | 2026-11-19 | Rossano Schifanella | §A.2 — the baseline of the scenario inputs on real Mexicali data: real household size and storeys where sources have them, synthetic values fitted to the census elsewhere; twelve of twelve indicators have rows |
 
 ### Provenance of the figures
 
@@ -1088,7 +1089,8 @@ a missing input.
   Overture layer carries. `scripts/mexicali_run.sh` attempts them and reports
   them unavailable rather than inventing the attributes, and
   `urban_form_block_planned_floors` is unavailable for the same reason
-  (`floors`).
+  (`floors`). §A.2 later gave all five a baseline, partly real and partly
+  synthetic, and says which is which.
 - **Anything about Mexicali.** See qualification 3 above.
 
 ### Defects this run found that the test suite did not
@@ -1287,7 +1289,8 @@ assumed. Its heaviest input is `edificability_block_density` at weight 0.4,
 and the edificability family reads `num_levels`, `unit_size` and
 `people_per_household`: scenario inputs no INEGI or Overture layer carries.
 The composite writes nothing rather than scoring from a missing input, which
-is the behaviour Appendix A already records.
+is the behaviour Appendix A already records. (§A.2 later supplied those inputs,
+real where INEGI and Overture carry them and synthetic elsewhere.)
 
 So the ratio is unchanged at seven of twelve, but the *membership* is not.
 Before this ingest the seven were three urban-form plus health and school
@@ -1316,3 +1319,66 @@ category is added to the catalog without a destination in the generator.
 Without it, the acceptance run would reproduce the Mexicali failure in the one
 artifact meant to prove the opposite — a full set of rows, no error, and a
 choropleth that measures nothing.
+
+## A.2 The baseline of the scenario inputs
+
+**Status: measured on 19 November 2026, on the same machine and database as
+Appendix A, and not reviewer-reproducible for the same reason.** It closes the
+gap the two sections above end on: the five indicators a scenario rule can
+change had no baseline on real data, so the scenario workspace's Baseline row
+was empty and its difference maps read every block as `new`.
+
+### What was loaded
+
+A rule sets storeys, m² per dwelling and people per household. The baseline
+takes each from a real source where one exists and is synthetic where none
+does; the real values are observations and the synthetic ones the block's base
+attributes, so `effective_numeric` always resolves the real one first.
+
+```bash
+python -m apps.cli.app inegi-censo bootstrap --cve-ent 02 --columns prom_ocup
+python -m apps.cli.app overture block-storeys --aoi-id "$AOI_ID"
+python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
+```
+
+| Input | Real source | Mexicali blocks with a real value (of 19,058) | Synthetic elsewhere |
+|---|---|---|---|
+| People per household | INEGI 2020 `prom_ocup` | 13,593 | the census median, 3.14 |
+| Storeys | Overture `num_floors`, median per block | 83 | drawn from the tagged buildings' mix (94 % one storey) |
+| m² per dwelling | none | 0 | fitted so each block's dwellings equal its census count |
+
+A block the census found without dwellings (4,518 of them) starts at zero
+dwellings rather than at a fitted envelope.
+
+### What it produced
+
+| Indicator | Rows | Median | Total over the pilot |
+|---|---|---|---|
+| `edificability_block_housing_units` | 19,058 | 13 | **340,169** — the census count of dwellings |
+| `edificability_block_population` | 19,058 | 40.7 | 1,069,852 (census: 940,386) |
+| `edificability_block_density` | 19,058 | 19.9 units/ha | — |
+| `urban_form_block_planned_floors` | 19,058 | 1 | — |
+| `livability_block_score` | 19,058 | 0.24 | — |
+
+Population runs 14 % over the census because the dwelling count includes
+unoccupied dwellings while `prom_ocup` is occupants per *occupied* dwelling.
+
+### Two attempts that were wrong first
+
+- **The generic fixture values.** `seed_demo_attributes.py` without the fit
+  writes 1–6 storeys and 60 m² on every block. Over Mexicali that gave
+  13,778,576 potential dwellings and 45,573,497 residents: the storeys average
+  3.5 in a mostly single-storey city, and the formula builds 233 km² of blocks
+  over wall to wall. The fit replaced it.
+- **Real storeys on the dwelling formula.** Written as `num_levels`, a real
+  height shadowed the zero on 37 blocks the census found empty and built 6,215
+  dwellings on them. Real heights now land as `floors` (planned floors) only,
+  and the fit uses them for the blocks' m² per dwelling.
+
+### What it does not establish
+
+Anything about Mexicali's built form. Storeys are real on 0.4 % of blocks and
+m² per dwelling is fitted, not observed: the baseline reproduces the census by
+construction, so it is a starting point a rule is measured against, not a
+measurement of the city. With it, twelve of the twelve indicators have rows on
+real Mexicali data.
