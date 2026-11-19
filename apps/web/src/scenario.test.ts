@@ -146,6 +146,29 @@ describe("maxLevelsFor", () => {
 });
 
 
+describe("lot coverage", () => {
+  const ok = { levels: 6, unitSize: 60, peoplePerHousehold: 3.6 };
+
+  it("must be a share of the block", () => {
+    for (const bad of [0, -0.1, 1.2, Number.NaN]) {
+      expect(validateEdit({ ...ok, lotCoverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
+    }
+    expect(validateEdit({ ...ok, lotCoverage: 0.6 })).toBeNull();
+  });
+
+  // density = coverage × levels × 10000 / unit_size: 20 storeys at 60 m² is
+  // 3333/ha at full coverage, 1666 at half.
+  it("scales the density ceiling", () => {
+    const at = (lotCoverage: number) =>
+      validateEdit({ ...ok, levels: 20, lotCoverage, densityValidMax: 2000 });
+    expect(at(1)).toMatch(/density ceiling/);
+    expect(at(0.5)).toBeNull();
+    expect(maxLevelsFor(60, 2000, 0.5)).toBe(24);
+    expect(maxLevelsFor(60, 2000)).toBe(12);
+  });
+});
+
+
 describe("validateEdit", () => {
   const ok = { levels: 6, unitSize: 60, peoplePerHousehold: 3.6 };
 
@@ -653,6 +676,17 @@ describe("groupEditsByArea", () => {
   it("marks a whole proposal complete", () => {
     expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].complete).toBe(true);
   });
+
+  // A rule written before lot coverage existed has four edits: still a whole
+  // proposal, computed at full coverage.
+  it("reads lot coverage when the rule has it, and leaves it null otherwise", () => {
+    expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].lotCoverage).toBeNull();
+    const five = [...proposalEdits(AREA_A, 1), edit(5, "lot_coverage", 0.6, AREA_A)];
+    const [group] = groupEditsByArea(five);
+    expect(group.lotCoverage).toBe(0.6);
+    expect(group.complete).toBe(true);
+    expect(group.editIds).toHaveLength(5);
+  });
 });
 
 
@@ -662,14 +696,16 @@ describe("describeGroup", () => {
     levels: 6,
     unitSize: 60,
     peoplePerHousehold: complete ? 3.6 : null,
+    lotCoverage: null as number | null,
     editIds: ["e1"],
     complete,
     ordinal: 1,
   });
 
-  it("names a rule by its position and its three numbers", () => {
-    expect(describeGroup(group(true), 2)).toBe(
-      "Area 2: 6 storeys · 60 m²/dwelling · 3.6 people/household",
+  it("names a rule by its position and its numbers", () => {
+    expect(describeGroup(group(true), 2)).toBe("Rule 2 · 6 st · 60 m² · 3.6 people");
+    expect(describeGroup({ ...group(true), lotCoverage: 0.6 }, 3)).toBe(
+      "Rule 3 · 6 st · 60 m² · 3.6 people · 60 %",
     );
   });
 

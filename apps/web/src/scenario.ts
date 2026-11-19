@@ -121,8 +121,14 @@ export function tileUrlFor(options: TileUrlOptions): string {
  * buildable. The bound is a parameter rather than a constant for the reason
  * the module docstring gives.
  */
-export function maxLevelsFor(unitSize: number, densityValidMax: number): number {
-  return Math.floor((densityValidMax * unitSize) / M2_PER_HECTARE);
+export function maxLevelsFor(
+  unitSize: number,
+  densityValidMax: number,
+  lotCoverage = 1,
+): number {
+  // density = coverage × levels × 10000 / unit_size, so coverage divides the
+  // storeys the bound allows. 1, the whole block, is the formula without it.
+  return Math.floor((densityValidMax * unitSize) / M2_PER_HECTARE / lotCoverage);
 }
 
 
@@ -130,6 +136,9 @@ export interface ProposalValues {
   levels: number;
   unitSize: number;
   peoplePerHousehold: number;
+  /** Share of the block built on, `0 < c ≤ 1`. Absent means 1, the whole
+   *  block — what the API assumes when it is not sent. */
+  lotCoverage?: number;
   /** `valid_max` of {@link DENSITY_INDICATOR_SLUG} from the catalog. Null or
    *  absent when `/indicators/{slug}` could not be read — the check is then
    *  the server's alone. */
@@ -171,6 +180,10 @@ export function validateEdit(values: ProposalValues): string | null {
       return `${label} (${field}) must be a positive number, got ${value}.`;
     }
   }
+  const coverage = values.lotCoverage ?? 1;
+  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
+    return `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`;
+  }
   const floorsBound = values.floorsValidMax;
   if (
     floorsBound !== null &&
@@ -191,9 +204,9 @@ export function validateEdit(values: ProposalValues): string | null {
   if (bound === null || bound === undefined || !Number.isFinite(bound) || bound <= 0) {
     return null;
   }
-  const density = (M2_PER_HECTARE * values.levels) / values.unitSize;
+  const density = (M2_PER_HECTARE * values.levels * coverage) / values.unitSize;
   if (density > bound) {
-    const allowed = maxLevelsFor(values.unitSize, bound);
+    const allowed = maxLevelsFor(values.unitSize, bound, coverage);
     return (
       `${fmt(values.levels)} storeys at ${fmt(values.unitSize)} m² per dwelling ` +
       `is ${density.toFixed(0)} dwellings/ha, over the density ceiling of ` +
@@ -522,6 +535,9 @@ export interface EditGroup {
   levels: number | null;
   unitSize: number | null;
   peoplePerHousehold: number | null;
+  /** Share of the block built on. Null for a rule written before lot
+   *  coverage existed, which computes at 1, the whole block. */
+  lotCoverage: number | null;
   /** Every edit in the group, in the order they were written. The remove
    *  button passes all of them. */
   editIds: string[];
@@ -556,6 +572,7 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
         levels: null,
         unitSize: null,
         peoplePerHousehold: null,
+        lotCoverage: null,
         editIds: [],
         complete: false,
         ordinal: edit.ordinal,
@@ -579,6 +596,9 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
       case "people_per_household":
         group.peoplePerHousehold = edit.value_numeric;
         break;
+      case "lot_coverage":
+        group.lotCoverage = edit.value_numeric;
+        break;
       default:
         break;
     }
@@ -597,15 +617,17 @@ export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
 
 export function describeGroup(group: EditGroup, position: number): string {
   const parts = [
-    group.levels === null ? "storeys —" : `${fmt(group.levels)} storeys`,
-    group.unitSize === null ? "m²/dwelling —" : `${fmt(group.unitSize)} m²/dwelling`,
+    `Rule ${position}`,
+    group.levels === null ? "st —" : `${fmt(group.levels)} st`,
+    group.unitSize === null ? "m² —" : `${fmt(group.unitSize)} m²`,
     group.peoplePerHousehold === null
-      ? "people/household —"
-      : `${fmt(group.peoplePerHousehold)} people/household`,
+      ? "people —"
+      : `${fmt(group.peoplePerHousehold)} people`,
   ];
+  if (group.lotCoverage !== null) parts.push(`${fmt(group.lotCoverage * 100)} %`);
   // An incomplete group is named as such rather than papered over: the
   // edificability family skips any feature missing any of the three, so a
   // partial rule computes nothing and that is invisible on the map.
   const flag = group.complete ? "" : " · incomplete, will not compute";
-  return `Area ${position}: ${parts.join(" · ")}${flag}`;
+  return `${parts.join(" · ")}${flag}`;
 }
