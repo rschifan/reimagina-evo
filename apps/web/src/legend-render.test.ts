@@ -160,6 +160,20 @@ describe("one number style in the legend", () => {
   });
 });
 
+describe("a layer where every block sits at the cap", () => {
+  it("prints every value as the cap, scope line and bar title included", () => {
+    const el = document.createElement("div");
+    const stats = { ...uniformStats(), histogram: { lo: 1500, hi: 1500, width: 0, bins: 1, counts: [19058] } };
+    renderLegend(el, PARK, rampDomainFromStats(stats, PARK), stats.histogram, 19058, 19058);
+    // The low bound is the catalog floor of the one-colour ramp, not a value.
+    const bounds = Array.from(el.querySelectorAll(".bounds span"), (s) => s.textContent);
+    expect(bounds).toEqual(["0 m", "1,500 m+ (cap)"]);
+    expect(el.querySelector(".cap-key")?.textContent).toBe("1,500 m+ (cap)");
+    expect(el.querySelector(".scope")?.textContent).toContain("identical (1,500 m+ (cap))");
+    expect(el.querySelector("title")?.textContent).toBe("19058 at 1,500 m+ (cap)");
+  });
+});
+
 describe("renderGrainToggle", () => {
   it("shows nothing when the indicator has one grain", () => {
     const el = document.createElement("div");

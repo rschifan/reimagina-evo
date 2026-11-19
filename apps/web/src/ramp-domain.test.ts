@@ -107,12 +107,13 @@ describe("rampScopeText", () => {
         stats({ count: 19058, min: 1500, p05: 1500, p50: 1500, p95: 1500, max: 1500 }),
         indicator(),
       ),
+      indicator(),
     );
     expect(uniform).toContain("19,058");
     expect(uniform).toContain("identical");
     expect(uniform).not.toContain("no data");
 
-    expect(rampScopeText(rampDomainFromStats(stats({ count: 0 }), indicator()))).toContain(
+    expect(rampScopeText(rampDomainFromStats(stats({ count: 0 }), indicator()), indicator())).toContain(
       "no data yet",
     );
   });
@@ -123,6 +124,7 @@ describe("rampScopeText", () => {
         stats({ count: 19058, min: 0, p05: 90, p50: 410, p95: 1180, max: 1500 }),
         indicator(),
       ),
+      indicator(),
     );
     expect(text).toContain("middle 90%");
     expect(text).not.toContain("p05");

@@ -32,7 +32,7 @@ import type {
 } from "./api";
 import { _baselineMinzoomForGrain } from "./layers";
 import { distributionSvg } from "./distribution";
-import { escapeHtml, fmtNumber, formatValue, shareText, unitLabel } from "./format";
+import { escapeHtml, fmtNumber, formatValue, shareText } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -698,7 +698,10 @@ export function setValueHoverListener(
  * point of `RampBasis`, and it is the line a reader checks when a layer comes
  * out one flat colour.
  */
-export function rampScopeText(domain: RampDomain): string {
+export function rampScopeText(
+  domain: RampDomain,
+  indicator: { unit: string | null; cap_value?: number | null },
+): string {
   switch (domain.basis) {
     case "percentile":
       return "Colours span the middle 90% of values";
@@ -707,7 +710,7 @@ export function rampScopeText(domain: RampDomain): string {
     case "uniform":
       return (
         `One colour: all ${fmtNumber(domain.count)} values ` +
-        `identical (${fmtNumber(domain.p50 ?? domain.min)})`
+        `identical (${formatValue(domain.p50 ?? domain.min, indicator)})`
       );
     case "empty":
       return "No colours: no data yet";
@@ -729,7 +732,6 @@ export function renderLegend(
   total: number,
 ): void {
   container.hidden = false;
-  const unit = indicator.unit ? unitLabel(indicator.unit) : "";
   // Every value the legend prints goes through one formatter with the
   // indicator, so a bound at the cap reads "… (cap)" exactly as the median does.
   const bound = (n: number): string => escapeHtml(formatValue(n, indicator));
@@ -737,7 +739,7 @@ export function renderLegend(
     domain.fromStats && domain.p50 !== null
       ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
       : "";
-  const scopeRow = `<div class="scope">${rampScopeText(domain)}</div>`;
+  const scopeRow = `<div class="scope">${escapeHtml(rampScopeText(domain, indicator))}</div>`;
   // The distribution, and a slot the hover handler rewrites in place.
   //
   // Kept as a sibling of the gradient rather than replacing it: the gradient
@@ -748,7 +750,7 @@ export function renderLegend(
     rampMin: domain.min,
     rampMax: domain.max,
     median: domain.p50,
-  }, unit);
+  }, indicator);
   const distBlock = dist ? `<div class="dist-wrap" data-distribution>${dist}</div>` : "";
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
@@ -839,7 +841,7 @@ export function markLegendValue(
       median: domain.p50,
       hovered: value,
     },
-    indicator.unit ? unitLabel(indicator.unit) : "",
+    indicator,
   );
 }
 

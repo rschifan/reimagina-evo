@@ -27,7 +27,7 @@
  * assistive technology and a hover tooltip both read for free.
  */
 import type { ValueHistogram } from "./api";
-import { fmtNumber } from "./format";
+import { fmtNumber, formatValue, unitLabel } from "./format";
 
 /** Bins requested from the API. */
 export const HISTOGRAM_BINS = 24;
@@ -70,15 +70,22 @@ export function binOf(value: number, histogram: ValueHistogram): number | null {
   return Math.max(0, Math.min(histogram.bins - 1, raw));
 }
 
-/** Inclusive-exclusive edges of a bin, as a readable range. */
+/** What a bin label needs to know about the indicator: its unit and cap. */
+export type BinIndicator = { unit: string | null; cap_value?: number | null };
+
+/**
+ * Inclusive-exclusive edges of a bin, as a readable range. The one-bin
+ * histogram of identical values is a value, so it reads like every other
+ * value the legend prints (`1,500 m+ (cap)` at the cap).
+ */
 export function binLabel(
   index: number,
   histogram: ValueHistogram,
-  unit: string,
+  indicator: BinIndicator,
 ): string {
-  const suffix = unit ? ` ${unit}` : "";
+  const suffix = indicator.unit ? ` ${unitLabel(indicator.unit)}` : "";
   if (histogram.width <= 0) {
-    return `${fmtNumber(histogram.lo)}${suffix}`;
+    return formatValue(histogram.lo, indicator);
   }
   const lo = histogram.lo + index * histogram.width;
   const hi = lo + histogram.width;
@@ -103,7 +110,7 @@ function escapeAttr(value: string): string {
 export function distributionSvg(
   histogram: ValueHistogram | null,
   marks: DistributionMarks,
-  unit = "",
+  indicator: BinIndicator = { unit: null },
 ): string {
   if (!histogram || histogram.counts.length === 0) return "";
   const peak = Math.max(...histogram.counts);
@@ -127,7 +134,7 @@ export function distributionSvg(
       const y = VIEW_H - h;
       const current = hoveredBin === index;
       const cls = current ? "dist__bar dist__bar--current" : "dist__bar";
-      const label = `${count} at ${binLabel(index, histogram, unit)}`;
+      const label = `${count} at ${binLabel(index, histogram, indicator)}`;
       return (
         `<rect class="${cls}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" ` +
         `width="${Math.max(0, slot - 1).toFixed(2)}" height="${h.toFixed(2)}">` +

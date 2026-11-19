@@ -457,13 +457,13 @@ describe("a layer whose values are all identical", () => {
   it("is uniform, not a percentile ramp over a single point", () => {
     const d = rampDomainFromStats(noisy, indicator());
     expect(d.basis).toBe("uniform");
-    expect(rampScopeText(d)).toMatch(/all 16 values identical \(1,333\)/);
-    expect(rampScopeText(d)).not.toMatch(/p05/);
+    expect(rampScopeText(d, indicator())).toMatch(/all 16 values identical \(1,333 units\/ha\)/);
+    expect(rampScopeText(d, indicator())).not.toMatch(/p05/);
   });
 
   it("prints the identical value without padded decimals", () => {
     const d = rampDomainFromStats(stats({ count: 16, min: 12.5, max: 12.5, p05: 12.5, p50: 12.5, p95: 12.5 }), indicator());
-    expect(rampScopeText(d)).toContain("identical (12.5)");
+    expect(rampScopeText(d, indicator())).toContain("identical (12.5 units/ha)");
   });
 
   it("is uniform at the epsilon the server really produces, at any magnitude", () => {

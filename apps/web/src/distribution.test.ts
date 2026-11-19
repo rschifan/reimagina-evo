@@ -80,19 +80,19 @@ describe("positionOf", () => {
 
 describe("binLabel", () => {
   it("names a bin's edges with the unit", () => {
-    expect(binLabel(0, histogram(), "m")).toBe("0 – 25 m");
+    expect(binLabel(0, histogram(), { unit: "m" })).toBe("0 – 25 m");
   });
 
   it("omits the unit when the indicator has none", () => {
-    expect(binLabel(1, histogram(), "")).toBe("25 – 50");
+    expect(binLabel(1, histogram(), { unit: null })).toBe("25 – 50");
   });
 
   it("names the single value when every value is identical", () => {
-    expect(binLabel(0, FLAT, "m")).toBe("42 m");
+    expect(binLabel(0, FLAT, { unit: "m" })).toBe("42 m");
   });
 
   it("prints bin edges without padded decimals, like the rest of the legend", () => {
-    expect(binLabel(0, histogram({ width: 12.5 }), "m")).toBe("0 – 12.5 m");
+    expect(binLabel(0, histogram({ width: 12.5 }), { unit: "m" })).toBe("0 – 12.5 m");
   });
 });
 
@@ -167,7 +167,7 @@ describe("distributionSvg", () => {
     const svg = distributionSvg(
       histogram(),
       { rampMin: 0, rampMax: 100, median: 20 },
-      "m",
+      { unit: "m" },
     );
     expect(svg).toContain("<title>12 at 0 – 25 m</title>");
   });
@@ -177,7 +177,7 @@ describe("distributionSvg", () => {
       rampMin: 0,
       rampMax: 100,
       median: null,
-    }, '"><script>alert(1)</script>');
+    }, { unit: '"><script>alert(1)</script>' });
     expect(svg).not.toContain("<script>");
     expect(svg).toContain("&lt;script&gt;");
   });
