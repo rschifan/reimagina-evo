@@ -5,7 +5,6 @@ import {
   binLabel,
   binOf,
   distributionSvg,
-  percentileOf,
   positionOf,
 } from "./distribution";
 
@@ -78,35 +77,6 @@ describe("positionOf", () => {
   });
 });
 
-describe("percentileOf", () => {
-  it("uses the mid-rank of the value's own bin", () => {
-    // 12 below the second bin, half of its 5 → 14.5 of 20.
-    expect(percentileOf(30, histogram())).toBe(73);
-  });
-
-  // ⚠ The phrasing bug this estimator exists to avoid. Counting a value's
-  // whole bin as "below" puts every value in the top bin at 100 %, which
-  // renders as "higher than 100% of features" — wrong, and obviously wrong,
-  // on exactly the outlier a planner is most likely to click.
-  it("never reports a value as higher than all of them", () => {
-    expect(percentileOf(100, histogram())).toBeLessThan(100);
-    expect(percentileOf(100, histogram())).toBeGreaterThan(90);
-  });
-
-  it("never reports the minimum as higher than none of them", () => {
-    expect(percentileOf(0, histogram())).toBeGreaterThan(0);
-  });
-
-  it("declines to rank a population of one", () => {
-    // "higher than 50%" with a single feature is an artefact of the
-    // arithmetic, not a finding.
-    expect(percentileOf(42, FLAT)).toBeNull();
-  });
-
-  it("has no rank for a value outside the range", () => {
-    expect(percentileOf(999, histogram())).toBeNull();
-  });
-});
 
 describe("binLabel", () => {
   it("names a bin's edges with the unit", () => {

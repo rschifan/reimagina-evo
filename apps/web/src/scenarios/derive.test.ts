@@ -44,6 +44,7 @@ const indicator = (statistic: "sum" | "median"): ReachableIndicator => ({
   applies_to: ["block"],
   valid_min: 0,
   valid_max: 1,
+  cap_value: null,
   statistic,
 });
 

@@ -29,8 +29,8 @@ import type {
   TileSource,
   ValueHistogram,
 } from "./api";
-import { distributionSvg, percentileOf } from "./distribution";
-import { escapeHtml, fmtNumber } from "./format";
+import { distributionSvg } from "./distribution";
+import { escapeHtml, fmtNumber, formatValue, unitLabel } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
 import type { SelectionController } from "./selection";
@@ -41,8 +41,27 @@ import { mvtProvider, type TooltipController } from "./tooltip";
 const OVERLAY_SOURCE = "indicator_overlay";
 const OVERLAY_LAYER = "indicator_overlay__fill";
 const OVERLAY_LINE_LAYER = "indicator_overlay__line";
-const RAMP_START = "#f7fbff";
-const RAMP_END = "#08306b";
+/**
+ * The value ramp, light to dark: ColorBrewer Blues without its darkest step
+ * (`#08306b`), which sank into the dark map background and hid the high end.
+ * Both the fill and the legend gradient are built from these.
+ */
+export const RAMP_STOPS = ["#f7fbff", "#08519c"] as const;
+
+/**
+ * Features at or past an indicator's declared `cap_value` (value mode only).
+ *
+ * A violet-magenta: off the blue ramp, and not the delta palette's teal, red or
+ * amber, so a cap block cannot read as a point on either scale. Checked with
+ * the dataviz validator (OKLab ΔE×100; CVD = min of protan/deutan sim) against
+ * the dark map surface `#1a1a19` and five RGB samples of the ramp
+ * (`#f7fbff #bbd1e6 #80a6ce #447cb5 #08519c`) plus every delta colour:
+ * OKLCH L 0.62 / C ≥ 0.1 (inside the dark band); contrast 4.84:1 on the
+ * surface; worst normal-vision ΔE 25.3 (ramp `#80a6ce`; floor 15); worst CVD
+ * ΔE 11.4 (ramp `#447cb5`; target 8); vs `DELTA_NEW` 39.2 / 36.3, vs
+ * `DELTA_BAD` 27.7 / 27.7, vs `DELTA_GOOD` 37.0 / 18.8.
+ */
+export const CAP_COLOR = "#cc44ff";
 
 /**
  * The delta palette: green for an improvement, red for a deterioration, grey
@@ -384,21 +403,28 @@ export function deltaScopeText(domain: DeltaDomain, unit: string | null): string
 
 
 /**
- * The baseline colour expression: `value_numeric` on a light-to-dark blue ramp.
- *
- * Lifted out of `activateIndicator` unchanged so the delta ramp has something
- * to be compared against.
+ * The value colour expression: `value_numeric` on a light-to-dark blue ramp,
+ * and, when the indicator declares a cap, {@link CAP_COLOR} at or past it.
  */
-export function valueRamp(domain: RampDomain): ExpressionSpecification {
+export function valueRamp(
+  domain: RampDomain,
+  capValue: number | null = null,
+): ExpressionSpecification {
   // If domain.max==min we've got a degenerate range; widen so the linear
   // interpolation doesn't divide by zero (MapLibre silently produces NaN).
   const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
-  return [
+  const ramp: ExpressionSpecification = [
     "interpolate",
     ["linear"],
     ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
-    domain.min, RAMP_START,
-    rampMax, RAMP_END,
+    domain.min, RAMP_STOPS[0],
+    rampMax, RAMP_STOPS[1],
+  ];
+  if (capValue === null) return ramp;
+  return [
+    "case",
+    [">=", ["to-number", ["get", "value_numeric"]], capValue], CAP_COLOR,
+    ramp,
   ];
 }
 
@@ -478,7 +504,7 @@ export function activateIndicator(
       // character, look there before looking here.
       "fill-color": asDelta && delta
         ? deltaFill({ min: -delta.limit, max: delta.limit }, delta.higherIsBetter)
-        : valueRamp(domain),
+        : valueRamp(domain, indicator.cap_value ?? null),
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
     },
@@ -565,12 +591,7 @@ export function activateIndicator(
           if (raw === undefined || raw === null) return null;
           const num = typeof raw === "number" ? raw : Number(raw);
           if (Number.isNaN(num)) return null;
-          const formatted = fmtNumber(num);
-          const unit = indicator.unit ? ` ${indicator.unit}` : "";
-          return {
-            title: indicator.name,
-            detail: `${formatted}${unit}`,
-          };
+          return { title: indicator.name, detail: formatValue(num, indicator) };
         },
       })),
     );
@@ -673,13 +694,21 @@ export function rampScopeText(domain: RampDomain): string {
 }
 
 
+/**
+ * The value legend. With a `cap_value`, a cap swatch and, when the exact
+ * `countAtCap` is known, its share of `total` ("62% of blocks at the 1,500 m
+ * cap"); without one, no cap wording at all.
+ */
 export function renderLegend(
   container: HTMLElement,
   indicator: IndicatorSummary,
   domain: RampDomain,
-  histogram: ValueHistogram | null = null,
+  histogram: ValueHistogram | null,
+  countAtCap: number | null,
+  total: number,
 ): void {
   container.hidden = false;
+  const unit = indicator.unit ? unitLabel(indicator.unit) : "";
   const p50Row =
     domain.fromStats && domain.p50 !== null
       ? `<div class="p50">median · ${formatNumber(domain.p50)}</div>`
@@ -695,20 +724,35 @@ export function renderLegend(
     rampMin: domain.min,
     rampMax: domain.max,
     median: domain.p50,
-  }, indicator.unit ?? "");
-  const distBlock = dist
-    ? `<div class="dist-wrap" data-distribution>${dist}</div>` +
-      `<div class="dist-readout" data-readout hidden></div>`
-    : "";
+  }, unit);
+  const distBlock = dist ? `<div class="dist-wrap" data-distribution>${dist}</div>` : "";
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
-    <div class="gradient"></div>
+    <div class="gradient" style="background: linear-gradient(to right, ${RAMP_STOPS.join(", ")})"></div>
     <div class="bounds"><span>${formatNumber(domain.min)}</span><span>${formatNumber(domain.max)}</span></div>
-    <div class="unit">${escapeHtml(indicator.unit ?? "")}</div>
+    <div class="unit">${escapeHtml(unit)}</div>
+    ${capRows(indicator, countAtCap, total)}
     ${distBlock}
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+function capRows(indicator: IndicatorSummary, countAtCap: number | null, total: number): string {
+  const cap = indicator.cap_value ?? null;
+  if (cap === null) return "";
+  const swatch =
+    `<div class="cap-key"><i class="cap-key__swatch" style="background: ${CAP_COLOR}"></i>` +
+    `${escapeHtml(formatValue(cap, indicator))}</div>`;
+  if (countAtCap === null || total <= 0) return swatch;
+  const pct = (countAtCap / total) * 100;
+  // A handful of capped blocks must not round to a claim of none.
+  const share = countAtCap > 0 && pct < 1 ? "<1" : String(Math.round(pct));
+  // ponytail: grain word from the finest declared grain; capped indicators are block-only today.
+  const grain = (GRAIN_LABELS[indicator.applies_to?.[0] ?? ""] ?? "features").toLowerCase();
+  const capText = formatValue(cap, { ...indicator, cap_value: null });
+  return swatch + `<div class="cap-share">${share}% of ${grain} at the ${escapeHtml(capText)} cap</div>`;
 }
 
 
@@ -753,6 +797,9 @@ export function renderDeltaLegend(
  * Called from the hover path, so it must be cheap and must not re-render the
  * whole legend: rebuilding `innerHTML` on every mousemove would drop the
  * `<title>` tooltips mid-hover and churn the DOM at pointer rate.
+ *
+ * Only a mark, no rank: the client has 24 histogram bins, and a bin-level rank
+ * would disagree with the exact one the server gives elsewhere.
  */
 export function markLegendValue(
   container: HTMLElement,
@@ -762,8 +809,7 @@ export function markLegendValue(
   value: number | null,
 ): void {
   const wrap = container.querySelector<HTMLElement>("[data-distribution]");
-  const readout = container.querySelector<HTMLElement>("[data-readout]");
-  if (!wrap || !readout || !histogram) return;
+  if (!wrap || !histogram) return;
   wrap.innerHTML = distributionSvg(
     histogram,
     {
@@ -772,23 +818,8 @@ export function markLegendValue(
       median: domain.p50,
       hovered: value,
     },
-    indicator.unit ?? "",
+    indicator.unit ? unitLabel(indicator.unit) : "",
   );
-  if (value === null) {
-    readout.hidden = true;
-    readout.textContent = "";
-    return;
-  }
-  const pct = percentileOf(value, histogram);
-  const unit = indicator.unit ? ` ${indicator.unit}` : "";
-  readout.hidden = false;
-  // "higher than 81% of blocks" rather than "p81": a rank stated as a
-  // comparison is a finding, and a bare number is another reading of the
-  // same thing the map already shows.
-  readout.textContent =
-    pct === null
-      ? `${formatNumber(value)}${unit}`
-      : `${formatNumber(value)}${unit} · higher than ${pct}% of features`;
 }
 
 

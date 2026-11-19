@@ -1,7 +1,18 @@
+import { createExpression } from "@maplibre/maplibre-gl-style-spec";
+import type { ExpressionSpecification } from "maplibre-gl";
 import { describe, expect, it } from "vitest";
 
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
-import { rampDomainFromStats, rampScopeText } from "./choropleth";
+import {
+  CAP_COLOR,
+  DELTA_NEUTRAL,
+  DELTA_NEW,
+  deltaStops,
+  RAMP_STOPS,
+  rampDomainFromStats,
+  rampScopeText,
+  valueRamp,
+} from "./choropleth";
 
 /** A catalog entry whose safety bounds are nothing like a view range. */
 function indicator(overrides: Partial<IndicatorSummary> = {}): IndicatorSummary {
@@ -115,5 +126,51 @@ describe("rampScopeText", () => {
     );
     expect(text).toContain("p05");
     expect(text).toContain("p95");
+  });
+});
+
+/** What MapLibre's own engine paints for `value_numeric`, as `#rrggbb`. */
+function paintedAt(expression: ExpressionSpecification, value: number): string {
+  const compiled = createExpression(expression, "fill-color", {
+    type: "color",
+    "property-type": "data-driven",
+    expression: { interpolated: true, parameters: ["zoom", "feature"] },
+  } as never);
+  if (compiled.result !== "success") throw new Error("MapLibre rejects the ramp");
+  const c = compiled.value.evaluate({ zoom: 12 } as never, {
+    type: 3,
+    properties: { value_numeric: value },
+  } as never) as { r: number; g: number; b: number };
+  return "#" + [c.r, c.g, c.b].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+}
+
+describe("valueRamp and the cap", () => {
+  const domain = rampDomainFromStats(
+    stats({ count: 19058, min: 0, p05: 400, p50: 1500, p95: 1500, max: 1500 }),
+    indicator(),
+  );
+
+  it("paints values at or past the cap in the cap colour", () => {
+    const ramp = valueRamp(domain, 1500);
+    expect(ramp[0]).toBe("case");
+    expect(paintedAt(ramp, 1500)).toBe(CAP_COLOR);
+    expect(paintedAt(ramp, 1600)).toBe(CAP_COLOR);
+    expect(paintedAt(ramp, 1499)).not.toBe(CAP_COLOR);
+  });
+
+  it("has no cap colour anywhere when the indicator declares no cap", () => {
+    expect(JSON.stringify(valueRamp(domain, null))).not.toContain(CAP_COLOR);
+  });
+
+  it("keeps the ramp's high end off the darkest blue, which vanishes on the map", () => {
+    expect(RAMP_STOPS).not.toContain("#08306b");
+    expect(JSON.stringify(valueRamp(domain, null))).not.toContain("#08306b");
+  });
+
+  it("uses a cap colour the scenario delta palette does not", () => {
+    for (const higherIsBetter of [true, false]) {
+      expect(deltaStops(higherIsBetter)).not.toContain(CAP_COLOR);
+    }
+    expect([DELTA_NEW, DELTA_NEUTRAL, ...RAMP_STOPS]).not.toContain(CAP_COLOR);
   });
 });

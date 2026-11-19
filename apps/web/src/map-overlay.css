@@ -45,10 +45,11 @@
   gap: 6px;
 }
 
+/* The gradient's colours are set inline from `RAMP_STOPS` / `deltaStops`
+   in `choropleth.ts`, so the swatch cannot drift from the fill. */
 .legend .gradient {
   height: 12px;
   border-radius: 3px;
-  background: linear-gradient(to right, #f7fbff, #08306b);
 }
 
 /* The difference legend: what the non-ramp colours mean. Swatches are drawn
@@ -66,13 +67,15 @@
   gap: 4px 12px;
 }
 
-.legend .delta-key__item {
+.legend .delta-key__item,
+.legend .cap-key {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.legend .delta-key__swatch {
+.legend .delta-key__swatch,
+.legend .cap-key__swatch {
   display: inline-block;
   width: 12px;
   height: 12px;
@@ -144,10 +147,4 @@
   stroke: #22d3ee;
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
-}
-
-.legend .dist-readout {
-  font-variant-numeric: tabular-nums;
-  color: #22d3ee;
-  min-height: 16px;
 }

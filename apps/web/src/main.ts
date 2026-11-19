@@ -426,7 +426,9 @@ async function main(): Promise<void> {
         });
       }
       const histogram = stats?.histogram ?? null;
-      if (legend) renderLegend(legend, indicator, domain, histogram);
+      if (legend) {
+        renderLegend(legend, indicator, domain, histogram, stats?.count_at_cap ?? null, stats?.count ?? 0);
+      }
       // The hovered feature's place in the distribution. Registered after
       // the legend exists, and re-registered per render so it closes over
       // this indicator's histogram rather than a stale one.

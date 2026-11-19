@@ -184,7 +184,9 @@
     if (myToken !== renderToken || !map) return;
     const domain = rampDomainFromStats(stats, current);
     activateIndicator(map, config, current, domain, tooltips, aoiId, selection, grain, scenarioId);
-    renderLegend(legend, current, domain, stats?.histogram ?? null);
+    renderLegend(
+      legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
+    );
     mapNote = stats && stats.count === 0 ? noValuesNote(current.name, scenarioId !== null) : "";
   }
 

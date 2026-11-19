@@ -23,6 +23,11 @@ export interface IndicatorSummary {
   applies_to: string[];
   valid_min: number | null;
   valid_max: number | null;
+  /** A bound that means "beyond measurement" (the distance indicators report
+   *  1500 m for an unreachable block); ``null`` when there is none. Unlike
+   *  ``valid_min``/``valid_max``, which only validate, this changes how a value
+   *  reads and paints. */
+  cap_value: number | null;
 }
 
 export interface TileSource {
@@ -77,6 +82,10 @@ export interface IndicatorValueStats {
   max: number | null;
   /** Over the same rows as ``count``; ``null`` when there are none. */
   sum: number | null;
+  /** Rows ``>= cap_value`` over the same rows as ``count``; ``null`` when the
+   *  indicator has no cap. Optional only so fixtures written before the field
+   *  still type; the API always sends it. */
+  count_at_cap?: number | null;
   /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
   histogram: ValueHistogram | null;
 }

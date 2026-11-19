@@ -14,9 +14,9 @@
     type IndicatorLineage,
     type IndicatorStats,
   } from "./api";
-  import { boundsFraction, capNotes, familyOf, unitLabel } from "./derive";
+  import { boundsFraction, capNotes, familyOf } from "./derive";
   import { isAbortError } from "../http";
-  import { fmtNumber } from "../format";
+  import { fmtNumber, unitLabel } from "../format";
   import { catalog, statsFor } from "./store.svelte";
 
   let { slug }: { slug: string } = $props();

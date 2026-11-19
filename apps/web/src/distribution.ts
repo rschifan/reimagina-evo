@@ -171,34 +171,3 @@ export function distributionSvg(
     `${ramp}${bars}${median}${cursor}</svg>`
   );
 }
-
-/**
- * Where a value sits among the others, as a percentage, or ``null``.
- *
- * The **mid-rank** estimator: everything in lower bins, plus half of the
- * value's own bin. Two reasons, and the second is the one that shows.
- *
- * A bin's members are indistinguishable at this resolution, so counting the
- * whole bin as "below" would be a claim the data does not support. And
- * counting it as below puts every value in the top bin at 100 %, which
- * renders as "higher than 100% of blocks" — a sentence that is both wrong
- * and obviously wrong, on exactly the outlier a planner is most likely to
- * click.
- *
- * Returns ``null`` for a population of one, where there is no comparison to
- * make and "higher than 50%" would be an artefact of the arithmetic rather
- * than a finding.
- */
-export function percentileOf(
-  value: number,
-  histogram: ValueHistogram,
-): number | null {
-  const total = histogram.counts.reduce((a, b) => a + b, 0);
-  if (total < 2) return null;
-  const bin = binOf(value, histogram);
-  if (bin === null) return null;
-  let below = 0;
-  for (let i = 0; i < bin; i += 1) below += histogram.counts[i];
-  const rank = below + histogram.counts[bin] / 2;
-  return Math.round((rank / total) * 100);
-}
