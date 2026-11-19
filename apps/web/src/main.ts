@@ -104,6 +104,9 @@ interface AppState {
    *  the indicator's finest grain and is re-derived on every pick, so
    *  a coarse choice never leaks onto an indicator that lacks it. */
   activeGrain: string | null;
+  /** The grain the overlay is actually drawn at (set once it is drawn), so
+   *  a pin knows what it pinned. */
+  drawnGrain: string | null;
   /**
    * Places the hovered feature's value in the legend's distribution.
    *
@@ -196,6 +199,7 @@ async function main(): Promise<void> {
   const state: AppState = {
     activeIndicator: null,
     activeGrain: null,
+    drawnGrain: null,
   };
 
   const map = createMap("map", FALLBACK_CENTER, FALLBACK_ZOOM);
@@ -315,8 +319,6 @@ async function main(): Promise<void> {
     const inspectorEl = document.getElementById("inspector");
     let pinned: { id: string; grain: string | null; rows: FeatureIndicatorValue[] | string } | null = null;
     let pinRequest: AbortController | null = null;
-    // The grain the overlay is drawn at, so a pin knows what it pinned.
-    let drawnGrain: string | null = null;
     // What the selection card asks about: the indicator being rendered, at its
     // grain, and once its stats arrive, the legend's AOI-wide median.
     let cardContext: CardContext = renderingContext(null, null);
@@ -353,7 +355,7 @@ async function main(): Promise<void> {
 
     async function pin(id: string): Promise<void> {
       closeInspector();
-      const mine: NonNullable<typeof pinned> = { id, grain: drawnGrain, rows: "Loading…" };
+      const mine: NonNullable<typeof pinned> = { id, grain: state.drawnGrain, rows: "Loading…" };
       pinned = mine;
       setOverlayPinned(map, overlayConfig, id, true);
       showInspector();
@@ -519,12 +521,12 @@ async function main(): Promise<void> {
       activateIndicator(map, overlayConfig, indicator, domain, {
         tooltips: tooltipController, aoiId, grain, pinHint: true,
       });
-      drawnGrain = grain ?? null;
+      state.drawnGrain = grain ?? null;
       // The new source has no feature-state: re-outline the pinned block and
       // show the new indicator's rank. A pin from another grain is a
       // different feature, so it closes.
       if (pinned) {
-        if (pinned.grain === drawnGrain) {
+        if (pinned.grain === state.drawnGrain) {
           setOverlayPinned(map, overlayConfig, pinned.id, true);
           showInspector();
         } else {
