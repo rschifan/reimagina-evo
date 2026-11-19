@@ -4,9 +4,15 @@
   import Badge from "../lib/components/ui/Badge.svelte";
   import FacetBar from "./FacetBar.svelte";
   import { catalog } from "./store.svelte";
-  import { familyOf, filtersToHash, type Filters } from "./derive";
+  import { familyOf, filtersToHash, unitLabel, type Filters } from "./derive";
 
   const rows = $derived(catalog.visible);
+  const withValues = $derived(catalog.indicators.filter((i) => i.has_values).length);
+  // Every indicator is a block indicator today; a column that never varies is
+  // reading cost for nothing. It returns when a second grain does.
+  const showGrain = $derived(Object.keys(catalog.facets.grain).length > 1);
+  const TH =
+    "px-4 py-2.5 font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase";
 
   /** Navigate when the row is clicked anywhere, without turning the row into
    *  a second tab stop — the name anchor is already the keyboard target, and
@@ -36,7 +42,9 @@
 
   <p class="font-mono text-[11px] text-muted-foreground" data-numeric>
     {rows.length} of {catalog.total} indicators
-    {#if catalog.activeAoiId}· scoped to the active AOI{/if}
+    {#if catalog.activeAoi}
+      · {withValues} have values in {catalog.activeAoi.name}
+    {/if}
   </p>
 
   {#if catalog.loading}
@@ -49,7 +57,7 @@
     <div class="rounded-lg border border-dashed border-line p-8 text-center">
       <p class="text-sm">No indicator matches these filters.</p>
       <p class="mt-1 text-xs text-muted-foreground">
-        {catalog.total} exist in the catalog — widen the search or clear a facet.
+        {catalog.total} exist in the catalog — widen the search or clear a filter.
       </p>
     </div>
   {:else}
@@ -60,28 +68,27 @@
       when it is itself a containing block. This wrapper was `static`, and
       Tailwind's `sr-only` is `position: absolute` — so the "Open" label in
       the last header cell escaped the scroll box, laid out at the table's
-      full width, and made the *document* scroll sideways. Measured at
-      390 px: `window.scrollX` reached 320 on a page whose body was 390 wide,
-      with the table itself correctly clipped the whole time. The symptom is
-      a page that drifts under your thumb and snaps back, and nothing in the
-      table is responsible for it.
+      full width, and made the *document* scroll sideways.
     -->
     <div class="relative overflow-x-auto rounded-lg border border-line">
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="border-b border-line text-left">
-            <th scope="col" class="px-4 py-2.5 font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase">Indicator</th>
-            <th scope="col" class="px-4 py-2.5 font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase">Family</th>
-            <th scope="col" class="px-4 py-2.5 font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase">Grain</th>
-            <th scope="col" class="px-4 py-2.5 font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase">Unit</th>
-            <th scope="col" class="px-4 py-2.5 text-right font-mono text-[10px] tracking-[0.09em] font-medium text-muted-foreground uppercase">Declared range</th>
+            <th scope="col" class={TH}>Indicator</th>
+            <th scope="col" class={`${TH} max-md:hidden`}>Family</th>
+            <th scope="col" class={`${TH} max-md:hidden`}>Kind</th>
+            {#if showGrain}
+              <th scope="col" class={`${TH} max-md:hidden`}>Grain</th>
+            {/if}
+            <th scope="col" class={`${TH} max-md:hidden`}>Unit</th>
+            <th scope="col" class={`${TH} text-right max-lg:hidden`}>Declared range</th>
             <th scope="col" class="w-8"><span class="sr-only">Open</span></th>
           </tr>
         </thead>
         <tbody>
           {#each rows as row (row.slug)}
             <tr
-              class="cursor-pointer border-b border-line/60 last:border-0 hover:bg-accent/5
+              class="cursor-pointer border-b border-line/60 align-top last:border-0 hover:bg-accent/5
                      has-[a:focus-visible]:bg-accent/5"
               onclick={(e) => onRowClick(e, row.slug)}
             >
@@ -91,30 +98,49 @@
                   class="block rounded focus-visible:outline-2"
                 >
                   <span class="text-foreground">{row.name}</span>
-                  <span class="mt-0.5 block font-mono text-[10.5px] text-muted-foreground">
-                    {row.slug}
-                  </span>
+                  {#if row.has_values === false}
+                    <span class="ml-1.5 align-middle">
+                      <Badge tone="stale">no values here</Badge>
+                    </span>
+                  {/if}
                 </a>
-              </td>
-              <td class="px-4 py-2.5">
-                <Badge>{familyOf(row.slug)}</Badge>
-              </td>
-              <td class="px-4 py-2.5">
-                <span class="flex gap-1">
-                  {#each row.applies_to as grain (grain)}
-                    <Badge tone="accent">{grain}</Badge>
-                  {/each}
+                {#if row.description}
+                  <p class="mt-0.5 line-clamp-1 max-w-prose text-[12px] text-muted-foreground" title={row.description}>
+                    {row.description}
+                  </p>
+                {/if}
+                <span class="mt-0.5 block font-mono text-[10.5px] text-muted-foreground">
+                  {row.slug}
+                </span>
+                <!-- The columns hidden below md, folded into one line. -->
+                <span class="mt-0.5 block font-mono text-[10.5px] text-muted-foreground md:hidden">
+                  {familyOf(row)} · {row.computation_kind} · {unitLabel(row.unit)}
                 </span>
               </td>
-              <td class="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-                {row.unit ?? "—"}
+              <td class="px-4 py-2.5 max-md:hidden">
+                <Badge>{familyOf(row)}</Badge>
               </td>
-              <td class="px-4 py-2.5 text-right font-mono text-[11px] text-muted-foreground" data-numeric>
+              <td class="px-4 py-2.5 font-mono text-[11px] text-muted-foreground max-md:hidden">
+                {row.computation_kind}
+              </td>
+              {#if showGrain}
+                <td class="px-4 py-2.5 max-md:hidden">
+                  <span class="flex gap-1">
+                    {#each row.applies_to as grain (grain)}
+                      <Badge tone="accent">{grain}</Badge>
+                    {/each}
+                  </span>
+                </td>
+              {/if}
+              <td class="px-4 py-2.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground max-md:hidden">
+                {unitLabel(row.unit)}
+              </td>
+              <td class="px-4 py-2.5 text-right font-mono text-[11px] whitespace-nowrap text-muted-foreground max-lg:hidden" data-numeric>
                 {row.valid_min ?? "—"} – {row.valid_max ?? "—"}
               </td>
-              <td class="px-2 text-right">
+              <td class="px-2 py-2.5 text-right">
                 <ChevronRight
-                  class="inline size-4 text-muted-foreground transition-transform"
+                  class="inline size-4 text-muted-foreground"
                   aria-hidden="true"
                 />
               </td>

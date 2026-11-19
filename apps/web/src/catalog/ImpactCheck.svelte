@@ -1,5 +1,6 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
+  import { catalog } from "./store.svelte";
   import {
     listChangeInputs,
     previewImpact,
@@ -115,6 +116,12 @@
    * difference that is not there. The dataset button is the honest control; the
    * marker is named on it instead.
    */
+  /** The planner's relation codes, in words. The code stays in the tooltip. */
+  const RELATION: Record<string, string> = {
+    within_radius: "nearby",
+    child_in_parent: "contained",
+  };
+
   const byDataset = $derived(
     inputs
       .filter((i) => !i.is_version_marker)
@@ -128,18 +135,19 @@
 <section class="rounded-lg border border-line">
   <header class="flex flex-wrap items-baseline gap-x-3 border-b border-line px-4 py-2">
     <h2 class="font-mono text-[11px] tracking-wide text-muted-foreground uppercase">
-      Recomputation check
+      What would recompute?
     </h2>
     <p class="text-[11px] text-muted-foreground">
-      Pick what changed; the planner says what it would recompute. A dry run —
-      nothing is submitted and nothing is written.
+      Pick what changed in the data to see which indicators would recompute, in
+      run order. Nothing runs until you press Run. Numbers count the indicators
+      that read each input.
     </p>
   </header>
 
   <!-- Two fixed columns, each scrolling internally. The panel's height never
        changes as you select, so the page underneath does not reflow. -->
   <div class="grid gap-0 sm:grid-cols-2">
-    <div class="max-h-72 overflow-y-auto border-line px-4 py-3 sm:border-r">
+    <div class="border-line px-4 py-3 sm:max-h-72 sm:overflow-y-auto sm:border-r">
       <div class="mb-2 flex items-baseline justify-end gap-2">
         {#if picked.size || pickedDatasets.size}
           <button
@@ -158,7 +166,7 @@
         <div class="mb-3">
           <div class="mb-1 flex items-baseline gap-2">
             <span class="font-mono text-[11px] text-foreground">{dataset}</span>
-            <span class="text-[10px] text-muted-foreground">dataset</span>
+            <span class="text-[10px] text-muted-foreground">attributes</span>
           </div>
           <div class="flex flex-wrap gap-1.5">
             {#each items as input (input.attribute)}
@@ -184,10 +192,10 @@
 
       {#if datasets.length}
         <div class="mt-3 border-t border-line/60 pt-2">
-          <div class="mb-1 flex items-baseline gap-2">
-            <span class="font-mono text-[11px] text-foreground">whole datasets</span>
+          <div class="mb-1 flex flex-wrap items-baseline gap-x-2">
+            <span class="font-mono text-[11px] whitespace-nowrap text-foreground">whole datasets</span>
             <span class="text-[10px] text-muted-foreground">
-              reloaded or edited — e.g. a street added to the network
+              reloaded or edited, e.g. a street added to the network
             </span>
           </div>
           <div class="flex flex-wrap gap-1.5">
@@ -195,7 +203,7 @@
               <button
                 type="button"
                 aria-pressed={pickedDatasets.has(d.dataset)}
-                title={`${d.indicators.length} indicator(s) declare an edge to ${d.dataset} (${d.relation})`}
+                title={`${d.indicators.length} indicator(s) read ${d.dataset} (${d.relation})`}
                 onclick={() => toggleDataset(d.dataset)}
                 class={`rounded border px-2 py-1 font-mono text-[11px] ${
                   pickedDatasets.has(d.dataset)
@@ -204,7 +212,7 @@
                 }`}
               >
                 {d.dataset}
-                <span class="ml-1 opacity-60">{d.relation}</span>
+                <span class="ml-1 opacity-60">{RELATION[d.relation] ?? d.relation}</span>
                 <span class="ml-1 opacity-60" data-numeric>{d.indicators.length}</span>
               </button>
             {/each}
@@ -215,8 +223,7 @@
       {#if unconsumed.length}
         <div class="mt-2 border-t border-line/60 pt-2">
           <p class="mb-1 text-[10px] text-muted-foreground">
-            Registered but consumed by no indicator — editing one recomputes
-            nothing, which is a coverage gap rather than a planner fault.
+            Read by no indicator, so changing these recomputes nothing:
           </p>
           <p class="font-mono text-[10.5px] text-muted-foreground">
             {unconsumed.join(" · ")}
@@ -225,7 +232,7 @@
       {/if}
     </div>
 
-    <div class="max-h-72 overflow-y-auto px-4 py-3">
+    <div class="border-t border-line px-4 py-3 sm:max-h-72 sm:overflow-y-auto sm:border-t-0">
       {#if error}
         <span class="font-mono text-[11px] text-state-error">{error}</span>
       {:else if !preview}
@@ -246,14 +253,17 @@
         </div>
         <ol class="mt-2 space-y-0.5">
           {#each preview.indicators as slug, i (slug)}
-            <li class="font-mono text-[11px]">
-              <span class="text-muted-foreground" data-numeric>{i + 1}.</span>
-              {slug}
+            <li class="flex items-baseline gap-1.5 text-[12px]">
+              <span class="w-5 shrink-0 text-right font-mono text-[11px] text-muted-foreground" data-numeric>{i + 1}.</span>
+              <a href={`#/i/${encodeURIComponent(slug)}`} class="min-w-0 hover:underline">
+                {catalog.bySlug(slug)?.name ?? slug}
+                <span class="font-mono text-[10.5px] text-muted-foreground">{slug}</span>
+              </a>
             </li>
           {/each}
         </ol>
         <p class="mt-2 text-[10.5px] text-muted-foreground">
-          Dependency order — an indicator appears after the ones it reads.
+          Each indicator comes after the ones it reads.
         </p>
 
         <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-line/60 pt-3">
