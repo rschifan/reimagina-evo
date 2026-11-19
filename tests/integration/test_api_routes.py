@@ -700,6 +700,78 @@ def test_feature_indicators_rank_within_the_aoi(client, two_aois_one_block_each)
     assert unscoped[0]["count"] == 2
 
 
+def test_feature_indicators_count_below_and_equal_are_exact(
+    client, conn, seeded_many_blocks
+):
+    slug = seeded_many_blocks["slug"]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT feature_id::text FROM curated_geo.indicator_result "
+            "WHERE indicator_slug = %s ORDER BY feature_id",
+            (slug,),
+        )
+        ids = [r[0] for r in cur.fetchall()]
+        for fid, v in zip(ids, [0.1, 0.2, 0.3, 0.3, 0.3, 0.5, 0.6, 0.7], strict=True):
+            cur.execute(
+                "UPDATE curated_geo.indicator_result SET value_numeric = %s "
+                "WHERE feature_id = %s AND indicator_slug = %s",
+                (v, fid, slug),
+            )
+    tied = client.get(f"/features/{ids[3]}/indicators").json()[0]
+    assert (tied["count_below"], tied["count_equal"], tied["count"]) == (2, 3, 8)
+    five = client.get(f"/features/{ids[5]}/indicators").json()[0]
+    assert (five["count_below"], five["count_equal"], five["count"]) == (5, 1, 8)
+
+
+def test_feature_indicators_empty_aoi_population_keeps_the_row(
+    client, conn, two_aois_one_block_each
+):
+    from tests.integration._helpers import insert_project as _insert_project
+
+    f = two_aois_one_block_each
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    rows = client.get(f"/features/{f['block_a']}/indicators?aoi_id={empty_aoi}").json()
+    assert [r["slug"] for r in rows] == [f["slug"]]
+    assert (rows[0]["count"], rows[0]["count_below"], rows[0]["count_equal"]) == (
+        0,
+        0,
+        0,
+    )
+
+
+def test_feature_indicators_empty_for_a_feature_without_values(client, conn):
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="bare_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    bare = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+        dataset_version="v1",
+        source_record_ref="bare-blk",
+        geometry_wkt="POLYGON((-99.14 19.43,-99.137 19.43,-99.137 19.433,-99.14 19.433,-99.14 19.43))",
+    )
+    response = client.get(f"/features/{bare}/indicators")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 def test_feature_indicators_404_on_unknown_feature(client, conn):
     seed_catalog(conn)
     response = client.get("/features/00000000-0000-0000-0000-000000000000/indicators")

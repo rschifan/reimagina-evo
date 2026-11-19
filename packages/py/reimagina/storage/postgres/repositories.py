@@ -2824,6 +2824,8 @@ class PostgresIndicatorResultRepository:
         # The population is scoped exactly as value_stats scopes it (same
         # indicator, same feature type, current non-null rows, scenario
         # overlay, aoi_feature EXISTS) so the inspector agrees with /stats.
+        # LEFT JOIN: an empty population (the AOI holds none of this
+        # indicator's rows) still yields the row, with zero counts.
         mine_clause, mine_params = _scenario_overlay("m", scenario_id)
         pop_clause, pop_params = _scenario_overlay("p", scenario_id)
         aoi_clause = ""
@@ -2846,10 +2848,10 @@ class PostgresIndicatorResultRepository:
                        m.value_numeric AS value,
                        COUNT(*) FILTER (WHERE p.value_numeric < m.value_numeric) AS count_below,
                        COUNT(*) FILTER (WHERE p.value_numeric = m.value_numeric) AS count_equal,
-                       COUNT(*) AS count
+                       COUNT(p.feature_id) AS count
                 FROM curated_geo.indicator_result m
                 JOIN curated_geo.indicator_catalog c ON c.slug = m.indicator_slug
-                JOIN curated_geo.indicator_result p
+                LEFT JOIN curated_geo.indicator_result p
                   ON p.indicator_slug = m.indicator_slug
                  AND p.feature_type = m.feature_type
                  AND p.status = 'current'
