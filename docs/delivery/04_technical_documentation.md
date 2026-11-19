@@ -35,20 +35,15 @@ date: "20 November 2026"
 Re-measured on 19 November 2026, at migration `r051`: the install appendix in
 §10 (revision, table count, every test count), the acceptance run's duration
 in §7.1 and the size and generation time of the recovery territory in §6.1.
-Carried forward from an earlier measurement and not re-measured for this
-revision: the tile timing in §6.2 and the third-party dependency inventory.
+Carried forward from an earlier measurement: the tile timing in §6.2.
 
 ### About this document
 
-This document covers installation, configuration and operation. It assumes
+This document covers installation, configuration and operation; architecture
+is Work 1, and the schema and endpoint reference Work 3. It assumes
 familiarity with PostgreSQL, Python and the command line, but no prior
-knowledge of this system.
-
-The commands were executed against a clean clone of the delivered revision;
-§10 records that run, and §9 the failures met while writing it and what they
-mean.
-
-Architecture is Work 1; the schema and endpoint reference is Work 3.
+knowledge of this system. §10 records an install from a clean clone of the
+delivered revision; §9 the failures met while writing it and what they mean.
 
 ---
 
