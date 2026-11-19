@@ -2,7 +2,7 @@
   import { ArrowRight } from "@lucide/svelte";
 
   import type { DependencyEdge } from "./api";
-  import { unitLabel } from "./derive";
+  import { unitLabel } from "../format";
 
   let {
     slug,

@@ -22,16 +22,18 @@ domain packages don't import app code") holds.
 | GET | `/health/live` | `{status:"ok"}` — process alive. Never touches DB. |
 | GET | `/health/ready` | `{status, db}` — 200 iff DB is reachable, 503 otherwise. |
 | GET | `/health` | Alias for `/health/ready` (legacy). |
-| GET | `/indicators` | Every indicator in `indicator_catalog`. |
+| GET | `/indicators` | Every indicator in `indicator_catalog`. Each row carries `cap_value` — the value at which a distance indicator is truncated (e.g. `1500` m) — or `null` when it has none; a reading at the cap means "this far or more", not a measurement. |
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). |
-| GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`sum` is `null` with no rows — no values is no total). `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. |
+| GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`sum` is `null` with no rows — no values is no total). `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. `count_at_cap` is the number of those rows with `value >= cap_value`, `null` when the indicator has no cap. |
 | GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
 | GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. |
 | GET | `/indicators/{slug}/values.parquet` | GeoParquet byte payload (CRS=4326). |
 | GET | `/aois` | All AOIs. |
 | GET | `/aois/{aoi_id}/summaries` | Cached `aoi_indicator_summary` rows. 422 on malformed UUID. |
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features`. |
+| GET | `/features/{feature_id}/indicators` | The feature's current value for every indicator that has one, each with its exact rank among same-grain features of the AOI: `slug`, `name`, `unit`, `cap_value`, `value`, `count_below`, `count_equal`, `count`. Optional `aoi_id` (the peer set) and `scenario_id` (base city if omitted). 404 on an unknown feature. |
+| POST | `/metrics/indicator-within-polygon` | `/indicators/{slug}/stats` for the features whose centroid falls inside a GeoJSON Polygon. Body: `aoi_id`, `polygon` (EPSG:4326), `indicator_slug`, optional `feature_type`. Same response shape as `/stats`, including `count_at_cap`. 422 on a non-Polygon or non-finite polygon, 404 on an unknown indicator. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with snapshot registry; frontend-ready. |
 | GET | `/tile-sources/attribution` | Credit lines for every source that actually has features, from `data_source_catalog.license`. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
 | GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |

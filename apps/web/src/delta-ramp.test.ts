@@ -394,6 +394,11 @@ describe("deltaDomainFromComparison", () => {
     expect(text).toContain("95th percentile");
     expect(text).toMatch(/8(\.0+)? m/);
   });
+
+  it("prints its span with the app's one digit rule", () => {
+    const d = deltaDomainFromComparison(comparison([{ delta: 1500, state: "changed" }]));
+    expect(deltaScopeText(d, "m")).toContain("±1,500 m");
+  });
 });
 
 // ── the uniform-values legend ──────────────────────────────────────────
@@ -452,8 +457,13 @@ describe("a layer whose values are all identical", () => {
   it("is uniform, not a percentile ramp over a single point", () => {
     const d = rampDomainFromStats(noisy, indicator());
     expect(d.basis).toBe("uniform");
-    expect(rampScopeText(d)).toMatch(/all 16 values identical \(1333\)/);
-    expect(rampScopeText(d)).not.toMatch(/p05/);
+    expect(rampScopeText(d, indicator())).toMatch(/all 16 values identical \(1,333 units\/ha\)/);
+    expect(rampScopeText(d, indicator())).not.toMatch(/p05/);
+  });
+
+  it("prints the identical value without padded decimals", () => {
+    const d = rampDomainFromStats(stats({ count: 16, min: 12.5, max: 12.5, p05: 12.5, p50: 12.5, p95: 12.5 }), indicator());
+    expect(rampScopeText(d, indicator())).toContain("identical (12.5 units/ha)");
   });
 
   it("is uniform at the epsilon the server really produces, at any magnitude", () => {
@@ -560,7 +570,7 @@ describe("activateIndicator", () => {
     const { map, added } = fakeMap();
     activateIndicator(
       map, config, indicator(), value,
-      undefined, "a-1", undefined, "block", "s-1", deltaDomain,
+      { aoiId: "a-1", grain: "block", scenarioId: "s-1", delta: deltaDomain },
     );
     expect(String((added.sources[0].tiles as string[])[0])).toContain("&delta=true");
     const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
@@ -572,7 +582,7 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", undefined, "block", "s-1", { ...deltaDomain, higherIsBetter: higher },
+        { aoiId: "a-1", grain: "block", scenarioId: "s-1", delta: { ...deltaDomain, higherIsBetter: higher } },
       );
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
       expect(fill).toEqual(deltaFill({ min: -40, max: 40 }, higher));
@@ -584,11 +594,27 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", undefined, "block", scenario, delta,
+        { aoiId: "a-1", grain: "block", scenarioId: scenario, delta },
       );
       expect(String((added.sources[0].tiles as string[])[0])).not.toContain("delta");
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
       expect(fill).toEqual(valueRamp(value));
+    }
+  });
+
+  // Only the map page can pin; the scenario workspace must not promise it.
+  it("adds 'Click to pin' to the hover tooltip only when asked", () => {
+    for (const pinHint of [true, false]) {
+      const { map } = fakeMap();
+      let provider: { probe: (ctx: unknown) => unknown } | null = null;
+      const tooltips = { register: (p: typeof provider) => { provider = p; return () => undefined; } };
+      activateIndicator(
+        map, config, indicator(), value,
+        { tooltips: tooltips as never, aoiId: "a-1", grain: "block", pinHint },
+      );
+      const probeMap = { queryRenderedFeatures: () => [{ properties: { value_numeric: 12 } }] };
+      const content = provider!.probe({ map: probeMap, event: { point: { x: 0, y: 0 } } }) as { hint?: string };
+      expect(content.hint).toBe(pinHint ? "Click to pin" : undefined);
     }
   });
 });
@@ -601,20 +627,20 @@ describe("where the indicator is drawn in the layer stack", () => {
   // of everything and hid the area a rule is drawn over.
   it("goes under a drawn area, which stays on top", () => {
     const { map, order } = fakeMap(["basemap", "td-polygon", "td-polygon-outline", "td-point"]);
-    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    activateIndicator(map, config, indicator(), value, { aoiId: "a-1", grain: "block", scenarioId: null });
     expect(order.slice(-3)).toEqual(["td-polygon", "td-polygon-outline", "td-point"]);
     expect(order.indexOf("basemap")).toBe(0);
   });
 
   it("goes under a scenario's rule outlines too", () => {
     const { map, order } = fakeMap(["basemap", "scenario-rules-fill", "scenario-rules-line", "td-polygon"]);
-    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    activateIndicator(map, config, indicator(), value, { aoiId: "a-1", grain: "block", scenarioId: null });
     expect(order.slice(-3)).toEqual(["scenario-rules-fill", "scenario-rules-line", "td-polygon"]);
   });
 
   it("goes under the spotlight mask, which sits under the drawn area", () => {
     const { map, order } = fakeMap(["basemap", "__selection_mask__fill", "td-polygon"]);
-    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    activateIndicator(map, config, indicator(), value, { aoiId: "a-1", grain: "block", scenarioId: null });
     expect(order.slice(-2)).toEqual(["__selection_mask__fill", "td-polygon"]);
   });
 });

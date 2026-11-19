@@ -11,10 +11,13 @@ import geopandas as gpd
 import psycopg2.extras
 import pyarrow.parquet as pq
 
+from .._utils import POLYGON_COVERS_CENTROID as _POLYGON_COVERS_CENTROID
+from .._utils import aoi_exists as _aoi_exists
 from .._utils import is_run_id as _is_run_id
 from .._utils import normalize_json_value as _normalize_json_value
 from .._utils import scenario_filter as _scenario_filter
 from .._utils import scenario_overlay as _scenario_overlay
+from ..interfaces import FeatureNotFound
 
 
 #: Smallest share of a feature that must fall inside an AOI for it to count as a
@@ -1783,20 +1786,7 @@ class PostgresServingReader:
         #   - the per-row test is point-in-polygon, not polygon-vs-
         #     polygon.
         #
-        # ``ST_Covers`` (not ``ST_Contains``) on purpose: ST_Contains
-        # uses DE-9IM exclusive-boundary semantics — a centroid that
-        # lands EXACTLY on the polygon boundary is excluded. For
-        # grid-aligned manzanas whose ``ST_PointOnSurface`` can fall
-        # on a shared block edge, that produces silent undercount. The
-        # client-side ray-cast PIP in selection-filter.ts is also
-        # ambiguous at the boundary, so the two implementations could
-        # disagree on the same polygon. ST_Covers is the standard
-        # PostGIS recommendation for inclusive containment.
-        #
-        # Trade-off: features that straddle the boundary count if
-        # their centroid is inside or on the boundary, miss otherwise.
-        # Same approximation the legacy client-side path used and the
-        # same one humans intuit as "did the circle catch this?".
+        # Why ``ST_Covers``: see ``_utils.POLYGON_COVERS_CENTROID``.
         #
         # Bounded by aoi_id so a Mexicali selection doesn't
         # accidentally walk CDMX features. type_slug = ANY(%s) lets
@@ -1804,15 +1794,13 @@ class PostgresServingReader:
         # the panel.
         if not type_slugs:
             return {}
-        sql = """
+        covers = _POLYGON_COVERS_CENTROID.format(centroid="geometry_centroid")
+        sql = f"""
             SELECT type_slug, COUNT(*)::bigint AS n
             FROM serving_geo.feature_aoi_v
             WHERE aoi_id = %s
               AND type_slug = ANY(%s)
-              AND ST_Covers(
-                  ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326),
-                  geometry_centroid
-              )
+              AND {covers}
             GROUP BY type_slug
         """
         with self.connection.cursor() as cur:
@@ -2261,14 +2249,15 @@ class PostgresIndicatorCatalogRepository:
         unit: str | None = None,
         valid_min: float | None = None,
         valid_max: float | None = None,
+        cap_value: float | None = None,
     ) -> str:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.indicator_catalog
                   (slug, name, description, model_family, computation_kind, value_type,
-                   unit, valid_min, valid_max, aggregation_method, applies_to)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   unit, valid_min, valid_max, cap_value, aggregation_method, applies_to)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slug) DO UPDATE SET
                     name               = EXCLUDED.name,
                     description        = EXCLUDED.description,
@@ -2278,6 +2267,7 @@ class PostgresIndicatorCatalogRepository:
                     unit               = EXCLUDED.unit,
                     valid_min          = EXCLUDED.valid_min,
                     valid_max          = EXCLUDED.valid_max,
+                    cap_value          = EXCLUDED.cap_value,
                     aggregation_method = EXCLUDED.aggregation_method,
                     applies_to         = EXCLUDED.applies_to
                 RETURNING id::text
@@ -2292,6 +2282,7 @@ class PostgresIndicatorCatalogRepository:
                     unit,
                     valid_min,
                     valid_max,
+                    cap_value,
                     aggregation_method,
                     applies_to,
                 ),
@@ -2305,7 +2296,7 @@ class PostgresIndicatorCatalogRepository:
             cur.execute(
                 """
                 SELECT id::text, slug, name, description, model_family, computation_kind,
-                       value_type, unit, valid_min, valid_max, aggregation_method, applies_to
+                       value_type, unit, valid_min, valid_max, cap_value, aggregation_method, applies_to
                 FROM curated_geo.indicator_catalog WHERE slug = %s
                 """,
                 (slug,),
@@ -2397,7 +2388,7 @@ class PostgresIndicatorCatalogRepository:
                 f"""
                 SELECT c.id::text, c.slug, c.name, c.description, c.model_family,
                        c.computation_kind, c.value_type, c.unit, c.valid_min,
-                       c.valid_max, c.aggregation_method, c.applies_to
+                       c.valid_max, c.cap_value, c.aggregation_method, c.applies_to
                 FROM curated_geo.indicator_catalog c
                 {clause}
                 ORDER BY c.slug
@@ -2811,6 +2802,59 @@ class PostgresIndicatorResultRepository:
                 for row in cur.fetchall()
             ]
 
+    def feature_indicator_ranks(
+        self,
+        *,
+        feature_id: str,
+        aoi_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> list[dict]:
+        # The population is scoped exactly as value_stats scopes it (same
+        # indicator, same feature type, current non-null rows, scenario
+        # overlay, aoi_feature EXISTS) so the inspector agrees with /stats.
+        # LEFT JOIN: an empty population (the AOI holds none of this
+        # indicator's rows) still yields the row, with zero counts.
+        mine_clause, mine_params = _scenario_overlay("m", scenario_id)
+        pop_clause, pop_params = _scenario_overlay("p", scenario_id)
+        aoi_clause = ""
+        aoi_params: list = []
+        if aoi_id is not None:
+            aoi_clause, aoi_params = _aoi_exists("p", aoi_id)
+            aoi_clause = f"AND {aoi_clause}"
+        with self.connection.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM curated_geo.feature WHERE id = %s::uuid", (feature_id,)
+            )
+            if cur.fetchone() is None:
+                raise FeatureNotFound(feature_id)
+            cur.execute(
+                f"""
+                SELECT c.slug, c.name, c.unit, c.cap_value,
+                       m.value_numeric AS value,
+                       COUNT(*) FILTER (WHERE p.value_numeric < m.value_numeric) AS count_below,
+                       COUNT(*) FILTER (WHERE p.value_numeric = m.value_numeric) AS count_equal,
+                       COUNT(p.feature_id) AS count
+                FROM curated_geo.indicator_result m
+                JOIN curated_geo.indicator_catalog c ON c.slug = m.indicator_slug
+                LEFT JOIN curated_geo.indicator_result p
+                  ON p.indicator_slug = m.indicator_slug
+                 AND p.feature_type = m.feature_type
+                 AND p.status = 'current'
+                 AND p.value_numeric IS NOT NULL
+                 AND {pop_clause}
+                 {aoi_clause}
+                WHERE m.feature_id = %s::uuid
+                  AND m.status = 'current'
+                  AND m.value_numeric IS NOT NULL
+                  AND {mine_clause}
+                GROUP BY c.slug, c.name, c.unit, c.cap_value, m.value_numeric
+                ORDER BY c.name
+                """,
+                [*pop_params, *aoi_params, feature_id, *mine_params],
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+
     def value_stats(
         self,
         *,
@@ -2819,6 +2863,7 @@ class PostgresIndicatorResultRepository:
         feature_type: str | None = None,
         aoi_id: str | None = None,
         bins: int = 0,
+        polygon_geojson: str | None = None,
     ) -> dict:
         # Aliased so the optional aoi_id EXISTS subquery can reference
         # the row's feature_id column without column-name shadowing.
@@ -2835,18 +2880,27 @@ class PostgresIndicatorResultRepository:
             clauses.append("ir.feature_type = %s")
             params.append(feature_type)
         if aoi_id is not None:
-            # EXISTS over JOIN: same shape as the tile functions in
-            # r022 / r023, keeps cardinality stable when a feature
-            # belongs to multiple AOIs.
+            clause, extra = _aoi_exists("ir", aoi_id)
+            clauses.append(clause)
+            params.extend(extra)
+        if polygon_geojson is not None:
+            if aoi_id is None:
+                raise ValueError("polygon_geojson needs aoi_id")
+            # The same predicate as count_features_within_polygon, so block
+            # counts and selection stats agree.
+            covers = _POLYGON_COVERS_CENTROID.format(centroid="fa.geometry_centroid")
             clauses.append(
-                "EXISTS (SELECT 1 FROM curated_geo.aoi_feature af "
-                "WHERE af.feature_id = ir.feature_id AND af.aoi_id = %s::uuid)"
+                "EXISTS (SELECT 1 FROM serving_geo.feature_aoi_v fa "
+                f"WHERE fa.id = ir.feature_id AND fa.aoi_id = %s::uuid AND {covers})"
             )
-            params.append(aoi_id)
+            params.extend([aoi_id, polygon_geojson])
         where = " AND ".join(clauses)
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
+                WITH cap AS (
+                  SELECT cap_value FROM curated_geo.indicator_catalog WHERE slug = %s
+                )
                 SELECT
                   COUNT(*)::bigint                                               AS count,
                   MIN(ir.value_numeric)                                          AS min,
@@ -2854,13 +2908,19 @@ class PostgresIndicatorResultRepository:
                   percentile_cont(0.50) WITHIN GROUP (ORDER BY ir.value_numeric) AS p50,
                   percentile_cont(0.95) WITHIN GROUP (ORDER BY ir.value_numeric) AS p95,
                   MAX(ir.value_numeric)                                          AS max,
-                  SUM(ir.value_numeric)                                          AS sum
+                  SUM(ir.value_numeric)                                          AS sum,
+                  (SELECT cap_value FROM cap)                                    AS cap_value,
+                  COUNT(*) FILTER (
+                    WHERE ir.value_numeric >= (SELECT cap_value FROM cap)
+                  )                                                              AS at_cap
                 FROM curated_geo.indicator_result ir
                 WHERE {where}
                 """,
-                params,
+                [indicator_slug, *params],
             )
-            count, vmin, p05, p50, p95, vmax, vsum = cur.fetchone()
+            # No GROUP BY and the cap as a scalar subquery: always one row, so
+            # an empty population still knows its cap (count_at_cap 0, not None).
+            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = cur.fetchone()
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
@@ -2871,6 +2931,9 @@ class PostgresIndicatorResultRepository:
             # Over the same rows as `count`: the scenario overlay included, each
             # feature once. None with no rows — no values is no total.
             "sum": float(vsum) if vsum is not None else None,
+            # Rows at or past the catalog cap, over the same rows as `count`;
+            # None when the indicator has no cap.
+            "count_at_cap": int(at_cap) if cap_value is not None else None,
         }
         if bins > 0:
             stats["histogram"] = self._value_histogram(
@@ -3236,35 +3299,6 @@ class PostgresOpsRunReader:
             """,
             {"run_id": str(run_id)},
         )
-
-    def expected_durations(self, run_id: str) -> dict[str, int]:
-        if not _is_run_id(run_id):
-            return {}
-        rows = self._read_query(
-            """
-            SELECT mine.indicator_slug AS slug, last.ms
-            FROM jobs_runtime.orchestration_run this
-            JOIN jobs_runtime.job_unit mine ON mine.run_id = this.id
-            -- Newest first, stop at the first same-AOI match: a walk down
-            -- job_unit_success_by_slug_idx (r050), not every past success.
-            CROSS JOIN LATERAL (
-                SELECT (EXTRACT(EPOCH FROM u.completed_at - u.started_at) * 1000)::bigint
-                           AS ms
-                FROM jobs_runtime.job_unit u
-                JOIN jobs_runtime.orchestration_run r
-                  ON r.id = u.run_id AND r.aoi_id IS NOT DISTINCT FROM this.aoi_id
-                WHERE u.indicator_slug = mine.indicator_slug
-                  AND u.status = 'succeeded'
-                  AND u.started_at IS NOT NULL
-                  AND u.completed_at < this.submitted_at
-                ORDER BY u.completed_at DESC
-                LIMIT 1
-            ) last
-            WHERE this.id = %(run_id)s::uuid
-            """,
-            {"run_id": str(run_id)},
-        )
-        return {row["slug"]: int(row["ms"]) for row in rows}
 
     # ── Deletion ────────────────────────────────────────────────────────────
 

@@ -31,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..deps import get_backend, get_db_conn
+from .indicators import IndicatorValueStats, ensure_indicator_exists
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -78,27 +79,7 @@ def count_within_polygon(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> WithinPolygonResponse:
     """Count features intersecting a GeoJSON polygon, grouped by type_slug."""
-    if (payload.polygon.get("type") or "") != "Polygon":
-        # Pydantic typed ``polygon`` as ``dict`` so structural shape
-        # isn't validated. PostGIS would accept other GeoJSON types
-        # (Point, etc.) and silently return 0 — confusing. Reject
-        # non-Polygon at the boundary with a clear 422.
-        raise HTTPException(
-            status_code=422,
-            detail="payload.polygon must be a GeoJSON Polygon "
-            f"(got type={payload.polygon.get('type')!r}).",
-        )
-    if _polygon_has_non_finite_coords(payload.polygon):
-        # PostGIS' ST_GeomFromGeoJSON silently accepts NaN / Inf
-        # coordinates and produces a degenerate geometry that
-        # ST_Covers rejects against everything (count → 0). That
-        # surfaces as "selection valid but empty" — the wrong signal
-        # for what is clearly malformed input. Reject explicitly.
-        raise HTTPException(
-            status_code=422,
-            detail="polygon coordinates must be finite numbers (no NaN / Inf).",
-        )
-    polygon_json = json.dumps(payload.polygon)
+    polygon_json = _validated_polygon_json(payload.polygon)
     try:
         counts = (
             get_backend(conn)
@@ -120,6 +101,67 @@ def count_within_polygon(
             for slug in payload.type_slugs
         ],
     )
+
+
+class IndicatorWithinPolygonRequest(BaseModel):
+    aoi_id: UUID
+    polygon: dict = Field(..., description="GeoJSON Polygon (EPSG:4326).")
+    indicator_slug: str
+    feature_type: str | None = None
+
+
+@router.post("/indicator-within-polygon", response_model=IndicatorValueStats)
+def indicator_within_polygon(
+    payload: IndicatorWithinPolygonRequest,
+    conn: psycopg2.extensions.connection = Depends(get_db_conn),
+) -> IndicatorValueStats:
+    """An indicator's stats over the features whose centroid is in the polygon."""
+    polygon_json = _validated_polygon_json(payload.polygon)
+    ensure_indicator_exists(conn, payload.indicator_slug)
+    try:
+        stats = (
+            get_backend(conn)
+            .indicator_result_repo()
+            .value_stats(
+                indicator_slug=payload.indicator_slug,
+                feature_type=payload.feature_type,
+                aoi_id=str(payload.aoi_id),
+                polygon_geojson=polygon_json,
+            )
+        )
+    except psycopg2.errors.InvalidParameterValue as exc:
+        raise HTTPException(status_code=422, detail=f"invalid polygon: {exc}") from exc
+    return IndicatorValueStats(
+        slug=payload.indicator_slug,
+        feature_type=payload.feature_type,
+        aoi_id=str(payload.aoi_id),
+        **stats,
+    )
+
+
+def _validated_polygon_json(polygon: dict) -> str:
+    """The polygon as GeoJSON text, or a 422 for non-Polygon / non-finite input."""
+    if (polygon.get("type") or "") != "Polygon":
+        # Pydantic typed ``polygon`` as ``dict`` so structural shape
+        # isn't validated. PostGIS would accept other GeoJSON types
+        # (Point, etc.) and silently return 0 — confusing. Reject
+        # non-Polygon at the boundary with a clear 422.
+        raise HTTPException(
+            status_code=422,
+            detail="polygon must be a GeoJSON Polygon "
+            f"(got type={polygon.get('type')!r}).",
+        )
+    if _polygon_has_non_finite_coords(polygon):
+        # PostGIS' ST_GeomFromGeoJSON silently accepts NaN / Inf
+        # coordinates and produces a degenerate geometry that
+        # ST_Covers rejects against everything (count → 0). That
+        # surfaces as "selection valid but empty" — the wrong signal
+        # for what is clearly malformed input. Reject explicitly.
+        raise HTTPException(
+            status_code=422,
+            detail="polygon coordinates must be finite numbers (no NaN / Inf).",
+        )
+    return json.dumps(polygon)
 
 
 def _polygon_has_non_finite_coords(polygon: dict) -> bool:

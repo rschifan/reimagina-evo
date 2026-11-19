@@ -129,52 +129,6 @@ def _time_unit(conn, run_id, slug, started, completed):
         )
 
 
-def test_expected_duration_is_the_last_same_aoi_success_before_this_run(conn):
-    old = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
-    _time_unit(conn, old, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:07Z")
-    newer = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
-    _time_unit(conn, newer, "a", "2026-01-02T00:00:00Z", "2026-01-02T00:00:05Z")
-    this = _make_run(conn, units=[("a", "queued")], aoi_id="x")
-
-    assert _reader(conn).expected_durations(this) == {"a": 5000}
-
-
-def test_expected_duration_ignores_failures_other_aois_and_later_runs(conn):
-    """Each would make the estimate a guess, or let it move while the run is live."""
-    failed = _make_run(conn, status="failed", units=[("a", "failed")], aoi_id="x")
-    _time_unit(conn, failed, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:03Z")
-    other = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="y")
-    _time_unit(conn, other, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:04Z")
-    later = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
-    _time_unit(conn, later, "a", "2099-01-01T00:00:00Z", "2099-01-01T00:00:06Z")
-    this = _make_run(conn, units=[("a", "queued")], aoi_id="x")
-
-    assert _reader(conn).expected_durations(this) == {}
-
-
-def test_a_finished_run_is_not_its_own_estimate(conn):
-    """Reopened after it finished, a run's own successes must not become its
-    forecast: they completed after it was submitted."""
-    this = _make_run(conn, status="succeeded", units=[("a", "succeeded")], aoi_id="x")
-    _time_unit(conn, this, "a", "2099-01-01T00:00:00Z", "2099-01-01T00:00:09Z")
-
-    assert _reader(conn).expected_durations(this) == {}
-
-
-def test_whole_dataset_runs_match_each_other(conn):
-    """``aoi_id`` NULL is the launch form's default; ``=`` would never match it."""
-    old = _make_run(conn, status="succeeded", units=[("a", "succeeded")])
-    _time_unit(conn, old, "a", "2026-01-01T00:00:00Z", "2026-01-01T00:00:02.5Z")
-    this = _make_run(conn, units=[("a", "queued"), ("b", "queued")])
-
-    assert _reader(conn).expected_durations(this) == {"a": 2500}
-
-
-def test_expected_durations_guards_the_id(conn):
-    assert _reader(conn).expected_durations("not-a-uuid") == {}
-    assert _reader(conn).expected_durations(str(uuid4())) == {}
-
-
 def test_units_are_ordered_by_slug(conn):
     """Display order is the client's; start order would reshuffle it mid-run."""
     run_id = _make_run(conn, units=[("beta", "running"), ("alpha", "queued")])

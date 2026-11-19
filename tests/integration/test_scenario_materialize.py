@@ -271,7 +271,7 @@ def test_a_half_covered_block_is_caught_by_its_centroid(conn):
     A block whose centroid is inside the drawn area but whose eastern half
     hangs out of it is caught — that is what a planner means by "did my shape
     get this block?", and it is what ``count_features_within_polygon`` (r027)
-    and ``selection-filter.ts`` already answer. Testing the whole geometry with
+    already answers for the map's selection card. Testing the whole geometry with
     ``ST_CoveredBy`` instead would silently drop every edge block of a
     selection, which is exactly the boundary a district is drawn along.
     """

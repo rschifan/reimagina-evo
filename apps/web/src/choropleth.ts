@@ -20,6 +20,7 @@ import type {
   ExpressionSpecification,
   MapLayerMouseEvent,
   Map as MapLibreMap,
+  PointLike,
 } from "maplibre-gl";
 
 import type {
@@ -29,20 +30,38 @@ import type {
   TileSource,
   ValueHistogram,
 } from "./api";
-import { distributionSvg, percentileOf } from "./distribution";
-import { escapeHtml, fmtNumber } from "./format";
+import { minzoomForGrain } from "./layers";
+import { distributionSvg } from "./distribution";
+import { escapeHtml, fmtNumber, formatValue, grainLabel, grainNoun, shareText } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
-import type { SelectionController } from "./selection";
-import { registerValueAwareLayer } from "./selection-filter";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
 import { mvtProvider, type TooltipController } from "./tooltip";
 
 const OVERLAY_SOURCE = "indicator_overlay";
 const OVERLAY_LAYER = "indicator_overlay__fill";
 const OVERLAY_LINE_LAYER = "indicator_overlay__line";
-const RAMP_START = "#f7fbff";
-const RAMP_END = "#08306b";
+/**
+ * The value ramp, light to dark: ColorBrewer Blues without its darkest step
+ * (`#08306b`), which sank into the dark map background and hid the high end.
+ * Both the fill and the legend gradient are built from these.
+ */
+export const RAMP_STOPS = ["#f7fbff", "#08519c"] as const;
+
+/**
+ * Features at or past an indicator's declared `cap_value` (value mode only).
+ *
+ * A violet-magenta: off the blue ramp, and not the delta palette's teal, red or
+ * amber, so a cap block cannot read as a point on either scale. Checked with
+ * the dataviz validator (OKLab ΔE×100; CVD = min of protan/deutan sim) against
+ * the dark map surface `#1a1a19` and five RGB samples of the ramp
+ * (`#f7fbff #bbd1e6 #80a6ce #447cb5 #08519c`) plus every delta colour:
+ * OKLCH L 0.62 / C ≥ 0.1 (inside the dark band); contrast 4.84:1 on the
+ * surface; worst normal-vision ΔE 25.3 (ramp `#80a6ce`; floor 15); worst CVD
+ * ΔE 11.4 (ramp `#447cb5`; target 8); vs `DELTA_NEW` 39.2 / 36.3, vs
+ * `DELTA_BAD` 27.7 / 27.7, vs `DELTA_GOOD` 37.0 / 18.8.
+ */
+export const CAP_COLOR = "#cc44ff";
 
 /**
  * The delta palette: green for an improvement, red for a deterioration, grey
@@ -377,29 +396,55 @@ export function deltaScopeText(domain: DeltaDomain, unit: string | null): string
   }
   const u = unit ? ` ${unit}` : "";
   return (
-    `ramp: ±${formatNumber(domain.limit)}${u} — 95th percentile of the ` +
+    `ramp: ±${fmtNumber(domain.limit)}${u} — 95th percentile of the ` +
     `change across ${fmtNumber(domain.changed)} changed blocks`
   );
 }
 
 
 /**
- * The baseline colour expression: `value_numeric` on a light-to-dark blue ramp.
- *
- * Lifted out of `activateIndicator` unchanged so the delta ramp has something
- * to be compared against.
+ * The value colour expression: `value_numeric` on a light-to-dark blue ramp,
+ * and, when the indicator declares a cap, {@link CAP_COLOR} at or past it.
  */
-export function valueRamp(domain: RampDomain): ExpressionSpecification {
+export function valueRamp(
+  domain: RampDomain,
+  capValue: number | null = null,
+): ExpressionSpecification {
   // If domain.max==min we've got a degenerate range; widen so the linear
   // interpolation doesn't divide by zero (MapLibre silently produces NaN).
   const rampMax = domain.max === domain.min ? domain.min + 1 : domain.max;
-  return [
+  const ramp: ExpressionSpecification = [
     "interpolate",
     ["linear"],
     ["coalesce", ["to-number", ["get", "value_numeric"]], domain.min],
-    domain.min, RAMP_START,
-    rampMax, RAMP_END,
+    domain.min, RAMP_STOPS[0],
+    rampMax, RAMP_STOPS[1],
   ];
+  if (capValue === null) return ramp;
+  return [
+    "case",
+    [">=", ["to-number", ["get", "value_numeric"]], capValue], CAP_COLOR,
+    ramp,
+  ];
+}
+
+
+export interface ActivateOptions {
+  tooltips?: TooltipController;
+  aoiId?: string | null;
+  grain?: string | null;
+  /** The active scenario, or null/absent for the baseline city. Only the tile
+   *  URL reads it; everything else about the layer is the same either way,
+   *  which is the point of resolving the overlay in SQL (r043). */
+  scenarioId?: string | null;
+  /** The scenario's difference from the baseline, when that is what is shown.
+   *  Absent means the value view. Only meaningful with a `scenarioId`; without
+   *  one the tile URL ignores it, so the fill must too, or a delta fill would
+   *  sit over a value tile and paint nothing at all. */
+  delta?: DeltaDomain | null;
+  /** The hover tooltip ends with "Click to pin". Only the map page pins, so
+   *  only it asks. */
+  pinHint?: boolean;
 }
 
 
@@ -408,19 +453,7 @@ export function activateIndicator(
   config: ChoroplethConfig,
   indicator: IndicatorSummary,
   domain: RampDomain,
-  tooltips?: TooltipController,
-  aoiId?: string | null,
-  selectionController?: SelectionController,
-  grain?: string | null,
-  // The active scenario, or null/absent for the baseline city. Only the tile
-  // URL reads it; everything else about the layer is the same either way,
-  // which is the point of resolving the overlay in SQL (r043).
-  scenarioId?: string | null,
-  // The scenario's difference from the baseline, when that is what is shown.
-  // Absent means the value view. Only meaningful with a `scenarioId`; without
-  // one the tile URL ignores it, so the fill must too, or a delta fill would
-  // sit over a value tile and paint nothing at all.
-  delta?: DeltaDomain | null,
+  { tooltips, aoiId, grain, scenarioId, delta, pinHint }: ActivateOptions = {},
 ): void {
   removeIndicator(map);
   const asDelta = Boolean(delta && scenarioId);
@@ -444,7 +477,9 @@ export function activateIndicator(
   map.addSource(OVERLAY_SOURCE, {
     type: "vector",
     tiles: [tileUrl],
-    minzoom: config.minzoom,
+    // From the zoom the painted grain's own layer draws at (blocks: 8), not
+    // the catalog's legacy 10 — the rule aggregation overlays follow too.
+    minzoom: minzoomForGrain(grain) ?? config.minzoom,
     maxzoom: config.maxzoom,
     promoteId: "feature_id",
   });
@@ -484,7 +519,7 @@ export function activateIndicator(
       // character, look there before looking here.
       "fill-color": asDelta && delta
         ? deltaFill({ min: -delta.limit, max: delta.limit }, delta.higherIsBetter)
-        : valueRamp(domain),
+        : valueRamp(domain, indicator.cap_value ?? null),
       "fill-opacity": 0.75,
       "fill-outline-color": defaultOutline,
     },
@@ -523,7 +558,7 @@ export function activateIndicator(
   // Publish the hovered feature's value so the legend can mark where it
   // falls in the distribution.
   //
-  // A bus rather than another `activateIndicator` parameter, matching
+  // A bus rather than another `activateIndicator` option, matching
   // `hover-highlight`'s own suspend bus: the listener is owned by the page
   // and lives longer than any one indicator, while these handlers are torn
   // down and rebuilt on every pick. Registered here so they land in
@@ -544,21 +579,6 @@ export function activateIndicator(
     _valueHoverListener?.(null);
   });
 
-  // Clip the choropleth to the active selection (if any). Value
-  // layers should render features ONLY where the user has selected
-  // — outside the selection, they don't render at all (the spotlight
-  // mask still dims the spatial baseline beneath). When the user
-  // clears the selection, the disposer restores the layer's filter.
-  if (selectionController) {
-    _activeDisposers.push(
-      registerValueAwareLayer(map, selectionController, {
-        layerIds: [OVERLAY_LAYER, OVERLAY_LINE_LAYER],
-        sourceName: OVERLAY_SOURCE,
-        sourceLayer: config.sourceLayer,
-      }),
-    );
-  }
-
   if (tooltips) {
     _activeDisposers.push(
       tooltips.register(mvtProvider({
@@ -571,16 +591,38 @@ export function activateIndicator(
           if (raw === undefined || raw === null) return null;
           const num = typeof raw === "number" ? raw : Number(raw);
           if (Number.isNaN(num)) return null;
-          const formatted = fmtNumber(num);
-          const unit = indicator.unit ? ` ${indicator.unit}` : "";
           return {
             title: indicator.name,
-            detail: `${formatted}${unit}`,
+            detail: formatValue(num, indicator),
+            hint: pinHint ? "Click to pin" : undefined,
           };
         },
       })),
     );
   }
+}
+
+
+/** The overlay feature under `point`, or null (no overlay, or empty map). */
+export function overlayFeatureAt(map: MapLibreMap, point: PointLike): string | null {
+  // Guarded: querying a layer that is not in the style fires a map `error`.
+  if (!map.getLayer(OVERLAY_LAYER)) return null;
+  const id = map.queryRenderedFeatures(point, { layers: [OVERLAY_LAYER] })[0]?.id;
+  return id === undefined || id === null ? null : String(id);
+}
+
+
+/**
+ * Outline one overlay feature (the pinned one) or take the outline off.
+ *
+ * Feature-state on the overlay source, read by the hover-highlight paint, so
+ * it is lost with the source: re-apply after every `activateIndicator`.
+ */
+export function setOverlayPinned(
+  map: MapLibreMap, config: ChoroplethConfig, id: string, pinned: boolean,
+): void {
+  if (!map.getSource(OVERLAY_SOURCE)) return;
+  map.setFeatureState({ source: OVERLAY_SOURCE, sourceLayer: config.sourceLayer, id }, { pinned });
 }
 
 
@@ -662,36 +704,49 @@ export function setValueHoverListener(
  * point of `RampBasis`, and it is the line a reader checks when a layer comes
  * out one flat colour.
  */
-export function rampScopeText(domain: RampDomain): string {
+export function rampScopeText(
+  domain: RampDomain,
+  indicator: { unit: string | null; cap_value?: number | null },
+): string {
   switch (domain.basis) {
     case "percentile":
-      return "ramp: observed p05\u2013p95";
+      return "Colours span the middle 90% of values";
     case "min-max":
-      return "ramp: observed min\u2013max (p05 = p95)";
+      return "Colours span the lowest to the highest value";
     case "uniform":
       return (
-        `ramp: catalog bounds \u2014 all ${fmtNumber(domain.count)} values ` +
-        `identical (${formatNumber(domain.p50 ?? domain.min)})`
+        `One colour: all ${fmtNumber(domain.count)} values ` +
+        `identical (${formatValue(domain.p50 ?? domain.min, indicator)})`
       );
     case "empty":
-      return "ramp: catalog bounds (no data yet)";
+      return "No colours: no data yet";
   }
 }
 
 
+/**
+ * The value legend. With a `cap_value`, a cap swatch and, when the exact
+ * `countAtCap` is known, its share of `total` ("62% of blocks at the 1,500 m
+ * cap"); without one, no cap wording at all.
+ */
 export function renderLegend(
   container: HTMLElement,
   indicator: IndicatorSummary,
   domain: RampDomain,
-  histogram: ValueHistogram | null = null,
+  histogram: ValueHistogram | null,
+  countAtCap: number | null,
+  total: number,
 ): void {
   container.hidden = false;
+  // Every value the legend prints goes through one formatter with the
+  // indicator, so a bound at the cap reads "… (cap)" exactly as the median does.
+  const bound = (n: number): string => escapeHtml(formatValue(n, indicator));
   const p50Row =
     domain.fromStats && domain.p50 !== null
-      ? `<div class="p50">median · ${formatNumber(domain.p50)}</div>`
+      ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
       : "";
-  const scopeRow = `<div class="scope">${rampScopeText(domain)}</div>`;
-  // The distribution, and a slot the hover handler rewrites in place.
+  const scopeRow = `<div class="scope">${escapeHtml(rampScopeText(domain, indicator))}</div>`;
+  // The distribution, drawn once; the hover handler only moves its cursor.
   //
   // Kept as a sibling of the gradient rather than replacing it: the gradient
   // answers "what does this colour mean" and the histogram answers "how many
@@ -701,20 +756,32 @@ export function renderLegend(
     rampMin: domain.min,
     rampMax: domain.max,
     median: domain.p50,
-  }, indicator.unit ?? "");
-  const distBlock = dist
-    ? `<div class="dist-wrap" data-distribution>${dist}</div>` +
-      `<div class="dist-readout" data-readout hidden></div>`
-    : "";
+  }, indicator);
+  const distBlock = dist ? `<div class="dist-wrap">${dist}</div>` : "";
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
-    <div class="gradient"></div>
-    <div class="bounds"><span>${formatNumber(domain.min)}</span><span>${formatNumber(domain.max)}</span></div>
-    <div class="unit">${escapeHtml(indicator.unit ?? "")}</div>
+    <div class="gradient" style="background: linear-gradient(to right, ${RAMP_STOPS.join(", ")})"></div>
+    <div class="bounds"><span>${bound(domain.min)}</span><span>${bound(domain.max)}</span></div>
+    ${capRows(indicator, countAtCap, total)}
     ${distBlock}
     ${p50Row}
     ${scopeRow}
   `.trim();
+}
+
+
+function capRows(indicator: IndicatorSummary, countAtCap: number | null, total: number): string {
+  const cap = indicator.cap_value ?? null;
+  if (cap === null) return "";
+  const swatch =
+    `<div class="cap-key"><i class="cap-key__swatch" style="background: ${CAP_COLOR}"></i>` +
+    `${escapeHtml(formatValue(cap, indicator))}</div>`;
+  if (countAtCap === null || total <= 0) return swatch;
+  const share = escapeHtml(shareText(countAtCap, total));
+  // ponytail: grain word from the finest declared grain; capped indicators are block-only today.
+  const grain = grainNoun(indicator.applies_to?.[0] ?? null, true);
+  const capText = formatValue(cap, { ...indicator, cap_value: null });
+  return swatch + `<div class="cap-share">${share}% of ${grain} at the ${escapeHtml(capText)} cap</div>`;
 }
 
 
@@ -735,7 +802,7 @@ export function renderDeltaLegend(
   container.hidden = false;
   const unit = indicator.unit ?? "";
   const bound = (n: number, sign: string): string =>
-    domain.basis === "none" ? "" : `${sign}${formatNumber(n)}`;
+    domain.basis === "none" ? "" : `${sign}${fmtNumber(n)}`;
   container.innerHTML = `
     <div class="name">Change in ${escapeHtml(indicator.name)}</div>
     <div class="gradient" data-delta-gradient style="background: linear-gradient(to right, ${deltaStops(domain.higherIsBetter).join(", ")})"></div>
@@ -754,71 +821,14 @@ export function renderDeltaLegend(
 
 
 /**
- * Move the legend's cursor to ``value``, or clear it when ``null``.
- *
- * Called from the hover path, so it must be cheap and must not re-render the
- * whole legend: rebuilding `innerHTML` on every mousemove would drop the
- * `<title>` tooltips mid-hover and churn the DOM at pointer rate.
- */
-export function markLegendValue(
-  container: HTMLElement,
-  indicator: IndicatorSummary,
-  domain: RampDomain,
-  histogram: ValueHistogram | null,
-  value: number | null,
-): void {
-  const wrap = container.querySelector<HTMLElement>("[data-distribution]");
-  const readout = container.querySelector<HTMLElement>("[data-readout]");
-  if (!wrap || !readout || !histogram) return;
-  wrap.innerHTML = distributionSvg(
-    histogram,
-    {
-      rampMin: domain.min,
-      rampMax: domain.max,
-      median: domain.p50,
-      hovered: value,
-    },
-    indicator.unit ?? "",
-  );
-  if (value === null) {
-    readout.hidden = true;
-    readout.textContent = "";
-    return;
-  }
-  const pct = percentileOf(value, histogram);
-  const unit = indicator.unit ? ` ${indicator.unit}` : "";
-  readout.hidden = false;
-  // "higher than 81% of blocks" rather than "p81": a rank stated as a
-  // comparison is a finding, and a bare number is another reading of the
-  // same thing the map already shows.
-  readout.textContent =
-    pct === null
-      ? `${formatNumber(value)}${unit}`
-      : `${formatNumber(value)}${unit} · higher than ${pct}% of features`;
-}
-
-
-/** Human label for a feature-type slug. Falls back to the slug so a
- *  new grain shows up readable-ish rather than not at all. */
-const GRAIN_LABELS: Record<string, string> = {
-  block: "Blocks",
-  municipality: "Municipalities",
-  lot: "Lots",
-};
-
-
-/**
  * Render the grain switcher for ``indicator`` into ``container`` and
  * call ``onPick`` when the user changes it.
  *
- * Always rendered, including for the eleven of thirteen shipped
- * indicators published at ``block`` only — their single option shows
- * as a disabled chip. Hiding the row entirely made the control
- * invisible on most of the catalog, so nobody learned grain switching
- * existed; a disabled chip states the grain the numbers are at, which
- * is worth showing on its own. Coarser grains are served by the same
- * ``indicator_overlay_tile`` function via ``feature_type``, so
- * switching is a re-render, not a new code path.
+ * Only shown when there is a choice: a lone grain is stated by the
+ * downloads line ("19,058 blocks · Mexicali only"), so a disabled chip
+ * here would be a second copy of the same fact. Coarser grains are
+ * served by the same ``indicator_overlay_tile`` function via
+ * ``feature_type``, so switching is a re-render, not a new code path.
  */
 export function renderGrainToggle(
   container: HTMLElement,
@@ -827,13 +837,10 @@ export function renderGrainToggle(
   onPick: (grain: string) => void,
 ): void {
   const grains = indicator.applies_to ?? [];
-  if (grains.length === 0) {
-    // No declared grain at all — nothing truthful to show.
-    container.hidden = true;
-    container.replaceChildren();
+  if (grains.length < 2) {
+    clearGrainToggle(container);
     return;
   }
-  const single = grains.length === 1;
   container.hidden = false;
   const label = document.createElement("span");
   label.className = "grain-toggle__label";
@@ -843,15 +850,8 @@ export function renderGrainToggle(
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "grain-toggle__btn";
-    btn.textContent = GRAIN_LABELS[grain] ?? grain;
+    btn.textContent = grainLabel(grain);
     btn.setAttribute("aria-pressed", grain === active ? "true" : "false");
-    // A lone grain is a statement, not a choice: disabled so it can't
-    // be clicked, but still marked pressed so it reads as "this is
-    // what you are looking at" rather than as an unavailable option.
-    btn.disabled = single;
-    if (single) {
-      btn.title = `${indicator.name} is only published at this grain`;
-    }
     btn.addEventListener("click", () => {
       if (grain === active) return;
       onPick(grain);
@@ -872,13 +872,3 @@ export function clearLegend(container: HTMLElement): void {
   container.innerHTML = "";
 }
 
-
-/** Legend-only formatter — uses ``toFixed`` (no locale separators) so
- *  the gradient endpoints read as compact engineering numbers rather
- *  than long thousand-separated strings. Distinct from ``fmtNumber``
- *  in ``./format`` which is locale-aware for tooltips / panel rows. */
-function formatNumber(value: number): string {
-  if (Math.abs(value) >= 100) return value.toFixed(0);
-  if (Math.abs(value) >= 1) return value.toFixed(2);
-  return value.toFixed(3);
-}

@@ -36,6 +36,10 @@ class IndicatorSpec:
     unit: str | None = None
     valid_min: float | None = None
     valid_max: float | None = None
+    # A bound that means "beyond measurement", not a measured value: the
+    # indicator is clamped here, so a reading at the cap is "at least this".
+    # Not a validation range; that is valid_min/valid_max.
+    cap_value: float | None = None
     # What this indicator consumes, as typed edges in the asset graph: the
     # datasets, the attributes read off them, and the other indicators it
     # combines. This is the declaration; `reads` and `depends_on` below are
@@ -539,6 +543,7 @@ def _accessibility_spec(category: str) -> IndicatorSpec:
         unit="m",
         valid_min=0.0,
         valid_max=ACCESSIBILITY_CUTOFF_M,
+        cap_value=ACCESSIBILITY_CUTOFF_M,
         # Metres to the nearest amenity: nearer is better. All three of these
         # are the reason `higher_is_better` exists.
         higher_is_better=False,
@@ -748,6 +753,7 @@ def seed_catalog(
             unit=spec.unit,
             valid_min=spec.valid_min,
             valid_max=spec.valid_max,
+            cap_value=spec.cap_value,
         )
         if spec.depends_on:
             repo.set_dependencies(

@@ -5,7 +5,6 @@ import {
   binLabel,
   binOf,
   distributionSvg,
-  percentileOf,
   positionOf,
 } from "./distribution";
 
@@ -78,47 +77,22 @@ describe("positionOf", () => {
   });
 });
 
-describe("percentileOf", () => {
-  it("uses the mid-rank of the value's own bin", () => {
-    // 12 below the second bin, half of its 5 → 14.5 of 20.
-    expect(percentileOf(30, histogram())).toBe(73);
-  });
-
-  // ⚠ The phrasing bug this estimator exists to avoid. Counting a value's
-  // whole bin as "below" puts every value in the top bin at 100 %, which
-  // renders as "higher than 100% of features" — wrong, and obviously wrong,
-  // on exactly the outlier a planner is most likely to click.
-  it("never reports a value as higher than all of them", () => {
-    expect(percentileOf(100, histogram())).toBeLessThan(100);
-    expect(percentileOf(100, histogram())).toBeGreaterThan(90);
-  });
-
-  it("never reports the minimum as higher than none of them", () => {
-    expect(percentileOf(0, histogram())).toBeGreaterThan(0);
-  });
-
-  it("declines to rank a population of one", () => {
-    // "higher than 50%" with a single feature is an artefact of the
-    // arithmetic, not a finding.
-    expect(percentileOf(42, FLAT)).toBeNull();
-  });
-
-  it("has no rank for a value outside the range", () => {
-    expect(percentileOf(999, histogram())).toBeNull();
-  });
-});
 
 describe("binLabel", () => {
   it("names a bin's edges with the unit", () => {
-    expect(binLabel(0, histogram(), "m")).toBe("0 – 25 m");
+    expect(binLabel(0, histogram(), { unit: "m" })).toBe("0 – 25 m");
   });
 
   it("omits the unit when the indicator has none", () => {
-    expect(binLabel(1, histogram(), "")).toBe("25 – 50");
+    expect(binLabel(1, histogram(), { unit: null })).toBe("25 – 50");
   });
 
   it("names the single value when every value is identical", () => {
-    expect(binLabel(0, FLAT, "m")).toBe("42 m");
+    expect(binLabel(0, FLAT, { unit: "m" })).toBe("42 m");
+  });
+
+  it("prints bin edges without padded decimals, like the rest of the legend", () => {
+    expect(binLabel(0, histogram({ width: 12.5 }), { unit: "m" })).toBe("0 – 12.5 m");
   });
 });
 
@@ -155,26 +129,14 @@ describe("distributionSvg", () => {
     expect(Math.min(...heights.filter((h) => h > 0))).toBeGreaterThanOrEqual(1.5);
   });
 
-  it("marks exactly the hovered value's bin", () => {
+  it("draws one hidden cursor and no current bin, for the hover to move", () => {
     const svg = distributionSvg(histogram(), {
       rampMin: 0,
       rampMax: 100,
       median: 20,
-      hovered: 30,
-    });
-    expect(svg.match(/dist__bar--current/g)).toHaveLength(1);
-    expect(svg).toContain("dist__cursor");
-  });
-
-  it("marks no bin when nothing is hovered", () => {
-    const svg = distributionSvg(histogram(), {
-      rampMin: 0,
-      rampMax: 100,
-      median: 20,
-      hovered: null,
     });
     expect(svg).not.toContain("dist__bar--current");
-    expect(svg).not.toContain("dist__cursor");
+    expect(svg.match(/class="dist__cursor"[^>]*visibility="hidden"/g)).toHaveLength(1);
   });
 
   it("shows the span the colour ramp resolves", () => {
@@ -193,7 +155,7 @@ describe("distributionSvg", () => {
     const svg = distributionSvg(
       histogram(),
       { rampMin: 0, rampMax: 100, median: 20 },
-      "m",
+      { unit: "m" },
     );
     expect(svg).toContain("<title>12 at 0 – 25 m</title>");
   });
@@ -203,7 +165,7 @@ describe("distributionSvg", () => {
       rampMin: 0,
       rampMax: 100,
       median: null,
-    }, '"><script>alert(1)</script>');
+    }, { unit: '"><script>alert(1)</script>' });
     expect(svg).not.toContain("<script>");
     expect(svg).toContain("&lt;script&gt;");
   });

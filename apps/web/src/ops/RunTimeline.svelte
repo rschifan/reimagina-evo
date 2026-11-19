@@ -62,10 +62,6 @@
           <span class={`size-2 shrink-0 rounded-full ${v.dot}`}></span>{v.label}
         </li>
       {/each}
-      <li class="flex items-center gap-1.5">
-        <span class="h-2 w-3.5 rounded-sm border border-dashed border-state-partial"></span>
-        expected (last run)
-      </li>
     </ul>
 
     <!-- Narrow: each row stacks its label and numbers above a full-width
@@ -114,13 +110,6 @@
           </span>
 
           <div class={TRACK_CELL + " min-h-7"}>
-            {#if row.expectedPct !== null}
-              <div
-                class={`absolute top-1/2 h-3 -translate-y-1/2 rounded-sm border border-dashed border-state-partial ${GLIDE}`}
-                style:left={`${row.leftPct}%`}
-                style:width={`${row.expectedPct}%`}
-              ></div>
-            {/if}
             {#if v.bar && row.unit.started_at}
               <div
                 class={`absolute top-1/2 h-3 min-w-[2px] -translate-y-1/2 rounded-sm ${v.bar} ${GLIDE}`}
@@ -144,9 +133,7 @@
           </div>
 
           <span
-            class={`text-right font-mono text-[11px] tabular-nums whitespace-nowrap ${
-              row.over ? "text-foreground" : "text-muted-foreground"
-            }`}
+            class="text-right font-mono text-[11px] tabular-nums whitespace-nowrap text-muted-foreground"
           >
             {row.numbers}
           </span>

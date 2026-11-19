@@ -17,6 +17,7 @@ import type { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 
 import { listAttributions, type AOIRow } from "./api";
+import { minzoomForGrain } from "./layers";
 
 /** No basemap: licence hygiene, see the attribution note in `installMapControls`. */
 function emptyStyle(): StyleSpecification {
@@ -35,6 +36,36 @@ function emptyStyle(): StyleSpecification {
 }
 
 
+/**
+ * When a map error stops being shown. MapLibre emits `error` per failed
+ * request (one tile timeout is enough) and nothing when it recovers, so the
+ * message goes on the first `idle` that ends a render cycle with no new
+ * error: it stays while the failing cycle's data is missing and clears once
+ * the map has drawn cleanly again (a pan, a zoom, a hover repaint).
+ */
+export function mapErrorBanner(
+  show: (message: string) => void,
+  hide: (message: string) => void,
+): { error: (message: string) => void; idle: () => void } {
+  let shown: string | null = null;
+  let errorSinceIdle = false;
+  return {
+    error(message) {
+      shown = message;
+      errorSinceIdle = true;
+      show(message);
+    },
+    idle() {
+      if (shown !== null && !errorSinceIdle) {
+        hide(shown);
+        shown = null;
+      }
+      errorSinceIdle = false;
+    },
+  };
+}
+
+
 export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   // Prefer the features bbox over the AOI polygon bbox. For irregular
   // AOIs (Mexicali muni — mostly desert with the urban core packed in
@@ -47,16 +78,19 @@ export function flyToAoi(map: MapLibreMap, aoi: AOIRow): void {
   if (!target) return;
   const [minLon, minLat, maxLon, maxLat] = target;
   // ``maxZoom`` caps the fit so a tiny AOI doesn't slingshot past
-  // street level (z=14 keeps analysis-unit layers above their
-  // minzoom=8 with comfortable density). ``padding`` reserves
-  // viewport edges so the polygon isn't clipped behind UI chrome.
-  map.fitBounds(
+  // street level; ``padding`` keeps the polygon clear of UI chrome. The
+  // floor keeps a wide AOI or a phone screen where blocks (and the overlay
+  // painting them) draw.
+  const camera = map.cameraForBounds(
     [
       [minLon, minLat],
       [maxLon, maxLat],
     ],
-    { padding: 60, duration: 700, maxZoom: 14 },
+    { padding: 60, maxZoom: 14 },
   );
+  if (!camera) return;
+  const zoom = Math.max(camera.zoom ?? 0, minzoomForGrain("block") ?? 0);
+  map.easeTo({ ...camera, zoom, duration: 700 });
 }
 
 
@@ -169,6 +203,9 @@ export function createMap(
     zoom,
     maxZoom: 18,
     minZoom: 5,
+    // `installMapControls` adds the one attribution control, carrying the
+    // data credits; MapLibre's default would be a second (i) button.
+    attributionControl: false,
   });
   installMapControls(map);
   return map;

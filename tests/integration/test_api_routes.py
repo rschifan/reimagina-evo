@@ -189,6 +189,13 @@ def test_list_indicators_returns_seeded_catalog(client, conn):
     assert "block" in compactness["applies_to"]
 
 
+def test_indicator_list_exposes_cap_value(client, conn):
+    seed_catalog(conn)
+    by_slug = {r["slug"]: r for r in client.get("/indicators").json()}
+    assert by_slug["accessibility_block_park_network_m"]["cap_value"] == 1500.0
+    assert by_slug["urban_form_block_compactness"]["cap_value"] is None
+
+
 def test_get_indicator_404s_on_unknown_slug(client):
     response = client.get("/indicators/not_a_real_indicator")
     assert response.status_code == 404
@@ -351,10 +358,9 @@ class TestStatsHistogram:
     a pattern without letting anyone place a value inside it.
 
     ⚠ Server-side by necessity, not preference. The obvious client
-    implementation is `queryRenderedFeatures`, and `selection-metrics`
-    already abandoned exactly that because it "silently undercounted whenever
-    the renderer hadn't loaded the relevant tiles". A histogram that changes
-    shape while tiles load is worse than none, because a reader cannot tell
+    implementation is `queryRenderedFeatures`, which sees only the tiles the
+    renderer has loaded and so undercounts until they arrive. A histogram that
+    changes shape while tiles load is worse than none, because a reader cannot tell
     which shape was the real one.
     """
 
@@ -678,6 +684,99 @@ def two_aois_one_block_each(conn):
     }
 
 
+def test_feature_indicators_rank_within_the_aoi(client, two_aois_one_block_each):
+    f = two_aois_one_block_each
+    scoped = client.get(
+        f"/features/{f['block_a']}/indicators?aoi_id={f['aoi_a']}"
+    ).json()
+    assert [r["slug"] for r in scoped] == [f["slug"]]
+    assert (scoped[0]["count"], scoped[0]["count_below"], scoped[0]["count_equal"]) == (
+        1,
+        0,
+        1,
+    )
+    unscoped = client.get(f"/features/{f['block_a']}/indicators").json()
+    assert unscoped[0]["count"] == 2
+
+
+def test_feature_indicators_count_below_and_equal_are_exact(
+    client, conn, seeded_many_blocks
+):
+    slug = seeded_many_blocks["slug"]
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT feature_id::text FROM curated_geo.indicator_result "
+            "WHERE indicator_slug = %s ORDER BY feature_id",
+            (slug,),
+        )
+        ids = [r[0] for r in cur.fetchall()]
+        for fid, v in zip(ids, [0.1, 0.2, 0.3, 0.3, 0.3, 0.5, 0.6, 0.7], strict=True):
+            cur.execute(
+                "UPDATE curated_geo.indicator_result SET value_numeric = %s "
+                "WHERE feature_id = %s AND indicator_slug = %s",
+                (v, fid, slug),
+            )
+    tied = client.get(f"/features/{ids[3]}/indicators").json()[0]
+    assert (tied["count_below"], tied["count_equal"], tied["count"]) == (2, 3, 8)
+    five = client.get(f"/features/{ids[5]}/indicators").json()[0]
+    assert (five["count_below"], five["count_equal"], five["count"]) == (5, 1, 8)
+
+
+def test_feature_indicators_empty_aoi_population_keeps_the_row(
+    client, conn, two_aois_one_block_each
+):
+    from tests.integration._helpers import insert_project as _insert_project
+
+    f = two_aois_one_block_each
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    rows = client.get(f"/features/{f['block_a']}/indicators?aoi_id={empty_aoi}").json()
+    assert [r["slug"] for r in rows] == [f["slug"]]
+    assert (rows[0]["count"], rows[0]["count_below"], rows[0]["count_equal"]) == (
+        0,
+        0,
+        0,
+    )
+
+
+def test_feature_indicators_empty_for_a_feature_without_values(client, conn):
+    from tests.integration._helpers import (
+        insert_feature as _insert_feature,
+        register_source as _register_source,
+        start_run as _start_run,
+    )
+
+    seed_catalog(conn)
+    source_id = _register_source(
+        conn,
+        name="bare_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    bare = _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "MEX", "block"),
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+        dataset_version="v1",
+        source_record_ref="bare-blk",
+        geometry_wkt="POLYGON((-99.14 19.43,-99.137 19.43,-99.137 19.433,-99.14 19.433,-99.14 19.43))",
+    )
+    response = client.get(f"/features/{bare}/indicators")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_feature_indicators_404_on_unknown_feature(client, conn):
+    seed_catalog(conn)
+    response = client.get("/features/00000000-0000-0000-0000-000000000000/indicators")
+    assert response.status_code == 404
+
+
 def test_stats_endpoint_includes_aoi_id_in_response(client, two_aois_one_block_each):
     """The response model echoes the requested aoi_id so clients can
     correlate the percentiles with the AOI they're rendering."""
@@ -707,6 +806,83 @@ def test_stats_endpoint_scopes_count_to_picked_aoi(client, two_aois_one_block_ea
     assert resp_all.json()["count"] == 2
     assert resp_a.json()["count"] == 1
     assert resp_b.json()["count"] == 1
+
+
+def test_stats_count_at_cap_is_null_without_a_cap(client, two_aois_one_block_each):
+    """Compactness has no cap, so there is nothing to count at it."""
+    fixture = two_aois_one_block_each
+    payload = client.get(f"/indicators/{fixture['slug']}/stats").json()
+    assert payload["count_at_cap"] is None
+
+
+def test_stats_count_at_cap_counts_rows_on_the_cap(
+    client, conn, two_aois_one_block_each
+):
+    """Cap = the larger of the two blocks' values: only that block's AOI
+    has a row on the cap, and the count follows the AOI scope."""
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT feature_id, value_numeric FROM curated_geo.indicator_result "
+            "WHERE indicator_slug = %s AND status = 'current' "
+            "AND feature_id = ANY(%s::uuid[])",
+            (fixture["slug"], [fixture["block_a"], fixture["block_b"]]),
+        )
+        values = {str(f): v for f, v in cur.fetchall()}
+        top = max(values, key=values.get)
+        cur.execute(
+            "UPDATE curated_geo.indicator_catalog SET cap_value = %s WHERE slug = %s",
+            (max(values.values()), fixture["slug"]),
+        )
+    on_cap_aoi, other_aoi = (
+        (fixture["aoi_a"], fixture["aoi_b"])
+        if top == str(fixture["block_a"])
+        else (fixture["aoi_b"], fixture["aoi_a"])
+    )
+    url = f"/indicators/{fixture['slug']}/stats"
+    assert client.get(f"{url}?aoi_id={on_cap_aoi}").json()["count_at_cap"] == 1
+    assert client.get(f"{url}?aoi_id={other_aoi}").json()["count_at_cap"] == 0
+    assert client.get(url).json()["count_at_cap"] == 1
+
+
+def test_stats_count_at_cap_is_zero_for_a_capped_indicator_with_no_rows(
+    client, conn, two_aois_one_block_each
+):
+    """A cap with nothing under it is zero at the cap, not "no cap"."""
+    from tests.integration._helpers import insert_project as _insert_project
+
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.indicator_catalog SET cap_value = 1 WHERE slug = %s",
+            (fixture["slug"],),
+        )
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-cap-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    payload = client.get(
+        f"/indicators/{fixture['slug']}/stats?aoi_id={empty_aoi}"
+    ).json()
+    assert (payload["count"], payload["count_at_cap"]) == (0, 0)
+
+
+def test_stats_count_at_cap_stays_null_without_a_cap_and_no_rows(
+    client, conn, two_aois_one_block_each
+):
+    from tests.integration._helpers import insert_project as _insert_project
+
+    empty_aoi = aoi.create_aoi(
+        conn,
+        project_id=_insert_project(conn, name="proj-empty-nocap-aoi"),
+        name="Empty AOI",
+        geometry_wkt="POLYGON((10 10,11 10,11 11,10 11,10 10))",
+    )
+    slug = two_aois_one_block_each["slug"]
+    payload = client.get(f"/indicators/{slug}/stats?aoi_id={empty_aoi}").json()
+    assert (payload["count"], payload["count_at_cap"]) == (0, None)
 
 
 @pytest.mark.parametrize("fmt", ["csv", "geojson", "parquet"])

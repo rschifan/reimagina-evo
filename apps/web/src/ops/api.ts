@@ -73,16 +73,13 @@ export interface UnitDetail {
   completed_at: string | null;
   /** Prerequisites within this run — not the whole registry graph. */
   depends_on: string[];
-  /** Duration of this indicator's last success on the same AOI before this
-   *  run was submitted; null without history. */
-  expected_ms: number | null;
 }
 
 export interface RunDetailResponse {
   run: RunRow;
   units: UnitDetail[];
   server_now: string;
-  /** Units one worker runs at once — the forecast's slot count. */
+  /** Units one worker runs at once: the height of the parallelism strip. */
   unit_slots: number;
 }
 

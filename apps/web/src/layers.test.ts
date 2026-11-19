@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { INPUT_LAYERS } from "./layers";
+import { INPUT_LAYERS, groupRastersAndOverlays, minzoomForGrain } from "./layers";
 
 /**
  * The zoom at which `serving_geo.get_tile` starts serving
@@ -51,10 +51,25 @@ describe("INPUT_LAYERS", () => {
     expect(streets?.geometry).toBe("line");
   });
 
-  it("turns streets on by default, alone among the optional layers", () => {
-    // Orientation is the problem the layer solves, and a context layer
-    // nobody switches on provides none.
-    expect(streets?.visible).toBe(true);
+  it("starts every spatial layer unchecked", () => {
+    expect(INPUT_LAYERS.every((l) => l.visible === false)).toBe(true);
+  });
+
+  it("labels the municipalities layer plainly", () => {
+    expect(INPUT_LAYERS.find((l) => l.typeSlug === "municipality")?.label).toBe("Municipalities");
+  });
+
+  it("lists overlays without a parent raster directly, under no heading", () => {
+    const groups = groupRastersAndOverlays([
+      { layer_id: "a", source_mode: "aggregation_overlay", source_config: {} },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].parentLabel).toBe("");
+  });
+
+  it("starts block overlays where blocks render", () => {
+    expect(minzoomForGrain("block")).toBe(8);
+    expect(minzoomForGrain(null)).toBeUndefined();
   });
 
   it("gives streets a zoom-dependent width", () => {
