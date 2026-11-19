@@ -15,21 +15,33 @@ are reported identically by every other suite: as nothing at all.
 
 ## Running it
 
-Opt-in, because it needs two servers and a browser:
+Opt-in, because it needs two servers and a browser. Once, install the
+Playwright driver (without touching `package.json` or the lockfile) and the
+Chromium it drives:
 
 ```bash
-REIMAGINA_E2E=1 make test-e2e
+cd apps/web && npm install --no-save playwright && npx playwright install chromium
 ```
 
-It expects, and checks for, an API on `:8001` and the web dev server on
-`:5173`:
+Then, with `make dev` running (an API on `http://127.0.0.1:8001`, the web dev
+server on `http://localhost:5173`):
 
 ```bash
-REIMAGINA_APP_DSN=... python -m apps.api
-cd apps/web && npm run dev
+make test-e2e
 ```
 
-Chromium and Playwright are already installed; nothing is downloaded.
+On other ports, tell the suite where the servers are:
+
+```bash
+make dev API_PORT=8123 WEB_PORT=5199
+REIMAGINA_E2E_API=http://127.0.0.1:8123 REIMAGINA_E2E_WEB=http://localhost:5199 make test-e2e
+```
+
+⚠ The web server is `localhost`, not `127.0.0.1`: Vite listens on
+`localhost`, which macOS resolves to `::1`, so nothing answers on 127.0.0.1.
+
+The pages need data to show: any migrated database with a territory loaded
+works, for example the one `scripts/acceptance_run.sh` leaves behind.
 
 ## What it will not do
 
