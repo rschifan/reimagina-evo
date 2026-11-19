@@ -28,6 +28,7 @@ from reimagina.storage.interfaces.raster import (
     AggregationRecipeRepository as AggregationRecipeRepository,
 )
 from reimagina.storage.interfaces.indicators import (
+    FeatureNotFound as FeatureNotFound,
     IndicatorCatalogRepository as IndicatorCatalogRepository,
     IndicatorResultRepository as IndicatorResultRepository,
     AOISummaryRepository as AOISummaryRepository,
@@ -50,6 +51,7 @@ __all__ = [
     "AOISummaryRepository",
     "AggregationRecipeRepository",
     "ExploreReader",
+    "FeatureNotFound",
     "FeatureRepository",
     "FileAssetRepository",
     "IndicatorCatalogRepository",

@@ -31,7 +31,7 @@ body {
   /* Driven by a custom property so the collapse is one class on `.app`
      rather than a rule per child. `0px`, not `0`: `grid-template-columns`
      needs a length for the transition to interpolate. */
-  --sidebar-w: 320px;
+  --sidebar-w: 240px;
   grid-template-columns: var(--sidebar-w) 1fr;
   flex: 1;
   min-height: 0;
@@ -189,10 +189,10 @@ body {
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   overflow-y: auto;
-  padding: 20px 20px 32px;
+  padding: 14px 12px 24px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 12px;
 }
 
 /* Title and the cross-link to the catalog page, on one line so the link
@@ -232,11 +232,12 @@ body {
   color: var(--muted);
 }
 
-.sidebar section {
+.sidebar section,
+.sidebar details {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 16px;
+  padding: 12px;
 }
 
 .sidebar label {
@@ -251,6 +252,44 @@ body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.sidebar select {
+  width: 100%;
+}
+
+/*
+ * The indicator's full name, wrapped rather than cut at the panel edge.
+ * `base-select` is what lets a <select> wrap its own text (Chromium,
+ * Safari); elsewhere it stays the native control and truncates.
+ */
+#indicator-select,
+#indicator-select::picker(select) {
+  appearance: base-select;
+}
+
+#indicator-select {
+  white-space: normal;
+  text-align: start;
+  line-height: 1.35;
+}
+
+#indicator-select::picker(select) {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-width: 360px;
+}
+
+#indicator-select option {
+  white-space: normal;
+  padding: 6px 10px;
+  color: var(--sidebar-fg);
+}
+
+#indicator-select option:hover,
+#indicator-select option:focus-visible {
+  background: var(--button-bg-hover);
 }
 
 .sidebar select,
@@ -273,19 +312,56 @@ body {
   cursor: not-allowed;
 }
 
-/* Active-AOI summary printed below the picker. Optional info, kept
-   unobtrusive — small text + muted colour so the dropdown stays the
-   primary focal point. */
-.aoi-info {
-  margin-top: 10px;
+/* Four lines of the catalog description; the element's title has the rest. */
+.indicator-description {
+  margin: 10px 0 0;
   font-size: 12px;
-  color: var(--muted);
   line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
 }
 
-.aoi-info .aoi-info-name {
-  color: var(--sidebar-fg);
+.indicator-description[hidden],
+.indicator-about[hidden] {
+  display: none;
+}
+
+.indicator-about {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.indicator-about:hover,
+.indicator-about:focus-visible {
+  text-decoration: underline;
+}
+
+/* Collapsed by default: layers are context, the indicator is the subject. */
+.layers > summary {
+  cursor: pointer;
+  font-size: 12px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.layers[open] > summary {
+  margin-bottom: 10px;
+}
+
+.layers__count {
+  float: right;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .layer-toggles {
@@ -403,18 +479,200 @@ body {
   to { transform: rotate(360deg); }
 }
 
-.downloads {
-  margin-top: 12px;
+.downloads__chips {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.status {
-  font-size: 11px;
+.downloads__chips a {
+  font-size: 12px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--button-bg);
+  color: var(--sidebar-fg);
+  text-decoration: none;
+}
+
+.downloads__chips a:hover,
+.downloads__chips a:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.downloads__scope {
+  margin: 8px 0 0;
+  font-size: 12px;
   color: var(--muted);
-  line-height: 1.6;
-  min-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Loading and errors, top-centre over the map. Hidden when empty. */
+.map-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(480px, calc(100% - 140px));
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.92);
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.map-banner[hidden] {
+  display: none;
+}
+
+.map-banner[data-kind="error"] {
+  border-color: #f87171;
+}
+
+/* The legend card, bottom-left over the map. Lifted clear of MapLibre's
+   scale bar, which shares the corner. */
+.map-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 40px;
+  z-index: 5;
+  width: 260px;
+  max-width: calc(100% - 24px);
+  margin-top: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.92);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.map-legend[hidden] {
+  display: none;
+}
+
+.map-legend .name {
+  color: var(--sidebar-fg);
+  font-weight: 600;
+}
+
+/* The pinned block's card, top-right under MapLibre's navigation control. */
+.inspector {
+  position: absolute;
+  top: 120px;
+  right: 10px;
+  z-index: 5;
+  width: 280px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 240px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.92);
+  color: var(--sidebar-fg);
+  font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.inspector[hidden] {
+  display: none;
+}
+
+.inspector__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.inspector__kind {
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
+.inspector__id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  user-select: all;
+}
+
+.inspector__close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.inspector__close:hover {
+  color: var(--sidebar-fg);
+}
+
+.inspector__name {
+  font-weight: 600;
+}
+
+.inspector__value {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 2px 0;
+}
+
+.inspector__rank,
+.inspector__status {
+  color: var(--muted);
+  margin: 0;
+}
+
+.inspector__subhead {
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.inspector__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--sidebar-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inspector__row:hover,
+.inspector__row:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.inspector__row-value {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .map-panel {
@@ -494,13 +752,14 @@ body {
 }
 
 /*
- * Metrics panel — one per selection. Sits above the legend on the
- * left edge of the map, next to the sidebar. main.ts toggles the
- * ``hidden`` attribute when the selection store emits null/non-null.
+ * Selection summary, bottom-right of the map, across from the legend. Stale
+ * numbers dim while the next answer is in flight; tabular figures keep their
+ * width from jumping when they change.
  */
-.selection-panel {
+.selection-card {
   position: absolute;
-  bottom: 12px;
+  /* Level with the legend, clear of the attribution button below it. */
+  bottom: 40px;
   right: 12px;
   z-index: 5;
   min-width: 200px;
@@ -508,60 +767,33 @@ body {
   background: rgba(17, 24, 39, 0.92);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   color: var(--sidebar-fg);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-}
-
-.selection-panel__title {
-  margin: 0 0 8px 0;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.selection-panel__metrics {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  row-gap: 4px;
-  column-gap: 12px;
   font-size: 13px;
-}
-
-.selection-panel__metrics dt {
-  margin: 0;
-  color: var(--muted);
-}
-
-.selection-panel__metrics dd {
-  margin: 0;
-  text-align: right;
   font-variant-numeric: tabular-nums;
+  transition: opacity 120ms;
 }
 
-.selection-panel__total {
-  margin: 0 0 8px 0;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 8px;
+.selection-card.is-stale {
+  opacity: 0.6;
 }
 
-.selection-panel__total-value {
-  font-size: 22px;
+.selection-card p {
+  margin: 0;
+}
+
+.selection-card .selection-card__title {
   font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--sidebar-fg);
+  margin-bottom: 4px;
 }
 
-.selection-panel__total-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.selection-card__value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.selection-card__note {
   color: var(--muted);
 }
 
@@ -604,20 +836,6 @@ body {
   background: #1d4ed8;
   border-color: #1d4ed8;
   color: #fff;
-}
-
-.grain-toggle__btn:disabled {
-  cursor: default;
-}
-
-/* A single-grain chip is disabled but still the active grain, so it
-   keeps a readable fill instead of the sidebar's generic 0.4-opacity
-   disabled wash — it is stating a fact, not offering a dead option. */
-.grain-toggle__btn:disabled[aria-pressed="true"] {
-  opacity: 1;
-  background: var(--panel);
-  border-color: var(--border);
-  color: var(--muted);
 }
 
 /*
@@ -829,3 +1047,69 @@ body {
   }
 }
 
+
+/*
+ * Phone (< 768 px). The drawer keeps its 860 px breakpoint above: it is where
+ * a panel and a map stop fitting side by side, and everything between 768 and
+ * 860 px is still better served by the drawer. Below 768 px the legend is a
+ * one-line strip and the inspector and selection card share one bottom sheet
+ * (sheet.ts marks the older of the two `data-behind`), both clear of the draw
+ * tools (top-left) and MapLibre's navigation control (top-right).
+ */
+@media (max-width: 767px) {
+  .map-legend {
+    left: 8px;
+    right: 8px;
+    bottom: 28px;
+    width: auto;
+    max-width: none;
+    padding: 6px 10px;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .map-legend .name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-legend .gradient {
+    flex: 1 1 60px;
+    min-width: 40px;
+  }
+
+  .map-legend .cap-key {
+    flex: none;
+  }
+
+  .map-legend .bounds,
+  .map-legend .dist-wrap,
+  .map-legend .p50,
+  .map-legend .scope,
+  .map-legend .cap-share,
+  .map-legend .delta-meaning {
+    display: none;
+  }
+
+  .inspector,
+  .selection-card {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 72px;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    max-height: 38%;
+    overflow-y: auto;
+  }
+
+  .inspector[data-behind],
+  .selection-card[data-behind] {
+    display: none;
+  }
+}

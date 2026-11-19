@@ -37,6 +37,7 @@ class IndicatorSummary(BaseModel):
     unit: str | None = None
     valid_min: float | None = None
     valid_max: float | None = None
+    cap_value: float | None = None
     aggregation_method: str
     applies_to: list[str]
 
@@ -156,7 +157,7 @@ def list_indicators(
             scenario_id=_as_str(scenario_id),
         )
     )
-    return [IndicatorSummary(**_catalog_row_to_dict(row)) for row in rows]
+    return [IndicatorSummary(**catalog_row_to_dict(row)) for row in rows]
 
 
 @router.get("/{slug}", response_model=IndicatorSummary)
@@ -168,7 +169,7 @@ def get_indicator(
     row = get_backend(conn).indicator_catalog_repo().get_indicator(slug)
     if row is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
-    return IndicatorSummary(**_catalog_row_to_dict(row))
+    return IndicatorSummary(**catalog_row_to_dict(row))
 
 
 @router.get("/{slug}/dependencies", response_model=IndicatorDependencies)
@@ -298,6 +299,9 @@ class IndicatorValueStats(BaseModel):
     #: Over the same rows as ``count``. A scenario table's total for counts
     #: (dwellings, people); ``None`` when there are no values.
     sum: float | None = None
+    #: Rows with ``value >= cap_value`` over the same rows as ``count``;
+    #: ``None`` when the indicator has no cap.
+    count_at_cap: int | None = None
     histogram: ValueHistogram | None = None
 
 
@@ -353,7 +357,7 @@ def get_values_stats(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> IndicatorValueStats:
     """Return count + percentiles for an indicator's current numeric values."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     aoi_id_str = _as_str(aoi_id)
     scenario_id_str = _as_str(scenario_id)
     stats = (
@@ -394,7 +398,7 @@ def download_values_csv(
     schema additions — richer fields belong to the GeoJSON / GeoParquet
     downloads.
     """
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -426,7 +430,7 @@ def download_values_geojson(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
     """Return a GeoJSON FeatureCollection in one response."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -459,7 +463,7 @@ def download_values_parquet(
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> Response:
     """Return a GeoParquet byte payload (EPSG:4326)."""
-    _ensure_indicator_exists(conn, slug)
+    ensure_indicator_exists(conn, slug)
     rows = (
         get_backend(conn)
         .indicator_result_repo()
@@ -480,12 +484,13 @@ def download_values_parquet(
     )
 
 
-def _ensure_indicator_exists(conn, slug: str) -> None:
+def ensure_indicator_exists(conn, slug: str) -> None:
+    """404 unless the catalog carries `slug`; shared by every route that takes one."""
     if get_backend(conn).indicator_catalog_repo().get_indicator(slug) is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
 
 
-def _catalog_row_to_dict(row: dict) -> dict:
+def catalog_row_to_dict(row: dict) -> dict:
     """Normalise the RealDictCursor/tuple-dict shape into kwargs for IndicatorSummary."""
     return {
         "slug": row["slug"],
@@ -497,6 +502,7 @@ def _catalog_row_to_dict(row: dict) -> dict:
         "unit": row.get("unit"),
         "valid_min": row.get("valid_min"),
         "valid_max": row.get("valid_max"),
+        "cap_value": row.get("cap_value"),
         "aggregation_method": row["aggregation_method"],
         "applies_to": list(row.get("applies_to") or []),
     }
