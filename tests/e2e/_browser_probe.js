@@ -122,6 +122,14 @@ const PAGES = [
   await tab.$eval('#layer-toggles input[type=checkbox]', (e) => e.click()).catch(() => {});
   await tab.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
   await tab.waitForTimeout(1500);
+  // Streets are served from z12. A large territory opens fitted below that,
+  // so zoom in on its centre (MapLibre's own `=` key) until they are asked for.
+  for (let i = 0; i < 6 && layerTileRequests.length === 0; i += 1) {
+    await tab.focus('.maplibregl-canvas').catch(() => {});
+    await tab.keyboard.press('Equal');
+    await tab.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    await tab.waitForTimeout(1000);
+  }
   interaction.layerTileRequests = layerTileRequests;
   interaction.roadTiles = roadTiles;
   interaction.attribution = await tab
