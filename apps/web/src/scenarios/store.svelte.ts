@@ -21,6 +21,7 @@ import {
   listReachableIndicators,
   listScenarios,
   recomputeScenario,
+  updateRule,
   type AOIRow,
   type ReachableIndicator,
   type ScenarioListRow,
@@ -40,6 +41,7 @@ import {
 } from "../scenario";
 import { cellValue } from "./derive";
 import { followRun, removeRule } from "./follow";
+import { wktToGeometry } from "./rule-geometry";
 
 /** The table's key for the baseline city's row. */
 export const BASELINE = "baseline";
@@ -53,6 +55,15 @@ export interface Cell {
 export interface Message {
   text: string;
   tone: "ok" | "bad";
+}
+
+/** The four numbers a rule carries, as the rule box edits them. */
+export interface RuleValues {
+  levels: number;
+  unitSize: number;
+  peoplePerHousehold: number;
+  /** Share of the block built on, `0 < c ≤ 1`. */
+  lotCoverage: number;
 }
 
 export interface WorkspaceState {
@@ -78,6 +89,13 @@ export interface WorkspaceState {
   drawn: Feature<Polygon> | null;
   densityValidMax: number | null;
   floorsValidMax: number | null;
+  /** An apply, save or delete is in flight (it ends when its run lands).
+   *  One at a time: the box's buttons are disabled meanwhile. */
+  busy: boolean;
+  /** What the last applied rule used, so the next box starts from it. */
+  lastValues: RuleValues;
+  /** Why the open rule box's last action was refused, if it was. */
+  boxError: { field: string | null; text: string } | null;
   /** False until the route a page opened with has been applied. Whatever
    *  writes the selection back into the URL waits for it — before then the
    *  selection is empty only because the pilot is still loading, and writing
@@ -102,6 +120,9 @@ export const ws: WorkspaceState = $state({
   drawn: null,
   densityValidMax: null,
   floorsValidMax: null,
+  busy: false,
+  lastValues: { levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 },
+  boxError: null,
   routeReady: false,
 });
 
@@ -558,4 +579,287 @@ export async function removeScenario(): Promise<void> {
   } catch (err) {
     await refused(err, "delete");
   }
+}
+
+
+// ── editing on the map: one call per gesture ─────────────────────────────
+//
+// Apply, Save and Delete each write, recompute and wait for the run, so the
+// map and the table always show what the rules say. When the recompute
+// refuses (a per-block ceiling only the server can see) or the rule catches
+// no block, the page undoes its own write: a rule the run refused must not
+// stay on the map looking applied.
+
+const HOUSING_UNITS = "edificability_block_housing_units";
+const POPULATION = "edificability_block_population";
+const NO_BLOCKS = "No blocks fall inside this area. Draw it over the city's blocks.";
+
+type Landing =
+  | { outcome: "landed" }
+  | { outcome: "failed" | "unknown" }
+  | { outcome: "refused"; error: unknown }
+  | { outcome: "empty" };
+
+/**
+ * Recompute `scenarioId` and wait for its run. `ruleEditIds`, when given, are
+ * the edits just written: if every one of them caught no block the answer is
+ * `empty`, without waiting for anything.
+ */
+async function recomputeAndWait(scenarioId: string, ruleEditIds: string[] = []): Promise<Landing> {
+  let result;
+  try {
+    result = await recomputeScenario(scenarioId);
+  } catch (error) {
+    return { outcome: "refused", error };
+  }
+  const caught = ruleEditIds.map((id) => result.matched_per_edit[id] ?? 0);
+  if (caught.length > 0 && caught.every((n) => n === 0)) return { outcome: "empty" };
+  void loadScenarios();
+  if (result.run_id === null) return { outcome: "landed" };
+  const runId = result.run_id;
+  stopFollowing(scenarioId);
+  ws.following[scenarioId] = { runId, status: result.run_status };
+  return new Promise<Landing>((resolve) => {
+    const finish = (landing: Landing): void => {
+      followers.delete(scenarioId);
+      delete ws.following[scenarioId];
+      resolve(landing);
+    };
+    const cancel = followRun(runId, {
+      progress(status) {
+        ws.following[scenarioId] = { runId, status };
+      },
+      landed: () => finish({ outcome: "landed" }),
+      failed: () => finish({ outcome: "failed" }),
+      unreadable: () => finish({ outcome: "unknown" }),
+      handedOver: () => finish({ outcome: "unknown" }),
+    });
+    // Cancelled from outside (a pilot switch): the gesture is over either way,
+    // and a promise left pending would hold `busy` forever.
+    followers.set(scenarioId, () => {
+      cancel();
+      finish({ outcome: "unknown" });
+    });
+  });
+}
+
+/** After a run: the row, the rules and the map, and the change view. */
+async function afterLanding(scenarioId: string, landing: Landing, done: string): Promise<void> {
+  void refreshRow(scenarioId);
+  if (ws.selectedId !== scenarioId) return;
+  await loadRules(scenarioId, selection);
+  refreshMap();
+  ws.comparison = null;
+  if (landing.outcome === "landed") {
+    ws.mode = "delta";
+    say(`${done} The map shows the change against the baseline city.`);
+  } else if (landing.outcome === "failed") {
+    say(`${done} The recompute failed; the Runs page has the detail.`, "bad");
+  } else {
+    say(`${done} The recompute is still running — the Runs page follows it.`);
+  }
+}
+
+const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<void> => {
+  ws.boxError = { field: null, text: await refusalText(err, operation) };
+};
+
+function precheck(values: RuleValues): boolean {
+  const refusal = validateEdit({
+    ...values,
+    densityValidMax: ws.densityValidMax,
+    floorsValidMax: ws.floorsValidMax,
+  });
+  if (!refusal) return true;
+  const field = /\((\w+)\)/.exec(refusal)?.[1] ?? null;
+  ws.boxError = { field, text: refusal };
+  return false;
+}
+
+/**
+ * Write a new rule over `area` and show its effect. On the baseline city
+ * (no scenario selected) the scenario is created first, named `scenarioName`.
+ * Returns whether the rule now stands.
+ */
+export async function applyNewRule(
+  area: Feature<Polygon>,
+  values: RuleValues,
+  scenarioName?: string,
+): Promise<boolean> {
+  if (ws.busy) return false;
+  ws.boxError = null;
+  if (!precheck(values)) return false;
+  let scenarioId = ws.selectedId;
+  if (scenarioId === null && !(scenarioName ?? "").trim()) {
+    ws.boxError = { field: "name", text: "Give the new scenario a name." };
+    return false;
+  }
+  ws.busy = true;
+  let created: string | null = null;
+  let written: string[] = [];
+  try {
+    if (scenarioId === null) {
+      if (!ws.projectId) {
+        ws.boxError = { field: null, text: "No pilot is active, so there is no project to add a scenario to." };
+        return false;
+      }
+      try {
+        const scenario = await createScenario({
+          project_id: ws.projectId,
+          name: (scenarioName ?? "").trim(),
+          aoi_id: ws.aoiId,
+        });
+        created = scenario.id;
+      } catch (err) {
+        await boxRefusal(err, "create");
+        return false;
+      }
+      await loadScenarios();
+      select(created);
+      scenarioId = created;
+    }
+    try {
+      const result = await addScenarioEdits(scenarioId, {
+        area,
+        levels: values.levels,
+        unit_size: values.unitSize,
+        people_per_household: values.peoplePerHousehold,
+        lot_coverage: values.lotCoverage,
+      });
+      written = result.edits.map((e) => e.id);
+    } catch (err) {
+      await boxRefusal(err, "edits");
+      await undoCreated(created);
+      return false;
+    }
+    const landing = await recomputeAndWait(scenarioId, written);
+    if (landing.outcome === "refused" || landing.outcome === "empty") {
+      await removeRule(scenarioId, written);
+      if (landing.outcome === "refused") await boxRefusal(landing.error, "recompute");
+      else ws.boxError = { field: null, text: NO_BLOCKS };
+      await undoCreated(created);
+      if (created === null) await loadScenarios();
+      return false;
+    }
+    ws.lastValues = { ...values };
+    await afterLanding(scenarioId, landing, "Rule added.");
+    return true;
+  } finally {
+    ws.busy = false;
+  }
+}
+
+/** Delete a scenario this gesture created, when the gesture did not stand. */
+async function undoCreated(created: string | null): Promise<void> {
+  if (created === null) return;
+  try {
+    await deleteScenario(created);
+  } catch (err) {
+    console.warn("could not delete the scenario the refused rule created", err);
+  }
+  if (ws.selectedId === created) select(null);
+  delete ws.cells[created];
+  await loadScenarios();
+}
+
+/**
+ * Change a rule's numbers, and its area when `area` is given, in place, and
+ * show the effect. A refused recompute writes the previous numbers and area
+ * back. Returns whether the change stands.
+ */
+export async function saveRule(
+  group: EditGroup,
+  area: Feature<Polygon> | null,
+  values: RuleValues,
+): Promise<boolean> {
+  const scenarioId = ws.selectedId;
+  if (ws.busy || scenarioId === null) return false;
+  ws.boxError = null;
+  if (!precheck(values)) return false;
+  ws.busy = true;
+  try {
+    let ids = group.editIds;
+    try {
+      const result = await updateRule(scenarioId, {
+        edit_ids: group.editIds,
+        ...(area ? { area } : {}),
+        levels: values.levels,
+        unit_size: values.unitSize,
+        people_per_household: values.peoplePerHousehold,
+        lot_coverage: values.lotCoverage,
+      });
+      ids = result.edits.map((e) => e.id);
+    } catch (err) {
+      await boxRefusal(err, "edits");
+      return false;
+    }
+    const landing = await recomputeAndWait(scenarioId, area ? ids : []);
+    if (landing.outcome === "refused" || landing.outcome === "empty") {
+      try {
+        await updateRule(scenarioId, {
+          edit_ids: ids,
+          ...(area ? { area: wktToGeometry(group.areaWkt) } : {}),
+          levels: group.levels ?? values.levels,
+          unit_size: group.unitSize ?? values.unitSize,
+          people_per_household: group.peoplePerHousehold ?? values.peoplePerHousehold,
+          lot_coverage: group.lotCoverage ?? 1,
+        });
+      } catch (err) {
+        console.warn("could not restore the rule", err);
+      }
+      if (landing.outcome === "refused") await boxRefusal(landing.error, "recompute");
+      else ws.boxError = { field: null, text: NO_BLOCKS };
+      if (ws.selectedId === scenarioId) await loadRules(scenarioId, selection);
+      return false;
+    }
+    ws.lastValues = { ...values };
+    await afterLanding(scenarioId, landing, "Rule saved.");
+    return true;
+  } finally {
+    ws.busy = false;
+  }
+}
+
+/** Remove a rule — every edit of it — and show the effect. */
+export async function deleteRule(group: EditGroup): Promise<boolean> {
+  const scenarioId = ws.selectedId;
+  if (ws.busy || scenarioId === null) return false;
+  ws.boxError = null;
+  ws.busy = true;
+  try {
+    const { removed, error } = await removeRule(scenarioId, group.editIds);
+    if (error) {
+      await boxRefusal(error, "removeEdit");
+      if (removed > 0) {
+        ws.boxError = {
+          field: null,
+          text: `${removed} of ${group.editIds.length} edits were removed; delete the rule again to remove the rest.`,
+        };
+      }
+      if (ws.selectedId === scenarioId) await loadRules(scenarioId, selection);
+      return false;
+    }
+    const landing = await recomputeAndWait(scenarioId);
+    if (landing.outcome === "refused") {
+      await boxRefusal(landing.error, "recompute");
+      return false;
+    }
+    await afterLanding(scenarioId, landing, "Rule deleted.");
+    return true;
+  } finally {
+    ws.busy = false;
+  }
+}
+
+/** Total homes and people, baseline and now, for the top bar. */
+export function headline(scenarioId: string | null): {
+  homes: { base: number | null; now: number | null };
+  people: { base: number | null; now: number | null };
+} {
+  const cell = (row: string, slug: string): number | null => ws.cells[row]?.[slug]?.value ?? null;
+  const now = scenarioId ?? BASELINE;
+  return {
+    homes: { base: cell(BASELINE, HOUSING_UNITS), now: cell(now, HOUSING_UNITS) },
+    people: { base: cell(BASELINE, POPULATION), now: cell(now, POPULATION) },
+  };
 }

@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   getComparison: vi.fn(),
   getRun: vi.fn(),
   removeScenarioEdit: vi.fn(),
+  updateRule: vi.fn(),
 }));
 vi.mock("../api", () => api);
 
@@ -338,5 +339,191 @@ describe("authoring", () => {
       ["A", "e2"],
       ["A", "e3"],
     ]);
+  });
+});
+
+
+describe("editing on the map", () => {
+  const AREA = {
+    type: "Feature" as const,
+    properties: {},
+    geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] },
+  };
+  const VALUES = { levels: 3, unitSize: 66, peoplePerHousehold: 3.6, lotCoverage: 0.6 };
+  const written = (ids: string[]) => ({
+    scenario_id: "A",
+    feature_type: "MEX:block",
+    edits: ids.map((id) => ({ id, attribute_key: "k", value_numeric: 1 })),
+  });
+  const recomputed = (matched: Record<string, number>, runId: string | null = "run-1") => ({
+    scenario_id: "A", matched_per_edit: matched, overrides_written: 5,
+    overrides_removed: 0, results_superseded: 0, run_id: runId,
+    run_status: "queued", deduplicated: false,
+  });
+  // `load()` resets the module registry, so the class the store checks
+  // `instanceof` against is the one imported after it, not one from the top
+  // of this file.
+  let ApiError: typeof import("../http").ApiError;
+  beforeEach(async () => {
+    ({ ApiError } = await import("../http"));
+  });
+  const ceiling = () => {
+    const response = new Response(
+      JSON.stringify({ detail: { error: "ceiling_exceeded", message: "housing units over 200000" } }),
+      { status: 422 },
+    );
+    return new ApiError("422 Unprocessable Entity on /recompute", response);
+  };
+  const GROUP = {
+    areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
+    levels: 6,
+    unitSize: 60,
+    peoplePerHousehold: 3.6,
+    lotCoverage: null,
+    editIds: ["e1", "e2", "e3", "e4"],
+    complete: true,
+    ordinal: 1,
+  };
+
+  beforeEach(() => {
+    api.addScenarioEdits.mockResolvedValue(written(["n1", "n2", "n3", "n4", "n5"]));
+    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 7, n2: 7, n3: 7, n4: 7, n5: 7 }));
+    api.getRun.mockResolvedValue({ run_id: "run-1", status: "succeeded", units: [] });
+    api.removeScenarioEdit.mockResolvedValue(undefined);
+    api.updateRule.mockResolvedValue(written(GROUP.editIds));
+  });
+
+  const settleRun = async <T,>(p: Promise<T>): Promise<T> => {
+    await vi.advanceTimersByTimeAsync(2_500);
+    return p;
+  };
+
+  it("apply on the baseline creates the scenario, then the rule, then recomputes", async () => {
+    api.createScenario.mockResolvedValue({ id: "N", name: "Scenario 3" });
+    api.listScenarios.mockResolvedValue([row("A"), row("B"), row("N")]);
+    store.select(null);
+    const order: string[] = [];
+    api.createScenario.mockImplementation(async () => (order.push("create"), { id: "N", name: "S" }));
+    api.addScenarioEdits.mockImplementation(async () => (order.push("edits"), written(["n1"])));
+    api.recomputeScenario.mockImplementation(async () => (order.push("recompute"), recomputed({ n1: 3 })));
+
+    const ok = await settleRun(store.applyNewRule(AREA, VALUES, "Scenario 3"));
+
+    expect(ok).toBe(true);
+    expect(order).toEqual(["create", "edits", "recompute"]);
+    expect(api.addScenarioEdits).toHaveBeenCalledWith("N", expect.objectContaining({ lot_coverage: 0.6, levels: 3 }));
+    expect(store.ws.selectedId).toBe("N");
+    expect(store.ws.mode).toBe("delta");
+    expect(store.ws.busy).toBe(false);
+  });
+
+  it("a refused recompute undoes the new rule", async () => {
+    store.select("A");
+    api.recomputeScenario.mockRejectedValue(ceiling());
+
+    const ok = await settleRun(store.applyNewRule(AREA, VALUES));
+
+    expect(ok).toBe(false);
+    expect(api.removeScenarioEdit.mock.calls.map((c) => c[1])).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+    expect(store.ws.boxError?.text).toMatch(/200000|ceiling/);
+  });
+
+  it("a refused recompute after creating the scenario deletes the scenario", async () => {
+    store.select(null);
+    api.createScenario.mockResolvedValue({ id: "N", name: "S" });
+    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.deleteScenario.mockResolvedValue({ overrides: 0, results_superseded: 0 });
+
+    await settleRun(store.applyNewRule(AREA, VALUES, "S"));
+
+    expect(api.deleteScenario).toHaveBeenCalledWith("N");
+    expect(store.ws.selectedId).toBeNull();
+  });
+
+  it("a rule that catches no block is undone and said so", async () => {
+    store.select("A");
+    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 0, n2: 0, n3: 0, n4: 0, n5: 0 }, null));
+
+    const ok = await settleRun(store.applyNewRule(AREA, VALUES));
+
+    expect(ok).toBe(false);
+    expect(api.removeScenarioEdit).toHaveBeenCalledTimes(5);
+    expect(store.ws.boxError?.text).toMatch(/No blocks fall inside this area/);
+  });
+
+  it("save keeps the rule's edit ids", async () => {
+    store.select("A");
+    api.recomputeScenario.mockResolvedValue(recomputed({ e1: 4, e2: 4, e3: 4, e4: 4 }));
+    const ok = await settleRun(store.saveRule(GROUP, AREA, VALUES));
+    expect(ok).toBe(true);
+    expect(api.updateRule).toHaveBeenCalledWith("A", expect.objectContaining({
+      edit_ids: GROUP.editIds, area: AREA, levels: 3, lot_coverage: 0.6,
+    }));
+    expect(api.addScenarioEdits).not.toHaveBeenCalled();
+  });
+
+  it("a refused save writes the old numbers and area back", async () => {
+    store.select("A");
+    api.recomputeScenario.mockRejectedValue(ceiling());
+    await settleRun(store.saveRule(GROUP, AREA, VALUES));
+    expect(api.updateRule).toHaveBeenCalledTimes(2);
+    const undo = api.updateRule.mock.calls[1][1];
+    expect(undo).toMatchObject({ levels: 6, unit_size: 60, people_per_household: 3.6, lot_coverage: 1 });
+    expect(undo.area.type).toBe("Polygon");
+    expect(store.ws.boxError).not.toBeNull();
+  });
+
+  it("delete removes every edit then recomputes", async () => {
+    store.select("A");
+    api.recomputeScenario.mockResolvedValue(recomputed({}, "run-1"));
+    const ok = await settleRun(store.deleteRule(GROUP));
+    expect(ok).toBe(true);
+    expect(api.removeScenarioEdit.mock.calls.map((c) => c[1])).toEqual(GROUP.editIds);
+    expect(api.recomputeScenario).toHaveBeenCalledWith("A");
+  });
+
+  it("a second apply while busy is ignored", async () => {
+    store.select("A");
+    const first = store.applyNewRule(AREA, VALUES);
+    const second = store.applyNewRule(AREA, VALUES);
+    expect(await second).toBe(false);
+    await settleRun(first);
+    expect(api.addScenarioEdits).toHaveBeenCalledTimes(1);
+  });
+
+  it("switching scenario mid-apply writes nothing to the new one", async () => {
+    store.select("A");
+    let release!: () => void;
+    api.addScenarioEdits.mockImplementation(
+      () => new Promise((r) => (release = () => r(written(["n1"])))),
+    );
+    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 2 }));
+    const pending = store.applyNewRule(AREA, VALUES);
+    store.select("B");
+    store.ws.message = { text: "about B", tone: "ok" };
+    release();
+    await settleRun(pending);
+    expect(api.recomputeScenario.mock.calls.every((c) => c[0] === "A")).toBe(true);
+    expect(store.ws.message?.text).toBe("about B");
+    expect(store.ws.mode).toBe("value");
+  });
+
+  it("values are remembered for the next rule", async () => {
+    store.select("A");
+    expect(store.ws.lastValues).toEqual({ levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 });
+    await settleRun(store.applyNewRule(AREA, VALUES));
+    expect(store.ws.lastValues).toEqual(VALUES);
+  });
+
+  it("the headline reads homes and people from the table's cells", () => {
+    store.ws.cells = {
+      baseline: { edificability_block_housing_units: { value: 100, error: null }, edificability_block_population: { value: 300, error: null } },
+      A: { edificability_block_housing_units: { value: 150, error: null } },
+    };
+    expect(store.headline("A")).toEqual({
+      homes: { base: 100, now: 150 },
+      people: { base: 300, now: null },
+    });
+    expect(store.headline(null).homes).toEqual({ base: 100, now: 100 });
   });
 });
