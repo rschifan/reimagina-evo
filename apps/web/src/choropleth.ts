@@ -429,26 +429,31 @@ export function valueRamp(
 }
 
 
+export interface ActivateOptions {
+  tooltips?: TooltipController;
+  aoiId?: string | null;
+  grain?: string | null;
+  /** The active scenario, or null/absent for the baseline city. Only the tile
+   *  URL reads it; everything else about the layer is the same either way,
+   *  which is the point of resolving the overlay in SQL (r043). */
+  scenarioId?: string | null;
+  /** The scenario's difference from the baseline, when that is what is shown.
+   *  Absent means the value view. Only meaningful with a `scenarioId`; without
+   *  one the tile URL ignores it, so the fill must too, or a delta fill would
+   *  sit over a value tile and paint nothing at all. */
+  delta?: DeltaDomain | null;
+  /** The hover tooltip ends with "Click to pin". Only the map page pins, so
+   *  only it asks. */
+  pinHint?: boolean;
+}
+
+
 export function activateIndicator(
   map: MapLibreMap,
   config: ChoroplethConfig,
   indicator: IndicatorSummary,
   domain: RampDomain,
-  tooltips?: TooltipController,
-  aoiId?: string | null,
-  grain?: string | null,
-  // The active scenario, or null/absent for the baseline city. Only the tile
-  // URL reads it; everything else about the layer is the same either way,
-  // which is the point of resolving the overlay in SQL (r043).
-  scenarioId?: string | null,
-  // The scenario's difference from the baseline, when that is what is shown.
-  // Absent means the value view. Only meaningful with a `scenarioId`; without
-  // one the tile URL ignores it, so the fill must too, or a delta fill would
-  // sit over a value tile and paint nothing at all.
-  delta?: DeltaDomain | null,
-  // `pinHint`: the hover tooltip ends with "Click to pin". Only the map page
-  // pins, so only it asks.
-  options: { pinHint?: boolean } = {},
+  { tooltips, aoiId, grain, scenarioId, delta, pinHint }: ActivateOptions = {},
 ): void {
   removeIndicator(map);
   const asDelta = Boolean(delta && scenarioId);
@@ -547,7 +552,7 @@ export function activateIndicator(
   // Publish the hovered feature's value so the legend can mark where it
   // falls in the distribution.
   //
-  // A bus rather than another `activateIndicator` parameter, matching
+  // A bus rather than another `activateIndicator` option, matching
   // `hover-highlight`'s own suspend bus: the listener is owned by the page
   // and lives longer than any one indicator, while these handlers are torn
   // down and rebuilt on every pick. Registered here so they land in
@@ -583,7 +588,7 @@ export function activateIndicator(
           return {
             title: indicator.name,
             detail: formatValue(num, indicator),
-            hint: options.pinHint ? "Click to pin" : undefined,
+            hint: pinHint ? "Click to pin" : undefined,
           };
         },
       })),

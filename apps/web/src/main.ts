@@ -516,10 +516,9 @@ async function main(): Promise<void> {
       if (myToken !== renderToken) return;
 
       const domain = rampDomainFromStats(stats, indicator);
-      activateIndicator(
-        map, overlayConfig, indicator, domain,
-        tooltipController, aoiId, grain, null, null, { pinHint: true },
-      );
+      activateIndicator(map, overlayConfig, indicator, domain, {
+        tooltips: tooltipController, aoiId, grain, pinHint: true,
+      });
       drawnGrain = grain ?? null;
       // The new source has no feature-state: re-outline the pinned block and
       // show the new indicator's rank. A pin from another grain is a

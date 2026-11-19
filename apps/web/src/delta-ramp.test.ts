@@ -562,7 +562,7 @@ describe("activateIndicator", () => {
     const { map, added } = fakeMap();
     activateIndicator(
       map, config, indicator(), value,
-      undefined, "a-1", "block", "s-1", deltaDomain,
+      { aoiId: "a-1", grain: "block", scenarioId: "s-1", delta: deltaDomain },
     );
     expect(String((added.sources[0].tiles as string[])[0])).toContain("&delta=true");
     const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
@@ -574,7 +574,7 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", "block", "s-1", { ...deltaDomain, higherIsBetter: higher },
+        { aoiId: "a-1", grain: "block", scenarioId: "s-1", delta: { ...deltaDomain, higherIsBetter: higher } },
       );
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
       expect(fill).toEqual(deltaFill({ min: -40, max: 40 }, higher));
@@ -586,7 +586,7 @@ describe("activateIndicator", () => {
       const { map, added } = fakeMap();
       activateIndicator(
         map, config, indicator(), value,
-        undefined, "a-1", "block", scenario, delta,
+        { aoiId: "a-1", grain: "block", scenarioId: scenario, delta },
       );
       expect(String((added.sources[0].tiles as string[])[0])).not.toContain("delta");
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
@@ -602,7 +602,7 @@ describe("activateIndicator", () => {
       const tooltips = { register: (p: typeof provider) => { provider = p; return () => undefined; } };
       activateIndicator(
         map, config, indicator(), value,
-        tooltips as never, "a-1", "block", null, null, { pinHint },
+        { tooltips: tooltips as never, aoiId: "a-1", grain: "block", pinHint },
       );
       const probeMap = { queryRenderedFeatures: () => [{ properties: { value_numeric: 12 } }] };
       const content = provider!.probe({ map: probeMap, event: { point: { x: 0, y: 0 } } }) as { hint?: string };
