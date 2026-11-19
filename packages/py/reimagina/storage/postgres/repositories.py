@@ -3233,21 +3233,25 @@ class PostgresOpsRunReader:
             return {}
         rows = self._read_query(
             """
-            SELECT DISTINCT ON (u.indicator_slug)
-                   u.indicator_slug AS slug,
-                   (EXTRACT(EPOCH FROM u.completed_at - u.started_at) * 1000)::bigint
-                       AS ms
+            SELECT mine.indicator_slug AS slug, last.ms
             FROM jobs_runtime.orchestration_run this
             JOIN jobs_runtime.job_unit mine ON mine.run_id = this.id
-            JOIN jobs_runtime.job_unit u
-              ON u.indicator_slug = mine.indicator_slug
-             AND u.status = 'succeeded'
-             AND u.started_at IS NOT NULL
-             AND u.completed_at < this.submitted_at
-            JOIN jobs_runtime.orchestration_run r
-              ON r.id = u.run_id AND r.aoi_id IS NOT DISTINCT FROM this.aoi_id
+            -- Newest first, stop at the first same-AOI match: a walk down
+            -- job_unit_success_by_slug_idx (r050), not every past success.
+            CROSS JOIN LATERAL (
+                SELECT (EXTRACT(EPOCH FROM u.completed_at - u.started_at) * 1000)::bigint
+                           AS ms
+                FROM jobs_runtime.job_unit u
+                JOIN jobs_runtime.orchestration_run r
+                  ON r.id = u.run_id AND r.aoi_id IS NOT DISTINCT FROM this.aoi_id
+                WHERE u.indicator_slug = mine.indicator_slug
+                  AND u.status = 'succeeded'
+                  AND u.started_at IS NOT NULL
+                  AND u.completed_at < this.submitted_at
+                ORDER BY u.completed_at DESC
+                LIMIT 1
+            ) last
             WHERE this.id = %(run_id)s::uuid
-            ORDER BY u.indicator_slug, u.completed_at DESC
             """,
             {"run_id": str(run_id)},
         )
