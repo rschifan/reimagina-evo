@@ -557,7 +557,12 @@ export function installAggregationOverlays(
     // back to min/max if the percentiles are missing (tiny datasets).
     const range = cfg.value_range ?? null;
     const lo = range?.p05 ?? range?.min ?? 0;
-    const hi = range?.p95 ?? range?.max ?? 1;
+    let hi = range?.p95 ?? range?.max ?? 1;
+    // ⚠ A constant range (every area the same value, or p05 and p95 a float
+    // ulp apart) gives stops that are not strictly ascending, and MapLibre
+    // rejects the whole layer with an error banner. Widen it as `valueRamp`
+    // does for the indicator.
+    if (!(lo < (lo + hi) / 2 && (lo + hi) / 2 < hi)) hi = lo + 1;
     const fillId = `${sourceName}__fill`;
     const lineId = `${sourceName}__line`;
     map.addLayer({
