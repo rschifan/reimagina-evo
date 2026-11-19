@@ -56,6 +56,9 @@ QUERY_AND_BODY = [
     ("GET", f"/indicators/{SLUG}/values.csv?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values.geojson?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values.parquet?scenario_id={BAD}", None),
+    ("GET", f"/indicators/{SLUG}/values.csv?aoi_id={BAD}", None),
+    ("GET", f"/indicators/{SLUG}/values.geojson?aoi_id={BAD}", None),
+    ("GET", f"/indicators/{SLUG}/values.parquet?aoi_id={BAD}", None),
     ("GET", f"/features?aoi_id={BAD}", None),
     ("GET", f"/aois/{BAD}/summaries", None),
     (
