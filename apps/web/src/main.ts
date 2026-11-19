@@ -20,7 +20,7 @@ import { mount } from "svelte";
 
 import TopBar from "./lib/TopBar.svelte";
 import "./topbar.css";
-import type { AOIRow, IndicatorSummary, TileSource } from "./api";
+import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, TileSource } from "./api";
 import { createMap, flyToAoi } from "./map-base";
 
 import {
@@ -30,6 +30,7 @@ import {
   subscribe as subscribeToAoi,
 } from "./aoi";
 import {
+  getFeatureIndicators,
   getIndicatorStats,
   isAbortError,
   listAois,
@@ -45,15 +46,19 @@ import {
   clearLegend,
   defaultGrain,
   grainLabel,
+  overlayFeatureAt,
   populateIndicatorSelect,
   rampDomainFromStats,
   removeIndicator,
   renderGrainToggle,
   renderLegend,
+  setOverlayPinned,
 } from "./choropleth";
 import { HISTOGRAM_BINS } from "./distribution";
 import { renderDownloads } from "./download";
 import { escapeHtml } from "./format";
+import { isHoverGloballySuspended } from "./hover-highlight";
+import { renderInspector } from "./inspector";
 import type { Command } from "./commands";
 import { enablePalette } from "./palette";
 import { SHORTCUTS, wireShortcuts } from "./shortcuts";
@@ -300,10 +305,84 @@ async function main(): Promise<void> {
       if (aoi) flyToAoi(map, aoi);
     };
 
+    // ── Block inspector ─────────────────────────────────────────────
+    //
+    // A click on the overlay pins the block: outline, card, one request
+    // for its values. Declared before the AOI subscription, which fires
+    // on registration and closes the card.
+    const inspectorEl = document.getElementById("inspector");
+    let pinned: { id: string; grain: string | null; rows: FeatureIndicatorValue[] | string } | null = null;
+    let pinRequest: AbortController | null = null;
+    // The grain the overlay is drawn at, so a pin knows what it pinned.
+    let drawnGrain: string | null = null;
+
+    const showInspector = (): void => {
+      if (!inspectorEl || !pinned) return;
+      renderInspector(
+        inspectorEl, pinned, pinned.rows, state.activeIndicator?.slug ?? null,
+        (slug) => {
+          const el = document.getElementById("indicator-select") as HTMLSelectElement | null;
+          // A value the picker does not list would set it to "(none)".
+          if (!el || !indicators.some((i) => i.slug === slug)) return;
+          el.value = slug;
+          el.dispatchEvent(new Event("change"));
+        },
+        closeInspector,
+      );
+    };
+
+    function closeInspector(): void {
+      pinRequest?.abort();
+      pinRequest = null;
+      if (pinned) setOverlayPinned(map, overlayConfig, pinned.id, false);
+      pinned = null;
+      if (inspectorEl) {
+        inspectorEl.hidden = true;
+        inspectorEl.replaceChildren();
+      }
+    }
+
+    async function pin(id: string): Promise<void> {
+      closeInspector();
+      const mine: NonNullable<typeof pinned> = { id, grain: drawnGrain, rows: "Loading…" };
+      pinned = mine;
+      setOverlayPinned(map, overlayConfig, id, true);
+      showInspector();
+      const ctrl = new AbortController();
+      pinRequest = ctrl;
+      try {
+        mine.rows = await getFeatureIndicators(id, {
+          aoi_id: getActiveAoiId() ?? undefined,
+          signal: ctrl.signal,
+        });
+      } catch (err) {
+        if (isAbortError(err)) return;
+        console.warn("feature values failed:", err);
+        // In the card, not the banner: it is about this block, not the map.
+        mine.rows = "Could not load this block's values.";
+      }
+      if (ctrl.signal.aborted) return;
+      pinRequest = null;
+      showInspector();
+    }
+
+    // A click on a block pins it; a click on empty map closes the card.
+    // Ignored while a selection shape is drawn or edited (hover is off then
+    // too): the click belongs to the shape.
+    map.on("click", (e) => {
+      if (isHoverGloballySuspended()) return;
+      const id = overlayFeatureAt(map, e.point);
+      if (id === null) closeInspector();
+      else if (id !== pinned?.id) void pin(id);
+    });
+
     // React to any AOI change — picker, localStorage hydration, or a
     // future programmatic setActiveAoiId call. One central handler
     // keeps every consumer (map, tiles, ramp) in sync.
     subscribeToAoi(async (aoi) => {
+      // A pinned block belongs to the AOI it was clicked in; this also
+      // aborts its request.
+      closeInspector();
       if (aoi) flyToAoi(map, aoi);
       // Baseline layers are AOI-scoped too (r039), so switching pilot
       // re-frames the spatial context instead of leaving every other
@@ -363,6 +442,7 @@ async function main(): Promise<void> {
     /** Take the overlay and everything describing it off the page. Resolves
      *  its elements by id for the same hoisting reason as above. */
     function clearIndicator(): void {
+      closeInspector();
       state.activeIndicator = null;
       state.activeGrain = null;
       removeIndicator(map);
@@ -413,8 +493,20 @@ async function main(): Promise<void> {
       const domain = rampDomainFromStats(stats, indicator);
       activateIndicator(
         map, overlayConfig, indicator, domain,
-        tooltipController, aoiId, grain,
+        tooltipController, aoiId, grain, null, null, { pinHint: true },
       );
+      drawnGrain = grain ?? null;
+      // The new source has no feature-state: re-outline the pinned block and
+      // show the new indicator's rank. A pin from another grain is a
+      // different feature, so it closes.
+      if (pinned) {
+        if (pinned.grain === drawnGrain) {
+          setOverlayPinned(map, overlayConfig, pinned.id, true);
+          showInspector();
+        } else {
+          closeInspector();
+        }
+      }
       // The ramp is per-grain — an AGEB mean spans a much narrower
       // range than its child blocks — so the toggle re-renders with
       // the legend rather than once at pick time.
@@ -628,7 +720,8 @@ async function main(): Promise<void> {
       onFit: () => fitToActiveAoi(),
       onPanel: () => sidebar?.toggle(),
       onDraw: (shape) => selectionController?.startDrawing(shape),
-      onClear: () => selectionController?.clear(),
+      // Esc closes the block card first; the next Esc clears the selection.
+      onClear: () => (pinned ? closeInspector() : selectionController?.clear()),
       isPaletteOpen: () => palette.isOpen(),
     });
   });

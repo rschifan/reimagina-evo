@@ -21,7 +21,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "r", description: "Draw a rectangle selection" },
   { keys: "p", description: "Draw a polygon selection" },
   { keys: "c", description: "Draw a circle selection" },
-  { keys: "esc", description: "Clear the selection" },
+  { keys: "esc", description: "Close the block card, then clear the selection" },
 ];
 
 export interface ShortcutHandlers {

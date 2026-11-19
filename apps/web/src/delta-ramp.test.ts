@@ -583,6 +583,22 @@ describe("activateIndicator", () => {
       expect(fill).toEqual(valueRamp(value));
     }
   });
+
+  // Only the map page can pin; the scenario workspace must not promise it.
+  it("adds 'Click to pin' to the hover tooltip only when asked", () => {
+    for (const pinHint of [true, false]) {
+      const { map } = fakeMap();
+      let provider: { probe: (ctx: unknown) => unknown } | null = null;
+      const tooltips = { register: (p: typeof provider) => { provider = p; return () => undefined; } };
+      activateIndicator(
+        map, config, indicator(), value,
+        tooltips as never, "a-1", "block", null, null, { pinHint },
+      );
+      const probeMap = { queryRenderedFeatures: () => [{ properties: { value_numeric: 12 } }] };
+      const content = provider!.probe({ map: probeMap, event: { point: { x: 0, y: 0 } } }) as { hint?: string };
+      expect(content.hint).toBe(pinHint ? "Click to pin" : undefined);
+    }
+  });
 });
 
 

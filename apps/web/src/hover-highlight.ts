@@ -119,6 +119,12 @@ export function setHoverGloballySuspended(suspended: boolean): void {
 }
 
 
+/** True while a selection shape is drawn or edited: map clicks belong to it. */
+export function isHoverGloballySuspended(): boolean {
+  return _suspended;
+}
+
+
 export function enableHoverHighlight(
   map: MapLibreMap,
   cfg: HoverHighlightConfig,
@@ -153,9 +159,13 @@ export function enableHoverHighlight(
   const defaultFillOpacity = cfg.defaultFillOpacity ?? 0;
   const defaultLineWidth = cfg.defaultLineWidth ?? 1;
 
+  // `pinned` (set by the map page's inspector) wears the same highlight as
+  // hover, so a pinned block keeps its outline after the cursor leaves.
   const hoveredCase = (hot: unknown, cold: unknown) => [
     "case",
-    ["boolean", ["feature-state", "hover"], false],
+    ["any",
+      ["boolean", ["feature-state", "hover"], false],
+      ["boolean", ["feature-state", "pinned"], false]],
     hot,
     cold,
   ];

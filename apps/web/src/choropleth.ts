@@ -20,6 +20,7 @@ import type {
   ExpressionSpecification,
   MapLayerMouseEvent,
   Map as MapLibreMap,
+  PointLike,
 } from "maplibre-gl";
 
 import type {
@@ -452,6 +453,9 @@ export function activateIndicator(
   // one the tile URL ignores it, so the fill must too, or a delta fill would
   // sit over a value tile and paint nothing at all.
   delta?: DeltaDomain | null,
+  // `pinHint`: the hover tooltip ends with "Click to pin". Only the map page
+  // pins, so only it asks.
+  options: { pinHint?: boolean } = {},
 ): void {
   removeIndicator(map);
   const asDelta = Boolean(delta && scenarioId);
@@ -581,11 +585,38 @@ export function activateIndicator(
           if (raw === undefined || raw === null) return null;
           const num = typeof raw === "number" ? raw : Number(raw);
           if (Number.isNaN(num)) return null;
-          return { title: indicator.name, detail: formatValue(num, indicator) };
+          return {
+            title: indicator.name,
+            detail: formatValue(num, indicator),
+            hint: options.pinHint ? "Click to pin" : undefined,
+          };
         },
       })),
     );
   }
+}
+
+
+/** The overlay feature under `point`, or null (no overlay, or empty map). */
+export function overlayFeatureAt(map: MapLibreMap, point: PointLike): string | null {
+  // Guarded: querying a layer that is not in the style fires a map `error`.
+  if (!map.getLayer(OVERLAY_LAYER)) return null;
+  const id = map.queryRenderedFeatures(point, { layers: [OVERLAY_LAYER] })[0]?.id;
+  return id === undefined || id === null ? null : String(id);
+}
+
+
+/**
+ * Outline one overlay feature (the pinned one) or take the outline off.
+ *
+ * Feature-state on the overlay source, read by the hover-highlight paint, so
+ * it is lost with the source: re-apply after every `activateIndicator`.
+ */
+export function setOverlayPinned(
+  map: MapLibreMap, config: ChoroplethConfig, id: string, pinned: boolean,
+): void {
+  if (!map.getSource(OVERLAY_SOURCE)) return;
+  map.setFeatureState({ source: OVERLAY_SOURCE, sourceLayer: config.sourceLayer, id }, { pinned });
 }
 
 

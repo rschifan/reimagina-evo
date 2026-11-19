@@ -36,6 +36,12 @@
   margin-top: 2px;
 }
 
+.map-tooltip .map-tooltip-hint {
+  color: #9ca3af;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
 .legend {
   margin-top: 12px;
   font-size: 12px;

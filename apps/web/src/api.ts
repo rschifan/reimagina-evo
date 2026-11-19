@@ -173,6 +173,34 @@ export function getIndicatorStats(
   );
 }
 
+/** One feature's value for one indicator, with its exact rank among the
+ *  AOI's features of the same grain (`count` 0 when there are none). */
+export interface FeatureIndicatorValue {
+  slug: string;
+  name: string;
+  unit: string | null;
+  cap_value: number | null;
+  value: number;
+  count_below: number;
+  count_equal: number;
+  count: number;
+}
+
+/** Every current indicator value of one feature; `[]` when it has none. */
+export function getFeatureIndicators(
+  featureId: string,
+  options: { aoi_id?: string; scenario_id?: string; signal?: AbortSignal } = {},
+): Promise<FeatureIndicatorValue[]> {
+  const params = new URLSearchParams();
+  if (options.aoi_id) params.set("aoi_id", options.aoi_id);
+  if (options.scenario_id) params.set("scenario_id", options.scenario_id);
+  const qs = params.toString();
+  return jsonRequest<FeatureIndicatorValue[]>(
+    `/features/${encodeURIComponent(featureId)}/indicators${qs ? `?${qs}` : ""}`,
+    { signal: options.signal },
+  );
+}
+
 /** A credit line the licence of some loaded source requires. */
 export interface AttributionRow {
   provider: string;
