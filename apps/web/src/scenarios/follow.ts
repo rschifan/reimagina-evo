@@ -16,8 +16,8 @@ import { isTerminalRunStatus, runProducedResults } from "../scenario";
 /** How often, and for how long, the page follows the run it enqueued. Two
  *  minutes covers a synthetic territory and a small pilot; a Mexicali-scale
  *  recompute outlives it and is handed over rather than reported lost. */
-export const RUN_POLL_MS = 2_000;
-export const MAX_RUN_POLLS = 60;
+export const RUN_POLL_MS = 500;
+export const MAX_RUN_POLLS = 240;
 /** Consecutive unreadable polls tolerated. One network blip must not end it. */
 export const MAX_RUN_READ_FAILURES = 3;
 

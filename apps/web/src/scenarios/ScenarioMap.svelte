@@ -101,6 +101,9 @@
   /** The open rule was dragged or resized since it was opened. */
   let moved = false;
   let labels: maplibregl.Marker[] = [];
+  /** MapLibre is fetching tiles. With `ws.busy` (a recompute running), it
+   *  shows the map page's spinner — one look for "working" across the app. */
+  let tilesLoading = $state(false);
 
   const indicator = $derived(ws.indicators.find((i) => i.slug === ws.slug) ?? null);
 
@@ -161,6 +164,8 @@
           placeBox();
         }));
         map.on("move", placeBox);
+        map.on("dataloading", () => (tilesLoading = true));
+        map.on("idle", () => (tilesLoading = false));
         map.on("click", RULES_FILL, (e) => {
           if (editing || ws.busy || selection?.isDrawing()) return;
           const index = Number(e.features?.[0]?.properties?.index);
@@ -565,6 +570,13 @@
       >
         ×
       </button>
+    </div>
+    <div
+      class="map-loading"
+      data-loading={ws.busy || tilesLoading ? "true" : "false"}
+      aria-hidden="true"
+    >
+      <div class="map-loading__spinner" role="progressbar" aria-label="Recomputing"></div>
     </div>
     <div
       bind:this={legend}
