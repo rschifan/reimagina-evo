@@ -29,6 +29,7 @@ date: "13 November 2026"
 | 0.11 | 2026-11-13 | Rossano Schifanella | The acceptance run re-measured at `r049`: the scenario is authored through the CLI (§9), the territory carries streets (§2, §10), and the environment of record, wall time and API operation count are current |
 | 0.12 | 2026-11-16 | Rossano Schifanella | The feature-provenance count re-measured over the street-carrying territory (108 of 108, replacing 67 of 67); the introduction no longer claims every figure comes from one sitting |
 | 0.13 | 2026-11-19 | Rossano Schifanella | §A.2 — the baseline of the scenario inputs on real Mexicali data: real household size and storeys where sources have them, synthetic values fitted to the census elsewhere; twelve of twelve indicators have rows |
+| 0.14 | 2026-11-19 | Rossano Schifanella | §9 — a proposal now writes five edits (lot coverage, 1.0 from the CLI): 20 overrides, values unchanged; annex note on the edificability inputs names lot coverage |
 
 ### Provenance of the figures
 
@@ -376,8 +377,10 @@ non-trivial.
 A scenario is authored the way a planner does it: `scenario create`, then
 `scenario set-attribute` with an area drawn as GeoJSON and the policy inputs
 over it (12 levels, an 80 m² unit, 3.2 people per household), then
-`scenario recompute`. The area catches four blocks; the four edits match four
-blocks each, so 16 overrides are written. Then the planned-floors indicator,
+`scenario recompute`. The area catches four blocks; the five edits — the
+three numbers (storeys written as both `floors` and `num_levels`) and a lot
+coverage of 1.0, the whole block, which is what the CLI writes when none is
+given — match four blocks each, so 20 overrides are written. Then the planned-floors indicator,
 baseline against scenario:
 
 ```
@@ -409,7 +412,8 @@ Three properties, each observed rather than argued:
   remain current alongside the scenario's 80. No row was overwritten, and zero
   blocks had their base `attributes` written to.
 - **Only the dirty indicators were recomputed.** The scenario edited `floors`,
-  `num_levels`, `unit_size` and `people_per_household`, so it holds rows for
+  `num_levels`, `unit_size`, `people_per_household` and `lot_coverage`, so it
+  holds rows for
   the five indicators downstream of them — 80 (5 × 16), not 192.
 - **One current row per tuple.** The partial unique indexes
   (`ir_one_current_base`, `ir_one_current_scenario`) hold at a maximum of 1.
@@ -1085,7 +1089,8 @@ a missing input.
   matching destinations. The number is real; its scope is much narrower than
   "school".
 - **The edificability family.** `edificability_block_*` read `num_levels`,
-  `unit_size` and `people_per_household` — scenario inputs that no INEGI or
+  `unit_size` and `people_per_household` (and `lot_coverage`, 1.0 where a
+  block has none) — scenario inputs that no INEGI or
   Overture layer carries. `scripts/mexicali_run.sh` attempts them and reports
   them unavailable rather than inventing the attributes, and
   `urban_form_block_planned_floors` is unavailable for the same reason

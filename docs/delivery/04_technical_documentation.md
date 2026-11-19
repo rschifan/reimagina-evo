@@ -26,6 +26,7 @@ date: "13 November 2026"
 | 0.8 | 2026-11-18 | Rossano Schifanella | §5: `make dev` now starts the worker too; the separate-terminal path uses `make dev-worker` |
 | 0.9 | 2026-11-19 | Rossano Schifanella | §1 names the scenario workspace (`/scenarios.html`); §10 re-measured at `r050` from a fresh clone, with the run's deviations from a fresh machine stated |
 | 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
+| 0.11 | 2026-11-19 | Rossano Schifanella | §6.4: rules are drawn and edited on the scenarios map; §7.2: lot coverage, and why the baseline carries none |
 
 ### Provenance of the figures
 
@@ -378,6 +379,29 @@ The palette is also the only surface that *lists* what the application does,
 which matters because the draw tools are icons and the rest is three menus
 in a long panel.
 
+### 6.4 Writing a scenario on the map
+
+The scenario workspace (`/scenarios.html`) is edited on its map:
+
+1. Draw an area with the tools at the map's top left (or `r` / `p` / `c`):
+   drag out a rectangle or circle, or click a polygon's corners and click the
+   last one again to close it.
+2. A box opens beside the shape with the rule's four numbers — storeys, m²
+   per home, people per home and lot coverage (the share of the block built
+   on) — prefilled with the last numbers used. On the baseline city it also
+   asks for the new scenario's name.
+3. **Apply** writes the rule, recomputes and switches the map to **Change**
+   against the baseline. The bar above the map shows the change in homes and
+   people, and says while a recompute is running.
+
+Every rule stays outlined and labelled on the map. Click one to change its
+numbers, drag or resize it, or delete it; each is followed by a recompute,
+and the rule keeps its place in "later wins" (a box opened on an earlier rule
+says which later rule overrides it). `esc` cancels. If the recompute refuses
+the rule — a per-block ceiling — or the area catches no block, the page undoes
+its own write and says why in the box. **Values** colours every scenario on
+the baseline city's scale, so a colour means the same number everywhere.
+
 **Spatial context.** There is no external basemap, on purpose — no tile
 provider to depend on and no third-party licence to carry. Orientation comes
 from the platform's own street network: the routing graph in
@@ -477,6 +501,12 @@ Household size comes from the census and storeys from Overture where they
 exist; the rest is synthetic, fitted so each block's dwellings equal the
 census count. `scripts/mexicali_run.sh` runs all three (step 9b), and
 `docs/delivery/05_capability_proof.md` §A.2 records what they produced.
+
+Lot coverage (`lot_coverage`, the share of a block that is built on) is not
+seeded: a block without it is computed at 1.0, the whole block, so the fitted
+baseline still equals the census. Scenario rules carry it — 60 % unless the
+planner changes it — and `housing_units = area × lot_coverage × storeys ÷
+m² per home`.
 
 ## 8. Operating the platform
 
