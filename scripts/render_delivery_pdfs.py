@@ -6,11 +6,35 @@ over typography rather than whatever a default template produces: pandoc turns
 the Markdown into HTML, a print stylesheet sets the page up, and headless
 Chromium prints it.
 
+Every document gets the same report template, and everything on it comes from
+the document itself — nothing here is written per document:
+
+* a cover: the project line from the front matter's ``subtitle`` (the part
+  before " — "), ``title``, the **Deliverable**, **Version** and **Status**
+  rows of the document-control table, ``date`` and ``author``. A document
+  missing any of them stops the render, naming what is missing;
+* the document-control section the document opens with (everything before
+  its second level-2 heading), then a table of contents with page numbers,
+  then the body, each starting on a new page;
+* a running header (title · version) and footer (Schedule A, Work N · page X
+  of Y), drawn by CSS page-margin boxes and suppressed on the cover.
+
+Contents page numbers come from rendering twice. Chromium writes every link
+target into the PDF as a named destination, so the first render says on which
+page each heading landed. The numbers go into slots of fixed width, so the
+second render lays out exactly like the first — which is checked, not assumed.
+
+The type is IBM Plex Sans and IBM Plex Mono (SIL OFL 1.1), vendored in
+``docs/delivery/fonts`` so the result does not depend on the fonts of the
+machine that renders it. The few glyphs Plex lacks (⚠, ⌘, ✕) fall back to a
+system font.
+
 The stylesheet does most of the real work. These documents are dense with
 long identifiers — index definitions, constraint expressions, DSNs — and the
 default failure is a table that runs off the right edge of the page, taking
-the text with it. Code wraps rather than overflows, tables are laid out to the
-page width, and headings are kept with the content beneath them.
+the text with it. Tables size their columns to their content, inline code
+gains break opportunities after ``_ . / , ( =``, code blocks wrap, and
+headings are kept with the content beneath them.
 
 Toolchain (nothing here is declared in the repository's own dependencies; the
 committed hashes in ``docs/delivery/SHA256SUMS`` were produced with exactly
@@ -18,8 +42,8 @@ these, on macOS):
 
 * ``pandoc`` 3.6.3
 * Node.js >= 22 (24 was used)
-* Playwright 1.64.x with its Chromium. Provide it without touching the
-  lockfile, from ``apps/web``::
+* Playwright 1.64.x with its Chromium (page-margin boxes need Chromium 131+).
+  Provide it without touching the lockfile, from ``apps/web``::
 
       cd apps/web
       npm i --no-save playwright@1.64.1 && npx playwright install chromium
@@ -31,7 +55,7 @@ PDFs would be correct but would not match ``SHA256SUMS`` byte for byte.
 
 Usage::
 
-    python scripts/render_delivery_pdfs.py            # every docs/delivery/*.md
+    python scripts/render_delivery_pdfs.py            # every docs/delivery/NN_*.md
     python scripts/render_delivery_pdfs.py 03_database_and_api_reference.md
 """
 
@@ -42,6 +66,7 @@ import re
 import shutil
 import subprocess
 import sys
+from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,82 +86,173 @@ BUILD = DELIVERY / "pdf"
 #: added here later is excluded by default instead of by remembering to.
 WORK_GLOB = "[0-9][0-9]_*.md"
 
-PRINT_CSS = """
-@page { size: A4; margin: 18mm 16mm 20mm 16mm; }
-html { font-size: 10.5pt; }
-body {
-  font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.45; color: #16181d; margin: 0;
-}
-h1 { font-size: 1.9rem; margin: 0 0 .4em; letter-spacing: -.01em; }
-/* Cover page: the title block gets a page of its own. */
-#title-block-header { break-after: page; padding-top: 58mm; }
-#title-block-header .title { font-size: 2.5rem; line-height: 1.15;
-                             margin: 0 0 .35em; letter-spacing: -.015em; }
-#title-block-header .subtitle { font-size: 1.15rem; font-weight: 400;
-                                color: #454c59; margin: 0 0 2.6em;
-                                padding-bottom: 1.1em;
-                                border-bottom: 2px solid #16181d; }
-#title-block-header .author, #title-block-header .date {
-    font-size: .95rem; color: #454c59; margin: .2em 0; }
-#TOC { break-after: page; }
-#TOC > ul { padding-left: 1.1em; }
-h2 { font-size: 1.35rem; margin: 1.6em 0 .5em; padding-bottom: .22em;
-     border-bottom: 1.5px solid #c9ced6; break-after: avoid; }
-h3 { font-size: 1.12rem; margin: 1.3em 0 .4em; break-after: avoid; }
-h4 { font-size: 1.02rem; margin: 1.5em 0 .45em; color: #16181d;
-     break-after: avoid; border-left: 3px solid #8d97a6; padding-left: .5em; }
-h4 code { background: none; padding: 0; font-size: .95em; font-weight: 600; }
-p, li { orphans: 3; widows: 3; }
-code, pre {
-  font-family: "DejaVu Sans Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: .84em;
-}
-code { background: #f3f4f7; padding: .08em .3em; border-radius: 3px;
-       overflow-wrap: anywhere; word-break: break-word; }
-pre { background: #f6f7f9; padding: .7em .9em; border-radius: 5px;
-      border: 1px solid #e3e6ea; white-space: pre-wrap; overflow-wrap: anywhere; }
-pre code { background: none; padding: 0; }
-blockquote { margin: 1em 0; padding: .6em 1em; background: #f5f7fa;
-             border-left: 3px solid #8d97a6; }
-blockquote p { margin: .3em 0; }
-table { border-collapse: collapse; width: 100%; margin: .7em 0 1.1em;
-        font-size: .8rem; table-layout: fixed; }
-th, td { border: 1px solid #d5d9e0; padding: .32em .5em; text-align: left;
-         vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
-th { background: #eef1f5; font-weight: 600; }
-tr { break-inside: avoid; }
-a { color: #1c4fd8; text-decoration: none; }
-.diagram { break-inside: avoid; text-align: center; margin: 1.2em 0; }
-.diagram svg { max-width: 100%; max-height: 222mm; height: auto; }
-.plate { break-before: page; break-after: page; position: relative;
-         height: 247mm; width: 100%; overflow: visible; }
-.plate > svg { position: absolute; top: 0; left: 0;
-               transform-origin: top left; transform: translateX(178mm) rotate(90deg);
-               max-width: 247mm; max-height: 178mm; height: auto; }
-hr { border: none; border-top: 1px solid #d5d9e0; margin: 1.6em 0; }
+_ACCENT = "#1f3b5c"
+_MUTED = "#5b6472"
+_RULE = "#c3c9d2"
+
+
+def _face(family: str, file: str, weight: int, style: str = "normal") -> str:
+    return (
+        f'@font-face {{ font-family: "{family}"; font-weight: {weight}; '
+        f'font-style: {style}; src: url("../fonts/{file}.woff2") format("woff2"); }}'
+    )
+
+
+PRINT_CSS = (
+    "\n".join(
+        [
+            _face("IBM Plex Sans", "IBMPlexSans-Regular", 400),
+            _face("IBM Plex Sans", "IBMPlexSans-Italic", 400, "italic"),
+            _face("IBM Plex Sans", "IBMPlexSans-SemiBold", 600),
+            _face("IBM Plex Sans", "IBMPlexSans-Bold", 700),
+            _face("IBM Plex Mono", "IBMPlexMono-Regular", 400),
+            _face("IBM Plex Mono", "IBMPlexMono-SemiBold", 600),
+        ]
+    )
+    + f"""
+/* A4, 170 x 251 mm text block. The header and footer live in the margins. */
+@page {{
+  size: A4;
+  margin: 24mm 20mm 22mm 20mm;
+  @top-left {{ font: 400 7.5pt "IBM Plex Sans"; color: {_MUTED};
+              vertical-align: bottom; padding-bottom: 2.5mm;
+              border-bottom: .5pt solid {_RULE}; }}
+  @top-right {{ content: ""; vertical-align: bottom; padding-bottom: 2.5mm;
+               border-bottom: .5pt solid {_RULE}; }}
+  @bottom-left {{ font: 400 7.5pt "IBM Plex Sans"; color: {_MUTED};
+                 vertical-align: top; padding-top: 2.5mm;
+                 border-top: .5pt solid {_RULE}; }}
+  @bottom-right {{ content: "Page " counter(page) " of " counter(pages);
+                  font: 400 7.5pt "IBM Plex Sans"; color: {_MUTED};
+                  text-align: right; vertical-align: top; padding-top: 2.5mm;
+                  border-top: .5pt solid {_RULE}; }}
+}}
+html {{ font-size: 9.75pt; }}
+body {{ font-family: "IBM Plex Sans", sans-serif; line-height: 1.5;
+       color: #1a1d23; margin: 0; font-kerning: normal; }}
+p {{ margin: 0 0 .7em; }}
+p, li {{ orphans: 3; widows: 3; }}
+/* A lead-in ("Indexes:") stays with the table, code or list it introduces. */
+p:has(+ table, + pre, + ul, + ol) {{ break-after: avoid; }}
+a {{ color: {_ACCENT}; text-decoration: none; }}
+strong {{ font-weight: 600; }}
+hr {{ border: none; border-top: .5pt solid {_RULE}; margin: 1.6em 0; }}
+
+/* ── Cover ─────────────────────────────────────────────────────────── */
+.cover {{ height: 248mm; display: flex; flex-direction: column;
+         break-after: page; }}
+.cover .project {{ border-top: 3pt solid {_ACCENT}; padding-top: 4mm;
+                  font-size: 9.5pt; letter-spacing: .02em; color: {_MUTED}; }}
+.cover h1 {{ margin: 62mm 0 0; font-size: 27pt; font-weight: 600;
+            line-height: 1.15; letter-spacing: -.01em; color: {_ACCENT};
+            text-wrap: balance; }}
+.cover .deliverable {{ margin: 5mm 0 0; font-size: 12.5pt; color: #3d4654; }}
+.cover dl {{ margin: auto 0 0; padding-top: 4mm; display: grid;
+            grid-template-columns: 28mm 1fr; row-gap: 1.6mm;
+            border-top: .5pt solid {_RULE}; font-size: 9.5pt; }}
+.cover dt {{ color: {_MUTED}; }}
+.cover dd {{ margin: 0; }}
+
+/* ── Document control, contents ───────────────────────────────────── */
+.front {{ break-after: page; font-size: .92em; }}
+.front th, .front td {{ padding-top: .26em; padding-bottom: .26em; }}
+.front > hr:last-child {{ display: none; }}
+.front > h2:first-child, nav > h2 {{ margin-top: 0; }}
+nav {{ break-after: page; }}
+nav ul {{ list-style: none; margin: 0; padding: 0; }}
+nav > ul > li {{ margin-top: .7em; font-weight: 600; }}
+nav li li {{ font-weight: 400; padding-left: 2.6em; margin-top: .15em; }}
+nav li li li {{ padding-left: 2.6em; }}
+nav a {{ display: flex; align-items: baseline; color: inherit; }}
+nav .dots {{ flex: 1 1 auto; min-width: 1.5em; margin: 0 .4em;
+            border-bottom: .8pt dotted #9aa4b2; }}
+nav .pg {{ flex: 0 0 2.2em; text-align: right;
+          font-variant-numeric: tabular-nums; }}
+nav .secnum {{ min-width: 2.6em; }}
+
+/* ── Headings: the documents number their own; the number hangs. ───── */
+h2, h3, h4, h5 {{ break-after: avoid; break-inside: avoid; color: {_ACCENT};
+             font-weight: 600; line-height: 1.3; text-wrap: balance; }}
+h2 {{ font-size: 15pt; margin: 1.7em 0 .65em; padding-bottom: .3em;
+     border-bottom: .75pt solid {_ACCENT}; }}
+h3 {{ font-size: 12pt; margin: 1.45em 0 .5em; }}
+h4 {{ font-size: 10.25pt; margin: 1.3em 0 .45em; color: #1a1d23; }}
+h5 {{ font-size: 9.75pt; margin: 1.15em 0 .35em; color: #1a1d23; }}
+h4 code, h5 code {{ background: none; padding: 0; font-size: .95em; font-weight: 600; }}
+.secnum {{ display: inline-block; min-width: 2.2em; }}
+h3 .secnum, h4 .secnum {{ min-width: 2.8em; }}
+
+/* ── Code ──────────────────────────────────────────────────────────── */
+code, pre {{ font-family: "IBM Plex Mono", monospace; }}
+code {{ font-size: .9em; background: #eff2f5; padding: .05em .28em;
+       border-radius: 2px; overflow-wrap: break-word; }}
+pre {{ font-size: 8.25pt; line-height: 1.45; margin: .5em 0 1em;
+      background: #f5f7f9; border: .5pt solid #dde2e8;
+      border-left: 2.5pt solid {_ACCENT}; padding: .6em .85em;
+      white-space: pre-wrap; overflow-wrap: anywhere; }}
+pre code {{ background: none; padding: 0; font-size: inherit; }}
+
+/* ── Notes and warnings ────────────────────────────────────────────── */
+blockquote {{ margin: .8em 0 1em; padding: .55em .9em; background: #f3f5f8;
+             border-left: 2.5pt solid #8a96a8; break-inside: avoid; }}
+blockquote p {{ margin: .25em 0; }}
+p.warning {{ padding: .55em .9em; background: #fbf5e6;
+            border-left: 2.5pt solid #b7791f; break-inside: avoid; }}
+
+/* ── Lists ─────────────────────────────────────────────────────────── */
+ul, ol {{ margin: .3em 0 .85em; padding-left: 1.5em; }}
+li {{ margin: .18em 0; }}
+li > p {{ margin: 0 0 .3em; }}
+
+/* ── Tables: columns sized to content, shaded header, row rules ────── */
+table {{ border-collapse: collapse; width: 100%; table-layout: auto;
+        margin: .6em 0 1.3em; font-size: 8.25pt; line-height: 1.4; }}
+thead {{ display: table-header-group; }}
+th {{ background: #e8ecf1; font-weight: 600; text-align: left;
+     border-bottom: .9pt solid #8a96a8; }}
+th, td {{ padding: .38em .6em; vertical-align: top;
+         overflow-wrap: break-word; }}
+td {{ border-bottom: .5pt solid #dde2e8; }}
+td.nw {{ white-space: nowrap; }}
+tr {{ break-inside: avoid; }}
+tbody tr:last-child {{ break-before: avoid; }}  /* no lone last row */
+td code, th code {{ font-size: .95em; padding: 0 .2em; }}
+/* A table with no header row is a key/value table (document control). */
+table:not(:has(thead)) {{ border-top: .9pt solid #8a96a8; }}
+table:not(:has(thead)) td:first-child {{ width: 26%; background: #f3f5f8; }}
+
+/* ── Figures: the caption is part of the SVG, so none is added. ────── */
+.diagram {{ break-inside: avoid; text-align: center; margin: 1em 0 1.4em; }}
+.diagram svg {{ width: 100%; height: auto; max-height: 240mm; }}
 """
+)
+
+#: Per document: the running header and footer text, then their suppression
+#: on the cover — which has to come after, or this rule wins over it.
+_PAGE_CSS = """@page {{
+  @top-left {{ content: "{header}"; }}
+  @bottom-left {{ content: "{footer}"; }}
+}}
+@page :first {{
+  @top-left {{ content: none; border: none; }}
+  @top-right {{ content: none; border: none; }}
+  @bottom-left {{ content: none; border: none; }}
+  @bottom-right {{ content: none; border: none; }}
+}}"""
+
+#: pandoc writes the contents and the body; the marker splits them.
+_TEMPLATE = "$table-of-contents$\n<!--body-->\n$body$\n"
 
 RENDER_JS = """
 const {chromium} = require('playwright');
-const [html, pdf, footer] = process.argv.slice(2);
+const [html, pdf] = process.argv.slice(2);
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   await page.goto('file://' + html, {waitUntil: 'load'});
+  await page.evaluate(() => document.fonts.ready);
   await page.pdf({
-    path: pdf,
-    format: 'A4',
-    printBackground: true,
-    displayHeaderFooter: true,
-    headerTemplate: '<div></div>',
-    footerTemplate:
-      '<div style="width:100%;font-size:8px;color:#6b7280;' +
-      'padding:0 16mm;display:flex;justify-content:space-between;">' +
-      '<span>' + footer + '</span>' +
-      '<span><span class="pageNumber"></span> / ' +
-      '<span class="totalPages"></span></span></div>',
-    margin: {top: '18mm', bottom: '20mm', left: '16mm', right: '16mm'},
+    path: pdf, printBackground: true, preferCSSPageSize: true, outline: true,
   });
   await browser.close();
 })().catch((err) => { console.error(err); process.exit(1); });
@@ -154,7 +270,8 @@ def _inline_svg(page: str, assets: Path) -> str:
     of defect in a delivered document, because it does not announce itself.
 
     Inlining removes the question. The PDF carries the vector artwork itself
-    and depends on no file beside it.
+    and depends on no file beside it. The figure carries its own caption, so
+    the image's alt text is not repeated under it.
     """
 
     def replace(match: re.Match[str]) -> str:
@@ -164,41 +281,42 @@ def _inline_svg(page: str, assets: Path) -> str:
         path = (assets / src).resolve()
         if not path.is_file():
             raise FileNotFoundError(f"diagram referenced but missing: {src}")
-        svg = path.read_text()
-        size = re.search(r'<svg[^>]*\swidth="(\d+)"\s+height="(\d+)"', svg)
-        wide = size is not None and int(size.group(1)) / int(size.group(2)) > 1.4
-        # A figure much wider than tall is unreadable scaled to a portrait
-        # column, so it gets a landscape plate: its own page, turned ninety
-        # degrees. This is ordinary practice for dense figures in engineering
-        # documents, and it roughly halves the scale-down — measured at 7.6pt
-        # against 5.4pt for the container diagram.
-        return f'<div class="{"plate" if wide else "diagram"}">{svg}</div>'
+        return f'<div class="diagram">{path.read_text()}</div>'
 
     return re.sub(r'<img[^>]*src="(?P<src>[^"]+)"[^>]*/?>', replace, page)
 
 
-def _front_matter_title(markdown: str) -> str:
-    """Read `title:` out of a YAML front-matter block."""
+def _front_matter(markdown: str) -> tuple[dict[str, str], str]:
+    """The YAML front-matter block's `key: value` lines, and the rest."""
+    if not markdown.startswith("---\n"):
+        return {}, markdown
     end = markdown.find("\n---", 4)
-    for line in markdown[4 : end if end > 0 else len(markdown)].splitlines():
-        if line.startswith("title:"):
-            return line.split(":", 1)[1].strip().strip('"').strip("'")
-    return ""
+    meta = {}
+    for line in markdown[4:end].splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            meta[key.strip()] = value.strip().strip('"').strip("'")
+    return meta, markdown[markdown.index("\n", end + 1) + 1 :]
 
 
-def _split_title(markdown: str) -> tuple[str, str]:
-    """Take the document's own H1 as the title and drop it from the body.
+def _split_front(body: str) -> tuple[str, str]:
+    """The document-control section, and everything after it.
 
-    Otherwise the title appears twice — once in pandoc's title block, built
-    from the filename, and once as the heading the document actually carries.
-    Lifting the real H1 gives the conventional report order: title, contents,
-    body.
+    The front part ends at the second level-2 heading: the first is the
+    document's own "Document control".
     """
-    lines = markdown.splitlines()
-    for index, line in enumerate(lines):
-        if line.startswith("# "):
-            return line[2:].strip(), "\n".join(lines[:index] + lines[index + 1 :])
-    return "", markdown
+    starts = [m.start() for m in re.finditer(r"^## ", body, re.M)]
+    if len(starts) < 2:
+        return "", body
+    return body[: starts[1]], body[starts[1] :]
+
+
+def _control_rows(front: str) -> dict[str, str]:
+    """`| **Key** | value |` rows of the document-control table."""
+    return {
+        m.group(1): m.group(2)
+        for m in re.finditer(r"^\|\s*\*\*(.+?)\*\*\s*\|\s*(.*?)\s*\|\s*$", front, re.M)
+    }
 
 
 _MONTHS = {
@@ -219,26 +337,17 @@ _MONTHS = {
 _FALLBACK_STAMP = "D:19700101000000+00'00'"
 
 
-def _front_matter_date(markdown: str) -> str:
-    """The document's declared `date:`, as a PDF timestamp.
+def _pdf_date(declared: str) -> str:
+    """A `date:` such as "20 November 2026", as a PDF timestamp.
 
     Returns a fixed-width 23-byte payload, which is what makes the
     substitution in `_pin_timestamps` safe — see that function.
     """
-    end = markdown.find("\n---", 4)
-    for line in markdown[4 : end if end > 0 else len(markdown)].splitlines():
-        if not line.startswith("date:"):
-            continue
-        parts = line.split(":", 1)[1].strip().strip('"').strip("'").split()
-        if len(parts) != 3:
-            break
-        day, month, year = parts
-        if not (day.isdigit() and year.isdigit()):
-            break
-        number = _MONTHS.get(month.lower())
-        if number is None:
-            break
-        return f"D:{int(year):04d}{number:02d}{int(day):02d}000000+00'00'"
+    parts = declared.split()
+    if len(parts) == 3 and parts[0].isdigit() and parts[2].isdigit():
+        number = _MONTHS.get(parts[1].lower())
+        if number is not None:
+            return f"D:{int(parts[2]):04d}{number:02d}{int(parts[0]):02d}000000+00'00'"
     return _FALLBACK_STAMP
 
 
@@ -285,46 +394,187 @@ def _pin_timestamps(pdf: Path, stamp: str) -> None:
     pdf.write_bytes(patched)
 
 
-def render(source: Path, css: Path, js: Path) -> Path:
-    html = BUILD / (source.stem + ".html")
+def _anchor_pages(pdf: bytes) -> dict[str, int]:
+    """Page number (1-based) of every named destination in a Chromium PDF.
+
+    Chromium (Skia) writes an uncompressed `/Dests` dictionary mapping each
+    link target's id to `[page 0 R /XYZ …]`, and an uncompressed page tree.
+    """
+
+    def obj(number: int) -> bytes:
+        start = pdf.index(b"\n%d 0 obj" % number)
+        return pdf[start : pdf.index(b"endobj", start)]
+
+    catalog = re.search(rb"/Type /Catalog\s*/Pages (\d+) 0 R\s*/Dests (\d+) 0 R", pdf)
+    if catalog is None:
+        raise RuntimeError("no /Dests in the rendered PDF: cannot number the contents")
+    order: list[int] = []
+
+    def walk(number: int) -> None:
+        node = obj(number)
+        if b"/Type /Pages" in node:
+            kids = re.search(rb"/Kids \[([^\]]*)\]", node)
+            for kid in re.findall(rb"(\d+) 0 R", kids.group(1) if kids else b""):
+                walk(int(kid))
+        else:
+            order.append(number)
+
+    walk(int(catalog.group(1)))
+    page_of = {number: index for index, number in enumerate(order, start=1)}
+
+    def name(raw: bytes) -> str:
+        return re.sub(
+            rb"#([0-9A-Fa-f]{2})", lambda m: bytes([int(m.group(1), 16)]), raw
+        ).decode()
+
+    return {
+        name(m.group(1)): page_of[int(m.group(2))]
+        for m in re.finditer(rb"/(\S+) \[(\d+) 0 R", obj(int(catalog.group(2))))
+    }
+
+
+def _pandoc(markdown: str, *args: str) -> str:
+    return subprocess.run(
+        ["pandoc", "--from=gfm", "--to=html5", "--no-highlight", "--wrap=none", *args],
+        input=markdown,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+    ).stdout
+
+
+def _typeset(page: str) -> str:
+    """Small HTML refinements pandoc's GFM writer has no option for."""
+    # Break opportunities in long inline code (never inside a code block).
+    parts = re.split(r"(<pre[\s\S]*?</pre>)", page)
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(
+            r"<code>([^<]{24,})</code>",
+            lambda m: (
+                "<code>"
+                + re.sub(r"([_./,(=])(?=\S)", r"\1<wbr>", m.group(1))
+                + "</code>"
+            ),
+            parts[i],
+        )
+    page = "".join(parts)
+    # The documents number their own headings; set the number apart.
+    page = re.sub(
+        r'(<h[2-5] id="[^"]*">|<span class="t">)(\d+(?:\.\d+)*\.?) ',
+        r'\1<span class="secnum">\2</span>',
+        page,
+    )
+    # A short cell (a version, a date, a name) never wraps: left to the
+    # automatic layout, a long neighbouring column squeezes it to "2026-/11-08".
+    page = re.sub(
+        r"<td([^>]*)>(.*?)</td>",
+        lambda m: (
+            m.group(0)
+            if len(re.sub(r"<[^>]+>", "", m.group(2))) > 20
+            else f'<td class="nw"{m.group(1)}>{m.group(2)}</td>'
+        ),
+        page,
+    )
+    return page.replace("<p>⚠", '<p class="warning">⚠')
+
+
+def _contents(toc: str, pages: dict[str, int]) -> str:
+    """Pandoc's contents list, each entry with its page in a fixed-width slot."""
+
+    def entry(m: re.Match[str]) -> str:
+        page = pages.get(m.group(1), "")
+        return (
+            f'{m.group(0)[: m.group(0).index(">") + 1]}<span class="t">{m.group(2)}'
+            f'</span><span class="dots"></span><span class="pg">{page}</span></a>'
+        )
+
+    return re.sub(r'<a href="#([^"]+)" id="toc-[^"]*">(.*?)</a>', entry, toc)
+
+
+def render(source: Path, css: Path, js: Path, template: Path) -> Path:
+    page_html = BUILD / (source.stem + ".html")
     pdf = BUILD / (source.stem + ".pdf")
-    raw = source.read_text()
-    has_front_matter = raw.startswith("---\n")
-    if has_front_matter:
-        title = _front_matter_title(raw) or source.stem.replace("_", " ")
-        body = raw
-    else:
-        found, body = _split_title(raw)
-        title = found or source.stem.replace("_", " ")
-    stripped = BUILD / (source.stem + ".body.md")
-    stripped.write_text(body)
+    meta, body = _front_matter(source.read_text())
+    front, main = _split_front(body)
+    rows = _control_rows(front)
 
-    subprocess.run(
-        [
-            "pandoc",
-            str(stripped),
-            "--standalone",
-            "--from=gfm+yaml_metadata_block",
-            "--to=html5",
-            f"--css={css.name}",
-            *(() if has_front_matter else ("--metadata", f"title={title}")),
-            "--toc",
-            "--toc-depth=3",
-            "-o",
-            str(html),
-        ],
-        check=True,
-        cwd=ROOT,
-    )
-    stripped.unlink()
+    wanted = {
+        "title": meta.get("title"),
+        "subtitle": meta.get("subtitle"),
+        "author": meta.get("author"),
+        "date": meta.get("date"),
+        "Deliverable": rows.get("Deliverable"),
+        "Version": rows.get("Version"),
+        "Status": rows.get("Status"),
+    }
+    if missing := [key for key, value in wanted.items() if not value]:
+        raise SystemExit(
+            f"{source.name}: the cover needs {', '.join(missing)} "
+            "(front matter, or a **row** of the document-control table)"
+        )
+    title, version = meta["title"], rows["Version"]
+    project = meta["subtitle"].split(" — ")[0]
+    work = rows["Deliverable"].split(" — ")[0]
 
-    html.write_text(_inline_svg(html.read_text(), source.parent))
-    subprocess.run(
-        ["node", str(js), str(html), str(pdf), f"Reimagina — {title}"],
-        check=True,
-        cwd=ROOT,
+    toc, main_html = _pandoc(
+        main,
+        "--toc",
+        "--toc-depth=3",
+        f"--template={template}",
+        "--metadata",
+        f"pagetitle={title}",
+    ).split("<!--body-->", 1)
+
+    def quoted(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    cover = (
+        f'<section class="cover"><div class="project">{escape(project)}</div>'
+        f"<h1>{escape(title)}</h1>"
+        f'<p class="deliverable">{escape(rows["Deliverable"])}</p><dl>'
+        + "".join(
+            f"<dt>{label}</dt><dd>{escape(value)}</dd>"
+            for label, value in (
+                ("Version", version),
+                ("Date", meta["date"]),
+                ("Author", meta["author"]),
+                ("Status", rows["Status"]),
+            )
+        )
+        + "</dl></section>"
     )
-    _pin_timestamps(pdf, _front_matter_date(raw))
+    page_css = _PAGE_CSS.format(
+        header=quoted(f"{title} · Version {version}"), footer=quoted(work)
+    )
+
+    def write(pages: dict[str, int]) -> None:
+        document = (
+            '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+            f"<title>{escape(title)}</title>\n"
+            f'<link rel="stylesheet" href="{css.name}">\n'
+            f"<style>\n{page_css}\n</style>\n</head>\n<body>\n{cover}\n"
+            f'<section class="front">\n{_pandoc(front)}</section>\n'
+            f"<nav><h2>Contents</h2>\n{_contents(toc, pages)}</nav>\n"
+            f"<main>\n{main_html}</main>\n</body>\n</html>\n"
+        )
+        page_html.write_text(_typeset(_inline_svg(document, source.parent)))
+        subprocess.run(
+            ["node", str(js), str(page_html), str(pdf)], check=True, cwd=ROOT
+        )
+
+    # Two passes: the first finds the pages, the second prints them.
+    write({})
+    pages = _anchor_pages(pdf.read_bytes())
+    write(pages)
+    linked = re.findall(r'<a href="#([^"]+)" id="toc-', toc)
+    after = _anchor_pages(pdf.read_bytes())
+    if [after.get(i) for i in linked] != [pages.get(i) for i in linked]:
+        raise RuntimeError(f"{source.name}: contents page numbers moved between passes")
+    if unplaced := [i for i in linked if i not in pages]:
+        raise RuntimeError(f"{source.name}: contents entries not found: {unplaced}")
+
+    _pin_timestamps(pdf, _pdf_date(meta["date"]))
     return pdf
 
 
@@ -367,6 +617,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no Markdown in {DELIVERY.relative_to(ROOT)}", file=sys.stderr)
         return 2
 
+    # Chromium falls back to a system font without a word, so a missing font
+    # file would change every page and every hash silently.
+    fonts = re.findall(r'url\("\.\./fonts/([^"]+)"\)', PRINT_CSS)
+    if absent := [f for f in fonts if not (DELIVERY / "fonts" / f).is_file()]:
+        print(f"fonts missing from docs/delivery/fonts: {absent}", file=sys.stderr)
+        return 2
+
     if missing_tools := _missing_tools():
         print(
             "cannot render; missing:\n  - " + "\n  - ".join(missing_tools),
@@ -379,14 +636,17 @@ def main(argv: list[str] | None = None) -> int:
     css.write_text(PRINT_CSS)
     js = BUILD / "_render.js"
     js.write_text(RENDER_JS)
+    template = BUILD / "_template.html"
+    template.write_text(_TEMPLATE)
 
     for source in sources:
-        pdf = render(source, css, js)
+        pdf = render(source, css, js, template)
         print(
             f"  {source.name} -> {pdf.relative_to(ROOT)} "
             f"({pdf.stat().st_size // 1024} KB)"
         )
     js.unlink()
+    template.unlink()
     return 0
 
 
