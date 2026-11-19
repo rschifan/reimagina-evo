@@ -190,8 +190,10 @@ export function enableSelection(map: MapLibreMap): SelectionController {
   const draw = new TerraDraw({
     adapter: new TerraDrawMapLibreGLAdapter({ map }),
     modes: [
-      new TerraDrawCircleMode({ styles: _shapeStyles }),
-      new TerraDrawRectangleMode({ styles: _shapeStyles }),
+      // Click-move-click is terra-draw's default; a drag did nothing, and a
+      // drag is what most people try first. Accept both.
+      new TerraDrawCircleMode({ styles: _shapeStyles, drawInteraction: "click-move-or-drag" }),
+      new TerraDrawRectangleMode({ styles: _shapeStyles, drawInteraction: "click-move-or-drag" }),
       new TerraDrawPolygonMode({ styles: _shapeStyles }),
       new TerraDrawSelectMode({
         // Keep the feature selected when the user clicks outside it.

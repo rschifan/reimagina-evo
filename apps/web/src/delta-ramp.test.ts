@@ -502,21 +502,29 @@ describe("a layer whose values are all identical", () => {
 // a fill that is never installed, or a source that never asks for the delta
 // tile, leaves every unit test green and the map blank or wrong.
 
-function fakeMap() {
+function fakeMap(existingLayers: string[] = []) {
   const added = { sources: [] as Array<Record<string, unknown>>, layers: [] as Array<Record<string, unknown>> };
-  const present = new Set<string>();
+  const present = new Set<string>(existingLayers);
+  /** Layer ids bottom to top, as MapLibre's style holds them. */
+  const order = [...existingLayers];
   const map = {
     getLayer: (id: string) => (present.has(id) ? {} : undefined),
     getSource: (id: string) => (present.has(id) ? {} : undefined),
+    getStyle: () => ({ layers: order.map((id) => ({ id })) }),
     addSource: (id: string, spec: Record<string, unknown>) => {
       present.add(id);
       added.sources.push(spec);
     },
-    addLayer: (spec: Record<string, unknown>) => {
+    addLayer: (spec: Record<string, unknown>, beforeId?: string) => {
       present.add(spec.id as string);
       added.layers.push(spec);
+      const at = beforeId === undefined ? -1 : order.indexOf(beforeId);
+      order.splice(at === -1 ? order.length : at, 0, spec.id as string);
     },
-    removeLayer: (id: string) => present.delete(id),
+    removeLayer: (id: string) => {
+      order.splice(order.indexOf(id), 1);
+      return present.delete(id);
+    },
     removeSource: (id: string) => present.delete(id),
     getCanvasContainer: () => document.createElement("div"),
     setPaintProperty: () => undefined,
@@ -526,7 +534,7 @@ function fakeMap() {
     on: () => undefined,
     off: () => undefined,
   };
-  return { map: map as never, added };
+  return { map: map as never, added, order };
 }
 
 const config = {
@@ -582,6 +590,26 @@ describe("activateIndicator", () => {
       const fill = (added.layers[0].paint as Record<string, unknown>)["fill-color"];
       expect(fill).toEqual(valueRamp(value));
     }
+  });
+});
+
+
+describe("where the indicator is drawn in the layer stack", () => {
+  const value = domain({ min: 0, max: 100, count: 5, basis: "percentile", fromStats: true });
+
+  // The scenarios page has no spotlight mask, so the fill used to go on top
+  // of everything and hid the area a rule is drawn over.
+  it("goes under a drawn area, which stays on top", () => {
+    const { map, order } = fakeMap(["basemap", "td-polygon", "td-polygon-outline", "td-point"]);
+    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    expect(order.slice(-3)).toEqual(["td-polygon", "td-polygon-outline", "td-point"]);
+    expect(order.indexOf("basemap")).toBe(0);
+  });
+
+  it("goes under the spotlight mask, which sits under the drawn area", () => {
+    const { map, order } = fakeMap(["basemap", "__selection_mask__fill", "td-polygon"]);
+    activateIndicator(map, config, indicator(), value, undefined, "a-1", undefined, "block", null);
+    expect(order.slice(-2)).toEqual(["__selection_mask__fill", "td-polygon"]);
   });
 });
 
