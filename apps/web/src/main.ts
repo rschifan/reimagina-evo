@@ -20,7 +20,8 @@ import { mount } from "svelte";
 
 import TopBar from "./lib/TopBar.svelte";
 import "./topbar.css";
-import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, IndicatorValueStats, TileSource } from "./api";
+import type { AOIRow, FeatureIndicatorValue, IndicatorSummary, TileSource } from "./api";
+import { createBanner } from "./banner";
 import { createMap, flyToAoi, mapErrorBanner } from "./map-base";
 
 import {
@@ -79,12 +80,14 @@ import {
   type SelectionGeometry,
   type SelectionShape,
 } from "./selection";
-import { installSelectionHandle } from "./selection-handle";
+import { clickHitsSelectionHandle, installSelectionHandle } from "./selection-handle";
 import { installSelectionMask } from "./selection-mask";
 import {
   INITIAL_CARD,
   nextCardState,
   renderSelectionCard,
+  renderingContext,
+  type CardContext,
   type SelectionStats,
 } from "./selection-card";
 import { wireSheet } from "./sheet";
@@ -113,16 +116,8 @@ interface AppState {
 }
 
 
-/** The banner over the map: loading and errors only. `null` hides it. */
-function setBanner(message: string | null, kind: "loading" | "error" = "loading"): void {
-  const el = document.getElementById("map-banner");
-  if (!el) return;
-  el.hidden = message === null;
-  // Errors interrupt; loading messages wait their turn.
-  el.setAttribute("role", kind === "error" ? "alert" : "status");
-  el.textContent = message ?? "";
-  el.dataset.kind = kind;
-}
+/** The banner over the map: loading and errors only, one channel per writer. */
+const setBanner = createBanner(document.getElementById("map-banner"));
 
 
 
@@ -168,7 +163,7 @@ async function main(): Promise<void> {
   const topbar = document.getElementById("topbar");
   if (topbar) mount(TopBar, { target: topbar, props: { current: "map" } });
 
-  setBanner("Connecting to the reimagina API…");
+  setBanner("loading", "Connecting to the reimagina API…");
 
   // Show the spinner immediately so the user has feedback while the
   // first /aois + /tile-sources round-trip happens (before the map
@@ -185,11 +180,12 @@ async function main(): Promise<void> {
   try {
     ({ sources, indicators, aois } = await loadInitialState());
   } catch (err) {
-    setBanner(`Could not reach the API: ${(err as Error).message}`, "error");
+    setBanner("loading", null);
+    setBanner("api", `Could not reach the API: ${(err as Error).message}`);
     if (loadingHost) loadingHost.setAttribute("data-loading", "false");
     throw err;
   }
-  setBanner(null);
+  setBanner("loading", null);
   const tileCatalog = extractTileSources(sources);
   const overlayConfig = choroplethConfig(sources);
 
@@ -321,15 +317,11 @@ async function main(): Promise<void> {
     let pinRequest: AbortController | null = null;
     // The grain the overlay is drawn at, so a pin knows what it pinned.
     let drawnGrain: string | null = null;
-    // The legend's AOI-wide stats, for the selection card's comparison line.
-    let aoiStats: IndicatorValueStats | null = null;
+    // What the selection card asks about: the indicator being rendered, at its
+    // grain, and once its stats arrive, the legend's AOI-wide median.
+    let cardContext: CardContext = renderingContext(null, null);
 
-    // The selection card asks about the indicator drawn now; with none, blocks.
-    const refreshSelectionCard = _wireSelectionCard(selectionController, () => ({
-      indicator: state.activeIndicator,
-      grain: state.activeIndicator ? drawnGrain : "block",
-      aoiStats,
-    }));
+    const refreshSelectionCard = _wireSelectionCard(selectionController, () => cardContext);
 
     const raiseSheet = wireSheet(inspectorEl, document.getElementById("selection-panel"));
 
@@ -388,7 +380,8 @@ async function main(): Promise<void> {
     // A click that began while a shape was being drawn belongs to the shape,
     // the one that finishes it included (terra-draw is in select mode by the
     // time the click lands, hence the capture at pointerdown). A finished
-    // selection does not block pinning.
+    // selection does not block pinning, except a click on one of its vertices
+    // or on the radius handle, which belongs to the shape too.
     let clickBelongsToDraw = false;
     map.getContainer().addEventListener(
       "pointerdown",
@@ -396,7 +389,7 @@ async function main(): Promise<void> {
       { capture: true },
     );
     map.on("click", (e) => {
-      if (clickBelongsToDraw) return;
+      if (clickBelongsToDraw || clickHitsSelectionHandle(map, e.point)) return;
       const id = overlayFeatureAt(map, e.point);
       if (id === null) closeInspector();
       else if (id !== pinned?.id) void pin(id);
@@ -470,7 +463,7 @@ async function main(): Promise<void> {
       closeInspector();
       state.activeIndicator = null;
       state.activeGrain = null;
-      aoiStats = null;
+      cardContext = renderingContext(null, null);
       refreshSelectionCard();
       removeIndicator(map);
       renderIndicatorInfo(null);
@@ -499,7 +492,11 @@ async function main(): Promise<void> {
       const aoiId = getActiveAoiId();
       const grain = state.activeGrain ?? defaultGrain(indicator) ?? undefined;
       renderIndicatorInfo(indicator);
-      setBanner(`Loading ${indicator.name}…`);
+      // The selection card switches now: it dims, and its next answer is about
+      // this indicator at this grain, with no AOI median until the stats land.
+      cardContext = renderingContext(indicator, grain ?? null);
+      refreshSelectionCard();
+      setBanner("loading", `Loading ${indicator.name}…`);
       let stats = null;
       try {
         stats = await getIndicatorStats(indicator.slug, {
@@ -564,11 +561,13 @@ async function main(): Promise<void> {
             (aoiName ? ` · ${aoiName} only` : "")
           : "";
       }
+      setBanner("loading", null);
+      // Cleared by the next successful stats load, for any indicator.
       setBanner(
+        "values",
         stats ? null : `Could not load the values of ${indicator.name}; colours use the catalog range.`,
-        "error",
       );
-      aoiStats = stats;
+      cardContext = { ...cardContext, aoiStats: stats };
       refreshSelectionCard();
     }
 
@@ -754,12 +753,9 @@ async function main(): Promise<void> {
       isPaletteOpen: () => palette.isOpen(),
     });
   });
-  // Cleared only if the banner still says this; a later message is not ours to hide.
   const mapError = mapErrorBanner(
-    (message) => setBanner(message, "error"),
-    (message) => {
-      if (document.getElementById("map-banner")?.textContent === message) setBanner(null);
-    },
+    (message) => setBanner("map", message),
+    () => setBanner("map", null),
   );
   map.on("error", (e) => mapError.error(`The map could not load some data: ${e.error?.message ?? "unknown error"}`));
   map.on("idle", () => mapError.idle());
@@ -846,17 +842,13 @@ function _wireSelectionToolbar(controller: SelectionController): () => void {
  */
 function _wireSelectionCard(
   controller: SelectionController,
-  current: () => {
-    indicator: IndicatorSummary | null;
-    grain: string | null;
-    aoiStats: IndicatorValueStats | null;
-  },
+  current: () => CardContext,
 ): () => void {
   const card = document.getElementById("selection-panel");
   if (!card) return () => undefined;
   let state = INITIAL_CARD;
   // What the numbers on screen were fetched for: stale numbers keep their unit.
-  let shown: ReturnType<typeof current> = { indicator: null, grain: "block", aoiStats: null };
+  let shown: CardContext = renderingContext(null, null);
   let inFlight: AbortController | null = null;
   const paint = (): void =>
     renderSelectionCard(card, state, shown.indicator, shown.aoiStats, shown.grain);

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { INITIAL_CARD, nextCardState, renderSelectionCard, type CardEvent } from "./selection-card";
 import { wireSheet } from "./sheet";
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -39,6 +40,26 @@ describe("wireSheet", () => {
     inspector.hidden = false;
     raise("inspector");
     await tick();
+    expect(behind(inspector)).toBe(false);
+    expect(behind(selection)).toBe(true);
+  });
+
+  it("a changed selection after a failed summary does not jump over a later pin", async () => {
+    const { inspector, selection, raise, behind } = setup();
+    let card = INITIAL_CARD;
+    const step = async (event: CardEvent): Promise<void> => {
+      card = nextCardState(card, event);
+      renderSelectionCard(selection, card, null, null);
+      await tick();
+    };
+    await step({ type: "selection-changed" });
+    await step({ type: "response", token: card.token, stats: null }); // failed
+    expect(selection.hidden).toBe(false);
+    inspector.hidden = false;
+    raise("inspector");
+    await tick();
+    await step({ type: "selection-changed" });
+    await step({ type: "response", token: card.token, stats: { count: 3 } });
     expect(behind(inspector)).toBe(false);
     expect(behind(selection)).toBe(true);
   });

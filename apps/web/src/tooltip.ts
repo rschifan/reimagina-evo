@@ -50,10 +50,10 @@ export interface TooltipProvider {
 //
 // Same pattern as :func:`setHoverGloballySuspended` in
 // hover-highlight.ts. Tooltips are suspended together with hover
-// while the user is drawing or editing a selection shape — modes
-// are mutually exclusive in production map tools (Felt, Mapbox
-// Studio): if you're committed to a draw gesture, no other mousemove
-// affordance should fire.
+// while the user is drawing a selection shape — modes are mutually
+// exclusive in production map tools (Felt, Mapbox Studio): if you're
+// committed to a draw gesture, no other mousemove affordance should
+// fire.
 let _tooltipGloballySuspended = false;
 const _liveTooltipInstances = new Set<TooltipController>();
 

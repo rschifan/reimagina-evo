@@ -4,8 +4,10 @@
  * It must not flicker while a shape is drawn or dragged: a new selection keeps
  * the previous numbers on screen, dimmed, until the one response for the
  * settled shape replaces them in a single paint. The card never shows a
- * placeholder, and stays hidden until its first numbers arrive. main.ts owns
- * the request (one per settled change, the previous one aborted).
+ * placeholder, and stays hidden until its first answer arrives; once shown it
+ * stays shown (a failure note dims like numbers do) until the selection is
+ * cleared. main.ts owns the request (one per settled change, the previous one
+ * aborted).
  */
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
 import { grainCount, grainLabel } from "./choropleth";
@@ -17,6 +19,8 @@ export type SelectionStats = Pick<IndicatorValueStats, "count">
 
 export interface CardState {
   visible: boolean;
+  /** A response (numbers or a failure) arrived since the selection appeared. */
+  answered: boolean;
   /** The selection changed since `stats` were fetched. */
   stale: boolean;
   /** Bumped on every change: a response for an older token is dropped. */
@@ -30,7 +34,7 @@ export type CardEvent =
   | { type: "response"; token: number; stats: SelectionStats | null }
   | { type: "cleared" };
 
-export const INITIAL_CARD: CardState = { visible: false, stale: false, token: 0, stats: null };
+export const INITIAL_CARD: CardState = { visible: false, answered: false, stale: false, token: 0, stats: null };
 
 export function nextCardState(state: CardState, event: CardEvent): CardState {
   switch (event.type) {
@@ -38,10 +42,26 @@ export function nextCardState(state: CardState, event: CardEvent): CardState {
       return { ...state, visible: true, stale: true, token: state.token + 1 };
     case "response":
       if (event.token !== state.token || !state.visible) return state;
-      return { ...state, stale: false, stats: event.stats };
+      return { ...state, answered: true, stale: false, stats: event.stats };
     case "cleared":
-      return { visible: false, stale: false, token: state.token + 1, stats: null };
+      return { visible: false, answered: false, stale: false, token: state.token + 1, stats: null };
   }
+}
+
+/** What the card's numbers are about: an indicator at a grain, and its AOI-wide stats. */
+export interface CardContext {
+  indicator: IndicatorSummary | null;
+  grain: string | null;
+  aoiStats: IndicatorValueStats | null;
+}
+
+/**
+ * The context while `indicator` is being rendered at `grain`: the card asks
+ * about what is being drawn, not what was, and has no AOI median to compare
+ * with until that indicator's stats arrive. With no indicator: blocks.
+ */
+export function renderingContext(indicator: IndicatorSummary | null, grain: string | null): CardContext {
+  return { indicator, grain: indicator ? grain : "block", aoiStats: null };
 }
 
 /**
@@ -56,8 +76,9 @@ export function renderSelectionCard(
   aoiStats: { p50: number | null } | null,
   grain: string | null = "block",
 ): void {
-  const pending = state.stats === null && state.stale;
-  container.hidden = !state.visible || pending;
+  // Hidden only before the first answer: re-hiding a shown card while a
+  // request is pending would re-open it on the phone sheet over a later pin.
+  container.hidden = !state.visible || !state.answered;
   container.classList.toggle("is-stale", state.stale);
   if (container.hidden) return;
 

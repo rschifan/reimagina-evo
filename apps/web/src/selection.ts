@@ -143,6 +143,51 @@ const TD_MODE: Record<SelectionShape, string> = {
 };
 
 
+// ── Map-gesture suppression while drawing ───────────────────────────
+//
+// terra-draw's MapLibre adapter SHOULD pre-empt the map's drag
+// handler, but on maplibre-gl 4.x the order of mousedown listener
+// registration means the map's ``dragPan`` handler can win the
+// first gesture — the user clicks to start a circle and ends up
+// panning the map instead. Explicitly disabling the map's
+// gestures while a shape is being drawn makes terra-draw the only
+// consumer of those events.
+export function syncMapGestures(
+  map: Pick<MapLibreMap, "dragPan" | "boxZoom" | "doubleClickZoom">,
+  mode: string,
+): void {
+  const drawing = isDrawMode(mode);
+  // Suspend BOTH global hover-highlight and tooltips while a shape is
+  // being drawn: the user's clicks place its vertices, so a hover
+  // outline or tooltip is noise that fights for the same input. A
+  // finished shape (select mode) keeps them: hovering a block and its
+  // "Click to pin" tooltip are how pinning is found with a selection on.
+  setHoverGloballySuspended(drawing);
+  setTooltipGloballySuspended(drawing);
+  // Two regimes for the competing-gesture handlers (left-click
+  // drag, shift+drag, double-click):
+  //
+  //   - DRAW modes (circle/rectangle/polygon): disable them. The
+  //     user's first click should start the draw gesture, not pan
+  //     the map. Without this, dragPan races terra-draw's
+  //     mousedown handler and sometimes wins.
+  //
+  //   - SELECT and STATIC: leave them ENABLED. terra-draw's select
+  //     mode cooperates with the map via ``setMapDraggability`` — its
+  //     ``onDragStart`` disables pan ONLY for the duration of an
+  //     inside-feature drag. Outside drags fall through to
+  //     ``dragPan`` so the user can reframe the map without
+  //     clearing the selection.
+  //
+  // Wheel zoom, pinch, keyboard, right-click rotate stay on in
+  // every regime — they live on independent inputs.
+  for (const h of [map.dragPan, map.boxZoom, map.doubleClickZoom]) {
+    if (drawing) h.disable();
+    else h.enable();
+  }
+}
+
+
 export function enableSelection(map: MapLibreMap): SelectionController {
   const cached = _controllers.get(map);
   if (cached) return cached;
@@ -209,7 +254,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
         // Default is true: an outside-click deselects the feature,
         // which here would mean the user can no longer drag-to-move
         // the circle until they click on it again. With outside-pan
-        // re-enabled (see ``_syncMapGestures``), outside clicks /
+        // re-enabled (see ``syncMapGestures``), outside clicks /
         // drags should be camera operations, not selection-clear
         // operations. The toolbar's × button is the explicit clear.
         allowManualDeselection: false,
@@ -277,57 +322,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
     ],
   });
   draw.start();
-
-  // ── Map-gesture suppression while drawing/editing ────────────────
-  //
-  // terra-draw's MapLibre adapter SHOULD pre-empt the map's drag
-  // handler, but on maplibre-gl 4.x the order of mousedown listener
-  // registration means the map's ``dragPan`` handler can win the
-  // first gesture — the user clicks to start a circle and ends up
-  // panning the map instead. Explicitly disabling the map's
-  // gestures whenever we're in a non-static mode makes terra-draw
-  // the only consumer of those events.
-  //
-  // Restored on ``static`` mode (after ``clear``)
-  // so the user can pan freely between selections.
-  const _syncMapGestures = (mode: string): void => {
-    const drawing = mode !== "static";
-    // Suspend BOTH global hover-highlight and tooltips while drawing
-    // or editing. The user's mousedown is committed to terra-draw
-    // (start vertex, drag handle), so any competing mousemove
-    // affordance — cyan hover outline, hover tooltip — is confusing
-    // noise that also fights for the same input. Production map
-    // tools (Felt, Mapbox Studio) suppress both together for the
-    // exact reason.
-    setHoverGloballySuspended(drawing);
-    setTooltipGloballySuspended(drawing);
-    // Two regimes for the competing-gesture handlers (left-click
-    // drag, shift+drag, double-click):
-    //
-    //   - DRAW modes (circle/rectangle/polygon): disable them. The
-    //     user's first click should start the draw gesture, not pan
-    //     the map. Without this, dragPan races terra-draw's
-    //     mousedown handler and sometimes wins.
-    //
-    //   - SELECT mode: leave them ENABLED. terra-draw's select mode
-    //     cooperates with the map via ``setMapDraggability`` — its
-    //     ``onDragStart`` disables pan ONLY for the duration of an
-    //     inside-feature drag. Outside drags fall through to
-    //     ``dragPan`` so the user can reframe the map without
-    //     clearing the selection. Matches Felt / Mapbox-Studio's
-    //     "selected shape persists while you pan around it" UX.
-    //
-    //   - STATIC: everything enabled (default map gestures).
-    //
-    // Wheel zoom, pinch, keyboard, right-click rotate stay on in
-    // every regime — they live on independent inputs.
-    const competing = [map.dragPan, map.boxZoom, map.doubleClickZoom];
-    for (const h of competing) {
-      if (isDrawMode(mode)) h.disable();
-      else h.enable();
-    }
-  };
-  _syncMapGestures("static");
+  syncMapGestures(map, "static");
 
   // ── terra-draw → store bridge ────────────────────────────────────
   //
@@ -403,7 +398,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       // No-op if the id is no longer in the snapshot (e.g. user
       // cleared between finish and this callback).
     }
-    _syncMapGestures("select");
+    syncMapGestures(map, "select");
   });
   draw.on("change", () => {
     // terra-draw's ``change`` event shape (type argument, ordering)
@@ -431,7 +426,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       controller.clear();
       _activeShape = shape;
       draw.setMode(TD_MODE[shape]);
-      _syncMapGestures(TD_MODE[shape]);
+      syncMapGestures(map, TD_MODE[shape]);
     },
     clear(): void {
       _activeShape = null;
@@ -439,7 +434,7 @@ export function enableSelection(map: MapLibreMap): SelectionController {
       draw.clear();
       _selection = null;
       draw.setMode("static");
-      _syncMapGestures("static");
+      syncMapGestures(map, "static");
       _emit();
     },
     getSelection(): SelectionGeometry | null {

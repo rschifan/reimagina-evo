@@ -92,14 +92,14 @@ export interface HoverHighlightConfig {
  */
 // ── Global suspend bus ───────────────────────────────────────────────
 //
-// While the user is drawing or editing a selection shape, hover
-// highlighting is the wrong affordance: it competes for the mousedown
-// (vertex drag vs. feature select) and adds visual noise to a
-// committed-attention task. Production map tools (Felt, Mapbox
-// Studio) suppress hover globally during draw, so we expose a single
-// bus that flips every registered hover handler at once. The
-// selection-tool wiring in main.ts toggles this on `startDrawing`
-// and off on `clear`.
+// While the user is drawing a selection shape, hover highlighting is
+// the wrong affordance: it competes for the clicks that place the
+// shape's vertices and adds visual noise to a committed-attention
+// task. Production map tools (Felt, Mapbox Studio) suppress hover
+// globally during draw, so we expose a single bus that flips every
+// registered hover handler at once. `syncMapGestures` in selection.ts
+// turns it on while a shape is drawn and off once it is finished or
+// cleared.
 
 let _suspended = false;
 const _clearHoverFns = new Set<() => void>();

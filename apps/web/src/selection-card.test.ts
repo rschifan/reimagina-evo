@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { IndicatorSummary } from "./api";
-import { INITIAL_CARD, nextCardState, renderSelectionCard, type CardState } from "./selection-card";
+import { INITIAL_CARD, nextCardState, renderSelectionCard, renderingContext, type CardState } from "./selection-card";
 import { isDrawMode } from "./selection";
 
 const PARK = {
@@ -21,7 +21,7 @@ const DENSITY = {
   cap_value: null,
 } as IndicatorSummary;
 
-const shown = (stats: CardState["stats"]): CardState => ({ visible: true, stale: false, token: 1, stats });
+const shown = (stats: CardState["stats"]): CardState => ({ visible: true, answered: true, stale: false, token: 1, stats });
 
 function render(state: CardState, indicator: IndicatorSummary | null, aoiStats: { p50: number | null } | null = null): HTMLElement {
   const host = document.createElement("div");
@@ -33,7 +33,7 @@ describe("nextCardState", () => {
   it("keeps the previous numbers on a new selection, marked stale", () => {
     const before = shown({ count: 12 });
     const after = nextCardState(before, { type: "selection-changed" });
-    expect(after).toEqual({ visible: true, stale: true, token: 2, stats: { count: 12 } });
+    expect(after).toEqual({ visible: true, answered: true, stale: true, token: 2, stats: { count: 12 } });
   });
 
   it("ignores a response to a superseded request", () => {
@@ -44,13 +44,13 @@ describe("nextCardState", () => {
   it("replaces the numbers and clears stale on the current response", () => {
     const pending = nextCardState(shown({ count: 12 }), { type: "selection-changed" });
     expect(nextCardState(pending, { type: "response", token: pending.token, stats: { count: 30 } })).toEqual({
-      visible: true, stale: false, token: 2, stats: { count: 30 },
+      visible: true, answered: true, stale: false, token: 2, stats: { count: 30 },
     });
   });
 
   it("hides and forgets on clear, so a late response cannot reopen it", () => {
     const cleared = nextCardState(shown({ count: 12 }), { type: "cleared" });
-    expect(cleared).toEqual({ visible: false, stale: false, token: 2, stats: null });
+    expect(cleared).toEqual({ visible: false, answered: false, stale: false, token: 2, stats: null });
     expect(nextCardState(cleared, { type: "response", token: 1, stats: { count: 5 } })).toBe(cleared);
   });
 });
@@ -98,13 +98,32 @@ describe("renderSelectionCard", () => {
   });
 
   it("dims stale numbers rather than replacing them", () => {
-    const host = render({ visible: true, stale: true, token: 2, stats: { count: 7 } }, null);
+    const host = render({ visible: true, answered: true, stale: true, token: 2, stats: { count: 7 } }, null);
     expect(host.classList.contains("is-stale")).toBe(true);
     expect(host.textContent).toBe("Selection · 7 blocks");
   });
 
   it("stays hidden until the first numbers arrive", () => {
     expect(render(nextCardState(INITIAL_CARD, { type: "selection-changed" }), PARK).hidden).toBe(true);
+  });
+
+  it("keeps a failed card shown, dimmed, while the next request is pending", () => {
+    const failed = nextCardState(nextCardState(INITIAL_CARD, { type: "selection-changed" }), { type: "response", token: 1, stats: null });
+    const pending = nextCardState(failed, { type: "selection-changed" });
+    const host = render(pending, PARK);
+    expect(host.hidden).toBe(false);
+    expect(host.classList.contains("is-stale")).toBe(true);
+    expect(host.textContent).toBe("Could not summarise this selection.");
+  });
+});
+
+describe("renderingContext", () => {
+  it("asks about the indicator and grain being rendered, with no AOI median yet", () => {
+    expect(renderingContext(PARK, "municipality")).toEqual({ indicator: PARK, grain: "municipality", aoiStats: null });
+  });
+
+  it("falls back to blocks with no indicator", () => {
+    expect(renderingContext(null, null)).toEqual({ indicator: null, grain: "block", aoiStats: null });
   });
 });
 
