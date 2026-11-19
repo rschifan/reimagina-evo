@@ -65,3 +65,28 @@ export function formatValue(
   if (cap !== null && value >= cap) return `${fmtNumber(cap)}${unit}+ (cap)`;
   return `${fmtNumber(value)}${unit}`;
 }
+
+
+/** Human label for a feature-type slug. Falls back to the slug so a
+ *  new grain shows up readable-ish rather than not at all. */
+const GRAIN_LABELS: Record<string, string> = {
+  block: "Blocks",
+  municipality: "Municipalities",
+  lot: "Lots",
+};
+
+/** Plural label for a grain: `block` → `Blocks`; `null` → `Features`. */
+export function grainLabel(grain: string | null): string {
+  return grain === null ? "Features" : (GRAIN_LABELS[grain] ?? grain);
+}
+
+/** A grain as a noun in running text: `block` / `blocks`; no grain is
+ *  `feature` / `features`. */
+export function grainNoun(grain: string | null, plural: boolean): string {
+  return plural ? grainLabel(grain).toLowerCase() : (grain || "feature");
+}
+
+/** A count of features with its noun: `1 block`, `19,058 blocks`, `2 features`. */
+export function grainCount(n: number, grain: string | null): string {
+  return `${fmtNumber(n)} ${grainNoun(grain, n !== 1)}`;
+}

@@ -48,7 +48,6 @@ import {
   clearGrainToggle,
   clearLegend,
   defaultGrain,
-  grainCount,
   overlayFeatureAt,
   populateIndicatorSelect,
   rampDomainFromStats,
@@ -58,6 +57,7 @@ import {
   setOverlayPinned,
 } from "./choropleth";
 import { HISTOGRAM_BINS } from "./distribution";
+import { grainCount } from "./format";
 import { renderDownloads } from "./download";
 import { renderInspector } from "./inspector";
 import type { Command } from "./commands";

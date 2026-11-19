@@ -32,7 +32,7 @@ import type {
 } from "./api";
 import { minzoomForGrain } from "./layers";
 import { distributionSvg } from "./distribution";
-import { escapeHtml, fmtNumber, formatValue, shareText } from "./format";
+import { escapeHtml, fmtNumber, formatValue, grainLabel, grainNoun, shareText } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -773,7 +773,7 @@ function capRows(indicator: IndicatorSummary, countAtCap: number | null, total: 
   if (countAtCap === null || total <= 0) return swatch;
   const share = escapeHtml(shareText(countAtCap, total));
   // ponytail: grain word from the finest declared grain; capped indicators are block-only today.
-  const grain = grainLabel(indicator.applies_to?.[0] ?? null).toLowerCase();
+  const grain = grainNoun(indicator.applies_to?.[0] ?? null, true);
   const capText = formatValue(cap, { ...indicator, cap_value: null });
   return swatch + `<div class="cap-share">${share}% of ${grain} at the ${escapeHtml(capText)} cap</div>`;
 }
@@ -843,26 +843,6 @@ export function markLegendValue(
     },
     indicator,
   );
-}
-
-
-/** Human label for a feature-type slug. Falls back to the slug so a
- *  new grain shows up readable-ish rather than not at all. */
-const GRAIN_LABELS: Record<string, string> = {
-  block: "Blocks",
-  municipality: "Municipalities",
-  lot: "Lots",
-};
-
-/** Plural label for a grain: `block` → `Blocks`; `null` → `Features`. */
-export function grainLabel(grain: string | null): string {
-  return grain === null ? "Features" : (GRAIN_LABELS[grain] ?? grain);
-}
-
-/** A count of features with its noun: `1 block`, `19,058 blocks`, `2 features`. */
-export function grainCount(n: number, grain: string | null): string {
-  const noun = n === 1 ? (grain ?? "feature") : grainLabel(grain).toLowerCase();
-  return `${n.toLocaleString()} ${noun}`;
 }
 
 

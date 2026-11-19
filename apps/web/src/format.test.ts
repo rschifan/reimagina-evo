@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { escapeHtml, fmtNumber, formatValue, shareText, unitLabel } from "./format";
+import { escapeHtml, fmtNumber, formatValue, grainCount, grainNoun, shareText, unitLabel } from "./format";
 
 describe("fmtNumber", () => {
   it("passes integers through with thousands separators", () => {
@@ -116,5 +116,31 @@ describe("shareText", () => {
     expect(shareText(3, 300)).toBe("1");
     expect(shareText(124, 200)).toBe("62");
     expect(shareText(297, 300)).toBe("99");
+  });
+});
+
+
+describe("grainNoun", () => {
+  it("is the grain word in the singular and its lower-cased label in the plural", () => {
+    expect(grainNoun("block", false)).toBe("block");
+    expect(grainNoun("block", true)).toBe("blocks");
+    expect(grainNoun("municipality", true)).toBe("municipalities");
+    expect(grainNoun(null, false)).toBe("feature");
+    expect(grainNoun(null, true)).toBe("features");
+  });
+});
+
+
+describe("grainCount", () => {
+  it("counts one in the singular and more in the plural", () => {
+    expect(grainCount(1, "block")).toBe("1 block");
+    expect(grainCount(2, "block")).toBe("2 blocks");
+    expect(grainCount(1, "municipality")).toBe("1 municipality");
+    expect(grainCount(19058, "block")).toBe(`${(19058).toLocaleString()} blocks`);
+  });
+
+  it("falls back to features for no grain", () => {
+    expect(grainCount(1, null)).toBe("1 feature");
+    expect(grainCount(2, null)).toBe("2 features");
   });
 });

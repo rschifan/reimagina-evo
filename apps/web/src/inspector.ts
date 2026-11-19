@@ -7,8 +7,7 @@
  * to it. main.ts owns the request, the pinned outline and when it closes.
  */
 import type { FeatureIndicatorValue } from "./api";
-import { grainLabel } from "./choropleth";
-import { formatValue, shareText } from "./format";
+import { formatValue, grainNoun, shareText } from "./format";
 
 /**
  * Where a value sits among the AOI's features of the same grain, in words.
@@ -20,7 +19,7 @@ import { formatValue, shareText } from "./format";
  */
 export function rankText(row: FeatureIndicatorValue, grain: string | null = "block"): string {
   if (row.count < 2) return "";
-  const word = grainLabel(grain).toLowerCase();
+  const word = grainNoun(grain, true);
   // "nearly all" / "under 1%" rather than ">99%" / "<1%" spliced after "than".
   const share = (n: number): string => {
     const s = shareText(n, row.count);
@@ -52,7 +51,8 @@ export function renderInspector(
   };
 
   const head = el("div", "inspector__head");
-  const kind = feature.grain ? feature.grain[0].toUpperCase() + feature.grain.slice(1) : "Feature";
+  const noun = grainNoun(feature.grain, false);
+  const kind = noun[0].toUpperCase() + noun.slice(1);
   const id = el("code", "inspector__id", feature.id);
   id.title = "Click to select, then copy";
   const close = el("button", "inspector__close", "✕") as HTMLButtonElement;

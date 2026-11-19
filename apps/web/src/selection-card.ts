@@ -10,8 +10,7 @@
  * aborted).
  */
 import type { IndicatorSummary, IndicatorValueStats } from "./api";
-import { grainCount, grainLabel } from "./choropleth";
-import { formatValue, shareText } from "./format";
+import { formatValue, grainCount, grainNoun, shareText } from "./format";
 
 /** `/stats`-shaped numbers for the selection; just `count` with no indicator. */
 export type SelectionStats = Pick<IndicatorValueStats, "count">
@@ -97,7 +96,7 @@ export function renderSelectionCard(
     container.replaceChildren(line("selection-card__note", "Could not summarise this selection."));
     return;
   }
-  const word = grainLabel(grain).toLowerCase();
+  const word = grainNoun(grain, true);
   const lines = [line("selection-card__title", `Selection · ${grainCount(stats.count, grain)}`)];
   if (indicator && stats.count === 0) {
     lines.push(line("selection-card__note", `No ${word} inside`));
