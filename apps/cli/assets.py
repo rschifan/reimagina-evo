@@ -1,7 +1,7 @@
 """CLI helpers for the asset graph.
 
-Reads go through ``explore`` rather than ``serving_geo`` — AGENTS.md keeps CLI
-inspection on the engineer-facing surface, and "which indicators must I
+Reads go through ``explore`` rather than ``serving_geo`` — CLI inspection
+stays on the engineer-facing surface, and "which indicators must I
 recompute" is an inspection question before it is an orchestration one.
 """
 

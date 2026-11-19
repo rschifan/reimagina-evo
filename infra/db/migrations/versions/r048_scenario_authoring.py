@@ -29,8 +29,8 @@ permissive-when-unset predicate r011 uses, keyed on ``project_id``.
 propagate across the FK, so its rows are tenant-visible even where the
 scenario row is not. That is declared in the design rather than papered over.
 
-``explore.scenario_v`` is the engineer-facing listing (AGENTS.md keeps CLI
-inspection commands reading from ``explore``): one row per scenario with its
+``explore.scenario_v`` is the engineer-facing listing (CLI inspection
+commands read from ``explore``): one row per scenario with its
 edit and override counts. The counts are correlated subqueries rather than
 joins so each stays one row per scenario without a GROUP BY over two
 independently fanning-out children. ``override_count`` reads

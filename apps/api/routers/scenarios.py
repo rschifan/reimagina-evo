@@ -155,7 +155,7 @@ from .indicators import IndicatorSummary, catalog_row_to_dict
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
-#: Every shipped indicator is block-grain (AGENTS.md), so this is the type a
+#: Every shipped indicator is block-grain, so this is the type a
 #: drawn rule applies to unless the caller says otherwise.
 DEFAULT_TYPE_CONTEXT = "MEX"
 DEFAULT_TYPE_SLUG = "block"

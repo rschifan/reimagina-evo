@@ -51,7 +51,7 @@ def _cors_origins_from_env() -> list[str]:
 
 def _log_resolved_dsn() -> None:
     """Log the API's resolved Postgres DSN at startup so operators
-    catch DB-mismatch bugs immediately (Codex review HIGH finding).
+    catch DB-mismatch bugs immediately.
 
     The MVT path goes API + Martin → both must point at the same
     Postgres database. We can't read Martin's DSN, but printing the
@@ -106,7 +106,7 @@ def create_app(
 
     app = FastAPI(
         title="reimagina API",
-        version="0.1.0",
+        version="1.0.0",
         description=(
             "Read-side for the reimagina urban-planning platform. "
             "Exposes curated indicator results, AOI summaries, spatial "

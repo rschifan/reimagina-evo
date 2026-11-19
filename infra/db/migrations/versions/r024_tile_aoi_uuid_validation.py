@@ -1,6 +1,6 @@
 """serving_geo tile functions — pre-validate aoi_id before ::uuid cast.
 
-Codex review flagged that r022/r023 cast ``aoi_id`` straight to UUID
+Review flagged that r022/r023 cast ``aoi_id`` straight to UUID
 inside the WHERE clause. A malformed value (any string that isn't
 exactly 36 chars in the canonical 8-4-4-4-12 form) raises a Postgres
 error rather than returning an empty tile, so a fuzzed request to

@@ -261,18 +261,41 @@ pr-merge: ## Squash-merge the current branch's PR and delete the branch.
 ship: check pr ## `check` + open PR. Use when you're confident.
 
 # ─── Release ─────────────────────────────────────────────────────────────────
-# Usage: `make release VERSION=v0.2.0`
+# Usage: `make release VERSION=v1.0.0`, from a clean `main` whose HEAD is the
+# commit that adds MANIFEST.md + SHA256SUMS and carries the tag VERSION:
+#
+#   python scripts/render_delivery_pdfs.py          # needs the render toolchain
+#   python scripts/delivery_manifest.py --tag v1.0.0
+#   git add docs/delivery && git commit && git tag -a v1.0.0 -m v1.0.0
+#   make release VERSION=v1.0.0
+#
+# It re-renders the PDFs and verifies them against SHA256SUMS (so a toolchain
+# that does not reproduce the delivered bytes fails here), then collects the
+# release assets into dist/ (git-ignored) and prints the `gh` command. It does
+# not tag, push or publish anything.
 
 .PHONY: release
-release: ## Tag + publish a GitHub release. VERSION=v0.2.0
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v0.2.0"; exit 1; fi
+release: ## Build the release bundle in dist/. VERSION=v1.0.0 (HEAD must be tagged)
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v1.0.0"; exit 1; fi
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then \
 	  echo "release must be cut from main (you are on $$(git rev-parse --abbrev-ref HEAD))"; exit 1; \
 	fi
-	git pull --ff-only
-	git tag -a $(VERSION) -m "$(VERSION)"
-	git push origin $(VERSION)
-	gh release create $(VERSION) --generate-notes --title "$(VERSION)"
+	@if [ -n "$$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi
+	@if [ "$$(git describe --tags --exact-match 2>/dev/null)" != "$(VERSION)" ]; then \
+	  echo "HEAD must carry the tag $(VERSION) (commit MANIFEST.md + SHA256SUMS, then tag)"; exit 1; \
+	fi
+	uv run python scripts/render_delivery_pdfs.py
+	uv run python scripts/delivery_manifest.py --check
+	shasum -a 256 -c docs/delivery/SHA256SUMS
+	mkdir -p dist && rm -f dist/*
+	cp docs/delivery/pdf/*.pdf docs/delivery/MANIFEST.md docs/delivery/SHA256SUMS dist/
+	@src=$$(sed -n 's/^| \*\*Generated from commit\*\* | `\(.*\)` |$$/\1/p' docs/delivery/MANIFEST.md); \
+	git archive --format=tar --prefix=reimagina-$(VERSION)/ $$src | gzip -n > dist/reimagina-$(VERSION).tar.gz; \
+	echo "source archive of $$src"
+	cd dist && shasum -a 256 *.pdf MANIFEST.md SHA256SUMS reimagina-$(VERSION).tar.gz > SHA256SUMS-assets
+	@echo
+	@echo "Bundle in dist/. Publish it (after pushing main and the tag):"
+	@echo "  gh release create $(VERSION) dist/* --title $(VERSION) --notes-file CHANGELOG.md"
 
 # ─── Housekeeping ────────────────────────────────────────────────────────────
 

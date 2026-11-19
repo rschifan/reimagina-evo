@@ -9,8 +9,8 @@ authors:
     affiliation: ISI Foundation
 repository-code: "https://github.com/rschifan/reimagina-evo"
 license: MIT
-version: 0.1.0
-date-released: "2026-04-22"
+version: 1.0.0
+date-released: "2026-11-20"
 keywords:
   - urban-analytics
   - gis
