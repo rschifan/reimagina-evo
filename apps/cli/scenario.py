@@ -7,7 +7,7 @@ The sub-app is two halves that deliberately read different relations.
 each function here owns one transaction and ends it explicitly.
 
 **The read half** — ``list`` and ``show`` — reads ``explore.scenario_v``, not
-``authoring.list_scenarios``/``get_scenario``. AGENTS.md rule 4: CLI
+``authoring.list_scenarios``/``get_scenario``. The rule: CLI
 inspection commands read from ``explore``. That is not a stylistic preference
 — the view is the engineer-facing contract, so a column added to it reaches
 the CLI without an edit here (the select is ``*``), and a question the CLI can
@@ -19,7 +19,7 @@ the state between runs (edits drawn, and whether a materialisation has seen
 them) is visible without recomputing anything.
 
 **The rules of a proposal are not in this file.** ``reimagina.scenarios.proposal``
-owns them — the four edits three numbers write, the refusal of a non-positive
+owns them — the five edits four numbers write, the refusal of a non-positive
 or non-finite value, the density precheck, and the unioning of a drawn
 FeatureCollection into one area. They are domain policy, and the API router
 needs the same ones; a router that imported them from ``apps/cli`` would have
@@ -74,7 +74,7 @@ from reimagina.scenarios.proposal import (
     require_positive,
 )
 
-#: Every shipped indicator is block-grain (AGENTS.md), so this is the type a
+#: Every shipped indicator is block-grain, so this is the type a
 #: drawn rule applies to unless the caller says otherwise.
 DEFAULT_TYPE_CONTEXT = "MEX"
 DEFAULT_TYPE_SLUG = "block"
@@ -160,7 +160,7 @@ def create(
 
     ``app_core.scenario.project_id`` is NOT NULL and ``aoi_id`` is not, so the
     project cannot simply be read off the AOI in general (r048). It can be
-    whenever an AOI *is* given, and the documented example (AGENTS.md) passes
+    whenever an AOI *is* given, and the documented example passes
     only ``--name`` and ``--aoi-id``; deriving it there is what makes that command
     line work, and the alternative is asking the user for a uuid the database
     already knows.
@@ -210,8 +210,8 @@ def set_attribute(
 
     The refusals come first and in this order — values, then ceiling, then
     geometry — so a proposal that cannot be stored costs no connection and
-    leaves no partial rule behind. The four writes then share one
-    transaction: three edits of four is not a proposal, it is a block the
+    leaves no partial rule behind. The five writes then share one
+    transaction: some edits of five is not a proposal, it is a block the
     edificability family skips.
     """
     _require_positive(

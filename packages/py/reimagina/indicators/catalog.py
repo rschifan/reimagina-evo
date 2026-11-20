@@ -246,7 +246,7 @@ URBAN_FORM_BLOCK_COMPOSITE = IndicatorSpec(
 # ── Edificability ───────────────────────────────────────────────────────────
 #
 # Buildable capacity from construction and land-use attributes: the worked
-# example the Reimagina collaborators supplied. Three outputs of one three-line
+# example the collaborators supplied. Three outputs of one three-line
 # calculation.
 #
 # ⚠ All three declare the SAME `reads`, including `people_per_household`, which
@@ -600,7 +600,7 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 
 # ── Livability score ────────────────────────────────────────────────────────
 #
-# The fourth worked example the Reimagina collaborators asked for: "a composite
+# The fourth worked example the collaborators asked for: "a composite
 # that combines density and accessibility indicators into a score indicator".
 #
 # It needs no compute code. `default_runners()` binds every

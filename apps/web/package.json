@@ -1,7 +1,7 @@
 {
-  "name": "@reimagina/web",
-  "version": "0.1.0",
-  "description": "Reimagina read-side web app — MapLibre + vanilla TS.",
+  "name": "@r-evo/web",
+  "version": "1.0.0",
+  "description": "Web application of the prototype — MapLibre, TypeScript and Svelte.",
   "private": true,
   "type": "module",
   "engines": {

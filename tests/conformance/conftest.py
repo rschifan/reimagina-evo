@@ -8,7 +8,6 @@ is what an ops-plane branch edits.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from types import SimpleNamespace
 from uuid import uuid4
@@ -30,7 +29,11 @@ from tests.integration._helpers import (
     start_run as _start_run,
 )
 
-_DSN = os.environ.get("TEST_DATABASE_URL", "postgresql://localhost/reimagina_test")
+# ⚠ The DSN is the `migrated_db` fixture's, never read here at import time.
+# A module-level `os.environ.get("TEST_DATABASE_URL", ...)` runs before
+# `reimagina.db` loads `.env`, so with the variable only in `.env` this suite
+# wrote to the default `reimagina_test` while the schema was migrated
+# elsewhere: 22 setup errors ("indicator_catalog does not exist").
 _BLOCK_WKT = (
     "POLYGON((-99.140 19.430,-99.137 19.430,-99.137 19.433,"
     "-99.140 19.433,-99.140 19.430))"
@@ -89,7 +92,7 @@ IMPLEMENTATIONS = [
 @pytest.fixture(params=IMPLEMENTATIONS, ids=lambda impl: impl.mode)
 def impl(request, migrated_db, monkeypatch) -> Implementation:
     """The implementation under test, with its environment satisfied."""
-    monkeypatch.setenv("DATABASE_URL_DIRECT", _DSN)
+    monkeypatch.setenv("DATABASE_URL_DIRECT", migrated_db)
     # The production default is client-only. Conformance proves the explicit
     # one-process developer/executor mode separately from deployment policy.
     monkeypatch.setenv("REIMAGINA_DBOS_EXECUTION_MODE", "dev")
@@ -131,11 +134,11 @@ def seeded(migrated_db):
     ordering dependency that broke the engine tests when they moved.
     """
     try:
-        psycopg2.connect(_DSN).close()
+        psycopg2.connect(migrated_db).close()
     except psycopg2.OperationalError as exc:
         pytest.skip(f"PostgreSQL unavailable: {exc}")
 
-    conn = psycopg2.connect(_DSN)
+    conn = psycopg2.connect(migrated_db)
     conn.autocommit = True
     run_ids: list[str] = []
     source_id = None

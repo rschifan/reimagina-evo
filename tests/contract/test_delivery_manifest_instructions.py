@@ -77,15 +77,15 @@ def test_untracked_artefacts_are_declared_in_the_manifest():
     )
 
 
-def test_the_manifest_offers_a_procedure_that_works_from_a_bare_checkout():
-    """Rebuilding is the only check available to someone who has only the tag,
-    so it must be named, not merely implied."""
+def test_the_manifest_says_where_the_pdfs_are_and_how_to_check_them():
+    """The tag does not carry the PDFs or their sources (both are kept out of
+    the repository), so the manifest must name where the PDFs come from and
+    the command that checks them."""
     manifest = (DELIVERY / "MANIFEST.md").read_text()
-    assert "render_delivery_pdfs.py" in manifest, (
-        "MANIFEST.md does not tell a recipient how to produce the PDFs the "
-        "tag does not carry"
+    assert "release" in manifest and "docs/delivery/pdf/" in manifest, (
+        "MANIFEST.md does not say where a recipient gets the PDFs"
     )
-    assert "byte-reproducible" in manifest
+    assert "sha256sum -c SHA256SUMS" in manifest
 
 
 def test_the_manifest_does_not_promise_an_unqualified_all_ok():

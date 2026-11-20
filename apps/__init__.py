@@ -1,1 +1,1 @@
-"""Deployable application entrypoints for Reimagina."""
+"""Deployable application entrypoints of the prototype."""

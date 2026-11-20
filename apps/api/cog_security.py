@@ -30,7 +30,7 @@ def validated_cog_path(
         Query(
             description=(
                 "Absolute file:// URL to the COG to render. Must resolve "
-                "inside the reimagina data root (REIMAGINA_DATA_DIR). "
+                "inside the data root (REIMAGINA_DATA_DIR). "
                 "Non-file schemes and paths outside the data root are "
                 "rejected with 403."
             ),
@@ -92,7 +92,7 @@ def validated_cog_path(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"URL resolves outside the reimagina data root "
+                f"URL resolves outside the data root "
                 f"({data_root}). Only COGs under that tree are servable."
             ),
         ) from exc

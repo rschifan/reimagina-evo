@@ -334,7 +334,6 @@ def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
 # list: adding one would force it to be implemented before it could be written
 # down.
 AS_BUILT_DOCS = (
-    "AGENTS.md",
     "README.md",
     "docs/*.md",
     "docs/architecture/*.md",
@@ -387,9 +386,9 @@ def test_every_source_path_the_as_built_docs_name_exists():
 def test_every_cli_command_the_as_built_docs_quote_is_registered():
     """A documented command that does not exist sends the reader nowhere.
 
-    `AGENTS.md` quoted `indicators rollup` for three months after `39ab70a`
-    removed it — and `AGENTS.md` is the file an agent reads first, so the
-    first thing it learned about the indicator layer was false.
+    A guide quoted `indicators rollup` for three months after `39ab70a`
+    removed it, so what a reader first learned about the indicator layer was
+    false.
 
     Resolved against Typer's registry rather than by running the CLI: a
     subprocess per command would make this slow enough to skip, and `--help`
@@ -399,6 +398,7 @@ def test_every_cli_command_the_as_built_docs_quote_is_registered():
 
     groups = {
         group.name: {cmd.name for cmd in group.typer_instance.registered_commands}
+        | {sub.name for sub in group.typer_instance.registered_groups}
         for group in cli_app.registered_groups
         if group.name and group.typer_instance is not None
     }

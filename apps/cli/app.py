@@ -260,7 +260,7 @@ def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
 
 
 app = typer.Typer(
-    name="reimagina-cli",
+    name="r-evo",
     add_completion=False,
     pretty_exceptions_enable=False,
 )
@@ -1578,7 +1578,7 @@ def scenario_show(
 
 @scenario_app.command(
     "set-attribute",
-    help="Draw an area and set the three policy inputs over it (four edits)",
+    help="Draw an area and set the four policy inputs over it (five edits)",
 )
 def scenario_set_attribute(
     scenario_id: str = typer.Option(..., "--scenario-id"),
@@ -1894,6 +1894,7 @@ def raster_fetch_worldpop(
     dsn: str = typer.Option(
         DEFAULT_APP_DSN,
         "--dsn",
+        envvar="DATABASE_URL",
         help="DSN used to read the AOI polygon when --aoi-id is given.",
     ),
     force: bool = typer.Option(

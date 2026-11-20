@@ -1,13 +1,13 @@
 """CLI helpers for the raster ingest pipeline (R2) + zonal stats (R3).
 
 Subcommands:
-    reimagina raster fetch-worldpop — download (cached) + optionally clip
+    python -m apps.cli.app raster fetch-worldpop — download (cached) + optionally clip
                                       a WorldPop country raster, ready
                                       to feed into ``raster ingest``
-    reimagina raster ingest         — land + stage + register a single-band raster
-    reimagina raster list           — dump the engineer-inspection view of registered layers
-    reimagina raster publish        — flip the published flag on a layer_slug
-    reimagina raster zonal-stats    — write per-feature stats from a raster to observations
+    python -m apps.cli.app raster ingest         — land + stage + register a single-band raster
+    python -m apps.cli.app raster list           — dump the engineer-inspection view of registered layers
+    python -m apps.cli.app raster publish        — flip the published flag on a layer_slug
+    python -m apps.cli.app raster zonal-stats    — write per-feature stats from a raster to observations
 
 Kept as thin argparse wrappers over the pipeline / repo / worker calls
 — all actual logic lives in reimagina.pipeline.raster,

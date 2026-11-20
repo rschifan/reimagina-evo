@@ -1,5 +1,5 @@
 /**
- * Typed fetch helpers for the reimagina API.
+ * Typed fetch helpers for the API.
  *
  * The TS interfaces below intentionally describe only the subset of
  * each endpoint's response that the web app reads today. The API

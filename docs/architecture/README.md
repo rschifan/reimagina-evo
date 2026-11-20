@@ -1,6 +1,6 @@
 # Design Docs Guide
 
-The `docs/architecture/` folder is the authoritative architecture set for Reimagina. Start here when you need to understand how data enters the platform, how scenarios are defined, how jobs run, and where computed outputs are stored.
+The `docs/architecture/` folder is the architecture set of the prototype. Start here when you need to understand how data enters the platform, how scenarios are defined, how jobs run, and where computed outputs are stored.
 
 ## Reading order
 

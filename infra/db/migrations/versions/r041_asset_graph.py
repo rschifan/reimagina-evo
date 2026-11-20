@@ -665,8 +665,8 @@ def upgrade() -> None:
         FROM serving_geo.asset_freshness_v f
     """)
 
-    # Lineage gets an explore twin too, because AGENTS.md keeps CLI inspection
-    # commands reading from explore rather than reaching into serving_geo.
+    # Lineage gets an explore twin too, because CLI inspection
+    # commands read from explore rather than reaching into serving_geo.
     op.execute("""
         CREATE OR REPLACE VIEW explore.asset_lineage_v AS
         SELECT direction, root_key, related_key, related_kind, depth

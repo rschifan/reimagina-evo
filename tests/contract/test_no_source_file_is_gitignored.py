@@ -35,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_TREES = ("packages", "apps", "infra", "scripts", "tests")
 
 #: Extensions that are source rather than artifact.
-_SOURCE_SUFFIXES = {".py", ".sql", ".sh", ".ts", ".tsx", ".mmd"}
+_SOURCE_SUFFIXES = {".py", ".sql", ".sh", ".ts", ".tsx"}
 
 #: Directories that legitimately hold untracked content inside those trees.
 _EXCLUDED_PARTS = {

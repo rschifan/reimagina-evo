@@ -138,7 +138,7 @@ class OpsRunReader(Protocol):
 
         Reads the ``jobs_runtime`` base table rather than
         ``explore.ops_executor_health_v``: ``explore`` is a human-facing
-        contract, not an application dependency (AGENTS.md), and the view emits
+        contract, not an application dependency, and the view emits
         an ``interval`` where this consumer needs a float.
         """
         ...

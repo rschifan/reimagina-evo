@@ -1,4 +1,4 @@
-"""Cross-cutting HTTP middleware for the reimagina API.
+"""Cross-cutting HTTP middleware for the API.
 
 `request_id_middleware` propagates a stable correlation id:
 

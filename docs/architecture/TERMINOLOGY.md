@@ -1,6 +1,6 @@
 # Terminology and Conceptual Framing
 
-Reference document for the Reimagina platform. Every term defined here is used consistently across `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, and `JOB_LAYER.md`. When in doubt about what something means or where it belongs, start here.
+Terminology of the prototype. Every term defined here is used consistently across `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, and `JOB_LAYER.md`. When in doubt about what something means or where it belongs, start here.
 
 ---
 

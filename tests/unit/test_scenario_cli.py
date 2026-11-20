@@ -4,7 +4,7 @@ Every test here runs without a database. The write paths are exercised by
 monkeypatching the `authoring` functions the CLI delegates to, which is the
 shape the rest of `tests/unit/test_cli_entrypoint.py` already uses; the read
 paths are exercised against a recording fake connection, because *which
-relation they read* is the contract (AGENTS.md rule 4) and a delegation test
+relation they read* is the contract and a delegation test
 cannot see it.
 """
 

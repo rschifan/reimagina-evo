@@ -6,24 +6,21 @@ the exact migration + DB object that records it. Written as a
 reference to speak from, not a textbook.
 
 The pre-existing scaffolding (baseline features, indicator catalog,
-`feature_overlap`) is explained only insofar as it enabled what this
-branch added on top of it. For the canonical architecture, see
+`feature_overlap`) is explained only insofar as it enabled what the
+raster work added on top of it. For the canonical architecture, see
 [`architecture/`](architecture/).
 
 Source paths are relative to the repo root.
 
-⚠ **Line numbers drift; the symbol names do not.** This file used to pin them
-to commit `d5bd093` on `feature/raster-integration` — a branch that no longer
-exists and a commit no longer reachable from `main`, so the pin could not be
-checked by the time anyone wanted to. When a link's line number looks wrong,
-search for the function or DB object named next to it and trust that; when you
-edit this file, prefer naming the symbol over citing a line.
+⚠ **Line numbers drift; the symbol names do not.** When a link's line number
+looks wrong, search for the function or DB object named next to it and trust
+that; when you edit this file, prefer naming the symbol over citing a line.
 
 ---
 
 ## Dataflow at a glance
 
-How a raw raster becomes a map tile — the path this branch made
+How a raw raster becomes a map tile — the path the raster work made
 possible:
 
 ```mermaid
@@ -48,7 +45,7 @@ flowchart LR
     class registry,recipe,obs,titiler,martin new;
 ```
 
-The highlighted nodes are what this branch added. `obs` also feeds
+The highlighted nodes are what the raster work added. `obs` also feeds
 observation→observation rollups (same recipe table, different
 `input_kind`) that land at AGEB or municipality grain.
 
@@ -71,7 +68,7 @@ What was **missing** was everything raster-shaped: no ingest path, no
 COG tile server, no declarative way to say "produce population per
 block from this raster", no observation→observation rollup worker, and
 no hover affordances on any of the new surfaces. That gap is the
-scope of this branch.
+scope of the raster work.
 
 ---
 
@@ -117,7 +114,7 @@ failure:
 
 CLI wrapper:
 [`apps/cli/raster.py::ingest_raster`](../apps/cli/raster.py#L47)
-invoked as `reimagina raster ingest --raw-path … --layer-slug …
+invoked as `python -m apps.cli.app raster ingest --raw-path … --layer-slug …
 --aggregation-kind …`.
 
 **CDMX today:** ingested WorldPop 2020 Mexico (894 MB, 100 m) via
@@ -229,7 +226,7 @@ reads a recipe and routes on `input_kind`:
 ([derivations.py#L85](../packages/py/reimagina/jobs/derivations.py#L85))
 iterates every enabled recipe bound to one raster.
 
-CLI subcommands: `reimagina raster derivation add/list/enable/remove/run` —
+CLI subcommands: `python -m apps.cli.app raster derivation add/list/enable/remove/run` —
 wired in
 [`apps/cli/app.py#L519`](../apps/cli/app.py#L519), delegating to
 [`add_derivation`](../apps/cli/raster.py#L312) /
@@ -352,7 +349,7 @@ sort by the same grain order.
 
 ---
 
-## 6. The DB objects this branch added, at a glance
+## 6. The DB objects the raster work added, at a glance
 
 Read off `explore.layer_catalog_v`, all registered with their
 intended use:
@@ -380,7 +377,7 @@ ORDER BY layer_kind, object_name;
 ### Schema diagram
 
 The `curated_geo` tables and their foreign-key relationships as they
-stand at the tip of this branch. Tables introduced by this branch are
+stand at the current release. Tables introduced by the raster work are
 suffixed with `(new)`; everything else pre-existed and this work only
 added references to it.
 
@@ -553,7 +550,7 @@ flowchart TB
         obs[observation]
     end
 
-    subgraph rast["Raster (new this branch)"]
+    subgraph rast["Raster (new with the raster work)"]
         direction LR
         rl[raster_layer]
         rr[aggregation_recipe]
@@ -594,11 +591,10 @@ flowchart TB
 - **Migration-driven state** — every DB change lands as an Alembic
   revision under
   [`infra/db/migrations/versions/`](../infra/db/migrations/versions/).
-- **Two review passes** (one Claude, one Codex) landed the
-  hardening commits: run-row isolation on ingest, advisory-lock
-  guard tightening, URL encoding, TOCTOU on `validated_cog_path`.
-  See commits `6692e21` and `d3cf4f5`.
-- **254 tests green.** Raster + recipe tests in
+- **Hardening** landed in review: run-row isolation on ingest,
+  advisory-lock guard tightening, URL encoding, TOCTOU on
+  `validated_cog_path` (commits `6692e21` and `d3cf4f5`).
+- **Tests.** Raster + recipe tests in
   [`tests/integration/test_raster_ingest.py`](../tests/integration/test_raster_ingest.py),
   [`test_raster_zonal_stats.py`](../tests/integration/test_raster_zonal_stats.py),
   [`test_aggregation_recipes.py`](../tests/integration/test_aggregation_recipes.py),
@@ -617,13 +613,14 @@ flowchart TB
 
 ```bash
 # 1. Stage + publish a raster (runs through the whole pipeline).
-reimagina raster ingest \
+python -m apps.cli.app raster ingest \
   --raw-path data/local/worldpop_cdmx.tif \
+  --source-name "WorldPop 2020 Mexico" --provider WorldPop --version 2020 \
   --layer-slug worldpop_cdmx_2020_100m \
   --aggregation-kind extensive
 
 # 2. Declare recipes for the grains you want observations at.
-reimagina raster derivation add \
+python -m apps.cli.app raster derivation add \
   --input-kind raster \
   --raster-layer-slug worldpop_cdmx_2020_100m \
   --target-feature-type block \
@@ -631,7 +628,7 @@ reimagina raster derivation add \
   --method sum
 
 # 3. Materialise the observations.
-reimagina raster derivation run \
+python -m apps.cli.app raster derivation run \
   --raster-layer-slug worldpop_cdmx_2020_100m
 
 # 4. Reload the web app. Sidebar shows a nested "Raster overlays"
@@ -640,7 +637,7 @@ reimagina raster derivation run \
 ```
 
 For the CDMX rollups to cover the whole city rather than one
-alcaldía, run `reimagina overlap compute-all` once without
+alcaldía, run `python -m apps.cli.app overlap compute-all` once without
 `--aoi-id` so `feature_overlap` holds block→AGEB and
 block→municipality rows for every block.
 
@@ -705,6 +702,4 @@ edge** rather than the CLI-only step it is today.
   Martin + PMTiles baseline.
 - [`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md) — the
   `Orchestrator` port, run state, and the rollup contract.
-- Git log on `feature/raster-integration` — eleven feature commits,
-  two hardening commits, the UX polish commits — the authoritative
-  history of what was delivered.
+- `git log` on `main` — the authoritative history of what was delivered.

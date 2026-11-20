@@ -1,6 +1,6 @@
 # Tile Serving
 
-Tile serving in Reimagina follows a hybrid rule:
+Tile serving follows a hybrid rule:
 
 - **live MVT** is the system of record for current, filtered, scenario-aware, or frequently changing map data
 - **PMTiles** are snapshot artifacts for stable reference/context layers

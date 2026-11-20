@@ -15,6 +15,12 @@ from reimagina.perf import (
 
 
 def test_postgres_perf_smoke_benchmarks_run(conn):
+    # ⚠ The benchmarks aim their bboxes at the centre of *every* feature's
+    # extent. Integration tests commit features from CDMX to Mexicali, and
+    # under `pytest tests` that centre lands between them and two benchmarks
+    # read 0 rows. Start from an empty table; `conn` rolls this back.
+    with conn.cursor() as cur:
+        cur.execute("TRUNCATE curated_geo.feature CASCADE")
     feat.seed_feature_types(conn)
 
     source_id = cat.register_source(
