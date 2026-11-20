@@ -1,30 +1,17 @@
 # Open Issues and Design Decisions
 
-Unresolved questions and gaps identified during architecture review. Each item records both the original decision and the current implementation status.
+Unresolved questions and gaps identified during architecture review. Each item records both the original decision and the current implementation status. Items that have since been built or removed are no longer listed; the layer documents describe what exists.
 
 ---
 
 ## Status summary
 
-| # | Item | Status |
-|---|---|---|
-| 1 | Spatial aggregation mechanism | **Done** — schema (r009), contract (`JOB_LAYER.md`), `reimagina.jobs.aggregation` pure module, and `reimagina.jobs.rollup.run_rollup` worker (weights `weighted_mean` by `feature_overlap.overlap_measure` for area-weighted semantics). Validated end-to-end on real CDMX data: compactness (0.636 weighted-mean Cuauhtémoc) and building density (26.56/ha Cuauhtémoc, 1.5M buildings attributed). See `PERFORMANCE.md` baseline numbers. |
-| 2 | AOI-level aggregate indicator values | Decided (Option B); schema and worker not yet built |
-| 3 | Non-hierarchical spatial aggregation | Resolved — `feature_overlap` covers this |
-
 **Production-readiness items from architecture review (see detail below):**
 
 | # | Item | Status |
 |---|---|---|
-| T1-1 | Materialise `feature_current_attributes_mv` | **Done** — r008 |
-| T1-2 | PgBouncer connection pooling | **Done** — docker-compose + martin config |
-| T1-3 | Cursor-based API pagination | **Done** — `_utils.py` + Protocol |
-| T1-4 | `feature_overlap` table | **Done** — r009 schema + `reimagina.jobs.overlap` orchestrator (AOI-scoped) + CLI; realistic-scale validated on real INEGI CDMX geometry (2,853 block→AGEB rows in 0.92 s Postgres for Cuauhtémoc — see `PERFORMANCE.md`); rollup consumer lands Layer 2 |
-| T1-5 | Vector tile serving (`martin` + `get_tile`) | **Done** — r010 + martin sidecar |
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
-| T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
-| T2-8 | SSE for job status | **Done** — `GET /jobs/{run_id}/events` (`apps/api/routers/jobs.py::stream_run_events`), over DBOS workflow streams rather than the LISTEN/NOTIFY this entry assumed. Detail below. |
-| T2-9 | Row-Level Security | **Policies done** — r011. ⚠ Inert in practice: permissive whenever `app.current_project_id` is unset, and nothing in the app sets it, so every current caller sees every row. FORCE RLS and a dedicated non-owner app role are deliberately deferred to the first deployed API route. Not a tenancy boundary yet. |
+| T2-9 | Row-Level Security | **Policies only** — r011 (`app_core.project`, `curated_geo.area_of_interest`) and r048 (`app_core.scenario`). ⚠ Inert in practice: permissive whenever `app.current_project_id` is unset, and nothing in the app sets it (only a test does), so every current caller sees every row. r011 deferred FORCE RLS and a dedicated non-owner app role "until the first API route is deployed"; neither has been added. Not a tenancy boundary yet. |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
 | T3-11 | STAC alignment for `file_asset` | **Not built** — low priority |
 | T3-12 | OGC API Features compliance | **Not built** — low priority |
@@ -33,105 +20,14 @@ Unresolved questions and gaps identified during architecture review. Each item r
 
 | # | Item | Where | Notes |
 |---|---|---|---|
-| TD-1 | Backend-kind guard in `reimagina.tiles.export.export_pmtiles_snapshot` | `tiles/export.py` | `backend_name_for_dsn(dsn) != "postgres"` is a policy check, not a branch to be abstracted; tracks only so a future multi-backend export plan finds it |
-| TD-2 | `perf/*` reads `backend.name` directly | `perf/runner.py`, `perf/seed.py`, `perf/observability.py` | Test/harness code inspects backend kind to choose plan-output parsers and seed SQL; move behind a `reimagina.storage` helper when perf grows past two backends |
-
----
-
-## 1. Spatial aggregation mechanism (INDICATORS_LAYER)
-
-> **Decision: Option B — rollup worker via `feature_overlap`.**
-> `feature_overlap` and `feature_overlap_type_pair` tables have been added (r009).
-> The rollup worker should read `feature_overlap` instead of `feature.parent_id`,
-> covering both hierarchical and non-hierarchical cases uniformly.
-> Resolved. The contract is in `JOB_LAYER.md` — *Rollup — a direct call, not an
-> orchestrated unit* — and implemented as `reimagina.jobs.rollup.run_rollup`
-> (`jobs/rollup.py:38`).
-
-**Where:** `indicator_catalog.aggregation_method`, `indicator_result`, `JOB_LAYER.md`
-
-**The gap (as identified):**
-`aggregation_method` (`weighted_mean`, `sum`, etc.) declares the intent for rolling up indicator values from a finer spatial grain to a coarser one — for example, from block to AGEB, or from lot to block. But nothing in the framework defined who performed this rollup or when. The field was documentation intent, not a wired pipeline step.
-
-**What needs a decision:**
-
-| Option | How it works | Trade-off |
-|---|---|---|
-| **A — Model computes at each grain independently** | The worker receives features at each declared grain and computes the indicator directly at that scale | Simple worker contract; coarser results are not derived from finer ones — they are independently computed and may not be numerically consistent |
-| **B — Spatial rollup worker** | After fine-grain results are written, a rollup step reads child results, groups them by parent, applies `aggregation_method`, and writes a new `indicator_result` for the parent feature | Coarser results are always consistent with finer ones; requires a separate rollup step with its own trigger condition |
-
-**Adopted: B**, with `feature_overlap` as the join source rather than `feature.parent_id`.
-
-**How it was built.** Not as a queued worker type: `run_rollup` is a direct function call, invoked from the CLI or an integration test (`jobs/rollup.py:10-12`, `:38`). It is not in `SHIPPED_INDICATORS`, so `default_runners` never binds it (`orchestration/runners.py:76-90`, `indicators/catalog.py:150-155`) and no run can dispatch it. It opens its own `job_run` with `model_family="rollup"` (`rollup.py:75-79`), so its outputs carry provenance like any other compute. There is no rollup queue and no automatic trigger after a fine-grain run — the caller decides when to roll up.
-
----
-
-## 2. AOI-level aggregate indicator values (INDICATORS_LAYER + DATA_LAYER)
-
-> **Decision: Option B — `aoi_indicator_summary` table.**
-> A city planning frontend's primary UX is the AOI scorecard (single headline number
-> per indicator per AOI). Recomputing this on every page load from `aoi_feature` +
-> `indicator_result` via an area-weighted join is too expensive at production data volume.
->
-> **Schema not yet built.** Requires: new Alembic migration adding
-> `curated_geo.aoi_indicator_summary`, a `serving_geo.aoi_summary_v` view, and a
-> rollup step triggered after `indicator_result` batch writes complete.
-> Depends on the rollup worker (issue 1) being wired.
-
-**Where:** `indicator_result`, `area_of_interest`, `aoi_feature`
-
-**The gap:**
-`area_of_interest` is not a `feature` — it lives in `curated_geo.area_of_interest`, not in `curated_geo.feature`. It therefore has no `feature_id` and cannot have an `indicator_result` row. There is no way to store a pre-computed single summary value such as "the liveability index of this AOI = 0.71".
-
-The current AOI query in `INDICATORS_LAYER.md` returns per-feature results within the AOI, with `overlap_ratio` available as a display weight. The AOI-level aggregate must be recomputed at query time every time it is needed.
-
-**What needs a decision:** does the platform need a stored, cacheable AOI-level summary, or is on-the-fly aggregation acceptable?
-
-| Option | How it works | Trade-off |
-|---|---|---|
-| **A — Compute on-the-fly** | Add a canonical area-weighted aggregation query to `INDICATORS_LAYER.md` as the standard AOI summary pattern; no schema change | No schema change; consistent with current data at all times; slower at read time for large AOIs |
-| **B — New `aoi_indicator_summary` table** | A new table keyed on `(aoi_id, scenario_id, indicator_id)` stores pre-computed AOI summaries; populated by a rollup step after fine-grain results are written | Cacheable and consistent with the rest of the result pattern; requires schema addition, a new worker step, and a staleness/refresh mechanism parallel to `indicator_result` |
-
-**Proposed schema (when built):**
-
-```sql
-CREATE TABLE curated_geo.aoi_indicator_summary (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    aoi_id           UUID NOT NULL REFERENCES curated_geo.area_of_interest(id),
-    scenario_id      UUID REFERENCES app_core.scenario(id),  -- NULL = baseline
-    indicator_id     UUID NOT NULL REFERENCES curated_geo.indicator_catalog(id),
-    value            DOUBLE PRECISION,
-    aggregation_note TEXT,
-    computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (aoi_id, scenario_id, indicator_id)
-);
-```
-
----
-
-## 3. Non-hierarchical spatial aggregation (INDICATORS_LAYER + DATA_LAYER)
-
-> **Resolved.** `feature_overlap` (r009) covers both hierarchical and non-hierarchical
-> cases.  The rollup worker in issue 1 above should use `feature_overlap` as its
-> join source for all spatial aggregations.
-
-**Where:** `indicator_catalog.aggregation_method`, `feature.parent_id`, `aoi_feature`
-
-**The gap:**
-Issue 1's Option B (rollup worker via `feature.parent_id`) only works when the two spatial grains are part of the same administrative hierarchy — for example, lots nested inside blocks, blocks nested inside AGEBs. When the source and target grains are **not hierarchical** — for example, blocks and a 100m analysis grid, lots and road segments, AGEBs and a custom project grid — `parent_id` is `NULL` and the hierarchy cannot be traversed. There is no structural relationship to follow, and the rollup worker has no way to know how much of a source feature falls inside a target feature.
-
-The only pre-computed spatial intersection in the schema is `aoi_feature`, which handles AOI ↔ feature overlap. There is no equivalent for feature ↔ feature overlap across arbitrary type pairs.
-
-**What needs a decision:**
-
-| Option | How it works | Trade-off |
-|---|---|---|
-| **A — Model computes independently at each grain** | Each grain is treated as a fully independent computation; no relationship between results at different scales is assumed or enforced | Simple; always possible; results at different grains are not numerically consistent with each other |
-| **B — `feature_overlap` pre-computed intersection table** | A new table generalises `aoi_feature` to feature-to-feature: keyed on `(source_feature_id, target_feature_id)`, storing `overlap_basis`, `overlap_measure`, `feature_measure`, `overlap_ratio` for any two feature types. A background job populates it for declared type-pair combinations. The rollup worker reads it instead of `parent_id`. | Consistent cross-grain aggregation for any type pair; requires schema addition, a background intersection job, and a refresh trigger when features change |
-
-**Relationship to Issue 1:** Option B here is the generalisation of Issue 1's Option B. If a rollup worker is adopted, it should use `feature_overlap` (not `parent_id`) as its spatial join source — covering both hierarchical and non-hierarchical cases uniformly. `parent_id` would then become a special case of a known 1:1 containment overlap.
-
-**Decision needed:** are non-hierarchical cross-grain aggregations required by any model family or by the frontend? If yes, `feature_overlap` should be designed alongside `aoi_feature`, and Issues 1 and 3 should be resolved together.
+| TD-1 | Backend-kind guard in `reimagina.tiles.export.export_pmtiles_snapshot` | `tiles/export.py` | `backend_name_for_dsn(dsn) != "postgres"` is a policy check, not a branch to be abstracted. `backend_name_for_dsn` returns `"postgres"` or raises, so the branch cannot fire while Postgres is the only storage backend; tracked only so a future multi-backend export plan finds it |
+| TD-2 | `perf/*` reads `backend.name` directly | `perf/runner.py`, `perf/seed.py`, `perf/observability.py` | Each module's `_require_postgres` raises `ValueError` for a non-Postgres backend. `backend_for_connection` only ever returns the Postgres backend (anything else is a `TypeError`), so the guards cannot fire today. The same direct check sits in `scenarios/overrides.py`, `assets/registry.py`, `assets/version.py` and `orchestration/runstore.py`; move them behind a `reimagina.storage` helper if a second backend is ever added |
+| TD-3 | The run index undercounts a deep queue | `apps/api/routers/jobs.py` (`list_runs`) | Queued runs are folded in from the engine with `list_enqueued_runs(limit=limit)`, so past `limit` queued runs the queued chip undercounts; an engine-side count is the upgrade |
+| TD-4 | Recompute after new source data is full-extent | `apps/cli/indicators.py` (`submit_after_ingest`) | Every affected indicator recomputes every feature it applies to; narrow it when `impact.FeatureExpander` has a real implementation |
+| TD-5 | `FeatureExpander` has only the identity default | `orchestration/impact.py` | Maps the features a change touched to the features whose value changes; proximity (neighbours) and grain (child → parent) expansion need the spatial feature graph injected |
+| TD-6 | A scenario change set is a flat union of attributes and features | `scenarios/overrides.py` (`resolve_change_set`) | A safe over-approximation: a dependent may recompute a feature whose own changed attribute it does not read. Per-attribute scoping is the upgrade path |
+| TD-7 | Synthetic workload DAGs are generated in-repo | `perf/workloads.py` (`layered_random`) | About 30 lines instead of a WfCommons dependency; swap the function if trace-derived workflows become representative of indicator DAGs |
+| TD-8 | Demo attributes are fixture data | `scripts/seed_demo_attributes.py` | Seeds the attributes the edificability and accessibility demos read, because nothing in the shipped pipeline populates a scenario-editable attribute; delete it when a real cadastre and zoning table land |
 
 ---
 
@@ -145,7 +41,7 @@ These items were identified in the Layer 1 architecture review. Tier 1 items are
 
 `observation` is a single unbounded table. At city scale with multiple indicators across multiple sources and time windows, this table will grow to hundreds of millions of rows. Autovacuum, index rebuilds, and partition pruning all become problems.
 
-**Approach when needed:** RANGE partitioning on `valid_from` (year or quarter). New Alembic migration — no Python code changes required; SQLAlchemy and raw psycopg2 queries are partition-transparent.
+**Approach when needed:** RANGE partitioning on `valid_from` (year or quarter), in a new Alembic migration. The application's queries are raw psycopg2 SQL against `curated_geo.observation` and are partition-transparent.
 
 ```sql
 CREATE TABLE curated_geo.observation (...) PARTITION BY RANGE (valid_from);
@@ -153,56 +49,7 @@ CREATE TABLE curated_geo.observation_2024 PARTITION OF curated_geo.observation
     FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 ```
 
----
-
-### T2-7: `aoi_indicator_summary` table
-
-**Not built** — depends on rollup worker (issue 1 above) being wired. See issue 2 for the schema and rationale.
-
-**Files needed:** new Alembic migration + `serving_geo.aoi_summary_v` serving view + `ServingReader` Protocol update.
-
----
-
-### T2-8: Server-Sent Events for job status
-
-**Done**, by a different transport than this entry anticipated.
-
-`GET /jobs/{run_id}/events` streams `text/event-stream`
-(`apps/api/routers/jobs.py::stream_run_events`). The run dashboard at
-`/ops.html` consumes run state by polling `GET /jobs` instead, because the
-page watches many runs at once and one stream per visible run is the wrong
-trade; the stream serves a single run's detail.
-
-**What changed from the plan below.** Progress does *not* arrive over
-`LISTEN/NOTIFY`. The ops plane moved to DBOS, and the per-run stream is a DBOS
-workflow stream — `subscribe_progress` takes no connection from the caller,
-because no engine's progress transport is the API's pooled one
-(`orchestration/port.py:167`). The `LISTEN/NOTIFY` module this entry assumed
-was deleted with the queue ops plane (`orchestration/frames.py:4`).
-
-The PgBouncer caveat below survived the change and is still load-bearing, now
-one layer down: `dbos_app.py::dbos_dsn` requires `DATABASE_URL_DIRECT` and
-raises rather than let DBOS fall back to SQLite, precisely because checkpoints
-and progress streams both need a real server connection.
-
-The route also owns its connection for the 404 check only, then closes it
-before streaming — a `StreamingResponse` does not complete until its body
-iterator is exhausted, so a `Depends(get_db_conn)` connection stayed borrowed
-for the whole subscription and starved the pool.
-
-**Original plan, kept for the record:**
-
-~~**Approach:** SSE endpoint + PostgreSQL `LISTEN/NOTIFY`.~~
-
-```
-GET /jobs/{job_id}/events  →  text/event-stream
-data: {"status": "running", "progress": 0.45}
-data: {"status": "complete", "result_url": "..."}
-```
-
-~~Workers call `NOTIFY jobs_status, '{"job_id": "...", "status": "complete"}'` after writing to `jobs_runtime`.~~
-
-**Note:** PgBouncer transaction mode is incompatible with `LISTEN/NOTIFY` (session-level). The SSE connection must bypass PgBouncer or use a separate pool in session mode.
+⚠ Not schema-only in one respect. Postgres requires a unique constraint or index on a partitioned table to include the partition key, and neither the `id` primary key nor `obs_one_current` — the partial unique index on `(feature_id, attribute_key) WHERE is_current` that enforces one current row per attribute — includes `valid_from`. Both need a replacement design before this migration can be written.
 
 ---
 
@@ -210,9 +57,9 @@ data: {"status": "complete", "result_url": "..."}
 
 **Not built.** No distributed tracing. When a job fails or a viewport read is slow, there is no trace connecting API → worker → DB query → result.
 
-**Approach:** Add `opentelemetry-sdk`, `opentelemetry-instrumentation-psycopg2`, `opentelemetry-instrumentation-fastapi` to dependencies. Auto-instrument at app startup; OTLP export to Jaeger or Grafana Tempo. Add `trace_id` to `jobs_runtime.details` JSON so DB-side failures are linkable to the originating trace.
+**Approach:** Add `opentelemetry-sdk`, `opentelemetry-instrumentation-psycopg2`, `opentelemetry-instrumentation-fastapi` to dependencies. Auto-instrument at app startup; OTLP export to Jaeger or Grafana Tempo. Record a `trace_id` with each run so DB-side failures are linkable to the originating trace — no `jobs_runtime` table has a JSON details column to put it in (`job_unit.detail` is text), so that is a column on `jobs_runtime.orchestration_run` or `jobs_runtime.job_run`.
 
-**Files needed:** `apps/api/` and `apps/worker/` startup instrumentation only — no domain code changes.
+**Files needed:** `apps/api/` and `apps/worker/` startup instrumentation, plus that migration — no domain code changes.
 
 ---
 
@@ -228,9 +75,9 @@ data: {"status": "complete", "result_url": "..."}
 
 ### T3-12: OGC API Features compliance
 
-**Not built** — low priority. Route rename only, no storage layer changes.
+**Not built** — low priority.
 
-The `feature` endpoint returns domain-specific JSON. Frontend mapping libraries (MapLibre, Leaflet) expect GeoJSON FeatureCollections. QGIS and other GIS tools can auto-discover OGC API Features endpoints.
+`GET /features` returns a cursor-paginated page of `{id, type_slug, role, name, attributes}` rows with no geometry: `ServingReader.get_features` does not select it. Frontend mapping libraries (MapLibre, Leaflet) expect GeoJSON FeatureCollections. QGIS and other GIS tools can auto-discover OGC API Features endpoints.
 
 **Approach:** Restructure API routes to conform to OGC API Features Part 1 (Core):
 
@@ -239,6 +86,6 @@ GET /collections/{type_slug}/items?bbox=...&limit=...
 → GeoJSON FeatureCollection + Links header
 ```
 
-**Files needed:** `apps/api/` route restructuring only.
+**Files needed:** `apps/api/` route restructuring, and a read path that returns geometry (`ServingReader.get_features` or a sibling) — not a route rename alone.
 
 ---

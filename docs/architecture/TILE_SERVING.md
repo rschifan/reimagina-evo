@@ -10,11 +10,13 @@ Tile serving follows a hybrid rule:
 - `serving_geo.get_tile()` is the primary live tile path, served by
   **Martin** by default and by **the API itself** as an alternative — see
   "Two servers, one contract" below
-- `serving_geo.indicator_overlay_tile()` adds a live choropleth channel
-  (details below), published by both
+- `serving_geo.indicator_overlay_tile()` adds a live choropleth channel for
+  indicator results, and `serving_geo.aggregation_overlay_tile()` one for
+  current observations (details below), both published by both servers
 - PMTiles are additive, not a replacement
 - v1 PMTiles target: `admin_reference` from `serving_geo.admin_v`
-- PMTiles are rebuilt manually, on schedule, or on release publication
+- PMTiles are rebuilt by running `tiles export` (see "CLI" below); nothing
+  in the repository schedules a rebuild or triggers one on a release
 - PMTiles are **not** rebuilt on every ingestion run
 
 ## Two servers, one contract
@@ -31,19 +33,28 @@ serving it.
 | **Martin** (`:3000`) | `ghcr.io/maplibre/martin` against Postgres directly | The default. A Rust tile server with its own pool is the better machine under many clients panning at once |
 | **The API** (`:8001/tiles`) | `apps/api/routers/mvt.py`, same functions, same process as the rest of the API | One less service to run; the only path that is end-to-end covered by this repository's own test suites |
 
-Choosing between them is one environment variable, resolved by
-`tiles.sources`:
+Choosing between them is one environment variable, read by
+`tiles.defaults.tile_live_base_url` and resolved by `tiles.sources`:
 
 ```bash
-REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000         # Martin (default)
+REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000         # Martin
 REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles                    # the API, same-origin
 REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:8001/tiles   # the API, direct
 ```
 
+Unset, the code default is `http://localhost:3000/get_tile` — Martin, which
+resolves to the same URLs as the first line. `make dev` is the exception: it
+starts the API, the web dev server and the worker but not Martin, so it sets
+`/api/tiles` (as does `make dev-api`, which runs the same preamble) unless the invoking shell already sets the variable (a value in
+`.env` does not count; the Makefile restores the shell's value after sourcing
+it).
+
 ⚠ **Prefer the relative form.** An absolute URL makes every tile request
 cross-origin from the web dev server, so it depends on the API's CORS
-allowlist — which defaults to `http://localhost:5173` and therefore rejects a
-browser that reached the page as `http://127.0.0.1:5173`. Measured in a real
+allowlist — which defaults to `http://localhost:5173` and
+`http://localhost:8001` (`REIMAGINA_API_CORS_ORIGINS` overrides it) and
+therefore rejects a browser that reached the page as
+`http://127.0.0.1:5173`. Measured in a real
 browser: 53 tile requests, 53 `net::ERR_FAILED`, a map drawing nothing, and
 **no console error naming CORS**. `/api/tiles` goes through the proxy the web
 app already uses for the rest of the API, so tiles are same-origin and the
@@ -57,7 +68,8 @@ functions, so `/tiles` is kept as a path prefix rather than mistaken for a
 function called "tiles". A contract test pins that, because "one variable" is
 the property the second implementation has to keep.
 
-**The servable functions are one list**, `reimagina.tiles.functions.TILE_FUNCTIONS`,
+**The servable functions are one list**, `reimagina.tiles.functions.TILE_FUNCTIONS`
+— `get_tile`, `indicator_overlay_tile`, `aggregation_overlay_tile` —
 read by the resolver and by the API route's allowlist. A function the
 resolver advertises but the route refuses is a 404 in a map; a function the
 route serves but the resolver never names is dead code.
@@ -80,10 +92,15 @@ endpoints under `/cog` so "the API + tile server share a process, a dep tree,
 and an origin".
 
 **And it closes a bug class.** `/health/tile-server` exists only because the
-API and Martin read two different `DATABASE_URL`s and can disagree about
-which database they serve; its own comment records that the multi-site work
-shipped twice against mismatched databases. A deployment without Martin
-cannot have that bug.
+API and Martin read their database from two different variables — the API
+`REIMAGINA_APP_DSN`, Martin its own `DATABASE_URL` (built by the compose
+file from `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` over the
+compose network, `postgres:5432`) — and can disagree about which
+database they serve; its own comment records that the multi-site work
+shipped twice against mismatched databases. It probes Martin at
+`REIMAGINA_MARTIN_URL` (default `http://localhost:3000`) and reports the
+API's database name for an operator to compare; it cannot read Martin's. A
+deployment without Martin cannot have that bug.
 
 ### What the API route adds on top of the SQL
 
@@ -95,14 +112,18 @@ The bytes are one function call; the HTTP is the work.
 | Tile is empty | `204 No Content` — matching Martin, and matching what this document already specified for sub-`z14` buildings |
 | `If-None-Match` matches | `304 Not Modified` |
 | `z` outside 0–24, or `x`/`y` outside `0 … 2^z − 1` | `422`, before the database is touched |
-| Unknown function | `404` |
+| Unknown function | `404`, naming the servable ones |
+| Every pooled connection still busy after `REIMAGINA_API_POOL_WAIT_S` (default 30 s) | `503` with `Retry-After: 1` |
 
-- **`ETag`** is a content hash with the encoding folded in, plus
-  `Vary: Accept-Encoding`. A shared cache must not be able to serve a gzip
-  body under an identity validator.
-- **`Cache-Control`** `public, max-age=60, stale-while-revalidate=300`,
-  configurable, for every tile **except a scenario's** (any request carrying
-  `scenario_id`), which is `no-cache`. A scenario changes under the same URL
+- **`ETag`** is a content hash (SHA-256, truncated to 128 bits) with the
+  encoding folded in, plus `Vary: Accept-Encoding`. A shared cache must not
+  be able to serve a gzip body under an identity validator. The `304` is
+  decided after the tile is computed: it saves the transfer, not the query.
+- **`Cache-Control`** `public, max-age=60, stale-while-revalidate=300`
+  (`REIMAGINA_TILE_MAX_AGE_S`, `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S`), on
+  `204`s as well as `200`s, for every tile **except a scenario's** (any
+  request carrying `scenario_id`, delta tiles included), which is `no-cache`.
+  A scenario changes under the same URL
   each time it is recomputed, and the map rebuilds its source with that URL
   when the run lands; with a lifetime the browser painted the previous run's
   tiles for up to six minutes while the table already showed the new totals.
@@ -117,9 +138,21 @@ The bytes are one function call; the HTTP is the work.
   anything sharing one. Postgres stacks GUC settings per subtransaction, so
   `ROLLBACK TO SAVEPOINT` releases the setting and leaves an outer
   transaction untouched.
+- **The read is time-boxed.** `SET LOCAL statement_timeout` inside the same
+  savepoint, from `REIMAGINA_TILE_TIMEOUT_MS` (default 5000), so a
+  pathological tile fails its own request instead of holding a pooled
+  connection.
+- **A burst waits for a connection rather than failing.** The route takes a
+  connection from the API pool (`REIMAGINA_API_POOL_MAX`, default 16).
+  psycopg2's pool raises past its size instead of blocking, which a map
+  loading a new zoom hits at once — measured, 40 concurrent tile requests
+  came back 16 × `200` and 24 × `500` on an idle server — so `get_db_conn`
+  takes a semaphore permit first and the excess queues for up to
+  `REIMAGINA_API_POOL_WAIT_S` before the `503` above.
 
-`GET /tiles/{function}` returns TileJSON 3.0.0, so the route is drop-in for
-the resolver's `tilejson_url` as well as its `tiles_url_template`.
+`GET /tiles/{function}` returns TileJSON 3.0.0 (`minzoom` 0, `maxzoom` 22,
+tile URL built from the incoming request), so the route is drop-in for the
+resolver's `tilejson_url` as well as its `tiles_url_template`.
 
 ## Street context, without an external basemap
 
@@ -169,8 +202,17 @@ statement on every demo.
 The baseline feature channel. Martin publishes it at
 `GET /get_tile/{z}/{x}/{y}?…`; the API publishes the same at
 `GET /tiles/get_tile/{z}/{x}/{y}?…`. Query params: `type_slug`, `role`, `aoi_id`
-— all optional.
+— all optional. One MVT layer, `features`, with `id`, `type_slug`, `role`,
+`name` and `attributes` per feature.
 
+- **The role gate.** Below z8 only `role = 'context'` is served; z8–z11 adds
+  `analysis_unit`; from z12 every role, which is where `infrastructure`
+  (roads) appears.
+- **Attributes thin out with zoom.** From z14 `attributes` is the feature's
+  own merged with its current observations
+  (`serving_geo.feature_current_attributes_mv`); at z12–13 the feature's own
+  only; below z12 none. Geometry is simplified below z14 (tolerance 0.00002
+  at z12–13, 0.0001 at z10–11, 0.0005 at z8–9, 0.002 below z8).
 - **`aoi_id` scopes to that AOI's members** via `EXISTS` against
   `curated_geo.aoi_feature` (r039). `EXISTS` rather than a join, because a
   feature can belong to several AOIs and a join would emit it once per
@@ -211,11 +253,23 @@ The baseline feature channel. Martin publishes it at
 ### `serving_geo.indicator_overlay_tile(z, x, y, query_params json)`
 
 - Martin auto-discovery publishes the function at
-  `GET /indicator_overlay_tile/{z}/{x}/{y}?…`.
+  `GET /indicator_overlay_tile/{z}/{x}/{y}?…`; the API at
+  `GET /tiles/indicator_overlay_tile/{z}/{x}/{y}?…`. One MVT layer,
+  `indicator_overlay`.
 - Required query param: `indicator_slug` — the function returns an
   empty tile when absent so a misconfigured caller never leaks the
   whole table.
-- Optional query param: `scenario_id` (uuid). Omit for base state.
+- Optional query param: `scenario_id` (uuid). Omit for base state. With it,
+  each feature carries the scenario's value where the scenario has one and
+  the baseline's otherwise (r043); since r049 the anti-join tests for a
+  value on both arms, so a valueless scenario row no longer draws a feature
+  twice.
+- Optional query param: `feature_type` (r018) — one grain only. Without it
+  every grain the indicator has results at is drawn; every shipped indicator
+  is block-only, so in practice it changes nothing.
+- Optional query param: `aoi_id` (r022; a malformed uuid is an empty tile
+  since r024) — scoped by `EXISTS` against `curated_geo.aoi_feature`, as in
+  `get_tile`.
 - Optional query param: `delta` (r049) — a boolean in Postgres's own
   spelling, which is the *whole* vocabulary: `1`, `t`, `tr`, `tru`,
   `true`, `y`, `ye`, `yes`, `on`, case ignored, surrounding whitespace
@@ -231,11 +285,12 @@ The baseline feature channel. Martin publishes it at
   z=8/9. `infra/tiles/layers.json` advertises `minzoom: 11` to clients,
   which is a rendering choice about where a choropleth reads well, not
   the function's floor; the two numbers are different claims and neither
-  is 10.
+  is 10. The functions' `COMMENT`s said z=10 until r052 corrected them
+  to z=8 (comments only).
 - Emits per feature: `feature_id`, `type_slug`, `value_numeric`,
   `quality_flag`. Frontend's `fill-color` expression reads
-  `value_numeric`; `quality_flag` is used to dim `estimated` / `missing`
-  rows if the UI wants to distinguish them.
+  `value_numeric`; `quality_flag` is there for a client that wants to dim
+  `estimated` / `missing` rows — the web app does not read it today.
 - **Two views, one function.** With `delta` set the tile emits
   `feature_id`, `type_slug`, `delta` and `state` — and *not*
   `value_numeric`, so a client that forgot to switch from the sequential
@@ -254,6 +309,33 @@ The baseline feature channel. Martin publishes it at
   still name one relation for this channel — but `layers.json` documents
   the parameter, because the contract did change.
 
+### `serving_geo.aggregation_overlay_tile(z, x, y, query_params json)`
+
+The observation choropleth (r021; `aoi_id` r023, uuid guard r024, z8 floor
+r025). Martin publishes it at `GET /aggregation_overlay_tile/{z}/{x}/{y}?…`,
+the API at `GET /tiles/aggregation_overlay_tile/{z}/{x}/{y}?…`. One MVT layer,
+`aggregation_overlay`.
+
+- Required query params: `attribute_key` and `feature_type_slug` — without
+  either the tile is empty. It reads current rows of
+  `curated_geo.observation` (`is_current`) for that key on features of that
+  type, so it serves raw observations and recipe outputs alike.
+- Optional query param: `aoi_id`, the same `EXISTS` scoping as the other two.
+- Emits per feature: `feature_id`, `type_slug`, `attribute_key`,
+  `value_numeric`.
+- Empty below z8, with the same simplification ladder as
+  `indicator_overlay_tile`.
+- Not in `layers.json`. `/tile-sources` builds its entries from the database
+  (see "Source classification") and appends `v=<epoch of the key's latest
+  current-observation update>` to each URL. The function ignores `v`; it
+  changes the URL when the key's observations change, so a cached tile is
+  not reused for new values. The entries advertise `minzoom: 10`. The
+  explore map (`installAggregationOverlays` in `apps/web/src/layers.ts`)
+  appends the active `aoi_id`, replaces that floor with its baseline floor
+  for the target grain (`minzoomForGrain`), and colours the layer over the
+  entry's `value_range` p05–p95 through `aggregationRampStops(lo, hi)`, which
+  widens a flat or inverted range so the ramp stays strictly ascending.
+
 ## Source classification
 
 The infrastructure-owned layer manifest lives at:
@@ -267,13 +349,30 @@ Each declared layer is classified as:
 
 In v1:
 
-- reference/context layers may be `pmtiles_snapshot`
-- canonical layers under active ingestion stay `live_mvt`
-- scenario and indicator overlays stay `live_mvt`
+- reference/context layers may be `pmtiles_snapshot` (`admin_reference`)
+- canonical layers under active ingestion stay `live_mvt` (`baseline_live`)
+- scenario and indicator overlays stay `live_mvt` (`indicator_overlay`;
+  `scenario_overlay` is declared with `implemented: false`, reserved)
+
+`/tile-sources` (and `tiles sources`) also returns two kinds the manifest
+does not declare, resolved from the database on each call (cached in the API
+process for 30 s):
+
+- `aggregation_overlay` — one entry per enabled aggregation recipe
+  (`aggregation_overlay::<recipe id>`) and one per remaining
+  `(attribute_key, feature type)` pair with current observations
+  (`observation::<attribute_key>::<type>`), all served by
+  `aggregation_overlay_tile`
+- `raster_cog` — one per published raster layer, served by titiler under the
+  API's `/cog`
 
 ## Dev infrastructure
 
-- live MVT: Martin on `http://localhost:3000`
+- live MVT under `make dev`: the API's own route, through the web dev
+  server's `/api` proxy (`REIMAGINA_TILE_LIVE_BASE_URL=/api/tiles`)
+- live MVT with Martin: `http://localhost:3000`, started by
+  `infra/docker/docker-compose.yml` (`make stack-up`) against
+  `postgres:5432` on the compose network
 
 ⚠ **Martin's tile cache is disabled** (`cache_size_mb: 0` in
 `infra/docker/martin.yaml`). Its 512 MB default is right for static data and
@@ -289,7 +388,9 @@ real block tile. Raise it for a deployment where the data is not moving
 under the reader, and carry the setting if you start Martin from another
 config.
 
-- PMTiles static serving: file-backed HTTP on `http://localhost:3001`
+- PMTiles static serving: file-backed HTTP on `http://localhost:3001` (the
+  compose file's `pmtiles_static` nginx service;
+  `REIMAGINA_TILE_SNAPSHOT_BASE_URL` points `/tile-sources` at it)
 - PMTiles export output directory: `data/tiles/pmtiles`
 
 ## CLI
@@ -305,7 +406,8 @@ Runtime note:
 
 - `tiles export` requires `ogr2ogr` with PostgreSQL and PMTiles driver support (GDAL ≥ 3.8)
 - local sandboxed environments may block the export subprocess from connecting to Postgres over TCP even when the CLI code is correct
-- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes and CI alike. Any other non-zero exit re-raises.
+- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes. Any other non-zero exit re-raises (with the Postgres password redacted from the command), and the subprocess has a 30-minute timeout.
+- the integration test that runs a real `ogr2ogr` skips when `ogr2ogr` is not on `PATH`. `.github/workflows/ci.yml` installs `libgdal-dev` (best-effort), not `gdal-bin`, which is the package that ships `ogr2ogr`; another test in the same file covers the export with `_run_export_command` stubbed
 
 ## Metadata surface
 
