@@ -28,6 +28,7 @@ date: "13 November 2026"
 | 0.10 | 2026-11-19 | Rossano Schifanella | §7.2: the load gives the scenario inputs a baseline (census household size, Overture storeys, census-fitted synthetic values) |
 | 0.11 | 2026-11-19 | Rossano Schifanella | §6.4: rules are drawn and edited on the scenarios map; §7.2: lot coverage, and why the baseline carries none |
 | 0.12 | 2026-11-19 | Rossano Schifanella | §6.4, §7.2: a rule sets only the numbers typed; the rest keep each block's own value |
+| 0.13 | 2026-11-20 | Rossano Schifanella | §6.5: the application, page by page, with screenshots of the Mexicali pilot |
 
 ### Provenance of the figures
 
@@ -434,6 +435,103 @@ tell which shape was the real one.
 **Below 860 px** the panel becomes a drawer and starts closed, so the map
 gets the whole viewport. The toggle is top-left, and `esc` or a tap outside
 closes it.
+
+### 6.5 The application, page by page
+
+The web application has four pages, reached from the bar at the top of every
+page: **Map**, **Scenarios**, **Catalog** and **Runs**. The screenshots below
+are of the Mexicali pilot (`reimagina_demo`, 19 November 2026);
+`scripts/capture_app_screenshots.js` retakes them from any running stack
+without changing its data.
+
+#### Map — `/`
+
+The map is for exploring the city as it is: one indicator at a time, for
+every block of the selected area.
+
+![The map page over central Mexicali](screenshots/app-map.png)
+
+*The map page. Left: the area, the indicator and its description, the
+optional layers (all off on arrival, so the first view is the indicator alone)
+and the downloads. Bottom left: the legend — the colour ramp, the share of
+blocks at the indicator's cap, and the distribution of values with its median.*
+
+- **Area** picks the pilot; the map flies to it.
+- **Indicator** picks what the blocks are coloured by. *About this indicator*
+  opens its catalogue entry.
+- **Layers** adds context — streets, buildings, blocks, municipalities, and
+  the observation overlays — beneath the indicator.
+- **Downloads** export the indicator for the area as CSV, GeoJSON or
+  Parquet.
+- The tools at the map's top left draw a circle, rectangle or polygon; the
+  panel then summarises the indicator inside the shape.
+
+![A block pinned on the map](screenshots/app-map-block.png)
+
+*Clicking a block pins it. The card shows its value for the current
+indicator, its rank among the area's blocks ("farther than 5 % of blocks"),
+and its value for every other indicator. Hovering shows the value under the
+cursor.*
+
+![The map page on a phone](screenshots/app-map-phone.png)
+
+*On a phone the panel becomes a drawer (the arrow at the left edge) and the
+legend shrinks to a strip, so the map has the whole screen.*
+
+Keyboard use, the command palette and the legend's distribution are described
+in §6.3.
+
+#### Scenarios — `/scenarios.html`
+
+The scenario workspace is for proposing changes and seeing their effect: a
+scenario is a named set of rules drawn over the city, compared against the
+baseline.
+
+![The scenarios workspace](screenshots/app-scenarios.png)
+
+*The scenarios workspace. Top: the scenario picker, the change it makes in
+homes and people against the baseline city, and whether its results are up to
+date. Middle: the map in the **Change** view — green blocks gain, red blocks
+lose, grey are unchanged — with each rule outlined and labelled. Bottom: every
+scenario side by side, one row each, against the baseline.*
+
+![Editing a rule on the map](screenshots/app-scenarios-rule.png)
+
+*Clicking a rule opens its box: change its numbers, drag or resize it, or
+delete it. Only the numbers a rule sets are applied; a number left empty keeps
+each block's own value.*
+
+How a rule is drawn, applied and edited is in §6.4. **Values** shows the
+scenario's own values, coloured on the baseline city's scale; switching the
+indicator shows the same scenario through another indicator, with nothing to
+recompute. The downloads export the scenario's values.
+
+#### Catalog — `/catalog.html`
+
+The catalogue lists every indicator the platform computes, with what it
+measures and how.
+
+![The indicator catalogue](screenshots/app-catalog.png)
+
+*The catalogue: a search box, filters by family and by kind (computed
+directly, or a composite of other indicators), and one row per indicator with
+its family, kind, unit and declared range. The header says how many have
+values in the selected area. A row opens the indicator's full definition.*
+
+#### Runs — `/ops.html`
+
+The run dashboard shows the computations the platform has been asked to
+make — a scenario recompute, an indicator refresh — and controls them.
+
+![The run dashboard](screenshots/app-runs.png)
+
+*The run dashboard. Top: the executors and the worker's heartbeat, and the
+runs and units in flight. The chips filter runs by status. **New run**
+submits one; **Refresh now** and **Pause** control the live view. Each run
+opens to its units and their timeline. Here the list is empty: finished runs
+had been cleared.*
+
+The API behind it is in §8.2.
 
 ## 7. Loading data
 
