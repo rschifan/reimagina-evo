@@ -27,7 +27,6 @@ Run `make help` to see every shortcut. The important ones:
 | `make branch NAME=feat/x` | Create a branch off latest `main`. |
 | `make ship` | `make check` + push + open PR in one go. |
 | `make pr-merge` | Squash-merge the current branch's PR and delete the branch. |
-| `make release VERSION=v0.2.0` | Build a local release bundle from a tagged clean `main`; requires local delivery sources. Does not publish. |
 
 ## Branch + commit conventions
 

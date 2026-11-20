@@ -97,9 +97,6 @@ AGENTS.md
 .claude/
 docs/superpowers/
 
-# ── Release bundle (`make release`) ──────────────────────────────────────────
-dist/
-
 # ── Misc ─────────────────────────────────────────────────────────────────────
 *.log
 *.tmp
@@ -117,10 +114,8 @@ cache/
 
 # ── Private documentation: never committed, never pushed ───────────────
 # The contract delivery package, architecture decision records and proposals,
-# legacy notes and design/plan working documents live only in local checkouts. The
-# delivery tooling (scripts/render_delivery_pdfs.py, delivery_manifest.py,
-# build_diagrams.py, build_schema_reference.py, capture_app_screenshots.js)
-# works on a local docs/delivery/, and the tests that read it skip without it.
+# legacy notes and design/plan working documents live only in local checkouts,
+# and so does the tooling that renders the delivery PDFs from docs/delivery/.
 docs/adr/
 docs/delivery/
 docs/legacy/
@@ -129,6 +124,12 @@ docs/superpowers/
 docs/AZURE_DATA_INVENTORY.md
 docs/ENGINEERING_NOTES.md
 docs/INSTALLATION_VERIFICATION.md
+scripts/render_delivery_pdfs.py
+scripts/build_schema_reference.py
+scripts/delivery_manifest.py
+scripts/build_diagrams.py
+scripts/capture_app_screenshots.js
+dist/
 
 # Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
 # retirement left 6.8 MB of them tracked under a dotted directory, where a
