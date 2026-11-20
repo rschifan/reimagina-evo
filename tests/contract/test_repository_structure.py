@@ -447,65 +447,6 @@ def test_the_acceptance_run_exercises_every_shipped_indicator():
     )
 
 
-def test_the_delivery_manifest_matches_the_artefacts_it_names():
-    """A hash the deliverer typed and nobody re-derived proves nothing.
-
-    Article 2.2 identifies a delivery by its SHA-256, so a stale manifest is
-    not a tidiness problem — it is a delivery that does not match its own
-    identification. `scripts/delivery_manifest.py --check` regenerates both
-    files and compares, which is the same guard `docs/THIRD_PARTY_LICENSES.md`
-    already has for Article 4.1.
-
-    ⚠ The PDFs are build outputs and are not in version control, so a clean
-    checkout has only the Markdown sources and the licence inventory. Those
-    are checked here; a missing PDF is reported rather than failed, because
-    failing would mean every CI run demanded a Chromium render to pass. The
-    full check runs at packaging time, where it matters, against artefacts
-    that exist.
-    """
-    import hashlib
-
-    if not (ROOT / "docs" / "delivery").is_dir():
-        pytest.skip(
-            "docs/delivery/ is kept out of the repository (see .gitignore); "
-            "this check runs in a checkout that has the delivery package"
-        )
-    sums = ROOT / "docs" / "delivery" / "SHA256SUMS"
-    assert sums.is_file(), (
-        "docs/delivery/SHA256SUMS is missing — run "
-        "`python scripts/delivery_manifest.py`"
-    )
-
-    recorded = {}
-    for line in sums.read_text().splitlines():
-        if not line.strip():
-            continue
-        digest, relative = line.split("  ", 1)
-        recorded[relative] = digest
-    assert recorded, "SHA256SUMS is empty"
-
-    stale, absent = [], []
-    for relative, digest in sorted(recorded.items()):
-        path = ROOT / relative
-        if not path.is_file():
-            absent.append(relative)
-            continue
-        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            stale.append(relative)
-
-    assert not stale, (
-        "these files no longer match the hash recorded for them, so the "
-        "delivery manifest identifies something other than what is here. Run "
-        "`python scripts/render_delivery_pdfs.py && python "
-        "scripts/delivery_manifest.py`:\n  " + "\n  ".join(stale)
-    )
-    # Not an assertion: see the docstring. Checked rather than silent, so the
-    # one case this test cannot cover is visible in the run it was skipped in.
-    assert len(absent) < len(recorded), (
-        f"none of the manifest's artefacts exist, so nothing was verified: {absent}"
-    )
-
-
 def test_ci_requires_the_database_it_attaches_rather_than_skipping():
     """A job with a Postgres service must not pass by skipping past it.
 

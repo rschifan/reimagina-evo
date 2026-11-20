@@ -9,6 +9,10 @@ From `v1.0.0` the public API, database schema, and CLI contracts follow Semantic
 
 ## [Unreleased]
 
+### Removed
+
+- The delivery tooling (`scripts/render_delivery_pdfs.py`, `build_schema_reference.py`, `delivery_manifest.py`, `capture_app_screenshots.js`), its tests and `make release`. The delivery package and the tooling that renders it are kept outside the repository.
+
 ### Fixed
 
 - macOS/Linux installation instructions, environment precedence, destructive
