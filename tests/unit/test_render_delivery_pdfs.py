@@ -7,8 +7,11 @@ page numbers are read back out of a rendered PDF.
 
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS) not in sys.path:
@@ -64,3 +67,29 @@ def test_inline_code_breaks_but_code_blocks_do_not() -> None:
     page = r._typeset(f"<p><code>{long}</code></p><pre><code>{long}</code></pre>")
     assert "<p><code>curated_<wbr>geo.<wbr>indicator_<wbr>result</code></p>" in page
     assert f"<pre><code>{long}</code></pre>" in page
+
+
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def test_a_screenshot_is_embedded_as_data(tmp_path: Path) -> None:
+    (tmp_path / "shots").mkdir()
+    (tmp_path / "shots" / "page.png").write_bytes(PNG)
+    html = r._inline_figures(
+        '<p><img src="shots/page.png" alt="The page" /></p>', tmp_path
+    )
+    assert 'src="data:image/png;base64,' in html
+    assert "shots/page.png" not in html
+    assert 'alt="The page"' in html
+
+
+def test_a_missing_screenshot_stops_the_render(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="missing.png"):
+        r._inline_figures('<img src="missing.png" alt="x">', tmp_path)
+
+
+def test_diagrams_are_still_inlined(tmp_path: Path) -> None:
+    (tmp_path / "d.svg").write_text('<svg width="100" height="100"></svg>')
+    assert "<svg" in r._inline_figures('<img src="d.svg" alt="d">', tmp_path)

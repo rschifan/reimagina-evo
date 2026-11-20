@@ -1712,10 +1712,17 @@ These are real values from the acceptance database, produced through the CLI as 
 
 The four pages share one top bar that links them. Every page reads the API
 through the web application's `/api` proxy; none needs anything but `make dev`.
+The screenshots in this chapter show the Mexicali pilot on 19 November 2026;
+`scripts/capture_app_screenshots.js` retakes them from any running stack
+without changing its data.
 
 ### 9.1 Map (`/`)
 
 The map shows one indicator over one area of interest.
+
+![The map page over central Mexicali](screenshots/app-map.png)
+
+*The map page. Left: the area, the indicator and its description, the optional layers (all off on arrival, so the first view is the indicator alone) and the downloads. Bottom left: the legend — the colour ramp, the share of blocks at the indicator's cap, and the distribution of values with its median.*
 
 1. **Pick the area** under *Area*; the map fits to it (`f` refits).
 2. **Pick the indicator** under *Indicator*. The map opens on the first
@@ -1756,11 +1763,19 @@ bottom-right, from the licence recorded against each loaded source — so a
 real OpenStreetMap network is credited as ODbL requires, and a generated
 territory credits the generator instead.
 
+![A block pinned on the map](screenshots/app-map-block.png)
+
+*Clicking a block pins it. The card shows its value for the current indicator, its rank among the area's blocks ("farther than 5 % of blocks"), and its value for every other indicator. Hovering shows the value under the cursor.*
+
 **On a phone or narrow window.** Below 860 px the panel becomes a drawer that
 starts closed, so the map gets the whole screen; the toggle is top-left, and
 `esc` or a tap outside closes it. Below 768 px the legend becomes a one-line
 strip, and the block inspector and the selection card share one bottom sheet:
 the one opened last is in front.
+
+![The map page on a phone](screenshots/app-map-phone.png)
+
+*On a phone the panel becomes a drawer (the arrow at the left edge) and the legend shrinks to a strip, so the map has the whole screen.*
 
 **Keyboard.** The command palette (`⌘K`, `Ctrl-K`) lists every area,
 indicator, layer, draw mode and page, and is the shortest route to all of
@@ -1780,6 +1795,10 @@ them.
 A scenario is a named what-if over a pilot area: rules that set any of the
 storeys, dwelling size, household size and lot coverage of the blocks inside
 a drawn area, and the indicators those changes recompute.
+
+![The scenarios workspace](screenshots/app-scenarios.png)
+
+*The scenarios workspace. Top: the scenario picker, the change it makes in homes and people against the baseline city, and whether its results are up to date. Middle: the map in the Change view — green blocks gain, red blocks lose, grey are unchanged — with each rule outlined and labelled. Bottom: every scenario side by side, one row each, against the baseline.*
 
 1. **Pick a pilot.** The table lists every scenario on it side by side, with
    the baseline city first, on the indicators a rule can change — one number
@@ -1816,6 +1835,10 @@ a drawn area, and the indicators those changes recompute.
    or *Delete scenario*, which removes it, its rules and its results after a
    confirmation.
 
+![Editing a rule on the map](screenshots/app-scenarios-rule.png)
+
+*Clicking a rule opens its box: change its numbers, drag or resize it, or delete it. Only the numbers a rule sets are applied; a number left empty keeps each block's own value.*
+
 The same operations are in the CLI (`scenario create`, `set-attribute`,
 `recompute`, `compare`) and the API (`/scenarios`); `scripts/acceptance_run.sh`
 steps 10 and 11 use the CLI.
@@ -1823,6 +1846,10 @@ steps 10 and 11 use the CLI.
 ### 9.3 Catalogue (`/catalog.html`)
 
 What each indicator is and where it comes from.
+
+![The indicator catalogue](screenshots/app-catalog.png)
+
+*The catalogue: a search box, filters by family and by kind (computed directly, or a composite of other indicators), and one row per indicator with its family, kind, unit and declared range. The header says how many have values in the selected area. A row opens the indicator's full definition.*
 
 - **Find an indicator**: search by name, slug or description, and filter by
   family, kind and grain.
@@ -1841,6 +1868,10 @@ What each indicator is and where it comes from.
 
 Every computation — an indicator, a scenario recompute — is a run of units,
 one unit per indicator, executed by the worker.
+
+![The run dashboard](screenshots/app-runs.png)
+
+*The run dashboard. Top: the executors and the worker's heartbeat, and the runs and units in flight. The chips filter runs by status. New run submits one; Refresh now and Pause control the live view. Each run opens to its units and their timeline. Here the list is empty: finished runs had been cleared.*
 
 - **The health strip** at the top says whether a worker is alive. If none
   is, nothing will run until one is started (`make dev-worker`).

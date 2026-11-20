@@ -202,6 +202,9 @@ async function main(): Promise<void> {
   };
 
   const map = createMap("map", FALLBACK_CENTER, FALLBACK_ZOOM);
+  // Tooling drives the map through this in a browser (the e2e suite, the
+  // delivery screenshots); dev only, as on the scenarios page.
+  if (import.meta.env.DEV) (window as unknown as { __map?: typeof map }).__map = map;
 
   // Collapsing the panel changes the canvas size, and MapLibre only learns
   // that when told. Without the resize the map keeps its old width and the
