@@ -38,7 +38,7 @@
 >
   <a href="/index.html" class="flex items-center gap-2">
     <Boxes class="size-5 text-interactive" aria-hidden="true" />
-    <span class="text-sm font-semibold tracking-tight">reimagina</span>
+    <span class="text-sm font-semibold tracking-tight">r-evo</span>
   </a>
 
   <nav aria-label="Sections" class="flex items-center gap-1">

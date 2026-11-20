@@ -1,5 +1,5 @@
 /**
- * Entry point for the reimagina read-side web app.
+ * Entry point for the r-evo map page.
  *
  * Boots MapLibre with a minimal offline style (no basemap — the
  * prototype avoids external tile dependencies and licensing drift),

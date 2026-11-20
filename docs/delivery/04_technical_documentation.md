@@ -1712,7 +1712,7 @@ These are real values from the acceptance database, produced through the CLI as 
 
 The four pages share one top bar that links them. Every page reads the API
 through the web application's `/api` proxy; none needs anything but `make dev`.
-The screenshots in this chapter show the Mexicali pilot on 19 November 2026;
+The screenshots in this chapter show the Mexicali pilot on 20 November 2026;
 `scripts/capture_app_screenshots.js` retakes them from any running stack
 without changing its data.
 

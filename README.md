@@ -1,10 +1,10 @@
-# reimagina-evo
+# r-evo
 
 [![CI](https://github.com/rschifan/reimagina-evo/actions/workflows/ci.yml/badge.svg)](https://github.com/rschifan/reimagina-evo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
-Architectural prototype of a platform that computes urban indicators and explores planning scenarios. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (from the API itself, or Martin behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL web application.
+r-evo is an architectural prototype of a platform that computes urban indicators and explores planning scenarios. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (from the API itself, or Martin behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL web application.
 
 > **Release 1.0.0.** The delivery documents — architecture, database and API
 > reference, technical documentation — are in

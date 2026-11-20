@@ -8,7 +8,7 @@ from apps.worker.app import create_worker
 def test_api_scaffold_boots():
     """create_app returns a FastAPI instance with the read-side routers mounted."""
     app = create_app(initialise_pool=False)
-    assert app.title == "Urban indicators and scenarios API"
+    assert app.title == "r-evo API"
     # Read paths from the OpenAPI schema, not app.routes: FastAPI >=0.135
     # stops flattening included routers into app.routes (they become a
     # single _IncludedRouter with path=None), so the shallow walk misses
