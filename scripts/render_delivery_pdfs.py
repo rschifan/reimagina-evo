@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import base64
 import re
 import subprocess
 import sys
@@ -93,6 +94,9 @@ tr { break-inside: avoid; }
 a { color: #1c4fd8; text-decoration: none; }
 .diagram { break-inside: avoid; text-align: center; margin: 1.2em 0; }
 .diagram svg { max-width: 100%; max-height: 222mm; height: auto; }
+.screenshot { display: block; margin: 0.6em 0 0.2em; text-align: center; }
+.screenshot img { max-width: 100%; max-height: 200mm; height: auto;
+                  border: 1px solid #d5d9e0; border-radius: 4px; }
 .plate { break-before: page; break-after: page; position: relative;
          height: 247mm; width: 100%; overflow: visible; }
 .plate > svg { position: absolute; top: 0; left: 0;
@@ -127,8 +131,14 @@ const [html, pdf, footer] = process.argv.slice(2);
 """
 
 
-def _inline_svg(page: str, assets: Path) -> str:
-    """Replace `<img src="*.svg">` with the SVG itself.
+def _inline_figures(page: str, assets: Path) -> str:
+    """Replace `<img src="*.svg">` with the SVG itself, and embed `*.png`.
+
+    The application screenshots are PNG. They take the same route for the
+    same reason — a file beside the HTML does not load — as a ``data:`` URI, in
+    a framed figure; a missing one stops the render rather than shipping an
+    empty frame.
+
 
     Referencing the file and letting the browser fetch it does not survive the
     trip: the HTML is built in a different directory from the diagrams, and
@@ -143,6 +153,17 @@ def _inline_svg(page: str, assets: Path) -> str:
 
     def replace(match: re.Match[str]) -> str:
         src = match.group("src")
+        if src.endswith(".png"):
+            png = (assets / src).resolve()
+            if not png.is_file():
+                raise FileNotFoundError(f"screenshot referenced but missing: {src}")
+            data = base64.b64encode(png.read_bytes()).decode("ascii")
+            alt = re.search(r'alt="([^"]*)"', match.group(0))
+            alt_attr = f' alt="{alt.group(1)}"' if alt else ""
+            return (
+                f'<span class="screenshot"><img src="data:image/png;base64,{data}"'
+                f"{alt_attr} /></span>"
+            )
         if not src.endswith(".svg"):
             return match.group(0)
         path = (assets / src).resolve()
@@ -302,7 +323,7 @@ def render(source: Path, css: Path, js: Path) -> Path:
     )
     stripped.unlink()
 
-    html.write_text(_inline_svg(html.read_text(), source.parent))
+    html.write_text(_inline_figures(html.read_text(), source.parent))
     subprocess.run(
         ["node", str(js), str(html), str(pdf), f"Reimagina — {title}"],
         check=True,
