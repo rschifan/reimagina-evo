@@ -8,9 +8,9 @@ r-evo is an architectural prototype of a platform that computes urban indicators
 
 Start with the tracked [installation guide](docs/INSTALLATION.md) for macOS
 and Linux, and the [architecture guide](docs/architecture/README.md) for the
-system design. The [verification record](docs/INSTALLATION_VERIFICATION.md)
-states the tested environments and limits. These instructions cover local
-evaluation; keep the unauthenticated API on loopback.
+system design. The installation guide states the tested environments and
+limits. These instructions cover local evaluation; keep the unauthenticated
+API on loopback.
 
 ## What's in here
 
