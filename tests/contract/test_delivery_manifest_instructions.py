@@ -131,7 +131,10 @@ def test_every_hashed_artefact_exists_or_is_generated():
     renderer = (ROOT / "scripts" / "render_delivery_pdfs.py").read_text()
     tracked = _tracked()
     for relative in _hashed_paths():
-        if relative in tracked:
+        # The delivery package is local-only (see .gitignore), so being on
+        # disk is enough; only a file that is neither here nor rendered is
+        # missing.
+        if relative in tracked or (ROOT / relative).is_file():
             continue
         assert relative.startswith("docs/delivery/pdf/"), (
             f"{relative} is hashed in SHA256SUMS, is not in the repository, "
