@@ -33,15 +33,10 @@ cd "$ROOT"
 PY="${PYTHON:-uv run python}"
 CLI="$PY -m apps.cli.app"
 
-if [[ -f .env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
-
-: "${DATABASE_URL:?set DATABASE_URL (see .env.example)}"
-: "${DATABASE_URL_ADMIN:?set DATABASE_URL_ADMIN — a DSN that may CREATE DATABASE}"
+# Parse .env as data; exported caller values always win.
+ENV_EXPORTS="$($PY scripts/runtime_env.py harness)"
+eval "$ENV_EXPORTS"
+unset ENV_EXPORTS
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 
@@ -52,36 +47,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The database name is the last path segment of the DSN, minus any query string.
-DB_NAME="${DATABASE_URL##*/}"
-DB_NAME="${DB_NAME%%\?*}"
-
 if [[ $KEEP -eq 0 ]]; then
+  # Resolve the CLI and its dependencies before terminating any DB sessions.
+  $CLI status >/dev/null
   step "0. Dropping and recreating ${DB_NAME}"
-  # Terminate first: DROP DATABASE fails outright while any session is
-  # attached, and a left-over API or worker from a previous run is attached.
-  $PY - <<'PYEOF'
-import os
-import psycopg2
-
-admin = os.environ["DATABASE_URL_ADMIN"]
-name = os.environ["DATABASE_URL"].rsplit("/", 1)[-1].split("?")[0]
-conn = psycopg2.connect(admin)
-conn.autocommit = True
-with conn.cursor() as cur:
-    cur.execute(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-        "WHERE datname = %s AND pid <> pg_backend_pid()",
-        (name,),
-    )
-    cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
-conn.close()
-print(f"  dropped {name}")
-PYEOF
+  $PY scripts/runtime_env.py drop
 fi
 
 step "1. Migrating to head"
-$CLI bootstrap-db --with-test-db
+$CLI bootstrap-db
 
 step "2. Verifying the first-layer schema"
 $CLI verify-schema

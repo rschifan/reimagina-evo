@@ -379,14 +379,21 @@ def test_a_write_through_the_pool_would_have_persisted_nothing(
     monkeypatch.setenv("REIMAGINA_APP_DSN", migrated_db)
     deps.shutdown_pool()
     deps.initialise_pool()
-    try:
+
+    async def write():
         pooled = deps.get_db_conn()
-        conn = next(pooled)
-        scenario_id = create_scenario(
-            conn, project_id=territory.project_id, name="Through the pool"
-        )
-        with pytest.raises(StopIteration):
-            next(pooled)  # the dependency's teardown: rollback, then putconn
+        conn = await anext(pooled)
+        try:
+            return create_scenario(
+                conn, project_id=territory.project_id, name="Through the pool"
+            )
+        finally:
+            await pooled.aclose()
+
+    import asyncio
+
+    try:
+        scenario_id = asyncio.run(write())
     finally:
         deps.shutdown_pool()
 

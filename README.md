@@ -6,11 +6,11 @@
 
 r-evo is an architectural prototype of a platform that computes urban indicators and explores planning scenarios. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (from the API itself, or Martin behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL web application.
 
-> **Release 1.0.0.** The delivery documents — architecture map, database and
-> API reference, technical documentation — are published as PDF assets of the
-> `v1.0.0` release, with their SHA-256 manifest. Installation, configuration
-> and operation are covered in full by the technical documentation; this
-> README is the short path.
+Start with the tracked [installation guide](docs/INSTALLATION.md) for macOS
+and Linux, and the [architecture guide](docs/architecture/README.md) for the
+system design. The [verification record](docs/INSTALLATION_VERIFICATION.md)
+states the tested environments and limits. These instructions cover local
+evaluation; keep the unauthenticated API on loopback.
 
 ## What's in here
 
@@ -25,76 +25,23 @@ r-evo is an architectural prototype of a platform that computes urban indicators
 | `scripts/` | `acceptance_run.sh` (credential-free end-to-end run), `mexicali_run.sh` (the real Mexicali load), generators and tools |
 | `docs/` | [`architecture/`](docs/architecture) (per-layer references), [`BOOTSTRAP.md`](docs/BOOTSTRAP.md) (data-load runbook) |
 
-## Quickstart
+## Installation
 
-Requirements: Python 3.12+ (`uv` installs it if needed), [`uv`](https://docs.astral.sh/uv/),
-Node.js `^22.22.2 || ^24.15.0 || >=26`, PostgreSQL 16+ with PostGIS 3.4+ and
-pgRouting 3.6+ (`CREATE EXTENSION pgrouting` needs a superuser). Docker is
-optional — only for the container stack. GDAL ≥ 3.8 (`ogr2ogr`) is needed
-only to export PMTiles snapshots; the Python packages bundle their own GDAL.
+Follow [docs/INSTALLATION.md](docs/INSTALLATION.md) for the macOS and Linux
+prerequisites, Docker or native PostgreSQL setup, all five database URLs,
+migrations and startup. Use Python 3.12 for the verified installation path;
+Node must satisfy `^22.22.2 || ^24.15.0 || >=26`. Linux ARM64 also needs GEOS
+headers and a C++ build toolchain for `exactextract`.
 
-```bash
-# 1. Configure environment
-cp .env.example .env                 # Path A: set POSTGRES_PASSWORD, and the
-                                     # same password in the five DSNs
+After configuration and database readiness, `make install` installs locked
+Python and web dependencies, `make migrate` bootstraps both databases, and
+`make dev` starts the API (:8001), web (:5173) and worker. Without data the map
+is empty; without the worker submitted runs stay queued.
 
-# 2. Bring up the stack (Postgres + PostGIS + pgRouting, pgbouncer, Martin)
-make stack-up                        # skip on Path B (host PostgreSQL)
-
-# 3. Install deps + apply migrations
-make install                         # uv sync + npm ci
-make migrate                         # creates both DBs, then alembic upgrade head
-
-# 4. Run the API, the web app and the worker — Ctrl-C stops all three
-make dev                             # API :8001, web http://localhost:5173
-```
-
-Ports are `make` variables: `make dev API_PORT=8123 WEB_PORT=5199`. `make dev`
-checks they are free first, and points the map's tiles at the API
-(`/api/tiles`), so no tile server is needed. To run the processes in separate
-terminals: `make dev-api`, `make dev-web`, `make dev-worker` (pass the same
-`API_PORT` to the first two). Without the worker, runs stay queued.
-
-Python commands go through `uv run` (e.g. `uv run python -m apps.cli.app --help`),
-which uses the environment `make install` created; bare `python`/`pytest` do
-not have the project's dependencies.
-
-`make migrate` takes no arguments: it reads `DATABASE_URL`,
-`TEST_DATABASE_URL` and `DATABASE_URL_ADMIN` from your `.env`. The last one is
-the connection it uses to *create* the other two databases — creating a
-database requires a connection to a different one — so it needs a role that
-may create databases and extensions. `.env.example` sets all three for both
-paths.
-
-In Path A only one of the five DSNs goes through the pooler, and that is
-deliberate: `localhost:5432` is PgBouncer in transaction mode holding a single
-database, so migrations, bootstrap, the test suites and the ops plane all
-connect to PostgreSQL itself on `localhost:5433`. `.env.example` says why
-against each line.
-
-**Path B — host PostgreSQL.** Uncomment the Path B block in `.env` instead of
-Path A and skip step 2. `make migrate` creates both databases (or create them
-yourself: `createdb reimagina_app` and `createdb reimagina_test`). Path B's
-DSNs name no user, so they assume your OS username is a Postgres role that can
-connect without a password and create databases — the usual Homebrew or
-Postgres.app arrangement. If yours is not, put a user and password in the five
-Path B DSNs.
-
-## Verify
-
-```bash
-scripts/acceptance_run.sh
-```
-
-Builds the platform from an empty database and exercises every layer: it
-generates a small territory on Mexicali coordinates, computes all twelve
-indicators, ingests a raster, authors a scenario, has a worker drain a run and
-decodes live tiles. It needs no credentials and no network, and takes about a
-minute and a half.
-
-⚠ **It drops and recreates the database named by `DATABASE_URL`.** Point
-`DATABASE_URL` at a dedicated database you can lose — never one holding a real
-load.
+For a generated territory, use the guide's
+[scratch verification procedure](docs/INSTALLATION.md#7-verify-with-synthetic-data).
+`scripts/acceptance_run.sh` **drops and recreates its target database**;
+configure a separate scratch checkout before running it.
 
 ## Data
 
@@ -131,7 +78,7 @@ suites are hand-run:
 |---|---|
 | `tests/performance` | benchmark harness; budgets live in `docs/architecture/PERFORMANCE.md` |
 | `tests/workloads` | measures *how* an ops plane schedules, and records what two planes may differ on — `make test-workloads`, see [`tests/workloads/README.md`](tests/workloads/README.md) |
-| `tests/recovery` | kills real processes with SIGKILL and needs a test database with at least 20,000 blocks — `make test-recovery`; the technical documentation §6.1 says how to build one |
+| `tests/recovery` | kills real processes with SIGKILL and needs a test database with at least 20,000 blocks — `make test-recovery`; see [`tests/recovery/test_crash_recovery.py`](tests/recovery/test_crash_recovery.py) for prerequisites |
 | `tests/e2e` | opens every page in a real browser; needs both servers and Playwright — `make test-e2e`, see [`tests/e2e/README.md`](tests/e2e/README.md) |
 
 ⚠ `TEST_DATABASE_URL` must name a database whose name contains `test`: the

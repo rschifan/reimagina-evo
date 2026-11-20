@@ -21,12 +21,12 @@ The current target state is:
 
 ## 0. Pre-flight
 
+Complete the [installation guide](INSTALLATION.md) first, including the
+five DSNs, database readiness, `make install` and `make migrate`. For Docker,
+start PostgreSQL and PgBouncer before migrations, then start Martin. Then:
+
 ```sh
-make install                   # Python + web deps (uv sync --extra dev, npm ci)
-cp .env.example .env           # then keep Path A (compose) or switch to Path B (host Postgres)
-make stack-up                  # Path A only: Postgres + pgbouncer + Martin + PMTiles host in Docker
-make migrate                   # apps.cli.app bootstrap-db --with-test-db
-make verify-sources            # data verify-sources (uses OVERTURE_DEFAULT_RELEASE)
+make verify-sources            # uses OVERTURE_DEFAULT_RELEASE; needs network/mirror
 ```
 
 `.env` is read by every step below: the CLI loads it itself
@@ -179,9 +179,10 @@ document to run a part of it, or to understand what it does.
 
 ```sh
 # ⚠ Without --keep, step 1a DROPS and recreates the DATABASE_URL database.
-# DATABASE_URL comes from .env, which the script sources — so a value
-# exported in the shell is overridden when .env sets it. DATABASE_URL_ADMIN
-# defaults to the same server's `postgres` database.
+# Explicit exports override .env. The script validates that DATABASE_URL and
+# DATABASE_URL_DIRECT identify the same direct host, port and database before
+# dropping anything; DATABASE_URL_ADMIN must use that server and a different
+# maintenance database (default: postgres).
 scripts/mexicali_run.sh                 # --keep, --skip-network, --low-memory
 ```
 

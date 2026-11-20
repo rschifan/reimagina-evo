@@ -217,6 +217,11 @@ All via environment variable; sensible defaults for local dev.
   `autocommit=False`, runs inside a transaction, and rolls back on
   teardown. If the rollback itself fails the connection is closed
   instead of returned to the pool so the pool self-heals.
+- Connection capacity is awaited asynchronously. Waiting requests do not occupy
+  the thread pool needed by handlers holding connections. Socket checkout and
+  rollback run off the event loop; cancellation waits for those operations to
+  finish before returning capacity, so a tile burst or cancelled navigation
+  cannot strand connections.
 - Because that dependency rolls back on success, every route that writes
   opens its own committed connection instead: `POST /jobs`, cancel,
   rerun, both `DELETE /jobs` routes, and every `/scenarios` route (the

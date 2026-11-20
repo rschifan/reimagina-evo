@@ -1,4 +1,7 @@
 # Infrastructure Scripts
 
-Operational scripts that support local development, deployment, and maintenance belong here.
+Current operational helpers live in the repository's root `scripts/`
+directory; this directory is reserved for infrastructure-specific additions.
+Use the [installation guide](../../docs/INSTALLATION.md) for setup and the
+[bootstrap runbook](../../docs/BOOTSTRAP.md) for real-data loading.
 
