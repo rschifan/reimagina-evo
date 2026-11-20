@@ -26,8 +26,20 @@ These are the named workloads the platform must monitor continuously.
 | `selected_features_current_observations` | current observation lookup for selected visible features |
 | `feature_detail_by_id` | single-feature detail fetch |
 | `aoi_membership_read` | precomputed AOI membership read through `aoi_feature` |
+| `tile_z14_small` | `serving_geo.get_tile` at z14: full detail, merged current attributes |
+| `tile_z12_dense` | `serving_geo.get_tile` at z12: simplified, base attributes only |
+| `tile_z8_overview` | `serving_geo.get_tile` at z8: overview zoom, context features only |
+| `tile_z14_filtered_type` | `serving_geo.get_tile` at z14 with `type_slug=building` |
+| `overlap_block_to_ageb_cuauhtemoc` | dry-run block → AGEB geodesic overlap inside the Cuauhtémoc AOI, on real INEGI geometry |
 
 These are the workloads that must be benchmarked before adding any frontend performance claims.
+
+All thirteen are declared in `reimagina.perf.manifest.BENCHMARKS`. ⚠ The four
+`tile_*` benchmarks are declared but cannot run yet: `perf.runner._build_params`
+has no case for them and raises `Unknown benchmark name`, and `perf run`
+without `--benchmark` selects every declared benchmark, so it raises on the
+first of them and returns no report. Name the others explicitly with
+`--benchmark`.
 
 ## SLOs and measured signals
 
@@ -47,27 +59,59 @@ The benchmark manifest stores machine-checkable budgets per dataset tier:
 - `representative`: production-like Mexico City profile
 - `stress`: larger observation/AOI amplification profile
 
+Budgets, p50 / p95 / p99 in ms, as `perf/manifest.py` declares them:
+
+| Benchmark | `smoke` | `representative` | `stress` |
+|---|---|---|---|
+| `bbox_features_small` | 25 / 80 / 150 | 120 / 350 / 600 | 180 / 450 / 800 |
+| `bbox_features_dense` | 40 / 120 / 220 | 250 / 900 / 1500 | 350 / 1200 / 2000 |
+| `polygon_features_small` | 35 / 90 / 180 | 180 / 450 / 800 | 250 / 700 / 1200 |
+| `polygon_features_dense` | 50 / 120 / 240 | 300 / 1200 / 2000 | 450 / 1600 / 2600 |
+| `bbox_features_with_current_attributes` | 50 / 130 / 250 | 350 / 1200 / 1800 | 500 / 1600 / 2400 |
+| `selected_features_current_observations` | 25 / 80 / 150 | 120 / 400 / 700 | 180 / 600 / 1000 |
+| `feature_detail_by_id` | 10 / 40 / 80 | 20 / 80 / 150 | 30 / 100 / 180 |
+| `aoi_membership_read` | 20 / 70 / 140 | 120 / 350 / 700 | 180 / 550 / 900 |
+| `tile_z14_small` | 20 / 60 / 120 | 80 / 200 / 400 | 120 / 300 / 600 |
+| `tile_z12_dense` | 15 / 50 / 100 | 50 / 150 / 300 | 80 / 220 / 450 |
+| `tile_z8_overview` | 5 / 20 / 40 | 15 / 50 / 100 | 25 / 80 / 160 |
+| `tile_z14_filtered_type` | 15 / 50 / 100 | 60 / 180 / 350 | 90 / 250 / 500 |
+| `overlap_block_to_ageb_cuauhtemoc` | 450 / 600 / 750 | 450 / 600 / 750 | 900 / 1200 / 1500 |
+
+Each benchmark also declares the plan nodes and index names it expects, the
+hot tables it must not sequentially scan, and a minimum row count. A run
+passes only if all five checks hold: expected node, expected index, row
+count, no catastrophic seq scan, latency budget. The node and index checks
+apply only when a hot table holds more than 10,000 rows, and a seq scan
+fails only on such a table (the runner sizes `aoi_feature` by the feature
+count).
+
 ## Dataset tiers
 
 The benchmark framework uses deterministic tiers:
 
-| Tier | Purpose |
-|---|---|
-| `smoke` | fast CI/local checks |
-| `representative` | Mexico City baseline with realistic observation volume |
-| `stress` | higher observation and AOI volume for deeper capacity checks |
+| Tier | Purpose | Features seeded with observations | Selected features | Iterations |
+|---|---|---|---|---|
+| `smoke` | fast CI/local checks | 250 | 25 | 3 |
+| `representative` | Mexico City baseline with realistic observation volume | 25,000 | 250 | 5 |
+| `stress` | higher observation and AOI volume for deeper capacity checks | 100,000 | 500 | 7 |
 
 `feature` scale comes from the loaded canonical dataset.
-`observation` scale is produced by deterministic seeding:
+`observation` scale is produced by deterministic seeding
+(`perf seed-observations`, `reimagina.perf.seed`):
 
-- multiple attribute keys per feature
-- only one current row per `(feature_id, attribute_key)`
+- five attribute keys per feature (`population_total`, `ndvi_mean`,
+  `footfall_index`, `land_use_class`, `access_profile`)
+- only one current row per `(feature_id, attribute_key)`; a re-seed skips
+  pairs that already have one
 - numeric, text, and JSON values
+
+The same command creates the four benchmark AOIs (`perf_bbox_small`,
+`perf_bbox_dense`, `perf_polygon_small`, `perf_polygon_dense`).
 
 ## Baseline numbers (Cuauhtémoc, Apr 2026)
 
 Captured against real INEGI Marco Geoestadístico 2020 geometry loaded via
-`reimagina-cli cdmx bootstrap`; host is a local dev macOS laptop running
+`python -m apps.cli.app cdmx bootstrap`; host is a local dev macOS laptop running
 PostgreSQL 17 with PostGIS 3.4. These are the numbers the overlap benchmark's
 budgets are derived from — update them alongside any significant code or
 schema change that touches the overlap path.
@@ -110,9 +154,15 @@ Benchmark `overlap_block_to_ageb_cuauhtemoc` (5 iterations, warm cache,
 Plan shape: `Nested Loop` + `Index Scan` on `feature_geometry_gist` for both
 block↔AGEB and block↔AOI joins. 55 K shared hit blocks, 0 temp blocks — the
 working set fits in memory on any reasonable dev box. Budgets follow the
-`observed × (1.5 p50 / 2.0 p95 / 2.5 p99)` policy rounded up to 50 ms, so
-normal CI variance has headroom but genuine regressions (e.g. a plan flip to
-sequential scan) will trip the budget.
+`observed × (1.5 p50 / 2.0 p95 / 2.5 p99)` policy rounded up to 50 ms (the
+p99 budget is 750 ms where the policy gives 700 ms), so normal run-to-run
+variance has headroom but genuine regressions (e.g. a plan flip to
+sequential scan) will trip the budget. `smoke` carries the same budgets as
+`representative` because the data is the same; `stress` doubles them.
+`tests/performance/test_overlap_benchmarks.py` runs this benchmark at the
+`representative` tier against `REIMAGINA_PERF_DSN` (falling back to
+`REIMAGINA_APP_DSN`) and skips when the CDMX data or the Cuauhtémoc AOI is
+missing.
 
 ## Baseline numbers — Layer 2 first indicator (Apr 2026)
 
@@ -120,12 +170,12 @@ Captured on the same Cuauhtémoc + full-CDMX dataset as Layer 1, running
 `urban_form_block_compactness` (Polsby-Popper) end-to-end through the CLI
 on PostgreSQL 17 + PostGIS 3.4.
 
-Compute + rollup + AOI summary:
+Compute + AOI summary (the block → AGEB indicator rollup measured alongside
+them at the time no longer exists; every indicator is block-only):
 
 | Step | Scope | Rows | Wall-clock |
 |---|---|---|---|
 | `indicators compute --slug urban_form_block_compactness` | 66 789 blocks CDMX-wide | 66 789 | 5.9 s |
-| `indicators rollup --source-type block --target-type ageb` ⚠ *command removed; every indicator is now block-only* | 153 AGEBs covered by populated `feature_overlap` pairs | 153 | 8.0 s |
 | `indicators aoi-summary --aoi-id <Cuauhtémoc> --slug urban_form_block_compactness` | 3 020 features weighted, 3 006 usable, 14 prorated | 1 | <0.5 s |
 
 Cuauhtémoc block-compactness (weighted-mean): **0.636** (ratio_0_1).
@@ -140,17 +190,6 @@ CDMX-wide block-level distribution:
 | p95   | 0.780 |
 | max   | 1.000 |
 
-Cuauhtémoc AGEB-grain rollup spread (weighted-mean of child block values
-per AGEB): bottom three 0.423–0.431 (irregular historic street patterns),
-top three 0.757–0.760 (more-planned grids).
-
-*Note:* From Apr 2026 the rollup weight changed from
-`feature_overlap.overlap_ratio` to `feature_overlap.overlap_measure`
-(true area-weighted mean, not arithmetic-mean-in-disguise). Compactness
-numbers are stable to three decimals because Cuauhtémoc's blocks nest
-cleanly inside AGEBs; the fix matters most for extensive metrics like
-density.
-
 ### Building density — `urban_form_block_building_density`
 
 Uses Overture buildings (5.9M loaded; ~1.5M attribute to CDMX INEGI
@@ -162,8 +201,7 @@ with GIST on `feature.geometry` doing the heavy lifting.
 |---|---|---|---|
 | `overture load` | 5 888 557 building features landed into `curated_geo.feature` | 5 888 557 | ~5 min (background) |
 | `indicators compute --slug urban_form_block_building_density` | 66 789 blocks CDMX-wide; 1 511 860 buildings attributed | 66 789 | 8.9 s |
-| `indicators rollup --source-type block --target-type ageb` ⚠ *command removed* | 153 AGEBs covered | 153 | 0.5 s |
-| `indicators aoi-summary --aoi-id <Cuauhtémoc>` | 3 020 features weighted, 3 006 usable | 1 | <0.5 s |
+| `indicators aoi-summary --aoi-id <Cuauhtémoc> --slug urban_form_block_building_density` | 3 020 features weighted, 3 006 usable | 1 | <0.5 s |
 
 Cuauhtémoc building-density (weighted-mean): **26.56 buildings/ha**.
 
@@ -177,14 +215,7 @@ CDMX-wide block-level distribution:
 | p95  | 89.24 |
 | max  | 411.30 |
 
-Cuauhtémoc AGEB-grain rollup spread: bottom three 4.5–4.8/ha (parks,
-plazas, wide boulevards), top three 48.4–50.0/ha (dense mixed-use
-vecindades). All values well inside the catalog's `valid_max = 500/ha`
-safety cap.
-
-Plan shape of the rollup SELECT: `Nested Loop` over
-`feature_overlap_target_idx` into `indicator_result.ir_base_slug_idx`, no
-sequential scans on either `feature_overlap` or `indicator_result`.
+All values are inside the catalog's `valid_max = 500/ha` safety cap.
 
 If a regression pushes any of these numbers into a different ballpark
 (e.g. full CDMX compute over 20 s, or AOI summary taking seconds
@@ -294,6 +325,17 @@ evaluation. The numbers behind it:
   materialisation into a job: a job would give up the synchronous refusal
   (`CeilingExceeded`, `ScenarioHasNoAOI`), which the caller needs to see.
 
+**Evaluation is scoped to the scenario's footprint.** `POST
+/scenarios/{id}/recompute` passes `MaterializeResult.footprint_features` and
+`footprint_attributes` to `submit_run`: every block a current rule overrides,
+plus every block whose override this materialisation removed, with their
+attributes. Blocks outside it carry no override and read the baseline through
+the overlay. Planned from freshness instead, as it was before, every indicator
+reading a changed attribute recomputed every block of the AOI under the
+scenario — 19,058 blocks in Mexicali for a rule over 2,400, about 20 s a run,
+as recorded in `recompute_route`'s docstring. The footprint-scoped run has not
+been measured with this document's method.
+
 Not measured at 90,000 blocks: the removal and the `compute_block_housing_density`
 contrast. `compute_block_housing_density` died there with "SSL connection has
 been closed unexpectedly"; the cause was not investigated. Those rows exist only
@@ -304,7 +346,10 @@ materialisations of different scenarios contending on `scenario_override`, and
 a database whose `feature` table holds the whole country rather than the
 fixture's 10-90k rows.
 
-### Delta tile (`serving_geo.indicator_delta_tile`)
+### Delta tile (`serving_geo.indicator_overlay_tile` with `delta`)
+
+There is no separate delta function: r049 added a `delta` parameter to
+`indicator_overlay_tile`, and the delta view is one branch of it.
 
 These tile figures were measured against the r049 tile path at pilot scale.
 They were not re-measured when the materialisation figures in this document
@@ -372,17 +417,38 @@ Postgres environments used for production-like benchmarking should enable and in
 - sequential scan frequency on hot tables
 - top queries by total and mean execution time
 
-The CLI should expose at least:
+The CLI exposes (`perf report` is built by `reimagina.perf.observability`:
+extension and preload status, relation and index sizes, per-table seq/index
+scan counts and last (auto)analyze, and the top `pg_stat_statements` queries
+by total time):
 
 ```bash
 python -m apps.cli.app perf seed-observations
-python -m apps.cli.app perf run --dataset-tier smoke
+python -m apps.cli.app perf run --dataset-tier smoke --benchmark bbox_features_small
 python -m apps.cli.app perf explain bbox_features_dense
 python -m apps.cli.app perf report
 python -m apps.cli.app perf compare baseline.json candidate.json
 ```
 
 ## Test and release policy
+
+What runs today: `tests/performance` holds three files, run by
+`pytest tests/performance` (or `pytest tests`) on a developer machine.
+
+- `test_postgres_perf_smoke.py` — seeds a small fixture and runs four smoke
+  benchmarks (`bbox_features_small`, `selected_features_current_observations`,
+  `feature_detail_by_id`, `aoi_membership_read`, two iterations) plus the
+  observability report, against the migrated test database.
+- `test_overlap_benchmarks.py` — `overlap_block_to_ageb_cuauhtemoc` on real
+  CDMX data; skips without it.
+- `test_scenario_materialize_plan.py` — the materialisation plan contract
+  above.
+
+⚠ **No performance gate is wired into CI.** `.github/workflows/ci.yml` runs
+`tests/unit`, `tests/contract`, `tests/integration` and `tests/conformance`;
+nothing in it runs `tests/performance` or `perf run`, and its weekly schedule
+runs the same jobs as a pull request. The two subsections below are the
+policy, not a description of the pipeline.
 
 ### CI / every PR
 
