@@ -358,7 +358,7 @@ CREATE TABLE curated_geo.data_source_catalog (
   -- tiles and zonal stats read. Nothing opens a file through this column.
   --
   -- This line used to read "Bronze file location", while
-  -- docs/AZURE_DATA_INVENTORY.md said the same column "keeps the original Azure
+  -- the Azure data inventory said the same column "keeps the original Azure
   -- URL for lineage". The pipelines split along that contradiction — three wrote
   -- an origin, three overwrote it with a local path — until it was settled here.
 

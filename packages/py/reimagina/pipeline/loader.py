@@ -72,7 +72,7 @@ def load_vector_source(
     # Trade-off: if the process is killed between this commit and the final
     # complete_ingestion_run() call, the run stays in status='running' indefinitely.
     # A periodic cleanup query (WHERE status='running' AND started_at < now()-interval)
-    # is the intended remedy; see docs/ENGINEERING_NOTES.md.
+    # is the intended remedy.
     conn.commit()
     try:
         backend = backend_for_connection(conn)

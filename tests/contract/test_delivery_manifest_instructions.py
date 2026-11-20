@@ -30,8 +30,17 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 DELIVERY = ROOT / "docs" / "delivery"
+
+# The delivery package is kept out of the repository (see .gitignore): these
+# checks run in a checkout that has it, and skip in one that does not.
+pytestmark = pytest.mark.skipif(
+    not DELIVERY.is_dir(),
+    reason="docs/delivery/ is kept out of the repository; nothing to check",
+)
 
 
 def _hashed_paths() -> list[str]:
