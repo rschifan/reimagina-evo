@@ -1,7 +1,8 @@
-"""One proposal: three numbers, four edits, and the values it refuses.
+"""One proposal: four numbers, five edits, and the values it refuses.
 
-A planner proposes three things over a drawn area — storeys, square metres
-per dwelling, people per household — and the platform stores **four** edits
+A planner proposes four things over a drawn area — storeys, square metres
+per dwelling, people per household, lot coverage — and the platform stores
+**five** edits
 for them. That asymmetry is domain policy, not the shape of any one surface,
 which is why it lives here rather than in the CLI that happened to need it
 first. A router that re-derived it would re-introduce the precise failure the

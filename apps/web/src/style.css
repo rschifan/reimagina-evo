@@ -479,6 +479,9 @@ body {
   color: var(--sidebar-fg);
   font-size: 12px;
   line-height: 1.4;
+  /* Error text carries long unbroken tokens (MapLibre layer ids), which
+     otherwise spill out of the box and scroll a phone sideways. */
+  overflow-wrap: anywhere;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   /* A message can carry a long unbroken token (a layer id, a slug); without
      this it spilled out of the box and the whole page scrolled sideways on a

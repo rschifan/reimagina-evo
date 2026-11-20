@@ -2,8 +2,10 @@
 
 This is the operator runbook for rebuilding `reimagina_app` from
 scratch. Follow it top-to-bottom on a clean machine that has Postgres
-+ PostGIS reachable, the repo checked out, and `make install` already
-run.
++ PostGIS + pgRouting reachable, the repo checked out, `make install`
+already run, the lake mirror under `data/sources/lake/` (INEGI geometry,
+census, amenities) and internet access (Overture, OpenStreetMap,
+WorldPop).
 
 The current target state is:
 
@@ -11,7 +13,7 @@ The current target state is:
 - **Geometry features:** INEGI 2024 (blocks, AGEBs, municipalities,
   states for entidad codes 09 + 02) + Overture buildings clipped to
   each AOI's polygon
-- **Observations:** INEGI 2010 census headline columns + their
+- **Observations:** INEGI 2020 census headline columns + their
   AGEB/municipality rollups
 - **Indicators:** `urban_form_block_compactness`,
   `urban_form_block_building_density` for both AOIs
@@ -35,9 +37,8 @@ default) are all reachable. Any red entry blocks ingest: fix the path
 To target a different Overture release: `make verify-sources` accepts
 no flags; for a non-default release run the CLI directly:
 `uv run python -m apps.cli.app data verify-sources --release <X>`. If
-the release exists, also bump `OVERTURE_DEFAULT_RELEASE` in
-`packages/py/reimagina/pipeline/overture.py` so subsequent commands
-default to it.
+the release exists, set `REIMAGINA_OVERTURE_RELEASE=<X>` in `.env` so
+subsequent commands default to it.
 
 ## 1. Feature-type catalog
 
@@ -188,14 +189,15 @@ The WorldPop public REST API publishes per-country population rasters
 GeoTIFF (cached so re-runs against multiple AOIs only download once)
 and clips it to the AOI polygon before handing the local file to the
 existing `raster ingest` step. No FTP client or manual download
-script needed.
+script needed. `fetch-worldpop` does not read `.env` for its `--dsn`, so pass
+it whenever you pass `--aoi-id`.
 
 ```sh
 # Step 1 — fetch + clip to CDMX. Country raster lands in
 # data/cache/worldpop/wpgp_MEX_2020.tif (~1 GB, cached).
 uv run python -m apps.cli.app raster fetch-worldpop \
   --country MEX --year 2020 \
-  --aoi-id <CDMX_AOI_UUID> \
+  --aoi-id <CDMX_AOI_UUID> --dsn "$DATABASE_URL" \
   --output-path data/worldpop_cdmx_2020_100m.tif
 
 # Step 2 — register + COG-encode through the existing pipeline.
@@ -209,7 +211,7 @@ uv run python -m apps.cli.app raster ingest \
 # Repeat both steps for Mexicali — the cached country file is reused.
 uv run python -m apps.cli.app raster fetch-worldpop \
   --country MEX --year 2020 \
-  --aoi-id <MEXICALI_AOI_UUID> \
+  --aoi-id <MEXICALI_AOI_UUID> --dsn "$DATABASE_URL" \
   --output-path data/worldpop_mexicali_2020_100m.tif
 uv run python -m apps.cli.app raster ingest \
   --raw-path data/worldpop_mexicali_2020_100m.tif \
@@ -237,7 +239,7 @@ each target AOI are deleted first.
 This populates `aoi_feature` against the now-loaded buildings + INEGI
 geometries. ~3 min per AOI.
 
-## 7. INEGI 2010 census
+## 7. INEGI 2020 census
 
 ```sh
 uv run python -m apps.cli.app inegi-censo bootstrap --cve-ent 09,02
@@ -291,13 +293,17 @@ SELECT type_slug, count(*) FROM curated_geo.feature GROUP BY type_slug;
 ## 10. Smoke services
 
 ```sh
-make dev &          # API on :8001, web on :5173 and the run worker together
-martin --config infra/docker/martin.yaml &   # Martin on :3000 (optional)
+make dev            # API on :8001, web on :5173 and the run worker together
 ```
 
-In the browser hit `/aois` and toggle each layer at zoom 11–14 — the
-buildings, blocks, AGEBs, and municipality choropleths should all
-render without empty tiles.
+`make dev` serves the tiles from the API itself. To use Martin from the
+container stack instead (Path A), start it as
+`REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000 make dev`.
+
+Open `http://localhost:5173`, pick each area under *Area*, and turn on each
+layer under *Layers* at zoom 11–14 — the buildings, blocks and municipalities
+should all render without empty tiles, and the indicator choropleth should
+colour the blocks.
 
 ## Total wall-clock
 
@@ -307,11 +313,12 @@ from private.
 
 ## Rolling forward to a new Overture release
 
-When Overture publishes a new release (monthly), update one constant:
+When Overture publishes a new release (monthly), set one variable in
+`.env` (the built-in default is `OVERTURE_DEFAULT_RELEASE` in
+`packages/py/reimagina/pipeline/overture.py`):
 
-```python
-# packages/py/reimagina/pipeline/overture.py
-OVERTURE_DEFAULT_RELEASE = "2026-MM-DD.0"
+```sh
+REIMAGINA_OVERTURE_RELEASE=2026-MM-DD.0
 ```
 
 To find out what you can pin to, ask S3 rather than guessing — this is

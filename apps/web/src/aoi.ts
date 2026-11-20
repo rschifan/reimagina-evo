@@ -17,7 +17,7 @@
 
 import type { AOIRow } from "./api";
 
-const STORAGE_KEY = "reimagina.activeAoiId";
+const STORAGE_KEY = "r-evo.activeAoiId";
 
 type Listener = (aoi: AOIRow | null) => void;
 

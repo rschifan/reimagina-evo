@@ -39,7 +39,7 @@ help: ## Show this help.
 .PHONY: install
 install: ## Install Python + web dependencies.
 	uv sync --extra dev
-	cd apps/web && npm install
+	cd apps/web && npm ci
 
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
 
@@ -191,8 +191,10 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 # exists to prevent, reintroduced by the line two above it. `.env` is for
 # machine configuration like the DSN; which tile server a *development* run
 # talks to is this target's business, and it starts only one of them.
-dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
-	@_tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
+#
+# `dev-api` runs the same preamble, so the API it starts reads the same
+# database and points the map at the same tiles as `make dev`.
+DEV_ENV = _tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
 	  set -a; . ./.env; set +a; \
 	  : $${REIMAGINA_APP_DSN:=$$DATABASE_URL}; export REIMAGINA_APP_DSN; \
@@ -200,13 +202,16 @@ dev: check-ports ## Start the API, the web dev server and the worker together. C
 	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
 	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
 	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
-	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make dev"; \
+	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make $@"; \
 	  exit 1; \
 	fi; \
 	: $${REIMAGINA_TILE_LIVE_BASE_URL:=/api/tiles}; \
 	export REIMAGINA_TILE_LIVE_BASE_URL; \
 	echo "DSN  → $$REIMAGINA_APP_DSN"; \
-	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"; \
+	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"
+
+dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
+	@$(DEV_ENV); \
 	echo "API  → http://127.0.0.1:$(API_PORT)"; \
 	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
 	echo; \
@@ -217,14 +222,15 @@ dev: check-ports ## Start the API, the web dev server and the worker together. C
 	wait
 
 .PHONY: dev-api
-dev-api: ## Start the FastAPI read-side API with reload.
+dev-api: ## Start the FastAPI read-side API with reload (same DSN and tiles as `make dev`).
 	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API
+	@$(DEV_ENV); \
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
 
 .PHONY: dev-web
-dev-web: ## Start the Vite dev server for the web app.
+dev-web: ## Start the Vite dev server for the web app (proxies /api to API_PORT).
 	@$(PYTHON) scripts/preflight_ports.py $(WEB_PORT):Web
-	cd apps/web && VITE_PORT=$(WEB_PORT) npm run dev
+	cd apps/web && VITE_PORT=$(WEB_PORT) REIMAGINA_API_URL=http://127.0.0.1:$(API_PORT) npm run dev
 
 .PHONY: dev-worker
 dev-worker: ## Start the DBOS ops-plane worker (runs stay queued without it).
@@ -261,18 +267,42 @@ pr-merge: ## Squash-merge the current branch's PR and delete the branch.
 ship: check pr ## `check` + open PR. Use when you're confident.
 
 # ─── Release ─────────────────────────────────────────────────────────────────
-# Usage: `make release VERSION=v0.2.0`
+# Usage: `make release VERSION=v1.0.0`, from a clean `main` whose HEAD carries
+# the tag VERSION, with the local delivery package in docs/delivery/ (it is
+# kept out of the repository):
+#
+#   git tag -a v1.0.0 -m v1.0.0
+#   python scripts/render_delivery_pdfs.py          # needs the render toolchain
+#   python scripts/delivery_manifest.py
+#   make release VERSION=v1.0.0
+#
+# It re-renders the PDFs and verifies them against SHA256SUMS (so a toolchain
+# that does not reproduce the delivered bytes fails here), then collects the
+# release assets into dist/ (git-ignored) and prints the `gh` command. It does
+# not tag, push or publish anything.
 
 .PHONY: release
-release: ## Tag + publish a GitHub release. VERSION=v0.2.0
-	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v0.2.0"; exit 1; fi
+release: ## Build the release bundle in dist/. VERSION=v1.0.0 (HEAD must be tagged)
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make release VERSION=v1.0.0"; exit 1; fi
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then \
 	  echo "release must be cut from main (you are on $$(git rev-parse --abbrev-ref HEAD))"; exit 1; \
 	fi
-	git pull --ff-only
-	git tag -a $(VERSION) -m "$(VERSION)"
-	git push origin $(VERSION)
-	gh release create $(VERSION) --generate-notes --title "$(VERSION)"
+	@if [ -n "$$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi
+	@if [ "$$(git describe --tags --exact-match 2>/dev/null)" != "$(VERSION)" ]; then \
+	  echo "HEAD must carry the tag $(VERSION)"; exit 1; \
+	fi
+	uv run python scripts/render_delivery_pdfs.py
+	uv run python scripts/delivery_manifest.py --check
+	shasum -a 256 -c docs/delivery/SHA256SUMS
+	mkdir -p dist && rm -f dist/*
+	cp docs/delivery/pdf/*.pdf docs/delivery/MANIFEST.md docs/delivery/SHA256SUMS dist/
+	@src=$$(sed -n 's/^| \*\*Generated from commit\*\* | `\(.*\)` |$$/\1/p' docs/delivery/MANIFEST.md); \
+	git archive --format=tar --prefix=r-evo-$(VERSION)/ $$src | gzip -n > dist/r-evo-$(VERSION).tar.gz; \
+	echo "source archive of $$src"
+	cd dist && shasum -a 256 *.pdf MANIFEST.md SHA256SUMS r-evo-$(VERSION).tar.gz > SHA256SUMS-assets
+	@echo
+	@echo "Bundle in dist/. Publish it (after pushing main and the tag):"
+	@echo "  gh release create $(VERSION) dist/* --title $(VERSION) --notes-file CHANGELOG.md"
 
 # ─── Housekeeping ────────────────────────────────────────────────────────────
 

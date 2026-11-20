@@ -15,21 +15,36 @@ are reported identically by every other suite: as nothing at all.
 
 ## Running it
 
-Opt-in, because it needs two servers and a browser:
+Opt-in, because it needs two servers, a populated database and a browser.
+
+**Once**, install Playwright and its Chromium inside the web application, so
+the browser driver resolves them:
 
 ```bash
-REIMAGINA_E2E=1 make test-e2e
+cd apps/web
+npm install --no-save playwright
+npx playwright install chromium
 ```
 
-It expects, and checks for, an API on `:8001` and the web dev server on
-`:5173`:
+**Each time**, load a territory if the database is empty
+(`scripts/acceptance_run.sh` generates one, and drops and recreates the
+database named by `DATABASE_URL`), start the servers, and run the suite from
+the repository root:
 
 ```bash
-REIMAGINA_APP_DSN=... python -m apps.api
-cd apps/web && npm run dev
+make dev          # in another terminal: API, web dev server and worker
+make test-e2e     # sets REIMAGINA_E2E=1
 ```
 
-Chromium and Playwright are already installed; nothing is downloaded.
+It expects the API on `http://127.0.0.1:8001` and the web dev server on
+`http://localhost:5173` — `localhost`, because Vite listens there and on some
+machines that is IPv6 only. It skips, naming what is missing, when either does
+not answer or Playwright does not resolve. On other ports, say where they are:
+
+```bash
+make dev API_PORT=8123 WEB_PORT=5199
+REIMAGINA_E2E_API=http://127.0.0.1:8123 REIMAGINA_E2E_WEB=http://localhost:5199 make test-e2e
+```
 
 ## What it will not do
 

@@ -122,7 +122,7 @@ def _check_worldpop_rest(
     label = f"WorldPop REST · {dataset}/{country.upper()}"
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "reimagina-cli/0.1 verify-sources"},
+        headers={"User-Agent": "r-evo-cli/1.0 verify-sources"},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:

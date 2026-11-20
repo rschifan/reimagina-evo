@@ -129,7 +129,7 @@ def _prefix_lock_key(prefix: str) -> int:
     Uses blake2b for stdlib availability + a ``reimagina.raster.``
     namespace salt to avoid collisions with any other advisory-lock
     user in the same database. Byte order + signedness are pinned
-    explicitly (Codex Rev-5 review new-defect #4):
+    explicitly (review finding):
     ``pg_try_advisory_xact_lock(bigint)`` accepts the full int64 range
     including negatives, so ``signed=True`` is fine.
     """

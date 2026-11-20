@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import NODE_ENV
+
 
 @pytest.fixture(scope="module")
 def flow(servers, tmp_path_factory) -> dict:
@@ -31,7 +33,7 @@ def flow(servers, tmp_path_factory) -> dict:
     result = subprocess.run(
         ["node", str(Path(__file__).parent / "_scenario_flow.js")],
         env={
-            **os.environ,
+            **NODE_ENV,
             "E2E_WEB": servers["web"],
             "E2E_API": servers["api"],
             "E2E_OUT": str(out),

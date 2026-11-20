@@ -1,4 +1,4 @@
-"""FastAPI application factory for the reimagina read-side.
+"""FastAPI application factory for the r-evo API.
 
 The API exposes curated indicator results, AOI summaries, spatial-feature
 inventories, and the resolved tile-source manifest. It never owns its own
@@ -51,7 +51,7 @@ def _cors_origins_from_env() -> list[str]:
 
 def _log_resolved_dsn() -> None:
     """Log the API's resolved Postgres DSN at startup so operators
-    catch DB-mismatch bugs immediately (Codex review HIGH finding).
+    catch DB-mismatch bugs immediately.
 
     The MVT path goes API + Martin → both must point at the same
     Postgres database. We can't read Martin's DSN, but printing the
@@ -105,10 +105,11 @@ def create_app(
                 deps.shutdown_pool()
 
     app = FastAPI(
-        title="reimagina API",
-        version="0.1.0",
+        title="r-evo API",
+        version="1.0.0",
         description=(
-            "Read-side for the reimagina urban-planning platform. "
+            "API of r-evo, an architectural prototype of a platform that computes "
+            "urban indicators and explores planning scenarios. "
             "Exposes curated indicator results, AOI summaries, spatial "
             "feature inventories, and the tile source manifest."
         ),

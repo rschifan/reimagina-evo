@@ -21,8 +21,7 @@ mid-compute.
 Opt-in, because it needs a migrated database with enough features to make a
 compute window, and it deliberately kills processes:
 
-    REIMAGINA_RECOVERY_TEST=1 TEST_DATABASE_URL=postgresql:///reimagina_real_a \\
-        pytest tests/recovery -q
+    TEST_DATABASE_URL=postgresql:///reimagina_real_a make test-recovery
 
 Measured on the 86,225-block CDMX database: killed with two units running and
 none succeeded; a second process reclaimed the workflow, all three units
@@ -108,10 +107,12 @@ def _too_small(blocks: int) -> str:
     return (
         f"{blocks} blocks is too few to crash mid-compute; this suite needs "
         f"{MIN_BLOCKS:,}, because a run that finishes before the kill lands "
-        "proves nothing. Build a territory that is big enough with:\n"
-        "    DATABASE_URL=$TEST_DATABASE_URL python scripts/synthetic_territory.py "
-        "--blocks 150 --ageb-side 10\n"
-        "which seeds 22,500 blocks in about 40 seconds and needs no credentials."
+        "proves nothing. After `make migrate`, build a territory that is big "
+        "enough with:\n"
+        "    uv run python scripts/synthetic_territory.py "
+        '--dsn "$TEST_DATABASE_URL" --blocks 150 --ageb-side 10\n'
+        "which seeds 22,500 blocks in under a minute and needs no credentials, "
+        "then run `make test-recovery` again."
     )
 
 
@@ -141,6 +142,15 @@ def _crash_context(run_id: str) -> str:
 
 @pytest.fixture
 def clean_run_state():
+    # `make migrate` seeds the indicator catalog into the app database only,
+    # and every unit of the run looks its indicator up there: without this
+    # they all fail with a LookupError. Idempotent.
+    from reimagina.db import connect
+    from reimagina.indicators.catalog import seed_catalog
+
+    with connect(_dsn()) as conn:
+        seed_catalog(conn)
+        conn.commit()
     _query("TRUNCATE jobs_runtime.run_plan")
     _query("DELETE FROM jobs_runtime.job_unit")
     _query("DELETE FROM jobs_runtime.orchestration_run")

@@ -1,6 +1,6 @@
 # Performance
 
-Production performance contract for Reimagina.
+Performance contract of the prototype.
 
 ## Summary
 

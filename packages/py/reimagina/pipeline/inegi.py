@@ -49,7 +49,7 @@ CDMX_COLONIAS_PORTAL_URL = "https://datos.cdmx.gob.mx/dataset/colonias"
 # HTTP timeout + user-agent: INEGI's CDN has been observed to drop anonymous
 # `python-urllib/*` requests silently.
 _REQUEST_TIMEOUT_SECONDS = 60
-_USER_AGENT = "reimagina-cli/0.1 (+github.com/reimagina)"
+_USER_AGENT = "r-evo-cli/1.0"
 
 
 @dataclass(frozen=True)

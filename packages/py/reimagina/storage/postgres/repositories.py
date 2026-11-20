@@ -3344,7 +3344,7 @@ class PostgresOpsRunReader:
         request transaction, where ``now()`` is the transaction's start time.
 
         ⚠ The base table, not ``explore.ops_executor_health_v``. ``explore`` is a
-        human-facing contract rather than an application dependency (AGENTS.md),
+        human-facing contract rather than an application dependency,
         and the view emits ``heartbeat_age`` as an ``interval`` — which a Pydantic
         float field rejects outright, as a 500.
         """

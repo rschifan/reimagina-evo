@@ -39,7 +39,7 @@ def count_to_density(*, count: int, area_m2: float) -> float:
 
 # ── Edificability ───────────────────────────────────────────────────────────
 #
-# The buildable-capacity arithmetic, as specified by the Reimagina team:
+# The buildable-capacity arithmetic, as specified by the collaborators:
 #
 #     housing_units = (lot_size × num_levels) / unit_size
 #     population    = housing_units × people_per_household

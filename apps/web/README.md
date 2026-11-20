@@ -1,6 +1,6 @@
 # Web App
 
-Frontend application boundary for Reimagina.
+Frontend application boundary of the prototype.
 
 - Owns pages, components, frontend state, and API consumption
 - Talks only to `apps/api`

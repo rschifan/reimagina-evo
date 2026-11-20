@@ -524,13 +524,13 @@ def test_cli_cdmx_aoi_from_alcaldia_passes_cve_ent_for_other_states(
             "--name",
             "Mexicali",
             "--project-name",
-            "Reimagina pilots",
+            "Pilots",
         ]
     )
     assert exit_code == 0
     assert captured["cve_ent"] == "02"
     assert captured["cve_mun"] == "002"
-    assert captured["project_name"] == "Reimagina pilots"
+    assert captured["project_name"] == "Pilots"
 
 
 def test_cli_cdmx_aoi_from_alcaldia_returns_error_when_missing(monkeypatch, capsys):

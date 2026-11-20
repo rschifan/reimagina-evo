@@ -1,1 +1,1 @@
-"""Routers for the reimagina read-side API."""
+"""Routers for the r-evo API."""

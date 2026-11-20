@@ -45,10 +45,9 @@ DURABLE_MODES = ("dbos",)
 
 ``sync`` does not: it keeps run state in memory, per orchestrator instance. That
 makes it fine as an explicit choice and unusable as a deployment default —
-``POST /jobs`` names its own mode to honour its 200-vs-202 contract, while
-``GET /jobs/{run_id}`` and the SSE route take the configured one, so a global
-``sync`` would have writes going to Postgres and reads coming from an empty
-dict. Hence the environment may only select from this list.
+``POST /jobs``, ``GET /jobs/{run_id}`` and the SSE route each build their own
+orchestrator, so under a global ``sync`` a run would live in an instance no
+later request can reach. Hence the environment may only select from this list.
 """
 
 

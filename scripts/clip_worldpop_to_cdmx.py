@@ -2,7 +2,7 @@
 
 Pulls the CDMX boundary as the unioned municipality geometry from the
 running reimagina_app Postgres DB (reprojected to the raster's CRS),
-then writes a masked GeoTIFF ready for `reimagina raster ingest`.
+then writes a masked GeoTIFF ready for `python -m apps.cli.app raster ingest`.
 """
 
 from __future__ import annotations

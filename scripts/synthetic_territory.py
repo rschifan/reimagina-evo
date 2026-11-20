@@ -402,7 +402,7 @@ def seed(
         source_id = cat.register_source(
             conn,
             name="Synthetic Mexicali territory",
-            provider="reimagina-synthetic",
+            provider="r-evo-synthetic",
             storage_type="vector",
             integration_role="canonical_entity",
             storage_uri="generated://synthetic-mexicali",

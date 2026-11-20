@@ -1,4 +1,4 @@
-"""Structured exception handlers for the reimagina API.
+"""Structured exception handlers for the API.
 
 Three handlers cover the realistic failure modes — split so the HTTP
 status code carries useful retry semantics:
