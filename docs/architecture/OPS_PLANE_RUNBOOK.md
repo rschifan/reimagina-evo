@@ -31,9 +31,10 @@ migrations. Starting a worker once also creates it, as a side effect of
 `launch()`.
 
 Symptom to recognise: the read side is entirely healthy — the dashboard lists
-indicators, the run list renders, health is green — and only `POST /jobs`
-fails. Nothing is wrong with the request or with shipped code, which is why
-this is a 503 and not a 500.
+indicators, the run list renders, health is green — and only submits fail:
+`POST /jobs`, `POST /jobs/{id}/rerun` and `POST /scenarios/{id}/recompute`.
+Nothing is wrong with the request or with shipped code, which is why this is a
+503 and not a 500.
 
 ```bash
 # Is it provisioned?
@@ -41,6 +42,10 @@ psql "$DATABASE_URL_DIRECT" -c "SELECT to_regclass('dbos.workflow_status')"
 # NULL  -> not provisioned
 python -m apps.cli.app bootstrap-db --app-dsn "$REIMAGINA_APP_DSN"
 ```
+
+It connects to `--admin-dsn` (`$DATABASE_URL_ADMIN`, default
+`postgresql://localhost/postgres`) first, even when the database already
+exists, so that DSN must be reachable too.
 
 Idempotent, so it is safe to run against a database that already has it, and it
 creates nothing you did not ask for: the test database is opt-in behind
@@ -55,9 +60,11 @@ flag beats the variable, so a stale `DATABASE_URL_DIRECT` in the shell cannot
 quietly redirect the migration. A direct DSN naming a *different* database is
 refused rather than used: it is another route to the same one, so only host
 and port may differ. With neither set, `--app-dsn` pointing at pgbouncer is
-refused too, before anything is migrated, and the error names `--direct-dsn`:
-the ops-plane schema cannot be installed through a transaction-mode pooler,
-and the command detects one by asking the connection, not by reading the DSN.
+refused too, and the error names `--direct-dsn`: the ops-plane schema cannot be
+installed through a transaction-mode pooler, and the command detects one by
+asking the connection, not by reading the DSN. The refusal comes at the
+ops-plane step, after Alembic (which survives a pooler) and the seeds have
+already run through `--app-dsn`; rerun with `--direct-dsn` to finish.
 
 ## Configuration that will bite you
 
@@ -66,13 +73,16 @@ and the command detects one by asking the connection, not by reading the DSN.
 | `DATABASE_URL_DIRECT` | **startup fails** | Without it DBOS writes checkpoints to a local SQLite file. Guarded. |
 | — pointing at a wrong DSN | **startup fails** | DBOS *creates* a database rather than failing, so a typo would otherwise start cleanly and checkpoint nowhere useful. Guarded by a domain-table check. |
 | — naming a different database from the API DSN | **submit fails** | Planning must not read one database while DBOS executes in another. Guarded by a server-side database-name check. |
-| `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | API-safe default. Use `executor` for workers and explicit `dev` only for local one-process execution. |
-| `REIMAGINA_EXECUTOR_ID` | derives `<hostname>:<role>`, logs a warning | Recovery reclaims **only** work recorded against this exact id. Must be stable across restarts *and* unique between live processes — see below. |
+| `REIMAGINA_DBOS_EXECUTION_MODE` | `client` | API-safe default. `python -m apps.worker` sets `executor` itself when unset; use `dev` only for local one-process execution. Any other value fails. |
+| `REIMAGINA_EXECUTOR_ID` | derives `<hostname>:<role>`, logs a warning at launch | Recovery reclaims **only** work recorded against this exact id. Must be stable across restarts *and* unique between live processes — see below. |
+| `REIMAGINA_EXECUTOR_ROLE` | `app`; the worker sets `worker` | The `<role>` in the derived executor id and the `role` column of the heartbeat. |
 | `REIMAGINA_RUN_CONCURRENCY` | 2 | Parent workflows per executor on the `runs` queue. |
 | `REIMAGINA_UNIT_CONCURRENCY` | 8 | Units per process. Non-numeric fails at startup. Measured on the real catalog: 2 → 3614 ms, 4 → 2181 ms, 8 → 1691 ms, 16 → 1629 ms. 8 is the *latency* choice at 0.49 efficiency; **lower it toward 4** (0.76) where many runs execute concurrently and throughput matters more. Above 8 the graph runs out of parallelism — a DAG's average parallelism is `work/span`, here 4.03, and 16 slots measure exactly that. |
-| `REIMAGINA_EXECUTOR_HEARTBEAT_S` | 30 | Worker heartbeat interval; must be positive. |
+| `REIMAGINA_EXECUTOR_HEARTBEAT_S` | 30 | Heartbeat interval of every process that launches an executor; must be positive. |
+| `REIMAGINA_POLL_INTERVAL_SEC` | 0.1 | DBOS dispatch polling: the queues' dequeue loop and a parent's wait on its children. DBOS's own default is 1.0 s, which measured ~1.18 s per wave; 0.1 s measured 137 ms per wave for 5x the idle query load. |
+| `REIMAGINA_RUN_PLAN_TTL_HOURS` | 24 | Age after which an orphaned `jobs_runtime.run_plan` row is swept, on the next submit. A plan whose workflow is still queued or running is never swept. |
 | `REIMAGINA_PROGRESS_SUBSCRIBERS` | 32 | Maximum in-process DBOS progress stream pumps; excess SSE clients reconnect. |
-| `REIMAGINA_APP_VERSION` | derived from workflow source | ⚠ **Sticky.** DBOS records versions in `dbos.application_versions`; once you set one, every process on a different version logs "not the latest version" until something newer is recorded. Set it deliberately or never. |
+| `REIMAGINA_APP_VERSION` | an MD5 of the workflow source; each unpinned launch records itself as the latest | ⚠ DBOS records versions in `dbos.application_versions`, and **only an executor on the latest recorded version dequeues API submits** — a client enqueue carries no version. A process on any other version logs "is not the latest version" at launch and dequeues only work stamped with its own version. Unpinned, the most recent launch wins, so two unpinned executors on different source strand whichever launched first: pin it when running more than one, and pin it deliberately. |
 
 ### The executor id is the thing to get right
 
@@ -81,8 +91,9 @@ Both failure modes are silent:
 - **Not stable across restarts** → a restarted process reclaims *nothing*. Its
   predecessor's in-flight runs are orphaned with no error.
 - **Shared by two live processes** → one reclaims work the other is still
-  running. On dbos 2.28.0 recovery is not idempotent, so that is a double
-  execution.
+  running. Recovery re-enqueues a workflow its original runner is still
+  executing, so that is a double execution. DBOS 3's idempotent recovery covers
+  duplicate recovery *requests*, not this.
 
 The default is safe for at most one process per role per host. Run two workers
 on one host and you **must** set it per replica.
@@ -111,10 +122,23 @@ Read the two status columns together:
 | ours | engine | meaning |
 |---|---|---|
 | `running` | `PENDING` | normal, in flight |
-| `running` | `ENQUEUED` | parent waiting for a `runs` slot — check `REIMAGINA_RUN_CONCURRENCY`; child waits are visible as queued units and use `REIMAGINA_UNIT_CONCURRENCY` |
+| `running` | `ENQUEUED` | the parent started once and was re-enqueued by recovery (a restart or a sweep), and is waiting for a `runs` slot on an executor of its version — check `REIMAGINA_RUN_CONCURRENCY` and `application_version`; child waits are visible as queued units and use `REIMAGINA_UNIT_CONCURRENCY` |
 | `running` | `SUCCESS`/`ERROR` | the workflow finished without closing the run. A bug; capture it. |
 | `running` | *no row* | DBOS state was purged or the database was restored inconsistently; new submissions reject direct-DSN/database mismatches |
 | `running` | `PENDING`, `executor_id` of a process that no longer exists | **orphaned** — see below |
+
+A run nothing has dequeued yet has no `orchestration_run` row — the workflow's
+first step writes it — so it is not in the result above. It is an `ENQUEUED`
+`run_workflow` row in `dbos.workflow_status`, and `GET /jobs` lists it as
+`queued`. With no worker running, every new submit looks like this:
+
+```sql
+SELECT workflow_uuid, status, application_version,
+       to_timestamp(created_at / 1000.0) AS created   -- epoch milliseconds
+FROM dbos.workflow_status
+WHERE name = 'run_workflow' AND status IN ('ENQUEUED', 'DELAYED')
+ORDER BY created_at;
+```
 
 ## An orphaned run
 
@@ -123,10 +147,13 @@ SELECT executor_id, count(*) FROM dbos.workflow_status
 WHERE status = 'PENDING' GROUP BY executor_id;
 ```
 
-Inspect `explore.ops_executor_health_v` before declaring an executor dead. It
-records the worker's direct-Postgres heartbeat and its age without requiring a
-control-plane service. If an `executor_id` there belongs to no live process,
-its runs are stuck.
+Inspect `explore.ops_executor_health_v` (or `python -m apps.cli.app explore
+executor-health`) before declaring an executor dead. It records the
+direct-Postgres heartbeat of every process that launched an executor — workers,
+and `dev` processes too — and its age, without requiring a control-plane
+service. If an `executor_id` there belongs to no live process, its runs are
+stuck.
+
 Two recoveries exist, and they are not the same mechanism.
 
 **Its own, at startup.** `DBOS.launch()` reclaims the workflows recorded
@@ -179,9 +206,11 @@ reclaim sweep left <id> unreclaimed — work remains open against them
 that this application version cannot recover
 ```
 
-To drain it, start a process pinned to the stranded version
-(`REIMAGINA_APP_VERSION=<that version>`); its own startup recovery, or its
-sweep, will reclaim the work. Find the version with:
+To drain it, start a worker pinned to the stranded version
+(`REIMAGINA_APP_VERSION=<that version>`); its sweep will reclaim the work. (Its
+startup recovery reclaims only its own executor id, so that helps only if you
+also start it with the dead executor's `REIMAGINA_EXECUTOR_ID` — safe only when
+that process is certainly gone.) Find the version with:
 
 ```sql
 SELECT executor_id, application_version, status, count(*)
@@ -190,8 +219,9 @@ WHERE status IN ('PENDING', 'ENQUEUED')
 GROUP BY 1, 2, 3 ORDER BY 1, 2;
 ```
 
-If you would rather not, cancel the runs (`POST /jobs/{id}/cancel` semantics
-via the port) and resubmit. Safe: writes are replace-in-place.
+If you would rather not, cancel the runs (`POST /jobs/{id}/cancel`) and
+resubmit their unfinished indicators (`POST /jobs/{id}/rerun`, which starts a
+new run). Safe: writes are replace-in-place.
 
 Do **not** call `DBOS._recover_pending_workflows` by hand against an executor
 you have not checked against `explore.ops_executor_health_v`. It is a private
@@ -201,13 +231,14 @@ execution of a unit. Use the sweep, which holds the gate.
 ## A unit that will not stop
 
 Cancellation is three mechanisms because none suffices alone. If a unit is
-still burning CPU after a cancel:
+still burning CPU after a cancel (in `psql`, `\set run_id <uuid>` first; the
+queries below quote it with `:'run_id'`):
 
 ```sql
 SELECT jr.id, jr.backend_pid, jr.status, a.state, a.query_start
 FROM jobs_runtime.job_run jr
 LEFT JOIN pg_stat_activity a ON a.pid = jr.backend_pid
-WHERE jr.run_id = :run_id AND jr.status NOT IN ('succeeded','failed','cancelled');
+WHERE jr.run_id = :'run_id' AND jr.status NOT IN ('succeeded','failed','cancelled');
 ```
 
 `pg_cancel_backend(backend_pid)` stops the statement. A unit that has not yet
@@ -220,7 +251,7 @@ and *before* the row exists has nothing to grab.
 ```sql
 SELECT count(*) AS units,
        round(sum(extract(epoch FROM (completed_at - started_at)))::numeric, 3) AS runner_secs
-FROM jobs_runtime.job_run WHERE run_id = :run_id;
+FROM jobs_runtime.job_run WHERE run_id = :'run_id';
 ```
 
 Wall clock is measured at the caller, not here — the gap between submit and the
@@ -247,11 +278,14 @@ Measured, one process each, idle after launch:
 | | connections |
 |---|---|
 | worker, idle | 4 |
-| DBOS's own pool | `pool_size=5, max_overflow=0` per client |
+| DBOS's own pool | an executor (`DBOS()`): `pool_size=20, max_overflow=0`, DBOS's default, not overridden here; a `DBOSClient` (the API, one per DSN): `pool_size=5, max_overflow=0` |
 | each in-flight unit | +1 (its own psycopg2 connection) |
 
 Budget as `processes × (4 + REIMAGINA_UNIT_CONCURRENCY)` against
-`max_connections`. The runners' connections dominate, not DBOS's.
+`max_connections`. The runners' connections dominate, not DBOS's. The 4 is an
+idle measurement: an executor's DBOS pool may grow toward its cap of 20 under
+load, and each status step and heartbeat opens a short-lived connection of its
+own.
 
 ⚠ That default is now **8**, so a worker peaks at ~12 connections rather than
 ~6. Against Postgres's stock `max_connections = 100` this caps you near 8 worker
@@ -267,6 +301,8 @@ Stated plainly so nobody discovers it at 3am:
   could not take, and keeps the evidence — but draining a stranded version
   still means starting a process pinned to it. See above.
 - **No metrics.** No counters, no histograms, nothing to alert on. Diagnosis is
-  the SQL above.
+  the SQL above, the Ops page (`GET /jobs`: runs, status counts and executor
+  heartbeat ages; `GET /jobs/{id}/detail`: per-unit timings), and
+  `python -m apps.cli.app explore executor-health`.
 - **Never load-tested**, never run multi-process beyond a two-process spike,
   never deployed.

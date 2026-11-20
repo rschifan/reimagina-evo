@@ -4,8 +4,10 @@
 this graph records. `JOB_LAYER.md` — the runs it decides the contents of.
 `DATA_LAYER.md` — the sources that sit at its leaves.
 
-Introduced by `r041`. The layer answers one question the rest of the platform
-could not: **what is actually out of date, right now.**
+Introduced by `r041`; `r044` pins the version hash to byte order and `r045`
+retires the single `scenario.override` asset in favour of one per attribute. The
+layer answers one question the rest of the platform could not: **what is
+actually out of date, right now.**
 
 ## Why it exists
 
@@ -26,10 +28,11 @@ different and larger question.
 
 ⚠ It also closes a gap `reads` structurally cannot: `reads` is an
 **invalidation vocabulary, not a data manifest** (see `INDICATORS_LAYER.md`).
-`urban_form_block_building_density` declares `reads=("geometry",)` while its
-compute joins `global:building`; the accessibility family declares
+`urban_form_block_building_density` has `reads=("geometry",)` while its
+compute joins `global:building`; the accessibility family reads
 `poi_version` / `network_version`, hand-maintained tokens standing in for whole
-tables. An asset edge names the real producer.
+tables. An asset edge names the real producer: each `IndicatorSpec` declares its
+`inputs` as `AssetEdge`s, and `reads` / `depends_on` are projections of them.
 
 ## The shape
 
@@ -42,25 +45,45 @@ asset  ──edge──▶  asset            declared, in code
 
 | table | holds |
 |---|---|
-| `curated_geo.asset` | the node — one per source, indicator, or external layer |
-| `curated_geo.asset_dependency` | the edge, with `partition_mapping` and an optional `weight` |
+| `curated_geo.asset` | the node — `kind` `source`, `external` or `derived`; one per source layer, external layer, per-attribute scenario override, or indicator |
+| `curated_geo.asset_dependency` | the edge: `relation`, an `attributes` projection, `radius_m` for `within_radius`, an optional `weight` for `derived_from`, and `partition_mapping` |
 | `curated_geo.asset_version` | recorded versions for **leaves**, Iceberg-snapshot style: append a row, move `is_current` |
-| `curated_geo.asset_materialization` | what a run actually wrote, per partition |
+| `curated_geo.asset_materialization` | what a run actually wrote, per partition, with the input versions it read and whether it covered the whole grain |
 
 | view | answers |
 |---|---|
 | `serving_geo.asset_expected_version_v` | what each asset's version *should* be, derived from the graph |
-| `serving_geo.asset_freshness_v` | expected vs recorded → `fresh` / `stale` / `absent` |
-| `serving_geo.asset_component_v` | the transitive closure, depth-capped at 50 |
+| `serving_geo.asset_freshness_v` | expected vs recorded → `fresh` / `stale` / `partial` / `absent` |
+| `serving_geo.asset_component_v` | the terms hashed into each version — one row per node and edge in the asset's upstream closure, depth-capped at 50 |
 | `serving_geo.asset_lineage_v` | upstream / downstream reachability |
 | `explore.asset_v`, `explore.asset_freshness_v`, `explore.asset_lineage_v` | the engineer-facing mirrors |
 
+The shipped registry (`assets/registry.py`) holds 30 nodes:
+
+| asset keys | kind | backing |
+|---|---|---|
+| `mex.state`, `mex.municipality`, `mex.neighborhood`, `mex.ageb`, `mex.block`, `mex.lot`, `global.building`, `global.poi` | source, `commit` | a feature type (`global.poi` is `global:establishment`) |
+| `censo.2020` | source, `commit` | the `censo_2020` observation prefix |
+| `global.road_network` | external, `observed` | the relation `curated_geo.road_edge` |
+| `scenario.override.<attribute>` — `floors`, `geometry`, `lot_coverage`, `network_version`, `num_levels`, `people_per_household`, `poi_version`, `unit_size` | source, `commit`, partitioned by `scenario` | one per attribute any indicator reads |
+| `indicator.<slug>` — the 12 shipped indicators | derived, partitioned by `scenario` | projected from `SHIPPED_INDICATORS` |
+
+Edges are the indicators' declared `inputs` plus, for every attribute an
+indicator reads, a `self` edge to that attribute's override asset — 48 in all.
+`assets seed` (and `bootstrap-db`) writes both, replacing each indicator's edges
+rather than merging them.
+
 ## Four decisions worth knowing
 
-**Partitions, not whole assets.** An asset is materialised per *partition* — a
-scenario, an AOI, a feature-type pair, a zoom tier. `assets/keys.py` is the one
-canonicalisation of a partition key, so the SQL view and the Python twin cannot
-disagree about what a partition is called.
+**Partitions, not whole assets.** An asset is materialised per *partition*.
+`assets/keys.py` is the one canonicalisation of a partition key — dimensions
+sorted by name, rendered `name=value`, joined by `/`, and the baseline is the
+empty string — so the SQL view and the Python twin cannot disagree about what a
+partition is called. The shipped registry partitions by `scenario` only (the
+indicators and the override assets); a producer without that dimension is read
+at the baseline (`partition_mapping='baseline'`), one with it at the consumer's
+own scenario (`'identity'`), and `asset_component_v` carries a scenario
+partition downstream along `identity` edges.
 
 **The version algebra exists twice, deliberately.**
 `serving_geo.asset_expected_version_v` is what the platform reads: always live,
@@ -68,46 +91,92 @@ disagree about what a partition is called.
 derives the same value in Python, from the same rows, by a different route —
 purely so `tests/integration/test_asset_graph.py` can assert the two agree.
 Two implementations of one algebra is an uncomfortable choice made on purpose;
-the alternative is a view nothing can check.
+the alternative is a view nothing can check. Both hash the closure as a set,
+sorted in byte order (`COLLATE "C"`, r044), with floats at a fixed scale of 6.
 
 **Leaves are told; everything else is derived.** A source asset's version is
-recorded by whatever changed it (`assets/publish.py`). The database can compute
-every *derived* version from the graph, but it cannot know that Overture
-published a new release. `assets/observe.py` covers data that arrives through no
-pipeline at all — `curated_geo.road_edge` comes straight from Overpass with no
-`ingestion_run`, the Azure mirrors are copied by hand, and
-`scripts/seed_demo_attributes.py` merges directly into `feature.attributes`.
+recorded by whatever changed it (`assets/publish.py`): an ingest publishes its
+ingestion run id when it finishes having written rows (`data.catalog.finish_run`),
+`assets backfill-versions` covers layers loaded before the graph existed, and
+materialising a scenario publishes a content digest per edited attribute into
+that scenario's partition (`scenarios.overrides.publish_scenario_version`). The
+database can compute every *derived* version from the graph, but it cannot know
+that Overture published a new release. `assets/observe.py` (`assets observe`) is
+for data that arrives through no pipeline at all: it runs each `observed`
+asset's `probe_sql` and publishes the result when it changes. One shipped asset
+is observed — `global.road_network`, because `curated_geo.road_edge` comes
+straight from Overpass with no `ingestion_run`; its probe is the row count and
+the max `osm_id`. The hand-copied Azure mirrors and
+`scripts/seed_demo_attributes.py`'s direct merges into `feature.attributes`
+have no observed asset, so the graph cannot see them.
 
 ⚠ **A staleness system that reports "fresh" for data it cannot see is worse
-than none**, because it is believed. That is why `absent` is excluded from the
-dirty set by default rather than treated as fresh.
+than none**, because it is believed. That is why a probe that finds nothing
+retires the asset's version (`retire_version`) rather than publishing a
+sentinel, and why a partition with nothing recorded reports `absent`, never
+`fresh`. `absent` is still excluded from the baseline dirty set by default: on a
+fresh database every indicator is absent, and an empty submit would otherwise
+recompute the whole platform. A scenario partition counts it.
 
 **The registry is seeded from code, never from migration bodies.** `r006`,
-`r015`, `r016`, `r019` and `r020` each insert their own `explore.layer_catalog`
-rows, and that drifted far enough to need `scripts/repair_layer_catalog.sql`.
-One seeder cannot drift from itself.
+`r015`, `r016`, `r017`, `r019`, `r020`, `r021` and `r041` itself each insert
+their own `explore.layer_catalog` rows, and that drifted far enough to need
+`scripts/repair_layer_catalog.sql`. One seeder cannot drift from itself.
 
 ## How it reaches a run
 
 `assets/freshness.py` derives the dirty set from freshness rather than from
-declared attributes. Both paths still exist and answer different questions:
+declared attributes. Both paths still exist and answer different questions;
+`orchestration/plan.plan_run` picks between them:
 
 ```
-attribute path   "an edit named X"      → impact.py, IndicatorSpec.reads
-freshness path   "what is out of date"  → assets/freshness.py, the graph
+attribute path   "an edit named X"      → impact.compute_dirty_set, IndicatorSpec.reads
+freshness path   "what is out of date"  → assets/freshness.stale_units, the graph
 ```
 
-A road reload publishes a new version for `global.road_network`; every
-consumer's expected version moves; the three `*_network_m` indicators and
-`livability_block_score` — which consumes them — all report stale. **That
-propagation needs no code**: the dependency is declared in the catalog and the
-graph finds it (`tests/integration/test_freshness_driven_recompute.py`).
+A submit that names attributes or features takes the attribute path — the
+scenario recompute does, with the scenario's footprint. A submit that names
+neither takes the freshness path when the graph is seeded: on the baseline
+partition it returns indicators in state `stale` or `partial`; with a
+`scenario_id` it returns every indicator that has a node in that scenario's
+partition and whose materialised version is missing, different or partial.
+Freshness units are whole-grain. A database with no seeded graph falls back to
+the attribute path. `POST /jobs` also accepts `changed_datasets`, which
+`impact.indicators_for_datasets` resolves from the `inputs` edges into an
+explicit indicator list.
+
+A road reload is seen when `assets observe` probes `curated_geo.road_edge` and
+publishes a new version for `global.road_network`; every consumer's expected
+version moves; the four `*_network_m` indicators and `livability_block_score` —
+which consumes three of them — all report stale. **That propagation needs no
+code**: the dependency is declared in the catalog and the graph finds it
+(`tests/integration/test_freshness_driven_recompute.py`).
+
+Materialisations are written by the runner registry, not by each compute:
+`orchestration/runners._recording` wraps every dispatched unit in
+`assets.materialize.materializing`, which captures the expected version and
+input versions **before** the compute runs, records them only if it succeeds,
+and marks coverage complete only when the unit was neither feature- nor
+AOI-scoped, so a scoped run at the current version reports `partial`, not
+`fresh`.
 
 ## What a params change does
 
-Catalog fields fold into a `params_digest` that feeds the asset version, so
-editing an indicator's bounds or weights moves its expected version and
-restages its results. That is intended — a bounds change that alters the output
-*should* restage — but it means a catalog edit with no code change can dirty a
-whole grain. `#55` moving the composite's `valid_max` from 300 to 1 did exactly
-that.
+`seed_assets` folds seven fields of each `IndicatorSpec` — `computation_kind`,
+`value_type`, `unit`, `aggregation_method`, `valid_min`, `valid_max`,
+`applies_to` — into the indicator asset's `params_digest`, which feeds the asset
+version; a weight moves it through the edge term instead, since
+`asset_component_v` hashes every edge's weight. So editing an indicator's bounds
+or weights in `indicators/catalog.py` and re-seeding moves its expected version
+and restages its results and everything downstream of them. That is intended —
+a bounds change that alters the output *should* restage — but it means a catalog
+edit with no compute-code change can dirty a whole grain: an edit like `#55`'s,
+which moved the composite's `valid_max` from 300 to 1, restages the composite on
+every block.
+
+The digest is computed from the in-code spec at seed time, not read from the
+`indicator_catalog` row, so an SQL edit to that table moves nothing.
+`higher_is_better`, `cap_value`, `name` and `description` are not in it. A
+change to an indicator's own logic is signalled by its per-asset
+`code_version` — `"1"` for every shipped indicator, bumped by hand, never the git
+SHA.
