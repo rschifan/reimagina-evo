@@ -12,7 +12,7 @@ This module closes that. A live executor periodically asks which executors
 have stopped publishing liveness, and asks DBOS to recover their pending
 workflows onto itself.
 
-**Why it was not built until now.** ``docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md``
+**Why it was not built until now.** The DBOS spikes
 measured the sweep working against DBOS 2.28 (spike 1: two handles returned,
 the run driven to SUCCESS, exactly one unit recomputed) and then deliberately
 shelved it. 2.28.0 shipped six hours before the idempotent-recovery fix

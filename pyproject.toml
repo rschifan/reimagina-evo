@@ -101,7 +101,7 @@ dependencies = [
     # cannot read workflows created by 3. Drain before upgrading.
     #
     # The upper bound is deliberate — breaking changes ship inside minor
-    # releases. See docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
+    # releases.
     #
     # ⚠ The bound sits just above the minor in use, so patches arrive and a
     # new minor is an edit here — which is what the sentence above means.

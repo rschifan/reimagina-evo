@@ -329,10 +329,10 @@ def test_no_makefile_recipe_invokes_a_python_entry_point_bare():
 
 
 # Documents that describe the system as built. A path or a command named in one
-# of these has to resolve. Deliberately NOT the whole of `docs/`:
-# `docs/product/` holds architecture *proposals*, which legitimately name files
-# that do not exist yet. Adding a proposal to this list would force the
-# proposal to be implemented before it could be written down.
+# of these has to resolve. Architecture *proposals*, which legitimately name
+# files that do not exist yet, are kept out of the repository and out of this
+# list: adding one would force it to be implemented before it could be written
+# down.
 AS_BUILT_DOCS = (
     "README.md",
     "docs/*.md",

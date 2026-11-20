@@ -15,7 +15,7 @@ indicator, so position alone decides which checkpointed output a replayed call
 receives. A workflow body that decided its steps from a mutable module global
 would therefore not fail loudly on a catalog change mid-run — it would hand one
 indicator's result to another, silently. Measured, not theorised; see
-``docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md`` spike 2.
+``docs/architecture/JOB_LAYER.md`` (spike 2).
 
 So: **the workflow body branches only on workflow inputs and step results.**
 Reading a global *inside a step* is fine, because a step's output is

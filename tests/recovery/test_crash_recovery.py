@@ -286,7 +286,7 @@ def test_a_peer_reclaims_a_dead_executors_run(clean_run_state):
     and the run can only finish because `reclaim.sweep` judged the first
     executor dead and re-enqueued its workflows.
 
-    `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md` measured the mechanism
+    The DBOS spikes measured the mechanism
     working on DBOS 2.28 and then deferred shipping it, because that version
     predates the idempotent-recovery fix. On DBOS 3 recovery re-enqueues
     through the queue's atomic ENQUEUED->PENDING dequeue, so a duplicate

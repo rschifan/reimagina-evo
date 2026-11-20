@@ -1,7 +1,7 @@
 """Impact engine — the dirty-set computation for selective recompute (F1).
 
 Component 3 of the Phase 3 orchestration design
-(docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md). Given the attributes a
+(docs/architecture/JOB_LAYER.md). Given the attributes a
 scenario changed and the features it changed them on, it decides the exact
 set of indicator outputs to recompute: seeded from the attribute→indicator
 read mapping (``IndicatorSpec.reads``), propagated downstream through the
