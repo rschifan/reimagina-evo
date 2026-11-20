@@ -2098,15 +2098,15 @@ revision, in this order, and each step is reported with its actual result.
 | 3 | `make migrate` | Both databases created and migrated to `r052`; 25 tables in `curated_geo` |
 | 3b | `uv run python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev API_PORT=8057 WEB_PORT=5197` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
-| 5 | `make test` | 1,034 passed |
-| 6 | `make test-integration` | 560 passed, 1 skipped |
+| 5 | `make test` | 1,037 passed |
+| 6 | `make test-integration` | 564 passed, 1 skipped |
 | 7 | `make test-conformance` | 21 passed, 1 skipped |
 | 8 | `uv run pytest tests/performance` | 6 passed, 1 skipped |
-| 9 | `make test-web` | 430 passed (30 files) |
+| 9 | `make test-web` | 440 passed (30 files) |
 | 10 | `make build-web` | OK |
-| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 27 s |
+| 11 | `scripts/acceptance_run.sh` | Every step passed, in 1 min 20 s |
 | 12 | The recovery preparation of §6.1, then `make test-recovery` | 22,500 blocks generated in 15 s; 2 passed |
-| 13 | `REIMAGINA_E2E_WRITES=1 make test-e2e` | 40 of 40 passed, in a real browser against both servers, including the scenario editor flow |
+| 13 | `REIMAGINA_E2E_WRITES=1 make test-e2e` | 41 of 41 passed, in a real browser against both servers, including the scenario editor flow |
 
 Measured against PostgreSQL 17.10, PostGIS 3.5.6 and pgRouting 3.6.3, with
 Python 3.12.11 (from `uv`) and Node.js 24.22.2. CI and the container stack use
