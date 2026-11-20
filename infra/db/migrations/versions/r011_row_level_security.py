@@ -9,8 +9,7 @@ Policy design:
     Existing application and migration code continues to work unchanged.
   - When set via SET LOCAL, only rows for that project are visible.
   - Table owners bypass RLS in PostgreSQL by default. FORCE RLS and a
-    dedicated app role are deferred until the first API route is deployed
-    (see docs/ENGINEERING_NOTES.md — Row-Level Security section).
+    dedicated app role are deferred until the first API route is deployed.
 
 Revision ID: r011
 Revises: r010

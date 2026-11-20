@@ -2,8 +2,7 @@
  * The run page's execution timeline, as data. `RunTimeline.svelte` draws this
  * and decides nothing; every rule the picture follows is here, under test.
  *
- * Two invariants the design rests on (docs/superpowers/specs/
- * 2026-11-18-run-execution-view-design.md):
+ * Two invariants the design rests on:
  * - Rows never move: order is dependency depth, then slug — never start time.
  * - Nothing drawn moves left: bars grow left to right on an axis that starts
  *   at 10 s and doubles each time the run reaches its edge, so everything

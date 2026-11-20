@@ -149,7 +149,7 @@ check_optional data/sources/lake/exe/002_mexicali/equipamientos.geoparquet \
 
 # ⚠ The vintage the pipeline reads and the vintage that was downloaded are not
 # the same thing. `inegi_censo.DEFAULT_SOURCE_ROOT` points at
-# manzanas_2020.parquet; docs/DATA_INVENTORY.md records
+# manzanas_2020.parquet; the private data inventory records
 # manzanas_2010.parquet being pulled from the container. Say which is actually
 # here, because the alternative is discovering it at step 4 — and 2010 has a
 # different headline column set (no p_18ymas), so it is not a --source-root
@@ -167,7 +167,7 @@ computed on. The entries marked "absent" above are optional and would only
 cost you ATTEMPTED indicators.
 
 `data/` is gitignored, so a fresh clone never has the mirror; it comes from the
-private container recorded in docs/DATA_INVENTORY.md, pulled with Storage
+private container described in the data inventory, pulled with Storage
 Explorer.
 
 Without it, two things still work:

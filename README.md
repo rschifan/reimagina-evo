@@ -24,9 +24,8 @@ Urban planning scenario modelling platform. A feature/observation/indicator/scen
 
 The pipeline ingests from a private private data lake (`private-lake`)
 that mirrors INEGI 2024 marco geoestadístico, INEGI 2010 census,
-SIGCDMX/EXE amenities, and other upstream sources.
-[`docs/DATA_INVENTORY.md`](docs/DATA_INVENTORY.md)
-documents the expected layout under `data/sources/lake/`.
+SIGCDMX/EXE amenities, and other upstream sources. The expected layout
+under `data/sources/lake/` comes with the access credentials.
 
 You need read access to that container to reproduce the prototype's
 dataset. **Contact the maintainer** for credentials before following the
