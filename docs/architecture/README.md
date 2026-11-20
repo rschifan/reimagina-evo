@@ -21,7 +21,7 @@ The `docs/architecture/` folder is the architecture set of the prototype. Start 
 ## The six major flows
 
 1. **Dataset onboarding**
-   Register a source in `data_source_catalog`, classify it by `storage_type` and `integration_role`, land Bronze, clean to Silver, then start an `ingestion_run` for the curated load. (The raster pipeline starts its `ingestion_run` before landing Bronze, so a failure at any step is recorded.)
+   Register a source in `data_source_catalog`, classify it by `storage_type` and `integration_role`, land Bronze (or use an existing immutable mirror as Bronze), clean to Silver, then start an `ingestion_run` for the curated load. (The raster pipeline starts its `ingestion_run` before landing Bronze, so a failure at any step is recorded.)
 2. **Canonical city assembly**
    Load stable spatial entities into `curated_geo.feature` and measured or derived facts into `curated_geo.observation`.
 3. **Serving/read contract**

@@ -60,31 +60,10 @@ cd "$ROOT"
 PY="${PYTHON:-uv run python}"
 CLI="$PY -m apps.cli.app"
 
-if [[ -f .env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
-
-: "${DATABASE_URL:?set DATABASE_URL (see .env.example)}"
-
-# DATABASE_URL_ADMIN is a DSN that may CREATE DATABASE, needed because step 1a
-# drops and recreates the target and cannot do that while connected to it.
-#
-# Derived rather than required. `.env` carries DATABASE_URL and
-# DATABASE_URL_DIRECT but not this one, so the script refused to start over a
-# variable whose value is mechanical: the same server, the `postgres`
-# maintenance database. Asking for it bought nothing and cost a failed run.
-#
-# Overridable, because the derivation assumes the connecting role may create
-# databases on that server — true for a local Homebrew Postgres, not
-# necessarily for a managed one.
-if [[ -z "${DATABASE_URL_ADMIN:-}" ]]; then
-  DATABASE_URL_ADMIN="${DATABASE_URL%/*}/postgres"
-  export DATABASE_URL_ADMIN
-  printf 'DATABASE_URL_ADMIN not set; using %s\n' "$DATABASE_URL_ADMIN"
-fi
+# Parse .env as data; exported caller values always win.
+ENV_EXPORTS="$($PY scripts/runtime_env.py harness)"
+eval "$ENV_EXPORTS"
+unset ENV_EXPORTS
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -185,33 +164,15 @@ fi
 $CLI data verify-sources || note "verify-sources reported problems; continuing, since the paths above are what this script reads"
 
 # ── 1. Schema ────────────────────────────────────────────────────────────────
-DB_NAME="${DATABASE_URL##*/}"
-DB_NAME="${DB_NAME%%\?*}"
-
 if [[ $KEEP -eq 0 ]]; then
+  # Resolve the CLI and its dependencies before terminating any DB sessions.
+  $CLI status >/dev/null
   step "1a. Dropping and recreating ${DB_NAME}"
-  $PY - <<'PYEOF'
-import os
-import psycopg2
-
-admin = os.environ["DATABASE_URL_ADMIN"]
-name = os.environ["DATABASE_URL"].rsplit("/", 1)[-1].split("?")[0]
-conn = psycopg2.connect(admin)
-conn.autocommit = True
-with conn.cursor() as cur:
-    cur.execute(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-        "WHERE datname = %s AND pid <> pg_backend_pid()",
-        (name,),
-    )
-    cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
-conn.close()
-print(f"  dropped {name}")
-PYEOF
+  $PY scripts/runtime_env.py drop
 fi
 
 step "1b. Migrating and seeding the catalogs"
-$CLI bootstrap-db --with-test-db
+$CLI bootstrap-db
 $CLI verify-schema
 $CLI feat seed-types
 $CLI indicators seed-catalog
@@ -581,4 +542,4 @@ if (( ${#SKIPPED[@]} )); then
   note "unavailable on real data (${#SKIPPED[@]}): ${SKIPPED[*]}"
   note "each reads a scenario input step 9b supplies; if 9b failed, see its comment"
 fi
-note "map: REIMAGINA_APP_DSN=$DATABASE_URL $PY -m apps.api  +  (cd apps/web && npm run dev)"
+note "map: make dev (uses the configured environment)"

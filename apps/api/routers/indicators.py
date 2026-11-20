@@ -138,10 +138,9 @@ def list_indicators(
         default=None,
         description=(
             "Which results count toward `aoi_id`: this scenario's and the "
-            "baseline's, rather than the baseline's alone. Needed because the "
-            "edificability indicators exist only inside a scenario, so "
-            "without it the picker hides exactly what a scenario was authored "
-            "to show. A well-formed id naming no scenario offers the baseline "
+            "baseline's, rather than the baseline's alone. This includes "
+            "indicators with scenario results even when no baseline results "
+            "have been computed. A well-formed id naming no scenario offers the baseline "
             "set — the same thing that would render. No effect without "
             "`aoi_id`, which is what narrows."
         ),

@@ -12,13 +12,17 @@ API layer).
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Iterator
-from threading import BoundedSemaphore, Lock
+from collections.abc import AsyncIterator
+from threading import Lock
+from typing import Any
 
 import psycopg2
+from anyio import CancelScope
 from fastapi import HTTPException
 from psycopg2.pool import ThreadedConnectionPool
+from starlette.concurrency import run_in_threadpool
 
 from reimagina.storage import backend_for_connection
 from reimagina.storage.interfaces import StorageBackend
@@ -78,7 +82,7 @@ _pool: ThreadedConnectionPool | None = None
 #: instead of queueing. A map loading at a new zoom is exactly that burst —
 #: measured, 40 concurrent tile requests came back 16 x 200 and 24 x 500 on an
 #: idle server. Taking a permit before ``getconn`` makes the excess wait.
-_slots: BoundedSemaphore | None = None
+_slots: asyncio.Semaphore | None = None
 _pool_lock = Lock()
 
 
@@ -108,7 +112,7 @@ def initialise_pool(
             size,
             api_dsn() if dsn is None else dsn,
         )
-        _slots = BoundedSemaphore(size)
+        _slots = asyncio.Semaphore(size)
 
 
 def shutdown_pool() -> None:
@@ -122,7 +126,7 @@ def shutdown_pool() -> None:
         _slots = None
 
 
-def get_db_conn() -> Iterator[psycopg2.extensions.connection]:
+async def get_db_conn() -> AsyncIterator[psycopg2.extensions.connection]:
     """Yield a pool-backed Postgres connection; rolls back + returns on teardown.
 
     Returns the connection to the pool even when the handler raises. If
@@ -138,35 +142,68 @@ def get_db_conn() -> Iterator[psycopg2.extensions.connection]:
             "API connection pool is not initialised; "
             "apps.api.app.create_app() must run before any request arrives."
         )
-    if not slots.acquire(timeout=_pool_wait_s()):
+    # Wait on the event loop, before using a request thread. A blocking
+    # semaphore here exhausted AnyIO's threads during map tile bursts: every
+    # thread waited for a connection while the handlers holding connections
+    # were queued behind them and could not run to release one.
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout=_pool_wait_s())
+    except TimeoutError:
         raise HTTPException(
             status_code=503,
             detail="Every database connection is busy; try again shortly.",
             headers={"Retry-After": "1"},
-        )
+        ) from None
+    connection = None
     try:
-        connection = pool.getconn()
-    except BaseException:
-        slots.release()
-        raise
-    broken = False
-    try:
+        # Checkout can open a socket. Cancellation must not abandon a thread
+        # that subsequently obtains a connection nobody knows to return.
+        with CancelScope(shield=True):
+            checkout = asyncio.create_task(run_in_threadpool(pool.getconn))
+            try:
+                connection = await asyncio.shield(checkout)
+            except asyncio.CancelledError:
+                connection = await _finish_database_task(checkout)
+                raise
+        assert connection is not None
         connection.autocommit = False
         yield connection
-    except Exception:
+    finally:
         try:
-            connection.rollback()
-        except psycopg2.Error:
-            broken = True
-        raise
-    else:
+            if connection is not None:
+                with CancelScope(shield=True):
+                    cleanup = asyncio.create_task(
+                        run_in_threadpool(_return_connection, pool, connection)
+                    )
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        await _finish_database_task(cleanup)
+                        raise
+        finally:
+            slots.release()
+
+
+async def _finish_database_task(task: asyncio.Task[Any]) -> Any:
+    # AnyIO shields parent cancellation scopes, but not Task.cancel(). Keep
+    # the thread's result reachable and wait even if the request is cancelled
+    # repeatedly; its connection permit belongs to the operation until it ends.
+    while True:
         try:
-            connection.rollback()
-        except psycopg2.Error:
-            broken = True
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+
+
+def _return_connection(pool, connection) -> None:
+    broken = False
+    try:
+        connection.rollback()
+    except psycopg2.Error:
+        broken = True
     finally:
         pool.putconn(connection, close=broken)
-        slots.release()
 
 
 def get_backend(

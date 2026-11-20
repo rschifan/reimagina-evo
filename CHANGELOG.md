@@ -9,9 +9,17 @@ From `v1.0.0` the public API, database schema, and CLI contracts follow Semantic
 
 ## [Unreleased]
 
+### Fixed
+
+- macOS/Linux installation instructions, environment precedence, destructive
+  script target validation and development-process cleanup.
+- API connection-pool waits that could stall browser requests under load.
+- URL-encoded bootstrap DSNs and explicit database-test configuration.
+
 ## [1.0.0] — 2026-11-20
 
-First stable release. It is the cumulative result of the work since `0.1.0`:
+Source milestone; the `v1.0.0` tag and release assets have not been published.
+It is the cumulative result of the work since `0.1.0`:
 the indicator layer, the orchestration plane, scenario authoring, and the
 delivery documentation.
 
@@ -77,6 +85,6 @@ delivery documentation.
 - MapLibre-GL web app with modular hover-tooltip and hover-highlight primitives.
 - Operator CLI: ingest, publish, status, raster pipelines, derivation management.
 
-[Unreleased]: https://github.com/rschifan/reimagina-evo/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/rschifan/reimagina-evo/compare/v0.1.0...v1.0.0
+[Unreleased]: https://github.com/rschifan/reimagina-evo/compare/v0.1.0...HEAD
+[1.0.0]: https://github.com/rschifan/reimagina-evo/commit/dba836f
 [0.1.0]: https://github.com/rschifan/reimagina-evo/releases/tag/v0.1.0

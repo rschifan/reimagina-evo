@@ -3,7 +3,12 @@
 Frontend application boundary of the prototype.
 
 - Owns pages, components, frontend state, and API consumption
-- Talks only to `apps/api`
+- Reads application data and submits changes through `apps/api`.
+- Loads tiles from endpoints returned by the API's tile-source manifest:
+  the API itself, Martin, or configured raster/snapshot hosts.
+
+For prerequisites, configuration and startup, follow the
+[installation guide](../../docs/INSTALLATION.md).
 
 Four pages, each its own Vite entry (`vite.config.ts`), sharing one top bar:
 
@@ -15,4 +20,5 @@ Four pages, each its own Vite entry (`vite.config.ts`), sharing one top bar:
 | Runs | `ops.html` → `src/ops/` | The run dashboard |
 
 The scenario workspace offers only the indicators a scenario rule can change
-(`GET /scenarios/indicators`); see `docs/architecture/SCENARIOS_LAYER.md`.
+(`GET /scenarios/indicators`); see the
+[scenario reference](../../docs/architecture/SCENARIOS_LAYER.md).

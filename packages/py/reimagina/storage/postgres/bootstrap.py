@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 import psycopg2
 from psycopg2 import sql
 
@@ -11,10 +9,10 @@ from .migrations import run_postgres_migrations
 
 
 def database_name_from_dsn(dsn: str) -> str:
-    parsed = urlparse(dsn)
-    name = parsed.path.lstrip("/")
+    # Use the same decoding as connect() and the destructive harness guard.
+    name = psycopg2.extensions.parse_dsn(dsn).get("dbname")
     if not name:
-        raise ValueError(f"DSN has no database name: {dsn!r}")
+        raise ValueError("DSN has no database name")
     return name
 
 

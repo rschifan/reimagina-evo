@@ -1,8 +1,11 @@
-# PostgreSQL Migration Note
+# PostgreSQL migrations
 
-PostgreSQL/PostGIS migrations remain temporarily managed through the existing Alembic stack in `infra/db/migrations/versions`.
+Alembic revisions live in `infra/db/migrations/versions`; `alembic.ini` points
+to that migration tree. The PostgreSQL runner is
+`packages/py/reimagina/storage/postgres/migrations.py`.
 
-This folder exists to make the backend split explicit while the project transitions toward a backend-aware migration runner:
+Use `make migrate` for installation: it creates missing application/test
+databases, applies revisions, seeds catalogs/assets and provisions DBOS.
+A bare Alembic upgrade performs only the schema-revision step.
 
-- `common/` holds shared logical revision ordering
-- `postgres/` documents the Postgres side until the project moves its logical migration manifest fully behind the storage manager
+See the [installation guide](../../../../docs/INSTALLATION.md#5-install-dependencies-and-migrate).

@@ -1,18 +1,13 @@
-# Local + pre-push parity with CI.
-#
-# Ruff version is pinned to match `.github/workflows/ci.yml` so the
-# hook reports the same diagnostics CI does — bumping one without the
-# other surfaces "passes locally, fails in CI" reports that waste
-# everyone's time.
-#
-# Install once per clone: `pre-commit install` (also documented in
-# CONTRIBUTING.md). Run on demand: `pre-commit run --all-files`.
+# Ruff matches pyproject.toml / uv.lock; CI runs it through uv.
+# Hooks also run file hygiene and Prettier, not the full CI suite.
+# Setup: uv tool install pre-commit && pre-commit install
+# Run: pre-commit run --all-files
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.17.5
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
 

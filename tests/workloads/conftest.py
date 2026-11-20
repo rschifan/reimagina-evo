@@ -119,17 +119,17 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture(scope="session")
 def bench_db() -> str:
     from alembic import command
-    from alembic.config import Config
+    from reimagina.storage.postgres.bootstrap import database_name_from_dsn
+    from reimagina.storage.postgres.migrations import postgres_alembic_config
 
-    if "test" not in _DSN.rsplit("/", 1)[-1]:
-        pytest.fail(f"refusing to run against a non-test database: {_DSN}")
+    if "test" not in database_name_from_dsn(_DSN).lower():
+        pytest.fail("refusing to run against a non-test database")
     try:
         psycopg2.connect(_DSN).close()
     except psycopg2.OperationalError as exc:
         pytest.skip(f"bench database unavailable: {exc}")
 
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", _DSN)
+    cfg = postgres_alembic_config(_DSN)
     command.upgrade(cfg, "head")
     # ⚠ No `downgrade base` on teardown, unlike tests/conftest.py. Re-migrating
     # 32 revisions per session costs more than the suite itself, and the bench

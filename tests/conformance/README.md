@@ -19,7 +19,7 @@ the same head — so no shared fixture can parametrise across both. The comparis
 is a diff of two runs of the same file:
 
 ```bash
-pytest tests/conformance -q --no-header -rA \
+uv run pytest tests/conformance -q --no-header -rA \
   | grep -E '^(PASSED|SKIPPED|FAILED)' \
   | sort > conformance-$(git branch --show-current).txt
 ```
@@ -64,7 +64,9 @@ came out.)
 
 ## Preconditions
 
-Postgres (`TEST_DATABASE_URL`, default `postgresql://localhost/reimagina_test`).
+Postgres (`TEST_DATABASE_URL`, explicitly exported or set in the checkout's `.env`).
+There is no implicit database target. Use `REIMAGINA_REQUIRE_DB=1` to fail,
+rather than skip, when database configuration or connectivity is missing.
 Everything skips cleanly without it. The suite seeds on a committed connection
 and tears down surgically, because a queue worker opens its own connection and
 cannot see uncommitted rows.
