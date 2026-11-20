@@ -24,7 +24,7 @@ Unresolved questions and gaps identified during architecture review. Each item r
 | T2-6 | Table partitioning on `observation` | **Deferred** — before 10M rows |
 | T2-7 | `aoi_indicator_summary` table | **Done** — r015 schema + serving view + repo on both backends; `reimagina.jobs.aoi_summary.summarise_aoi` worker shipped; validated on real Cuauhtémoc data (one `current` summary row, pro-rated over 14 missing child features). |
 | T2-8 | SSE for job status | **Done** — `GET /jobs/{run_id}/events` (`apps/api/routers/jobs.py::stream_run_events`), over DBOS workflow streams rather than the LISTEN/NOTIFY this entry assumed. Detail below. |
-| T2-9 | Row-Level Security | **Policies done** — r011. ⚠ Inert in practice: permissive whenever `app.current_project_id` is unset, and nothing in the app sets it, so every current caller sees every row. FORCE RLS and a dedicated non-owner app role are deliberately deferred to the first deployed API route (see `ENGINEERING_NOTES.md`). Not a tenancy boundary yet. |
+| T2-9 | Row-Level Security | **Policies done** — r011. ⚠ Inert in practice: permissive whenever `app.current_project_id` is unset, and nothing in the app sets it, so every current caller sees every row. FORCE RLS and a dedicated non-owner app role are deliberately deferred to the first deployed API route. Not a tenancy boundary yet. |
 | T3-10 | OpenTelemetry distributed tracing | **Not built** |
 | T3-11 | STAC alignment for `file_asset` | **Not built** — low priority |
 | T3-12 | OGC API Features compliance | **Not built** — low priority |

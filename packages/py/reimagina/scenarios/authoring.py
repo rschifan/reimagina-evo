@@ -214,7 +214,7 @@ def _require_aoi_in_project(conn: Any, *, aoi_id: str, project_id: str) -> None:
     no surface offers a PUT or a PATCH, and the FK's ``ON DELETE SET NULL`` can
     only empty it. A CHECK cannot express the rule — it spans two tables — and
     a trigger would be the right answer only if an untrusted writer existed.
-    RLS is inert (``docs/delivery/01_architecture_map.md``, deferred risk T6),
+    RLS is inert (a known, deferred risk: see ``SCENARIOS_LAYER.md``),
     so what this closes is our own client sending a mismatched pair, which is a
     correctness bug rather than a breached boundary.
 
