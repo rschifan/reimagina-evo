@@ -129,6 +129,8 @@ docs/adr/
 docs/delivery/
 docs/legacy/
 docs/superpowers/
+docs/AZURE_DATA_INVENTORY.md
+docs/ENGINEERING_NOTES.md
 
 # Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
 # retirement left 6.8 MB of them tracked under a dotted directory, where a
