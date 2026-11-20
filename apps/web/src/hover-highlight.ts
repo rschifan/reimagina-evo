@@ -11,7 +11,7 @@
  * Standard MapLibre idiom, encapsulated:
  *   1. Source must be added with ``promoteId`` so ``feature.id`` is
  *      populated from a stable MVT property (we use ``feature_id``
- *      emitted by every reimagina tile function).
+ *      emitted by every tile function).
  *   2. On mousemove/mouseleave the feature-state ``hover`` flag flips
  *      for the feature under the cursor.
  *   3. Paint expressions on the fill / line read that flag and switch

@@ -23,7 +23,7 @@ import { minzoomForGrain } from "./layers";
 function emptyStyle(): StyleSpecification {
   return {
     version: 8,
-    name: "reimagina-empty",
+    name: "r-evo-empty",
     sources: {},
     layers: [
       {

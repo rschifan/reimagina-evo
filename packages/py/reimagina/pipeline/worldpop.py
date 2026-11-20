@@ -43,7 +43,7 @@ DEFAULT_DATASET = "wpgp"
 # but urllib doesn't enforce a per-byte stall on read once the socket
 # is open.
 _REQUEST_TIMEOUT_SECONDS = 60
-_USER_AGENT = "reimagina-cli/0.1 (+github.com/reimagina) worldpop-fetch"
+_USER_AGENT = "r-evo-cli/1.0 worldpop-fetch"
 
 
 class WorldPopFetchError(RuntimeError):

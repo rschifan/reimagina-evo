@@ -5,7 +5,7 @@ browsers, analytical scripts, and anything else that wants to read the
 reimagina platform without talking to Postgres directly.
 
 - **OpenAPI**: `http://localhost:8001/docs` (Swagger) or `/redoc`.
-- **Run locally**: `python -m apps.api`.
+- **Run locally**: `make dev` (API, web app and worker), or `uv run python -m apps.api`.
 - **Base URL in dev**: `http://127.0.0.1:8001`. Through the Vite dev
   proxy the frontend sees it at `/api/...` instead.
 
@@ -17,13 +17,18 @@ domain packages don't import app code") holds.
 
 ## Endpoints
 
+All 44 operations the project defines are below; the in-process titiler routes under `/cog` are titiler's own and are listed in the OpenAPI document. `docs/delivery/03_database_and_api_reference.md` is the generated reference, with every parameter and response model.
+
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/health/live` | `{status:"ok"}` — process alive. Never touches DB. |
 | GET | `/health/ready` | `{status, db}` — 200 iff DB is reachable, 503 otherwise. |
 | GET | `/health` | Alias for `/health/ready` (legacy). |
+| GET | `/health/tile-server` | Whether Martin answers at `REIMAGINA_MARTIN_URL`, and the database the API itself reads, so the two can be compared. |
 | GET | `/indicators` | Every indicator in `indicator_catalog`. Each row carries `cap_value` — the value at which a distance indicator is truncated (e.g. `1500` m) — or `null` when it has none; a reading at the cap means "this far or more", not a measurement. |
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
+| GET | `/indicators/{slug}/dependencies` | What the indicator is computed from (`upstream`) and what is computed from it (`downstream`), indicator to indicator. Both empty is the common case. |
+| GET | `/indicators/{slug}/lineage` | The asset closure around the indicator in both directions, down to the datasets it ultimately reads. Empty lists when the asset graph is not seeded. |
 | GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). |
 | GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`sum` is `null` with no rows — no values is no total). `bins=1..200` adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. `count_at_cap` is the number of those rows with `value >= cap_value`, `null` when the indicator has no cap. |
 | GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
@@ -34,12 +39,21 @@ domain packages don't import app code") holds.
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features`. |
 | GET | `/features/{feature_id}/indicators` | The feature's current value for every indicator that has one, each with its exact rank among same-grain features of the AOI: `slug`, `name`, `unit`, `cap_value`, `value`, `count_below`, `count_equal`, `count`. Optional `aoi_id` (the peer set) and `scenario_id` (base city if omitted). 404 on an unknown feature. |
 | POST | `/metrics/indicator-within-polygon` | `/indicators/{slug}/stats` for the features whose centroid falls inside a GeoJSON Polygon. Body: `aoi_id`, `polygon` (EPSG:4326), `indicator_slug`, optional `feature_type`. Same response shape as `/stats`, including `count_at_cap`. 422 on a non-Polygon or non-finite polygon, 404 on an unknown indicator. |
+| POST | `/metrics/within-polygon` | Count of features intersecting a GeoJSON polygon, grouped by `type_slug`. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with snapshot registry; frontend-ready. |
 | GET | `/tile-sources/attribution` | Credit lines for every source that actually has features, from `data_source_catalog.license`. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
 | GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |
 | GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. |
-| GET | `/scenarios` | Scenarios, newest first, by `project_id` and/or `aoi_id`. Each row carries `edit_count` and `latest_run` (`{id, status}` of its newest run envelope in `orchestration_run` — the id `GET /jobs/{run_id}` takes — or `null`) — a failed recompute still sets `materialized_at`, so only the run tells it from a good one. A run still queued has no envelope yet. The other scenario routes are in `SCENARIOS_LAYER.md`. |
+| GET | `/scenarios` | Scenarios, newest first, by `project_id` and/or `aoi_id`. Each row carries `edit_count` and `latest_run` (`{id, status}` of its newest run envelope in `orchestration_run` — the id `GET /jobs/{run_id}` takes — or `null`) — a failed recompute still sets `materialized_at`, so only the run tells it from a good one. A run still queued has no envelope yet. `SCENARIOS_LAYER.md` describes the scenario routes in depth. |
 | GET | `/scenarios/indicators` | The indicators a scenario rule can change, inputs before dependents, each with `statistic` (`sum` or `median`). Derived from the catalog, not listed. Declared before `/scenarios/{scenario_id}`, which would otherwise read `indicators` as an id. |
+| POST | `/scenarios` | Create a named what-if; `201` with the scenario as `GET` returns it. |
+| GET | `/scenarios/{scenario_id}` | One scenario with its edits in order and its override count. |
+| DELETE | `/scenarios/{scenario_id}` | Delete a scenario and everything it wrote; answers the four counts removed. 404 for an unknown id. |
+| POST | `/scenarios/{scenario_id}/edits` | Draw one area and write the five edits of one rule over it, in one transaction. `201`; 422 on a value past the floor or density ceiling. |
+| PATCH | `/scenarios/{scenario_id}/rules` | Change one rule's numbers (`edit_ids`, `levels`, `unit_size`, `people_per_household`, `lot_coverage`), and optionally move or resize it (`area`), in place. Same refusals, in the same order, as `POST …/edits`; does not recompute. |
+| DELETE | `/scenarios/{scenario_id}/edits` | Remove one rule (`edit_id`) from this scenario. Its overrides are withdrawn on the next recompute. `204`. |
+| POST | `/scenarios/{scenario_id}/recompute` | Materialise the scenario's edits, then enqueue the recompute of what they changed. `202` with the run id, `null` when nothing needs recomputing. |
+| GET | `/scenarios/{scenario_id}/comparison` | One indicator under the scenario against the baseline: `{feature_id, baseline, scenario, delta, state}` per feature, `state` one of `changed`, `unchanged`, `new`. |
 | POST | `/jobs` | Submit a run. Scope it with `changed_attributes`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with the run id, or `status:"noop"` and a **null** run id when the dirty set was empty. |
 | GET | `/jobs` | Run list for the dashboard: rows with unit counts, `total`, unfiltered `status_counts`, executor health and `server_now`, in one response. Repeatable `status=`, `limit=1..200`, `offset`. |
 | GET | `/jobs/{run_id}` | Run status through the orchestrator port. Unchanged. |
@@ -158,9 +172,9 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_API_POOL_WAIT_S` | `30` | How long a request waits for a free connection when all `REIMAGINA_API_POOL_MAX` are busy, before answering 503 with `Retry-After`. psycopg2's pool never waits on its own; without this a burst wider than the pool (a map loading at a new zoom) failed with `connection pool exhausted`. |
 | `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed through CORS. |
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host. |
-| `REIMAGINA_API_PORT` | `8000` | uvicorn bind port. |
+| `REIMAGINA_API_PORT` | `8001` | uvicorn bind port for `python -m apps.api`. The `make` targets use `API_PORT` (default `8001`). |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level. |
-| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for live MVT. Must be reachable by the end user's browser in deployed environments. **This is the whole switch between tile servers:** `http://localhost:3000` for Martin, `http://localhost:8001/tiles` for the API's own route. |
+| `REIMAGINA_TILE_LIVE_BASE_URL` | `http://localhost:3000/get_tile` | Base URL `/tile-sources` hands back for live MVT. Must be reachable by the end user's browser in deployed environments. **This is the whole switch between tile servers:** `http://localhost:3000` for Martin, `/api/tiles` for the API's own route through the web app's proxy (the absolute `http://localhost:8001/tiles` is cross-origin and depends on CORS). `make dev` and `make dev-api` set `/api/tiles` regardless of `.env`. |
 | `REIMAGINA_TILE_SNAPSHOT_BASE_URL` | `http://localhost:3001` | Static host serving PMTiles snapshot artifacts. |
 | `REIMAGINA_TILE_MAX_AGE_S` | `60` | `Cache-Control: max-age` on API-served tiles. Scenario tiles (`scenario_id` in the query) are always `no-cache`. |
 | `REIMAGINA_TILE_STALE_WHILE_REVALIDATE_S` | `300` | `stale-while-revalidate` on API-served tiles — what lets a map pan instead of blink. |
@@ -228,5 +242,5 @@ curl -s 'http://localhost:8001/indicators/urban_form_block_building_density/valu
 
 curl -s 'http://localhost:8001/indicators/urban_form_block_building_density/values.parquet?feature_type=ageb' \
   > /tmp/density.parquet
-python -c "import geopandas; print(geopandas.read_parquet('/tmp/density.parquet').head())"
+uv run python -c "import geopandas; print(geopandas.read_parquet('/tmp/density.parquet').head())"
 ```

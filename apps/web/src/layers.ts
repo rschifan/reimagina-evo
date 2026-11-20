@@ -263,7 +263,7 @@ export function installInputLayers(
     const visibility = visible(layer) ? "visible" : "none";
     // promoteId surfaces the MVT 'feature_id' property as feature.id so
     // setFeatureState({...id}) can find the right feature for hover
-    // highlighting. Every reimagina tile function emits feature_id.
+    // highlighting. Every tile function emits feature_id.
     map.addSource(layer.sourceName, {
       type: "vector",
       tiles: [tileUrl],
@@ -729,7 +729,7 @@ function _formatPopulationLine(props: Record<string, unknown>): string | undefin
   const pob = _readNumber(props, "censo_2020_pobtot");
   if (pob === null) return undefined;
   const viv = _readNumber(props, "censo_2020_vivtot");
-  const parts = [`Pop. 2010: ${fmtNumber(pob)}`];
+  const parts = [`Pop. 2020: ${fmtNumber(pob)}`];
   if (viv !== null) parts.push(`viv: ${fmtNumber(viv)}`);
   return parts.join(" · ");
 }

@@ -10,11 +10,24 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
 API = os.environ.get("REIMAGINA_E2E_API", "http://127.0.0.1:8001")
-WEB = os.environ.get("REIMAGINA_E2E_WEB", "http://127.0.0.1:5173")
+# ⚠ `localhost`, not `127.0.0.1`: Vite listens on `localhost`, which macOS
+# resolves to `::1` first, so there the dev server is not on 127.0.0.1 at all.
+WEB = os.environ.get("REIMAGINA_E2E_WEB", "http://localhost:5173")
+
+# Playwright goes into the web app's node_modules (see the skip message below),
+# which neither the repo root nor tests/e2e resolves `require` from.
+_WEB_MODULES = Path(__file__).resolve().parents[2] / "apps" / "web" / "node_modules"
+NODE_ENV = {
+    **os.environ,
+    "NODE_PATH": os.pathsep.join(
+        p for p in (str(_WEB_MODULES), os.environ.get("NODE_PATH", "")) if p
+    ),
+}
 
 
 def _reachable(url: str) -> bool:
@@ -71,15 +84,15 @@ def _playwright_resolves() -> str | None:
         capture_output=True,
         text=True,
         timeout=30,
+        env=NODE_ENV,
     )
     if probe.returncode == 0:
         return None
     return (
         "the 'playwright' node module does not resolve, so the browser probe "
-        "cannot run. Install it where the driver can see it:\n"
-        "    cd apps/web && npm install --no-save playwright\n"
-        "Chromium itself is already present in the session image; no "
-        "'playwright install' is needed."
+        "cannot run. Install it, and the browser it drives, with:\n"
+        "    cd apps/web && npm install --no-save playwright "
+        "&& npx playwright install chromium"
     )
 
 
@@ -101,8 +114,9 @@ def servers() -> dict[str, str]:
     if missing:
         pytest.skip(
             f"{' and '.join(missing)} not reachable. Start them with:\n"
-            "    REIMAGINA_APP_DSN=... python -m apps.api\n"
-            "    cd apps/web && npm run dev"
+            "    make dev\n"
+            "or, on other ports, `make dev API_PORT=... WEB_PORT=...` with\n"
+            "REIMAGINA_E2E_API / REIMAGINA_E2E_WEB set to match"
         )
     return {"api": API, "web": WEB}
 
@@ -119,13 +133,12 @@ def probe(servers, tmp_path_factory):
     delivery claims to ship.
     """
     import json
-    from pathlib import Path
 
     driver = Path(__file__).parent / "_browser_probe.js"
     out = tmp_path_factory.mktemp("e2e") / "report.json"
     result = subprocess.run(
         ["node", str(driver)],
-        env={**os.environ, "E2E_WEB": servers["web"], "E2E_OUT": str(out)},
+        env={**NODE_ENV, "E2E_WEB": servers["web"], "E2E_OUT": str(out)},
         capture_output=True,
         text=True,
         timeout=300,

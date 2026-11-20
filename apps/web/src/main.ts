@@ -1,5 +1,5 @@
 /**
- * Entry point for the reimagina read-side web app.
+ * Entry point for the r-evo map page.
  *
  * Boots MapLibre with a minimal offline style (no basemap — the
  * prototype avoids external tile dependencies and licensing drift),
@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   const topbar = document.getElementById("topbar");
   if (topbar) mount(TopBar, { target: topbar, props: { current: "map" } });
 
-  setBanner("loading", "Connecting to the reimagina API…");
+  setBanner("loading", "Connecting to the API…");
 
   // Show the spinner immediately so the user has feedback while the
   // first /aois + /tile-sources round-trip happens (before the map
@@ -480,7 +480,7 @@ async function main(): Promise<void> {
     // stats fetch from request N doesn't overwrite the result of a
     // newer request N+1. Without this, switching AOI or indicator
     // rapidly leaves the map showing the older combination's ramp +
-    // tile source — a subtle "stale state" bug Codex flagged.
+    // tile source — a subtle "stale state" bug.
     let renderToken = 0;
 
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """The orchestration demo, on real Tlalpan data.
 
-Answers the four questions the Reimagina collaborators asked, by running them
+Answers the four questions the collaborators asked, by running them
 rather than describing them:
 
   mapping        which attribute edits trigger which runs
@@ -29,13 +29,17 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import psycopg2
 
 DEFAULT_DSN = "postgresql://localhost/reimagina_demo"
 #: Where the real INEGI / SIGCDMX extracts live. Not in this worktree.
-DEFAULT_SOURCE_ROOT = "/Users/rschifan/Desktop/projects/reimagina/data/sources/azure"
+DEFAULT_SOURCE_ROOT = os.environ.get(
+    "REIMAGINA_SOURCE_ROOT",
+    str(Path(__file__).resolve().parents[1] / "data/sources/azure"),
+)
 AOI_NAME = "Tlalpan"
 CVE_ENT, CVE_MUN = "09", "012"
 

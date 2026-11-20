@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reimagina"
-version = "0.1.0"
-description = "Reimagina urban planning scenario modelling platform — prototype"
+version = "1.0.0"
+description = "An architectural prototype of a platform that computes urban indicators and explores planning scenarios"
 # 3.12, not 3.11. pyproj 3.8 requires >=3.12, and the declared floor had
 # been wider than the gated one for a year — CI pins UV_PYTHON to 3.12 and
 # nothing has ever tested 3.11. Narrowing it makes the declaration true

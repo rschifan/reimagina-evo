@@ -16,8 +16,8 @@ own guard names the function in its error text:
 
 — so a user who ran `indicators compute --slug
 accessibility_block_school_network_m` on real data was told to go call a
-Python function. And `AGENTS.md` documents the street layer as the map's
-only spatial context, with no command to fill it.
+Python function. And the street layer is the map's only spatial context, with no
+command to fill it.
 """
 
 from __future__ import annotations

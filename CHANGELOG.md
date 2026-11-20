@@ -5,9 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Until `v1.0.0` the public API, database schema, and CLI contracts are considered unstable — breaking changes may land in any `0.y` release.
+From `v1.0.0` the public API, database schema, and CLI contracts follow Semantic Versioning. `0.y` releases made no stability promise.
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-11-20
+
+First stable release. It is the cumulative result of the work since `0.1.0`:
+the indicator layer, the orchestration plane, scenario authoring, and the
+delivery documentation.
+
+### Added
+
+- Twelve indicators at block grain, including accessibility over the street
+  network, a density + accessibility livability score and an urban-form
+  composite; composite inputs are oriented and normalised so the weights mean
+  what they say.
+- An asset graph and one version algebra: an edit to an attribute invalidates
+  exactly the indicators that read it, and a completed load recomputes what it
+  invalidated.
+- An orchestration plane on DBOS 3: per-unit run state, as-completed dispatch,
+  cancellable runs, SSE run telemetry, a dry run of the planner and run
+  controls, with a conformance suite that asserts the port contract.
+- Scenario authoring: draw a rule on the map, override attributes, read the
+  result as an overlay on the baseline, with delta tiles and a scenario
+  workspace page for planners.
+- Web app: indicator catalog for operators, a run dashboard and execution
+  timeline, an exploration map page with legend and inspector, an AOI picker,
+  a grain selector, and AOI-scoped downloads.
+- Pilot data pipelines: INEGI Marco Geoestadístico, census observations and
+  roll-ups, per-city amenity ingest, WorldPop and raster zonal statistics.
+- The delivery documents (architecture map, database and API reference,
+  technical documentation), their reproducible PDF renderer,
+  the delivery manifest generator and `scripts/acceptance_run.sh`.
+- 63 API operations; database schema at migration `r052`.
+
+### Changed
+
+- The CLI moved from argparse to Typer.
+- Only block grain is offered; the AGEB grain and the straight-line indicator
+  family were retired.
+- The DuckDB backend was removed; PostgreSQL is the single storage engine.
+- `data_source_catalog.storage_uri` records where data came from.
+- The API waits for a free pooled connection instead of failing.
+- `make release` builds the release bundle (PDFs, manifest, checksums, source
+  archive) into `dist/`.
+- Internal tooling files are no longer part of the repository.
 
 ### Fixed
 
@@ -34,5 +77,6 @@ Until `v1.0.0` the public API, database schema, and CLI contracts are considered
 - MapLibre-GL web app with modular hover-tooltip and hover-highlight primitives.
 - Operator CLI: ingest, publish, status, raster pipelines, derivation management.
 
-[Unreleased]: https://github.com/rschifan/reimagina-evo/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rschifan/reimagina-evo/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/rschifan/reimagina-evo/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/rschifan/reimagina-evo/releases/tag/v0.1.0

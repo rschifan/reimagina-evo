@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "reimagina-evo: urban planning scenario modelling platform"
+title: "r-evo: architectural prototype of a platform that computes urban indicators and explores planning scenarios"
 message: "If you use this software, please cite it as below."
 type: software
 authors:
@@ -9,8 +9,8 @@ authors:
     affiliation: ISI Foundation
 repository-code: "https://github.com/rschifan/reimagina-evo"
 license: MIT
-version: 0.1.0
-date-released: "2026-04-22"
+version: 1.0.0
+date-released: "2026-11-20"
 keywords:
   - urban-analytics
   - gis

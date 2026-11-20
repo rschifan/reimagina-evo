@@ -1,4 +1,4 @@
-"""Request-scoped dependencies for reimagina FastAPI routers.
+"""Request-scoped dependencies for the FastAPI routers.
 
 A process-wide ThreadedConnectionPool is created on app startup (see
 app.lifespan) and torn down on shutdown. Each request checks a connection

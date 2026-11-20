@@ -152,7 +152,7 @@ step "7. Ingesting a raster: bronze -> silver COG -> registry"
 INGEST="$($CLI raster ingest \
   --raw-path "$RASTER" \
   --source-name "Synthetic Mexicali population" \
-  --provider reimagina-synthetic \
+  --provider r-evo-synthetic \
   --version synthetic-v1 \
   --layer-slug syn_pop_acceptance \
   --aggregation-kind extensive \
@@ -438,6 +438,7 @@ import sys
 sys.path.insert(0, "packages/py")
 os.environ["REIMAGINA_DBOS_EXECUTION_MODE"] = "client"
 from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator  # noqa: E402
+from reimagina.orchestration.port import RUN_TERMINAL_STATES  # noqa: E402
 from reimagina.storage import connect  # noqa: E402
 
 request = {
@@ -472,13 +473,13 @@ if second.run_id == first.run_id and second.deduplicated:
 with connect(os.environ["DATABASE_URL"]) as conn:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT status FROM jobs_runtime.orchestration_run WHERE run_id = %s::uuid",
+            "SELECT status FROM jobs_runtime.orchestration_run WHERE id = %s::uuid",
             (first.run_id,),
         )
         row = cur.fetchone()
 status = row[0] if row else None
 print(f"  run 1 status at the time of submit 2: {status}")
-if status in {"succeeded", "failed", "cancelled"}:
+if status in RUN_TERMINAL_STATES:
     print(
         "  run 1 had already finished, so the key was released and submit 2 "
         "correctly started new work — deduplication covers outstanding runs, "
@@ -509,7 +510,7 @@ sys.path.insert(0, ".")
 from reimagina.storage import connect  # noqa: E402
 from scripts.mvt_inspect import decode, summarise  # noqa: E402
 
-out = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "reimagina-acceptance-tiles"
+out = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "r-evo-acceptance-tiles"
 out.mkdir(parents=True, exist_ok=True)
 with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
     # Tile indices for the territory's centroid, at each zoom.

@@ -1,37 +1,54 @@
 """Generate the third-party dependency and licence inventory.
 
 A delivery of this platform has to be accompanied by a complete list of the
-third-party and open-source code it incorporates, with each item's licence
-terms, so that whoever receives it can see what they are taking on. This script
-produces that list.
+third-party and open-source components it incorporates, with each item's
+licence terms, so that whoever receives it can see what they are taking on.
+This script produces that list as ``docs/THIRD_PARTY_LICENSES.md``.
 
 It is a script rather than a hand-written document on purpose, and the reason
 is in this repository's own history: ``overridable_attributes()`` says a
 hand-maintained list "is how ``poi_version`` rotted — it named an input nothing
 produced and nothing validated, for six migrations". A licence inventory rots
 the same way and the rot is less visible, because nothing fails when it goes
-stale. Regenerate it; do not edit the output.
+stale. Regenerate it; do not edit the output. A contract test runs
+``--check``, so a lockfile change without a regenerated inventory fails.
 
-What it reads:
+What it reads, and why the output is the same on every machine:
 
-- **Python** — the distributions actually installed in the environment, via
-  ``importlib.metadata``, not the lockfile. The lockfile says what should be
-  resolved; the installed set is what a reader can actually inspect, and the
-  licence metadata lives there.
-- **npm** — every ``package.json`` under ``apps/web/node_modules``, plus
-  ``npm ls --omit=dev`` to mark the subset that reaches the production bundle.
-  That distinction matters: a build-time formatter and a library shipped to
-  every browser are not the same disclosure.
+- **Which packages, at which versions** — the lockfiles, never the local
+  install. ``uv.lock`` is resolved for the delivered platform (Linux x86_64,
+  CPython 3.12, glibc — what CI runs) by evaluating each dependency's
+  environment marker, walking from the project's own ``dependencies``
+  (runtime) and its ``dev`` extra (dev/test only). ``apps/web/package-lock.json``
+  is walked the way ``npm ci`` would on that platform: optional packages whose
+  ``os``/``cpu``/``libc`` exclude Linux x64 glibc are dropped with everything
+  only they pull in, and the lockfile's ``dev`` flag separates build/test
+  packages from the runtime tree.
+- **Python licence metadata** — read from the installed distributions, because
+  ``uv.lock`` does not carry it. Each one is matched to the lockfile by name
+  *and version*, and a mismatch is an error, so an unsynced environment cannot
+  silently produce a different document. The metadata of a release is the
+  same on every platform.
+- **npm licence metadata** — the ``license`` field the lockfile records.
+- **System components** — image tags from ``infra/docker/docker-compose.yml``.
 
-Where a package declares no licence, the script looks for a ``LICENSE`` file
-beside it and reports what it finds, labelled as coming from the file rather
-than the manifest. It never guesses: an unresolved package is reported as
-undeclared, because "probably MIT" is not a licence statement.
+Licence strings are normalised to SPDX identifiers. Where a manifest is vague
+(a "BSD License" classifier names no variant) the identifier was read off the
+package's own licence file and is recorded in ``PACKAGE_LICENCE`` with that
+evidence; the raw declaration is kept in the table. An identifier that is not
+in ``GLOSSARY`` stops the script — it never guesses, because "probably MIT" is
+not a licence statement.
+
+Some findings cannot be read off any manifest — the native libraries a wheel
+vendors, the licences of system services and of the data the platform loads.
+They are recorded below as data with the evidence for each, and printed with
+the package version they were checked at, so a later version bump shows
+plainly where a re-check is due.
 
 Usage::
 
-    python scripts/third_party_licences.py            # writes the document
-    python scripts/third_party_licences.py --check    # exit 1 if out of date
+    uv run python scripts/third_party_licences.py            # writes the document
+    uv run python scripts/third_party_licences.py --check    # exit 1 if out of date
 """
 
 from __future__ import annotations
@@ -39,153 +56,167 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
+import tomllib
+from collections import defaultdict
 from dataclasses import dataclass
-from importlib.metadata import distributions
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from typing import Any
+
+from packaging.markers import Marker
 
 ROOT = Path(__file__).resolve().parents[1]
-NODE_MODULES = ROOT / "apps" / "web" / "node_modules"
+UV_LOCK = ROOT / "uv.lock"
+NPM_LOCK = ROOT / "apps" / "web" / "package-lock.json"
+COMPOSE = ROOT / "infra" / "docker" / "docker-compose.yml"
 OUTPUT = ROOT / "docs" / "THIRD_PARTY_LICENSES.md"
 
-# This project's own distribution is not a third party to itself.
-OWN_PACKAGES = {"reimagina"}
+#: The delivered platform: CI's runner. Markers are evaluated against this,
+#: not against whatever machine runs the script.
+TARGET_ENV = {
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.0",
+    "os_name": "posix",
+    "platform_machine": "x86_64",
+    "platform_python_implementation": "CPython",
+    "platform_release": "",
+    "platform_system": "Linux",
+    "platform_version": "",
+    "python_full_version": "3.12.0",
+    "python_version": "3.12",
+    "sys_platform": "linux",
+}
+NPM_OS, NPM_CPU, NPM_LIBC = "linux", "x64", "glibc"
 
-# Findings that cannot be read off a manifest, recorded here so regenerating
-# the document does not discard the research. Keep each one to what was
-# actually checked — an inventory that launders an assumption into a statement
-# is worse than one that admits a gap.
-MANUAL_NOTES: dict[str, str] = {}
+SPDX = "https://spdx.org/licenses/{}.html"
 
-# Order matters: LGPL must be recognised before GPL, or every LGPL package is
-# reported as strong copyleft and the one category that would stop a delivery
-# stops meaning anything.
-WEAK_COPYLEFT = re.compile(
-    r"\bLGPL|Lesser General|\bMPL\b|MPL-|Mozilla Public|\bEPL-|Eclipse Public"
-    r"|\bCDDL|Common Development",
-    re.I,
-)
-STRONG_COPYLEFT = re.compile(
-    # ⚠ `\bGPL\b` matters as much as the versioned forms. A bare "GPL" with no
-    # version is what a licence *file* yields when the manifest declared
-    # nothing, and without this alternative it fell through every bucket to
-    # `undeclared` — so Article 4.1's "Strong copyleft: 0" could be true of the
-    # table and false of the tree. `\b` does not fire inside "LGPL" (both
-    # characters are word characters), and weak copyleft is tested first
-    # regardless, so this cannot capture an LGPL package.
-    r"\bAGPL|\bGPL-|\bGPLv|\bGPL\b|GNU General Public|\bSSPL"
-    r"|Open Software License|\bOSL-|\bCPAL|\bEUPL",
-    re.I,
-)
-PERMISSIVE = re.compile(
-    r"\bMIT\b|\bBSD\b|BSD-[0-9]|Apache|\bISC\b|\b0BSD\b|Unlicense|\bCC0\b"
-    r"|Python-2|\bPSF\b|\bZlib\b|Blue ?Oak|\bWTFPL|Public Domain|CC-BY(?!-SA)",
-    re.I,
-)
+#: Every licence identifier the document may use, with its canonical text.
+GLOSSARY: dict[str, tuple[str, str]] = {
+    i: (n, SPDX.format(i))
+    for i, n in (
+        ("0BSD", "BSD Zero Clause License"),
+        ("AFL-2.1", "Academic Free License v2.1"),
+        ("Apache-2.0", "Apache License 2.0"),
+        ("BlueOak-1.0.0", "Blue Oak Model License 1.0.0"),
+        ("BSD-2-Clause", 'BSD 2-Clause "Simplified" License'),
+        ("BSD-3-Clause", 'BSD 3-Clause "New" or "Revised" License'),
+        ("BSD-3-Clause-Open-MPI", "BSD 3-Clause Open MPI variant"),
+        ("CC-BY-4.0", "Creative Commons Attribution 4.0 International"),
+        ("CC0-1.0", "Creative Commons Zero v1.0 Universal"),
+        ("CDLA-Permissive-2.0", "Community Data License Agreement Permissive 2.0"),
+        ("GCC-exception-3.1", "GCC Runtime Library exception 3.1"),
+        ("GPL-2.0-only", "GNU General Public License v2.0 only"),
+        ("GPL-2.0-or-later", "GNU General Public License v2.0 or later"),
+        ("GPL-3.0-or-later", "GNU General Public License v3.0 or later"),
+        ("IJG", "Independent JPEG Group License"),
+        ("ISC", "ISC License"),
+        ("LGPL-2.1-only", "GNU Lesser General Public License v2.1 only"),
+        ("LGPL-2.1-or-later", "GNU Lesser General Public License v2.1 or later"),
+        ("LGPL-3.0-only", "GNU Lesser General Public License v3.0 only"),
+        ("LGPL-3.0-or-later", "GNU Lesser General Public License v3.0 or later"),
+        ("MIT", "MIT License"),
+        ("MPL-2.0", "Mozilla Public License 2.0"),
+        ("ODbL-1.0", "Open Data Commons Open Database License v1.0"),
+        ("OFL-1.1", "SIL Open Font License 1.1"),
+        ("OLDAP-2.8", "Open LDAP Public License v2.8"),
+        ("PCRE2-exception", "PCRE2 exception"),
+        ("PostgreSQL", "PostgreSQL License"),
+        ("PSF-2.0", "Python Software Foundation License 2.0"),
+        ("Zlib", "zlib License"),
+        ("blessing", "SQLite Blessing"),
+        ("curl", "curl License"),
+        ("libpng-2.0", "PNG Reference Library version 2"),
+        ("libtiff", "libtiff License"),
+    )
+}
 
-STRONG = "strong-copyleft"
-WEAK = "weak-copyleft"
-PERM = "permissive"
-UNDECLARED = "undeclared"
+#: Trove classifiers that name exactly one SPDX licence. "BSD License",
+#: "Apache Software License" and the LGPL classifier name a family, not a
+#: licence, and are deliberately absent: those packages need an entry in
+#: `PACKAGE_LICENCE`, read off their licence file.
+CLASSIFIER_SPDX = {
+    "MIT License": "MIT",
+    "ISC License (ISCL)": "ISC",
+    "Mozilla Public License 2.0 (MPL 2.0)": "MPL-2.0",
+}
 
-
-def classify(text: str) -> str:
-    """Bucket a licence string. Weak copyleft is tested first — see above."""
-    if WEAK_COPYLEFT.search(text):
-        return WEAK
-    if STRONG_COPYLEFT.search(text):
-        return STRONG
-    if PERMISSIVE.search(text):
-        return PERM
-    return UNDECLARED
-
-
-@dataclass(frozen=True)
-class Entry:
-    ecosystem: str
-    name: str
-    version: str
-    licence: str
-    source: str  # where the licence text came from
-    production: bool
-
-    @property
-    def bucket(self) -> str:
-        return classify(self.licence)
-
-    @property
-    def distribution(self) -> str:
-        """Where this code actually runs.
-
-        Not one column for both ecosystems: a Python distribution never
-        reaches a browser, so reporting one as shipping in the bundle would be
-        a false statement in a document whose whole purpose is accuracy.
-        """
-        if self.ecosystem == "python":
-            return "server-side"
-        return "browser bundle" if self.production else "build/test only"
-
-
-#: Markers looked for in a licence file, **most specific first**, each paired
-#: with the identifier to report.
-#:
-#: ⚠ Every pattern here is anchored on a word boundary or a whole phrase, and
-#: that is the entire point of this table replacing a substring scan.
-#:
-#: The scan this replaces was `if name.lower() in head.lower()` over
-#: `("MIT", "Apache", ...)`. It read a verbatim GPL-3.0 `LICENSE` file as
-#: **MIT, permissive** — because the GPL preamble says "Everyone is
-#: per​mitted to copy and distribute verbatim copies", and "permitted"
-#: contains "mit". The strongest copyleft licence in the inventory was
-#: reported as the most permissive one, in the document that exists to state
-#: exactly that, with no symptom anywhere. `COPYING` in a GNU project is
-#: overwhelmingly the likeliest file to hit it.
-#:
-#: Order is load-bearing a second time: "GNU Lesser General Public" must be
-#: tested before "GNU General Public", which is a substring of nothing but is
-#: matched by the same text.
-_FILE_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"GNU Affero General Public", re.I), "AGPL"),
-    (re.compile(r"GNU Lesser General Public", re.I), "LGPL"),
-    (re.compile(r"GNU General Public", re.I), "GNU General Public License"),
-    (re.compile(r"Mozilla Public License", re.I), "MPL"),
-    (re.compile(r"Eclipse Public License", re.I), "EPL-"),
-    (re.compile(r"Common Development and Distribution", re.I), "CDDL"),
-    (re.compile(r"Apache License", re.I), "Apache"),
-    (re.compile(r"\bAGPL\b", re.I), "AGPL"),
-    (re.compile(r"\bLGPL\b", re.I), "LGPL"),
-    (re.compile(r"\bGPL\b|\bGPLv[0-9]", re.I), "GPL"),
-    (re.compile(r"\bMPL\b", re.I), "MPL"),
-    (re.compile(r"\bMIT License\b", re.I), "MIT"),
-    (
-        re.compile(r"Permission is hereby granted, free of charge", re.I),
-        "MIT",
+#: Identifiers established by reading the package's own licence file, where
+#: its metadata is a family name, free text, or absent. Value: (SPDX, evidence).
+_PYSTAC = ("Apache-2.0", "classifier; pystac repository licence is Apache-2.0")
+PACKAGE_LICENCE: dict[str, tuple[str, str]] = {
+    "exactextract": ("Apache-2.0", "metadata holds the full Apache-2.0 text"),
+    "httpx": ("BSD-3-Clause", "LICENSE.md"),
+    "jinja2": ("BSD-3-Clause", "LICENSE.txt"),
+    "protobuf": ("BSD-3-Clause", "LICENSE"),
+    "psycopg2-binary": (
+        "LGPL-3.0-or-later",
+        "LICENSE: LGPL v3 or later, plus an exception permitting linking with OpenSSL",
     ),
-    (re.compile(r"\bISC License\b", re.I), "ISC"),
-    (re.compile(r"\bBSD\b", re.I), "BSD"),
-    (re.compile(r"\bISC\b", re.I), "ISC"),
-    (re.compile(r"\bMIT\b", re.I), "MIT"),
-)
+    "pyclipper": ("MIT", "classifier"),
+    "requests": ("Apache-2.0", "LICENSE"),
+    "rio-tiler": ("BSD-3-Clause", "LICENSE"),
+    "svelte-toolbelt": ("MIT", "LICENSE; manifest declares none"),
+    "uvloop": ("MIT OR Apache-2.0", "LICENSE-MIT and LICENSE-APACHE"),
+    "pystac": ("Apache-2.0", "LICENSE"),
+    "pystac-core": _PYSTAC,
+}
+
+#: Per-package facts a reader needs next to the licence. Every copyleft
+#: package must have one (the script stops otherwise): a copyleft licence
+#: without a statement of how the component is used is half a disclosure.
+NOTES: dict[str, str] = {
+    "certifi": "ships Mozilla's CA bundle as a data file, used unmodified for TLS verification",
+    "pathspec": "imported only by mypy (type checker)",
+    "psycopg": "PostgreSQL driver imported by the DBOS library at run time; used unmodified, not linked into project code",
+    "psycopg-binary": "binary build of psycopg (bundles libpq; see Native libraries)",
+    "psycopg2-binary": "PostgreSQL driver imported by the API, storage and orchestration code; used unmodified (bundles libpq; see Native libraries)",
+    "lightningcss": "CSS transformer run by the Tailwind CSS build; its output CSS is not covered by its licence",
+    "lightningcss-linux-x64-gnu": "native binary of lightningcss, build only",
+    "lightningcss-linux-x64-musl": "native binary of lightningcss, build only",
+    "svelte": "compiled components embed the svelte runtime in the browser bundle",
+    "maplibre-gl": "its distributed file pre-bundles its own dependencies",
+}
+
+STRONG = "strong copyleft"
+WEAK = "weak copyleft"
+PERM = "permissive"
+
+WEAK_COPYLEFT = re.compile(r"\bLGPL|\bMPL-|\bEPL-|\bCDDL|\bOFL-", re.I)
+STRONG_COPYLEFT = re.compile(r"\bAGPL|\bGPL-|\bSSPL|\bOSL-|\bEUPL", re.I)
+
+
+def classify(spdx: str) -> str:
+    """Bucket a normalised licence expression.
+
+    Weak copyleft is tested first: ``\\bGPL-`` cannot match inside "LGPL-"
+    (no word boundary), but the order makes that independent of the regex.
+    An ``OR`` expression offering a permissive choice is permissive.
+    """
+    if " OR " in spdx and any(
+        classify(alt) == PERM for alt in spdx.strip("()").split(" OR ")
+    ):
+        return PERM
+    if WEAK_COPYLEFT.search(spdx):
+        return WEAK
+    if STRONG_COPYLEFT.search(spdx):
+        return STRONG
+    return PERM
+
+
+def spdx_ids(expression: str) -> list[str]:
+    return [
+        t
+        for t in re.split(r"[\s()]+", expression)
+        if t and t not in ("AND", "OR", "WITH")
+    ]
 
 
 def _one_line(raw: str, limit: int = 77) -> str:
-    """Collapse a licence string to one short line fit for a table cell.
+    """Collapse whitespace, then truncate — so newlines never eat the budget.
 
-    ⚠ ``License:`` in Python core metadata is a free-text field, and a handful
-    of distributions put the **entire licence text** in it. ``exactextract``
-    0.3.0 is one: its value is the whole Apache-2.0 document, newlines
-    included.
-
-    The truncation this replaces was ``raw[:77] + "..."``, which is correct on
-    length and silent on newlines — so those 77 characters still contained two
-    line breaks, and a single table row became three. Two of them rendered as
-    stray body text in the middle of the inventory, and the package's own row
-    lost its Category and Distribution columns. A reader checking that
-    `exactextract` is Apache-licensed found a mangled table instead.
-
-    Whitespace first, then truncate: collapsing afterwards would count the
-    newlines against the budget and throw away real text.
+    ``License:`` in Python core metadata is free text, and some distributions
+    (``exactextract`` 0.3.0) put the entire licence document in it.
     """
     collapsed = " ".join(raw.split())
     if len(collapsed) <= limit + 3:
@@ -194,216 +225,945 @@ def _one_line(raw: str, limit: int = 77) -> str:
 
 
 def _cell(value: str) -> str:
-    """Escape a value for a GitHub-flavoured markdown table cell.
-
-    An unescaped ``|`` in an SPDX expression (``MIT | Apache-2.0`` is legal
-    prose, and some manifests write it) would open a column that is not there
-    and silently shift every later column by one.
-    """
+    """One table cell: one line, and a ``|`` that cannot open a column."""
     return _one_line(value, limit=120).replace("|", "\\|")
 
 
-def _licence_from_file(directory: Path) -> tuple[str, str]:
-    """Read a licence out of a LICENSE file when the manifest declares none.
+@dataclass(frozen=True)
+class Entry:
+    ecosystem: str
+    name: str
+    version: str
+    licence: str  # normalised SPDX expression
+    declared: str  # raw declaration, when it differs from `licence`
+    runtime: bool
 
-    Reads 4000 characters rather than 400: the GNU family puts its own name on
-    the first line, but an Apache-2.0 `LICENSE` reaches "Apache License" in
-    the first few bytes while a project that merely *refers* to its licence in
-    prose may not get there for a paragraph. Reading more cannot now cause a
-    misread, because the markers are anchored.
+    @property
+    def bucket(self) -> str:
+        return classify(self.licence)
 
-    Returns ``("", "")`` when there is no licence file, and
-    ``("see <file>", "file")`` when there is one this cannot identify — never a
-    guess. An unidentified licence lands in ``undeclared``, which the summary
-    reports as needing a human.
-    """
-    for pattern in ("LICENSE*", "LICENCE*", "COPYING*"):
-        for path in sorted(directory.glob(pattern)):
-            if not path.is_file():
-                continue
-            head = path.read_text(encoding="utf-8", errors="replace")[:4000]
-            for marker, name in _FILE_MARKERS:
-                if marker.search(head):
-                    return f"{name} (per {path.name}; not declared in manifest)", "file"
-            return f"see {path.name}", "file"
-    return "", ""
+    @property
+    def distribution(self) -> str:
+        if self.ecosystem == "python":
+            return "runtime (server)" if self.runtime else "dev/test only"
+        return "runtime (browser)" if self.runtime else "build/test only"
+
+
+def _normalise(name: str, declared: str, ecosystem: str) -> tuple[str, str]:
+    """(SPDX expression, raw declaration if different). Raises on the unknown."""
+    key = name.lower()
+    if key in PACKAGE_LICENCE:
+        spdx = PACKAGE_LICENCE[key][0]
+    elif key.startswith("pystac-ext-"):
+        spdx = _PYSTAC[0]
+    else:
+        spdx = CLASSIFIER_SPDX.get(declared, declared).strip()
+        if spdx.startswith("(") and spdx.endswith(")"):
+            declared = spdx = spdx[1:-1]
+    unknown = [i for i in spdx_ids(spdx) if i not in GLOSSARY]
+    if not spdx or unknown:
+        raise SystemExit(
+            f"{ecosystem} package {name!r} declares {declared!r}, which is not a "
+            "known SPDX expression. Read its licence file and add it to "
+            "PACKAGE_LICENCE (or the identifier to GLOSSARY)."
+        )
+    return spdx, ("" if declared == spdx else _one_line(declared) or "(none)")
+
+
+# ── Python ──────────────────────────────────────────────────────────────────
+
+
+def _uv_closure(lock: dict[str, Any], roots: list[dict[str, Any]]) -> dict[str, str]:
+    by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for pkg in lock["package"]:
+        by_name[pkg["name"]].append(pkg)
+    found: dict[str, str] = {}
+    stack = list(roots)
+    while stack:
+        dep = stack.pop()
+        marker = dep.get("marker")
+        if marker and not Marker(marker).evaluate({**TARGET_ENV, "extra": ""}):
+            continue
+        candidates = [
+            p
+            for p in by_name[dep["name"]]
+            if "version" not in dep or p["version"] == dep["version"]
+        ]
+        if len(candidates) != 1:
+            raise SystemExit(f"uv.lock: cannot pick one {dep['name']!r}: {candidates}")
+        pkg = candidates[0]
+        extras = dep.get("extra", [])
+        seen = f"{pkg['name']}[{','.join(extras)}]"
+        if seen in found:
+            continue
+        found[seen] = pkg["version"]
+        stack += pkg.get("dependencies", [])
+        for extra in extras:
+            stack += pkg.get("optional-dependencies", {}).get(extra, [])
+    return {k.split("[")[0]: v for k, v in found.items()}
+
+
+def _python_licence(name: str, version: str) -> str:
+    try:
+        meta = distribution(name).metadata
+    except PackageNotFoundError:
+        meta = None
+    if meta is None or meta["Version"] != version:
+        have = meta["Version"] if meta else "nothing"
+        raise SystemExit(
+            f"{name} {version} is in uv.lock but {have} is installed. Licence "
+            "metadata is read from the environment: run `uv sync --locked --extra dev`."
+        )
+    if "License-Expression" in meta and meta["License-Expression"]:
+        return str(meta["License-Expression"])
+    classifiers = [
+        str(c).split("::")[-1].strip()
+        for c in meta.get_all("Classifier") or []
+        if str(c).startswith("License ::")
+        and str(c).strip() != "License :: OSI Approved"
+    ]
+    if classifiers:
+        return "; ".join(classifiers)
+    return str(meta["License"]) if "License" in meta else ""
 
 
 def python_entries() -> list[Entry]:
-    entries: list[Entry] = []
-    for dist in distributions():
-        meta = dist.metadata
-        name = meta["Name"] or dist.name
-        if not name or name in OWN_PACKAGES:
+    lock = tomllib.loads(UV_LOCK.read_text())
+    root = next(
+        p for p in lock["package"] if p.get("source", {}).get("editable") == "."
+    )
+    runtime = _uv_closure(lock, root.get("dependencies", []))
+    dev = _uv_closure(lock, root.get("optional-dependencies", {}).get("dev", []))
+    entries = []
+    for name, version in {**dev, **runtime}.items():
+        if name == root["name"]:
             continue
-        classifiers = [
-            c
-            for c in (meta.get_all("Classifier") or [])
-            if str(c).startswith("License")
-        ]
-        declared = ""
-        source = "metadata"
-        if "License-Expression" in meta and meta["License-Expression"]:
-            declared = str(meta["License-Expression"]).strip()
-        elif classifiers:
-            declared = "; ".join(str(c).split("::")[-1].strip() for c in classifiers)
-            source = "classifier"
-        elif meta["License"]:
-            declared = _one_line(str(meta["License"]))
-        entries.append(
-            Entry(
-                "python",
-                str(name),
-                str(meta["Version"] or dist.version or "?"),
-                declared,
-                source if declared else "",
-                production=True,  # no runtime/dev split is recorded at install time
-            )
-        )
+        declared = _python_licence(name, version)
+        licence, raw = _normalise(name, declared, "python")
+        entries.append(Entry("python", name, version, licence, raw, name in runtime))
     return entries
 
 
-def _npm_production_names() -> set[str]:
-    try:
-        proc = subprocess.run(
-            ["npm", "ls", "--omit=dev", "--all", "--json"],
-            cwd=ROOT / "apps" / "web",
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        tree = json.loads(proc.stdout or "{}")
-    except (OSError, json.JSONDecodeError):
-        return set()
-
-    names: set[str] = set()
-
-    def walk(node: dict) -> None:
-        for key, value in (node.get("dependencies") or {}).items():
-            names.add(key)
-            if isinstance(value, dict):
-                walk(value)
-
-    walk(tree)
-    return names
+# ── npm ─────────────────────────────────────────────────────────────────────
 
 
-def _npm_package_dirs(base: Path):
-    for entry in sorted(base.iterdir()):
-        if entry.name.startswith(".") or not entry.is_dir():
-            continue
-        if entry.name.startswith("@"):
-            yield from (c for c in sorted(entry.iterdir()) if c.is_dir())
-        else:
-            yield entry
+def _npm_platform_ok(pkg: dict[str, Any]) -> bool:
+    def ok(field: str, value: str) -> bool:
+        allowed = pkg.get(field)
+        if not allowed:
+            return True
+        if any(a == f"!{value}" for a in allowed):
+            return False
+        positives = [a for a in allowed if not a.startswith("!")]
+        return not positives or value in positives
+
+    return ok("os", NPM_OS) and ok("cpu", NPM_CPU) and ok("libc", NPM_LIBC)
+
+
+def _npm_resolve(packages: dict[str, Any], parent: str, name: str) -> str | None:
+    """Node's lookup: the nearest ``node_modules/<name>`` walking up from parent."""
+    base = parent
+    while True:
+        key = f"{base}/node_modules/{name}" if base else f"node_modules/{name}"
+        if key in packages:
+            return key
+        if not base:
+            return None
+        cut = base.rfind("/node_modules/")
+        base = base[:cut] if cut >= 0 else ""
 
 
 def npm_entries() -> list[Entry]:
-    if not NODE_MODULES.is_dir():
-        return []
-    production = _npm_production_names()
-    entries: list[Entry] = []
-    for directory in _npm_package_dirs(NODE_MODULES):
-        manifest = directory / "package.json"
-        if not manifest.is_file():
-            continue
-        try:
-            data = json.loads(manifest.read_text(encoding="utf-8", errors="replace"))
-        except json.JSONDecodeError:
-            continue
-        raw = data.get("license") or data.get("licenses") or ""
-        if isinstance(raw, list):
-            raw = " OR ".join(
-                str(x.get("type", x)) if isinstance(x, dict) else str(x) for x in raw
-            )
-        elif isinstance(raw, dict):
-            raw = str(raw.get("type", ""))
-        licence, source = str(raw).strip(), "manifest"
-        if not licence:
-            licence, source = _licence_from_file(directory)
-        name = str(data.get("name") or directory.name)
-        entries.append(
-            Entry(
-                "npm",
-                name,
-                str(data.get("version") or "?"),
-                licence,
-                source,
-                production=name in production,
-            )
+    packages: dict[str, Any] = json.loads(NPM_LOCK.read_text())["packages"]
+    installed: set[str] = set()
+    stack = [""]
+    while stack:
+        path = stack.pop()
+        pkg = packages[path]
+        deps: dict[str, str] = {}
+        for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+            deps |= pkg.get(field) or {}
+        if path == "":
+            deps |= pkg.get("devDependencies") or {}
+        for dep in deps:
+            key = _npm_resolve(packages, path, dep)
+            if key is None or key in installed or not _npm_platform_ok(packages[key]):
+                continue  # absent optional peer, or a binary for another platform
+            installed.add(key)
+            stack.append(key)
+
+    merged: dict[tuple[str, str], Entry] = {}
+    for key in installed:
+        pkg = packages[key]
+        name = key.rsplit("node_modules/", 1)[1]
+        declared = str(pkg.get("license") or "")
+        licence, raw = _normalise(name, declared, "npm")
+        entry = Entry("npm", name, pkg["version"], licence, raw, not pkg.get("dev"))
+        previous = merged.get((name, entry.version))
+        if previous is None or entry.runtime:
+            merged[(name, entry.version)] = entry
+    return list(merged.values())
+
+
+# ── Recorded findings ───────────────────────────────────────────────────────
+
+#: Native libraries vendored inside the Linux x86_64 cp312 wheels uv.lock
+#: names: the ``<package>.libs/`` shared objects, plus libraries statically
+#: linked into a shipped ``.so`` (pyogrio's libgdal lists its vcpkg build
+#: trees; others were found by exported symbols). Library versions are the
+#: ones embedded in the binaries (version strings, build paths, sonames); where
+#: a binary embeds none, the row says so.
+#:
+#: Every licence was read from an authoritative text, recorded as the source:
+#: the text shipped inside the wheel, or the project's own licence file at the
+#: bundled release's tag. The psycopg wheels take Kerberos, Cyrus SASL,
+#: keyutils, glibc's libcrypt, PCRE, libselinux and com_err from the CentOS 7
+#: (manylinux2014) build image, so those are pinned to that image's versions
+#: (krb5 1.15.1 is embedded in the binary; the build script is psycopg's
+#: tools/ci/build_libpq.sh, which builds only OpenSSL, OpenLDAP and libpq).
+#: (wheel, version checked, library, licence, source)
+_GH = "https://github.com/{}/blob/{}/{}"
+_WHEEL_GEOS = "text in the wheel (`LICENSE_GEOS`)"
+_PSY = "psycopg-binary, psycopg2-binary"
+_PSYV = "3.3.8 / 2.9.13"
+BUNDLED: list[tuple[str, str, str, str, str]] = [
+    ("shapely", "2.2.0", "GEOS 3.14.1", "LGPL-2.1-only", _WHEEL_GEOS),
+    ("exactextract", "0.3.0", "GEOS 3.14.1", "LGPL-2.1-only", _WHEEL_GEOS),
+    (
+        "numpy",
+        "2.5.4",
+        "OpenBLAS (with LAPACK)",
+        "BSD-3-Clause AND BSD-3-Clause-Open-MPI",
+        "text in the wheel (`LICENSE.txt`)",
+    ),
+    (
+        "numpy",
+        "2.5.4",
+        "libgfortran (GCC runtime)",
+        "GPL-3.0-or-later WITH GCC-exception-3.1",
+        "text in the wheel (`LICENSE.txt`)",
+    ),
+    (
+        "numpy",
+        "2.5.4",
+        "libquadmath",
+        "LGPL-2.1-or-later",
+        "text in the wheel (`LICENSE.txt`)",
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "GDAL 3.12.2",
+        "MIT",
+        _GH.format("OSGeo/gdal", "v3.12.2", "LICENSE.TXT"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "GEOS 3.14.1",
+        "LGPL-2.1-only",
+        _GH.format("libgeos/geos", "3.14.1", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "PROJ 9.8.1",
+        "MIT",
+        _GH.format("OSGeo/PROJ", "9.8.1", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "OpenSSL 3.6.2 (libssl, libcrypto)",
+        "Apache-2.0",
+        _GH.format("openssl/openssl", "openssl-3.6.2", "LICENSE.txt"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libcurl 8.20.0",
+        "curl",
+        _GH.format("curl/curl", "curl-8_20_0", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "nghttp2 1.69.0",
+        "MIT",
+        _GH.format("nghttp2/nghttp2", "v1.69.0", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "json-c 0.18",
+        "MIT",
+        _GH.format("json-c/json-c", "json-c-0.18-20240915", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libdeflate (version not embedded)",
+        "MIT",
+        _GH.format("ebiggers/libdeflate", "master", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "giflib 5.x (soname 7; version not embedded)",
+        "MIT",
+        "https://sourceforge.net/p/giflib/code/ci/master/tree/COPYING",
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "SQLite 3.53.1",
+        "blessing",
+        "https://www.sqlite.org/copyright.html (public domain)",
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libtiff 4.7.1",
+        "libtiff",
+        "https://gitlab.com/libtiff/libtiff/-/blob/v4.7.1/LICENSE.md",
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libpng 1.6.58",
+        "libpng-2.0",
+        _GH.format("pnggroup/libpng", "v1.6.58", "LICENSE"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libjpeg-turbo 3.1.4",
+        "IJG AND BSD-3-Clause AND Zlib",
+        _GH.format("libjpeg-turbo/libjpeg-turbo", "3.1.4", "LICENSE.md"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "OpenJPEG 2.5.4",
+        "BSD-2-Clause",
+        _GH.format("uclouvain/openjpeg", "v2.5.4", "LICENSE"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libaec 1.1.7 (libaec, libsz)",
+        "BSD-2-Clause",
+        _GH.format("MathisRosenhauer/libaec", "v1.1.7", "LICENSE.txt"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "libwebp, libsharpyuv (version not embedded)",
+        "BSD-3-Clause",
+        _GH.format("webmproject/libwebp", "main", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "netCDF-C 4.10.1",
+        "BSD-3-Clause",
+        _GH.format("Unidata/netcdf-c", "v4.10.1", "COPYRIGHT"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "c-blosc 1.21.6",
+        "BSD-3-Clause",
+        _GH.format("Blosc/c-blosc", "v1.21.6", "LICENSE.txt"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "zstd 1.5.7",
+        "BSD-3-Clause OR GPL-2.0-only",
+        _GH.format("facebook/zstd", "v1.5.7", "LICENSE") + " and COPYING",
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "liblzma (XZ Utils 5.8.3)",
+        "0BSD",
+        _GH.format("tukaani-project/xz", "v5.8.3", "COPYING"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "PCRE2 10.47",
+        "BSD-3-Clause WITH PCRE2-exception",
+        _GH.format("PCRE2Project/pcre2", "pcre2-10.47", "LICENCE.md"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "LERC 4 (soname 4; minor not embedded)",
+        "Apache-2.0",
+        _GH.format("Esri/lerc", "v4.0.0", "LICENSE"),
+    ),
+    (
+        "rasterio",
+        "1.5.2",
+        "HDF5 2.2.0",
+        "HDF5 licence (BSD-3-Clause-style)",
+        _GH.format("HDFGroup/hdf5", "2.2.0", "LICENSE"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "GDAL 3.12.4",
+        "MIT",
+        _GH.format("OSGeo/gdal", "v3.12.4", "LICENSE.TXT"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "GEOS 3.14.1 (statically linked into libgdal)",
+        "LGPL-2.1-only",
+        _GH.format("libgeos/geos", "3.14.1", "COPYING"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "PROJ 9.8.1 (static)",
+        "MIT",
+        _GH.format("OSGeo/PROJ", "9.8.1", "COPYING"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "OpenSSL 3.6.2 (static)",
+        "Apache-2.0",
+        _GH.format("openssl/openssl", "openssl-3.6.2", "LICENSE.txt"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "libcurl 8.20.0 (static)",
+        "curl",
+        _GH.format("curl/curl", "curl-8_20_0", "COPYING"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "SQLite 3.53.1 (static)",
+        "blessing",
+        "https://www.sqlite.org/copyright.html (public domain)",
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "expat 2.8.1 (static)",
+        "MIT",
+        _GH.format("libexpat/libexpat", "R_2_8_1", "expat/COPYING"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "libxml2 2.15.3 (static)",
+        "MIT",
+        "https://gitlab.gnome.org/GNOME/libxml2/-/blob/v2.15.3/Copyright",
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "libtiff 4.7.1 (static)",
+        "libtiff",
+        "https://gitlab.com/libtiff/libtiff/-/blob/v4.7.1/LICENSE.md",
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "libjpeg-turbo 3.1.4 (static)",
+        "IJG AND BSD-3-Clause AND Zlib",
+        _GH.format("libjpeg-turbo/libjpeg-turbo", "3.1.4", "LICENSE.md"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "libpng 1.6.58 (static)",
+        "libpng-2.0",
+        _GH.format("pnggroup/libpng", "v1.6.58", "LICENSE"),
+    ),
+    (
+        "pyogrio",
+        "0.13.0",
+        "zlib (static; reports deflate 1.2.5.2)",
+        "Zlib",
+        _GH.format("madler/zlib", "v1.2.5.2", "README") + " (licence section)",
+    ),
+    ("pyproj", "3.8.0", "PROJ 9.8.1", "MIT", "text in the wheel (`LICENSE_proj`)"),
+    (
+        "pyproj",
+        "3.8.0",
+        "libcurl 8.22.0",
+        "curl",
+        _GH.format("curl/curl", "curl-8_22_0", "COPYING"),
+    ),
+    (
+        "pyproj",
+        "3.8.0",
+        "OpenSSL 3.2.1 (statically linked into libcurl)",
+        "Apache-2.0",
+        _GH.format("openssl/openssl", "openssl-3.2.1", "LICENSE.txt"),
+    ),
+    (
+        "pyproj",
+        "3.8.0",
+        "nghttp2 1.70.0",
+        "MIT",
+        _GH.format("nghttp2/nghttp2", "v1.70.0", "COPYING"),
+    ),
+    (
+        "pyproj",
+        "3.8.0",
+        "SQLite 3.53.4",
+        "blessing",
+        "https://www.sqlite.org/copyright.html (public domain)",
+    ),
+    (
+        "pyproj",
+        "3.8.0",
+        "libtiff 4.7.2",
+        "libtiff",
+        "https://gitlab.com/libtiff/libtiff/-/blob/v4.7.2/LICENSE.md",
+    ),
+    (
+        "psycopg-binary",
+        "3.3.8",
+        "libpq 18 (soname 5.18)",
+        "PostgreSQL",
+        _GH.format("postgres/postgres", "REL_18_STABLE", "COPYRIGHT"),
+    ),
+    (
+        "psycopg2-binary",
+        "2.9.13",
+        "libpq 17 (soname 5.17)",
+        "PostgreSQL",
+        _GH.format("postgres/postgres", "REL_17_STABLE", "COPYRIGHT"),
+    ),
+    (
+        "psycopg-binary",
+        "3.3.8",
+        "OpenSSL 3.5.8 (libssl, libcrypto)",
+        "Apache-2.0",
+        _GH.format("openssl/openssl", "openssl-3.5.8", "LICENSE.txt"),
+    ),
+    (
+        "psycopg2-binary",
+        "2.9.13",
+        "OpenSSL 3.5.8 (libssl, libcrypto)",
+        "Apache-2.0",
+        _GH.format("openssl/openssl", "openssl-3.5.8", "LICENSE.txt"),
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "OpenLDAP 2.6.14 (libldap, liblber)",
+        "OLDAP-2.8",
+        _GH.format("openldap/openldap", "OPENLDAP_REL_ENG_2_6_14", "LICENSE"),
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "MIT Kerberos 1.15.1 (libkrb5, libgssapi_krb5, libk5crypto, libkrb5support)",
+        "MIT Kerberos licence (BSD-style)",
+        _GH.format("krb5/krb5", "krb5-1.15.1-final", "NOTICE"),
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "com_err (libcom_err; e2fsprogs 1.42.x of the CentOS 7 image, version not embedded)",
+        "MIT-style (MIT SIPB notice)",
+        _GH.format("tytso/e2fsprogs", "v1.42.9", "lib/et/com_err.c"),
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "Cyrus SASL 2.1.26 (libsasl2)",
+        "CMU licence (BSD-style, with acknowledgement clause)",
+        _GH.format("cyrusimap/cyrus-sasl", "cyrus-sasl-2.1.26", "COPYING"),
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "keyutils 1.5.x (libkeyutils; minor not embedded)",
+        "LGPL-2.1-or-later",
+        "https://git.kernel.org/pub/scm/linux/kernel/git/dhowells/keyutils.git/tree/LICENCE.LGPL?h=v1.5.8",
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "libcrypt (glibc 2.17)",
+        "LGPL-2.1-or-later",
+        "https://sourceware.org/git/?p=glibc.git;a=blob;f=COPYING.LIB;hb=glibc-2.17",
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "PCRE 8.32 (libpcre)",
+        "BSD-3-Clause",
+        _GH.format("PCRE2Project/pcre1", "master", "LICENCE") + " (release 8 licence)",
+    ),
+    (
+        _PSY,
+        _PSYV,
+        "libselinux (CentOS 7 image; version not embedded)",
+        "public domain",
+        _GH.format("SELinuxProject/selinux", "libselinux-2.5", "libselinux/LICENSE"),
+    ),
+    (
+        "pyarrow",
+        "26.0.1",
+        "Arrow C++ third-party code, statically linked (OpenSSL, libcurl, zlib, zstd, lz4, snappy, brotli, jemalloc, mimalloc, protobuf, abseil, gRPC, AWS and Google Cloud SDKs, xsimd, utf8proc)",
+        "permissive (no copyleft text in the notices)",
+        "text in the wheel (`LICENSE.txt`, `NOTICE.txt`)",
+    ),
+    (
+        "uvloop",
+        "0.23.0",
+        "libuv 1.52.1 (statically linked)",
+        "MIT AND BSD-2-Clause AND ISC",
+        _GH.format("libuv/libuv", "v1.52.1", "LICENSE") + " and LICENSE-extra",
+    ),
+]
+
+#: Software the platform runs beside the Works rather than importing. The
+#: ``compose`` key is the docker-compose service whose image tag is printed.
+#: (component, compose service or "", version if not from compose, licence, role)
+SYSTEM: list[tuple[str, str, str, str, str]] = [
+    ("PostgreSQL", "postgres", "", "PostgreSQL", "database server"),
+    (
+        "PostGIS",
+        "postgres",
+        "",
+        "GPL-2.0-or-later",
+        "spatial extension inside the database server",
+    ),
+    (
+        "pgRouting",
+        "postgres",
+        "",
+        "GPL-2.0-or-later",
+        "routing extension inside the database server (`pgr_drivingDistance`, migration r037)",
+    ),
+    ("PgBouncer", "pgbouncer", "", "ISC", "connection pooler, separate process"),
+    (
+        "Martin",
+        "martin",
+        "",
+        "MIT OR Apache-2.0",
+        "vector tile server, separate process",
+    ),
+    (
+        "nginx",
+        "pmtiles_static",
+        "",
+        "BSD-2-Clause",
+        "static file server for PMTiles snapshots (development stack)",
+    ),
+    (
+        "GDAL command-line tools (`ogr2ogr`)",
+        "",
+        ">= 3.8",
+        "MIT",
+        "external program, used only by PMTiles export",
+    ),
+    ("CPython", "", "3.12", "PSF-2.0", "interpreter running the server code"),
+    ("Node.js", "", "24 (LTS)", "MIT", "build only: compiles the web application"),
+]
+
+#: Data the platform ingests and displays. Not code, and not in the repository
+#: (no data file is tracked in git); listed because its terms bind whoever
+#: loads, displays or redistributes it. (source, used for, licence, attribution)
+DATA: list[tuple[str, str, str, str]] = [
+    (
+        "OpenStreetMap (via osmnx / Overpass)",
+        "street network for accessibility indicators",
+        "ODbL-1.0",
+        '"© OpenStreetMap contributors", shown on the map by `reimagina.data.attribution`; '
+        "ODbL also requires a publicly used or distributed derivative database to be offered under ODbL",
+    ),
+    (
+        "Overture Maps — `buildings` theme",
+        "building footprints",
+        "ODbL-1.0 (some sources CC-BY-4.0, per Overture's attribution page)",
+        '"© OpenStreetMap contributors. Available under the Open Database License."',
+    ),
+    (
+        "Overture Maps — `divisions` theme",
+        "municipal boundary (area of interest)",
+        "ODbL-1.0 (geoBoundaries and other sources CC-BY-4.0)",
+        "as for buildings",
+    ),
+    (
+        "Overture Maps — `places` theme",
+        "park, recreation and cultural destinations",
+        "per source: CDLA-Permissive-2.0 (most), Apache-2.0 (Foursquare), CC0-1.0 (AllThePlaces)",
+        'per source, e.g. "Data from Meta. Available under CDLA Permissive 2.0."',
+    ),
+    (
+        "INEGI — Marco Geoestadístico, Censo de Población 2020, DENUE",
+        "municipalities, AGEBs, blocks, census attributes; DENUE within the amenity layers",
+        "Términos de Libre Uso de la Información del INEGI (https://www.inegi.org.mx/inegi/terminos.html)",
+        'credit INEGI and cite the product ("Fuente: INEGI, <producto>"); commercial use and adaptation permitted',
+    ),
+    (
+        "WorldPop (`raster fetch-worldpop`)",
+        "gridded population rasters",
+        "CC-BY-4.0 (datasets derived from OSM or Microsoft footprints/roads: ODbL-1.0)",
+        "credit WorldPop; the licence is recorded per raster at `raster ingest --license`",
+    ),
+]
+
+
+#: Third-party files committed to the repository itself rather than resolved
+#: by a package manager. (asset, version, path, licence, source)
+VENDORED: list[tuple[str, str, str, str, str]] = [
+    (
+        "IBM Plex Sans (Regular, Italic, SemiBold, Bold) and IBM Plex Mono "
+        "(Regular, SemiBold), WOFF2",
+        "Plex Sans 2.0.0, Plex Mono 2.5.0 (npm `@ibm/plex-sans`, `@ibm/plex-mono`)",
+        "`docs/delivery/fonts/`",
+        "OFL-1.1",
+        "licence text beside the fonts (`docs/delivery/fonts/LICENSE.txt`); "
+        "type of the delivery PDFs, embedded in them by "
+        "`scripts/render_delivery_pdfs.py`; not used by the platform",
+    ),
+]
+
+
+def _compose_images() -> dict[str, str]:
+    images: dict[str, str] = {}
+    service = ""
+    for line in COMPOSE.read_text().splitlines():
+        if m := re.match(r"^  ([a-z_]+):\s*$", line):
+            service = m.group(1)
+        elif m := re.match(r"^\s+image:\s*(\S+)", line):
+            images[service] = m.group(1)
+    return images
+
+
+def _system_versions() -> tuple[dict[str, str], dict[str, str]]:
+    images = _compose_images()
+    m = re.fullmatch(
+        r"pgrouting/pgrouting:(\d+)-([\d.]+)-([\d.]+)", images.get("postgres", "")
+    )
+    if not m:
+        raise SystemExit(
+            f"unrecognised postgres image in {COMPOSE}: {images.get('postgres')}"
         )
-    return entries
+    return {
+        "PostgreSQL": m.group(1),
+        "PostGIS": m.group(2),
+        "pgRouting": m.group(3),
+        **{
+            name: images[svc].rsplit(":", 1)[1].lstrip("v")
+            for name, svc, *_ in SYSTEM
+            if svc and svc != "postgres"
+        },
+    }, images
+
+
+# ── Rendering ───────────────────────────────────────────────────────────────
 
 
 def _table(entries: list[Entry]) -> list[str]:
-    lines = ["| Package | Version | Licence | Distribution |", "|---|---|---|---|"]
-    for e in sorted(entries, key=lambda x: x.name.lower()):
-        licence = _cell(e.licence) if e.licence else "**undeclared**"
-        lines.append(f"| `{e.name}` | {e.version} | {licence} | {e.distribution} |")
+    lines = [
+        "| Package | Version | Licence | Declared as | Distribution | Note |",
+        "|---|---|---|---|---|---|",
+    ]
+    for e in sorted(entries, key=lambda x: (x.name.lower(), x.version)):
+        lines.append(
+            f"| `{e.name}` | {e.version} | {e.licence} | {_cell(e.declared)} "
+            f"| {e.distribution} | {NOTES.get(e.name, '')} |"
+        )
     return lines
+
+
+def _count(entries: list[Entry], **where: object) -> int:
+    return sum(all(getattr(e, k) == v for k, v in where.items()) for e in entries)
 
 
 def render(entries: list[Entry]) -> str:
     python = [e for e in entries if e.ecosystem == "python"]
     npm = [e for e in entries if e.ecosystem == "npm"]
-    flagged = [e for e in entries if e.bucket in (STRONG, WEAK, UNDECLARED)]
+    copyleft = sorted(
+        (e for e in entries if e.bucket != PERM), key=lambda e: (e.bucket, e.name)
+    )
+    missing = [e.name for e in copyleft if e.name not in NOTES]
+    if missing:
+        raise SystemExit(f"copyleft packages without a NOTES entry: {missing}")
+    versions, images = _system_versions()
+    locked = {e.name.lower(): e.version for e in python}
 
-    out: list[str] = [
+    def row(label: str, items: list[Entry]) -> str:
+        rt, dv = _count(items, runtime=True), _count(items, runtime=False)
+        return f"| {label} | {rt} | {dv} | {rt + dv} |"
+
+    out = [
         "# Third-party dependencies and licences",
         "",
-        "Complete inventory of the third-party and open-source code this platform",
-        "incorporates, with the licence each one declares.",
+        "Complete inventory of the third-party and open-source components this",
+        "platform incorporates or requires, with the licence terms of each:",
+        "Python and npm packages, native libraries vendored inside Python wheels,",
+        "system software the platform runs beside, the fonts vendored for the",
+        "delivery documents, and — listed separately, as data rather than",
+        "code — the data sources it loads.",
         "",
         "> **Generated — do not edit.** Regenerate with",
-        "> `python scripts/third_party_licences.py`, which reads the installed",
-        "> Python distributions and every `package.json` under",
-        "> `apps/web/node_modules`. Regenerate before any delivery, so the list",
-        "> describes the code actually being delivered rather than the code that",
-        "> was installed when someone last remembered.",
+        "> `uv run python scripts/third_party_licences.py`; a contract test runs it",
+        "> with `--check`. Packages and versions come from `uv.lock` and",
+        "> `apps/web/package-lock.json`, resolved for the delivered platform",
+        "> (Linux x86_64, CPython 3.12, glibc), so the document is the same",
+        "> whichever machine generates it.",
         "",
-        "`Distribution` separates code that reaches a browser from code used",
-        "only to build or test, and from server-side Python. A build-time",
-        "formatter and a library served to every user are not the same",
-        "disclosure.",
+        "**Distribution.** *Runtime* Python packages are the closure of the",
+        "project's `dependencies`; *dev/test only* are those reached only through",
+        "the `dev` extra (test runner, type checker, linter). *Runtime (browser)*",
+        "npm packages are those `package-lock.json` does not mark `dev`: the",
+        "dependency tree of what the web application imports. The bundler then",
+        "includes only modules actually imported, so this column can overstate",
+        "what reaches a browser, never understate it. *Build/test only* npm",
+        "packages compile or test the web application and are not shipped.",
         "",
         "## Summary",
         "",
-        "| | Count |",
-        "|---|---|",
-        f"| Python distributions | {len(python)} |",
-        f"| npm packages | {len(npm)} |",
-        f"| of which ship in the production bundle | {len([e for e in npm if e.production])} |",
-        f"| **Strong copyleft (GPL / AGPL / SSPL)** | **{len([e for e in entries if e.bucket == STRONG])}** |",
-        f"| Weak copyleft (LGPL / MPL / EPL / CDDL) | {len([e for e in entries if e.bucket == WEAK])} |",
-        f"| Undeclared | {len([e for e in entries if e.bucket == UNDECLARED])} |",
-        f"| Permissive | {len([e for e in entries if e.bucket == PERM])} |",
+        "| Packages | Runtime | Dev / build / test only | Total |",
+        "|---|---|---|---|",
+        row("Python (`uv.lock`)", python),
+        row("npm (`package-lock.json`)", npm),
+        row("**All packages**", entries),
         "",
-        "## Needing attention",
+        "| Licence family (packages) | Runtime | Dev / build / test only | Total |",
+        "|---|---|---|---|",
+    ]
+    for bucket in (PERM, WEAK, STRONG):
+        rt = _count(entries, bucket=bucket, runtime=True)
+        dv = _count(entries, bucket=bucket, runtime=False)
+        out.append(f"| {bucket} | {rt} | {dv} | {rt + dv} |")
+    out += [
         "",
-        "Everything not in this section declares a permissive licence (MIT, BSD,",
-        "Apache-2.0, ISC and similar) that imposes no restriction beyond",
-        "attribution.",
+        f"Also listed: {len(BUNDLED)} native-library rows vendored in"
+        f" {len({w.strip() for row in BUNDLED for w in row[0].split(',')})} Python wheels, {len(SYSTEM)} system components,"
+        f" {len(DATA)} data sources, {len(VENDORED)} vendored asset.",
+        "",
+        "## Copyleft components",
+        "",
+        "Every component under a copyleft licence, wherever it appears in this",
+        "document, and how the platform uses it. This is a factual description of",
+        "use, not legal advice.",
+        "",
+        "**Packages**",
+        "",
+        "| Component | Version | Licence | Distribution | How it is used |",
+        "|---|---|---|---|---|",
+    ]
+    for e in copyleft:
+        out.append(
+            f"| `{e.name}` ({e.ecosystem}) | {e.version} | {e.licence} | {e.distribution} | {NOTES[e.name]} |"
+        )
+    out += [
+        "",
+        "**Native libraries inside Python wheels** — shipped as separate shared",
+        "objects (`<package>.libs/`) loaded at run time, unmodified, unless noted",
+        "as statically linked:",
         "",
     ]
-    if flagged:
-        out += [
-            "| Package | Version | Licence | Category | Distribution |",
-            "|---|---|---|---|---|",
-        ]
-        for e in sorted(flagged, key=lambda x: (x.bucket, x.name.lower())):
-            out.append(
-                f"| `{e.name}` | {e.version} "
-                f"| {_cell(e.licence) if e.licence else '**undeclared**'} "
-                f"| {e.bucket} | {e.distribution} |"
-            )
-        notes = [n for n in (MANUAL_NOTES.get(e.name) for e in flagged) if n]
-        if notes:
-            out += ["", "### Findings on specific packages", ""]
-            out += [f"- {note}" for note in sorted(set(notes))]
-    else:
-        out.append("None.")
-    out += ["", "## Python", ""] + _table(python)
-    out += ["", "## npm", ""] + _table(npm)
+    for wheel, _, lib, licence, _ in BUNDLED:
+        if classify(licence) != PERM:
+            out.append(f"- {lib} — {licence} — in `{wheel}`")
+    out += [
+        "",
+        "**Vendored assets** — fonts, unmodified; the OFL lets them be",
+        "bundled and embedded in documents of any licence, and binds only",
+        "the font files themselves:",
+        "",
+    ]
+    out += [f"- {a} — {lic} — `{path.strip('`')}`" for a, _, path, lic, _ in VENDORED]
+    out += [
+        "",
+        "**System components** — PostGIS and pgRouting (GPL-2.0-or-later) are",
+        "extensions loaded by the PostgreSQL server process. The Works reach them",
+        "only by sending SQL over a database connection; they are not linked into,",
+        "copied into or distributed with the Works, which reference the upstream",
+        f"container image `{images['postgres']}` by tag. Base layers of the",
+        "container images (Debian, Alpine) contain further GPL/LGPL programs that",
+        "run inside those containers only.",
+        "",
+        "No package in either lockfile is under a strong-copyleft licence.",
+        "",
+        "## Licence glossary",
+        "",
+        "| Identifier | Licence | Canonical text |",
+        "|---|---|---|",
+    ]
+    for ident, (title, url) in sorted(GLOSSARY.items(), key=lambda kv: kv[0].lower()):
+        out.append(f"| `{ident}` | {title} | {url} |")
+    out += [
+        "",
+        "## Native libraries bundled in Python wheels",
+        "",
+        "Read from the Linux x86_64 CPython 3.12 wheels `uv.lock` names. Package",
+        "metadata names only the package's own licence (shapely says BSD-3-Clause",
+        "while shipping GEOS), so these are listed separately. Library versions",
+        "are those embedded in the binaries. *Source* is the licence text each",
+        "row was verified against: the text inside the wheel, or the library's",
+        "own licence file at the bundled release's tag.",
+        "",
+        "| Wheel | Checked at | Library | Licence | Source |",
+        "|---|---|---|---|---|",
+    ]
+    for wheel, checked, lib, licence, src in BUNDLED:
+        now = " / ".join(locked.get(w.strip(), "?") for w in wheel.split(","))
+        stamp = checked if now == checked else f"{checked} (lock now {now}: re-check)"
+        out.append(f"| `{wheel}` | {stamp} | {lib} | {licence} | {src} |")
+    out += [
+        "",
+        "## System components",
+        "",
+        "Required at run time but not installed by pip or npm. Versions of the",
+        "containerised services are the image tags in",
+        "`infra/docker/docker-compose.yml`.",
+        "",
+        "| Component | Version | Licence | Role |",
+        "|---|---|---|---|",
+    ]
+    for name, svc, version, licence, role in SYSTEM:
+        shown = versions.get(name, version)
+        image = f" (`{images[svc]}`)" if svc else ""
+        out.append(f"| {name} | {shown}{image} | {licence} | {role} |")
+    out += [
+        "",
+        "## Vendored assets",
+        "",
+        "Third-party files committed to this repository rather than installed",
+        "by a package manager.",
+        "",
+        "| Asset | Version | Path | Licence | Note |",
+        "|---|---|---|---|---|",
+    ]
+    out += [f"| {a} | {v} | {path} | {lic} | {n} |" for a, v, path, lic, n in VENDORED]
+    out += [
+        "",
+        "## Data sources (data, not code)",
+        "",
+        "Data the platform's pipelines download, load and display. None of it is",
+        "stored in the repository. The licence each loaded source carries is",
+        "recorded in `curated_geo.data_source_catalog` and credited on the map",
+        "(`GET /tile-sources/attribution`). For the Overture `buildings` and",
+        '`divisions` themes the catalogue records "ODbL-1.0 / Overture terms",',
+        "and for `places` the three per-source licences below.",
+        "",
+        "| Source | Used for | Licence / terms | Attribution |",
+        "|---|---|---|---|",
+    ]
+    out += [f"| {s} | {u} | {lic} | {a} |" for s, u, lic, a in DATA]
+    out += ["", "## Python packages", ""] + _table(python)
+    out += ["", "## npm packages", ""] + _table(npm)
     out.append("")
     return "\n".join(out)
 
@@ -428,9 +1188,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{OUTPUT.relative_to(ROOT)} is current.")
         return 0
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(document)
-    print(f"wrote {OUTPUT.relative_to(ROOT)} — {len(entries)} dependencies")
+    print(f"wrote {OUTPUT.relative_to(ROOT)} — {len(entries)} packages")
     return 0
 
 
