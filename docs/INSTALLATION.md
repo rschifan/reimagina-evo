@@ -29,8 +29,6 @@ The November 2026 installation audit exercised these environments:
 All used uv 0.7.14. This is evidence for those combinations, not a claim that
 every macOS/Linux release or native Linux database installation was tested.
 The Ubuntu package path below is based on official package availability.
-Commands, results, skips and limitations are recorded in
-[INSTALLATION_VERIFICATION.md](INSTALLATION_VERIFICATION.md).
 
 On **Linux ARM64**, `exactextract` builds from source for Python 3.12. Before
 installing Python dependencies, install GEOS headers, a C/C++ compiler and CMake:
