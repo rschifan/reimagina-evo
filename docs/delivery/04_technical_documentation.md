@@ -2129,7 +2129,7 @@ revision, in this order, and each step is reported with its actual result.
 | 3 | `make migrate` | Both databases created and migrated to `r052`; 25 tables in `curated_geo` |
 | 3b | `uv run python -m apps.cli.app verify-schema` | `all_present: true` across the five canonical relations |
 | 4 | `make dev API_PORT=8057 WEB_PORT=5197` | `/health` 200, `{"status":"ok","db":"reachable"}`; `/docs` 200; `/`, `/scenarios.html`, `/catalog.html`, `/ops.html` all 200 |
-| 5 | `make test` | 1,037 passed |
+| 5 | `make test` | 1,040 passed |
 | 6 | `make test-integration` | 564 passed, 1 skipped |
 | 7 | `make test-conformance` | 21 passed, 1 skipped |
 | 8 | `uv run pytest tests/performance` | 6 passed, 1 skipped |
