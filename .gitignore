@@ -129,10 +129,14 @@ scripts/build_schema_reference.py
 scripts/delivery_manifest.py
 scripts/build_diagrams.py
 scripts/capture_app_screenshots.js
+tests/contract/test_delivery_manifest_instructions.py
+tests/unit/test_build_schema_reference.py
+tests/unit/test_delivery_manifest_snapshot.py
+tests/unit/test_render_delivery_pdfs.py
 dist/
 
 # Ad-hoc table dumps taken before a destructive migration (the AGEB-grain
 # retirement left 6.8 MB of them tracked under a dotted directory, where a
 # review diff never showed them). Derived data: reproducible from the pipeline
-# against the INEGI sources, and the old rows stay in git history regardless.
+# against the INEGI sources, the pre-cleanup history is retained only in a private backup.
 .*-backup/
