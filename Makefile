@@ -267,12 +267,13 @@ pr-merge: ## Squash-merge the current branch's PR and delete the branch.
 ship: check pr ## `check` + open PR. Use when you're confident.
 
 # ─── Release ─────────────────────────────────────────────────────────────────
-# Usage: `make release VERSION=v1.0.0`, from a clean `main` whose HEAD is the
-# commit that adds MANIFEST.md + SHA256SUMS and carries the tag VERSION:
+# Usage: `make release VERSION=v1.0.0`, from a clean `main` whose HEAD carries
+# the tag VERSION, with the local delivery package in docs/delivery/ (it is
+# kept out of the repository):
 #
+#   git tag -a v1.0.0 -m v1.0.0
 #   python scripts/render_delivery_pdfs.py          # needs the render toolchain
-#   python scripts/delivery_manifest.py --tag v1.0.0
-#   git add docs/delivery && git commit && git tag -a v1.0.0 -m v1.0.0
+#   python scripts/delivery_manifest.py
 #   make release VERSION=v1.0.0
 #
 # It re-renders the PDFs and verifies them against SHA256SUMS (so a toolchain
@@ -288,7 +289,7 @@ release: ## Build the release bundle in dist/. VERSION=v1.0.0 (HEAD must be tagg
 	fi
 	@if [ -n "$$(git status --porcelain)" ]; then echo "working tree is not clean"; exit 1; fi
 	@if [ "$$(git describe --tags --exact-match 2>/dev/null)" != "$(VERSION)" ]; then \
-	  echo "HEAD must carry the tag $(VERSION) (commit MANIFEST.md + SHA256SUMS, then tag)"; exit 1; \
+	  echo "HEAD must carry the tag $(VERSION)"; exit 1; \
 	fi
 	uv run python scripts/render_delivery_pdfs.py
 	uv run python scripts/delivery_manifest.py --check
@@ -296,9 +297,9 @@ release: ## Build the release bundle in dist/. VERSION=v1.0.0 (HEAD must be tagg
 	mkdir -p dist && rm -f dist/*
 	cp docs/delivery/pdf/*.pdf docs/delivery/MANIFEST.md docs/delivery/SHA256SUMS dist/
 	@src=$$(sed -n 's/^| \*\*Generated from commit\*\* | `\(.*\)` |$$/\1/p' docs/delivery/MANIFEST.md); \
-	git archive --format=tar --prefix=reimagina-$(VERSION)/ $$src | gzip -n > dist/reimagina-$(VERSION).tar.gz; \
+	git archive --format=tar --prefix=r-evo-$(VERSION)/ $$src | gzip -n > dist/r-evo-$(VERSION).tar.gz; \
 	echo "source archive of $$src"
-	cd dist && shasum -a 256 *.pdf MANIFEST.md SHA256SUMS reimagina-$(VERSION).tar.gz > SHA256SUMS-assets
+	cd dist && shasum -a 256 *.pdf MANIFEST.md SHA256SUMS r-evo-$(VERSION).tar.gz > SHA256SUMS-assets
 	@echo
 	@echo "Bundle in dist/. Publish it (after pushing main and the tag):"
 	@echo "  gh release create $(VERSION) dist/* --title $(VERSION) --notes-file CHANGELOG.md"

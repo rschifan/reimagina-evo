@@ -17,27 +17,18 @@ Two files come out of one pass, because they serve different readers:
     which Schedule A Work each artefact satisfies. This is the one that goes
     in the delivery email.
 
-⚠ **The manifest cannot contain its own hash**, and neither file can cover
-itself. ``SHA256SUMS`` covers the artefacts; both files are in turn covered
-by the commit the tag points at. That is the ordinary resolution of the
-circularity, and it is written into the generated document rather than left
-for a reviewer to notice.
+The delivery package (``docs/delivery/``) is kept out of the repository, so
+neither file is committed: both are generated from the tagged commit and
+travel, with the PDFs, as assets of the GitHub release. Neither file covers
+itself; ``SHA256SUMS`` covers the artefacts.
 
-**The source code (Schedule A Work 2)** is hashed too, but not as "the tag":
-the tag's commit contains this very file, so a hash of it cannot be written
-inside it. The manifest hashes the *source commit* — the commit it was
-generated from, which is the tag's parent — as an uncompressed
-``git archive`` tar. Uncompressed because a ``.tar.gz`` depends on the gzip
-implementation; the tar's bytes depend only on the commit (its entries carry
-the commit time). The tag's commit differs from the source commit by exactly
-``docs/delivery/MANIFEST.md`` and ``docs/delivery/SHA256SUMS``.
+**The source code (Schedule A Work 2)** is hashed as the uncompressed
+``git archive`` tar of the tagged commit. Uncompressed because a ``.tar.gz``
+depends on the gzip implementation; the tar's bytes depend only on the
+commit (its entries carry the commit time).
 
-Generate on a clean ``main``, never on a feature branch: the recorded commit
-must be one the recipient can reach from the tag.
-
-The *documents* are verifiable by something better than a hash as well: they
-are byte-reproducible, so a recipient can rebuild them and compare rather than
-trust. See ``render_delivery_pdfs._pin_timestamps``.
+Generate on a clean ``main`` checked out at the tag: the recorded commit must
+be the one the tag names.
 
 Usage::
 
@@ -65,18 +56,25 @@ MANIFEST = DELIVERY / "MANIFEST.md"
 #: deliver, and silently drop one whose name changed.
 ARTEFACTS: tuple[tuple[str, str], ...] = (
     ("docs/delivery/pdf/01_architecture_map.pdf", "Work 1 — architecture map"),
-    ("docs/delivery/01_architecture_map.md", "Work 1 — source"),
     (
         "docs/delivery/pdf/03_database_and_api_reference.pdf",
         "Work 3 — database and API reference",
     ),
-    ("docs/delivery/03_database_and_api_reference.md", "Work 3 — source"),
     (
         "docs/delivery/pdf/04_technical_documentation.pdf",
         "Work 4 — technical documentation",
     ),
-    ("docs/delivery/04_technical_documentation.md", "Work 4 — source"),
     ("docs/THIRD_PARTY_LICENSES.md", "Article 4.1 — dependency inventory"),
+)
+
+#: The sources the delivery date is read from; local, not delivered.
+SOURCES = tuple(
+    f"docs/delivery/{name}.md"
+    for name in (
+        "01_architecture_map",
+        "03_database_and_api_reference",
+        "04_technical_documentation",
+    )
 )
 
 
@@ -117,7 +115,7 @@ def _source_archive(commit: str, version: str) -> tuple[str, int]:
     if not commit:
         return "(not a git repository)", 0
     tar = subprocess.run(
-        ["git", "archive", "--format=tar", f"--prefix=reimagina-v{version}/", commit],
+        ["git", "archive", "--format=tar", f"--prefix=r-evo-v{version}/", commit],
         cwd=ROOT,
         capture_output=True,
         check=True,
@@ -134,9 +132,9 @@ def _delivery_date() -> str:
     the recipient's inbox.
     """
     declared = set()
-    for relative, _ in ARTEFACTS:
+    for relative in SOURCES:
         path = ROOT / relative
-        if path.suffix != ".md" or not path.is_file():
+        if not path.is_file():
             continue
         head = path.read_text()[:600]
         for line in head.splitlines():
@@ -181,12 +179,7 @@ def _manifest(
 ) -> str:
     commit = _git("rev-parse", "HEAD")
     src_sha, src_size = _source_archive(commit, version)
-    # Discovered when the tag already exists, stated when it does not.
-    # The tag has to name the commit whose tree contains this file, so it
-    # cannot exist when the file is generated — the ordering is: state the
-    # name here, commit, then tag that commit. Without `--tag` the manifest
-    # would permanently read "(untagged)", which is the one field a
-    # recipient is most likely to need.
+    # Discovered when HEAD carries a tag, stated with `--tag` otherwise.
     tag = tag or _git("describe", "--tags", "--exact-match") or "(untagged)"
     # What a recipient checks out. Both verification procedures start from a
     # checkout, and "(untagged)" names nothing to check out, so an untagged
@@ -195,9 +188,8 @@ def _manifest(
     # keeps comparing it.
     if tag == "(untagged)":
         checkout = (
-            "⚠ untagged, so not yet an issued delivery: the commit that adds "
-            f"this file, the first after `{(commit or '?')[:12]}` to touch "
-            "`docs/delivery/MANIFEST.md`. Tag that commit before issuing."
+            "⚠ untagged, so not yet an issued delivery: tag "
+            f"`{(commit or '?')[:12]}` before issuing."
         )
     else:
         checkout = f"`git checkout {tag}`"
@@ -217,12 +209,8 @@ def _manifest(
         f"| **Generated from commit** | `{commit or '(not a git repository)'}` |",
         f"| **Check out** | {checkout} |",
         "",
-        "⚠ The tag is the authoritative identifier, and the **Check out** row",
-        "names what to check out for the procedures below. The commit above is",
-        "the one this file was generated *from*, which is necessarily the commit",
-        "before the one that adds it — a file cannot record the hash of the",
-        "commit that contains it. Resolve a tag to its commit with",
-        "`git rev-list -n 1 <tag>`.",
+        "The tag is the authoritative identifier and names the commit above;",
+        "resolve it with `git rev-list -n 1 <tag>`.",
         "",
         "## Artefacts",
         "",
@@ -241,66 +229,33 @@ def _manifest(
         "| Work 2 — source code, `git archive` of the source commit | "
         f"`{commit or '(not a git repository)'}` | {src_size:,} | `{src_sha}` |",
         "",
-        "The hash is of the commit named above — the one this manifest was",
-        "generated from, which is the tag's parent — not of the tag itself: the",
-        "tag's commit contains this file, and a file cannot hold the hash of",
-        "something that contains it. The tag's commit differs from the source",
-        "commit by exactly `docs/delivery/MANIFEST.md` and",
-        "`docs/delivery/SHA256SUMS`. The archive is the *uncompressed* tar,",
+        "The hash is of the tagged commit's *uncompressed* `git archive` tar,",
         "because a `.tar.gz` also depends on the gzip implementation. To",
         "recompute it from any clone:",
         "",
         "```bash",
-        f"git archive --format=tar --prefix=reimagina-v{version}/ "
+        f"git archive --format=tar --prefix=r-evo-v{version}/ "
         f"{commit or '<commit>'} | sha256sum",
         "```",
         "",
-        f"The release also carries `reimagina-v{version}.tar.gz`, the same",
+        f"The release also carries `r-evo-v{version}.tar.gz`, the same",
         "archive compressed with `gzip -n`; its own hash is in the release asset",
         "`SHA256SUMS-assets`, which lists every file of the release.",
         "",
         "## Verifying this",
         "",
-        "The four PDFs are **not in the repository**: they are generated, and",
-        "`.gitignore` excludes `docs/delivery/pdf/`. They travel as assets of",
-        f"the GitHub release of tag `{tag}`, together with `MANIFEST.md`,",
-        "`SHA256SUMS` and the source archive. A bare checkout therefore reports",
-        "four `FAILED open or read` lines from `sha256sum -c`, which is expected,",
-        "not a corrupt delivery. Use whichever of the two procedures below",
-        "matches what you have.",
-        "",
-        "### If you have the delivered PDFs",
-        "",
-        "Download them from the release, put them in a checkout of the delivery",
-        "(the **Check out** row above) at the paths the table above gives",
-        "(`docs/delivery/pdf/`), then:",
+        "The PDFs are **not in the repository**. They travel as assets of the",
+        f"GitHub release of tag `{tag}`, together with `MANIFEST.md`,",
+        "`SHA256SUMS` and the source archive. Check out the tag, put the PDFs",
+        "in `docs/delivery/pdf/` and `SHA256SUMS` at the repository root, then:",
         "",
         "```bash",
-        "sha256sum -c docs/delivery/SHA256SUMS",
+        "sha256sum -c SHA256SUMS",
         "```",
         "",
-        "Every line must read `OK`. `SHA256SUMS` carries the same hashes in the",
-        "format that command expects, so nothing has to be compared by eye.",
-        "",
-        "### If you have only the source",
-        "",
-        "Rebuild them. The PDFs are byte-reproducible: rendering them from the",
-        "same sources produces the same bytes, because the only non-determinism",
-        "in the pipeline — the two timestamps the PDF engine embeds — is pinned",
-        "to the date each document declares.",
-        "",
-        "```bash",
-        "python scripts/render_delivery_pdfs.py",
-        "sha256sum -c docs/delivery/SHA256SUMS",
-        "```",
-        "",
-        "All nine lines then read `OK`. This is the stronger of the two checks:",
-        "it needs no trust in the delivered files at all, only in the sources",
-        "the checkout holds. The hashes were produced with pandoc 3.6.3,",
-        "Node 24, and Playwright 1.64.1 with its Chromium; the render script's",
-        "docstring says how to provide them (`npm i --no-save playwright@1.64.1",
-        "&& npx playwright install chromium` in `apps/web`, then",
-        "`NODE_PATH=apps/web/node_modules`).",
+        "Every line must read `OK`. `SHA256SUMS` carries the same hashes as the",
+        "table above, in the format that command expects, so nothing has to be",
+        "compared by eye.",
         "",
         "### What a hash does and does not establish",
         "",
@@ -310,14 +265,12 @@ def _manifest(
         "key the recipient has independent reason to trust, and no such key",
         "exists in this engagement.",
         "",
-        "⚠ Neither this file nor `SHA256SUMS` can cover itself. The artefacts",
-        "are covered by `SHA256SUMS`; both files are covered by the delivery",
-        "commit the **Check out** row names.",
+        "Neither this file nor `SHA256SUMS` can cover itself; the artefacts are",
+        "covered by `SHA256SUMS`.",
         "",
         "---",
         "",
-        "Generated by `scripts/delivery_manifest.py`. Do not edit by hand — a",
-        "contract test regenerates it and fails if the result differs.",
+        "Generated by `scripts/delivery_manifest.py`. Do not edit by hand.",
         "",
     ]
     return "\n".join(lines)
@@ -358,11 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         "--tag",
         default=None,
         metavar="NAME",
-        help=(
-            "The tag this delivery will carry. Needed because the tag must "
-            "point at the commit containing this manifest, so it cannot "
-            "exist yet when the manifest is written."
-        ),
+        help=("The tag this delivery carries; default: the tag on HEAD."),
     )
     parser.add_argument("--version", default=None, help="Default: pyproject.toml.")
     parser.add_argument(

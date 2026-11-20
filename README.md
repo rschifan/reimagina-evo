@@ -6,12 +6,11 @@
 
 r-evo is an architectural prototype of a platform that computes urban indicators and explores planning scenarios. A feature/observation/indicator/scenario data model on PostGIS, served as live vector tiles (from the API itself, or Martin behind the same URL contract) and Cloud-Optimized GeoTIFFs (titiler) to a MapLibre-GL web application.
 
-> **Release 1.0.0.** The delivery documents — architecture, database and API
-> reference, technical documentation — are in
-> [`docs/delivery/`](docs/delivery). Installation, configuration and operation
-> are covered in full by the
-> [technical documentation](docs/delivery/04_technical_documentation.md);
-> this README is the short path.
+> **Release 1.0.0.** The delivery documents — architecture map, database and
+> API reference, technical documentation — are published as PDF assets of the
+> `v1.0.0` release, with their SHA-256 manifest. Installation, configuration
+> and operation are covered in full by the technical documentation; this
+> README is the short path.
 
 ## What's in here
 
@@ -24,7 +23,7 @@ r-evo is an architectural prototype of a platform that computes urban indicators
 | `packages/py/reimagina/` | Backend domain packages (`assets`, `core`, `data`, `db`, `indicators`, `jobs`, `orchestration`, `perf`, `pipeline`, `scenarios`, `storage`, `tiles`) |
 | `infra/` | Alembic migrations (`infra/db/`), the container stack (`infra/docker/`), the tile manifest (`infra/tiles/`) |
 | `scripts/` | `acceptance_run.sh` (credential-free end-to-end run), `mexicali_run.sh` (the real Mexicali load), generators and tools |
-| `docs/` | [`delivery/`](docs/delivery) (the delivery documents), [`architecture/`](docs/architecture) (per-layer references), [`BOOTSTRAP.md`](docs/BOOTSTRAP.md) (data-load runbook) |
+| `docs/` | [`architecture/`](docs/architecture) (per-layer references), [`BOOTSTRAP.md`](docs/BOOTSTRAP.md) (data-load runbook) |
 
 ## Quickstart
 
@@ -104,8 +103,8 @@ The real territory needs two things the repository does not contain:
 - **The lake mirror** — INEGI Marco Geoestadístico 2024, the INEGI 2020
   census and municipal amenities, copied once from a private Azure data lake
   (`cfcetlsadls/raw`) to `data/sources/azure/` with credentials (contact the
-  maintainer). The loaders read that offline copy; layout in
-  [`docs/AZURE_DATA_INVENTORY.md`](docs/AZURE_DATA_INVENTORY.md).
+  maintainer). The loaders read that offline copy; the layout comes with the
+  credentials.
 - **Internet access** at load time — Overture buildings and places (public
   S3), the OpenStreetMap pedestrian network (Overpass) and, optionally,
   WorldPop.

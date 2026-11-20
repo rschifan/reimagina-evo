@@ -172,7 +172,7 @@ select = ["E4", "E7", "E9", "F"]
 # ⚠ Markdown is excluded, and that is a choice rather than an oversight.
 # Ruff 0.16 formats Python inside fenced code blocks, which it did not used to
 # — so the upgrade wanted to rewrite illustrative snippets across six
-# documents, `docs/legacy/` included. Those samples are written for a reader
+# documents. Those samples are written for a reader
 # mid-paragraph: they wrap where the prose needs them to and elide what is not
 # being discussed. Reflowing them to match source-file conventions makes them
 # worse as prose and produces diff noise in files no interpreter ever loads.
