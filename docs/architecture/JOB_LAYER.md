@@ -2,7 +2,7 @@
 
 How the platform executes indicator computation — the `Orchestrator` port, the run state it persists, and the engine behind it. The engine is the part that has now been replaced once and is replaced again on the other branch; the port is the part that is not.
 
-**Related documents:** `SCENARIOS_LAYER.md` — scenarios and overrides that trigger runs. `INDICATORS_LAYER.md` — indicator results that runs produce. `DATA_LAYER.md` — canonical city data that runs read from. `docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md` — what the two ops-plane branches measure. `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md` — what was measured before any of this branch's code was written.
+**Related documents:** `SCENARIOS_LAYER.md` — scenarios and overrides that trigger runs. `INDICATORS_LAYER.md` — indicator results that runs produce. `DATA_LAYER.md` — canonical city data that runs read from.
 
 ---
 
@@ -59,7 +59,7 @@ The project forked into two branches, each a complete reference implementation o
 | **Engine-level — this branch's own, replaced on the other** | `orchestration/dbos_app.py`, `dbos_orchestrator.py`; `apps/worker/` |
 | **Split fate — this *is* the comparison** | `orchestration/wave.py` — **survives here**. `orchestration/runstore.py` + `jobs_runtime.orchestration_run` + `jobs_runtime.job_unit` — **survive here**. All of it is what a branch whose engine owns scheduling and run state deletes instead |
 
-The split-fate row is no longer a hedge about the future; it is this branch's answer. Keeping the wave scheduler and keeping our own run tables are two decisions, both taken here, and the measurement spec names the first as a reported metric — "one branch keeps the wave scheduler, the other deletes it" (`docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md:150-156`, *Ownership delta*).
+The split-fate row is no longer a hedge about the future; it is this branch's answer. Keeping the wave scheduler and keeping our own run tables are two decisions, both taken here, and the measurement spec names the first as a reported metric — "one branch keeps the wave scheduler, the other deletes it" (*Ownership delta*).
 
 The module docstrings carry their own fate, deliberately, so the split survives a file move: `wave.py:3-6` ("this is the half an engine can replace"), `runstore.py:4-6` ("this module, and both tables, are among the things an ops-plane branch may delete outright"), `frames.py:3-7` ("surviving that deletion untouched is the point"), `memstore.py:5-8` ("an ops-plane that drops those tables can delete `runstore`").
 
@@ -147,7 +147,7 @@ The change-set is resolved by `scenarios.overrides.resolve_change_set` (`overrid
 2. **Propagate** — anything depending transitively on a dirty indicator is dirty, via reverse edges (`impact.py:85-99`).
 3. **Order** — topological over the dependency graph restricted to the dirty set, so inputs precede dependents; a cycle raises `graphlib.CycleError` (`impact.py:63-65`, `:124-126`).
 
-**Step 3's `sorted()` calls are load-bearing, and this engine is why.** Feeding the topological sorter a set made the output depend on `PYTHONHASHSEED` — measured at ten distinct orders across ten processes on a 20-indicator DAG, all topologically valid, which is exactly what made it dangerous. A durable-execution ops-plane replays a workflow by matching steps positionally, so a recovering process that re-derived a different order would resume against the wrong checkpoints. Both the keys and the predecessor sets have to be sorted; sorting only the keys took it from ten orders to two, "the kind of partial fix that reads as success" (`impact.py:104-126`, and spike 3 in `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:107-118`).
+**Step 3's `sorted()` calls are load-bearing, and this engine is why.** Feeding the topological sorter a set made the output depend on `PYTHONHASHSEED` — measured at ten distinct orders across ten processes on a 20-indicator DAG, all topologically valid, which is exactly what made it dangerous. A durable-execution ops-plane replays a workflow by matching steps positionally, so a recovering process that re-derived a different order would resume against the wrong checkpoints. Both the keys and the predecessor sets have to be sorted; sorting only the keys took it from ten orders to two, "the kind of partial fix that reads as success" (`impact.py:104-126`, and DBOS spike 3).
 
 Feature scoping rides along: a seed unit gets `edited_features`, a dependent gets the union of its dirty inputs' feature sets, and each passes through an injectable `expand` hook that is the identity today (`impact.py:38-46`, `:132-138`). The hook exists because proximity and rollup indicators need the feature graph, which is not derivable from the registry.
 
@@ -165,7 +165,7 @@ The output is `list[DirtyUnit]` — `(indicator, features)`, where an empty feat
 
 The readiness rule is stated twice on purpose, in two shapes: `plan_wave` answers "given these statuses, what moves now", while the in-process executor applies the same rule inline while walking a pre-sorted list (`wave.py:8-11`). Imports flow `wave → coordinator → port`, so there is no cycle: `coordinator` owns the graph derivation (`_dep_map`, `coordinator.py:97`) and `port` owns the status vocabulary.
 
-`plan_wave` is pure and was cleared for replay in the same spike that caught the ordering bug — given a fixed input it is byte-identical across processes, so it inherits order rather than generating it (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:117-118`). That is what lets `run_workflow` call it inside a workflow body.
+`plan_wave` is pure and was cleared for replay in the same spike that caught the ordering bug — given a fixed input it is byte-identical across processes, so it inherits order rather than generating it. That is what lets `run_workflow` call it inside a workflow body.
 
 ### In-process executor
 
@@ -204,7 +204,7 @@ Two columns exist but are never written by any code path: `job_unit.job_run_id` 
 
 ### job_run (r016, extended by r031)
 
-Domain provenance, not scheduler state. `curated_geo.indicator_result.job_run_id` is `NOT NULL` with an FK and an existence trigger (`r016_indicator_layer.py:175-176`, `:255-257`), so every result row cites the execution that produced it. That is why `job_run` survives on every branch, including one whose engine owns run state natively — and why r031 hangs the cancellation seam off it rather than off `orchestration_run` (`r031:23-25`). It is also why the measurement spec can define per-run compute time as a single query on this one table (`docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md:72-86`).
+Domain provenance, not scheduler state. `curated_geo.indicator_result.job_run_id` is `NOT NULL` with an FK and an existence trigger (`r016_indicator_layer.py:175-176`, `:255-257`), so every result row cites the execution that produced it. That is why `job_run` survives on every branch, including one whose engine owns run state natively — and why r031 hangs the cancellation seam off it rather than off `orchestration_run` (`r031:23-25`). It is also why the measurement spec can define per-run compute time as a single query on this one table.
 
 ```sql
 -- r016_indicator_layer.py:30-43, plus r028:67 and r031:43-44
@@ -332,7 +332,7 @@ Three layers, three fates:
 - **It is called from the workflow body, never from a step.** A stream write from a workflow is exactly-once; from a step it is at-least-once, and a duplicated terminal event would close a subscriber's stream early (`dbos_app.py:197-199`).
 - **The stream is closed explicitly** after the terminal event (`dbos_app.py:409`), which is what lets a reader end rather than hang.
 
-Measured before the design was fixed: full replay from offset 0 returns the five unit events plus the run-level `None`, a resume at the end returns nothing, no gap and no duplicate (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:152-164`).
+Measured before the design was fixed: full replay from offset 0 returns the five unit events plus the run-level `None`, a resume at the end returns nothing, no gap and no duplicate.
 
 The subscriber (`dbos_orchestrator.py:268-345`) reads through a `DBOSClient` rather than the ambient `DBOS`, so a reader process need not host the workflow definitions — the API can follow a run a worker is executing (`:271-273`). Three details there are resource-safety, not style:
 
@@ -358,7 +358,7 @@ Everything in this section is **engine-level**: it is this branch's answer, and 
 
 **The rule that shapes everything here.** DBOS matches replayed steps by `(position, function name)`. This design calls the *same* step function once per indicator, so the names always match and **position alone** decides which checkpointed output a replayed call receives (`dbos_app.py:11-17`).
 
-A workflow body that rebuilt its unit list from the catalog would therefore not fail loudly on a catalog change mid-run. It would hand one indicator's checkpointed result to another — no exception, no warning, a plausible-looking result. This was **measured, not theorised**: spike 2 ran two workflows over the same units, one reading a module global and one taking its list as input, interrupted both, changed the registry, and resumed. The module-global workflow returned position 0's request for a new indicator answered with the old indicator's recorded output, and the new one never ran at all (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:76-105`).
+A workflow body that rebuilt its unit list from the catalog would therefore not fail loudly on a catalog change mid-run. It would hand one indicator's checkpointed result to another — no exception, no warning, a plausible-looking result. This was **measured, not theorised**: spike 2 ran two workflows over the same units, one reading a module global and one taking its list as input, interrupted both, changed the registry, and resumed. The module-global workflow returned position 0's request for a new indicator answered with the old indicator's recorded output, and the new one never ran at all.
 
 So the dirty set is derived in `submit_run`, projected to `{slug, features, deps}`, and passed in (`dbos_orchestrator.py:125-141`). `deps` travels with it so the body can rebuild the dependency graph for `plan_wave` without reading the catalog — `_Spec` is the slice of an `IndicatorSpec` the scheduler needs, reconstructed from the workflow's own input (`dbos_app.py:51-53`, `:176-191`).
 
@@ -413,7 +413,7 @@ Two, not seven. `run_workflow` drives the dirty-set as each unit unblocks; `unit
 
 Children are enqueued under deterministic ids (`{run_id}-{slug}`) and the body asserts the returned handle carries the id it asked for. `SetWorkflowID` does not confer positional freedom — the counter increments regardless — but it makes a re-enqueue past recorded history dedup instead of minting a second child, and the assertion is the only available detector for the silent case above.
 
-**Fault isolation is preserved across the boundary.** A child that raises is caught, recorded as `failed`, and the loop continues; `plan_wave` then skips whatever depended on it (`dbos_app.py:387-404`). Exception payloads cross the process boundary intact — spike 4 disproved the plan's assumption that psycopg2 errors carrying a live cursor and `.diag` would not pickle, which is why no `UnitFailed` wrapper exists (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:120-137`).
+**Fault isolation is preserved across the boundary.** A child that raises is caught, recorded as `failed`, and the loop continues; `plan_wave` then skips whatever depended on it (`dbos_app.py:387-404`). Exception payloads cross the process boundary intact — spike 4 disproved the plan's assumption that psycopg2 errors carrying a live cursor and `.diag` would not pickle, which is why no `UnitFailed` wrapper exists.
 
 **But the body branches on `s_settle_unit`'s return, not on `get_result`** (`dbos_app.py:393-403`). `get_result` *looks* checkpointed and is not: DBOS records it and never reads it back, so a replay re-queries the child's **live** status. If a child were resumed to `SUCCESS` after the parent had already skipped its dependents, the replayed body would take the dispatch branch where the original took the skip branch, the step positions would diverge, and the run would die with `DBOSUnexpectedStepError` — unrecoverable. A step's output *is* genuinely checkpointed, so routing the outcome through one keeps the body reproducible. This is the replay rule from the top of the module applied to the one value that arrives from outside it.
 
@@ -425,7 +425,7 @@ Children are enqueued under deterministic ids (`{run_id}-{slug}`) and the body a
 
 **`executor_id` must be stable across restarts *and* unique between concurrent processes**, and getting either wrong is silent (`dbos_app.py:77-102`). Recovery is scoped by it: at launch a process reclaims the workflows recorded against its own id and no others. Not stable, and a restarted process has a new identity and reclaims *nothing* — its predecessor's in-flight runs orphaned with no error, durable execution quietly stopping being durable, which is what a pid-derived id does. Not unique, and a starting process reclaims work a live peer is still running — a double execution. DBOS 3 made duplicate *recovery requests* idempotent, which is a different thing and does not help here: recovering an executor that never stopped re-enqueues a workflow its original runner is still executing, and admits a second runner beside it. Nothing derivable satisfies both for every topology, so the default assumes the common one — at most one process per role per host — and derives `<hostname>:<role>` from `REIMAGINA_EXECUTOR_ROLE` (`:102`). `python -m apps.worker` sets that role itself, which is what distinguishes a worker from the API on the same host (`apps/worker/app.py:38-41`). Beyond one process per role per host, set `REIMAGINA_EXECUTOR_ID` per replica; launch logs a warning naming the derived id whenever it is unset (`dbos_app.py:145`).
 
-**`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:139-150`).
+**`application_version` gates recovery.** Unset, it is an MD5 of the registered workflow source, so any edit strands in-flight runs; pinned, they become recoverable onto possibly-incompatible code — which is why the deploy story is blue-green, with old-version processes kept alive to drain (`dbos_app.py:113-118`). Spike 5 confirmed the isolation holds in both directions, and found a free operator signal: DBOS logs that the current version is not the latest while an old-version process is still draining.
 
 **Use worker-local concurrency, not global concurrency.** The global limit also counts `PENDING` workflows from earlier application versions, which a blue-green deploy deliberately leaves lying around. `REIMAGINA_RUN_CONCURRENCY` limits parent runs per executor (default 2); `REIMAGINA_UNIT_CONCURRENCY` independently limits indicator units per executor (default 8, defined once in `reimagina/settings.py`).
 
@@ -433,7 +433,7 @@ That default is measured, not guessed: on the real catalog, 2 slots gives 3614 m
 
 `launch()` is idempotent and locked because an executor or `dev` CLI process can submit concurrently. The API does not call it in its default `client` mode. It registers the `runs` and `units` queues after DBOS has launched.
 
-Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:109`, `docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:173-179`).
+Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the app schemas emits no reference to it, so application backups stay coherent without dragging checkpoint state along, and DBOS's own migration table does not collide with alembic (`dbos_app.py:109`).
 
 **That schema is a bootstrap artifact, not a side effect of a worker starting.** It used to be the latter, and the consequence was a reachable 500. `DBOSClient` — what the API submits through in `client` mode — never runs DBOS's schema migrations; its docstring states the precondition outright, that the system database must already have been created by a DBOS application. Only `launch()` creates it, and only a worker launches. So a database migrated by Alembic alone served the whole read side correctly, listed every seeded indicator in the Ops dashboard, and answered every `POST /jobs` with `UndefinedTable: relation "dbos.workflow_status" does not exist` — next to a banner that said a worker was needed but not that submitting could not work without one.
 
@@ -450,7 +450,7 @@ Two layers, because bootstrap is not the only way a database gets migrated. A su
 Two consequences, and they are the comparison:
 
 - **A worker is required in production.** The API is client-only by default, keeping long-running PostGIS work outside request processes. `dev` is the explicit one-process mode for the CLI and integration tests; it is not a deployment default.
-- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans are reclaimed by the sweep below, which is now built. Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, and a live peer adopted nothing until swept (`docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md:50-74`).
+- **Launching reclaims this executor's interrupted workflows, and only its own.** Another executor's orphans are reclaimed by the sweep below, which is now built. Spike 1 verified both halves: a `SIGKILL` mid-wave left exactly one unit to recompute, and a live peer adopted nothing until swept.
 
 
 
@@ -593,11 +593,11 @@ This branch is the **library** corner, and its position is now decided rather th
 - **No standing service, and an interactive no-worker mode is natural**, because a library has no fleet to require.
 - **No dashboard**, and cross-node recovery is ours to write.
 
-A branch whose engine owns scheduling *and* run state is the other answer: it deletes `wave.py` and `runstore.py` and drops `orchestration_run` + `job_unit`, and that deletion is the entire reason such a track exists. The measurement spec is written so that neither branch's numbers depend on tables the other does not have — no metric may be defined in terms of the two tables this branch keeps (`docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md:72-79`).
+A branch whose engine owns scheduling *and* run state is the other answer: it deletes `wave.py` and `runstore.py` and drops `orchestration_run` + `job_unit`, and that deletion is the entire reason such a track exists. The measurement spec is written so that neither branch's numbers depend on tables the other does not have — no metric may be defined in terms of the two tables this branch keeps.
 
 ### The ladder this supersedes
 
-An earlier framing treated the choice as a monotone ladder — `SKIP LOCKED` → an at-least-once queue → a workflow engine. That framing is retired, in `docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md:516-519` as well as here. It collapsed two orthogonal axes (durability substrate × deployment shape) into one line, and it was not monotone in operational cost: a durable-execution **library** demands *less* of an operator than a task queue plus a hand-rolled scheduler, not more. This branch sits below the engine it replaced on operational cost while sitting above it on durability, which a ladder cannot express.
+An earlier framing treated the choice as a monotone ladder — `SKIP LOCKED` → an at-least-once queue → a workflow engine. That framing is retired. It collapsed two orthogonal axes (durability substrate × deployment shape) into one line, and it was not monotone in operational cost: a durable-execution **library** demands *less* of an operator than a task queue plus a hand-rolled scheduler, not more. This branch sits below the engine it replaced on operational cost while sitting above it on durability, which a ladder cannot express.
 
 ---
 
@@ -610,7 +610,7 @@ An earlier framing treated the choice as a monotone ladder — `SKIP LOCKED` →
 - the module splits that make the fates separable: `wave.py` out of `coordinator.py`, `frames.py` out of the notify module, `memstore.py` out of `synchronous.py`. The second of those was tested by the deletion and held: `frames.py` outlived the transport it was split from, untouched;
 - the conformance suite (`tests/conformance/`), whose assertions read identically on both branches and whose `IMPLEMENTATIONS` table is the branch-specific half each branch edits. DBOS conformance sets `REIMAGINA_DBOS_EXECUTION_MODE=dev` explicitly so it can prove one-process durable execution without weakening the production client/worker process split;
 - migration r031 — the cancellation seam (`job_run.run_id`, `job_run.backend_pid`), which works on any engine because it is addressed to Postgres, not to a scheduler;
-- `docs/product/PHASE3_OPS_PLANE_MEASUREMENT.md` — the metric definitions, fixed before either branch existed so the numbers can be put side by side.
+- the ops-plane metric definitions, fixed before either branch existed so the numbers can be put side by side.
 
 One thing Phase 0 did *not* anticipate and this branch's spikes caught: the dirty-set ordering bug. It was fixed at the source on `main` (`f6ff6ef`) because it gates both branches, not just this one — a positionally-replayed workflow and a statically-declared DAG are broken by non-determinism in the same way.
 

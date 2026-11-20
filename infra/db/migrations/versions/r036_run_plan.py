@@ -29,7 +29,7 @@ compresses the 1.4 MB payload out of line. uuid is 16 bytes in an array, not the
 ⚠ Written once, never updated. That immutability is the point: replay, retry and
 crash recovery all read the identical set. Re-deriving the features at execution
 time — from an AOI or a bbox — would be smaller still and is the wrong answer;
-spike 2 (``PHASE3_OPS_PLANE_DBOS_SPIKES.md``) found that work re-derived after
+DBOS spike 2 (see ``docs/architecture/JOB_LAYER.md``) found that work re-derived after
 an interruption silently attributes one indicator's result to another.
 
 ⚠ No index beyond the primary key, deliberately. Rows are deleted when their run
