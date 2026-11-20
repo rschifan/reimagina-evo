@@ -920,22 +920,6 @@ DATA: list[tuple[str, str, str, str]] = [
 ]
 
 
-#: Third-party files committed to the repository itself rather than resolved
-#: by a package manager. (asset, version, path, licence, source)
-VENDORED: list[tuple[str, str, str, str, str]] = [
-    (
-        "IBM Plex Sans (Regular, Italic, SemiBold, Bold) and IBM Plex Mono "
-        "(Regular, SemiBold), WOFF2",
-        "Plex Sans 2.0.0, Plex Mono 2.5.0 (npm `@ibm/plex-sans`, `@ibm/plex-mono`)",
-        "`docs/delivery/fonts/`",
-        "OFL-1.1",
-        "licence text beside the fonts (`docs/delivery/fonts/LICENSE.txt`); "
-        "type of the delivery PDFs, embedded in them by "
-        "`scripts/render_delivery_pdfs.py`; not used by the platform",
-    ),
-]
-
-
 def _compose_images() -> dict[str, str]:
     images: dict[str, str] = {}
     service = ""
@@ -1010,8 +994,8 @@ def render(entries: list[Entry]) -> str:
         "Complete inventory of the third-party and open-source components this",
         "platform incorporates or requires, with the licence terms of each:",
         "Python and npm packages, native libraries vendored inside Python wheels,",
-        "system software the platform runs beside, the fonts vendored for the",
-        "delivery documents, and — listed separately, as data rather than",
+        "system software the platform runs beside, and — listed separately,",
+        "as data rather than",
         "code — the data sources it loads.",
         "",
         "> **Generated — do not edit.** Regenerate with",
@@ -1048,8 +1032,8 @@ def render(entries: list[Entry]) -> str:
     out += [
         "",
         f"Also listed: {len(BUNDLED)} native-library rows vendored in"
-        f" {len({w.strip() for row in BUNDLED for w in row[0].split(',')})} Python wheels, {len(SYSTEM)} system components,"
-        f" {len(DATA)} data sources, {len(VENDORED)} vendored asset.",
+        f" {len({w.strip() for row in BUNDLED for w in row[0].split(',')})} Python wheels, {len(SYSTEM)} system components"
+        f" and {len(DATA)} data sources.",
         "",
         "## Copyleft components",
         "",
@@ -1076,14 +1060,6 @@ def render(entries: list[Entry]) -> str:
     for wheel, _, lib, licence, _ in BUNDLED:
         if classify(licence) != PERM:
             out.append(f"- {lib} — {licence} — in `{wheel}`")
-    out += [
-        "",
-        "**Vendored assets** — fonts, unmodified; the OFL lets them be",
-        "bundled and embedded in documents of any licence, and binds only",
-        "the font files themselves:",
-        "",
-    ]
-    out += [f"- {a} — {lic} — `{path.strip('`')}`" for a, _, path, lic, _ in VENDORED]
     out += [
         "",
         "**System components** — PostGIS and pgRouting (GPL-2.0-or-later) are",
@@ -1136,17 +1112,6 @@ def render(entries: list[Entry]) -> str:
         shown = versions.get(name, version)
         image = f" (`{images[svc]}`)" if svc else ""
         out.append(f"| {name} | {shown}{image} | {licence} | {role} |")
-    out += [
-        "",
-        "## Vendored assets",
-        "",
-        "Third-party files committed to this repository rather than installed",
-        "by a package manager.",
-        "",
-        "| Asset | Version | Path | Licence | Note |",
-        "|---|---|---|---|---|",
-    ]
-    out += [f"| {a} | {v} | {path} | {lic} | {n} |" for a, v, path, lic, n in VENDORED]
     out += [
         "",
         "## Data sources (data, not code)",
