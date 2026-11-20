@@ -1,7 +1,7 @@
 """Unit tests for the impact engine (dirty-set) — pure, no DB.
 
-Built around the linear-park worked example in
-docs/product/PHASE3_ORCHESTRATION_EXPLORATION.md §2.4.
+Built around the linear-park worked example of the Phase 3 orchestration
+design.
 """
 
 from __future__ import annotations

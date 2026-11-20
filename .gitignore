@@ -120,14 +120,15 @@ artifacts/
 cache/
 
 # ── Private documentation: never committed, never pushed ───────────────
-# The contract delivery package, architecture decision records, legacy notes
-# and design/plan working documents live only in local checkouts. The
+# The contract delivery package, architecture decision records and proposals,
+# legacy notes and design/plan working documents live only in local checkouts. The
 # delivery tooling (scripts/render_delivery_pdfs.py, delivery_manifest.py,
 # build_diagrams.py, build_schema_reference.py, capture_app_screenshots.js)
 # works on a local docs/delivery/, and the tests that read it skip without it.
 docs/adr/
 docs/delivery/
 docs/legacy/
+docs/product/
 docs/superpowers/
 docs/DATA_INVENTORY.md
 docs/ENGINEERING_NOTES.md

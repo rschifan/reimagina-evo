@@ -248,7 +248,7 @@ class DBOSOrchestrator:
         # rather than recomputed inside it. A workflow that rebuilt its own unit
         # list from the catalog would, on replay after a catalog edit, hand one
         # indicator's checkpointed result to another — silently. See spike 2 in
-        # docs/product/PHASE3_OPS_PLANE_DBOS_SPIKES.md.
+        # docs/architecture/JOB_LAYER.md.
         deps_of = {
             spec.slug: [dep for dep, _weight in spec.depends_on]
             for spec in self._registry
