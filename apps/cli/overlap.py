@@ -17,7 +17,7 @@ def declare_overlap_pair(
     """Register a source→target feature-type pair in feature_overlap_type_pair.
 
     The feature types must already exist in curated_geo.feature_type_catalog.
-    Use `reimagina-cli feat seed-types` first if the catalog is empty.
+    Use `python -m apps.cli.app feat seed-types` first if the catalog is empty.
     """
     with connect(dsn) as conn:
         pair = declare_pair(

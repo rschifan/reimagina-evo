@@ -1,5 +1,5 @@
 {
-  "name": "@reimagina/web",
+  "name": "@r-evo/web",
   "version": "1.0.0",
   "description": "Web application of the prototype — MapLibre, TypeScript and Svelte.",
   "private": true,

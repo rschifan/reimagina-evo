@@ -260,7 +260,7 @@ def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
 
 
 app = typer.Typer(
-    name="reimagina-cli",
+    name="r-evo",
     add_completion=False,
     pretty_exceptions_enable=False,
 )

@@ -222,7 +222,7 @@ def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
         row = cur.fetchone()
         if row is None:
             raise OverlapBenchmarkDataMissing(
-                "MEX:block feature type not found. Run `reimagina-cli feat seed-types` first."
+                "MEX:block feature type not found. Run `python -m apps.cli.app feat seed-types` first."
             )
         block_type_id = row[0]
 
@@ -232,7 +232,7 @@ def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
         row = cur.fetchone()
         if row is None:
             raise OverlapBenchmarkDataMissing(
-                "MEX:ageb feature type not found. Run `reimagina-cli feat seed-types` first."
+                "MEX:ageb feature type not found. Run `python -m apps.cli.app feat seed-types` first."
             )
         ageb_type_id = row[0]
 
@@ -243,8 +243,8 @@ def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
         row = cur.fetchone()
         if row is None:
             raise OverlapBenchmarkDataMissing(
-                "AOI 'Cuauhtémoc' not found. Run `reimagina-cli cdmx bootstrap` followed by "
-                "`reimagina-cli cdmx aoi-from-alcaldia --cve-mun 015 --name Cuauhtémoc` first."
+                "AOI 'Cuauhtémoc' not found. Run `python -m apps.cli.app cdmx bootstrap` followed by "
+                "`python -m apps.cli.app cdmx aoi-from-alcaldia --cve-mun 015 --name Cuauhtémoc` first."
             )
         aoi_id = row[0]
 

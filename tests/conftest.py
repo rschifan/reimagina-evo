@@ -133,7 +133,7 @@ def perf_conn(perf_db_url: str):
     """Read-oriented psycopg2 connection for perf benchmarks.
 
     Does not manage migrations or schema. The caller is expected to have
-    loaded realistic data (e.g. via `reimagina-cli cdmx bootstrap`) — tests
+    loaded realistic data (e.g. via `python -m apps.cli.app cdmx bootstrap`) — tests
     should skip when the expected data is absent rather than attempt setup.
     The transaction rolls back on teardown so incidental temp-table creation
     or lock acquisition inside a benchmark can't leak.

@@ -1,4 +1,4 @@
-"""FastAPI application factory for the reimagina read-side.
+"""FastAPI application factory for the r-evo API.
 
 The API exposes curated indicator results, AOI summaries, spatial-feature
 inventories, and the resolved tile-source manifest. It never owns its own
@@ -108,7 +108,8 @@ def create_app(
         title="r-evo API",
         version="1.0.0",
         description=(
-            "Read-side for the reimagina urban-planning platform. "
+            "API of r-evo, an architectural prototype of a platform that computes "
+            "urban indicators and explores planning scenarios. "
             "Exposes curated indicator results, AOI summaries, spatial "
             "feature inventories, and the tile source manifest."
         ),

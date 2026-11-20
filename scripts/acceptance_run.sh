@@ -152,7 +152,7 @@ step "7. Ingesting a raster: bronze -> silver COG -> registry"
 INGEST="$($CLI raster ingest \
   --raw-path "$RASTER" \
   --source-name "Synthetic Mexicali population" \
-  --provider reimagina-synthetic \
+  --provider r-evo-synthetic \
   --version synthetic-v1 \
   --layer-slug syn_pop_acceptance \
   --aggregation-kind extensive \
@@ -510,7 +510,7 @@ sys.path.insert(0, ".")
 from reimagina.storage import connect  # noqa: E402
 from scripts.mvt_inspect import decode, summarise  # noqa: E402
 
-out = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "reimagina-acceptance-tiles"
+out = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "r-evo-acceptance-tiles"
 out.mkdir(parents=True, exist_ok=True)
 with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
     # Tile indices for the territory's centroid, at each zoom.
