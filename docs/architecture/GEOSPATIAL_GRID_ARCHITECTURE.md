@@ -1,1505 +1,651 @@
-# Geospatial Grid Architecture for Urban Analytics and Scenario Modeling
+# Geospatial Model: Feature Grains, Rasters and Moving Values Between Them
 
-A production-grade reference guide for modeling raster and tessellation-based data alongside canonical spatial features, observations, and scenario outputs.
+How Reimagina represents spatial data today: which spatial grains exist, how vector features and rasters enter the database, how values move from one grain to another, how the results are served, and what is not built.
+
+> **Status.** Two spatial shapes are built: **features** (named entities with a geometry, one row each in `curated_geo.feature`) and **rasters** (Cloud Optimized GeoTIFFs on disk, summarised onto features). There are no grid cells: no H3, no fishnet, no table of values per cell. Every value queried in SQL belongs to a feature — measured values in `curated_geo.observation`, computed indicators in `curated_geo.indicator_result`. §14 says how a grid would fit if one is ever needed.
 
 ---
 
 ## Table of Contents
 
-1. [Purpose and Scope](#1-purpose-and-scope)
-2. [Core Design Principles](#2-core-design-principles)
-3. [Architecture Overview](#3-architecture-overview)
-4. [Decision Guide — What to Use When](#4-decision-guide--what-to-use-when)
-5. [The Four Data Paths](#5-the-four-data-paths)
-6. [Spatial Reference Layer](#6-spatial-reference-layer)
-7. [Case A — H3 Hierarchical Tessellation](#7-case-a--h3-hierarchical-tessellation)
-8. [Case B — Fishnet / External Raster Grid (e.g. GHS-POP)](#8-case-b--fishnet--external-raster-grid-eg-ghs-pop)
-9. [Complete Schema Reference](#9-complete-schema-reference)
-10. [Data Flow Patterns](#10-data-flow-patterns)
-11. [Scenario Modeling Mechanics](#11-scenario-modeling-mechanics)
-12. [AOI Filtering Mechanics](#12-aoi-filtering-mechanics)
-13. [Provenance and Reproducibility](#13-provenance-and-reproducibility)
-14. [Core Query Patterns](#14-core-query-patterns)
-15. [Performance Guidelines](#15-performance-guidelines)
-16. [Anti-Patterns to Avoid](#16-anti-patterns-to-avoid)
-17. [Real-World References](#17-real-world-references)
+1. [Scope](#1-scope)
+2. [The Model at a Glance](#2-the-model-at-a-glance)
+3. [Principles](#3-principles)
+4. [Grains: Feature Types and Features](#4-grains-feature-types-and-features)
+5. [How Data Gets In](#5-how-data-gets-in)
+6. [Moving Values Between Grains](#6-moving-values-between-grains)
+7. [Serving](#7-serving)
+8. [Scenarios and Grains](#8-scenarios-and-grains)
+9. [Provenance and Reproducibility](#9-provenance-and-reproducibility)
+10. [Schema Reference](#10-schema-reference)
+11. [Query Patterns](#11-query-patterns)
+12. [Performance](#12-performance)
+13. [Anti-Patterns](#13-anti-patterns)
+14. [Not Built: Grid Cells (H3, Fishnet)](#14-not-built-grid-cells-h3-fishnet)
+15. [External References](#15-external-references)
 
 ---
 
-## 1. Purpose and Scope
+## 1. Scope
 
-This document defines the architecture for handling all types of spatial data in a production urban analytics platform, specifically addressing the tension between:
+This document covers the spatial side of the data model: grains, geometry, CRS, the bridge tables that relate grains (`aoi_feature`, `feature_overlap`), raster ingest and zonal statistics, cross-grain rollups and the AOI summary.
 
-- **Discrete named entities** (features): blocks, roads, lots, bus stops, trees — each with identity, geometry, and a lifecycle
-- **Continuous gridded data** (rasters): heat surfaces, flood depth, NDVI, accessibility — values defined everywhere over a continuous field
-- **Tessellated cell outputs** (grids): indicator results returned as arrays of cells rather than per-feature values
+It does not repeat what other documents own:
 
-The goal is a single coherent architecture that handles all three without forcing any of them into the wrong storage model.
+- column-by-column definitions of `data_source_catalog`, `ingestion_run`, `feature`, `observation`, `file_asset`, `area_of_interest` — `DATA_LAYER.md`;
+- indicators and `indicator_result` — `INDICATORS_LAYER.md`;
+- runs, units and `job_run` — `JOB_LAYER.md`;
+- scenario authoring, overrides and the scenario overlay — `SCENARIOS_LAYER.md`;
+- tile functions, Martin and PMTiles — `TILE_SERVING.md`.
 
-### What this document covers
-
-- When to use H3 tessellation vs. an external fishnet grid (e.g. GHS-POP)
-- How to model, store, query, and version each data type
-- How scenario modeling and AOI filtering work for each path
-- How to trace provenance for any output value back to its source
-
-### What this document does not cover
-
-- Tile serving or map rendering pipelines (MVT, raster tiles)
-- Real-time or streaming ingestion
-- Distributed compute (Spark/Sedona) — referenced where relevant but not detailed
+Words follow `TERMINOLOGY.md`. "Grain" here means a feature type used as a unit of analysis or aggregation (block, AGEB, municipality, ...).
 
 ---
 
-## 2. Core Design Principles
-
-These principles drive every architectural decision. When in doubt, return to them.
-
-### P1 — Match storage to query pattern, not data origin
-
-The question is never "is this data a raster?" — it is "what is the primary access pattern and what is the cardinality?" A raster whose values are only ever queried per-block belongs in a zonal summary table, not a cell table. A model output that is always queried per-cell belongs in a cell table, not a raster file.
-
-### P2 — Geometry is expensive; keys are cheap
-
-Spatial predicates (`ST_Intersects`, `ST_Within`) at query time on large tables are the leading cause of geospatial performance failures. Pre-compute all spatial relationships at data registration time. At query time, use B-tree joins on integer or text keys.
-
-### P3 — Scenarios are explicit dimensions, not soft filters
-
-Every output row must carry `scenario_id` as part of its primary key. There must be no ambiguity about which scenario state produced which value. Baseline data is never overwritten; scenarios produce new rows.
-
-### P4 — Provenance is structural, not procedural
-
-Every computed output must trace back to a `model_run` record that captures the code version, parameters, scenario state, and input files used. Reproducibility must be achievable from the database record alone, without relying on external documentation.
-
-### P5 — The architecture is grid-agnostic
-
-No grid type (H3, S2, fishnet, GHS-POP) is privileged by the schema. All grids register through the same `grid` table and participate in the same query patterns via `feature_cell_membership` and `aoi_cell_membership`. The cell identifier format is the only thing that changes between grid types.
-
----
-
-## 3. Architecture Overview
+## 2. The Model at a Glance
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           DATA SOURCES                                  │
-│   field sensors │ remote sensing │ model outputs │ administrative data  │
-└──────┬──────────────────┬─────────────────┬──────────────┬─────────────┘
-       │                  │                 │              │
-       ▼                  ▼                 ▼              ▼
-┌────────────┐   ┌───────────────┐   ┌──────────┐   ┌──────────────────┐
-│  FEATURE   │   │  RASTER /     │   │  CELL    │   │  PROVENANCE      │
-│  PATH      │   │  COVERAGE     │   │  PATH    │   │  LAYER           │
-│            │   │  PATH         │   │          │   │                  │
-│ feature    │   │ raster_asset  │   │ grid     │   │ model_run        │
-│ observation│   │ (STAC-aligned)│   │ cell_    │   │ scenario         │
-│ indicator_ │   │ COG / Zarr    │   │ indicator│   │ scenario_        │
-│ result     │   │ object store  │   │ _result  │   │ override         │
-└──────┬─────┘   └──────┬────────┘   └────┬─────┘   └──────────────────┘
-       │                │                 │
-       └────────────────┴─────────────────┘
-                        │
-            SPATIAL BRIDGE LAYER
-            feature_cell_membership
-            aoi_cell_membership
-                        │
-            ┌───────────┴────────────┐
-            │    QUERY / SERVE       │
-            │                        │
-            │  PostgreSQL / PostGIS  │  ← transactional, relational queries
-            │  COG HTTP range reads  │  ← raster pixel access
-            └────────────────────────┘
+ DATA SOURCES
+ INEGI marco + censo │ CDMX layers │ Overture buildings, places │ OSM network │ WorldPop
+        │                                                              │
+        ▼ vector loaders                                               ▼ raster ingest
+ ┌──────────────────────────────┐                     ┌──────────────────────────────────┐
+ │ FEATURES  (PostGIS)          │   zonal statistics  │ RASTERS  (COG files on disk)     │
+ │ feature        one row per   │ ◀────────────────── │ data/silver/<source_id>/*.cog.tif│
+ │                entity        │   one observation   │ file_asset   catalog row         │
+ │ observation    measured or   │   per (feature,     │ raster_layer serving row         │
+ │                derived value │   statistic)        └───────────────┬──────────────────┘
+ │ indicator_result computed    │                                     │
+ └──────┬───────────────────────┘                                     │
+        │ relate grains (precomputed)                                 │
+        │   aoi_feature      feature ↔ AOI                            │
+        │   feature_overlap  feature ↔ feature, per declared type pair│
+        │ move values                                                 │
+        │   observation rollup (aggregation_recipe)                   │
+        │   aoi_indicator_summary                                     │
+        ▼                                                             ▼
+ SERVE  serving_geo views + MVT tile functions        titiler at /cog (pixels)
 ```
 
-### The three paths always in play
-
-| Path | Data type | Primary store | DB representation |
+| Shape | Built | Where values live | How it relates to other grains |
 |---|---|---|---|
-| Feature path | Named discrete entities | PostgreSQL / PostGIS | `feature`, `observation`, `indicator_result` |
-| Raster path | Dense continuous fields | Object storage (COG/Zarr) | `raster_asset` + zonal summaries in `indicator_result` |
-| Cell path | Sparse or dense grid outputs | PostgreSQL (sparse) + object storage (dense) | `cell_indicator_result` |
+| Feature | Yes | `feature` (geometry, identity), `observation`, `indicator_result` | `aoi_feature`, `feature_overlap`, `feature.parent_id` |
+| Raster | Yes | Pixels in a COG under the data root; per-feature summaries in `observation` | Zonal statistics onto one feature type |
+| Grid cell | No | — | Would be a feature type (§14) |
+
+The data root is `REIMAGINA_DATA_DIR`, default `<repo>/data` (`packages/py/reimagina/paths.py`).
 
 ---
 
-## 4. Decision Guide — What to Use When
+## 3. Principles
 
-This section is the practical entry point. Start here with a new dataset or model output.
+**P1 — Everything queried in SQL is per feature.** A raster's pixels stay in the COG; the database holds a catalog row and per-feature summaries. A raster whose values are only needed per block becomes block observations (`raster zonal-stats`), not a pixel or cell table.
 
-### Step 1 — Identify the data type
+**P2 — Spatial relationships are precomputed, then read by key.** AOI membership is stored in `curated_geo.aoi_feature` (`aoi compute-features`), feature-to-feature intersections in `curated_geo.feature_overlap` (`overlap compute-all`), and each feature's interior point in the generated column `feature.geometry_centroid` (r027). Reads scoped to an AOI — indicator values and statistics, downloads, the overlay tiles, scenario materialisation, scenario comparison — filter with `EXISTS` on `aoi_feature`.
 
-```
-Is the data defined everywhere over a continuous spatial field
-(temperature, flood depth, NDVI, elevation)?
-    YES → go to Step 2 (Raster path)
-    NO  → go to Step 3
+Run-time geometry tests remain where the geometry exists only at request time, and in the batch jobs that select their inputs:
+
+| Where | Predicate |
+|---|---|
+| `POST /metrics/within-polygon`, `POST /metrics/indicator-within-polygon` | `ST_Covers(polygon, geometry_centroid)` (`POLYGON_COVERS_CENTROID`, `packages/py/reimagina/storage/_utils.py`) |
+| Scenario materialisation | `ST_Covers(scenario_edit.geometry, feature.geometry_centroid)`, plus `EXISTS` on `aoi_feature` |
+| `raster zonal-stats --aoi-id` (feature selection) | `ST_Intersects(feature.geometry, aoi.geometry)` (`iter_geometries_by_type`) |
+| `overlap compute-all --aoi-id` | `ST_Intersects(source.geometry, aoi.geometry)` |
+| Indicator computes run with an AOI | `ST_Intersects(feature.geometry, aoi.geometry)` (`geodesic_metrics_by_type`, `centroid_in_parent_counts`, `_AOI_JOIN` in `packages/py/reimagina/indicators/accessibility.py`) |
+
+The batch selections by geometry are a superset of AOI membership (see "Possible inconsistencies" at the end of §6.1).
+
+**P3 — One schema for every grain.** Every grain is a row in `curated_geo.feature_type_catalog`; every entity is a row in `curated_geo.feature`; grains relate through the same two bridge tables. Adding a grain adds rows, not tables. What is grain-specific is the code that reads a grain: all twelve shipped indicators declare `applies_to = ('block',)` (`SHIPPED_INDICATORS` in `packages/py/reimagina/indicators/catalog.py`), and the raster workers resolve their target type in the `MEX` context (§6.3).
+
+**P4 — Rasters keep their native CRS.** Pixel values are never reprojected. Feature geometries are reprojected from EPSG:4326 to the raster's CRS at zonal-statistics time.
+
+**P5 — Provenance is structural.** Every `feature`, `observation` and `file_asset` row references the `ingestion_run` that wrote it; every `indicator_result` references the `job_run` that wrote it (§9).
+
+---
+
+## 4. Grains: Feature Types and Features
+
+### 4.1 Feature types
+
+The registry of grains is `curated_geo.feature_type_catalog` (r003):
+
+```sql
+CREATE TABLE curated_geo.feature_type_catalog (
+    id              uuid      PRIMARY KEY DEFAULT gen_random_uuid(),
+    context         text      NOT NULL,          -- seeded: 'MEX', 'global'
+    type_slug       text      NOT NULL,
+    label           text      NOT NULL,
+    geometry_family text      NOT NULL
+                              CHECK (geometry_family IN ('point','line','polygon','geometry')),
+    role            text      NOT NULL
+                              CHECK (role IN
+                                ('analysis_unit','context','infrastructure','poi','detection')),
+    admin_level     smallint  CHECK (admin_level IS NULL OR admin_level > 0),
+    description     text,
+    UNIQUE (context, type_slug)
+);
 ```
 
-```
-Step 3 — Does the data describe a named, stable, discrete entity
-(block, road, lot, bus stop, tree, administrative zone)?
-    YES → Feature path. Store geometry in `feature`.
-          Store values in `observation` or `indicator_result`.
-    NO  → go to Step 4
-```
+Seeded types are `FEATURE_TYPE_ROWS` in `packages/py/reimagina/data/feature.py`, the same rows r003 inserts; `feat seed-types` re-seeds them idempotently.
 
-```
-Step 4 — Is the data returned as a grid of cells
-(model outputs per H3 cell, per fishnet cell, per GHS-POP pixel)?
-    YES → Cell path. Go to Step 5.
-```
+| context | type_slug | geometry_family | role | admin_level | Shipped loader |
+|---|---|---|---|---|---|
+| MEX | state | polygon | context | 1 | INEGI marco |
+| MEX | municipality | polygon | context | 2 | INEGI marco, CDMX bootstrap |
+| MEX | neighborhood | polygon | context | 3 | CDMX bootstrap |
+| MEX | ageb | polygon | analysis_unit | 4 | INEGI marco, CDMX bootstrap |
+| MEX | block | polygon | analysis_unit | 5 | INEGI marco, CDMX bootstrap |
+| MEX | lot | polygon | analysis_unit | 6 | none |
+| global | building | polygon | context | — | Overture buildings |
+| global | tree | point | detection | — | none |
+| global | bus_stop | point | poi | — | none |
+| global | station | point | poi | — | none |
+| global | establishment | point | poi | — | amenity points, Overture places |
+| global | road | line | infrastructure | — | published from the routing graph |
+| global | sidewalk | line | infrastructure | — | none |
+| global | bike_lane | line | infrastructure | — | none |
+| global | crossing | point | infrastructure | — | none |
 
-```
-Step 5 — What is the grid type?
-    ├── Analytical tessellation with no external source → go to Step 6
-    └── Grid aligned to an external dataset (GHS-POP, census grid,
-        custom fishnet) → Case B (Fishnet Grid). See Section 8.
-```
+`admin_level` orders the administrative hierarchy. A type with `admin_level` NULL is non-hierarchical: the feature trigger refuses a `parent_id` on it.
 
-```
-Step 6 — Do you need hierarchical aggregation
-(zoom between resolution levels, compact/uncompact cells)?
-    YES → Case A (H3). See Section 7.
-    NO  → Either H3 or fishnet is fine. H3 is preferred for
-          city-scale analytics where no external grid alignment
-          is required.
-```
+### 4.2 Features
 
-### Quick reference table
+`curated_geo.feature` (r003; `geometry_centroid` added by r027) holds one row per entity of any grain. The full column list is in `DATA_LAYER.md`; the spatial rules are:
 
-| Situation | Recommended path | Section |
+- **Identity.** `id` is a UUID. A feature's identity within its source is `UNIQUE (source_id, dataset_version, source_record_ref)`, and `load_vector_source` inserts with `ON CONFLICT (source_id, dataset_version, source_record_ref) DO NOTHING`, so reloading the same version adds nothing. Re-ingesting a dataset can mint new ids, which is why identifier-based AOI membership matches on `attributes`, not on feature ids (r040).
+- **Geometry.** `geometry geometry(Geometry, 4326) NOT NULL`. The stored generated column `geometry_centroid geometry(Point, 4326)` is `ST_PointOnSurface(geometry)`, a point guaranteed inside the polygon.
+- **Trigger `feature_before_write`.** Sets `type_slug` and `role` from `type_id`; rejects geometry outside the type's `geometry_family` (`geometry` accepts anything); rejects a row whose `source_id` differs from its `ingestion_run`'s; enforces the `parent_id` hierarchy (no parent on a non-hierarchical type, parent `admin_level` strictly lower, no cycles).
+- **Deletion.** There is no soft delete. Two code paths delete features: the Overture buildings loader removes the rows of its own run that fall outside the AOI (`packages/py/reimagina/pipeline/overture.py:651`), and the road publisher replaces its source's `road` features on every load (`packages/py/reimagina/data/roads.py:130`). Deleting a feature cascades to its `observation`, `aoi_feature`, `feature_overlap`, `indicator_result` and `scenario_override` rows.
+
+### 4.3 Spatial reference
+
+There is no grid or CRS registry. The spatial reference is fixed by column types and code:
+
+| Data | CRS / measure | Fixed by |
 |---|---|---|
-| Dense raster, queried per-feature (mean flood depth per block) | Raster path → zonal summary as `indicator_result` | 5.2 |
-| Dense raster, cell-level queries needed | Raster path (file) + Cell path (sparse materialization) | 5.2, 5.3 |
-| Sparse model output over H3 grid | Cell path, Case A | 7 |
-| Output must align with GHS-POP, census grid, or any external raster | Cell path, Case B | 8 |
-| Named administrative zone (census tract, district) | Feature path | 5.1 |
-| Time series of sensor readings at a location | Feature path, `observation` table | 5.1 |
-| Scenario comparison at cell level | Cell path, both cases | 11 |
-| Accessibility or walkability surface | Raster path (source) + Cell path (H3 outputs) | 5.2, 7 |
-| Population-weighted indicator | Cell path aligned to GHS-POP | 8 |
-
-### H3 vs. Fishnet decision
-
-| Criterion | Choose H3 | Choose Fishnet / External Grid |
-|---|---|---|
-| Grid is derived from an external dataset | No | Yes — align to source |
-| Hierarchical aggregation between resolutions is needed | Yes | No (irregular) |
-| Integration with routing or mobility data (Uber H3 ecosystem) | Yes | No |
-| Cells must align with pixels in a source raster | No | Yes |
-| Population weighting uses GHS-POP pixels | No | Yes |
-| Sharing results with partners who use the same grid | Depends on partner tooling | Yes if they use same grid |
-| H3 library available in your tech stack | Yes | Not required |
+| Vector geometry: `feature.geometry`, `area_of_interest.geometry`, `scenario_edit.geometry` | EPSG:4326 | Column type `geometry(Geometry, 4326)` (r003, r004, r048) |
+| Vector input | Reprojected to EPSG:4326, invalid geometry repaired with `make_valid`, null and empty dropped | `clean_vector` in `packages/py/reimagina/pipeline/silver.py` |
+| Areas and lengths in `aoi_feature`, `feature_overlap` | Geodesic, through `::geography` (m², m) | `PostgresAOIRepository.compute_overlaps`, `PostgresOverlapRepository.compute_feature_overlaps` |
+| Raster pixels | The input's native CRS, recorded in `file_asset.crs` | `ingest_raster_source` |
+| Zonal statistics | Feature geometry reprojected EPSG:4326 → raster CRS | `transform_geom` at `packages/py/reimagina/jobs/raster_zonal_stats.py:386` |
+| Tiles | EPSG:3857 (`ST_Transform(..., 3857)` in the tile functions); titiler `WebMercatorQuad` | `TILE_SERVING.md` |
 
 ---
 
-## 5. The Four Data Paths
+## 5. How Data Gets In
 
-### 5.1 Feature Path
+### 5.1 Vector features
 
-**Use for:** Any spatial entity with stable identity that accumulates observations or receives indicator outputs over time.
+Every vector loader follows the same route: register the source, land the raw file in bronze, clean it to silver (`clean_vector`), then `load_vector_source` (`packages/py/reimagina/pipeline/loader.py`) opens an `ingestion_run` (`transformation_step = 'silver_to_curated'`), inserts the features and completes the run. Loaders that use it: INEGI marco (`inegi_marco.py`), the CDMX bootstrap (`cdmx.py`), Overture buildings (`overture.py`), Overture places (`overture_places.py`) and amenity points (`points.py`), all under `packages/py/reimagina/pipeline/`.
 
-**Examples:** city blocks, road segments, parcels, parks, bus stops, trees, administrative zones, census tracts.
+Two writers do not go through `load_vector_source`: the road publisher projects `curated_geo.road_edge` (the pgRouting graph loaded by `osm_network.py`) into `global:road` features (`packages/py/reimagina/data/roads.py`), and Overture divisions only read boundaries to build an AOI (`overture aoi-from-division`).
 
-**Key tables:** `feature`, `observation`, `indicator_result`
+### 5.2 Measured values
 
-**Rules:**
-- Every feature has a stable `id` (UUID) that never changes
-- Geometry is stored once in `feature.geometry` (PostGIS)
-- Measured values are stored in `observation` (timestamped, source-linked)
-- Computed model outputs are stored in `indicator_result` (scenario-aware, run-linked)
-- Features are never deleted; use a `deprecated_at` timestamp for retired entities
+Values measured about existing features are `observation` rows: one per (feature, `attribute_key`), exactly one of `value_numeric`, `value_text`, `value_json`, with SCD-2 history (`is_current`, `valid_from`, `valid_to`; partial unique index `obs_one_current`). Writers retire the current row and insert a new one; nothing updates a value in place. Producers: the INEGI census loader (`inegi_censo.py`), the block-storeys derivation (`block_storeys.py`, §6.5), raster zonal statistics (§6.3) and the observation rollup (§6.4).
 
-### 5.2 Raster Path
+Every `ingestion_run` that completes as `succeeded` refreshes `serving_geo.feature_current_attributes_mv`, the snapshot of current observations that `serving_geo.feature_v` and the base tile function read.
 
-**Use for:** Dense continuous fields where the primary artifact is a georeferenced array — heat stress surfaces, flood depth, NDVI, accessibility isochrones, elevation.
+### 5.3 Rasters
 
-**Rules:**
-- The raster file itself is stored in object storage as a Cloud Optimized GeoTIFF (COG) or Zarr store
-- The `raster_asset` table holds the catalog record (STAC-aligned metadata)
-- Feature-level summaries (mean, max, p90 per block) are extracted asynchronously and written as `indicator_result` rows on the feature path
-- Cell-level values are only materialized into `cell_indicator_result` if cell-level SQL queries are required; otherwise serve directly from the COG via HTTP range requests
-- The raster file is the single source of truth; the DB holds only derived summaries
+`raster ingest` (`ingest_raster_source`, `packages/py/reimagina/pipeline/raster.py:62`):
 
-### 5.3 Cell Path
+1. Opens the input and rejects anything but a single band with `UnsupportedRasterError` (`raster.py:116`), before any database write.
+2. Registers the source (`storage_type = 'raster'`, `integration_role = 'enrichment'`; `storage_uri` is `--origin-uri`, or the input file).
+3. Starts and commits an `ingestion_run` with `transformation_step = 'raster_landing'`.
+4. Copies the input unchanged to `data/bronze/<source_id>/<filename>`.
+5. Re-encodes it as a COG at `data/silver/<source_id>/<stem>.cog.tif`, in the input's native CRS (`raster.py:173`).
+6. Writes `file_asset` (`format = 'COG'`, `storage_uri = 'file://data/silver/...'`, `crs`, `resolution_m`, `band_description`) and `raster_layer` (`layer_slug`, `aggregation_kind`, `minzoom`/`maxzoom` default 5/14, `published` unless `--unpublished`).
 
-**Use for:** Indicator outputs whose native unit is a grid cell — not a named feature. Covers both H3 tessellations (Case A) and fishnet/external grids (Case B).
+`resolution_m` is set only when the CRS is projected in metres and the pixels are square and north-up (`_resolution_in_metres`, `raster.py:278`); otherwise it is NULL. `asset_extent_geometry` is never populated. `file_asset.source_id` and `raster_layer.source_id` are both UNIQUE: one COG per source. Files live on the local filesystem, not in object storage, and the catalog is not STAC (`TODO.md` T3-11).
 
-**Rules:**
-- Only cells with non-null values are stored (sparse by design)
-- Cell geometry is never stored — it is computed from the cell identifier and the grid's geotransform at read time
-- Every row carries `scenario_id` and `run_id` as non-nullable columns
-- Cross-path aggregation to features is performed via `feature_cell_membership`, never via a live spatial join
-
-### 5.4 Provenance Path
-
-**Use for:** Tracking which code, parameters, inputs, and scenario state produced any given output row.
-
-**Rules:**
-- Every computed output (`indicator_result`, `cell_indicator_result`, `raster_asset`) references a `model_run` row via `run_id`
-- `model_run` stores the full parameter snapshot as JSONB — not a pointer to a config file
-- Input raster assets are recorded as an array of UUIDs (`input_asset_ids`) on `model_run`
-- Checksums on `raster_asset` provide integrity verification for reproducibility
-
----
-
-## 6. Spatial Reference Layer
-
-This layer is written once at deployment time and rarely changes. It defines the coordinate systems and tessellation schemas used everywhere else.
-
-```sql
--- Canonical H3 resolutions in use for this deployment.
--- Only populated when H3 grids are used (Case A).
-CREATE TABLE h3_resolution_config (
-    resolution       int PRIMARY KEY,    -- H3 resolution level (0–15)
-    label            text NOT NULL,      -- human label: 'district', 'block', 'parcel'
-    avg_area_m2      double precision,   -- approximate cell area in m²
-    use_for_features boolean DEFAULT false,
-    use_for_cells    boolean DEFAULT false
-);
-
--- Example values for a city-scale deployment
-INSERT INTO h3_resolution_config VALUES
-    (7,  'district',    5161000, true,  false),
-    (8,  'subdistrict',  737000, true,  false),
-    (9,  'block',        105000, true,  true),
-    (10, 'parcel',        15000, false, false);
-
-
--- Master grid registry — accommodates H3, S2, fishnet, and custom grids
-CREATE TABLE grid (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            text NOT NULL UNIQUE,
-    type            text NOT NULL
-                    CHECK (type IN ('h3', 's2', 'fishnet', 'custom')),
-
-    -- H3 / S2 fields (null for fishnet)
-    resolution      int,
-
-    -- Fishnet / raster-aligned fields (null for H3/S2)
-    origin_x        double precision,   -- top-left x in CRS units
-    origin_y        double precision,   -- top-left y in CRS units
-    pixel_size_x    double precision,   -- cell width in CRS units (positive eastward)
-    pixel_size_y    double precision,   -- cell height in CRS units (positive, applied northward)
-    n_rows          int,
-    n_cols          int,
-
-    -- Common fields
-    crs             text NOT NULL DEFAULT 'EPSG:4326',
-    aoi_id          uuid,
-    cell_count      bigint,
-    source_asset_id uuid,               -- FK to raster_asset if grid is derived from a raster
-    metadata        jsonb,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-
-    CONSTRAINT fishnet_requires_geotransform CHECK (
-        type != 'fishnet' OR (
-            origin_x IS NOT NULL AND origin_y IS NOT NULL AND
-            pixel_size_x IS NOT NULL AND pixel_size_y IS NOT NULL AND
-            n_rows IS NOT NULL AND n_cols IS NOT NULL
-        )
-    )
-);
-```
-
----
-
-## 7. Case A — H3 Hierarchical Tessellation
-
-### 7.1 When to use H3
-
-Use H3 when:
-- You are constructing an analytical grid from scratch (not aligning to an external dataset)
-- You need hierarchical aggregation between resolution levels (compact/uncompact, parent/child cells)
-- Your platform integrates with mobility or routing data (H3 is the industry standard for this use case)
-- You want the cell identifier itself to encode spatial position (no separate geometry lookup required for approximate location)
-
-**Do not use H3 when** the model that produces outputs is tied to an external raster grid (GHS-POP, land cover, DEM) and cell alignment with that raster is required. Resampling to H3 introduces interpolation error. Use Case B instead.
-
-### 7.2 H3 Resolution Reference
-
-| Resolution | Label | Avg area | Typical city cell count | Recommended use |
-|---|---|---|---|---|
-| 6 | Metro region | 36 km² | ~50–200 | Regional summaries |
-| 7 | District | 5.2 km² | ~500–2K | District-level analytics |
-| 8 | Sub-district | 0.74 km² | ~3K–15K | Neighborhood analytics |
-| 9 | Block | 0.1 km² | ~25K–100K | Block-level, recommended for most city analytics |
-| 10 | Parcel | 15K m² | ~200K–1M | Fine-grained; only if query volume justifies it |
-| 11+ | Sub-parcel | < 3K m² | > 1M | Do not put in relational DB |
-
-**Rule of thumb:** Use resolution 9 as the primary analytical resolution. Pre-aggregate to resolution 7–8 for dashboards and regional summaries. Never store resolution 11+ in PostgreSQL.
-
-### 7.3 Schema — H3 Case
-
-```sql
--- Augment the feature table with H3 index columns.
--- These are populated by a trigger on INSERT/UPDATE.
-ALTER TABLE feature
-    ADD COLUMN h3_res8 text,   -- H3 index at resolution 8
-    ADD COLUMN h3_res9 text;   -- H3 index at resolution 9
-
--- Index for cross-path joins (cell → feature lookup)
-CREATE INDEX ON feature (h3_res9);
-CREATE INDEX ON feature (h3_res8);
-
--- For polygon features that span multiple H3 cells.
--- Stores the set of H3 cells overlapped by the feature geometry.
--- Populated once at registration; updated when geometry changes.
-CREATE TABLE feature_cell_membership (
-    feature_id  uuid NOT NULL REFERENCES feature(id) ON DELETE CASCADE,
-    grid_id     uuid NOT NULL REFERENCES grid(id),
-    cell_id     text NOT NULL,               -- H3 index string at the grid's resolution
-    coverage    double precision             -- fraction of the H3 cell covered by the feature (0–1)
-                CHECK (coverage > 0 AND coverage <= 1),
-    PRIMARY KEY (feature_id, grid_id, cell_id)
-);
-CREATE INDEX ON feature_cell_membership (grid_id, cell_id);
-CREATE INDEX ON feature_cell_membership (feature_id, grid_id);
-
--- Trigger: auto-populate h3_res8 and h3_res9 on feature insert/update
-CREATE OR REPLACE FUNCTION feature_set_h3_indices()
-RETURNS trigger AS $$
-BEGIN
-    IF NEW.geometry IS NOT NULL THEN
-        -- Requires the h3-pg extension: CREATE EXTENSION h3;
-        NEW.h3_res8 := h3_lat_lng_to_cell(
-            ST_Y(ST_Centroid(NEW.geometry)),
-            ST_X(ST_Centroid(NEW.geometry)), 8);
-        NEW.h3_res9 := h3_lat_lng_to_cell(
-            ST_Y(ST_Centroid(NEW.geometry)),
-            ST_X(ST_Centroid(NEW.geometry)), 9);
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_feature_h3
-    BEFORE INSERT OR UPDATE OF geometry ON feature
-    FOR EACH ROW EXECUTE FUNCTION feature_set_h3_indices();
-```
-
-### 7.4 Registering an H3 Grid
-
-```sql
--- Register a resolution-9 H3 grid covering a study area
-INSERT INTO grid (name, type, resolution, crs, aoi_id, metadata)
-VALUES (
-    'h3_res9_city_a',
-    'h3',
-    9,
-    'EPSG:4326',
-    :aoi_id,
-    '{"description": "Resolution 9 H3 grid for City A urban analytics"}'
-);
-```
-
-**Population of `feature_cell_membership` for H3 (Python):**
-
-```python
-import h3
-import psycopg2
-from shapely.geometry import shape, mapping
-
-
-def register_h3_grid_membership(conn, grid_id: str, resolution: int):
-    """
-    For each polygon feature in the DB, enumerate the H3 cells it covers
-    and insert into feature_cell_membership.
-    Run once per grid registration.
-    """
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, ST_AsGeoJSON(geometry)::json
-            FROM feature
-            WHERE geometry IS NOT NULL
-              AND ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_MultiPolygon')
-        """)
-        features = cur.fetchall()
-
-    rows = []
-    for feature_id, geojson in features:
-        geom = shape(geojson)
-        # h3.polyfill returns all cells whose center is within the polygon
-        cells = h3.polyfill_geojson(mapping(geom), resolution)
-        for cell_id in cells:
-            # Approximate coverage: cell area that intersects feature / cell area
-            cell_poly = shape(
-                {
-                    "type": "Polygon",
-                    "coordinates": [h3.h3_to_geo_boundary(cell_id, geo_json=True)],
-                }
-            )
-            coverage = geom.intersection(cell_poly).area / cell_poly.area
-            rows.append((str(feature_id), grid_id, cell_id, coverage))
-
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO feature_cell_membership (feature_id, grid_id, cell_id, coverage)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """,
-            rows,
-        )
-    conn.commit()
-```
-
-**Population of `aoi_cell_membership` for H3 (Python):**
-
-```python
-def register_h3_aoi_membership(
-    conn, aoi_id: str, grid_id: str, aoi_geojson: dict, resolution: int
-):
-    """
-    Enumerate all H3 cells within an AOI polygon and store membership.
-    Run once per AOI per grid. Never re-run at query time.
-    """
-    cells = h3.polyfill_geojson(aoi_geojson, resolution)
-    rows = [(aoi_id, grid_id, cell_id) for cell_id in cells]
-
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO aoi_cell_membership (aoi_id, grid_id, cell_id)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """,
-            rows,
-        )
-    conn.commit()
-    print(f"Registered {len(rows)} cells for AOI {aoi_id} at resolution {resolution}")
-```
-
-### 7.5 Cell ID format for H3
-
-The H3 cell identifier is the H3 index string itself, e.g. `"882830829bfffff"`. It is compact, globally unique, and encodes the resolution and spatial position. No additional metadata is needed to reconstruct the cell's geometry.
-
-```python
-import h3
-
-cell_id = "882830829bfffff"
-
-# Reconstruct cell center
-lat, lng = h3.h3_to_geo(cell_id)
-
-# Reconstruct cell boundary (hexagon vertices)
-boundary = h3.h3_to_geo_boundary(cell_id)
-
-# Get parent cell (one resolution coarser)
-parent = h3.h3_to_parent(cell_id, 8)  # → "882830829bfffff" parent at res 8
-
-# Get children (one resolution finer)
-children = h3.h3_to_children(cell_id, 10)
-```
-
----
-
-## 8. Case B — Fishnet / External Raster Grid (e.g. GHS-POP)
-
-### 8.1 When to use an external grid
-
-Use a fishnet or externally-defined grid when:
-- Model outputs must spatially align with a source raster (GHS-POP population grid, land cover, DEM, satellite-derived products)
-- Population weighting requires exact pixel alignment with GHS-POP
-- You are combining outputs with datasets that use the same grid (e.g. European urban atlas at 100m)
-- Partners or downstream tools consume data in a specific grid format
-
-**Do not introduce a resampling step to H3 just for architectural uniformity.** Resampling a 100m GHS-POP grid to H3 hexagons introduces interpolation error and makes population-weighted calculations incorrect. Use the native grid.
-
-### 8.2 GHS-POP Grid Reference
-
-The Global Human Settlement Population (GHS-POP) grid is a standard reference dataset produced by the European Commission's Joint Research Centre (JRC).
+**WorldPop** is the one raster with a fetch command, `raster fetch-worldpop` (`packages/py/reimagina/pipeline/worldpop.py`):
 
 | Parameter | Value |
 |---|---|
-| Resolutions available | 100m, 1km |
-| Projections | EPSG:4326 (geographic), ESRI:54009 (Mollweide equal-area) |
-| Format | GeoTIFF |
-| Cell identifier | (row, col) from top-left origin |
-| Coverage | Global |
-| Epoch | 1975, 1980, 1985, 1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030 |
-
-For urban analytics, use the **100m resolution in EPSG:4326** unless population-weighted area calculations require the equal-area Mollweide projection, in which case use ESRI:54009.
-
-### 8.3 Schema — Fishnet / External Grid Case
-
-The core `feature_cell_membership` and `aoi_cell_membership` tables are identical to Case A. The `grid` table gains geotransform fields. No H3-specific columns are needed on the `feature` table.
-
-```sql
--- No H3 columns on feature for this case.
--- feature_cell_membership uses (row:col) as cell_id instead of H3 index.
-
-CREATE TABLE feature_cell_membership (
-    feature_id  uuid NOT NULL REFERENCES feature(id) ON DELETE CASCADE,
-    grid_id     uuid NOT NULL REFERENCES grid(id),
-    cell_id     text NOT NULL,     -- format: "row:col" e.g. "42:137"
-    coverage    double precision
-                CHECK (coverage > 0 AND coverage <= 1),
-    PRIMARY KEY (feature_id, grid_id, cell_id)
-);
-CREATE INDEX ON feature_cell_membership (grid_id, cell_id);
-CREATE INDEX ON feature_cell_membership (feature_id, grid_id);
-```
-
-### 8.4 Registering a Fishnet Grid (GHS-POP example)
-
-```sql
--- First, register the source raster as a raster_asset
-INSERT INTO raster_asset (
-    collection_id, title, storage_uri, storage_format,
-    pixel_size_m, crs, is_baseline, band_metadata
-)
-VALUES (
-    'ghs_pop',
-    'GHS-POP R2023A 100m EPSG:4326 Epoch 2020',
-    's3://your-bucket/reference/GHS_POP_E2020_GLOBE_R2023A_4326_100m.tif',
-    'COG',
-    100,
-    'EPSG:4326',
-    true,
-    '{"band_1": {"name": "population", "unit": "inhabitants", "nodata": -200}}'
-) RETURNING id;
--- save returned id as :ghspop_asset_id
-
--- Then register the derived grid
-INSERT INTO grid (
-    name, type,
-    origin_x, origin_y,
-    pixel_size_x, pixel_size_y,
-    n_rows, n_cols,
-    crs, aoi_id, source_asset_id, metadata
-)
-VALUES (
-    'ghspop_100m_city_a',
-    'fishnet',
-    -74.0500,         -- top-left longitude of AOI bounding box
-     40.9000,         -- top-left latitude of AOI bounding box
-    0.00090090,       -- ~100m in degrees longitude at this latitude
-    0.00090090,       -- ~100m in degrees latitude
-    500,              -- number of rows covering the AOI
-    600,              -- number of columns covering the AOI
-    'EPSG:4326',
-    :aoi_id,
-    :ghspop_asset_id,
-    '{"source": "JRC GHS-POP R2023A", "epoch": 2020, "resolution_m": 100}'
-);
-```
-
-**How to derive origin and pixel_size from the GeoTIFF (Python):**
-
-```python
-import rasterio
-
-
-def get_grid_params_from_raster(raster_path: str, aoi_bounds: tuple) -> dict:
-    """
-    Extract geotransform parameters from a GeoTIFF for registration.
-    aoi_bounds: (west, south, east, north) in the raster's CRS
-    """
-    with rasterio.open(raster_path) as src:
-        transform = src.transform
-        # GDAL geotransform: (origin_x, pixel_size_x, 0, origin_y, 0, -pixel_size_y)
-        # rasterio Affine: (pixel_size_x, 0, origin_x, 0, -pixel_size_y, origin_y)
-        pixel_size_x = transform.a  # positive, eastward
-        pixel_size_y = abs(transform.e)  # stored as negative in raster convention
-
-        # Compute the row/col window for the AOI
-        west, south, east, north = aoi_bounds
-        window = rasterio.windows.from_bounds(west, south, east, north, transform)
-        row_off = int(window.row_off)
-        col_off = int(window.col_off)
-        n_rows = int(window.height)
-        n_cols = int(window.width)
-
-        # Origin of the AOI sub-grid (top-left corner)
-        origin_x = transform.c + col_off * pixel_size_x
-        origin_y = transform.f - row_off * pixel_size_y
-
-        return {
-            "origin_x": origin_x,
-            "origin_y": origin_y,
-            "pixel_size_x": pixel_size_x,
-            "pixel_size_y": pixel_size_y,
-            "n_rows": n_rows,
-            "n_cols": n_cols,
-            "crs": str(src.crs),
-            "col_offset": col_off,  # offset into the global raster (for reading)
-            "row_offset": row_off,
-        }
-```
-
-### 8.5 Cell ID format for Fishnet
-
-```
-cell_id = "row:col"
-
-Examples:
-  "0:0"       → top-left cell of the AOI grid
-  "42:137"    → row 42, column 137
-  "499:599"   → bottom-right cell of a 500×600 grid
-```
-
-**Cell ID to geographic bounding box (Python):**
-
-```python
-def cell_id_to_bbox(grid: dict, cell_id: str) -> tuple:
-    """
-    Convert a "row:col" cell ID to a geographic bounding box.
-    Returns (west, south, east, north) in the grid's CRS.
-    """
-    row, col = map(int, cell_id.split(":"))
-    x_min = grid["origin_x"] + col * grid["pixel_size_x"]
-    y_max = grid["origin_y"] - row * grid["pixel_size_y"]
-    x_max = x_min + grid["pixel_size_x"]
-    y_min = y_max - grid["pixel_size_y"]
-    return (x_min, y_min, x_max, y_max)
-
-
-def cell_id_to_shapely(grid: dict, cell_id: str):
-    from shapely.geometry import box
-
-    return box(*cell_id_to_bbox(grid, cell_id))
-```
-
-**Cell ID to global raster row/col (for reading from GeoTIFF):**
-
-```python
-def cell_id_to_global_pixel(grid: dict, cell_id: str) -> tuple:
-    """
-    Convert local AOI cell_id to the pixel coordinates in the source raster.
-    Use this when reading values from the original GHS-POP GeoTIFF.
-    """
-    local_row, local_col = map(int, cell_id.split(":"))
-    global_row = local_row + grid["row_offset"]
-    global_col = local_col + grid["col_offset"]
-    return (global_row, global_col)
-```
-
-### 8.6 Population of `feature_cell_membership` for fishnet grids (Python)
-
-```python
-import rasterio
-import geopandas as gpd
-from shapely.geometry import box
-from exactextract import exact_extract  # pip install exactextract
-
-
-def register_fishnet_membership(
-    conn, grid_id: str, grid_params: dict, features_gdf: gpd.GeoDataFrame
-):
-    """
-    For each polygon feature, find which fishnet cells it overlaps
-    and compute the coverage fraction.
-    Uses exactextract for accurate fractional coverage computation.
-    """
-    rows = []
-    origin_x = grid_params["origin_x"]
-    origin_y = grid_params["origin_y"]
-    px = grid_params["pixel_size_x"]
-    py = grid_params["pixel_size_y"]
-    n_rows = grid_params["n_rows"]
-    n_cols = grid_params["n_cols"]
-
-    for _, feature in features_gdf.iterrows():
-        geom = feature.geometry
-        if geom is None or geom.is_empty:
-            continue
-
-        # Find candidate cells via bounding box
-        bounds = geom.bounds  # (minx, miny, maxx, maxy)
-        col_min = max(0, int((bounds[0] - origin_x) / px))
-        col_max = min(n_cols - 1, int((bounds[2] - origin_x) / px))
-        row_min = max(0, int((origin_y - bounds[3]) / py))
-        row_max = min(n_rows - 1, int((origin_y - bounds[1]) / py))
-
-        for r in range(row_min, row_max + 1):
-            for c in range(col_min, col_max + 1):
-                cell_box = box(
-                    origin_x + c * px,
-                    origin_y - (r + 1) * py,
-                    origin_x + (c + 1) * px,
-                    origin_y - r * py,
-                )
-                intersection = geom.intersection(cell_box)
-                if intersection.is_empty:
-                    continue
-                coverage = intersection.area / cell_box.area
-                if coverage > 0:
-                    cell_id = f"{r}:{c}"
-                    rows.append((str(feature["id"]), grid_id, cell_id, coverage))
-
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO feature_cell_membership (feature_id, grid_id, cell_id, coverage)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """,
-            rows,
-        )
-    conn.commit()
-    print(f"Registered {len(rows)} feature-cell overlaps for grid {grid_id}")
-```
-
-### 8.7 Population of `aoi_cell_membership` for fishnet grids (Python)
-
-```python
-from shapely.geometry import box, shape
-
-
-def register_fishnet_aoi_membership(
-    conn, aoi_id: str, grid_id: str, grid_params: dict, aoi_geojson: dict
-):
-    """
-    Enumerate all fishnet cells within an AOI polygon.
-    Uses bounding box pre-filter then exact intersection test.
-    """
-    aoi_geom = shape(aoi_geojson)
-    origin_x = grid_params["origin_x"]
-    origin_y = grid_params["origin_y"]
-    px = grid_params["pixel_size_x"]
-    py = grid_params["pixel_size_y"]
-    n_rows = grid_params["n_rows"]
-    n_cols = grid_params["n_cols"]
-
-    bounds = aoi_geom.bounds
-    col_min = max(0, int((bounds[0] - origin_x) / px))
-    col_max = min(n_cols - 1, int((bounds[2] - origin_x) / px))
-    row_min = max(0, int((origin_y - bounds[3]) / py))
-    row_max = min(n_rows - 1, int((origin_y - bounds[1]) / py))
-
-    rows = []
-    for r in range(row_min, row_max + 1):
-        for c in range(col_min, col_max + 1):
-            cell_box = box(
-                origin_x + c * px,
-                origin_y - (r + 1) * py,
-                origin_x + (c + 1) * px,
-                origin_y - r * py,
-            )
-            if aoi_geom.intersects(cell_box):
-                rows.append((aoi_id, grid_id, f"{r}:{c}"))
-
-    with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO aoi_cell_membership (aoi_id, grid_id, cell_id)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING
-        """,
-            rows,
-        )
-    conn.commit()
-    print(f"Registered {len(rows)} cells in AOI membership for grid {grid_id}")
-```
+| Product | `wpgp` (`DEFAULT_DATASET`; `--dataset` overrides) |
+| Catalogue | `https://www.worldpop.org/rest/data` (`WORLDPOP_REST_BASE`), queried as `/pop/<dataset>?iso3=<ISO3>` |
+| Download | One GeoTIFF per (dataset, country, year), cached as `<dataset>_<ISO3>_<year>.tif` under `--cache-dir` (default `data/cache/worldpop`) |
+| AOI clip | Optional `--aoi-id` (`clip_to_aoi_polygon`) |
+| Grid | EPSG:4326, 3 arc-seconds (about 90 m at the equator) — so `resolution_m` is NULL |
+| Ingest | `raster ingest --raw-path <tif> ... --aggregation-kind extensive` (a count; the default kind is `intensive`) |
 
 ---
 
-## 9. Complete Schema Reference
+## 6. Moving Values Between Grains
 
-All tables, with column-level comments.
+Six mechanisms move or relate values across grains. All are explicit commands or functions; nothing runs automatically when features or AOIs are loaded.
 
-```sql
--- ─────────────────────────────────────────────────────────────────
--- SPATIAL REFERENCE
--- ─────────────────────────────────────────────────────────────────
+| From → to | Mechanism | Writes | Weight |
+|---|---|---|---|
+| Feature → AOI (membership) | `aoi compute-features` | `aoi_feature` | — |
+| Feature type → feature type (relation) | `overlap declare-pair` + `overlap compute-all` | `feature_overlap` | — |
+| Raster → feature type | `raster zonal-stats`, or a raster recipe | `observation` | exactextract pixel coverage fraction |
+| Finer → coarser feature type | Observation recipe (`raster derivation run`) | `observation` | `feature_overlap.overlap_measure` (for `weighted_mean`) |
+| Child points/centroids → parent polygon | Inside indicator computes and `block_storeys` | `indicator_result`, `observation` | Count / median |
+| Block indicator → AOI | `indicators aoi-summary` (`summarise_aoi`) | `aoi_indicator_summary` | `aoi_feature.overlap_measure` |
 
-CREATE TABLE h3_resolution_config (
-    resolution        int PRIMARY KEY,
-    label             text NOT NULL,
-    avg_area_m2       double precision,
-    use_for_features  boolean DEFAULT false,
-    use_for_cells     boolean DEFAULT false
-);
+### 6.1 AOI membership — `aoi_feature`
 
-CREATE TABLE grid (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            text NOT NULL UNIQUE,
-    type            text NOT NULL CHECK (type IN ('h3', 's2', 'fishnet', 'custom')),
-    -- H3 / S2 only
-    resolution      int,
-    -- Fishnet / raster-aligned only
-    origin_x        double precision,
-    origin_y        double precision,
-    pixel_size_x    double precision,
-    pixel_size_y    double precision,
-    n_rows          int,
-    n_cols          int,
-    -- Common
-    crs             text NOT NULL DEFAULT 'EPSG:4326',
-    aoi_id          uuid,
-    cell_count      bigint,
-    source_asset_id uuid,
-    metadata        jsonb,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT fishnet_requires_geotransform CHECK (
-        type != 'fishnet' OR (
-            origin_x IS NOT NULL AND origin_y IS NOT NULL AND
-            pixel_size_x IS NOT NULL AND pixel_size_y IS NOT NULL AND
-            n_rows IS NOT NULL AND n_cols IS NOT NULL
-        )
-    )
-);
+`aoi compute-features [--aoi-id <aoi>]` (`PostgresAOIRepository.compute_overlaps`, `packages/py/reimagina/storage/postgres/repositories.py:1045`) deletes the AOI's rows and re-inserts them in three passes:
 
+- **Polygons by area, lines by length** (geodesic). The AOI polygon is first cut with `ST_Subdivide` into chunks of at most `AOI_SUBDIVIDE_VERTICES` = 64 vertices (`repositories.py:52`), so the GiST index prunes candidates; per-chunk measures are summed. A feature is a member when `overlap_measure / feature_measure >= MEMBERSHIP_MIN_OVERLAP_RATIO` = 1e-9 (`repositories.py:44`), which drops shared-border slivers but keeps any feature that genuinely straddles the boundary.
+- **Points by presence**: `ST_Within(feature.geometry, aoi.geometry)`, stored with `overlap_measure = feature_measure = overlap_ratio = 1`.
+- **Identifier rule** (r040), applied in all three passes: when the AOI has a `membership_key` such as `{"CVE_ENT": "09", "CVE_MUN": "012"}`, a feature that carries every key must match the values exactly (`attributes @> membership_key`) and still pass the geometric test; a feature missing any key (Overture buildings, establishments) is decided by geometry alone. `cdmx aoi-from-state` and `cdmx aoi-from-alcaldia` set a key; `overture aoi-from-division` does not.
 
--- ─────────────────────────────────────────────────────────────────
--- FEATURE PATH (existing tables, minimal additions)
--- ─────────────────────────────────────────────────────────────────
+`aoi_feature` rows carry `overlap_basis` (`area` | `length` | `presence`), `overlap_measure` (m², m or 1), `feature_measure` and `overlap_ratio` (share of the feature inside the AOI). A trigger checks that the basis matches the feature's geometry type.
 
--- Existing table — add H3 index columns (Case A only)
-ALTER TABLE feature
-    ADD COLUMN IF NOT EXISTS h3_res8 text,
-    ADD COLUMN IF NOT EXISTS h3_res9 text;
-CREATE INDEX IF NOT EXISTS idx_feature_h3_res9 ON feature (h3_res9);
+Creating an AOI does not populate `aoi_feature`, and loading features does not update it. Run `aoi compute-features` after either.
 
--- Existing table — add run_id for provenance
-ALTER TABLE indicator_result
-    ADD COLUMN IF NOT EXISTS run_id uuid REFERENCES model_run(id);
+**Possible inconsistencies.** The batch jobs in the P2 table select AOI features by `ST_Intersects` with the AOI polygon, so they also process features `aoi_feature` excludes: identifier-mismatched neighbours and touching-only slivers. Those extra rows are computed but never read through an AOI-scoped path.
 
+### 6.2 Feature-to-feature overlap — `feature_overlap`
 
--- ─────────────────────────────────────────────────────────────────
--- RASTER / COVERAGE PATH
--- ─────────────────────────────────────────────────────────────────
+`overlap declare-pair --source-context --source-slug --target-context --target-slug` registers a pair in `feature_overlap_type_pair`. `overlap compute-all [--aoi-id <aoi>]` (`compute_all_pairs` → `PostgresOverlapRepository.compute_feature_overlaps`, `repositories.py:1454`) computes every declared pair:
 
-CREATE TABLE raster_asset (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    stac_item_id    text UNIQUE,
-    collection_id   text NOT NULL,           -- 'flood_depth', 'ghs_pop', 'ndvi'
-    title           text,
-    bbox            double precision[4],     -- [west, south, east, north] WGS84
-    aoi_id          uuid,
-    datetime_start  timestamptz,
-    datetime_end    timestamptz,
-    scenario_id     uuid,
-    run_id          uuid,
-    is_baseline     boolean NOT NULL DEFAULT false,
-    storage_uri     text NOT NULL,           -- s3://bucket/path/file.tif
-    storage_format  text NOT NULL
-                    CHECK (storage_format IN ('COG', 'GeoTIFF', 'Zarr', 'GeoParquet')),
-    byte_size       bigint,
-    checksum_sha256 text,                    -- SHA-256 of the file for reproducibility
-    crs             text,
-    pixel_size_m    double precision,
-    band_count      int DEFAULT 1,
-    band_metadata   jsonb,                   -- per-band name, unit, nodata value
-    links           jsonb,                   -- STAC links (thumbnail, overview, etc.)
-    created_at      timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX ON raster_asset (collection_id, scenario_id);
-CREATE INDEX ON raster_asset (run_id);
+- the basis comes from the **source** type's `geometry_family`: `polygon` → area, `line` → length, `point` or `geometry` → presence (`ST_Within(source, target)`);
+- area and length are geodesic; a row is written for any intersection with positive measure — there is no minimum ratio;
+- `overlap_measure` is the intersection (m² or m), `feature_measure` the source feature's area or length, `overlap_ratio = overlap_measure / feature_measure`, the share of the **source** inside the target;
+- rows are upserted on `(source_feature_id, target_feature_id)`. A recompute does not delete pairs that no longer intersect; only deleting a feature removes its rows.
 
+The one reader of `feature_overlap` is the observation rollup (§6.4). Neither indicators nor tiles read it, and `feature.parent_id` is not used for aggregation.
 
--- ─────────────────────────────────────────────────────────────────
--- PROVENANCE LAYER
--- ─────────────────────────────────────────────────────────────────
+### 6.3 Raster → feature: zonal statistics
 
-CREATE TABLE model_run (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    model_name      text NOT NULL,
-    model_version   text,
-    scenario_id     uuid,
-    parameters      jsonb NOT NULL DEFAULT '{}',   -- FULL parameter snapshot
-    input_asset_ids uuid[],                        -- raster_asset IDs consumed
-    input_run_ids   uuid[],                        -- upstream model_run IDs consumed
-    triggered_by    text,                          -- 'user:alice', 'pipeline:nightly'
-    status          text NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'running', 'complete', 'failed')),
-    error_message   text,
-    started_at      timestamptz,
-    completed_at    timestamptz,
-    created_at      timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX ON model_run (scenario_id, model_name);
-CREATE INDEX ON model_run (status, created_at);
+`raster zonal-stats --source-id <uuid> --feature-type <slug> --attribute-key-prefix <prefix> [--aoi-id] [--statistics] [--coverage-threshold] [--force] [--direct-dsn]` runs `run_raster_zonal_stats` (`packages/py/reimagina/jobs/raster_zonal_stats.py`). A raster recipe (§6.4) runs the same function.
 
+1. Resolves the feature type as `get_type_id("MEX", <slug>)` (`raster_zonal_stats.py:208`), so only `MEX` types can be targeted.
+2. Commits a new `ingestion_run` on the raster's source (`orchestrator = 'worker'`, `transformation_step = 'raster_zonal_stats'`).
+3. Reads every feature of the type (optionally intersecting the AOI), reprojects each geometry to the raster CRS, and runs exactextract once over all of them. exactextract weights each pixel by the fraction of it inside the polygon, so blocks smaller than a pixel get a correct share and the per-block sums of an extensive raster add up to the raster total.
+4. Skips a feature whose fractional valid-pixel `count` is 0 or below `coverage_threshold` (default 0.0, `raster_zonal_stats.py:419`).
+5. On a dedicated connection (`--direct-dsn` or `DATABASE_URL_DIRECT`, required), takes `pg_try_advisory_xact_lock` on a hash of the prefix — `ConcurrentRasterRun` if it is held — retires the prefix's current rows for that feature type (and AOI members, through `aoi_feature`, when `--aoi-id` is set), and inserts one observation per (feature, statistic) as `<prefix>_<stat>`.
 
--- ─────────────────────────────────────────────────────────────────
--- CELL PATH
--- ─────────────────────────────────────────────────────────────────
+Default statistics (`_DEFAULT_STATS_BY_KIND`, `raster_zonal_stats.py:120`): `mean, median, p05, p95, std` for an `intensive` raster, `sum, count` for an `extensive` one. Each row carries `lineage_ref = {"kind": "raster_zonal_stats", "asset_id", "stat_name", "fractional_pixel_count"}` and the raster's `source_id`.
 
--- Sparse cell-level indicator outputs.
--- Only cells with non-null values are stored.
--- Partitioned by grid_id for query performance.
-CREATE TABLE cell_indicator_result (
-    grid_id         uuid NOT NULL REFERENCES grid(id),
-    cell_id         text NOT NULL,
-    scenario_id     uuid NOT NULL,
-    indicator_id    uuid NOT NULL,
-    value           double precision,
-    value_json      jsonb,                          -- for vector or multi-band outputs
-    run_id          uuid NOT NULL REFERENCES model_run(id),
-    computed_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (grid_id, cell_id, scenario_id, indicator_id)
-) PARTITION BY LIST (grid_id);
+The CLI adds two checks the worker does not make: it refuses a prefix that another source already owns at the same feature type unless `--force` (`has_active_prefix`), and it warns when the median feature's equivalent-circle diameter is below three times `resolution_m` for an extensive raster.
 
--- Create one partition per registered grid:
--- CREATE TABLE cell_indicator_result_h3r9_city_a
---     PARTITION OF cell_indicator_result
---     FOR VALUES IN ('<grid_uuid>');
+### 6.4 Finer → coarser grain: aggregation recipes
 
--- Cell-level scenario overrides.
--- Stores only the cells and variables that differ from baseline.
-CREATE TABLE cell_scenario_override (
-    grid_id         uuid NOT NULL REFERENCES grid(id),
-    cell_id         text NOT NULL,
-    scenario_id     uuid NOT NULL,
-    variable_id     uuid NOT NULL,
-    override_value  double precision,
-    override_json   jsonb,
-    rationale       text,
-    created_by      text,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (grid_id, cell_id, scenario_id, variable_id)
-);
+`curated_geo.aggregation_recipe` (r020) declares a derivation per target grain; `raster derivation add | list | enable | disable | remove | run` manages them, and `raster derivation run --recipe-id <uuid>` or `--raster-layer-slug <slug>` executes them (`run_recipe` / `run_all_for_raster`, `packages/py/reimagina/jobs/derivations.py`). Recipes are never run automatically.
 
+- **Raster recipe** (`input_kind = 'raster'`): zonal statistics of `input_raster_layer_id` onto `target_feature_type_slug` (§6.3). Statistics come from `params.stats`, or else from the method (`mean`, `sum`, `min`, `max` map to the same statistic; `_METHOD_TO_RASTERSTAT`, `derivations.py:194`).
+- **Observation recipe** (`input_kind = 'observation'`): `run_observation_rollup` (`packages/py/reimagina/jobs/observation_rollup.py`) reads current observations of `input_feature_type_slug` whose key is `input_attribute_key_prefix` or starts with `<prefix>_`, joins them to the target grain through `feature_overlap` (`rollup_observation_child_rows`, `repositories.py:1588`; §11 Q2), groups by (target feature, source key) and reduces each group with `reimagina.jobs.aggregation.aggregate`. The suffix is kept: `pop_2020_sum` at block grain becomes `<output_prefix>_sum` at the target grain.
 
--- ─────────────────────────────────────────────────────────────────
--- SPATIAL BRIDGE LAYER
--- ─────────────────────────────────────────────────────────────────
+Aggregation methods: `weighted_mean` weights by `feature_overlap.overlap_measure` (m² or m); `mean`, `sum`, `min`, `max` ignore the weight. A `sum` therefore adds a source feature's full value to every target it touches — correct for nesting grains such as block → AGEB, double-counting for grains that do not nest. `weight_basis` is required for `weighted_mean` but only checked for presence; the weight is always `overlap_measure`.
 
--- Feature-to-cell overlap mapping.
--- Grid-agnostic: works for H3 and fishnet.
--- Populated ONCE at grid registration time, never at query time.
-CREATE TABLE feature_cell_membership (
-    feature_id  uuid NOT NULL REFERENCES feature(id) ON DELETE CASCADE,
-    grid_id     uuid NOT NULL REFERENCES grid(id),
-    cell_id     text NOT NULL,
-    coverage    double precision CHECK (coverage > 0 AND coverage <= 1),
-    PRIMARY KEY (feature_id, grid_id, cell_id)
-);
-CREATE INDEX ON feature_cell_membership (grid_id, cell_id);
-CREATE INDEX ON feature_cell_membership (feature_id, grid_id);
+Rollup observations are written under a synthetic source per recipe (`name = 'observation_rollup::<recipe_id>'`, `provider = 'reimagina-rollup'`), with `transformation_step = 'observation_rollup'`, `lineage_ref = {"source_attribute_key", "input_feature_type", "target_feature_type", "method", "children"}`, and the same prefix lock and grain-scoped retire as zonal statistics. With `aoi_id`, source features are limited to AOI members (`aoi_feature`). `aggregation_recipe_prefix_uk` makes `(target_feature_type_slug, attribute_key_prefix)` unique, so one prefix has one producer per grain.
 
--- AOI-to-cell membership.
--- Populated ONCE at grid/AOI registration time, never at query time.
-CREATE TABLE aoi_cell_membership (
-    aoi_id   uuid NOT NULL,
-    grid_id  uuid NOT NULL REFERENCES grid(id),
-    cell_id  text NOT NULL,
-    PRIMARY KEY (aoi_id, grid_id, cell_id)
-);
-CREATE INDEX ON aoi_cell_membership (grid_id, cell_id);
-```
+### 6.5 Point-in-polygon inside computes
+
+Two producers relate a child grain to a parent without `feature_overlap`:
+
+- `building_density` counts buildings per block with `ST_Within(ST_Centroid(child.geometry), parent.geometry)` (`centroid_in_parent_counts`, `repositories.py:466`).
+- `block_storeys` writes a block's `floors` observation as the median `num_floors` of the Overture buildings whose `geometry_centroid` the block contains (`packages/py/reimagina/pipeline/block_storeys.py`).
+
+Both assign a straddling child to one parent only.
+
+### 6.6 Block indicator → AOI: `aoi_indicator_summary`
+
+`indicators aoi-summary --aoi-id --slug [--scenario-id]` runs `summarise_aoi` (`packages/py/reimagina/jobs/aoi_summary.py`). It reads every `aoi_feature` row of the AOI, left-joined to the indicator's current values (through `scenario_overlay` for a scenario; `fetch_aoi_children`, `repositories.py:2081`), weights each by `aoi_feature.overlap_measure`, applies the shared missing-data policy (`aggregate_children`: missing if more than half of the weight is missing, `prorated` note if some is) and the indicator's `aggregation_method`, and upserts one row per (AOI, scenario, indicator). `GET /aois/{aoi_id}/summaries` reads them.
 
 ---
 
-## 10. Data Flow Patterns
+## 7. Serving
 
-### Flow 1 — Dense raster input (flood model output, heat stress, NDVI)
-
-```
-1. Model run completes
-   └─ Produces GeoTIFF on object storage
-
-2. Write model_run row
-   └─ status='complete', parameters={...}, scenario_id, input_asset_ids
-
-3. Write raster_asset row
-   └─ storage_uri, collection_id, scenario_id, run_id, checksum_sha256
-
-4. Async zonal extraction job (exactextract or rasterstats)
-   └─ For each feature in AOI: extract mean, max, p90 from raster
-   └─ Write indicator_result rows (feature_id, scenario_id, indicator_id, value, run_id)
-
-5. Optional: if cell-level SQL queries are required
-   └─ Read raster values per cell using rasterio windowed reads
-   └─ Write sparse cell_indicator_result rows (only cells with values)
-
-Query time:
-  - Feature analysts → indicator_result  (B-tree lookup)
-  - Cell analysts    → cell_indicator_result (B-tree lookup)
-  - Raster analysts  → fetch COG via storage_uri with HTTP range request
-```
-
-### Flow 2 — Sparse cell output (accessibility score, walkability index)
-
-```
-1. Model run completes
-   └─ Produces dict: {cell_id: value} (only cells with computed values)
-
-2. Write model_run row
-
-3. Bulk insert cell_indicator_result
-   └─ (grid_id, cell_id, scenario_id, indicator_id, value, run_id)
-   └─ Sparse: only cells with values; table stays compact
-
-4. Optional cross-path aggregation
-   └─ JOIN cell_indicator_result WITH feature_cell_membership
-   └─ Aggregate (weighted avg by coverage) per feature
-   └─ Write indicator_result rows for feature-level summaries
-
-5. AOI query:
-   └─ Look up cell set in aoi_cell_membership
-   └─ Filter cell_indicator_result by that set
-```
-
-### Flow 3 — External grid input (GHS-POP aligned indicator)
-
-```
-1. Register GHS-POP raster as raster_asset (once)
-
-2. Register derived grid in grid table (once)
-   └─ Store geotransform: origin_x/y, pixel_size_x/y, n_rows, n_cols
-
-3. Run registration jobs (once per grid):
-   a. register_fishnet_aoi_membership() → fills aoi_cell_membership
-   b. register_fishnet_membership()     → fills feature_cell_membership
-
-4. Model run produces {cell_id: value} aligned to this grid
-   └─ Same insert flow as Flow 2
-
-5. All queries use the same tables as Case A
-   └─ Only the cell_id format differs: "row:col" vs H3 index string
-```
-
----
-
-## 11. Scenario Modeling Mechanics
-
-### Baseline state
-
-```sql
--- Baseline indicator results on features
-SELECT * FROM indicator_result
-WHERE scenario_id IS NULL   -- or WHERE scenario_id = :baseline_id
-  AND indicator_id = :indicator_id;
-
--- Baseline cell results
-SELECT * FROM cell_indicator_result
-WHERE scenario_id = :baseline_id
-  AND grid_id     = :grid_id
-  AND indicator_id = :indicator_id;
-
--- Baseline raster assets
-SELECT * FROM raster_asset
-WHERE is_baseline = true
-  AND collection_id = :collection_id;
-```
-
-### Running a scenario
-
-A scenario never modifies baseline data. It produces new output rows tagged with `scenario_id`.
-
-```python
-def run_scenario(
-    scenario_id: str, model_name: str, parameters: dict, baseline_run_id: str
-) -> str:
-    """
-    Execute a model under a scenario, writing results as new rows.
-    Returns the model_run ID.
-    """
-    run_id = create_model_run(
-        model_name=model_name,
-        scenario_id=scenario_id,
-        parameters=parameters,
-        input_run_ids=[baseline_run_id],
-    )
-
-    # Resolve scenario state: read baseline, apply overrides in memory
-    baseline_cells = read_cell_indicator_result(
-        scenario_id=BASELINE_ID, indicator_id=parameters["input_indicator"]
-    )
-    overrides = read_cell_scenario_overrides(scenario_id=scenario_id)
-
-    effective_inputs = {**baseline_cells, **overrides}  # overrides win
-
-    # Run the model
-    outputs = model_function(effective_inputs, parameters)
-
-    # Write results — new rows, not updates
-    bulk_insert_cell_indicator_result(
-        rows=[
-            (GRID_ID, cell_id, scenario_id, OUTPUT_INDICATOR_ID, value, run_id)
-            for cell_id, value in outputs.items()
-        ]
-    )
-
-    mark_model_run_complete(run_id)
-    return run_id
-```
-
-### Scenario comparison query
-
-```sql
--- Which cells changed and by how much between baseline and scenario A?
-SELECT
-    base.cell_id,
-    base.value                              AS baseline_value,
-    scen.value                              AS scenario_value,
-    scen.value - base.value                 AS delta,
-    ROUND(
-        (scen.value - base.value)
-        / NULLIF(base.value, 0) * 100, 2
-    )                                       AS pct_change
-FROM cell_indicator_result base
-JOIN cell_indicator_result scen
-    ON  scen.cell_id      = base.cell_id
-    AND scen.grid_id      = base.grid_id
-    AND scen.indicator_id = base.indicator_id
-WHERE base.grid_id       = :grid_id
-  AND base.indicator_id  = :indicator_id
-  AND base.scenario_id   = :baseline_id
-  AND scen.scenario_id   = :scenario_id
-  AND ABS(scen.value - base.value) > :min_delta
-ORDER BY ABS(delta) DESC;
-```
-
-### What baseline scenario_id should be
-
-Use a fixed well-known UUID registered in the `scenario` table as the baseline. Do not use `NULL`. Using `NULL` for baseline makes `scenario_id IN (baseline_id, scenario_a_id)` comparisons impossible and complicates indexing.
-
-```sql
-INSERT INTO scenario (id, name, description, is_baseline)
-VALUES ('00000000-0000-0000-0000-000000000001', 'baseline', 'Observed current state', true);
-```
-
----
-
-## 12. AOI Filtering Mechanics
-
-AOI filtering is the most common source of query performance problems in geospatial systems. The rule is: **all spatial membership is pre-computed at registration time, never computed at query time.**
-
-### For the feature path
-
-```sql
--- Feature path AOI filtering uses PostGIS spatial index — already in place
-SELECT f.id, ir.value
-FROM feature f
-JOIN indicator_result ir ON ir.feature_id = f.id
-WHERE ST_Within(f.geometry, :aoi_geometry)   -- spatial index on feature.geometry
-  AND ir.scenario_id   = :scenario_id
-  AND ir.indicator_id  = :indicator_id;
-
--- Alternative: if aoi_id is pre-linked to features (faster for repeated queries)
-SELECT f.id, ir.value
-FROM feature f
-JOIN feature_aoi_membership fam ON fam.feature_id = f.id  -- pre-computed
-JOIN indicator_result ir ON ir.feature_id = f.id
-WHERE fam.aoi_id       = :aoi_id
-  AND ir.scenario_id   = :scenario_id
-  AND ir.indicator_id  = :indicator_id;
-```
-
-### For the cell path (both H3 and fishnet)
-
-```sql
--- Cell path AOI filtering via pre-computed aoi_cell_membership
--- No geometry operations at query time
-SELECT cir.cell_id, cir.value
-FROM cell_indicator_result cir
-JOIN aoi_cell_membership acm
-    ON  acm.cell_id = cir.cell_id
-    AND acm.grid_id = cir.grid_id
-WHERE acm.aoi_id       = :aoi_id
-  AND acm.grid_id      = :grid_id
-  AND cir.scenario_id  = :scenario_id
-  AND cir.indicator_id = :indicator_id;
--- Execution: index scan on aoi_cell_membership, nested loop to cell_indicator_result
--- No ST_* call anywhere in the query plan
-```
-
-### For the raster path
-
-AOI filtering on rasters is done at the file level using GDAL window reads or HTTP range requests on COG files. No SQL is involved.
-
-```python
-import rasterio
-from rasterio.mask import mask
-from shapely.geometry import mapping
-
-
-def read_raster_in_aoi(storage_uri: str, aoi_geom) -> tuple:
-    """Read raster values within AOI using COG range requests."""
-    with rasterio.open(storage_uri) as src:
-        out_image, out_transform = mask(src, [mapping(aoi_geom)], crop=True)
-    return out_image, out_transform
-```
-
-### Registration workflow (run once per grid, per AOI)
-
-```
-New grid registered
-       │
-       ├── H3 grid → h3.polyfill(aoi_geojson, resolution) → insert aoi_cell_membership
-       │
-       └── Fishnet grid → ST_Intersects loop → insert aoi_cell_membership
-
-New AOI added for existing grid
-       │
-       └── Same process: enumerate cells, insert aoi_cell_membership rows
-```
-
----
-
-## 13. Provenance and Reproducibility
-
-### Provenance chain
-
-Every computed output traces back to a complete reconstruction path:
-
-```
-cell_indicator_result.run_id
-    └─ model_run
-          ├── model_name + model_version     → identifies the exact code
-          ├── parameters (jsonb)             → full parameter snapshot
-          ├── scenario_id → scenario
-          │       └─ scenario_override[]     → what was changed from baseline
-          ├── input_asset_ids[] → raster_asset[]
-          │       └─ storage_uri             → exact input file
-          │       └─ checksum_sha256         → file integrity guarantee
-          └── input_run_ids[] → model_run[]  → upstream models consumed
-```
-
-### Full provenance query
-
-```sql
--- Trace the full provenance of a specific cell value
-SELECT
-    cir.cell_id,
-    cir.value,
-    cir.computed_at,
-    mr.model_name,
-    mr.model_version,
-    mr.parameters,
-    s.name                   AS scenario_name,
-    array_agg(DISTINCT ra.storage_uri)  AS input_rasters,
-    array_agg(DISTINCT ra.checksum_sha256) AS input_checksums
-FROM cell_indicator_result cir
-JOIN model_run mr ON mr.id = cir.run_id
-JOIN scenario s   ON s.id  = cir.scenario_id
-LEFT JOIN raster_asset ra ON ra.id = ANY(mr.input_asset_ids)
-WHERE cir.cell_id      = :cell_id
-  AND cir.grid_id      = :grid_id
-  AND cir.indicator_id = :indicator_id
-GROUP BY cir.cell_id, cir.value, cir.computed_at,
-         mr.model_name, mr.model_version, mr.parameters, s.name
-ORDER BY cir.computed_at DESC;
-```
-
-### Reproducibility checklist
-
-To reproduce any output row from scratch:
-
-1. Read `model_run.parameters` — this is the complete parameter set
-2. Read `model_run.model_version` — check out exactly this version of the model code
-3. Reconstruct scenario state: read `scenario_override` rows for `model_run.scenario_id`
-4. Fetch input files at `raster_asset.storage_uri` for each ID in `model_run.input_asset_ids`
-5. Verify file integrity: `sha256sum file.tif` must match `raster_asset.checksum_sha256`
-6. Re-run the model with the same parameters and scenario state
-
-If any checksum fails, the input has changed since the run and the output cannot be guaranteed reproducible. Surface this as a data quality warning.
-
----
-
-## 14. Core Query Patterns
-
-### Q1 — All cell values in an AOI, for a scenario
-
-```sql
--- Works identically for H3 and fishnet grids
-SELECT
-    cir.cell_id,
-    cir.value
-FROM cell_indicator_result cir
-JOIN aoi_cell_membership acm
-    ON  acm.cell_id = cir.cell_id
-    AND acm.grid_id = cir.grid_id
-WHERE acm.aoi_id       = :aoi_id
-  AND acm.grid_id      = :grid_id
-  AND cir.scenario_id  = :scenario_id
-  AND cir.indicator_id = :indicator_id;
-```
-
-### Q2 — Feature-level aggregation from cell values (cross-path join)
-
-```sql
--- Aggregate cell indicator values onto features using pre-computed coverage weights
-SELECT
-    fcm.feature_id,
-    SUM(cir.value * fcm.coverage)
-        / NULLIF(SUM(fcm.coverage), 0)           AS coverage_weighted_mean,
-    MAX(cir.value)                               AS max_value,
-    PERCENTILE_CONT(0.9) WITHIN GROUP
-        (ORDER BY cir.value)                     AS p90_value,
-    COUNT(*)                                     AS cell_count
-FROM cell_indicator_result cir
-JOIN feature_cell_membership fcm
-    ON  fcm.cell_id = cir.cell_id
-    AND fcm.grid_id = cir.grid_id
-WHERE cir.grid_id      = :grid_id
-  AND cir.scenario_id  = :scenario_id
-  AND cir.indicator_id = :indicator_id
-GROUP BY fcm.feature_id;
-```
-
-### Q3 — Scenario delta: cells that changed
-
-```sql
-SELECT
-    base.cell_id,
-    base.value                                        AS baseline_value,
-    scen.value                                        AS scenario_value,
-    scen.value - base.value                           AS delta,
-    ROUND((scen.value - base.value)
-          / NULLIF(base.value, 0) * 100, 2)           AS pct_change
-FROM cell_indicator_result base
-JOIN cell_indicator_result scen
-    ON  scen.cell_id      = base.cell_id
-    AND scen.grid_id      = base.grid_id
-    AND scen.indicator_id = base.indicator_id
-WHERE base.grid_id      = :grid_id
-  AND base.indicator_id = :indicator_id
-  AND base.scenario_id  = :baseline_id
-  AND scen.scenario_id  = :scenario_id;
-```
-
-### Q4 — Population-weighted indicator (GHS-POP case)
-
-```sql
--- When cell_id aligns with GHS-POP pixels,
--- join directly to GHS-POP cell values for population weighting.
--- Assumes population values are stored in cell_indicator_result under a 'population' indicator.
-SELECT
-    fcm.feature_id,
-    SUM(ind.value * pop.value)
-        / NULLIF(SUM(pop.value), 0)     AS population_weighted_mean
-FROM cell_indicator_result ind
-JOIN cell_indicator_result pop
-    ON  pop.cell_id      = ind.cell_id
-    AND pop.grid_id      = ind.grid_id
-    AND pop.scenario_id  = :baseline_id    -- population is always baseline
-    AND pop.indicator_id = :population_indicator_id
-JOIN feature_cell_membership fcm
-    ON  fcm.cell_id = ind.cell_id
-    AND fcm.grid_id = ind.grid_id
-WHERE ind.grid_id      = :ghspop_grid_id
-  AND ind.scenario_id  = :scenario_id
-  AND ind.indicator_id = :target_indicator_id
-GROUP BY fcm.feature_id;
-```
-
-### Q5 — Full provenance trace for a feature indicator value
-
-```sql
-SELECT
-    ir.feature_id,
-    ir.value,
-    ir.computed_at,
-    mr.model_name,
-    mr.model_version,
-    mr.parameters,
-    s.name                              AS scenario_name,
-    ra.storage_uri                      AS source_raster,
-    ra.checksum_sha256                  AS source_checksum
-FROM indicator_result ir
-JOIN model_run mr    ON mr.id = ir.run_id
-JOIN scenario s      ON s.id  = ir.scenario_id
-LEFT JOIN raster_asset ra ON ra.id = ANY(mr.input_asset_ids)
-WHERE ir.feature_id   = :feature_id
-  AND ir.indicator_id = :indicator_id
-ORDER BY ir.computed_at DESC;
-```
-
----
-
-## 15. Performance Guidelines
-
-### Partitioning strategy
-
-Partition `cell_indicator_result` by `grid_id`. Create one partition per registered grid.
-
-```sql
--- At grid registration time:
-CREATE TABLE cell_indicator_result_h3r9_city_a
-    PARTITION OF cell_indicator_result
-    FOR VALUES IN (':grid_uuid');
-
--- PostgreSQL prunes irrelevant partitions at plan time,
--- not execution time. Queries with grid_id = :x never touch other partitions.
-```
-
-For deployments with many scenarios, add a sub-partition by `scenario_id`:
-
-```sql
-CREATE TABLE cell_indicator_result_h3r9_baseline
-    PARTITION OF cell_indicator_result_h3r9_city_a
-    FOR VALUES IN (':baseline_scenario_uuid');
-```
-
-### Index strategy
-
-```sql
--- aoi_cell_membership: the most queried bridge table
-CREATE INDEX ON aoi_cell_membership (aoi_id, grid_id);   -- AOI filter
-CREATE INDEX ON aoi_cell_membership (grid_id, cell_id);  -- cell lookup
-
--- feature_cell_membership
-CREATE INDEX ON feature_cell_membership (grid_id, cell_id);   -- cell→feature
-CREATE INDEX ON feature_cell_membership (feature_id, grid_id); -- feature→cell
-
--- cell_indicator_result (within each partition)
--- Primary key (grid_id, cell_id, scenario_id, indicator_id) already provides
--- the main lookup index. Add a covering index for scenario comparison queries:
-CREATE INDEX ON cell_indicator_result (grid_id, indicator_id, scenario_id)
-    INCLUDE (cell_id, value);
-```
-
-### Cardinality limits
-
-| Grid type | Max cells in DB | Recommended action above limit |
+| What | Served by | Grain handling |
 |---|---|---|
-| H3 resolution 9 | ~500K | Partition by sub-AOI or move to GeoParquet |
-| H3 resolution 10+ | Do not store in DB | Use COG/Zarr for dense outputs |
-| Fishnet 100m city | ~250K–2M | Partition aggressively; consider GeoParquet |
-| Fishnet 1km regional | ~50K–500K | Fine for relational DB |
+| Features with current attributes | `serving_geo.feature_v`, `serving_geo.feature_aoi_v` (one row per AOI × feature); `GET /features` | Any type; `feature_v.attributes = feature.attributes ‖ feature_current_attributes_mv` |
+| Base map features | `serving_geo.get_tile` | Role-gated by zoom; `aoi_id` filters through `aoi_feature` (r039) |
+| Indicator choropleth | `serving_geo.indicator_overlay_tile` | `feature_type` and `aoi_id` parameters; empty below z8 (r025) |
+| Observation choropleth (recipes and raw observations) | `serving_geo.aggregation_overlay_tile` | `attribute_key` + `feature_type_slug`; `aoi_id` through `aoi_feature`; empty below z8 (r025) |
+| Indicator values and downloads | `GET /indicators/{slug}/values`, `/stats`, `/values.csv`, `/values.geojson`, `/values.parquet` | AOI scope by `EXISTS` on `aoi_feature` |
+| Raster pixels | titiler mounted at `/cog` (`apps/api/app.py:203`) | `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<file URL>` |
 
-### When to move to GeoParquet (analytical layer)
+The vector tile functions are served by Martin and by the API's `/tiles/{function}/{z}/{x}/{y}` route; `GET /tile-sources` lists them with every published raster layer and every enabled recipe (`packages/py/reimagina/tiles/sources.py`). `TILE_SERVING.md` has the details.
 
-If any of the following apply, export `cell_indicator_result` to GeoParquet on object storage:
-
-- Cell count × scenario count × indicator count > 50M rows
-- Analytical queries take more than 2 seconds on warm cache
-- Results are consumed primarily by data science workflows (Jupyter, pandas)
-- Bulk exports for GIS tools are frequent
+titiler only opens `file://` URLs that resolve, after symlinks, to an existing file inside the data root; any other scheme, a non-empty host or a path outside the root is rejected (`validated_cog_path`, `apps/api/cog_security.py`).
 
 ---
 
-## 16. Anti-Patterns to Avoid
+## 8. Scenarios and Grains
 
-| Anti-pattern | Problem | Correct approach |
+Scenarios touch only the feature path, and in practice only blocks:
+
+- A scenario edit is a drawn polygon over one feature type (the API default is `MEX:block`). Materialisation catches a feature when `ST_Covers(edit.geometry, feature.geometry_centroid)` holds and the feature is a member of the scenario's AOI in `aoi_feature`, and writes `scenario_override` rows.
+- Indicators read `override ⊕ current observation ⊕ feature.attributes` (`effective_numeric`) and write `indicator_result` rows under the scenario's `scenario_id`. The baseline is `scenario_id IS NULL`.
+- Rasters, zonal statistics, rollup observations, `aoi_feature` and `feature_overlap` have no scenario dimension. A scenario never edits geometry.
+- `aoi_indicator_summary` has a `scenario_id` and reads indicator values through `scenario_overlay`.
+
+Reads of a scenario go through `scenario_overlay` (`packages/py/reimagina/storage/_utils.py`): per (feature, indicator), the scenario's current row if it carries a value, else the baseline's. `SCENARIOS_LAYER.md` covers authoring, materialisation, the overlay and `GET /scenarios/{scenario_id}/comparison`.
+
+---
+
+## 9. Provenance and Reproducibility
+
+```
+feature / observation / file_asset .ingestion_run_id
+    └─ curated_geo.ingestion_run       → transformation_step, orchestrator, code_version, status, details
+          └─ source_id → data_source_catalog → provider, version, origin storage_uri
+observation.lineage_ref
+    ├─ zonal statistics: asset_id → file_asset → silver COG storage_uri, crs, dataset_version
+    └─ rollup: source_attribute_key, input_feature_type, target_feature_type, method, children
+
+indicator_result.job_run_id
+    └─ jobs_runtime.job_run            → code_version, model_family, scenario_id
+          └─ run_id → jobs_runtime.orchestration_run (NULL for direct CLI computes)
+indicator_result.model_version          → job_run.code_version unless the writer set it
+```
+
+`transformation_step` values on the spatial paths: `silver_to_curated` (vector and tabular loads), `raster_landing`, `raster_zonal_stats`, `observation_rollup`. `code_version` on `job_run` is the git commit SHA (`reimagina.provenance.code_version()`, `"dev"` outside a checkout); on `ingestion_run` it is whatever the caller passed — the raster commands default `--code-version` to `dev`, and the recipe dispatcher does not pass one.
+
+```sql
+-- A raster-derived observation, its run and its COG
+SELECT o.attribute_key,
+       o.value_numeric,
+       o.valid_from,
+       o.lineage_ref ->> 'stat_name'                       AS statistic,
+       (o.lineage_ref ->> 'fractional_pixel_count')::float AS pixel_coverage,
+       fa.storage_uri,
+       fa.crs,
+       fa.dataset_version,
+       run.transformation_step,
+       run.code_version,
+       run.details
+FROM curated_geo.observation o
+JOIN curated_geo.ingestion_run run ON run.id = o.ingestion_run_id
+LEFT JOIN curated_geo.file_asset fa ON fa.id = (o.lineage_ref ->> 'asset_id')::uuid
+WHERE o.feature_id = :feature_id
+  AND o.is_current
+  AND o.lineage_ref ->> 'kind' = 'raster_zonal_stats';
+```
+
+What can and cannot be reproduced:
+
+- Observations are SCD-2, so the inputs current at any time can be reconstructed from `valid_from` / `valid_to`.
+- The bronze original of a raster is under `data/bronze/<source_id>/`; `file_asset` stores no checksum, so file integrity cannot be checked from the database.
+- There is no per-run parameter snapshot. A zonal-statistics run records its statistics, `aggregation_kind` and counts in `ingestion_run.details`; a rollup records method, prefixes and grains there; recipe parameters live in `aggregation_recipe.params` (current state only).
+- `feature_overlap` and `aoi_feature` are recomputed in place and keep no history.
+
+---
+
+## 10. Schema Reference
+
+DDL of the tables this document owns, as the migrations leave them. Trigger bodies are summarised in comments.
+
+```sql
+-- r004. Populated by `aoi compute-features`.
+CREATE TABLE curated_geo.aoi_feature (
+    aoi_id          uuid             NOT NULL
+                                     REFERENCES curated_geo.area_of_interest(id) ON DELETE CASCADE,
+    feature_id      uuid             NOT NULL REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
+    overlap_basis   text             NOT NULL CHECK (overlap_basis IN ('area','length','presence')),
+    overlap_measure double precision NOT NULL CHECK (overlap_measure > 0),
+    feature_measure double precision NOT NULL CHECK (feature_measure > 0),
+    overlap_ratio   double precision NOT NULL CHECK (overlap_ratio > 0 AND overlap_ratio <= 1),
+    PRIMARY KEY (aoi_id, feature_id),
+    CHECK (overlap_measure <= feature_measure),
+    CHECK (overlap_basis <> 'presence'
+           OR (overlap_measure = 1 AND feature_measure = 1 AND overlap_ratio = 1))
+);
+-- Trigger aoi_feature_before_write: overlap_basis must match the feature's geometry type.
+
+-- r009. Which type pairs `overlap compute-all` computes.
+CREATE TABLE curated_geo.feature_overlap_type_pair (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_type_id uuid NOT NULL REFERENCES curated_geo.feature_type_catalog(id),
+    target_type_id uuid NOT NULL REFERENCES curated_geo.feature_type_catalog(id),
+    UNIQUE (source_type_id, target_type_id)
+);
+
+-- r009. Populated by `overlap compute-all`.
+CREATE TABLE curated_geo.feature_overlap (
+    id                uuid             PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_feature_id uuid             NOT NULL REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
+    target_feature_id uuid             NOT NULL REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
+    overlap_basis     text             NOT NULL CHECK (overlap_basis IN ('area','length','presence')),
+    overlap_measure   double precision NOT NULL CHECK (overlap_measure > 0),
+    feature_measure   double precision NOT NULL CHECK (feature_measure > 0),
+    overlap_ratio     double precision NOT NULL CHECK (overlap_ratio > 0 AND overlap_ratio <= 1),
+    computed_at       timestamptz      NOT NULL DEFAULT now(),
+    UNIQUE (source_feature_id, target_feature_id)
+);
+
+-- r019. Serving record of one COG.
+CREATE TABLE curated_geo.raster_layer (
+    id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id        uuid        NOT NULL UNIQUE
+                                 REFERENCES curated_geo.data_source_catalog(id) ON DELETE CASCADE,
+    asset_id         uuid        NOT NULL UNIQUE
+                                 REFERENCES curated_geo.file_asset(id) ON DELETE CASCADE,
+    layer_slug       text        NOT NULL UNIQUE,
+    logical_name     text,
+    description      text,
+    colormap_name    text,
+    rescale          text,
+    minzoom          integer     NOT NULL DEFAULT 5,
+    maxzoom          integer     NOT NULL DEFAULT 14,
+    published        boolean     NOT NULL DEFAULT true,
+    aggregation_kind text        NOT NULL DEFAULT 'intensive'
+                                 CHECK (aggregation_kind IN ('intensive', 'extensive')),
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+-- r020; coverage_threshold default lowered from 0.5 to 0.0 by r042 (existing rows kept).
+CREATE TABLE curated_geo.aggregation_recipe (
+    id                         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    input_kind                 text        NOT NULL CHECK (input_kind IN ('raster', 'observation')),
+    input_raster_layer_id      uuid        REFERENCES curated_geo.raster_layer(id) ON DELETE CASCADE,
+    input_attribute_key_prefix text,
+    input_feature_type_slug    text,
+    target_feature_type_slug   text        NOT NULL,
+    attribute_key_prefix       text        NOT NULL,
+    method                     text        NOT NULL
+                                           CHECK (method IN ('mean','weighted_mean','sum','min','max')),
+    weight_basis               text        CHECK (weight_basis IN ('area','length','presence')),
+    params                     jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    coverage_threshold         double precision NOT NULL DEFAULT 0.0
+                                           CHECK (coverage_threshold >= 0 AND coverage_threshold <= 1),
+    aoi_id                     uuid        REFERENCES curated_geo.area_of_interest(id) ON DELETE SET NULL,
+    enabled                    boolean     NOT NULL DEFAULT true,
+    created_at                 timestamptz NOT NULL DEFAULT now(),
+    updated_at                 timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT aggregation_recipe_input_shape CHECK (
+        (input_kind = 'raster' AND input_raster_layer_id IS NOT NULL
+             AND input_attribute_key_prefix IS NULL AND input_feature_type_slug IS NULL)
+     OR (input_kind = 'observation' AND input_raster_layer_id IS NULL
+             AND input_attribute_key_prefix IS NOT NULL AND input_feature_type_slug IS NOT NULL)),
+    CONSTRAINT aggregation_recipe_prefix_uk UNIQUE (target_feature_type_slug, attribute_key_prefix)
+);
+```
+
+Related tables documented elsewhere:
+
+| Table | Spatial columns and rules that matter here | Owner |
 |---|---|---|
-| Storing H3/fishnet geometry in the DB | Wastes storage; geometry is computable from cell_id | Compute geometry at read time from cell_id + geotransform |
-| Running `ST_Intersects` at query time for AOI filtering on cells | Performance cliff at > 100K cells | Pre-compute `aoi_cell_membership` at registration time |
-| Using `NULL` for baseline `scenario_id` | Breaks `IN (baseline_id, scenario_id)` comparisons; complicates indexing | Use a fixed, well-known UUID for baseline |
-| Resampling a fishnet output to H3 "for consistency" | Introduces interpolation error; breaks population-weighted calculations | Keep data in its native grid; use `feature_cell_membership` as the bridge |
-| One `indicator_result` table for both features and cells | Different cardinality, different access patterns, different keys | Separate tables: `indicator_result` (feature path), `cell_indicator_result` (cell path) |
-| Storing model parameters as a pointer to a config file | Config file can change; parameters are not reproducible | Store the full parameter JSONB snapshot in `model_run` |
-| Overwriting baseline data when a scenario is run | Loss of the baseline state; cannot compare | Always append new rows with `scenario_id`; never update |
-| Storing all cells for a dense raster in the DB | Table grows to hundreds of millions of rows | Store the raster as COG; materialize only sparse or queried cells |
-| Computing `feature_cell_membership` at query time | Geometry intersection at query time is O(features × cells) | Compute once at grid registration time |
+| `curated_geo.feature` | `geometry geometry(Geometry, 4326) NOT NULL`, `geometry_centroid` (r027), `UNIQUE (source_id, dataset_version, source_record_ref)` | `DATA_LAYER.md` |
+| `curated_geo.observation` | `obs_one_current UNIQUE (feature_id, attribute_key) WHERE is_current`; `lineage_ref jsonb` | `DATA_LAYER.md` |
+| `curated_geo.file_asset` | `storage_uri`, `format`, `crs`, `resolution_m`, `asset_extent_geometry geometry(Polygon, 4326)` (unused), `source_id UNIQUE` | `DATA_LAYER.md` |
+| `curated_geo.area_of_interest` | `geometry geometry(Geometry, 4326) NOT NULL` with a Polygon/MultiPolygon CHECK; `membership_key jsonb` (r040) | `DATA_LAYER.md` |
+| `curated_geo.aoi_indicator_summary` | One row per (AOI, scenario, indicator); partial unique indexes `aoi_indicator_summary_base_uk`, `aoi_indicator_summary_scenario_uk` (r015) | `DATA_LAYER.md` |
+| `curated_geo.indicator_result` | Per feature; trigger rejects a feature type outside `indicator_catalog.applies_to` unless `quality_flag = 'not_applicable'` | `INDICATORS_LAYER.md` |
+| `curated_geo.scenario_edit`, `curated_geo.scenario_override` | Drawn `geometry geometry(Geometry, 4326)` (r048); per-feature overrides (r030) | `SCENARIOS_LAYER.md` |
 
 ---
 
-## 17. Real-World References
+## 11. Query Patterns
 
-### H3 tessellation in production
+### Q1 — Indicator values in an AOI
 
-**Uber H3** (open source, https://h3geo.org): Uber uses H3 as the canonical spatial index for ride pricing, surge areas, and city analytics. Their key insight — later adopted broadly — is that storing H3 indices as integer keys and doing spatial joins via B-tree lookups instead of geometry intersections reduces query latency by 2–3 orders of magnitude at city scale.
+What `GET /indicators/{slug}/stats` and the value downloads filter on (`aoi_exists`, `packages/py/reimagina/storage/_utils.py`):
 
-**Foursquare Studio**: Uses H3 as the universal join key between point datasets, polygon datasets, and raster-derived summaries, enabling cross-dataset spatial analytics without geometry operations at query time.
+```sql
+SELECT ir.feature_id, ir.value_numeric
+FROM curated_geo.indicator_result ir
+WHERE ir.indicator_slug = :indicator_slug
+  AND ir.status = 'current'
+  AND ir.scenario_id IS NULL        -- or the scenario_overlay('ir', :scenario_id) predicate
+  AND EXISTS (SELECT 1 FROM curated_geo.aoi_feature af
+              WHERE af.feature_id = ir.feature_id
+                AND af.aoi_id = :aoi_id::uuid);
+```
 
-### Fishnet / raster-aligned grids in production
+`EXISTS`, not a join: a feature in several AOIs would otherwise be returned once per AOI.
 
-**Microsoft Planetary Computer**: All raster data is stored as Cloud Optimized GeoTIFFs catalogued via STAC. Feature-level analytics are served as pre-aggregated zonal statistics. This is structurally identical to the raster_asset + indicator_result pattern described here.
+### Q2 — Observation rollup inputs
 
-**EU Copernicus Urban Atlas + GHS-POP**: The standard approach in European urban analytics is to align all model outputs to the GHS-POP 100m grid and compute population-weighted indicators via pixel-level joins — exactly the population-weighted query in Section 14 (Q4).
+The rows an observation recipe aggregates (`rollup_observation_child_rows`), one per (target feature, source observation):
 
-### STAC as the raster catalog standard
+```sql
+SELECT fo.target_feature_id::text,
+       obs.attribute_key,
+       obs.value_numeric,
+       fo.overlap_measure                       -- the weight
+FROM curated_geo.feature_overlap fo
+JOIN curated_geo.feature src ON src.id = fo.source_feature_id
+     AND src.type_slug = :source_feature_type
+JOIN curated_geo.feature tgt ON tgt.id = fo.target_feature_id
+     AND tgt.type_slug = :target_feature_type
+JOIN curated_geo.observation obs
+     ON obs.feature_id = fo.source_feature_id
+    AND obs.is_current
+    AND obs.value_numeric IS NOT NULL
+    AND (obs.attribute_key = :input_prefix
+         OR obs.attribute_key LIKE :input_prefix || '\_%' ESCAPE '\')
+WHERE TRUE
+  -- with aoi_id:
+  -- AND fo.source_feature_id IN (SELECT feature_id FROM curated_geo.aoi_feature
+  --                              WHERE aoi_id = :aoi_id)
+;
+```
 
-**STAC Specification** (stacspec.org): The SpatioTemporal Asset Catalog spec is the de facto industry standard for describing geospatial raster and vector assets. NASA, ESA, Google Earth Engine, and Microsoft Planetary Computer all publish data as STAC catalogs. The `raster_asset` table in this architecture is a relational implementation of a STAC item.
+### Q3 — Population-weighted indicator over an AOI
 
-### GeoParquet as the analytical layer standard
+No code path computes one. With block population written by `raster zonal-stats` on an extensive raster (`<prefix>_sum`), it is:
 
-**GeoParquet** (geoparquet.org, OGC standard v1.1 2024): The Overture Maps Foundation distributes buildings, roads, and places for the entire planet as partitioned GeoParquet on S3. This is the recommended format for bulk analytical reads and data sharing.
+```sql
+SELECT SUM(ir.value_numeric * pop.value_numeric)
+         / NULLIF(SUM(pop.value_numeric), 0) AS population_weighted_mean
+FROM curated_geo.indicator_result ir
+JOIN curated_geo.observation pop
+  ON pop.feature_id    = ir.feature_id
+ AND pop.attribute_key = :population_key     -- e.g. '<prefix>_sum'
+ AND pop.is_current
+WHERE ir.indicator_slug = :indicator_slug
+  AND ir.status = 'current'
+  AND ir.scenario_id IS NULL
+  AND ir.value_numeric IS NOT NULL
+  AND EXISTS (SELECT 1 FROM curated_geo.aoi_feature af
+              WHERE af.feature_id = ir.feature_id
+                AND af.aoi_id = :aoi_id::uuid);
+```
 
-### exactextract for zonal statistics
+### Q4 — Which grain pairs are related, and how many rows each
 
-**exactextract** (github.com/isciences/exactextract): The industry-standard library for computing fractional coverage zonal statistics between raster pixels and vector polygons. Used by the GDAL project and recommended over `rasterstats` for production workloads requiring accurate area-weighted aggregation.
+```sql
+SELECT sc.context || ':' || sc.type_slug AS source,
+       tc.context || ':' || tc.type_slug AS target,
+       (SELECT count(*)
+          FROM curated_geo.feature_overlap fo
+          JOIN curated_geo.feature s ON s.id = fo.source_feature_id
+          JOIN curated_geo.feature t ON t.id = fo.target_feature_id
+         WHERE s.type_id = p.source_type_id
+           AND t.type_id = p.target_type_id) AS overlap_rows
+FROM curated_geo.feature_overlap_type_pair p
+JOIN curated_geo.feature_type_catalog sc ON sc.id = p.source_type_id
+JOIN curated_geo.feature_type_catalog tc ON tc.id = p.target_type_id
+ORDER BY 1, 2;
+```
+
+---
+
+## 12. Performance
+
+### Indexes behind the patterns above
+
+```
+-- feature (r003, r007, r027)
+feature_geometry_gist      GIST (geometry)
+feature_block_geom_idx     GIST (geometry) WHERE type_slug = 'block'
+feature_lot_geom_idx       GIST (geometry) WHERE type_slug = 'lot'
+feature_centroid_gist      GIST (geometry_centroid)           -- drawn-polygon selection
+feature_type_slug_idx (type_slug), feature_type_id_idx (type_id), feature_role_idx (role),
+feature_parent_idx (parent_id), feature_source_idx (source_id), feature_ingestion_run_idx (ingestion_run_id)
+
+-- area_of_interest (r004, r007)
+aoi_geometry_gist GIST (geometry), area_of_interest_project_idx (project_id)
+
+-- aoi_feature (r004)
+PRIMARY KEY (aoi_id, feature_id)                              -- AOI filter
+aoi_feature_feature_idx (feature_id)                          -- feature → AOIs
+
+-- feature_overlap (r009, r012)
+UNIQUE (source_feature_id, target_feature_id)
+feature_overlap_target_idx (target_feature_id, overlap_ratio)
+feature_overlap_source_idx (source_feature_id)
+feature_overlap_type_pair_target_idx (target_type_id)
+
+-- observation (r003, r007, r026)
+obs_one_current        UNIQUE (feature_id, attribute_key) WHERE is_current
+obs_feature_key_idx    (feature_id, attribute_key)
+obs_attr_feat_current  (attribute_key, feature_id) WHERE is_current
+obs_source_run_idx     (source_id, ingestion_run_id)
+observation_ingestion_run_idx (ingestion_run_id)
+```
+
+`indicator_result` indexes (r016, r047) are listed in `INDICATORS_LAYER.md`. No table is partitioned; partitioning `observation` is deferred until it nears 10M rows (`TODO.md` T2-6).
+
+### Measured costs
+
+| Operation | Measurement | Recorded in |
+|---|---|---|
+| AOI membership, 343,696 Overture buildings vs. the Mexicali municipal boundary | polygon pass 508,006 ms → 20,249 ms; line pass 457,368 ms → 7,505 ms after subdividing the AOI | `PostgresAOIRepository.compute_overlaps` |
+| AOI listing over 1.7 M `aoi_feature` rows | ~2.7 s → < 100 ms after folding six correlated subqueries into one pass | `PostgresAOIRepository.list_aois` |
+| Adding `geometry_centroid` to a ~2 M-row `feature` table | ~30–90 s table rewrite | r027 |
+
+`PERFORMANCE.md` holds the benchmark corpus.
+
+### GeoParquet
+
+GeoParquet is an exchange format, not an analytical store: the Overture loader reads Overture's GeoParquet release, large vector silver files are GeoParquet, and `GET /indicators/{slug}/values.parquet` writes GeoParquet 1.1 with a covering bbox (`apps/api/exports.py`).
+
+---
+
+## 13. Anti-Patterns
+
+| Anti-pattern | Problem | Do instead |
+|---|---|---|
+| `ST_Intersects` against the AOI polygon in a read path | Slow at city scale; disagrees with identifier-based membership (r040) | `EXISTS` on `aoi_feature` (`aoi_exists`) |
+| Joining `aoi_feature` instead of `EXISTS` | A feature in several AOIs is returned, and aggregated, more than once | `EXISTS (SELECT 1 FROM curated_geo.aoi_feature ...)` |
+| Forgetting `aoi compute-features` after creating an AOI or loading features | AOI-scoped reads return nothing, or miss the new features | Run it after every AOI creation and every feature load |
+| Reprojecting raster pixels at ingest | Resampling error | Keep the COG in its native CRS; reproject feature geometry to it |
+| Centroid-in-polygon zonal statistics | Drops blocks smaller than a pixel; block sums no longer add up to the raster total | exactextract coverage fractions (`raster_zonal_stats.py`) |
+| `sum` rollup across grains that do not nest | Each source value is added in full to every target it touches | Nesting grains only; or `weighted_mean` for intensive values |
+| Computing feature-to-feature intersections at query time | Pairwise geometry work on every read | `overlap compute-all` once per declared pair, AOI-scoped |
+| Reading a scenario as `scenario_id = :s OR scenario_id IS NULL` | Two rows for every feature the scenario recomputed | `scenario_overlay` |
+| Deciding administrative membership by geometry when features carry identifiers | Neighbouring units that cross the boundary become members | `area_of_interest.membership_key` (r040) |
+
+---
+
+## 14. Not Built: Grid Cells (H3, Fishnet)
+
+Nothing in the code stores, computes or serves values per grid cell. There is no `h3` Python dependency (`pyproject.toml`, `uv.lock`) and no `h3` PostgreSQL extension (r001 creates `postgis`, r037 `pgrouting`). The one gridded input, WorldPop, stays a raster and is summarised onto blocks with exactextract, which gives sub-pixel blocks a correct share without a pixel-aligned grid in the database.
+
+If a grid is ever needed, it fits the existing schema as one more grain — no new table:
+
+1. **Feature type.** A `feature_type_catalog` row with `geometry_family = 'polygon'` and `admin_level` NULL (H3 children are not exactly contained in their parent, so the hierarchy would come from `feature_overlap`, not `parent_id`). Today it must use context `MEX` to be a zonal-statistics or rollup target, because those resolve types in `MEX` (§6.3).
+2. **Cells as features.** Generate the cells covering the AOI (H3 polygons, or one polygon per pixel of a source raster's transform) and load them through `load_vector_source`, with the cell id (H3 index, or `row:col` of the source raster) in `source_record_ref`. `feature.geometry` is NOT NULL, so every cell stores its polygon.
+3. **Relations.** `overlap declare-pair` with the grid on either side, `overlap compute-all`, `aoi compute-features`.
+4. **Values.** Raster summaries per cell with `raster zonal-stats --feature-type <grid>`; observations moved onto the grid with an observation recipe, using `weighted_mean` (a `sum` would double-count, §6.4); indicators per cell only after adding the grid's slug to the indicator's `applies_to`.
+
+Choosing between the two: H3 suits analytical grids with no external alignment and hierarchical zoom between resolutions; a fishnet aligned to a source raster suits model outputs that must stay on that raster's pixels. Resampling a population raster to H3 introduces interpolation error; keeping the raster and summarising it per feature, as the platform does now, avoids it.
+
+---
+
+## 15. External References
+
+- **exactextract** (github.com/isciences/exactextract): zonal statistics with each pixel weighted by the fraction of it covered by the polygon. Used for every zonal statistic in place of rasterstats, whose centroid-in-polygon rule dropped manzanas smaller than a WorldPop pixel.
+- **WorldPop** (worldpop.org): the global population grid the platform ingests. GHS-POP (European Commission JRC) is the other common one; it is not ingested.
+- **Cloud Optimized GeoTIFF / titiler**: the silver raster format and the in-process tile server at `/cog`.
+- **STAC** (stacspec.org): the common raster catalog standard. `file_asset` + `raster_layer` play that role locally without STAC (`TODO.md` T3-11).
+- **GeoParquet** (geoparquet.org): the format of Overture's releases, read by the Overture loaders, and of the indicator export.
+- **H3** (h3geo.org): hierarchical hexagonal grid; relevant only to §14.

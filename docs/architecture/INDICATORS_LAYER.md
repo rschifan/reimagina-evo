@@ -18,13 +18,13 @@ Three tables do all the work:
 | `indicator_dependency` | Defines how composite indicators are built from simpler ones |
 | `indicator_result` | Stores computed values, one row per (feature, scenario state, indicator) |
 
-**Key design choice — indicators are rows, not columns.** Adding a new metric means inserting a row into `indicator_catalog` and writing new `indicator_result` rows. No schema migration, no `ALTER TABLE`.
+**Key design choice — indicators are rows, not columns.** Adding a new metric means a new `indicator_catalog` row — seeded from an `IndicatorSpec` in `indicators/catalog.py` — and new `indicator_result` rows. No schema migration, no `ALTER TABLE`.
 
 **Base state vs scenario state:**
 - `scenario_id = NULL` → result for the base city (Diagnosis mode)
 - `scenario_id = :uuid` → result for a specific scenario (Evaluation mode)
 
-Both live in the same table.
+Both live in the same table. A scenario stores only the rows it recomputed, so every scenario read is an overlay: the scenario's row where it has one carrying a value, the baseline's otherwise (`storage/_utils.scenario_overlay`).
 
 ---
 
@@ -40,7 +40,8 @@ CREATE TABLE curated_geo.indicator_catalog (
 
   slug               text             NOT NULL UNIQUE,
   -- Stable code-level identifier used in queries and the API.
-  -- e.g. 'accessibility_walkability', 'green_coverage', 'edificability_far', 'liveability_index'
+  -- e.g. 'urban_form_block_compactness', 'edificability_block_density',
+  --      'accessibility_block_school_network_m', 'livability_block_score'
 
   name               text             NOT NULL,
   description        text,
@@ -48,38 +49,47 @@ CREATE TABLE curated_geo.indicator_catalog (
   model_family       text,
   -- Which analytical family this indicator belongs to. A grouping label carried
   -- onto job_run, not a dispatch key — the runner registry binds compute
-  -- functions per slug, not per family (`orchestration/runners.py:76-90`).
-  -- Shipped indicators all use 'urban_form' (`indicators/catalog.py`).
-  -- NULL for composite indicators (derived from other indicators, not from a model run).
+  -- functions per slug, not per family (`orchestration/runners.py:43-55`, `:132-146`).
+  -- Shipped direct indicators use 'urban_form' or 'accessibility' (`indicators/catalog.py`).
+  -- NULL for composite indicators (derived from other indicators, not from a model run);
+  -- their job_run rows carry 'composite'.
 
   computation_kind   text             NOT NULL
                                       CHECK (computation_kind IN ('direct','composite')),
-  -- direct:    produced by a model worker reading city data
+  -- direct:    produced by a compute fn reading city data
   -- composite: weighted combination of other indicators
 
   value_type         text             NOT NULL
                                       CHECK (value_type IN ('numeric','text','json')),
-  -- numeric:  a single float  (most indicators)
+  -- numeric:  a single float  (every shipped indicator)
   -- text:     a category or label
   -- json:     a distribution or breakdown object
 
   unit               text,
-  -- 'score_0_1', 'm2_per_m2', 'ratio', 'count', 'MXN_per_m2', 'index'
+  -- Shipped: 'ratio_0_1', 'buildings_per_ha', 'floors', 'score_0_1', 'units',
+  --          'people', 'units_per_ha', 'm'
 
   valid_min          double precision,
   valid_max          double precision,
-  -- Expected numeric range. Values outside this range are flagged at write time.
+  -- Expected numeric range. The write trigger rejects values outside it.
   -- Only meaningful for value_type = 'numeric'. Must be NULL for all other types.
+
+  cap_value          double precision,
+  -- Added by r051. The value an indicator is clamped to, so a reading at the cap
+  -- means "at least this", not a measurement (the accessibility distances at
+  -- 1500 m). NULL for every indicator that is not clamped. Not a validation range.
 
   aggregation_method text             NOT NULL
                                       CHECK (aggregation_method IN
                                         ('mean','weighted_mean','sum','min','max','none')),
-  -- How to roll up this indicator from a finer to a coarser spatial level.
+  -- How to combine this indicator's values over a coarser area (the AOI summary).
   -- 'none' for indicators that are not aggregable.
 
   applies_to         text[]           NOT NULL,
   -- Which type_slugs this indicator is computed for.
-  -- ARRAY['block'] or ARRAY['block','ageb','lot']
+  -- ARRAY['block'] for every shipped indicator.
+
+  created_at         timestamptz      NOT NULL DEFAULT now(),
 
   CHECK (cardinality(applies_to) > 0),
   CHECK (valid_min IS NULL OR valid_max IS NULL OR valid_min <= valid_max),
@@ -91,30 +101,33 @@ CREATE TABLE curated_geo.indicator_catalog (
 );
 ```
 
-**Example rows:**
-```sql
-INSERT INTO curated_geo.indicator_catalog
-  (slug, name, model_family, computation_kind, value_type, unit,
-   valid_min, valid_max, aggregation_method, applies_to)
-VALUES
-  ('accessibility_walkability', 'Walkability Score',
-   'accessibility', 'direct',    'numeric', 'score_0_1', 0, 1,  'weighted_mean', ARRAY['block']),
+**Shipped rows.** The catalog is seeded from code, not from SQL: `SHIPPED_INDICATORS` in `indicators/catalog.py` holds one `IndicatorSpec` per indicator, and `seed_catalog` upserts each one (`upsert_indicator`, `ON CONFLICT (slug) DO UPDATE`) and rewrites a composite's `indicator_dependency` rows (`set_dependencies`). `indicators seed-catalog` and `bootstrap-db` both run it. Every shipped row is `value_type='numeric'`, `aggregation_method='weighted_mean'`, `applies_to={block}`; in `SHIPPED_INDICATORS` order:
 
-  ('accessibility_transit',     'Transit Accessibility',
-   'accessibility', 'direct',    'numeric', 'score_0_1', 0, 1,  'weighted_mean', ARRAY['block','ageb']),
+| slug | kind | model_family | unit | valid_min–valid_max | cap_value | higher_is_better | reads / depends_on (weight) |
+|---|---|---|---|---|---|---|---|
+| `urban_form_block_compactness` | direct | urban_form | ratio_0_1 | 0–1 | — | true | `geometry` |
+| `urban_form_block_building_density` | direct | urban_form | buildings_per_ha | 0–500 | — | true | `geometry` |
+| `urban_form_block_planned_floors` | direct | urban_form | floors | 0–200 | — | true | `floors` |
+| `urban_form_block_composite` | composite | NULL | score_0_1 | 0–1 | — | true | compactness 0.5, building_density 0.5 |
+| `edificability_block_housing_units` | direct | urban_form | units | 0–200,000 | — | true | `num_levels`, `unit_size`, `people_per_household`, `lot_coverage` |
+| `edificability_block_population` | direct | urban_form | people | 0–750,000 | — | true | same four |
+| `edificability_block_density` | direct | urban_form | units_per_ha | 0–2,000 | — | true | same four |
+| `accessibility_block_school_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | `poi_version`, `network_version` |
+| `accessibility_block_health_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
+| `accessibility_block_park_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
+| `accessibility_block_culture_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
+| `livability_block_score` | composite | NULL | score_0_1 | 0–1 | — | true | `edificability_block_density` 0.4; school, health and park `*_network_m` 0.2 each |
 
-  ('green_coverage',            'Green Area Coverage',
-   'green_area',    'direct',    'numeric', 'ratio_0_1', 0, 1,  'weighted_mean', ARRAY['block','ageb']),
+What each computes:
 
-  ('edificability_far',         'Floor Area Ratio',
-   'housing',       'direct',    'numeric', 'm2_per_m2', 0, 20, 'mean',          ARRAY['lot','block']),
+- **Compactness** — Polsby-Popper, `4π × area / perimeter²` over the block's geodesic area and perimeter, clamped to [0, 1].
+- **Building density** — `global:building` features whose centroid falls inside the block, divided by block area in hectares.
+- **Planned floors** — the block's effective `floors` (scenario override, then observation, then base attributes).
+- **Edificability** — `housing_units = area × lot_coverage × num_levels / unit_size`, `population = housing_units × people_per_household`, `density = housing_units / area_ha`. Block geodesic area stands in for lot area. `lot_coverage` is optional and defaults to 1.0, so `num_levels × lot_coverage` is the CUS term; a block missing `num_levels`, `unit_size` or `people_per_household` is skipped and keeps whatever it already held (`indicators/edificability.py`).
+- **Accessibility** — metres from the block's point-on-surface centroid to the nearest amenity of the category along the OSM pedestrian network (one multi-source `pgr_drivingDistance` per category), plus the block's and the amenity's walks to the network, clamped to [0, 1,500 m]; nothing reachable reports the 1,500 m cutoff.
+- **Composites** — see *Each input is rescaled before weighting* below.
 
-  ('fiscal_tax_base',           'Municipal Tax Base',
-   'fiscal',        'direct',    'numeric', 'MXN_per_m2',0, NULL,'sum',          ARRAY['lot','block']),
-
-  ('liveability_index',         'Liveability Index',
-   NULL,            'composite', 'numeric', 'score_0_1', 0, 1,  'weighted_mean', ARRAY['block']);
-```
+`IndicatorSpec` carries four fields that are not catalog columns: `inputs` (typed `AssetEdge`s — datasets, the attributes read off them, and the indicators combined), `reads` and `depends_on` (both derived from `inputs`; a different value declared alongside it raises `ValueError`), and `higher_is_better`. Besides the attributes above, building density declares a dataset edge to `global.building`, and each accessibility indicator edges to `global.poi` and `global.road_network` within 1,500 m.
 
 ---
 
@@ -131,9 +144,10 @@ CREATE TABLE curated_geo.indicator_dependency (
   -- The base indicator it is built from.
 
   weight         double precision,
-  -- For weighted composites. NULL means equal-weight or the formula is custom.
-  -- If any dependency for a given indicator_id has a weight, all must have weights.
-  -- Weights for a given indicator_id must sum to 1.0.
+  -- For weighted composites. If any dependency for a given indicator_id has a
+  -- weight, all must have weights, and they must sum to 1.0.
+  -- The schema allows NULL weights, but `compute_composite` counts a NULL
+  -- weight as 0; every shipped composite declares weights.
 
   PRIMARY KEY (indicator_id, depends_on_id),
   CHECK (indicator_id <> depends_on_id),
@@ -141,21 +155,20 @@ CREATE TABLE curated_geo.indicator_dependency (
 );
 ```
 
-**Example — liveability_index = 0.4 × walkability + 0.3 × transit + 0.3 × green_coverage:**
+**Example — `urban_form_block_composite` = 0.5 × compactness + 0.5 × building density** (each normalised first, see below). `seed_catalog` writes these rows through `set_dependencies`, which deletes the composite's existing rows and inserts one per input:
 ```sql
 INSERT INTO curated_geo.indicator_dependency (indicator_id, depends_on_id, weight)
 VALUES
-  (:liveability_id, :walkability_id,  0.4),
-  (:liveability_id, :transit_id,      0.3),
-  (:liveability_id, :green_id,        0.3);
+  (:composite_id, :compactness_id,      0.5),
+  (:composite_id, :building_density_id, 0.5);
 ```
 
-Enforce via a deferred trigger — `curated_geo.indicator_dependency_validate` — that fires `AFTER INSERT OR UPDATE OR DELETE`, `DEFERRABLE INITIALLY DEFERRED`. It must check:
-- `indicator_id` references a composite indicator (`computation_kind = 'composite'`)
-- No cycles exist in the dependency graph (recursive CTE reachability check)
-- If any weight for a given `indicator_id` is non-null, all must be non-null and sum to 1.0 (within 1e-9 tolerance)
+Enforced by the constraint trigger `indicator_dependency_validate_trigger` (r016), which runs `curated_geo.indicator_dependency_validate()` `AFTER INSERT OR UPDATE OR DELETE`, `DEFERRABLE INITIALLY DEFERRED`, and checks the whole table:
+- every `indicator_id` references a composite indicator (`computation_kind = 'composite'`)
+- no cycles exist in the dependency graph (recursive CTE reachability check, depth-capped at 50)
+- for each `indicator_id`, weights are either all NULL or all non-null, and non-null weights sum to 1.0 (within 1e-9 tolerance)
 
-Deferred execution is required because acyclicity and weight-sum can only be verified after all dependency rows for a given indicator have been inserted in the same transaction.
+Deferred execution is required because acyclicity and weight-sum can only be verified after all dependency rows for a given indicator have been inserted in the same transaction — which is why `seed_catalog` must not run on an autocommit connection.
 
 ---
 
@@ -174,7 +187,8 @@ CREATE TABLE curated_geo.indicator_result (
 
   -- Which state of the world
   scenario_id     uuid,
-  -- Plain uuid, NO foreign key: there is no app_core.scenario table (r016:7-10).
+  -- Plain uuid, NO foreign key (r016:7-10). app_core.scenario exists since r048,
+  -- but no migration has added the FK from this column.
   -- NULL  = base city state (Diagnosis mode — the city as it exists today)
   -- UUID  = a specific scenario (Evaluation mode — a proposed future state)
 
@@ -189,13 +203,13 @@ CREATE TABLE curated_geo.indicator_result (
   -- Denormalized from job_run.code_version at insert time. Set by the write trigger if NULL.
   -- Kept on the result row so reads don't require joining job_run.
 
-  -- The value — exactly one column populated per row
+  -- The value — at most one column populated per row (exactly one for a
+  -- measured/estimated/imputed row that has not failed; see the trigger)
   value_numeric   double precision,
   value_text      text,
   value_json      jsonb,
-  -- value_json examples:
-  --   distribution:  {"0_14": 0.23, "15_64": 0.65, "65_plus": 0.12}
-  --   composite breakdown: {"walkability": 0.71, "transit": 0.65, "green": 0.80}
+  -- Every shipped indicator writes value_numeric only. value_json is meant for
+  -- e.g. a distribution: {"0_14": 0.23, "15_64": 0.65, "65_plus": 0.12}
 
   -- Data quality (ISO 19157 style)
   quality_flag    text             NOT NULL DEFAULT 'measured'
@@ -208,18 +222,23 @@ CREATE TABLE curated_geo.indicator_result (
   -- not_applicable: this indicator does not apply to this feature type
 
   confidence      double precision CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
-  -- For indicators derived from probabilistic models or ML outputs.
-  -- Set when the model produces a per-feature uncertainty estimate (e.g. 0.87 = 87% confidence).
-  -- Leave NULL for deterministic indicators (FAR, tax base, area ratios).
+  -- For indicators derived from probabilistic models or ML outputs: a
+  -- per-feature uncertainty estimate (e.g. 0.87 = 87% confidence).
+  -- Every shipped indicator is deterministic and leaves it NULL.
   missing_reason  text,
   -- Required when quality_flag = 'missing'. Human-readable explanation.
 
   -- Lifecycle
   status          text             NOT NULL DEFAULT 'current'
                                    CHECK (status IN ('current','stale','failed')),
-  -- current: latest valid result for this (feature, scenario, indicator) triple
-  -- stale:   input data or scenario changed; needs recomputation
-  -- failed:  last computation attempt failed; see job_run.error_message
+  -- current: latest result for this (feature, scenario, indicator) triple
+  -- stale:   superseded. The write path stales the previous current row as it
+  --          inserts the new one; scenario authoring stales a scenario's rows
+  --          when the overrides behind them are removed or the scenario is
+  --          deleted. Nothing re-queues a stale row — what is out of date is
+  --          answered by the asset graph (ASSET_LAYER.md).
+  -- failed:  allowed by the CHECK, written by nothing. A failed computation is
+  --          recorded on job_run (status 'failed', error_message).
   -- Execution state ('queued', 'running') lives on job_run, not here.
 
   computed_at     timestamptz      NOT NULL DEFAULT now(),
@@ -263,20 +282,26 @@ CREATE INDEX ir_stale_idx
 
 CREATE INDEX ir_job_run_idx
   ON curated_geo.indicator_result (job_run_id);
+
+-- r047: plain, non-partial. Every index above on feature_id is partial, so none
+-- can serve the feature_id foreign key, and deleting a feature fell back to a
+-- sequential scan of this table.
+CREATE INDEX indicator_result_feature_id_idx
+  ON curated_geo.indicator_result (feature_id);
 ```
 
-**Trigger requirement — `curated_geo.indicator_result_before_write`:**
-- Set `feature_type` from `feature.type_slug` (denormalize at insert; reject if it drifts on update).
+**Trigger — `curated_geo.indicator_result_before_write()`**, run by `indicator_result_before_write_trigger` `BEFORE INSERT OR UPDATE` (r016):
+- On insert, set `feature_type` from `feature.type_slug`; on update, reject a change to it.
 - Set `indicator_slug` from `indicator_catalog.slug` (same rule).
-- Set `model_version` from `job_run.code_version` if `model_version IS NULL`.
+- On insert, set `model_version` from `job_run.code_version` if `model_version IS NULL`.
 - Reject if `job_run.scenario_id` does not match `indicator_result.scenario_id`.
 - Reject if `feature.type_slug` is not in `indicator_catalog.applies_to`, unless `quality_flag = 'not_applicable'`.
-- **`not_applicable` rows:** workers do NOT write these proactively. A missing row means "not yet computed or not applicable." Write `not_applicable` explicitly only when needed for audit or to suppress recomputation. The API treats a missing row as not-applicable for features whose `type_slug` is not in `applies_to`.
+- **`not_applicable` rows:** no shipped compute writes them. A feature with no row is simply absent from every read — "not yet computed" and "not applicable" look the same; the API serves `applies_to` with each catalog row.
 - Require exactly one value column populated when `quality_flag IN ('measured','estimated','imputed')` and `status != 'failed'`.
 - Require all value columns NULL when `quality_flag IN ('missing','not_applicable')` or `status = 'failed'`.
 - Require `missing_reason` when `quality_flag = 'missing'`.
 - Reject `value_numeric` outside `[valid_min, valid_max]` when those bounds are defined.
-- Maintain `updated_at`.
+- On update, set `updated_at = now()`.
 
 ---
 
@@ -315,49 +340,69 @@ WHERE ir.status = 'current';
 
 ### Adding a new direct indicator
 
-One INSERT into `indicator_catalog`. No migration.
+Add an `IndicatorSpec` to `SHIPPED_INDICATORS` in `indicators/catalog.py`, bind a
+compute fn for its slug in `_DIRECT_COMPUTE` (`orchestration/runners.py:43-55`) —
+usually built with `compute_indicator`, see *How a direct indicator is wired* —
+then run `indicators seed-catalog` and `assets seed` (`bootstrap-db` runs both).
+No migration. `default_runners` binds a direct spec only when `_DIRECT_COMPUTE`
+has an entry for it, so a catalog row alone computes nothing.
 
-```sql
-INSERT INTO curated_geo.indicator_catalog
-  (slug, name, model_family, computation_kind, value_type, unit,
-   valid_min, valid_max, aggregation_method, applies_to)
-VALUES
-  ('urban_heat_exposure', 'Urban Heat Exposure Index',
-   'green_area', 'direct', 'numeric', 'score_0_1',
-   0, 1, 'weighted_mean', ARRAY['block','ageb']);
+A shipped spec, abridged (description omitted):
+
+```python
+URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
+    slug="urban_form_block_compactness",
+    name="Block Compactness (Polsby-Popper)",
+    computation_kind="direct",
+    model_family="urban_form",
+    value_type="numeric",
+    unit="ratio_0_1",
+    valid_min=0.0,
+    valid_max=1.0,
+    aggregation_method="weighted_mean",
+    inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
+    applies_to=("block",),
+)
 ```
-
-The model worker for `green_area` can now write results for this slug.
 
 ---
 
 ### Adding a new composite indicator
 
-```sql
--- 1. Register the composite
-INSERT INTO curated_geo.indicator_catalog
-  (slug, name, computation_kind, value_type, unit,
-   valid_min, valid_max, aggregation_method, applies_to)
-VALUES
-  ('urban_quality_index', 'Urban Quality Index',
-   'composite', 'numeric', 'score_0_1',
-   0, 1, 'weighted_mean', ARRAY['block'])
-RETURNING id; -- :uqi_id
+A composite is an `IndicatorSpec` with `computation_kind="composite"`, no
+`model_family` (r016's CHECK), and one `relation="derived_from"` edge per input,
+weights summing to 1.0. Every input must declare `valid_min` and `valid_max`.
+New composites go at the **end** of `SHIPPED_INDICATORS`: dependencies must be
+upserted first, and `tests/unit/test_failed_job_run_provenance.py` exercises the
+first spec with `model_family is None`.
 
--- 2. Define its components
-INSERT INTO curated_geo.indicator_dependency (indicator_id, depends_on_id, weight)
-VALUES
-  (:uqi_id, :walkability_id,  0.40),
-  (:uqi_id, :green_id,        0.35),
-  (:uqi_id, :heat_id,         0.25);
+```python
+LIVABILITY_BLOCK_SCORE = IndicatorSpec(        # abridged
+    slug="livability_block_score",
+    name="Livability Score",
+    computation_kind="composite",
+    value_type="numeric",
+    unit="score_0_1",
+    valid_min=0.0,
+    valid_max=1.0,
+    aggregation_method="weighted_mean",
+    inputs=(
+        AssetEdge(indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
+                  relation="derived_from", weight=0.4),
+        # ...one 0.2 edge per category in LIVABILITY_ACCESSIBILITY_CATEGORIES
+        # ("school", "health", "park")
+    ),
+    applies_to=("block",),
+)
 ```
 
-No new model is required. The generic `compute_composite` runner reads the
-component results and applies weights — a new composite needs only a catalog
-entry, not new compute code (`orchestration/runners.py:86-87`).
-`livability_block_score` is the worked example: 0.4 housing density plus 0.2
-each for walking distance to schools, health facilities and parks, added as a
-spec and nothing else.
+No new model is required. `default_runners` binds every
+`computation_kind="composite"` spec to the generic `compute_composite`
+(`orchestration/runners.py:142-143`), so a new composite needs only a catalog
+entry, not new compute code. `livability_block_score` is the worked example:
+0.4 housing density (`edificability_block_density`) plus 0.2 each for walking
+distance to schools, health facilities and parks, added as a spec and nothing
+else. `culture` is deliberately not an input.
 
 #### Each input is rescaled before weighting
 
@@ -368,8 +413,10 @@ compactness (`ratio_0_1`, range 0–1) against 20.946 from building density
 dwellings-per-hectare do not add.
 
 `compute_composite` rescales each input to 0–1 against its **declared**
-`valid_min`/`valid_max` before weighting, so no input can exceed its weight and
-the result cannot leave 0–1.
+`valid_min`/`valid_max` and clamps it to 0–1 before weighting, so no input can
+exceed its weight and the result cannot leave 0–1. An input that declares no
+bounds, or `valid_max <= valid_min`, makes it refuse with `ValueError` rather
+than fall back to the raw value.
 
 Against the *declared* bounds, not the observed population, on purpose:
 percentile or AOI min–max would make every value depend on every other value, so
@@ -387,16 +434,18 @@ defensible balance.
 #### Direction: `higher_is_better`
 
 ⚠ `indicator_dependency` enforces `weight >= 0` (r016:93), so a lower-is-better
-input **cannot** be folded in with a negative weight. Three shipped indicators are
-distances in metres; a score adding one raw ranks "far from a school" as good —
-silently, because the arithmetic stays sound and only the meaning inverts.
-Measured on two blocks differing only in distance: near (100 m) scored 0.283,
-far (1400 m) scored 0.717.
+input **cannot** be folded in with a negative weight. Four shipped indicators are
+distances in metres (the `accessibility_block_*_network_m` family); a score
+adding one raw ranks "far from a school" as good — silently, because the
+arithmetic stays sound and only the meaning inverts. Measured on two blocks
+differing only in distance, in a 0.5/0.5 compactness + school-distance composite
+without orientation: near (100 m) scored 0.283, far (1400 m) scored 0.717
+(`tests/integration/test_composite_pipeline.py` pins the oriented result).
 
 Each spec declares `higher_is_better`; `compute_composite` flips a `False` input
-to `1 - normalised`, **after clamping and before weighting**. Clamp order is
-load-bearing — the accessibility family reports exactly its `valid_max` for an
-unreachable block, and orienting first would make that a negative contribution.
+to `1 - normalised`, **after clamping and before weighting**. The accessibility
+family reports exactly its `valid_max` (1,500 m) for an unreachable block, which
+normalises to 1 and contributes 0.
 
 The field is Python-side rather than a catalog column: its only consumer is the
 composite, which already reads these specs for bounds. Unlike `reads`, it cannot
@@ -407,89 +456,72 @@ touches. A distance is lower-is-better whatever the implementation does.
 
 ### Writing results from a model job
 
-The model worker:
+Every shipped compute writes through
+`IndicatorResultRepository.bulk_write_numeric_results`, inside its `job_run`:
 
-1. Marks any previous current result as stale.
-2. Writes the new current result.
+1. Marks the previous current results stale — one `UPDATE`, only for the feature ids being written.
+2. Inserts the new current results (`execute_batch`, 500 rows a page).
 
 ```sql
--- Step 1: mark previous result stale
+-- Step 1: mark previous results stale
 UPDATE curated_geo.indicator_result
 SET status = 'stale', updated_at = now()
-WHERE feature_id    = :block_id
-  AND scenario_id  IS NULL
-  AND indicator_id  = :walkability_id
-  AND status        = 'current';
+WHERE feature_id = ANY(:feature_ids::uuid[])
+  AND scenario_id IS NULL            -- or = :scenario_id
+  AND indicator_id = :compactness_id
+  AND status = 'current';
 
--- Step 2: write new result
--- Workers supply only feature_id, indicator_id, job_run_id, and the value.
--- The before-write trigger sets feature_type, indicator_slug, and model_version automatically.
+-- Step 2: write new results
+-- The repository supplies feature_id, scenario_id, indicator_id, job_run_id and
+-- the value, with '' placeholders for feature_type and indicator_slug: the
+-- before-write trigger sets those, and model_version from job_run.code_version.
 INSERT INTO curated_geo.indicator_result
-  (feature_id, scenario_id,
-   indicator_id,
-   job_run_id, model_version,
-   value_numeric, quality_flag, status)
+  (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+   job_run_id, value_numeric, quality_flag, status)
 VALUES
-  (:block_id, NULL,
-   :walkability_id,
-   :job_run_id, 'accessibility-v1.4',
-   0.73, 'measured', 'current');
+  (:block_id, '', NULL, :compactness_id, '',
+   :job_run_id, 0.73, 'measured', 'current');
 ```
 
-Set `confidence` when the model produces a per-feature uncertainty estimate; leave NULL for deterministic indicators.
+Because only written features are staled, a feature a compute skips keeps its
+previous value — which `indicators/edificability.py` relies on.
 
-For a result that could not be computed due to missing data:
+`bulk_write_numeric_results` never sets `confidence`. The single-row
+`write_result` can set it, and can write a valueless row such as the one below,
+which the trigger accepts; no shipped compute calls it:
 ```sql
 INSERT INTO curated_geo.indicator_result
-  (feature_id, scenario_id,
-   indicator_id,
+  (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
    job_run_id, quality_flag, missing_reason, status)
 VALUES
-  (:block_id, NULL,
-   :walkability_id,
-   :job_run_id, 'missing', 'No road network data within 500m', 'current');
+  (:block_id, '', NULL, :school_network_id, '',
+   :job_run_id, 'missing', 'No road network data within 1500 m', 'current');
 ```
+
+A missing *layer* is handled by refusing the whole compute instead — see *An
+indicator refuses to compute against a missing input*.
 
 ---
 
 ### Computing a composite indicator result
 
-The composite runner follows the same stale-then-insert pattern, but reads component results instead of city data. It is an ordinary unit in the same run as its components, ordered after them by the impact engine's topological sort — not a separate worker or a second run (see `JOB_LAYER.md` — *Impact engine*).
+`compute_composite` (`indicators/composite.py`) follows the same stale-then-insert write, but reads component results instead of city data, and combines them in Python rather than SQL. It is an ordinary unit in the same run as its components, ordered after them by the impact engine's topological sort — not a separate worker or a second run (see `JOB_LAYER.md` — *Impact engine*).
 
-1. Read all `current` component results for the same `(feature_id, scenario_id)`.
-2. Apply weights to compute the composite value.
-3. Mark any previous current composite result stale, then insert the new one.
+1. For each `(input, weight)` in `spec.depends_on`, read the input's current results with `list_current_for_indicator` — under a scenario, an overlay of the scenario's rows on the baseline's. Keep rows with a `value_numeric` at a feature type in the composite's `applies_to`.
+2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False`.
+3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped (`aoi_id` does not narrow it), and sum the weighted values.
+4. Open a `job_run` (`model_family='composite'`) and write with `bulk_write_numeric_results`.
 
-```sql
--- Step 1: compute weighted aggregate from components
-SELECT
-  SUM(ir.value_numeric * d.weight) AS composite_value
-FROM curated_geo.indicator_result ir
-JOIN curated_geo.indicator_dependency d ON d.depends_on_id = ir.indicator_id
-WHERE d.indicator_id  = :liveability_id
-  AND ir.feature_id   = :feature_id
-  AND ir.scenario_id  IS NOT DISTINCT FROM :scenario_id
-  AND ir.status       = 'current';
--- Example: liveability_index = 0.4 × walkability + 0.3 × transit + 0.3 × green_coverage
+```
+composite(f) = Σᵢ wᵢ · orientᵢ( clamp₀₁( (xᵢ(f) − valid_minᵢ) / (valid_maxᵢ − valid_minᵢ) ) )
+orientᵢ(v)   = v if higher_is_betterᵢ else 1 − v          (a NULL wᵢ counts as 0)
 
--- Step 2: mark previous result stale (same as direct indicator pattern)
-UPDATE curated_geo.indicator_result
-SET status = 'stale', updated_at = now()
-WHERE feature_id    = :feature_id
-  AND scenario_id   IS NOT DISTINCT FROM :scenario_id
-  AND indicator_id  = :liveability_id
-  AND status        = 'current';
-
--- Step 3: insert composite result
-INSERT INTO curated_geo.indicator_result
-  (feature_id, scenario_id, indicator_id, job_run_id,
-   value_numeric, quality_flag, status)
-VALUES
-  (:feature_id, :scenario_id, :liveability_id, :job_run_id,
-   :composite_value, 'measured', 'current');
+urban_form_block_composite = 0.5·n(compactness) + 0.5·n(building_density)
+livability_block_score     = 0.4·n(edificability_block_density)
+                           + 0.2·(1 − n(school)) + 0.2·(1 − n(health)) + 0.2·(1 − n(park))
 ```
 
-If any component result is missing or failed, write `quality_flag = 'missing'` with a `missing_reason` explaining which component was unavailable. Do not produce a partial composite.
+A feature missing any component gets no composite row in that run — not a `missing` row — and keeps whatever composite row it already had. No partial composite is produced.
 
 ---
 
@@ -525,15 +557,17 @@ SELECT
 FROM serving_geo.feature_v f
 JOIN serving_geo.current_indicator_v base
   ON base.feature_id    = f.id
- AND base.indicator_slug = 'accessibility_walkability'
+ AND base.indicator_slug = 'edificability_block_housing_units'
  AND base.scenario_id   IS NULL
 JOIN serving_geo.current_indicator_v scen
   ON scen.feature_id    = f.id
- AND scen.indicator_slug = 'accessibility_walkability'
+ AND scen.indicator_slug = 'edificability_block_housing_units'
  AND scen.scenario_id   = :scenario_id
 WHERE f.type_slug = 'block'
   AND ST_Intersects(f.geometry, :aoi_geometry);
 ```
+
+A scenario holds rows only for the features it recomputed, so this inner join returns exactly those; every other block reads through to its baseline value under the scenario.
 
 ---
 
@@ -565,7 +599,7 @@ ORDER BY f.id, ci.indicator_slug;
 
 When a scenario override changes features, all affected indicator results — including composite indicators that depend on them — can be marked stale before recomputation.
 
-This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass.
+This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed (`_supersede_unbacked_results`), and deleting a scenario stales all of its rows (`_supersede_all_results`).
 
 ```sql
 WITH RECURSIVE impacted AS (
@@ -592,7 +626,7 @@ WHERE  feature_id  = ANY(:affected_feature_ids)
   AND  indicator_id IN (SELECT indicator_id FROM impacted);
 ```
 
-Recomputation is triggered by submitting a run for the scenario, not by queueing one job per model family: the dirty-set is derived per indicator from the changed attributes and the dependency graph (see `JOB_LAYER.md` — *The submit prelude*).
+Recomputation is triggered by submitting a run for the scenario, not by queueing one job per model family: the dirty-set is derived per indicator from the changed attributes and the dependency graph (see `JOB_LAYER.md` — *The submit prelude*). `POST /scenarios/{scenario_id}/recompute` submits the scenario's footprint — every block a current rule overrides or whose override was just removed, with those attributes — so `compute_dirty_set` seeds the indicators whose `reads` include an attribute and scopes each unit, composites included, to those features. A submit that names no attribute and no feature is planned from asset freshness instead (`ASSET_LAYER.md`).
 
 ### How a direct indicator is wired
 
@@ -618,6 +652,8 @@ rejects a mis-shaped one with the expected signature named.
 ⚠ **The read happens inside the `job_run` context, not before it.**
 `indicator_result.job_run_id` is a NOT NULL FK (r016), so a read that raises
 outside the context leaves a failure with no provenance row anywhere.
+`compute_indicator` and `building_density` read inside it; `planned_floors`
+calls `effective_numeric` before opening its `job_run`.
 
 ⚠ **Two indicators deliberately keep their own body.** `planned_floors` has no
 Hamilton stage, and `building_density` reports an extra statistic
@@ -643,7 +679,9 @@ Two guards in `indicators/_compute.py`, both raising `MissingInputData`:
 
 - **`require_nonempty`** — refuses when the input layer is empty. Callers own
   the existence query; the helper owns the message, so the "what is missing /
-  what loads it" pair cannot drift between call sites.
+  what loads it" pair cannot drift between call sites. Used for the
+  `global:building` layer (building density), the establishment layer and
+  `curated_geo.road_edge` (accessibility).
 - **`require_measured`** — refuses when the layer is non-empty but contributed
   nothing *in scope*: loaded for a different AOI, loaded partially, or never
   linked by `aoi compute-features`. Free, because `building_density` already
@@ -660,45 +698,57 @@ real, uniformly bad accessibility surface — harder to spot than a zero. But a
 category genuinely absent while the layer is loaded is a different question this
 module already answered: the cutoff is the wanted value, pinned by
 `test_no_amenity_of_that_category_reports_the_cutoff`, which seeds a park and
-asks for a school. Guarding per category would overturn that silently.
+asks for a school. Guarding per category would overturn that silently. What it
+does instead, when a category matches no establishment at all, is log a warning
+naming the categories present in the layer (`_warn_if_category_absent`); it
+changes no value and refuses nothing.
 
 ⚠ **Ceiling, accepted deliberately.** A scope that genuinely contains none of
 the joined type trips `require_measured`. A loud false positive an operator
 clears in one query beats a silent zero reaching a composite. Relax only with a
 real such AOI in hand.
 
-⚠ **What the catalog does *not* tell you.** `reads` is an invalidation
-vocabulary, not a data manifest. `urban_form_block_building_density` declares
+⚠ **What `reads` does *not* tell you.** `reads` is an invalidation
+vocabulary, not a data manifest. `urban_form_block_building_density` has
 `reads=("geometry",)` while its compute joins `global:building`; the
-accessibility family declares `poi_version` / `network_version`, which are
-hand-maintained sentinels standing in for whole tables. Ask the catalog what
-`urban_form_block_composite` needs, transitively, and the answer is
-`['geometry']` — it needs 365,954 building features. `depends_on` is exact and
-machine-walkable; the leaves are under-declared by exactly that gap.
+accessibility family reads `poi_version` / `network_version`, which are
+hand-maintained sentinels standing in for whole tables. Walk `reads` through
+`depends_on` for `urban_form_block_composite` and the answer is `['geometry']`
+— it needs 365,954 building features. `depends_on` is exact and
+machine-walkable; the attribute leaves are under-declared by exactly that gap.
 
-A declarative `requires` field was considered and **not** added: a hand-typed
-list restating what the compute already says has nothing keeping the two in
-sync, which is the same defect class as `poi_version`. The data-contracts
-literature is blunt about it — a contract that is not executable will drift.
+The datasets are declared in `inputs`, the field `reads` and `depends_on` are
+projected from: building density has an `AssetEdge("global.building",
+relation="child_in_parent")`, and the accessibility family has `within_radius`
+edges to `global.poi` and `global.road_network`. Those edges become the asset graph, so
+`assets inputs indicator.urban_form_block_composite` answers with
+`global.building` (`ASSET_LAYER.md`). `inputs` is still hand-typed: nothing
+checks it against the queries a compute runs — a contract that is not
+executable can drift. What it removes is the second statement: the attribute
+and dataset dependencies are one declaration, not two that can disagree.
 
 ### Multi-grain rollup — removed
 
 Every shipped indicator is `applies_to=("block",)`. The block→AGEB rollup that
 produced coarser-grain `indicator_result` rows is gone: `jobs/rollup.py`, the
 `indicators rollup` CLI command, and `rollup_child_rows` on the overlap
-repository. r016's write trigger now rejects any result written at a grain the
+repository. r016's write trigger rejects any result written at a grain the
 indicator does not declare — *"feature type ageb is not in indicator
-applies_to ({block})"*.
+applies_to ({block})"* — and `compute_composite` reads only its inputs' rows at
+its own `applies_to` grain.
 
 What remains, and is unaffected:
 
 - **`curated_geo.feature_overlap`** and its type pairs. Still populated, still
-  read by AOI summaries and by the *observation* rollup, which is a different
-  mechanism from the indicator one.
-- **`jobs/aggregation.aggregate_children`** — the weighted-mean and
-  missing-data policy, shared with `jobs/aoi_summary.py`.
-- **`aggregation_method` on `IndicatorSpec`**, which the AOI summary still uses
-  to decide how children combine.
+  read by the *observation* rollup (`rollup_observation_child_rows`), which is a
+  different mechanism from the indicator one. AOI summaries weight by
+  `aoi_feature.overlap_measure`, not by `feature_overlap`.
+- **`jobs/aggregation.py`** — `aggregate_children`, the weighted-mean and
+  missing-data policy `jobs/aoi_summary.py` uses, and `aggregate`, which the
+  observation rollup uses.
+- **`aggregation_method`**, declared on `IndicatorSpec` and seeded into
+  `indicator_catalog`, which the AOI summary reads from the catalog row to
+  decide how children combine.
 - **The tile's `feature_type` param** (r018). Nothing in the shipped catalog can
   now produce the two-grain overlap it was added to prevent, but the client
   still sends it and it still filters.
@@ -712,10 +762,12 @@ its test in the same change.
 
 Within this layer (after DATA_LAYER and JOB_LAYER tables exist):
 
-1. `curated_geo.indicator_catalog` — seed with known indicators
+1. `curated_geo.indicator_catalog` — seed with known indicators (`seed_catalog`); `cap_value` added by r051
 2. `curated_geo.indicator_dependency` — define composite structures
-3. `curated_geo.indicator_result` — with all indexes and trigger
+3. `curated_geo.indicator_result` — with all indexes and trigger; `indicator_result_feature_id_idx` added by r047
 4. `serving_geo.current_indicator_v`
+
+Items 1–4 are all created by r016.
 
 See `JOB_LAYER.md` — *Migration order* — for how these interleave with the job-layer tables. `indicator_result.job_run_id` is `NOT NULL` with an FK, so `jobs_runtime.job_run` (r016) must exist first.
 

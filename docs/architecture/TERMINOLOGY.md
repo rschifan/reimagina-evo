@@ -1,6 +1,6 @@
 # Terminology and Conceptual Framing
 
-Terminology of the prototype. Every term defined here is used consistently across `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, and `JOB_LAYER.md`. When in doubt about what something means or where it belongs, start here.
+Terminology of the prototype. Every term defined here is used consistently across `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, `JOB_LAYER.md`, and `ASSET_LAYER.md`. When in doubt about what something means or where it belongs, start here.
 
 ---
 
@@ -11,8 +11,8 @@ The platform operates in three modes. Understanding which mode you are in determ
 | Mode | What it does | Key tables involved |
 |---|---|---|
 | **Diagnosis** | Describes the city as it exists today. No scenario. | `feature`, `observation`, `indicator_result` (where `scenario_id IS NULL`) |
-| **Exploration** | Sketches proposed changes to the city without running full models. | `scenario_override` |
-| **Evaluation** | Computes indicators for a specific scenario and compares results against the base state. | `job_run`, `indicator_result` (where `scenario_id IS NOT NULL`) |
+| **Exploration** | Sketches proposed changes to the city without running full models. | `app_core.scenario`, `scenario_edit`, `scenario_override` |
+| **Evaluation** | Computes indicators for a specific scenario and compares results against the base state. | `orchestration_run`, `job_unit`, `job_run`, `indicator_result` (where `scenario_id IS NOT NULL`) |
 
 These modes are not mutually exclusive — a project will typically use all three in sequence.
 
@@ -21,27 +21,39 @@ These modes are not mutually exclusive — a project will typically use all thre
 ## Pipeline
 
 ### Bronze
-The raw landing zone in object storage. An external dataset is copied here exactly as received from the source, before any transformation. Bronze files are **immutable** — never modified or deleted — which is what makes full re-processing possible without re-fetching from the source.
+The raw landing zone: `data/bronze/<source_id>/` under the data directory (`REIMAGINA_DATA_DIR`, default `<repo>/data`; `paths.data_dir`). An external dataset is copied here exactly as received from the source, before any transformation (`pipeline/bronze.py::land_file`). Bronze files are **immutable** — never modified or deleted — which is what makes full re-processing possible without re-fetching from the source. Bronze and silver are local files; no object-storage backend is implemented.
 
 ⚠ **Bronze is required unless the registered source is already an immutable mirror, in which case that mirror *is* bronze.** The Azure data lake is such a mirror, so `points` and `inegi_marco` land straight to silver rather than duplicating gigabytes to buy a guarantee that already holds; both record the reason in their own docstrings. `cdmx`, which fetches from upstream portals directly, does land bronze. Read the rule as being about the guarantee, not about the copy.
 
 ### Silver
-The cleaned intermediate zone in object storage. Bronze data is standardized here: coordinate reference systems are reprojected to EPSG:4326, invalid geometries are repaired, and records are validated against the registered schema. Silver files are still in source structure, not yet in the canonical model.
+The cleaned intermediate zone, `data/silver/<source_id>/`. Vector data is standardized here by `pipeline/silver.py::clean_vector`: a CRS is required, data is reprojected to EPSG:4326, invalid geometries are repaired with `make_valid`, and null or empty geometries are dropped; the result is written as GeoParquet. Rasters are re-encoded to a Cloud-Optimised GeoTIFF in their **native** CRS, not reprojected (`pipeline/raster.py`). Silver files are still in source structure, not yet in the canonical model.
 
 ### Gold / Curated (`curated_geo`)
 The canonical layer in PostgreSQL. This is what the platform reads for analysis and computation. Data enters here from Silver via a loader that assigns provenance metadata. Also referred to as the **curated layer**.
 
 ### Serving (`serving_geo`)
-A thin view layer over `curated_geo`. The API reads only from `serving_geo`. It is a read contract, not a second source of truth. In v1, serving is implemented as views. Views can be promoted to materialized views for specific hot paths when query performance requires it.
+A thin view layer over `curated_geo`, plus the tile functions (`get_tile`, `indicator_overlay_tile`, `aggregation_overlay_tile`) Martin and the API's `/tiles` route serve. It is a read contract, not a second source of truth. Serving is implemented as views; one hot path is a materialized view (`feature_current_attributes_mv`, r008). Baseline feature reads (`serving_geo.feature_v`, `feature_aoi_v`) and `GET /indicators/{slug}/values` (`current_indicator_v`) go through it. It is not exclusive: indicator statistics, per-feature indicator ranks and scenario comparison read `curated_geo.indicator_result` directly, scenario authoring reads `app_core` and `curated_geo`, run state is read from `jobs_runtime`, and the indicator computes read `curated_geo`.
 
 ### Ingestion run
 A record of one curated-load execution — one step of the Bronze → Silver → curated pipeline for a specific dataset. Every canonical row in `feature` and `observation` carries an `ingestion_run_id` that traces it back to the exact script version and run that produced it.
 
 ### Job run
-A record of one model computation that reads city data and writes indicator results. Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id`. The row is opened by the runner at compute time, not when work is submitted (`jobs/_lifecycle.py:46`).
+A record of one indicator computation that reads city data and writes indicator results — `jobs_runtime.job_run`, one row per compute, so one per executed unit of a run (or per standalone `indicators compute` from the CLI). Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id` (`NOT NULL`). The row is opened by the runner at compute time, straight to `running`, not when work is submitted (`jobs/_lifecycle.py:54`, the `job_run` context manager); `job_run.run_id` names the run it belongs to, `NULL` for a standalone compute.
 
 ### Run
-One submitted computation — the unit the `Orchestrator` port deals in, persisted as `jobs_runtime.orchestration_run` with one `jobs_runtime.job_unit` per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
+One submitted computation — the unit the `Orchestrator` port deals in, persisted as `jobs_runtime.orchestration_run` (the run id is also its DBOS workflow id) with one `jobs_runtime.job_unit` per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
+
+### Unit
+One indicator inside a run — a `jobs_runtime.job_unit` row, unique on `(run_id, indicator_slug)`, with its own status (`queued`, `running`, `succeeded`, `failed`, `skipped`, `cancelled`). On the DBOS engine each unit is one `unit_workflow` on the `units` queue, with workflow id `<run_id>-<indicator_slug>`, and its resolved feature set lives in the **run plan** (`jobs_runtime.run_plan`, r036: one row per dirty indicator, written at submit, read by the unit, deleted when the run is terminal), so `job_unit.feature_scope` is written empty there. Executing a unit opens one job run.
+
+### Change-set and dirty set
+The **change-set** is what a submit names as changed: attributes and the features they changed on (`changed_attributes`, `edited_features`), or whole datasets (`changed_datasets`). The **dirty set** is the list of `DirtyUnit`s — indicator plus feature scope — that must recompute, in dependency order. `orchestration/plan.py::plan_run` derives it: an explicit indicator list as given; otherwise from the change-set through the impact engine (`orchestration/impact.py`, seeded from each indicator's `reads`, propagated along `depends_on`); with nothing named, from asset freshness. An empty dirty set is a `noop` and persists no run.
+
+### Wave
+The units of a run that may start now: queued units whose dependencies inside the run have all succeeded (`orchestration/wave.py::plan_wave`). Re-evaluated after every completion, so a unit starts as soon as it unblocks.
+
+### Worker
+The process that executes runs: `python -m apps.worker`, which sets `REIMAGINA_DBOS_EXECUTION_MODE=executor` and drains the DBOS queues. The API is a `client` by default — it submits, reads, cancels and streams, but executes nothing — so without a worker a submitted run stays `queued`.
 
 ---
 
@@ -50,8 +62,14 @@ One submitted computation — the unit the `Orchestrator` port deals in, persist
 ### Source dataset
 A named external dataset or feed registered in `data_source_catalog` before any data is loaded. Every source must declare both its raw-format class (`storage_type`) and its semantic routing class (`integration_role`). Examples: INEGI Block Polygons 2020, Sentinel-2 NDVI 2024-Q1, GSV Street Tree Detection Batch, cellphone footfall by block and hour. Registering a source is always the first step.
 
-### Asset
-A file or object in object storage — a GeoTIFF, a batch of Street View images, a LAZ point cloud. Large assets stay in object storage permanently. Only metadata and derived values enter PostgreSQL.
+### File asset (`curated_geo.file_asset`)
+A file a source produced — a GeoTIFF, a batch of Street View images, a LAZ point cloud — recorded as one `file_asset` row (`format` one of `COG`, `GeoTIFF`, `NetCDF`, `LAZ`, `JPEG`, `PNG`; allowed only for `raster`, `imagery` and `point_cloud` sources). The file itself stays on disk under the data directory (a raster's silver COG is `file://data/silver/…`); only metadata and derived values enter PostgreSQL.
+
+### Asset (asset graph)
+Not the same thing as a file asset. In the asset graph (`curated_geo.asset`, r041; `ASSET_LAYER.md`) an asset is any named artifact the platform reads or produces — a feature type, an observation prefix, a raster layer, a scenario override attribute, an indicator — of kind `source`, `external` or `derived`, linked by `asset_dependency` edges and versioned per partition (the baseline, or one scenario). A source asset's version is recorded by whatever changed it; a derived asset's version is a hash of its whole upstream closure.
+
+### Freshness
+Whether a derived asset's materialized version matches the version its inputs imply, computed on read by `serving_geo.asset_freshness_v`: `fresh`, `stale` (versions differ), `partial` (materialized over only some of its features) or `absent` (never materialized in that partition). `stale` and `partial` count as dirty; `absent` counts in a scenario partition but on the baseline only when asked for (`assets/freshness.py`).
 
 ### Storage type
 The operational classification of a dataset, recorded in `data_source_catalog.storage_type`. It answers "what kind of asset arrived?" and helps determine the loading path.
@@ -82,8 +100,8 @@ The role a dataset plays during scenario work. This is not a schema column in v1
 |---|---|---|
 | Baseline-defining | Describes what physically exists in the city today | blocks, lots, roads, bus stops |
 | Baseline evidence | Read-only measurements that help models describe current conditions | census counts, NDVI, sidewalk width from GSV, cellphone footfall |
-| Scenario-editable context | Values that scenarios may override through `curated_geo.scenario_override` | floors (the one wired today); sidewalk width, lane count, green area share |
-| Output-only | Results produced by models, not inputs | walkability score, liveability index |
+| Scenario-editable context | Values that scenarios may override through `curated_geo.scenario_override` | the five authorable attributes today (`assets.registry.authorable_attributes`): `floors`, `num_levels`, `unit_size`, `people_per_household`, `lot_coverage` |
+| Output-only | Results produced by models, not inputs | network distance to schools, `livability_block_score` |
 
 ---
 
@@ -93,18 +111,18 @@ The role a dataset plays during scenario work. This is not a schema column in v1
 A stable canonical spatial object — something that should exist in the city model with a persistent identity, a geometry, and provenance. Examples: a city block, a parcel, a road segment, a bus stop, a validated tree detection. All features live in `curated_geo.feature`, regardless of type.
 
 ### Feature type
-The kind of spatial object a feature represents. Defined in `feature_type_catalog` as a row — not a table. Examples: `block`, `lot`, `tree`, `road`, `grid_cell`. Adding a new feature type is one INSERT.
+The kind of spatial object a feature represents. Defined in `feature_type_catalog` as a row — not a table. Examples: `block`, `lot`, `tree`, `road`, `building`. Adding a new feature type is one INSERT; the seeded set is `FEATURE_TYPE_ROWS` in `data/feature.py` (the same rows r003 inserts).
 
 ### Role
-The semantic function of a feature type in the model. Every feature type has exactly one role.
+The semantic function of a feature type in the model. Every feature type has exactly one role (a CHECK on `feature_type_catalog.role`). The examples are the seeded types.
 
 | Role | Meaning | Examples |
 |---|---|---|
-| `analysis_unit` | Spatial units that receive indicator values | block, lot, ageb, grid_cell |
-| `context` | Administrative framing; not directly analysed | municipality, state |
-| `infrastructure` | Physical urban fabric | road, sidewalk, bike_lane |
+| `analysis_unit` | Spatial units that receive indicator values | block, lot, ageb |
+| `context` | Framing — administrative units, and building footprints; not directly analysed | state, municipality, neighborhood, building |
+| `infrastructure` | Physical urban fabric | road, sidewalk, bike_lane, crossing |
 | `poi` | Point of interest, establishment, amenity | bus_stop, station, establishment |
-| `detection` | ML-derived object with a confidence score | tree (from GSV), barrier, crossing |
+| `detection` | ML-derived object with a confidence score | tree (from GSV) |
 
 ### Hierarchy / admin_level
 For types that are spatially nested (e.g., block inside municipality inside state), `admin_level` records the depth of each type in the hierarchy (1 = coarsest, N = finest). A feature's `parent_id` points to its containing feature. Types with `admin_level = NULL` are non-hierarchical (trees, bus stops).
@@ -114,6 +132,8 @@ The geographic or project scope that a feature type belongs to. `'global'` types
 
 ### Feature attributes (`feature.attributes`)
 Immutable base properties that belong to the canonical object itself and do not change after the object is created. Examples: `{"area_m2": 4200}` for a block, `{"species": "Ficus benjamina"}` for a tree. These are set at insert time and do not carry their own provenance.
+
+⚠ One writer breaks the rule on purpose: the demo fixture `scripts/seed_demo_attributes.py` merges `num_levels`, `floors`, `unit_size`, `people_per_household`, `poi_version` and `network_version` (fitted to the census with `--fit-to-census`) into the `attributes` of existing blocks, because no shipped pipeline populates them all. Its docstring says so; real values belong in `observation`, which `effective_numeric` prefers.
 
 ### Observation (`curated_geo.observation`)
 A measured or derived value about an existing feature that comes from a separate dataset, computed at a different time, and must retain its own provenance. Implements the OGC Observations & Measurements pattern (ISO 19156). Examples: census population count, NDVI mean from a satellite image, sidewalk width from GSV. Each observation carries its own `source_id`, `ingestion_run_id`, and currency flag (`is_current`). The current value for each `(feature_id, attribute_key)` pair is enforced by a partial unique index.
@@ -126,7 +146,7 @@ An object identified by a machine learning model run over imagery or point cloud
 Note: in OGC Observations & Measurements, an ML detection is a kind of observation about a place. Here we use the word in a narrower operational sense: a candidate spatial object produced by a model, which may be promoted to a `feature`.
 
 ### Area of interest (AOI)
-A user-drawn polygon that defines the spatial scope of a project. It is not a city feature — it is project-scoped and has a different lifecycle. It defines where analysis runs. Stored in `curated_geo.area_of_interest`, linked to `app_core.project`.
+A polygon that defines the spatial scope of a project. It is not a city feature — it is project-scoped and has a different lifecycle. It defines where analysis runs. Stored in `curated_geo.area_of_interest`, linked to `app_core.project`. Today AOIs are created from administrative boundaries by the CLI (`cdmx aoi-from-state`, `cdmx aoi-from-alcaldia`, `overture aoi-from-division`); an AOI may declare `membership_key` (r040), so features join it by identifier (`feature.attributes @> membership_key`) rather than by geometry alone.
 
 ### Dataset extent
 The geographic footprint of a source dataset or asset collection. Stored as metadata such as `data_source_catalog.source_extent_geometry` or `file_asset.asset_extent_geometry`. This describes where the source is available, not how much of a feature lies inside a project AOI.
@@ -142,13 +162,19 @@ The fraction of a feature's area, length, or presence that falls inside an AOI. 
 A workspace row in `app_core.project` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It groups scenarios: `app_core.scenario.project_id` (r048) references it.
 
 ### Scenario
-A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, and is the addressed resource for authoring. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` remain plain uuids with no foreign key (r016:7-10, r030:5-6); the authoring code, not the schema, keeps them consistent with the row. A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
+A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, bound to an AOI (`aoi_id`, nullable), and is the addressed resource for authoring. Only `curated_geo.scenario_edit.scenario_id` has a foreign key to it; the `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` remain plain uuids with no foreign key (r016:7-10, r030:6-7, r015:55); the authoring code, not the schema, keeps them consistent with the row. A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
+
+### Scenario edit and rule
+A **scenario edit** is one row of `curated_geo.scenario_edit` (r048): one drawn area (polygon or multipolygon), one feature type, one authorable attribute and one numeric value. `ordinal` orders the edits of a scenario, and later edits win where areas overlap. A **rule** is the edits one proposal wrote over one area: a planner sets up to four numbers — storeys, m² per dwelling, people per household, lot coverage — and only the numbers given are written, storeys as both `floors` and `num_levels` (`scenarios/proposal.py::edits_for`). `PATCH /scenarios/{id}/rules` updates a rule in place, keeping its ordinals.
+
+### Materialisation
+Resolving a scenario's edits into per-feature `scenario_override` rows inside its AOI (`scenarios/authoring.py::materialize_scenario`). It refuses the whole scenario if any block would breach an indicator ceiling, deletes overrides no edit implies any more, marks the scenario's now-unbacked results `stale`, and sets `app_core.scenario.materialized_at`. Its **footprint** — every block a current rule overrides plus every block whose override it removed, and the attributes involved — is the change-set `POST /scenarios/{id}/recompute` submits.
 
 ### Attribute override
-One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. The override rows *are* the scenario: reading them back yields the change-set a run needs (`scenarios/overrides.py:96`).
+One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. Override rows are written by materialisation, not drawn directly, and reading them back yields the scenario's change-set (`scenarios/overrides.py:215`, `scenario_change_set`).
 
 ### Effective value
-What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:50`). With no scenario it collapses to `observation ⊕ base` — the baseline.
+What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:169`). With no scenario it collapses to `observation ⊕ base` — the baseline.
 
 ### Base state
 The city as it exists today. Represented by `indicator_result` rows where `scenario_id IS NULL`. This is the Diagnosis mode output.
@@ -164,10 +190,10 @@ The computed result for a specific proposed future. Represented by `indicator_re
 A computed value for a specific spatial feature in a specific state of the world. Defined in `indicator_catalog` (what it means), stored in `indicator_result` (the computed value).
 
 ### Direct indicator
-An indicator produced directly by a model worker reading city data. Has a `model_family` set. Examples: walkability score (accessibility model), floor area ratio (housing model).
+An indicator produced directly by a model worker reading city data — `computation_kind = 'direct'`, with a `model_family` set. Examples: `accessibility_block_school_network_m` (`model_family = 'accessibility'`), `urban_form_block_compactness` and the edificability family (`'urban_form'`).
 
 ### Composite indicator
-An indicator derived from a weighted combination of other indicators. Has `model_family = NULL` (enforced by a CHECK, r016:86-87). Defined via `indicator_dependency`. The shipped example is `urban_form_block_composite` — compactness + building density, 0.5/0.5. Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`orchestration/runners.py:86-87`).
+An indicator derived from a weighted combination of other indicators — `computation_kind = 'composite'`, with `model_family = NULL` (enforced by a CHECK, r016:77-78). Defined via `indicator_dependency`. Two ship: `urban_form_block_composite` (compactness + building density, 0.5/0.5) and `livability_block_score` (housing density 0.4, network distance to school, health and park 0.2 each — the distances are lower-is-better and flipped before weighting). Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`orchestration/runners.py:112`, chosen at `:142-143`).
 
 ### Quality flag (ISO 19157)
 A classification of how reliable a computed indicator value is.
@@ -181,18 +207,18 @@ A classification of how reliable a computed indicator value is.
 | `not_applicable` | This indicator does not apply to this feature type |
 
 ### Current / stale / failed
-The lifecycle status of an `indicator_result` row.
+The lifecycle status of an `indicator_result` row (CHECK in r016).
 
 | Status | Meaning |
 |---|---|
 | `current` | The latest valid result for this (feature, scenario, indicator). What the API reads. |
-| `stale` | Input data or scenario changed; this result needs recomputation. |
-| `failed` | The last computation attempt failed; see `job_run.error_message`. |
+| `stale` | Superseded. Written when a newer result for the same (feature, scenario, indicator) is written (stale-then-insert in the result repository), when materialisation leaves a scenario result with no override behind it, and for every result of a deleted scenario. It does **not** mean "an input changed" — that is freshness, below. |
+| `failed` | Permitted by the CHECK, but no code path writes it. A failed compute is recorded on `job_run` (`status = 'failed'`, `error_message`), and the previous `current` row stays. |
 
-Execution state (`queued`, `running`) lives on `job_run`, not on `indicator_result`.
+Execution state lives on `job_unit` (`queued`, `running`, …) and `job_run` (opened as `running`), not on `indicator_result`.
 
 ### Staleness propagation
-When a scenario override changes features, the affected indicator results are marked `stale`. Any composite indicator that depends on a stale base indicator is also marked `stale`, recursively, using the `indicator_dependency` graph.
+Not marked on rows. Whether an indicator is out of date is derived on read by the asset graph: an edit, a reload or a logic-version bump moves an upstream version, and every indicator whose upstream closure contains it — composites included, through their `depends_on` edges — reads as `stale` in `serving_geo.asset_freshness_v` — in every partition for a baseline change, in that scenario's partition only for a scenario's override. A submit that names nothing recomputes exactly those (`orchestration/plan.py::plan_run`). See `ASSET_LAYER.md`.
 
 ---
 
@@ -218,16 +244,25 @@ When a dataset arrives, ask: does it define a new spatial entity that should hav
 | | `ingestion_run` | `job_run` |
 |---|---|---|
 | **Purpose** | Records one data loading execution | Records one model computation execution |
-| **Produced by** | ETL loaders (Bronze → curated pipeline) | Analytical model workers |
+| **Produced by** | ETL loaders (Bronze → curated pipeline), and the raster zonal-stats and observation-rollup workers that write observations | Indicator compute functions, one per unit |
 | **Referenced by** | `feature.ingestion_run_id`, `observation.ingestion_run_id` | `indicator_result.job_run_id` |
+
+### `orchestration_run` vs `job_unit` vs `job_run`
+
+| | `orchestration_run` | `job_unit` | `job_run` |
+|---|---|---|---|
+| **One row per** | run (one submit) | indicator in a run | executed compute |
+| **Owner** | ops-plane (scheduler state) | ops-plane (scheduler state) | domain (provenance) |
+| **Statuses** | `queued`, `running`, `succeeded`, `partial`, `failed`, `cancelling`, `cancelled` | `queued`, `running`, `succeeded`, `failed`, `skipped`, `cancelled` | `queued`, `running`, `succeeded`, `failed`, `cancelled` (CHECK); written as `running`, then `succeeded` or `failed` |
+| **Links** | — | `run_id` → `orchestration_run` | `run_id` (no FK, `NULL` outside a run); cited by `indicator_result.job_run_id` |
 
 ### `curated_geo` vs `serving_geo`
 
 | | `curated_geo` | `serving_geo` |
 |---|---|---|
-| **What it is** | Canonical tables — source of truth for the platform | Read contract — what the API is allowed to read |
-| **Written by** | ETL loaders and model workers | Never written to directly; derived from `curated_geo` |
-| **Implementation** | Tables with indexes and triggers | Views (or materialized views for hot paths) |
+| **What it is** | Canonical tables — source of truth for the platform | Read contract — views and tile functions for baseline features and current indicator values; not the only thing the API reads (see Serving above) |
+| **Written by** | ETL loaders, observation workers, indicator computes and scenario authoring | Never written to directly; derived from `curated_geo` |
+| **Implementation** | Tables with indexes and triggers | Views (one materialized view, r008) and SQL tile functions |
 
 ### `scenario_id IS NULL` vs `scenario_id IS NOT NULL`
 
@@ -247,7 +282,7 @@ Quick-reference rules for the most common decisions.
 4. Route to canonical table:
    Defines stable city objects with geometry?     → feature
    Describes or measures an existing object?      → observation
-   Large file asset (raster, image, LiDAR)?       → object storage + file_asset metadata
+   Large file asset (raster, image, LiDAR)?       → file on disk (data/) + file_asset metadata
                                                      + derived values → observation
    Computed output shown to users?                → indicator_result
 ```
@@ -268,7 +303,10 @@ How much of a feature lies inside a project AOI?   → aoi_feature overlap field
 
 **Where do scenario-related edits go?**
 ```
-Changing a feature's attribute for one scenario?   → curated_geo.scenario_override
+Changing an attribute over an area, for one scenario? → curated_geo.scenario_edit (a rule),
+                                                     materialised into
+                                                     curated_geo.scenario_override
+                                                     (one row per feature × attribute)
 Changing model assumptions (not feature-specific)? → nowhere — no configuration
                                                      table exists; model constants
                                                      live in code
@@ -281,11 +319,19 @@ Stable identity, persistent geometry, reused across analyses?   → feature (wit
 Measurement or score about an existing feature?                  → observation
 ```
 
-**When is an indicator result stale?**
+**When is an indicator out of date?** (freshness, `serving_geo.asset_freshness_v`)
 ```
-A feature's baseline attributes changed?           → stale for all scenarios that used that feature
-A scenario_override row changed?                   → stale for that scenario only
-A composite's component changed?                   → stale transitively via indicator_dependency
+A baseline source published a new version?         → stale in every partition of every indicator downstream
+  (an ingest finished, an observed probe moved)
+An override for one scenario written or removed?    → stale in that scenario's partition only
+A composite's component went stale?                 → stale too: its version hashes the whole upstream closure
+The indicator's own code version or params moved?   → stale everywhere it was materialized
+Materialized over only some of its features?        → partial
+Never computed in that partition?                   → absent (dirty in a scenario partition;
+                                                       on the baseline only when asked for)
+A change no pipeline records (hand-copied mirror,   → invisible to the graph
+  direct merge into feature.attributes)?
+indicator_result.status = 'stale'?                  → only "superseded by a newer write"; not this question
 ```
 
 ---

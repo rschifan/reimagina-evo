@@ -4,7 +4,7 @@ SQL-level contract tests for the database schema. These tests verify that the tr
 
 **Framework:** [`pgTAP`](https://pgtap.org/) — a TAP-compliant PostgreSQL testing framework. Tests run against a disposable PostgreSQL + PostGIS database seeded with the schema and minimal reference data.
 
-⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`pyproject.toml:86`), split into `unit`, `contract`, `integration`, `conformance`, `parity`, `performance`, and `e2e`, driven by `make test`, `make test-integration`, and `make test-conformance` (`Makefile:43`, `:47`, `:51`).
+⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`testpaths`, `pyproject.toml:183`), split into `unit`, `contract`, `integration`, `conformance`, `performance`, `e2e`, `recovery`, and `workloads`, driven by `make test`, `make test-integration`, `make test-conformance`, `make test-e2e`, `make test-recovery`, and `make test-workloads` (`Makefile:57`, `:61`, `:65`, `:69`, `:73`, `:77`); `tests/performance` has no target. See *Running the Python suites* below.
 
 **Related documents:** `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, `JOB_LAYER.md`.
 
@@ -17,7 +17,7 @@ SQL-level contract tests for the database schema. These tests verify that the tr
 CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Build the schema by running the Alembic migrations (r001 → r043):
+-- Build the schema by running the Alembic migrations (r001 → r052; there is no r033):
 --   make migrate        # apps.cli.app bootstrap-db --with-test-db
 -- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:
@@ -63,15 +63,48 @@ pytest tests/unit tests/contract             # no database
 TEST_DATABASE_URL=postgresql:///reimagina_test pytest tests/integration
 ```
 
-⚠ **Never a bare `pytest`.** `tests/integration`'s session fixture ends with
-`alembic downgrade base`, which drops every managed schema in
-`TEST_DATABASE_URL`. It refuses to run against a database whose name does not
-contain `test`; that guard is the only thing between the suite and real data.
+| suite | how to run | CI (`.github/workflows/ci.yml`) | needs |
+|---|---|---|---|
+| `tests/unit`, `tests/contract` | `make test` | job `test-py-unit` | nothing |
+| `tests/integration` | `make test-integration` | job `test-py-integration`, step `pytest (integration)` | Postgres + PostGIS + pgRouting at `TEST_DATABASE_URL`; CI points `REIMAGINA_APP_DSN` and `DATABASE_URL_DIRECT` at the same database |
+| `tests/conformance` | `make test-conformance` | same job, step `pytest (conformance)` | the same database |
+| `tests/e2e` | `make test-e2e` (sets `REIMAGINA_E2E=1`) | not run | an API (`REIMAGINA_E2E_API`, default `http://127.0.0.1:8001`), the web dev server (`REIMAGINA_E2E_WEB`, default `http://localhost:5173` — Vite listens on `localhost`, which macOS resolves to `::1`), and Node with the `playwright` module and its Chromium installed under `apps/web` (`tests/e2e/conftest.py` puts `apps/web/node_modules` on `NODE_PATH`) |
+| `tests/recovery` | `make test-recovery` (sets `REIMAGINA_RECOVERY_TEST=1`) | not run | ≥20,000 blocks; kills processes (below) |
+| `tests/workloads` | `make test-workloads` (sets `REIMAGINA_BENCH=1`) | not run | its own database, `TEST_DATABASE_URL` or `reimagina_test_bench_dbos`, migrated and never downgraded |
+| `tests/performance` | `pytest tests/performance`; no target | not run | `TEST_DATABASE_URL`, plus seeded data at `REIMAGINA_PERF_DSN` → `REIMAGINA_APP_DSN` → `postgresql://localhost/reimagina_app` for `test_overlap_benchmarks.py` |
+
+`tests/e2e` drives Chromium through two Node scripts rather than a Python
+dependency. `test_web_app_loads.py` runs `_browser_probe.js` once per session
+over the `map`, `scenarios`, `catalog` and `ops` pages and asserts what each
+page reports about itself, never pixels. `test_scenario_flow.py` runs
+`_scenario_flow.js`, which draws, edits, drags, overlaps and deletes scenario
+rules through the page; it writes, so it also needs `REIMAGINA_E2E_WRITES=1`
+and a scratch stack (`tests/e2e/README.md` has the recipe). Every missing
+prerequisite is a skip that names itself.
+
+CI also runs `make lint`'s three steps (job `lint-py`) and the web app's
+`npm run build` and `npm test` (job `build-web`; locally `make build-web` and
+`make test-web`). `make check` runs `lint`, `test`, `build-web` and `test-web`
+— none of the database suites.
+
+⚠ **Never a bare `pytest`.** `testpaths = ["tests"]` collects every suite.
+`migrated_db` (`tests/conftest.py`), the session fixture that
+`tests/integration`, `tests/conformance` and two of the three
+`tests/performance` files depend on (directly or through `conn`), ends with
+`alembic downgrade base`, which drops every
+managed schema in `TEST_DATABASE_URL` (default
+`postgresql://localhost/reimagina_test`). It refuses to run against a database
+whose name does not contain `test`, unless the name equals
+`REIMAGINA_TEST_DB_ALLOW_NAME`; that guard is the only thing between the suite
+and real data. When the database is unreachable it skips, unless
+`REIMAGINA_REQUIRE_DB=1` (set by CI's `test-py-integration` job), which turns
+the skip into a failure.
 
 ⚠ **Run `make lint`, not a hand-rolled `ruff check <paths>`.** The target
-mirrors CI exactly — check, format-check, and mypy over the package tree. A
-narrowed invocation skips the format gate and produced three "lint clean"
-reports against red CI in one day.
+mirrors CI exactly — `ruff check .`, `ruff format --check .`, and mypy over
+`packages/py/reimagina`, `apps` and `scripts` (`Makefile:47-50`,
+`ci.yml:62-69`). A narrowed invocation skips the format gate and produced
+three "lint clean" reports against red CI in one day.
 
 ⚠ **Do not point work-in-progress migrations at the shared `reimagina_test`.**
 A revision that exists only on your branch leaves the shared database stamped
@@ -91,28 +124,41 @@ every managed schema.
 
 ### `tests/recovery` — opt-in, kills processes
 
-The only suite that exercises DBOS crash recovery: two processes sharing an
-executor id, a real `SIGKILL` mid-compute, and a reclaim. It is the suite that
-most directly covers the as-completed dispatch loop in `run_workflow`, whose
-correctness argument rests on every branch input being checkpointed.
+The only suite that exercises DBOS crash recovery, with a real `SIGKILL`
+mid-compute in both of its tests (`tests/recovery/test_crash_recovery.py`).
+`test_a_killed_executor_resumes_the_same_feature_set` relaunches under the
+same executor id (`_recover.py`), so `DBOS.launch()` reclaims the workflow
+itself. `test_a_peer_reclaims_a_dead_executors_run` relaunches under a
+*different* id (`_sweep.py`), so the run finishes only because
+`reimagina.orchestration.reclaim.sweep` judged the first executor dead from
+its stale `ops_executor_heartbeat` row. It is the suite that most directly
+covers the as-completed dispatch loop in `run_workflow`
+(`packages/py/reimagina/orchestration/dbos_app.py`), whose correctness
+argument rests on every branch input being checkpointed.
 
 ```bash
 REIMAGINA_RECOVERY_TEST=1 TEST_DATABASE_URL=postgresql:///reimagina_test_recovery \
-    pytest tests/recovery -q
+    pytest tests/recovery -q        # or: make test-recovery
 ```
 
-It needs **≥20,000 blocks** and *skips* below that rather than passing
-vacuously — an earlier version slept six seconds, killed nothing because the
-run had already finished, and would have passed while proving the opposite of
-what it claims. The kill now waits until a unit is observably `running` with
-none succeeded.
+It needs **≥20,000 blocks** (`MIN_BLOCKS`) and *skips* below that rather than
+passing vacuously — an earlier version slept six seconds, killed nothing
+because the run had already finished, and would have passed while proving the
+opposite of what it claims. The kill now waits until a unit is observably
+`running` with fewer than three succeeded; if the run still reaches a terminal
+state before the signal lands, the test skips with the run's state attached.
 
-It also truncates `run_plan` and deletes `job_unit` / `orchestration_run`, and
-submits a full-city recompute. Clone a populated database rather than using one
-you care about:
+It seeds the indicator catalog into the test database itself (`make migrate`
+seeds only the app database, and every unit looks its indicator up there),
+truncates `run_plan`, deletes every `job_unit` / `orchestration_run` row and
+its own executors' `ops_executor_heartbeat` rows, and submits a full-city
+recompute. Clone a populated database rather than using one you care about, or
+seed a synthetic one (22,500 blocks, no credentials):
 
 ```bash
 createdb -T reimagina_demo reimagina_test_recovery
+# or, on a migrated database:
+uv run python scripts/synthetic_territory.py --dsn "$TEST_DATABASE_URL" --blocks 150 --ageb-side 10
 ```
 
 Last measured: 67,167 blocks, killed with a unit running, second process
@@ -244,7 +290,7 @@ ROLLBACK;
 
 ```sql
 BEGIN;
-SELECT plan(5);
+SELECT plan(4);
 
 -- Self-parenting must be rejected
 SELECT throws_ok(
@@ -274,27 +320,6 @@ SELECT throws_ok(
   'Non-hierarchical type must not accept parent_id'
 );
 
--- Parent and child must share the same context
-SELECT throws_ok(
-  $$
-    INSERT INTO curated_geo.feature_type_catalog
-      (context, type_slug, label, geometry_family, role, admin_level)
-    VALUES ('OTHER', 'other_block', 'Other Block', 'polygon', 'analysis_unit', 5);
-
-    INSERT INTO curated_geo.feature
-      (type_id, type_slug, role, parent_id, geometry, attributes,
-       source_id, source_record_ref, ingestion_run_id, dataset_version)
-    SELECT id, 'other_block', 'analysis_unit',
-      '33333333-0000-0000-0000-000000000001',
-      ST_SetSRID(ST_MakeEnvelope(-99.14, 19.43, -99.13, 19.44), 4326),
-      '{}',
-      '11111111-0000-0000-0000-000000000001', 'cross-context', '22222222-0000-0000-0000-000000000001', '2020'
-    FROM curated_geo.feature_type_catalog WHERE type_slug = 'other_block' AND context = 'OTHER'
-  $$,
-  'P0001',
-  'Parent and child must share the same context'
-);
-
 -- Parent admin_level must be lower (coarser) than child admin_level
 -- e.g., block (admin_level=5) cannot be parent of municipality (admin_level=2)
 SELECT throws_ok(
@@ -318,20 +343,27 @@ SELECT throws_ok(
   'Parent admin_level must be lower than child admin_level'
 );
 
--- type_slug and role must reflect type_id (trigger denormalization check)
-SELECT throws_ok(
-  $$
-    UPDATE curated_geo.feature
-    SET type_slug = 'road'
-    WHERE id = '33333333-0000-0000-0000-000000000001'
-  $$,
-  'P0001',
-  'Manual edit to type_slug must be rejected when it conflicts with type_id'
+-- type_slug and role are re-derived from type_id on every insert and update:
+-- a conflicting manual edit is overwritten, not rejected
+UPDATE curated_geo.feature
+SET type_slug = 'road'
+WHERE id = '33333333-0000-0000-0000-000000000001';
+
+SELECT is(
+  (SELECT type_slug FROM curated_geo.feature
+   WHERE id = '33333333-0000-0000-0000-000000000001'),
+  'block',
+  'Manual edit to type_slug is overwritten from type_id'
 );
 
 SELECT * FROM finish();
 ROLLBACK;
 ```
+
+There is no same-context case: `curated_geo.feature_before_write` (r003)
+compares parent and child `admin_level` only, never `context`, so a parent of
+another context is accepted whenever its `admin_level` is lower — or NULL,
+since the comparison is skipped for a parent with no `admin_level`.
 
 ---
 
@@ -798,6 +830,10 @@ ROLLBACK;
 BEGIN;
 SELECT plan(4);
 
+-- indicator_dependency_validate_trigger is DEFERRABLE INITIALLY DEFERRED (r016):
+-- left deferred it fires only at COMMIT, which the ROLLBACK below never reaches.
+SET CONSTRAINTS ALL IMMEDIATE;
+
 -- Seed two catalog entries
 INSERT INTO curated_geo.indicator_catalog
   (id, slug, name, model_family, computation_kind, value_type,
@@ -862,6 +898,7 @@ ROLLBACK;
 ```sql
 BEGIN;
 SELECT plan(1);
+SET CONSTRAINTS ALL IMMEDIATE;  -- the cycle check is the same deferred trigger (5.2)
 
 INSERT INTO curated_geo.indicator_catalog
   (id, slug, name, computation_kind, value_type, aggregation_method, applies_to)
@@ -1029,16 +1066,22 @@ VALUES
 INSERT INTO jobs_runtime.job_run (id, scenario_id, model_family, status, code_version)
 VALUES ('99999999-0000-0000-0000-000000000002', NULL, 'accessibility', 'succeeded', 'v1');
 
--- Two current base-state results for the same (feature, indicator): must fail
+INSERT INTO curated_geo.indicator_result
+  (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
+   job_run_id, value_numeric, quality_flag, status)
+VALUES
+  ('33333333-0000-0000-0000-000000000001', 'block', NULL,
+   '66666666-0000-0000-0000-000000000010', 'test_walk',
+   '99999999-0000-0000-0000-000000000002', 0.80, 'measured', 'current');
+
+-- A second current base-state result for the same (feature, indicator): must fail
+-- (ir_one_current_base, r016)
 SELECT throws_ok(
   $$
     INSERT INTO curated_geo.indicator_result
       (feature_id, feature_type, scenario_id, indicator_id, indicator_slug,
        job_run_id, value_numeric, quality_flag, status)
     VALUES
-      ('33333333-0000-0000-0000-000000000001', 'block', NULL,
-       '66666666-0000-0000-0000-000000000010', 'test_walk',
-       '99999999-0000-0000-0000-000000000002', 0.80, 'measured', 'current'),
       ('33333333-0000-0000-0000-000000000001', 'block', NULL,
        '66666666-0000-0000-0000-000000000010', 'test_walk',
        '99999999-0000-0000-0000-000000000002', 0.70, 'measured', 'current')
@@ -1123,8 +1166,14 @@ ROLLBACK;
 
 ## 8. Scenarios Layer
 
-A scenario has no table of its own — it is the set of `curated_geo.scenario_override`
-rows carrying its uuid (r030). The constraints to assert are therefore on that table.
+A scenario is an `app_core.scenario` row, and its drawn rules are
+`curated_geo.scenario_edit` rows, one attribute value each (both r048).
+`materialize_scenario` (`packages/py/reimagina/scenarios/authoring.py`)
+expands those rules into per-feature `curated_geo.scenario_override` rows
+(r030), whose `scenario_id` is still a bare uuid with no foreign key to
+`app_core.scenario`. So the override cases below need no scenario row.
+
+### 8.1 Overrides
 
 ```sql
 BEGIN;
@@ -1179,9 +1228,72 @@ SELECT * FROM finish();
 ROLLBACK;
 ```
 
-There is no scenario-status test and no configuration test: neither
-`app_core.scenario` nor `app_core.configuration` exists, and `app_core` holds
-only `project` (r001:27).
+### 8.2 Scenarios and drawn rules
+
+```sql
+BEGIN;
+SELECT plan(3);
+
+INSERT INTO app_core.project (id, name)
+VALUES ('44444444-0000-0000-0000-000000000003', 'Test Project 3');
+
+INSERT INTO app_core.scenario (id, project_id, name)
+VALUES ('88888888-0000-0000-0000-000000000004',
+        '44444444-0000-0000-0000-000000000003', 'Taller blocks');
+
+INSERT INTO curated_geo.scenario_edit
+  (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+SELECT '88888888-0000-0000-0000-000000000004', 1,
+       ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
+       id, 'floors', 10
+FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX';
+
+-- A scenario is addressed by name inside its project: UNIQUE (project_id, name)
+SELECT throws_ok(
+  $$
+    INSERT INTO app_core.scenario (project_id, name)
+    VALUES ('44444444-0000-0000-0000-000000000003', 'Taller blocks')
+  $$,
+  '23505',
+  'Duplicate scenario name within a project must be rejected'
+);
+
+-- A drawn rule is polygonal (type check only; validity is the API's job)
+SELECT throws_ok(
+  $$
+    INSERT INTO curated_geo.scenario_edit
+      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    SELECT '88888888-0000-0000-0000-000000000004', 2,
+           ST_SetSRID(ST_MakePoint(-99.14, 19.43), 4326),
+           id, 'floors', 10
+    FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
+  $$,
+  '23514',
+  'Non-polygon scenario_edit geometry must be rejected'
+);
+
+-- ordinal decides which overlapping rule wins, so it is unique per scenario
+SELECT throws_ok(
+  $$
+    INSERT INTO curated_geo.scenario_edit
+      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    SELECT '88888888-0000-0000-0000-000000000004', 1,
+           ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
+           id, 'num_levels', 3
+    FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
+  $$,
+  '23505',
+  'Duplicate (scenario_id, ordinal) must be rejected'
+);
+
+SELECT * FROM finish();
+ROLLBACK;
+```
+
+There is no scenario-status test and no configuration test: `app_core.scenario`
+has no status column (`materialized_at` is its only lifecycle field),
+`app_core.configuration` does not exist, and `app_core` holds only `project`
+(r001:27) and `scenario` (r048:67).
 
 ---
 
@@ -1191,8 +1303,20 @@ only `project` (r001:27).
 BEGIN;
 SELECT plan(4);
 
--- feature_v must merge feature.attributes with current observations
--- (Assumes the block and observation from earlier fixtures are present)
+-- feature_v must merge feature.attributes with current observations.
+-- Every case above rolls back, so insert the observation here, then refresh:
+-- feature_v reads current observations through the materialized view
+-- serving_geo.feature_current_attributes_mv (r008, r027), not live.
+INSERT INTO curated_geo.observation
+  (feature_id, attribute_key, value_type, value_numeric,
+   source_id, ingestion_run_id, is_current, valid_from)
+VALUES
+  ('33333333-0000-0000-0000-000000000001',
+   'population_total', 'numeric', 1200,
+   '11111111-0000-0000-0000-000000000002',
+   '22222222-0000-0000-0000-000000000002',
+   true, now());
+REFRESH MATERIALIZED VIEW serving_geo.feature_current_attributes_mv;
 
 SELECT is(
   (SELECT (attributes->>'population_total')::int
@@ -1211,13 +1335,15 @@ SELECT is(
   'feature_v must preserve feature.attributes keys not overridden by observations'
 );
 
--- current_indicator_v must not return stale rows
+-- current_indicator_v must not return stale rows. The view has no status
+-- column (r016), so join back to indicator_result to read it.
 -- (Assumes a stale indicator_result row exists for the test block)
 SELECT is(
   (SELECT count(*)::int
-   FROM serving_geo.current_indicator_v
-   WHERE feature_id = '33333333-0000-0000-0000-000000000001'
-     AND status IS DISTINCT FROM 'current'),
+   FROM serving_geo.current_indicator_v v
+   JOIN curated_geo.indicator_result ir ON ir.id = v.id
+   WHERE v.feature_id = '33333333-0000-0000-0000-000000000001'
+     AND ir.status <> 'current'),
   0,
   'current_indicator_v must not return non-current rows'
 );
@@ -1254,7 +1380,7 @@ EXPLAIN (ANALYZE, BUFFERS)
 SELECT *
 FROM serving_geo.current_indicator_v
 WHERE scenario_id = :scenario_id
-  AND indicator_slug = 'accessibility_walkability';
+  AND indicator_slug = 'livability_block_score';
 -- Expected: Index Scan using ir_scenario_slug_idx
 
 -- Base-state vs scenario comparison
@@ -1266,7 +1392,7 @@ JOIN serving_geo.current_indicator_v scen
  AND scen.indicator_slug = base.indicator_slug
 WHERE base.scenario_id IS NULL
   AND scen.scenario_id  = :scenario_id
-  AND base.indicator_slug = 'accessibility_walkability';
+  AND base.indicator_slug = 'livability_block_score';
 -- Expected: Index Scan using ir_base_slug_idx + ir_scenario_slug_idx
 
 -- Current observations for a feature
@@ -1275,7 +1401,8 @@ SELECT attribute_key, value_numeric
 FROM curated_geo.observation
 WHERE feature_id  = :feature_id
   AND is_current;
--- Expected: Index Scan using obs_feature_key_idx (partial WHERE is_current)
+-- Expected: Index Scan using obs_one_current (unique, partial WHERE is_current)
+-- or obs_feature_key_idx (not partial); both are on (feature_id, attribute_key), r003
 
 -- Stale indicator detection
 EXPLAIN (ANALYZE, BUFFERS)
@@ -1308,6 +1435,10 @@ The Python suite that does run:
 
 ```bash
 make test              # unit + contract
-make test-integration  # needs Postgres + PostGIS
-make test-conformance  # asserts the Orchestrator port contract
+make test-integration  # needs Postgres + PostGIS (+ pgRouting, r037)
+make test-conformance  # asserts the Orchestrator port contract (needs Postgres)
+make test-e2e          # opt-in: every page in a real browser (API + web dev server)
+make test-recovery     # opt-in: kills an executor mid-run (>=20,000 blocks)
+make test-workloads    # opt-in: ops-plane scheduling measurements
+make test-web          # the web app's vitest suite
 ```
