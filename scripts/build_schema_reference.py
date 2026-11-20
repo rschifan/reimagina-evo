@@ -36,13 +36,22 @@ from pathlib import Path
 from typing import Any
 
 import psycopg2
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "delivery" / "03_database_and_api_reference.md"
 COMPOSE = ROOT / "infra" / "docker" / "docker-compose.yml"
 
-VERSION = "1.0"
-REVISIONS = [("1.0", "2026-11-20", "Issued with the v1.0.0 delivery")]
+VERSION = "1.1"
+REVISIONS = [
+    ("Draft", "2026-11-13", "Original review draft; r050 schema and endpoint index"),
+    (
+        "1.1",
+        "2026-11-20",
+        "Refreshed from r052 and current OpenAPI; expanded schema and operation coverage",
+    ),
+]
 
 SCHEMAS = ("app_core", "curated_geo", "serving_geo", "explore", "jobs_runtime")
 
@@ -163,7 +172,18 @@ def deployed_stack(compose: str) -> str:
 def database_section(dsn: str) -> list[str]:
     out: list[str] = []
     with psycopg2.connect(dsn) as conn, conn.cursor() as cur:
-        head = _rows(cur, "select version_num from alembic_version")[0][0]
+        revisions = {
+            row[0] for row in _rows(cur, "select version_num from alembic_version")
+        }
+        cfg = Config(str(ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(ROOT / "infra/db/migrations"))
+        expected = set(ScriptDirectory.from_config(cfg).get_heads())
+        if revisions != expected:
+            raise SystemExit(
+                f"Database revision(s) {sorted(revisions)} do not match repository "
+                f"head(s) {sorted(expected)}; migrate an isolated database first."
+            )
+        head = ", ".join(sorted(revisions))
         out += [
             "## Database",
             "",
@@ -175,9 +195,11 @@ def database_section(dsn: str) -> list[str]:
             "column shows its geometry type and SRID.",
             "",
             "Two things live in the same database without belonging to this "
-            "schema. The `dbos` schema is created at runtime by the DBOS "
-            "workflow library, which orchestrates runs, for its own checkpoint "
-            "tables; it is third-party and not described here. The three tile "
+            "schema. The third-party `dbos` schema stores workflow checkpoints. "
+            "`bootstrap-db` provisions it through the DBOS library without "
+            "starting an executor; a worker launch can also initialize it. "
+            "It is outside the Alembic schema catalog below; see "
+            "[Installation](../INSTALLATION.md). The three tile "
             "functions in `serving_geo` follow Martin's function-source URL "
             "contract, `/{function}/{z}/{x}/{y}` with the query string passed "
             "as `query_params`; the same contract is served by Martin or by the "
@@ -400,9 +422,8 @@ def _geometry_section(cur: Any) -> list[str]:
     out = [
         "### Geometry columns",
         "",
-        "Every geometry column, with the SRID and dimension enforced by its "
-        "type. A single SRID across the platform is what lets any two layers "
-        "be compared without a reprojection step.",
+        "Geometry columns reported by PostGIS, with their reported type, SRID and dimension. The listed layers use EPSG:4326; metric distance and area calculations "
+        "still require geography or an appropriate projected CRS.",
         "",
         "| Table | Column | Type | SRID | Dimensions |",
         "|---|---|---|---|---|",
@@ -593,13 +614,19 @@ def api_section() -> list[str]:
         "mounted in-process rather than deployed separately, and are listed "
         "apart for that reason.",
         "",
-        "Each project operation below gives its description, its parameters "
+        "Each project operation below gives its declared description, its parameters "
         "(where they travel, their type and whether they are required), its "
         "request body and its responses, naming the schema of each JSON body; "
         "the schemas themselves follow in "
         "[Schemas](#schemas). Every operation that takes input can also "
         "answer 422 with FastAPI's `HTTPValidationError`; that response is not "
-        "repeated per operation.",
+        "repeated per operation. This is the declared OpenAPI contract, not an "
+        "exhaustive list of runtime refusals. Shared 500/503 error envelopes, "
+        "pool saturation (503 with `Retry-After: 1`), domain refusals and "
+        "stream/download behavior are documented in "
+        "[API operation and error behavior](../architecture/API.md). "
+        "Parameter ranges, patterns and complete JSON Schema details remain "
+        "available in `/openapi.json`.",
         "",
         f"### Project endpoints ({own})",
         "",
@@ -658,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
     document = [
         "---",
         'title: "Database and API reference"',
+        'subtitle: "Reimagina · Conceptualización y diseño de una centralidad urbana en Mexicali — Schedule A, Work 3"',
         f'author: "{author}"',
         f'date: "{issued.day} {issued:%B %Y}"',
         "---",
@@ -666,15 +694,24 @@ def main(argv: list[str] | None = None) -> int:
         "",
         "| | |",
         "|---|---|",
+        "| **Project** | Conceptualización y diseño de una centralidad urbana en Mexicali |",
         "| **Deliverable** | Schedule A, Work 3 — Database/API schemas and "
         "documentation |",
         f"| **Version** | {VERSION} |",
-        "| **Status** | Issued |",
+        "| **Status** | Updated for client review |",
         "| **Audience** | Technical reviewers, maintainers and operators |",
         "",
         "| Version | Date | Author | Summary |",
         "|---|---|---|---|",
         *(f"| {v} | {when} | {author} | {summary} |" for v, when, summary in REVISIONS),
+        "",
+        "Client acceptance is recorded separately; this reference documents the technical surface.",
+        "",
+        "Regenerate with `python scripts/build_schema_reference.py --dsn <isolated-r052-dsn> "
+        '--date "20 November 2026"`. The database must match the repository migration head. '
+        "The generator reads database catalogs and imports the API without starting a server. "
+        "It does not run migrations, load data or exercise endpoints. "
+        "Regeneration replaces this file; preserve its revision history in the generator.",
         "",
         *database_section(args.dsn),
         *api_section(),

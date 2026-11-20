@@ -14,12 +14,16 @@ You should receive an acknowledgement within **5 working days**. We aim to triag
 
 ## Supported versions
 
-Until `v1.0.0`, only the latest `0.x` release is supported. Fixes will land on `main` and in a new patch release.
+Report vulnerabilities against the current `main` source. Security fixes are developed on `main`. The source declares
+version `1.0.0`, but its tag and release assets have not been published as of
+20 November 2026. The latest published release is `v0.1.0`; use current source
+for the installation procedure and verification results in this repository.
 
-| Version | Supported |
-|---|---|
-| `0.x` (latest) | ✅ |
-| older `0.x` | ❌ |
+The prototype has no API authentication, and its RLS policies do not enforce
+tenant isolation. Keep the API bound to loopback. See the
+[API security scope](docs/architecture/API.md) and
+[open architecture issues](docs/architecture/TODO.md) before planning a
+production deployment.
 
 ## Scope
 

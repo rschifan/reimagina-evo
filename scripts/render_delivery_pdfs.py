@@ -36,16 +36,16 @@ gains break opportunities after ``_ . / , ( =``, code blocks wrap, and
 headings are kept with the content beneath them.
 
 Toolchain (nothing here is declared in the repository's own dependencies; the
-committed hashes in ``docs/delivery/SHA256SUMS`` were produced with exactly
+delivery hashes in ``docs/delivery/SHA256SUMS`` were produced with exactly
 these, on macOS):
 
 * ``pandoc`` 3.6.3
-* Node.js >= 22 (24 was used)
-* Playwright 1.64.x with its Chromium (page-margin boxes need Chromium 131+).
+* Node.js 24.22.2
+* Playwright 1.65.1 with its Chromium (page-margin boxes need Chromium 131+).
   Provide it without touching the lockfile, from ``apps/web``::
 
       cd apps/web
-      npm i --no-save playwright@1.64.1 && npx playwright install chromium
+      npm i --no-save playwright@1.65.1 && npx playwright install chromium
       cd ../..
       export NODE_PATH="$PWD/apps/web/node_modules"
 
@@ -66,8 +66,9 @@ import re
 import shutil
 import subprocess
 import sys
-from html import escape
+from html import escape, unescape
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DELIVERY = ROOT / "docs" / "delivery"
@@ -219,9 +220,12 @@ td code, th code {{ font-size: .95em; padding: 0 .2em; }}
 table:not(:has(thead)) {{ border-top: .9pt solid #8a96a8; }}
 table:not(:has(thead)) td:first-child {{ width: 26%; background: #f3f5f8; }}
 
-/* ── Figures: the caption is part of the SVG, so none is added. ────── */
+/* ── Figures: keep each image and its caption on the same page. ───── */
+figure {{ break-inside: avoid; margin: .8em 0 1em; }}
+figcaption {{ margin-top: .3em; font-size: .92em; }}
 .diagram {{ break-inside: avoid; text-align: center; margin: 1em 0 1.4em; }}
-.diagram svg {{ width: 100%; height: auto; max-height: 240mm; }}
+.diagram svg {{ width: 100%; height: auto; max-height: 200mm; }}
+figure .diagram {{ margin: 0; }}
 .screenshot {{ display: block; margin: .6em 0 .2em; text-align: center; }}
 .screenshot img {{ max-width: 100%; max-height: 200mm; height: auto;
                   border: .5pt solid {_RULE}; border-radius: 3px; }}
@@ -300,7 +304,46 @@ def _inline_figures(page: str, assets: Path) -> str:
             raise FileNotFoundError(f"diagram referenced but missing: {src}")
         return f'<div class="diagram">{path.read_text()}</div>'
 
-    return re.sub(r'<img[^>]*src="(?P<src>[^"]+)"[^>]*/?>', replace, page)
+    image_pattern = r'<img[^>]*src="(?P<src>[^"]+)"[^>]*/?>'
+
+    def figure(match: re.Match[str]) -> str:
+        embedded = re.sub(image_pattern, replace, match.group("image"))
+        return f"<figure>{embedded}<figcaption>{match.group('caption')}</figcaption></figure>"
+
+    page = re.sub(
+        r"<p>(?P<image><img[^>]+>)</p>\s*<p>(?P<caption><em>.*?</em>)</p>",
+        figure,
+        page,
+        flags=re.S,
+    )
+    return re.sub(image_pattern, replace, page)
+
+
+def _portable_links(page: str, source_directory: Path) -> str:
+    """Print source references without Chromium embedding this host's file URLs.
+
+    Web links and same-document anchors remain clickable. Source paths are
+    relative to the supplied source archive, so a standalone PDF remains usable.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        target = urlsplit(unescape(match.group("href")))
+        if target.scheme or target.netloc or not target.path:
+            return match.group(0)
+        path = (source_directory / unquote(target.path)).resolve()
+        if not path.is_relative_to(ROOT.resolve()) or not path.is_file():
+            raise FileNotFoundError(f"source reference missing: {target.path}")
+        relative = path.relative_to(ROOT.resolve()).as_posix()
+        if target.fragment:
+            relative += "#" + target.fragment
+        return f"{match.group('label')} (<code>{escape(relative)}</code>)"
+
+    return re.sub(
+        r'<a\b[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<label>.*?)</a>',
+        replace,
+        page,
+        flags=re.S,
+    )
 
 
 def _front_matter(markdown: str) -> tuple[dict[str, str], str]:
@@ -572,7 +615,11 @@ def render(source: Path, css: Path, js: Path, template: Path) -> Path:
             f"<nav><h2>Contents</h2>\n{_contents(toc, pages)}</nav>\n"
             f"<main>\n{main_html}</main>\n</body>\n</html>\n"
         )
-        page_html.write_text(_typeset(_inline_figures(document, source.parent)))
+        page_html.write_text(
+            _typeset(
+                _portable_links(_inline_figures(document, source.parent), source.parent)
+            )
+        )
         subprocess.run(
             ["node", str(js), str(page_html), str(pdf)], check=True, cwd=ROOT
         )
@@ -606,8 +653,8 @@ def _missing_tools() -> list[str]:
         != 0
     ):
         missing.append(
-            "Playwright 1.64.x with Chromium: in apps/web run "
-            "`npm i --no-save playwright@1.64.1 && npx playwright install chromium`, "
+            "Playwright 1.65.1 with Chromium: in apps/web run "
+            "`npm i --no-save playwright@1.65.1 && npx playwright install chromium`, "
             'then `export NODE_PATH="$PWD/apps/web/node_modules"`'
         )
     return missing

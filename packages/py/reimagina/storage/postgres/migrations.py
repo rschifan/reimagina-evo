@@ -16,7 +16,8 @@ def _repo_root() -> Path:
 
 def postgres_alembic_config(dsn: str) -> Config:
     cfg = Config(str(_repo_root() / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", dsn)
+    # ConfigParser interpolates percent signs; preserve URL-encoded credentials.
+    cfg.set_main_option("sqlalchemy.url", dsn.replace("%", "%%"))
     return cfg
 
 

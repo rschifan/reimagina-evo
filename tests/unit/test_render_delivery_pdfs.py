@@ -93,3 +93,34 @@ def test_a_missing_screenshot_stops_the_render(tmp_path: Path) -> None:
 def test_diagrams_are_still_inlined(tmp_path: Path) -> None:
     (tmp_path / "d.svg").write_text('<svg width="100" height="100"></svg>')
     assert "<svg" in r._inline_figures('<img src="d.svg" alt="d">', tmp_path)
+
+
+def test_source_links_print_portable_paths_instead_of_host_file_urls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(r, "ROOT", tmp_path)
+    source = tmp_path / "docs/delivery"
+    source.mkdir(parents=True)
+    (tmp_path / "docs/INSTALLATION.md").write_text("Setup")
+    page = '<a href="../INSTALLATION.md">Installation</a>'
+    rendered = r._portable_links(page, source)
+    assert "docs/INSTALLATION.md" in rendered
+    assert "href=" not in rendered
+    assert str(tmp_path) not in rendered
+
+
+def test_pdf_internal_and_web_links_remain_clickable(tmp_path):
+    page = '<a href="#schemas">Schemas</a><a href="https://example.com">Web</a>'
+    assert r._portable_links(page, tmp_path) == page
+
+
+def test_diagram_and_caption_share_one_unbreakable_figure(tmp_path):
+    (tmp_path / "d.svg").write_text('<svg width="100" height="100"></svg>')
+    page = (
+        '<p><img src="d.svg" alt="Diagram" /></p>\n<p><em>Figure 1 — Diagram.</em></p>'
+    )
+    rendered = r._inline_figures(page, tmp_path)
+    assert rendered.startswith("<figure>")
+    assert "<figcaption><em>Figure 1 — Diagram.</em></figcaption>" in rendered
+    assert rendered.endswith("</figure>")
+    assert "<p><div" not in rendered

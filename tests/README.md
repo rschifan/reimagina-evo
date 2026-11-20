@@ -8,8 +8,10 @@
 | `tests/conformance` | CI + `make test-conformance` | Postgres + PostGIS |
 | `tests/performance` | **no gate — nothing fails if it rots** | Postgres, seeded data |
 | `tests/e2e` | `make test-e2e`, opt-in | API + web dev server + Chromium |
+| `tests/workloads` | `make test-workloads`, opt-in | Separate migrated benchmark database |
+| `tests/recovery` | `make test-recovery`, opt-in | Disposable database with at least 20,000 blocks |
 
-`make check` runs lint, unit, contract and the web build. It does **not** run
+`make check` runs lint, unit, contract, the web build and web unit tests. It does **not** run
 integration or conformance, which need a database; CI runs those in a separate
 job with a Postgres service.
 
@@ -35,7 +37,7 @@ that is a decision rather than an accident.
 Run it deliberately:
 
 ```bash
-pytest tests/performance
+uv run pytest tests/performance
 ```
 
 ## A bare `pytest` is not the fast lane

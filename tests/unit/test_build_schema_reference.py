@@ -35,3 +35,35 @@ def test_schema_fragments_render_as_short_types():
     )
     assert ref.schema_type({"enum": ["a", "b"]}) == "one of `a`, `b`"
     assert ref.schema_type({}) == "any"
+
+
+def test_a_stale_database_is_rejected_before_generating_a_reference(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    monkeypatch.setattr(ref.psycopg2, "connect", MagicMock())
+    monkeypatch.setattr(
+        ref,
+        "_rows",
+        lambda cur, sql, *args: [("r050",)] if "alembic_version" in sql else [],
+    )
+
+    with pytest.raises(SystemExit, match="r050.*r052"):
+        ref.database_section("unused-test-dsn")
+
+
+def test_issue_metadata_preserves_the_original_draft_without_claiming_acceptance(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "reference.md"
+    monkeypatch.setattr(ref, "ROOT", tmp_path)
+    monkeypatch.setattr(ref, "OUTPUT", output)
+    monkeypatch.setattr(ref, "database_section", lambda dsn: [])
+    monkeypatch.setattr(ref, "api_section", lambda: [])
+    assert ref.main(["--dsn", "unused-test-dsn", "--date", "20 November 2026"]) == 0
+    document = output.read_text()
+    assert "2026-11-13" in document
+    assert "**Status** | Updated for client review" in document
+    assert "Client acceptance is recorded separately" in document
+    assert "Issued with the v1.0.0 delivery" not in document

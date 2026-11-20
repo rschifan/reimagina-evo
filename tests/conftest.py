@@ -2,7 +2,7 @@
 
 Requirements:
   - A running PostgreSQL instance with PostGIS installed.
-  - TEST_DATABASE_URL env var (or postgresql://localhost/reimagina_test by default).
+  - TEST_DATABASE_URL, exported or configured in the checkout's .env.
 
 The session-scoped `migrated_db` fixture runs all Alembic migrations once per
 test session and tears them down at the end. The `conn` fixture wraps each test
@@ -20,13 +20,17 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 import psycopg2
 import psycopg2.extras
 import pytest
-from alembic.config import Config
 from alembic import command
+from dotenv import load_dotenv
+
+from reimagina.storage.postgres.bootstrap import database_name_from_dsn
+from reimagina.storage.postgres.migrations import postgres_alembic_config
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 PY_PACKAGES_DIR = Path(__file__).resolve().parents[1] / "packages" / "py"
 if str(PY_PACKAGES_DIR) not in sys.path:
@@ -34,7 +38,13 @@ if str(PY_PACKAGES_DIR) not in sys.path:
 
 
 def _test_db_url() -> str:
-    return os.environ.get("TEST_DATABASE_URL", "postgresql://localhost/reimagina_test")
+    dsn = os.environ.get("TEST_DATABASE_URL")
+    if not dsn:
+        raise RuntimeError(
+            "Configure TEST_DATABASE_URL explicitly in .env or the environment; "
+            "database suites do not select a default database."
+        )
+    return dsn
 
 
 def _assert_db_name_is_test_safe(db_url: str) -> None:
@@ -45,7 +55,7 @@ def _assert_db_name_is_test_safe(db_url: str) -> None:
     TEST_DATABASE_URL would wipe real data, so we hard-fail unless the DB
     name makes it obvious this is a test target.
     """
-    db_name = urlparse(db_url).path.lstrip("/")
+    db_name = database_name_from_dsn(db_url)
     allowed = os.environ.get("REIMAGINA_TEST_DB_ALLOW_NAME", "")
     if "test" in db_name.lower() or db_name == allowed:
         return
@@ -60,7 +70,12 @@ def _assert_db_name_is_test_safe(db_url: str) -> None:
 
 @pytest.fixture(scope="session")
 def db_url() -> str:
-    return _test_db_url()
+    try:
+        return _test_db_url()
+    except RuntimeError as exc:
+        if os.environ.get("REIMAGINA_REQUIRE_DB") == "1":
+            pytest.fail(str(exc), pytrace=False)
+        pytest.skip(str(exc))
 
 
 @pytest.fixture(scope="session")
@@ -94,8 +109,7 @@ def migrated_db(db_url: str) -> str:  # type: ignore[return]
             )
         pytest.skip(f"PostgreSQL test database unavailable: {exc}")
 
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    cfg = postgres_alembic_config(db_url)
     command.upgrade(cfg, "head")
     yield db_url
     command.downgrade(cfg, "base")

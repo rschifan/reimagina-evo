@@ -1,8 +1,8 @@
 # Workload suite — how each ops plane schedules
 
 The conformance suite proves the `Orchestrator` port *contract* holds. It says
-nothing about **how** an engine schedules, because the shipped catalog is four
-indicators wide and only a `geometry` edit produces more than a single wave.
+nothing about **how** an engine schedules. The shipped indicator graph does
+not cover every topology or concurrency pattern a scheduler must handle.
 
 This suite supplies the DAG shapes the catalog cannot: seven synthetic
 workloads varying topology (chain, diamond, lattice, seeded random), unit size
@@ -17,7 +17,7 @@ make test-workloads
 Reports land in `artifacts/workloads-<track>.json`. Diff two of them:
 
 ```bash
-python -m reimagina.perf.workload_report artifacts/workloads-dbos.json artifacts/workloads-hatchet.json
+uv run python -m reimagina.perf.workload_report artifacts/workloads-dbos.json artifacts/workloads-hatchet.json
 ```
 
 ## Running it
@@ -26,21 +26,25 @@ python -m reimagina.perf.workload_report artifacts/workloads-dbos.json artifacts
 |---|---|---|
 | `REIMAGINA_BENCH` | unset | **must be `1`** — otherwise every test skips. `testpaths = ["tests"]` means a bare `pytest` would otherwise spend minutes here. |
 | `REIMAGINA_BENCH_SCALE` | `full` | `smoke` (÷10, ~1 min, a shape check **not** a measurement), `full` (~3–4 min), or a bare float for a longer run |
-| `REIMAGINA_BENCH_REPS` | 3 at full, 1 at smoke | repetitions per workload; **the first is always discarded as warm-up** |
-| `REIMAGINA_UNIT_CONCURRENCY` | 4 | slots on both tracks — the number is the same, what it means is not |
+| `REIMAGINA_BENCH_REPS` | 3 at full, 1 at smoke | Repetitions per workload; the first is discarded as warm-up when more than one repetition runs. |
+| `REIMAGINA_UNIT_CONCURRENCY` | 8 | Current DBOS default. Set the same explicit value when comparing tracks. |
 | `TEST_DATABASE_URL` | `reimagina_test_bench_<track>` | see below |
 
 ### Each track needs its own database
 
-Not a preference. The migration histories fork — `r032` on the library track,
-`r033` here, both off `r031` and mutually unresolvable — so a database migrated
+An exported `TEST_DATABASE_URL` takes precedence over `.env`; either overrides
+the benchmark default. Set it explicitly to a dedicated benchmark database.
+
+The migration histories fork — `r032` on this DBOS library track,
+`r033` on the service track, both off `r031` and mutually unresolvable — so a database migrated
 by one worktree makes the other's alembic fail outright with
 `Can't locate revision`. Sharing one is not slow, it is impossible.
 
-### Track B additionally needs the engine
+### Historical service-track requirements
 
-`HATCHET_CLIENT_TOKEN` and a reachable engine, or the whole suite skips cleanly.
-Track A needs neither, which is itself one of the findings.
+The separate Hatchet service track needs `HATCHET_CLIENT_TOKEN` and a reachable
+engine. This checkout runs `sync` and DBOS and requires neither. The following
+Hatchet notes describe that separate comparison environment, not this installation.
 
 ## Traps worth knowing before you debug something else
 

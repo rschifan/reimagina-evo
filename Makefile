@@ -38,7 +38,7 @@ help: ## Show this help.
 
 .PHONY: install
 install: ## Install Python + web dependencies.
-	uv sync --extra dev
+	uv sync --locked --extra dev
 	cd apps/web && npm ci
 
 # ─── Checks (match CI) ───────────────────────────────────────────────────────
@@ -130,101 +130,17 @@ check-ports: ## Fail early if the dev ports are taken, naming what holds them.
 	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API $(WEB_PORT):Web
 
 .PHONY: dev
-# ⚠ Deliberately NO `set -m` here, which is the opposite of the obvious fix.
-#
-# Ctrl-C is what stops this, and Ctrl-C signals the terminal's whole foreground
-# process group. Left alone, every process here — the recipe shell, `uv`, the
-# python it spawns, `npm`, the vite it spawns — shares that group, so all of
-# them receive the interrupt directly and shut down on their own.
-#
-# `set -m` breaks exactly that. It gives each background job its own process
-# group, which isolates the servers from the terminal's signal and leaves the
-# trap as the only thing that can stop them — and a trap cannot reliably reach
-# them, because no job IS the server: `uv run uvicorn` spawns a child python,
-# `npm run dev` a child vite, `uv run python -m apps.worker` a child python.
-# Measured, both ways: with `set -m`
-# and a group kill, vite died and uvicorn kept holding its port.
-#
-# The trap that remains is for the other exit: if one server dies on its own,
-# `wait` returns and it tears the survivor down rather than leaving it running.
-#
-# ⚠ The worker is not optional. The API only enqueues (client mode,
-# reimagina/orchestration/dbos_app.py); without a worker every run submitted
-# from the UI sits `queued` forever and no log says why.
-#
-# ⚠ The DSN is REIMAGINA_APP_DSN from the shell, then from `.env`, then `.env`'s
-# DATABASE_URL.
-# The API reads REIMAGINA_APP_DSN (apps/api/deps.py) and `.env` carries
-# DATABASE_URL, so a machine with a perfectly good `.env` still had to pass the
-# DSN by hand — while `scripts/acceptance_run.sh` and `scripts/mexicali_run.sh`
-# both source `.env` and need no argument. One command should mean one command.
-#
-# It fails loudly rather than defaulting: the API's own fallback DSN points at a
-# database called `reimagina_app`, and silently serving an empty or wrong database
-# looks like a broken frontend, not a missing variable.
-#
-# ⚠ Tiles are pointed at the API, not at Martin, and without this `make dev`
-# produces a blank map.
-#
-# `tile_live_base_url()` defaults to `http://localhost:3000/get_tile` — Martin —
-# because Martin is the recommended production path. But `make dev` starts three
-# processes and Martin is not one of them, so every tile request went to a
-# server nobody had started and the map drew nothing. The console reads
-# `AJAXError: Failed to fetch (0) http://localhost:3000/get_tile/...`, which is
-# easy to mistake for a data problem.
-#
-# `/api/tiles` is relative on purpose. The absolute form
-# `http://localhost:8001/tiles` is cross-origin from Vite's 5173 and fails CORS
-# — measured earlier at 53 requests, 53 `net::ERR_FAILED`, with no console
-# error object to find them by. Relative goes through Vite's `/api` proxy,
-# which strips the prefix, so the API's MVT router sees
-# `/tiles/get_tile/{z}/{x}/{y}` — Martin's own contract, which is why that
-# router exists.
-#
-# Assigned with `:=` so an explicit value still wins, and Martin goes back with
-# `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000/get_tile make dev`.
-#
-# ⚠ The value is captured BEFORE `.env` is sourced and restored after, so
-# only the invoking environment can override it. Without that, a `.env`
-# carrying `REIMAGINA_TILE_LIVE_BASE_URL` wins over the default and `make dev`
-# quietly points the map at Martin again — the exact failure this block
-# exists to prevent, reintroduced by the line two above it. `.env` is for
-# machine configuration like the DSN; which tile server a *development* run
-# talks to is this target's business, and it starts only one of them.
-#
-# `dev-api` runs the same preamble, so the API it starts reads the same
-# database and points the map at the same tiles as `make dev`.
-DEV_ENV = _tiles_from_env="$$REIMAGINA_TILE_LIVE_BASE_URL"; \
-	if [ -z "$$REIMAGINA_APP_DSN" ] && [ -f .env ]; then \
-	  set -a; . ./.env; set +a; \
-	  : $${REIMAGINA_APP_DSN:=$$DATABASE_URL}; export REIMAGINA_APP_DSN; \
-	fi; \
-	REIMAGINA_TILE_LIVE_BASE_URL="$$_tiles_from_env"; \
-	if [ -z "$$REIMAGINA_APP_DSN" ]; then \
-	  echo "REIMAGINA_APP_DSN is unset and .env has no DATABASE_URL."; \
-	  echo "  REIMAGINA_APP_DSN=postgresql://localhost/your_db make $@"; \
-	  exit 1; \
-	fi; \
-	: $${REIMAGINA_TILE_LIVE_BASE_URL:=/api/tiles}; \
-	export REIMAGINA_TILE_LIVE_BASE_URL; \
-	echo "DSN  → $$REIMAGINA_APP_DSN"; \
-	echo "Tiles→ $$REIMAGINA_TILE_LIVE_BASE_URL"
+# Python loads dotenv without overriding caller exports or executing shell text.
+# Tile routing is deliberately /api/tiles unless the caller exports an override.
+DEV_ENV = _dev_exports="$$( $(PYTHON) scripts/runtime_env.py dev )" && eval "$$_dev_exports"
 
 dev: check-ports ## Start the API, the web dev server and the worker together. Ctrl-C stops all three.
-	@$(DEV_ENV); \
-	echo "API  → http://127.0.0.1:$(API_PORT)"; \
-	echo "Web  → http://localhost:$(WEB_PORT)  (proxies /api to the API)"; \
-	echo; \
-	trap 'kill $$api $$web $$worker 2>/dev/null' EXIT; \
-	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT) & api=$$!; \
-	( cd apps/web && VITE_PORT=$(WEB_PORT) REIMAGINA_API_URL=http://127.0.0.1:$(API_PORT) npm run dev ) & web=$$!; \
-	$(PYTHON) -m apps.worker & worker=$$!; \
-	wait
+	@$(PYTHON) scripts/dev_supervisor.py --python '$(PYTHON)' --uvicorn '$(UVICORN)' --api-port '$(API_PORT)' --web-port '$(WEB_PORT)'
 
 .PHONY: dev-api
 dev-api: ## Start the FastAPI read-side API with reload (same DSN and tiles as `make dev`).
 	@$(PYTHON) scripts/preflight_ports.py $(API_PORT):API
-	@$(DEV_ENV); \
+	@$(DEV_ENV) && \
 	$(UVICORN) apps.api.app:app --reload --host 127.0.0.1 --port $(API_PORT)
 
 .PHONY: dev-web
@@ -234,7 +150,7 @@ dev-web: ## Start the Vite dev server for the web app (proxies /api to API_PORT)
 
 .PHONY: dev-worker
 dev-worker: ## Start the DBOS ops-plane worker (runs stay queued without it).
-	$(PYTHON) -m apps.worker
+	@$(DEV_ENV) && $(PYTHON) -m apps.worker
 
 # ─── Git / PR workflow ───────────────────────────────────────────────────────
 # Usage: `make branch NAME=fix/indicator-formatting`
@@ -296,10 +212,11 @@ release: ## Build the release bundle in dist/. VERSION=v1.0.0 (HEAD must be tagg
 	shasum -a 256 -c docs/delivery/SHA256SUMS
 	mkdir -p dist && rm -f dist/*
 	cp docs/delivery/pdf/*.pdf docs/delivery/MANIFEST.md docs/delivery/SHA256SUMS dist/
+	cp docs/delivery/0*.md docs/THIRD_PARTY_LICENSES.md dist/
 	@src=$$(sed -n 's/^| \*\*Generated from commit\*\* | `\(.*\)` |$$/\1/p' docs/delivery/MANIFEST.md); \
 	git archive --format=tar --prefix=r-evo-$(VERSION)/ $$src | gzip -n > dist/r-evo-$(VERSION).tar.gz; \
 	echo "source archive of $$src"
-	cd dist && shasum -a 256 *.pdf MANIFEST.md SHA256SUMS r-evo-$(VERSION).tar.gz > SHA256SUMS-assets
+	cd dist && shasum -a 256 *.pdf *.md SHA256SUMS r-evo-$(VERSION).tar.gz > SHA256SUMS-assets
 	@echo
 	@echo "Bundle in dist/. Publish it (after pushing main and the tag):"
 	@echo "  gh release create $(VERSION) dist/* --title $(VERSION) --notes-file CHANGELOG.md"
