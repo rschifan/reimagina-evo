@@ -9,7 +9,7 @@ tag, and SHA-256 hash.
 | **Date** | 20 November 2026 |
 | **Version** | 1.0.0 |
 | **Tag** | `v1.0.0` |
-| **Generated from commit** | `dcb5bdb7c24cd53dd5bde254fd68e005188ce174` |
+| **Generated from commit** | `d1746e54c02b01ee580e86e3d5ec1c27fb0e9c1f` |
 | **Check out** | `git checkout v1.0.0` |
 
 ⚠ The tag is the authoritative identifier, and the **Check out** row
@@ -23,19 +23,19 @@ commit that contains it. Resolve a tag to its commit with
 
 | Schedule A | File | Bytes | SHA-256 |
 |---|---|---:|---|
-| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 210,452 | `1ea21aa42e8e64cb5e42fc1e15cdafd96e8ab0ec562fd1c3201e91c88687b908` |
-| Work 1 — source | `docs/delivery/01_architecture_map.md` | 25,435 | `e5d85d13d3e9356e88b1da21ebb942177bf48815b79836bd43f73acf16f48b30` |
-| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 922,121 | `dbd86c0b1bf420064a85b419902e7ff7700d937fae06d6504810d51290d0835d` |
-| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 113,320 | `e7c289fb9205ef9eb5b4fa2847ffa7d68dcd259d7727429ac18d22acba0b2092` |
-| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 883,674 | `5d87c2ba63e8832ca052344710f4af2c20b35e26859d1dc973272baa6103a8f3` |
-| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 126,108 | `202d52f4d2dffe22503a8b4539d254abf771ee1a3f35ee40715937787daacb6e` |
+| Work 1 — architecture map | `docs/delivery/pdf/01_architecture_map.pdf` | 210,466 | `7515cec6ae6272c27cb1d50cb15e6286dff5864992d4e393583a614e79e8968a` |
+| Work 1 — source | `docs/delivery/01_architecture_map.md` | 25,425 | `c003d4cc2bbe43334d21734214ff820ae3f7f4e87d0bf1e3ecd78fd59477d3ea` |
+| Work 3 — database and API reference | `docs/delivery/pdf/03_database_and_api_reference.pdf` | 922,020 | `1e0a8eb959220bf238a9f30b948ab96ae0236d299fcb224d43adaed5052de811` |
+| Work 3 — source | `docs/delivery/03_database_and_api_reference.md` | 113,295 | `b89c8a195905cb9d1d8b5375380b79ad4908ee4718b49f01c096abb88bf87311` |
+| Work 4 — technical documentation | `docs/delivery/pdf/04_technical_documentation.pdf` | 2,914,022 | `1798a9a37274e863276764cd44d889cadc24fe7b1570aecf7b0ba386b9f72d00` |
+| Work 4 — source | `docs/delivery/04_technical_documentation.md` | 128,526 | `b8d9eeed53d15016c6fd9ea3b01683a0205fa680ab012fff02ca265eb16a3888` |
 | Article 4.1 — dependency inventory | `docs/THIRD_PARTY_LICENSES.md` | 38,709 | `fc95e762ee6eae07bd8cce22beaaec6bd807df76503594eced04595961103c51` |
 
 ## Source code (Schedule A Work 2)
 
 | Schedule A | Source commit | Bytes | SHA-256 |
 |---|---|---:|---|
-| Work 2 — source code, `git archive` of the source commit | `dcb5bdb7c24cd53dd5bde254fd68e005188ce174` | 9,236,480 | `fae771afbf5c31a7b63cfd088c1674b6563732cf5b8a9d5d88d31db6b5ef2d82` |
+| Work 2 — source code, `git archive` of the source commit | `d1746e54c02b01ee580e86e3d5ec1c27fb0e9c1f` | 11,694,080 | `43cb67d2259c8949f85385178e5fcc736720616936b00c8cb1012815260b513c` |
 
 The hash is of the commit named above — the one this manifest was
 generated from, which is the tag's parent — not of the tag itself: the
@@ -47,7 +47,7 @@ because a `.tar.gz` also depends on the gzip implementation. To
 recompute it from any clone:
 
 ```bash
-git archive --format=tar --prefix=reimagina-v1.0.0/ dcb5bdb7c24cd53dd5bde254fd68e005188ce174 | sha256sum
+git archive --format=tar --prefix=reimagina-v1.0.0/ d1746e54c02b01ee580e86e3d5ec1c27fb0e9c1f | sha256sum
 ```
 
 The release also carries `reimagina-v1.0.0.tar.gz`, the same
