@@ -104,6 +104,43 @@ def stale_after_seconds() -> float:
     return configured
 
 
+def sweep_interval(stale_after: float) -> float:
+    """How often to sweep, from ``REIMAGINA_RECLAIM_SWEEP_S``.
+
+    Rejected rather than coerced when it is not a positive number, because
+    every unusable value fails in a way that looks like something else.
+
+    ``0`` or a negative value makes ``Event.wait(timeout)`` return
+    immediately, so the loop becomes a busy spin: a full sweep — connect,
+    query the liveness table, ask DBOS to recover — as fast as Postgres will
+    answer, forever, on a thread nobody is watching. The symptom is a worker
+    that looks idle while holding a connection permanently busy.
+
+    A non-numeric value raises ``ValueError`` from ``float()`` at startup with
+    no mention of the variable that caused it.
+
+    The default is half the staleness threshold, floored at 60 s, so an
+    executor is normally declared dead within 1.5 thresholds of its last beat.
+    """
+    raw = os.environ.get("REIMAGINA_RECLAIM_SWEEP_S")
+    if raw is None or raw.strip() == "":
+        return max(stale_after / 2, 60.0)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"REIMAGINA_RECLAIM_SWEEP_S={raw!r} is not a number"
+        ) from exc
+    if value <= 0 or value != value or value == float("inf"):
+        raise RuntimeError(
+            f"REIMAGINA_RECLAIM_SWEEP_S={raw!r} must be a positive, finite "
+            "number of seconds. Zero or negative makes the sweep thread spin "
+            "without pausing; set REIMAGINA_RECLAIM_ENABLED=0 to turn the "
+            "sweep off instead."
+        )
+    return value
+
+
 def dead_executors(
     conn, *, stale_after: float, exclude: str | None = None
 ) -> list[str]:

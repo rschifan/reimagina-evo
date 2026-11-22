@@ -311,18 +311,25 @@ def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):
     from reimagina.orchestration import reclaim
     from reimagina.orchestration.port import RUN_TERMINAL_STATES
 
-    sweeping = os.environ.get("REIMAGINA_RECLAIM_ENABLED", "1") != "0"
+    log = logging.getLogger(__name__)
+    sweep_every = None
+    if os.environ.get("REIMAGINA_RECLAIM_ENABLED", "1") != "0":
+        # The worker's period, so one setting governs every sweeper. A
+        # misconfiguration the worker refuses to boot on is only a warning
+        # here: the wait itself must not fail on it.
+        try:
+            sweep_every = reclaim.sweep_interval(reclaim.stale_after_seconds())
+        except (RuntimeError, ValueError):  # ValueError: a non-numeric value
+            log.warning("reclaim is misconfigured; not sweeping", exc_info=True)
     next_sweep = 0.0
     deadline = time.monotonic() + timeout_s
     while True:
-        if sweeping and time.monotonic() >= next_sweep:
-            next_sweep = time.monotonic() + 30.0
+        if sweep_every is not None and time.monotonic() >= next_sweep:
+            next_sweep = time.monotonic() + sweep_every
             try:
                 reclaim.sweep()
             except Exception:  # noqa: BLE001 — the wait must outlive a failed sweep
-                logging.getLogger(__name__).warning(
-                    "reclaim sweep failed; will retry", exc_info=True
-                )
+                log.warning("reclaim sweep failed; will retry", exc_info=True)
         conn.rollback()  # end the read txn so the next poll sees fresh rows
         status = orchestrator.get_run(conn, run_id)
         if status is not None and status.status in RUN_TERMINAL_STATES:
