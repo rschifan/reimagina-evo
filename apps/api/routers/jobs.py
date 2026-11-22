@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from reimagina import settings
+from reimagina.orchestration.plan import canonical_feature_ids
 from reimagina.storage._utils import is_run_id
 
 from ..deps import api_dsn, get_backend, get_db_conn
@@ -163,7 +164,7 @@ class SubmitRunBody(BaseModel):
     def _uuids(cls, value: list[str] | None) -> list[str] | None:
         # Same reason, plus `runners._covers_overrides` compares them as uuid:
         # a typo there is a DataError in the worker, after a 202.
-        return None if value is None else [str(UUID(f)) for f in value]
+        return None if value is None else canonical_feature_ids(value)
 
 
 class SubmitRunResponse(BaseModel):

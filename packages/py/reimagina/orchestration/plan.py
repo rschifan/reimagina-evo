@@ -24,6 +24,7 @@ to give it to.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -95,6 +96,17 @@ class UnknownIndicators(ValueError):
     def __init__(self, unknown: Sequence[str]) -> None:
         self.unknown = tuple(unknown)
         super().__init__(f"unknown indicator(s): {', '.join(sorted(self.unknown))}")
+
+
+def canonical_feature_ids(values: Iterable[str]) -> list[str]:
+    """Feature ids in canonical uuid spelling; ``ValueError`` for one that is not.
+
+    The runners compare them as ``uuid`` (``runners._covers_overrides``), so a
+    typo is a DataError mid-run. ``plan_run`` applies it to every submit; the
+    API (a 422) and the CLI (a one-line error) call it first to refuse a typo
+    in their own words, before a run is persisted.
+    """
+    return [str(uuid.UUID(str(value))) for value in values]
 
 
 def plan_run(
@@ -184,7 +196,7 @@ def plan_run(
     # would see an exhausted generator as truthy and route to the attribute path
     # with an empty change set, silently skipping freshness.
     requested_attributes = tuple(changed_attributes)
-    requested_features = tuple(edited_features)
+    requested_features = tuple(canonical_feature_ids(edited_features))
     changed, edited = resolve_change_set(
         conn,
         changed_attributes=requested_attributes,

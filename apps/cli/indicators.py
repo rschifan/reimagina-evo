@@ -6,7 +6,7 @@ from apps.cli import UserError
 
 import os
 import time
-import uuid
+
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING
 
@@ -17,6 +17,7 @@ from reimagina.db import connect
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.orchestration.intake import evaluate_scenario
+from reimagina.orchestration.plan import canonical_feature_ids
 from reimagina.orchestration.runners import default_runners
 
 
@@ -190,7 +191,7 @@ def evaluate_scenario_cli(
     # Checked here, before any run is planned or persisted: the runners
     # compare feature ids as uuid, so a typo would fail a unit mid-run.
     try:
-        edited_features = [str(uuid.UUID(f)) for f in edited_features]
+        edited_features = canonical_feature_ids(edited_features)
     except ValueError as exc:
         raise UserError(
             f"--feature must be a feature UUID: {edited_features!r}"

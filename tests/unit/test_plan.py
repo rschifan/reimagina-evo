@@ -17,6 +17,9 @@ import pytest
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.orchestration.plan import UnknownIndicators, noop_handle, plan_run
 
+#: A feature id: the plan canonicalises edited features as uuids.
+B1 = "00000000-0000-0000-0000-0000000000b1"
+
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct"):
     return IndicatorSpec(
@@ -50,7 +53,7 @@ def _no_asset_graph(monkeypatch):
 
 def _plan(**kw):
     kw.setdefault("changed_attributes", {"land_use"})
-    kw.setdefault("edited_features", {"b1"})
+    kw.setdefault("edited_features", {B1})
     kw.setdefault("registry", REG)
     return plan_run(None, **kw)
 

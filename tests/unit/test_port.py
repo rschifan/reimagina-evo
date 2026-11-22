@@ -12,6 +12,9 @@ import asyncio
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
 
+#: A feature id: the plan canonicalises edited features as uuids.
+B1 = "00000000-0000-0000-0000-0000000000b1"
+
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct"):
     return IndicatorSpec(
@@ -52,7 +55,7 @@ def test_synchronous_orchestrator_runs_and_reports_status():
         for s in ("green_coverage", "walkability", "liveability_index")
     }
     handle = SynchronousOrchestrator(registry=REG, runners=runners).submit_run(
-        None, changed_attributes={"land_use"}, edited_features={"b1"}
+        None, changed_attributes={"land_use"}, edited_features={B1}
     )
     assert handle.status is not None
     assert handle.status.status == "succeeded"
@@ -72,7 +75,7 @@ def test_synchronous_orchestrator_reports_partial_on_failure():
         "liveability_index": _runner(log, "liveability_index"),
     }
     handle = SynchronousOrchestrator(registry=REG, runners=runners).submit_run(
-        None, changed_attributes={"land_use"}, edited_features={"b1"}
+        None, changed_attributes={"land_use"}, edited_features={B1}
     )
     assert handle.status.status == "partial"
     by_status = {u.indicator: u.status for u in handle.status.units}
@@ -98,7 +101,7 @@ def test_submitted_run_round_trips_through_the_default_store():
     }
     orch = SynchronousOrchestrator(registry=REG, runners=runners)
     handle = orch.submit_run(
-        None, changed_attributes={"land_use"}, edited_features={"b1"}
+        None, changed_attributes={"land_use"}, edited_features={B1}
     )
 
     fetched = orch.get_run(None, handle.run_id)
@@ -122,7 +125,7 @@ def test_cancel_is_always_false_here():
     """No run is ever in flight: submit_run does not return until it is over."""
     orch = SynchronousOrchestrator(registry=REG, runners={})
     handle = orch.submit_run(
-        None, changed_attributes={"land_use"}, edited_features={"b1"}
+        None, changed_attributes={"land_use"}, edited_features={B1}
     )
     assert orch.cancel_run(None, handle.run_id) is False
 
@@ -135,7 +138,7 @@ def test_subscribe_progress_yields_the_final_status_then_stops():
     }
     orch = SynchronousOrchestrator(registry=REG, runners=runners)
     handle = orch.submit_run(
-        None, changed_attributes={"land_use"}, edited_features={"b1"}
+        None, changed_attributes={"land_use"}, edited_features={B1}
     )
 
     events = _collect(orch.subscribe_progress(handle.run_id))
@@ -186,7 +189,7 @@ def test_subscribe_progress_works_with_a_connection_bound_store():
         registry=REG, runners=runners, store=_ConnectionBoundStore()
     )
     handle = orch.submit_run(
-        object(), changed_attributes={"land_use"}, edited_features={"b1"}
+        object(), changed_attributes={"land_use"}, edited_features={B1}
     )
 
     events = _collect(orch.subscribe_progress(handle.run_id))
@@ -213,6 +216,6 @@ def test_store_is_injectable():
 
     SynchronousOrchestrator(
         registry=REG, runners={}, store=_RecordingStore()
-    ).submit_run(None, changed_attributes={"land_use"}, edited_features={"b1"})
+    ).submit_run(None, changed_attributes={"land_use"}, edited_features={B1})
 
     assert calls == ["create_run", "record_units", "finalize_run"]
