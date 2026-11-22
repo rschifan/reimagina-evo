@@ -251,3 +251,28 @@ def test_counts_are_summed_and_rates_are_medians():
     assert table_statistic("people") == "sum"
     for unit in ("units_per_ha", "floors", "score_0_1", None):
         assert table_statistic(unit) == "median"
+
+
+def test_the_allowance_accounts_for_lot_coverage():
+    """Density is judged on levels × coverage, so half coverage allows twice
+    the storeys; the refusal must name the allowance that would pass."""
+    with pytest.raises(CeilingPrecheckFailed) as caught:
+        precheck_ceilings(30, 60, 3, 0.5)
+
+    allowed = caught.value.allowed_levels
+    assert allowed == math.floor(max_levels_for(60.0) / 0.5)
+    precheck_ceilings(allowed, 60, 3, 0.5)  # what it names really passes
+    assert f"allows {allowed:d} storeys" in str(caught.value)
+
+
+def test_a_floors_breach_names_the_floors_bound():
+    """Not the combined minimum, and no unit size the user never typed."""
+    from reimagina.scenarios.ceilings import max_floors
+
+    levels = max_floors() + 50
+    with pytest.raises(CeilingPrecheckFailed) as caught:
+        precheck_ceilings(levels, None, None)
+
+    message = str(caught.value)
+    assert f"floors ceiling allows {math.floor(max_floors()):d} storeys" in message
+    assert "m² per dwelling" not in message

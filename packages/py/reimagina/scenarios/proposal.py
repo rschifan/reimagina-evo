@@ -80,34 +80,46 @@ class CeilingPrecheckFailed(ValueError):
     """
 
     def __init__(
-        self, breaches: list[CeilingBreach], *, levels: float, unit_size: float
+        self,
+        breaches: list[CeilingBreach],
+        *,
+        levels: float,
+        unit_size: float,
+        lot_coverage: float = 1.0,
     ) -> None:
         self.breaches = breaches
         self.levels = levels
         self.unit_size = unit_size
-        # Both area-independent bounds: density scales with unit size, the
-        # floors bound does not. The smaller is what a form may offer.
+        # Both area-independent bounds: density scales with unit size and,
+        # because it is judged on levels × coverage, inversely with coverage;
+        # the floors bound does neither. The smaller is what a form may offer.
         # Without a unit size (a rule that keeps each block's own) only the
         # floors bound applies.
         self.allowed_levels = math.floor(
-            min(max_levels_for(unit_size), max_floors())
+            min(max_levels_for(unit_size) / lot_coverage, max_floors())
             if unit_size > 0
             else max_floors()
         )
+        # A unit size of 0 means none was given: naming "0 m²" would describe
+        # a number the user never typed.
+        at = f" at {unit_size:g} m² per dwelling" if unit_size > 0 else ""
         worst = breaches[0]
         if worst.indicator_slug == FLOORS:
+            # The floors bound itself, not the combined minimum above, which
+            # may be the density bound.
             advice = (
-                f"The floors ceiling allows {self.allowed_levels:d} storeys at "
-                f"{unit_size:g} m² per dwelling, whatever the unit size."
+                f"The floors ceiling allows {math.floor(max_floors()):d} "
+                f"storeys, whatever the unit size."
             )
         else:
+            cover = f" and {lot_coverage:g} lot coverage" if lot_coverage < 1 else ""
             advice = (
-                f"At {unit_size:g} m² per dwelling the ceiling allows "
+                f"At {unit_size:g} m² per dwelling{cover} the ceiling allows "
                 f"{self.allowed_levels:d} storeys, and the density part of it "
                 f"rises in proportion to the unit size."
             )
         super().__init__(
-            f"{levels:g} storeys at {unit_size:g} m² per dwelling computes "
+            f"{levels:g} storeys{at} computes "
             f"{worst.would_be:.1f} for {worst.indicator_slug}, whose valid_max "
             f"is {worst.bound:.1f}. {advice} The per-block bounds (housing "
             f"units, population) depend on each block's area, so this check "
@@ -226,7 +238,12 @@ def precheck_ceilings(
         ]
     )
     if breaches:
-        raise CeilingPrecheckFailed(breaches, levels=levels, unit_size=unit_size or 0.0)
+        raise CeilingPrecheckFailed(
+            breaches,
+            levels=levels,
+            unit_size=unit_size or 0.0,
+            lot_coverage=1.0 if lot_coverage is None else lot_coverage,
+        )
 
 
 def polygon_wkt(geojson: Any) -> str:
