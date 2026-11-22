@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .download import save_response
+
 
 WORLDPOP_REST_BASE = "https://www.worldpop.org/rest/data"
 DEFAULT_DATASET = "wpgp"
@@ -193,23 +195,12 @@ def fetch_country_raster(
         with urllib.request.urlopen(
             request, timeout=_REQUEST_TIMEOUT_SECONDS
         ) as response:
-            # Stream to a sibling .partial so a crash mid-download
-            # leaves the cache intact rather than producing a truncated
-            # file that future runs would silently consume.
-            partial = cached.with_suffix(cached.suffix + ".partial")
-            with open(partial, "wb") as out:
-                shutil.copyfileobj(response, out)
-            partial.replace(cached)
-    except urllib.error.URLError as exc:
-        if cached.exists() and not force:
-            # A partial file from a previous failure shouldn't survive
-            # — caller passed force=False so we shouldn't delete a
-            # legitimate cached copy though. The .partial cleanup is
-            # the only safe thing to do here.
-            pass
-        partial_path = cached.with_suffix(cached.suffix + ".partial")
-        if partial_path.exists():
-            partial_path.unlink()
+            # Via a .partial + length check, so a cut-off download never
+            # becomes the cache that every later run silently consumes.
+            save_response(response, cached)
+    # OSError, not just URLError: a read timeout mid-body raises TimeoutError
+    # and a cut-off body raises IncompleteDownloadError.
+    except OSError as exc:
         raise WorldPopFetchError(
             f"Failed to download {meta.url}: {exc}. "
             f"Try `raster fetch-worldpop --force` once connectivity returns, "
