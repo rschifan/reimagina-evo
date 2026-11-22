@@ -36,6 +36,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as pads
 
+from reimagina.assets.publish import publish_version
 from reimagina.data import catalog as cat
 from reimagina.data import observation as obs
 
@@ -407,6 +408,20 @@ def bootstrap(
             ingestion_run_id=run_id,
         )
 
+        # The observations sit on blocks, and indicators declare their census
+        # inputs as ``mex.block`` attributes (edificability reads
+        # ``people_per_household``) — nothing has an edge to ``censo.2020``.
+        # Publishing only that would leave every reader "fresh" on old values.
+        # Before complete_ingestion_run, which takes an exclusive MV lock.
+        if observations_written:
+            publish_version(
+                conn,
+                asset_key="mex.block",
+                version=str(run_id),
+                ingestion_run_id=run_id,
+                dataset_version=CENSO_VERSION,
+                row_count=observations_written,
+            )
         cat.complete_ingestion_run(
             conn,
             run_id,

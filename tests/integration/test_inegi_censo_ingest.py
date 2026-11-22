@@ -363,3 +363,30 @@ def test_bootstrap_raises_when_no_municipalities_loaded(
             cve_ent_filter=["9"],
             source_root=fake_censo_root,
         )
+
+
+def test_bootstrap_publishes_the_block_layer_it_writes_to(
+    conn,
+    fake_censo_root: Path,
+    cuauhtemoc_features,
+):
+    """``people_per_household`` lands on ``mex.block``, which is what the
+    edificability family declares it reads; publishing only ``censo.2020``
+    (which nothing reads) left those indicators "fresh" on the old value."""
+    from reimagina.assets.registry import seed_assets
+
+    seed_assets(conn)
+    result = inegi_censo.bootstrap(
+        conn,
+        cve_ent_filter=["9"],
+        columns=("prom_ocup",),
+        source_root=fake_censo_root,
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT av.version FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'mex.block' AND av.is_current "
+            "AND av.partition_key = ''"
+        )
+        assert cur.fetchone() == (result.ingestion_run_id,)

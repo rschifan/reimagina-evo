@@ -97,6 +97,8 @@ sorted in byte order (`COLLATE "C"`, r044), with floats at a fixed scale of 6.
 **Leaves are told; everything else is derived.** A source asset's version is
 recorded by whatever changed it (`assets/publish.py`): an ingest publishes its
 ingestion run id when it finishes having written rows (`data.catalog.finish_run`),
+a loader that writes block observations (the census, `overture block-storeys`)
+publishes `mex.block`, the asset indicators declare those attributes on,
 `assets backfill-versions` covers layers loaded before the graph existed, and
 materialising a scenario publishes a content digest per edited attribute into
 that scenario's partition (`scenarios.overrides.publish_scenario_version`). The

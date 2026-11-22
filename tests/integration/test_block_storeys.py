@@ -148,3 +148,46 @@ def test_storeys_round_to_a_whole_storey_and_never_below_one(conn):
         conn, type_id=block_type, attribute_key="floors", feature_ids=[halves, zero]
     )
     assert values == {halves: 3.0, zero: 1.0}
+
+
+def _block_version(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT av.version FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'mex.block' AND av.is_current "
+            "AND av.partition_key = ''"
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def test_writing_storeys_publishes_the_block_layer(conn):
+    """Planned floors reads ``mex.block`` ``floors``: writing them has to move
+    that asset's version, or the indicator stays "fresh" on stale input."""
+    from reimagina.assets.registry import seed_assets
+
+    seed_assets(conn)
+    src = _register_source(
+        conn,
+        name=f"storeys_src_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run = _start_run(conn, src)
+    block_type = feat.get_type_id(conn, "MEX", "block")
+    building_type = feat.get_type_id(conn, "global", "building")
+    block = _feature(conn, src, run, block_type, _square(-115.48, 32.64, 0.001))
+    _feature(
+        conn,
+        src,
+        run,
+        building_type,
+        _square(-115.4799, 32.6401, 0.0001),
+        {"num_floors": 3},
+    )
+    before = _block_version(conn)
+
+    block_storeys.bootstrap(conn, feature_ids=[block])
+
+    assert _block_version(conn) not in (None, before)

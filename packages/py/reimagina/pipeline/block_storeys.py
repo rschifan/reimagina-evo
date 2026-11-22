@@ -119,6 +119,9 @@ def bootstrap(
             status="succeeded",
             rows_written=n,
             details={"blocks": len(records)},
+            # Planned floors reads `floors` off mex.block; without a publish
+            # it stays "fresh" against storeys that just changed.
+            asset_key="mex.block",
         )
         written += n
     return {
