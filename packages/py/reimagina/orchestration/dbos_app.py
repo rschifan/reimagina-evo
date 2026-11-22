@@ -50,6 +50,7 @@ from reimagina.orchestration.port import (
 from reimagina.orchestration.runners import default_runners
 from reimagina.orchestration.wave import plan_wave
 from reimagina.storage import backend_for_connection
+from reimagina.storage.postgres.repositories import run_application_name
 
 logger = logging.getLogger(__name__)
 
@@ -776,6 +777,15 @@ def s_finalize(run_id: str, status: str) -> bool:
         return runstore.finalize_run(conn, run_id=run_id, status=status)
 
 
+def compute_connection(dsn: str, run_id: str):
+    """The connection a unit computes on, named so a cancel can find it.
+
+    Its ``job_run`` row stays uncommitted until the unit ends, so the name in
+    ``pg_stat_activity`` is the only handle ``cancel_run_backends`` has on it.
+    """
+    return psycopg2.connect(dsn, application_name=run_application_name(run_id))
+
+
 @DBOS.step(retries_allowed=False)
 def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None:
     """Run one indicator's real compute. Minutes of blocking PostGIS.
@@ -784,9 +794,11 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     same minutes to reach the same failure. Infrastructure faults surface as a
     failed connect, which is retried by the step that owns it.
 
-    ``current_run`` is what lets a cancel find this work: the runner opens its
-    own job_run row, and the ambient run id plus ``pg_backend_pid()`` are how
-    ``cancel_run`` locates the backend to signal (migration r031).
+    ``compute_connection`` is what lets a cancel find this work: it names the
+    connection after the run, and ``cancel_run`` signals the backend carrying
+    that name. The ``job_run`` row (run id + ``pg_backend_pid()``, migration
+    r031) is provenance; it is uncommitted while the unit runs, so a canceller
+    cannot see it.
 
     **One transaction, committed at the end.** The write path is
     stale-then-insert: it flips the previous values to ``status='stale'`` and
@@ -802,14 +814,14 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     DBOS's own check already fired when this step began. Without this the unit
     would run its full compute and commit results for a run already reported
     terminal. A narrowing, not a closing: a cancel arriving after this check
-    still has only ``pg_cancel_backend``, which is what the row exists for.
+    still has only ``pg_cancel_backend``, aimed by the connection's name.
     """
     runner = default_runners().get(slug)
     if runner is None:
         raise LookupError(f"no runner registered for {slug!r}")
 
     dsn = dbos_dsn()
-    conn = psycopg2.connect(dsn)  # NOT autocommit — see above
+    conn = compute_connection(dsn, run_id)  # NOT autocommit — see above
     started_at = datetime.now(timezone.utc)
     try:
         row = runstore.get_run(conn, run_id)

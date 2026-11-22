@@ -2118,6 +2118,15 @@ class PostgresAOISummaryRepository:
 # ─── Job run ────────────────────────────────────────────────────────────────
 
 
+def run_application_name(run_id: str) -> str:
+    """The ``application_name`` a unit's compute connection carries.
+
+    How ``cancel_run_backends`` finds a unit's backend while its ``job_run`` row
+    is still uncommitted. A uuid run id keeps it inside the 63-byte limit.
+    """
+    return f"reimagina-run:{run_id}"
+
+
 class PostgresJobRunRepository:
     def __init__(self, connection):
         self.connection = connection
@@ -2193,17 +2202,30 @@ class PostgresJobRunRepository:
         runner's psycopg call raises ``QueryCanceled`` and its own error
         handling takes over. Returns how many backends were signalled; a pid may
         already be gone, which Postgres reports as False rather than an error.
+
+        ⚠ The backend is found by ``application_name`` first, NOT only by the
+        ``job_run`` row. A unit writes that row inside the one transaction that
+        runs its compute (``s_compute``), so under READ COMMITTED it is
+        invisible here until the unit has already finished — a lookup by row
+        alone signalled nothing, ever. ``pg_stat_activity`` shows the compute
+        connection's name from the moment it connects. Committed rows are still
+        consulted, for any worker that does commit its row first.
         """
         with self.connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT count(*) FILTER (WHERE pg_cancel_backend(backend_pid))
-                FROM jobs_runtime.job_run
-                WHERE run_id = %s
-                  AND backend_pid IS NOT NULL
-                  AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                SELECT count(*) FILTER (WHERE pg_cancel_backend(pid))
+                FROM (
+                    SELECT pid FROM pg_stat_activity
+                    WHERE application_name = %s AND pid <> pg_backend_pid()
+                    UNION
+                    SELECT backend_pid FROM jobs_runtime.job_run
+                    WHERE run_id = %s
+                      AND backend_pid IS NOT NULL
+                      AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                ) AS live(pid)
                 """,
-                (run_id,),
+                (run_application_name(run_id), run_id),
             )
             return int(cur.fetchone()[0])
 

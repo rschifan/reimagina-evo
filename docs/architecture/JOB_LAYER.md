@@ -286,13 +286,18 @@ CREATE INDEX job_run_run_idx ON jobs_runtime.job_run (run_id, status) WHERE run_
 
 **One — stop scheduling.** `cancel_workflow(run_id, cancel_children=True)`, through the shared `DBOSClient` so a process that is not an executor can cancel a run a worker is executing (`dbos_orchestrator.py:472`). `cancel_children` is not optional here: the units are child workflows, and leaving them schedulable would let the next wave start after the run was closed (`:470-471`). The parent's own loop reads its statuses from an in-memory dict seeded at entry, never re-read from the database — so nothing in the workflow body would notice a cancel on its own.
 
-**Two — stop the statement.** A step already inside a blocking psycopg call keeps going; DBOS observes cancellation only at the next step boundary, which a minutes-long PostGIS statement does not reach. `JobRunRepository.cancel_run_backends(run_id)` issues `pg_cancel_backend` against every live backend recorded for the run (`storage/interfaces/jobs.py:44-51`, `storage/postgres/repositories.py:2183-2208`):
+**Two — stop the statement.** A step already inside a blocking psycopg call keeps going; DBOS observes cancellation only at the next step boundary, which a minutes-long PostGIS statement does not reach. `JobRunRepository.cancel_run_backends(run_id)` issues `pg_cancel_backend` against every live backend of the run (`storage/interfaces/jobs.py`, `storage/postgres/repositories.py`). It finds them by name first: `s_compute` opens its connection with `application_name = 'reimagina-run:<run_id>'` (`dbos_app.compute_connection`), which `pg_stat_activity` shows from the moment it connects. The `job_run` row cannot be the only handle — `s_compute` writes it inside the unit's one transaction, so under READ COMMITTED the canceller cannot see it until the unit has already finished:
 
 ```sql
-SELECT count(*) FILTER (WHERE pg_cancel_backend(backend_pid))
-FROM jobs_runtime.job_run
-WHERE run_id = %s AND backend_pid IS NOT NULL
-  AND status NOT IN ('succeeded', 'failed', 'cancelled');
+SELECT count(*) FILTER (WHERE pg_cancel_backend(pid))
+FROM (
+  SELECT pid FROM pg_stat_activity
+  WHERE application_name = 'reimagina-run:' || run_id AND pid <> pg_backend_pid()
+  UNION
+  SELECT backend_pid FROM jobs_runtime.job_run
+  WHERE run_id = %s AND backend_pid IS NOT NULL
+    AND status NOT IN ('succeeded', 'failed', 'cancelled')
+) AS live(pid);
 ```
 
 `pg_cancel_backend` cancels the *statement*, not the session — the runner's psycopg call raises `QueryCanceled` and its own error handling takes over (`repositories.py:2192-2195`). This is the mechanism r031 exists to make possible, and it is addressed to Postgres rather than to a scheduler, which is why it works on any engine (`r031:1-13`).

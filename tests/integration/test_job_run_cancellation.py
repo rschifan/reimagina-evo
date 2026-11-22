@@ -157,6 +157,58 @@ def test_cancel_run_backends_stops_a_live_statement(migrated_db):
         control.close()
 
 
+def test_cancel_reaches_a_unit_whose_job_run_row_is_uncommitted(migrated_db):
+    """The real path: s_compute runs the whole unit in ONE open transaction.
+
+    Its ``job_run`` row (and the pid on it) is invisible to the canceller until
+    the unit commits, so a lookup by that row alone signals nothing. The worker
+    connection here is opened exactly the way ``s_compute`` opens it — not
+    autocommit, row written inside the transaction that runs the statement.
+    """
+    from reimagina.orchestration.dbos_app import compute_connection
+
+    run = "77777777-7777-7777-7777-777777777777"
+    worker = compute_connection(migrated_db, run)
+    control = psycopg2.connect(migrated_db)
+    control.autocommit = True
+    error: list[BaseException] = []
+    started = threading.Event()
+
+    def _unit():
+        try:
+            with current_run(run):
+                with job_run(
+                    backend_for_connection(worker),
+                    model_family="urban_form",
+                    code_version="test",
+                    scenario_id=None,
+                ):
+                    with worker.cursor() as cur:
+                        started.set()
+                        cur.execute("SELECT pg_sleep(30)")
+        except BaseException as exc:
+            error.append(exc)
+
+    try:
+        thread = threading.Thread(target=_unit, daemon=True)
+        thread.start()
+        assert started.wait(5.0)
+        time.sleep(0.3)  # let the statement reach the server
+
+        signalled = (
+            backend_for_connection(control).job_run_repo().cancel_run_backends(run)
+        )
+        assert signalled == 1
+
+        thread.join(timeout=10.0)
+        assert not thread.is_alive(), "pg_sleep survived the cancel"
+        assert error and isinstance(error[0], psycopg2.errors.QueryCanceled)
+    finally:
+        worker.rollback()
+        worker.close()
+        control.close()
+
+
 def test_cancel_skips_terminal_rows(migrated_db):
     """A finished job's pid may have been reused by an unrelated backend."""
     run = "55555555-5555-5555-5555-555555555555"
