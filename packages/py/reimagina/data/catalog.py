@@ -61,6 +61,21 @@ def get_source(
     )
 
 
+def source_versions_sql(source_param: str, *, include_self: bool) -> str:
+    """Subquery for the ids of every version of a source: the rows sharing its
+    provider + name (a source name is one extent). ``source_param`` is the
+    placeholder that binds the source id; ``include_self=False`` leaves that
+    source out."""
+    not_self = "" if include_self else " AND other.id <> this.id"
+    return f"""
+        SELECT other.id
+        FROM curated_geo.data_source_catalog this
+        JOIN curated_geo.data_source_catalog other
+          ON other.provider = this.provider AND other.name = this.name{not_self}
+        WHERE this.id = {source_param}
+    """
+
+
 def update_source_storage_uri(conn, source_id: str, storage_uri: str) -> None:
     """Update the canonical storage URI once the Bronze artifact is landed."""
     backend_for_connection(conn).catalog_repo().update_source_storage_uri(

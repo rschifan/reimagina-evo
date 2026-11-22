@@ -130,17 +130,8 @@ def publish_road_features(
     type_id = feat.get_type_id(conn, "global", "road")
     with conn.cursor() as cur:
         cur.execute(
-            """
-            DELETE FROM curated_geo.feature
-            WHERE type_slug = 'road'
-              AND source_id IN (
-                  SELECT other.id
-                  FROM curated_geo.data_source_catalog this
-                  JOIN curated_geo.data_source_catalog other
-                    ON other.provider = this.provider AND other.name = this.name
-                  WHERE this.id = %s
-              )
-            """,
+            "DELETE FROM curated_geo.feature WHERE type_slug = 'road' AND source_id"
+            f" IN ({cat.source_versions_sql('%s', include_self=True)})",
             (source_id,),
         )
         removed = cur.rowcount or 0

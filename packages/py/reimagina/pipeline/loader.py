@@ -199,19 +199,12 @@ def supersede_other_versions(
     """
     if any(math.isnan(b) for b in bounds):  # an empty input covers nothing
         return 0
-    superseded = """
+    other_versions = cat.source_versions_sql("%(source_id)s::uuid", include_self=False)
+    superseded = f"""
         SELECT f.id
         FROM curated_geo.feature f
         WHERE f.type_id = %(type_id)s::uuid
-          AND f.source_id IN (
-              SELECT other.id
-              FROM curated_geo.data_source_catalog this
-              JOIN curated_geo.data_source_catalog other
-                ON other.provider = this.provider
-               AND other.name = this.name
-               AND other.id <> this.id
-              WHERE this.id = %(source_id)s::uuid
-          )
+          AND f.source_id IN ({other_versions})
           AND ST_Intersects(
               f.geometry, ST_MakeEnvelope(%(x0)s, %(y0)s, %(x1)s, %(y1)s, 4326)
           )
