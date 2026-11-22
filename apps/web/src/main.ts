@@ -319,7 +319,9 @@ async function main(): Promise<void> {
     // for its values. Declared before the AOI subscription, which fires
     // on registration and closes the card.
     const inspectorEl = document.getElementById("inspector");
-    let pinned: { id: string; grain: string | null; rows: FeatureIndicatorValue[] | string } | null = null;
+    let pinned: {
+      id: string; grain: string | null; estimated: string | null; rows: FeatureIndicatorValue[] | string;
+    } | null = null;
     let pinRequest: AbortController | null = null;
     // What the selection card asks about: the indicator being rendered, at its
     // grain, and once its stats arrive, the legend's AOI-wide median.
@@ -355,9 +357,9 @@ async function main(): Promise<void> {
       }
     }
 
-    async function pin(id: string): Promise<void> {
+    async function pin(id: string, estimated: string | null): Promise<void> {
       closeInspector();
-      const mine: NonNullable<typeof pinned> = { id, grain: state.drawnGrain, rows: "Loading…" };
+      const mine: NonNullable<typeof pinned> = { id, grain: state.drawnGrain, estimated, rows: "Loading…" };
       pinned = mine;
       setOverlayPinned(map, overlayConfig, id, true);
       showInspector();
@@ -385,9 +387,9 @@ async function main(): Promise<void> {
     // neither.
     map.on("click", (e) => {
       if (selectionController.ownsClick(e.point)) return;
-      const id = overlayFeatureAt(map, e.point);
-      if (id === null) closeInspector();
-      else if (id !== pinned?.id) void pin(id);
+      const hit = overlayFeatureAt(map, e.point);
+      if (hit === null) closeInspector();
+      else if (hit.id !== pinned?.id) void pin(hit.id, hit.estimated);
     });
 
     // Monotonic token bumped on every renderIndicator entry so a slow
@@ -547,7 +549,10 @@ async function main(): Promise<void> {
       }
       const histogram = stats?.histogram ?? null;
       if (legend) {
-        renderLegend(legend, indicator, domain, histogram, stats?.count_at_cap ?? null, stats?.count ?? 0);
+        renderLegend(
+          legend, indicator, domain, histogram, stats?.count_at_cap ?? null, stats?.count ?? 0,
+          stats?.count_estimated ?? 0,
+        );
       }
       // The hovered feature's place in the distribution. Registered after
       // the legend exists, and re-registered per render so it closes over

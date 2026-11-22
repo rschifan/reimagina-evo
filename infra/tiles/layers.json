@@ -31,7 +31,7 @@
     {
       "layer_id": "indicator_overlay",
       "logical_name": "Indicator Overlay",
-      "description": "Live MVT choropleth from serving_geo.indicator_overlay_tile. Caller must set indicator_slug; scenario_id is optional. With delta set, the same function serves the scenario's difference from the baseline instead of its values.",
+      "description": "Live MVT choropleth from serving_geo.indicator_overlay_tile. Caller must set indicator_slug; scenario_id is optional. With delta set, the same function serves the scenario's difference from the baseline instead of its values. Both views emit estimated (no_footprint | thin_footprint) on a block whose scenario inputs are estimated (r056).",
       "source_mode": "live_mvt",
       "implemented": true,
       "source_relation": "serving_geo.indicator_overlay_tile",

@@ -90,6 +90,10 @@ export interface IndicatorValueStats {
    *  indicator has no cap. Optional only so fixtures written before the field
    *  still type; the API always sends it. */
   count_at_cap?: number | null;
+  /** Rows on blocks whose scenario inputs are estimated (Overture maps none
+   *  or too little of their buildings), over the same rows as ``count``.
+   *  Optional for the same reason as ``count_at_cap``. */
+  count_estimated?: number;
   /** Present only when ``bins`` was requested; ``null`` when nothing to bin. */
   histogram: ValueHistogram | null;
 }

@@ -930,3 +930,31 @@ def test_the_delta_tile_and_the_comparison_endpoint_agree(territory, conn, slug,
         )
         == expected
     )
+
+
+# ── estimated inputs ────────────────────────────────────────────────────────
+
+
+def test_both_views_say_which_blocks_have_estimated_inputs(upzoned, conn):
+    """A block the fit had to guess the coverage of (``attributes.estimated``)
+    carries the reason in the value tile and the delta tile; the others carry
+    no ``estimated`` property at all."""
+    flagged = upzoned.blocks[0]
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes || "
+            """'{"estimated": "thin_footprint"}'::jsonb WHERE id = %s""",
+            (flagged,),
+        )
+    for delta in ("false", "true"):
+        properties = _props(
+            _tile(
+                conn,
+                indicator_slug=_FLOORS,
+                scenario_id=upzoned.scenario_id,
+                delta=delta,
+            )
+        )
+        assert properties[flagged]["estimated"] == "thin_footprint", delta
+        others = [p for fid, p in properties.items() if fid != flagged]
+        assert others and all("estimated" not in p for p in others), delta

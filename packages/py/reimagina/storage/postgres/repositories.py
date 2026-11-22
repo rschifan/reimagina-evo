@@ -3017,15 +3017,21 @@ class PostgresIndicatorResultRepository:
                   (SELECT cap_value FROM cap)                                    AS cap_value,
                   COUNT(*) FILTER (
                     WHERE ir.value_numeric >= (SELECT cap_value FROM cap)
-                  )                                                              AS at_cap
+                  )                                                              AS at_cap,
+                  COUNT(*) FILTER (
+                    WHERE f.attributes ? 'estimated'
+                  )                                                              AS estimated
                 FROM curated_geo.indicator_result ir
+                JOIN curated_geo.feature f ON f.id = ir.feature_id
                 WHERE {where}
                 """,
                 [indicator_slug, *params],
             )
             # No GROUP BY and the cap as a scalar subquery: always one row, so
             # an empty population still knows its cap (count_at_cap 0, not None).
-            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = cur.fetchone()
+            (count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap, estimated) = (
+                cur.fetchone()
+            )
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
@@ -3039,6 +3045,9 @@ class PostgresIndicatorResultRepository:
             # Rows at or past the catalog cap, over the same rows as `count`;
             # None when the indicator has no cap.
             "count_at_cap": int(at_cap) if cap_value is not None else None,
+            # Rows on a block whose scenario inputs the fit had to guess
+            # (``attributes.estimated``, scripts/seed_demo_attributes.py).
+            "count_estimated": int(estimated),
         }
         if bins > 0:
             stats["histogram"] = self._value_histogram(

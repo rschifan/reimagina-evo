@@ -319,6 +319,10 @@ class IndicatorValueStats(BaseModel):
     #: Rows with ``value >= cap_value`` over the same rows as ``count``;
     #: ``None`` when the indicator has no cap.
     count_at_cap: int | None = None
+    #: Rows on a block whose scenario inputs are estimated — Overture maps
+    #: none or too little of its buildings, so its lot coverage is the city
+    #: median (``attributes.estimated``) — over the same rows as ``count``.
+    count_estimated: int = 0
     histogram: ValueHistogram | None = None
 
 

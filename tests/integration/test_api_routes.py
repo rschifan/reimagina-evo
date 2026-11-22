@@ -1185,3 +1185,21 @@ def test_runstore_answers_a_malformed_run_id_instead_of_raising(conn):
 def test_jobs_route_404s_a_malformed_run_id_end_to_end(client):
     """The same thing through the live app, with the real orchestrator."""
     assert client.get("/jobs/not-a-uuid").status_code == 404
+
+
+def test_stats_count_estimated_counts_blocks_with_estimated_inputs(
+    client, conn, two_aois_one_block_each
+):
+    """The fit marks a block whose coverage it had to guess; the stats say how
+    many of the counted rows are such blocks, scoped like ``count``."""
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes || "
+            """'{"estimated": "no_footprint"}'::jsonb WHERE id = %s""",
+            (fixture["block_a"],),
+        )
+    url = f"/indicators/{fixture['slug']}/stats"
+    assert client.get(url).json()["count_estimated"] == 1
+    assert client.get(f"{url}?aoi_id={fixture['aoi_a']}").json()["count_estimated"] == 1
+    assert client.get(f"{url}?aoi_id={fixture['aoi_b']}").json()["count_estimated"] == 0

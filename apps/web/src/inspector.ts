@@ -37,7 +37,7 @@ export function rankText(row: FeatureIndicatorValue, grain: string | null = "blo
  */
 export function renderInspector(
   container: HTMLElement,
-  feature: { id: string; grain: string | null },
+  feature: { id: string; grain: string | null; estimated?: string | null },
   rows: FeatureIndicatorValue[] | string,
   activeSlug: string | null,
   onPick: (slug: string) => void,
@@ -62,6 +62,10 @@ export function renderInspector(
   head.append(el("span", "inspector__kind", kind), id, close);
   container.replaceChildren(head);
   container.hidden = false;
+  // The tile's `estimated`: this block's scenario inputs are a guess.
+  if (feature.estimated) {
+    container.append(el("p", "inspector__estimated", "Estimated \u2014 buildings not fully mapped"));
+  }
 
   if (typeof rows === "string") {
     container.append(el("p", "inspector__status", rows));

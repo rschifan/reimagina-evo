@@ -295,6 +295,10 @@ The baseline feature channel. Martin publishes it at
   `quality_flag`. Frontend's `fill-color` expression reads
   `value_numeric`; `quality_flag` is there for a client that wants to dim
   `estimated` / `missing` rows — the web app does not read it today.
+  Since r056 both views also emit `estimated` (`no_footprint` /
+  `thin_footprint`) on a block whose scenario inputs the fit had to guess
+  (`attributes.estimated`, `SCENARIOS_LAYER.md`); the tooltip and the
+  inspector say so in words. Absent on every other feature.
 - **Two views, one function.** With `delta` set the tile emits
   `feature_id`, `type_slug`, `delta` and `state` — and *not*
   `value_numeric`, so a client that forgot to switch from the sequential

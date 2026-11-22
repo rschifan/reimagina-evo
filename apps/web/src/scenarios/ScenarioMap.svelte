@@ -471,6 +471,7 @@
     activateIndicator(map, config, current, domain, { tooltips, aoiId, grain, scenarioId });
     renderLegend(
       legend, current, domain, shown?.histogram ?? null, shown?.count_at_cap ?? null, shown?.count ?? 0,
+      shown?.count_estimated ?? 0,
     );
     mapNote =
       stats && stats.count === 0
