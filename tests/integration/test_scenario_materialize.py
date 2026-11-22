@@ -648,7 +648,7 @@ def test_a_ceiling_breach_refuses_the_whole_run(conn):
     assert exc.value.breaches[0].indicator_slug == _DENSITY
     # B20: the refusal names the rule and the storeys a block would allow.
     breach = exc.value.breaches[0]
-    assert exc.value.rules_of(breach) == (rid,)
+    assert exc.value.rules_of(breach) == ((rid, 1),)
     assert exc.value.allowed_levels[(breach.feature_id, _DENSITY)] == 12
     assert "Rule 1" in str(exc.value) and "at most 12 storeys" in str(exc.value)
     assert {b.feature_id for b in exc.value.breaches} == set(t.blocks[:4])

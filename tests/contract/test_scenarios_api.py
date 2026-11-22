@@ -1217,8 +1217,7 @@ def test_a_ceiling_breach_at_materialisation_is_422(client, events, monkeypatch)
     def _raise(conn, **kwargs):
         raise CeilingExceeded(
             [CeilingBreach(FEATURE_ID, DENSITY, 2000.0, 2166.0)],
-            rules={FEATURE_ID: (RULE_ID,)},
-            rule_numbers={RULE_ID: 2},
+            rules={FEATURE_ID: ((RULE_ID, 2),)},
             allowed_levels={(FEATURE_ID, DENSITY): 5},
         )
 

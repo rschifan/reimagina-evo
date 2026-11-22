@@ -105,27 +105,19 @@ class CeilingExceeded(Exception):
         self,
         breaches: list[CeilingBreach],
         *,
-        rules: dict[str, tuple[str, ...]] | None = None,
-        rule_numbers: dict[str, int] | None = None,
+        rules: dict[str, tuple[tuple[str, int], ...]] | None = None,
         allowed_levels: dict[tuple[str, str], int] | None = None,
     ) -> None:
         self.breaches = breaches
-        #: Per feature, the rules whose numbers the block is computed with.
+        #: Per feature, the rules whose numbers the block is computed with, as
+        #: ``(rule id, number)`` in "later wins" order — the number being the
+        #: 1-based "Rule N" a planner sees.
         self.rules = rules or {}
-        #: Rule id -> its position, 1-based, in "later wins" order: the
-        #: "Rule N" a planner sees.
-        self.rule_numbers = rule_numbers or {}
         #: Per (feature, indicator), the most storeys that block allows with
         #: its other numbers as they are — what a planner would type instead.
         self.allowed_levels = allowed_levels or {}
         worst = breaches[0]
-        named = sorted(
-            {
-                self.rule_numbers[r]
-                for r in self.rules_of(worst)
-                if r in self.rule_numbers
-            }
-        )
+        named = [number for _, number in self.rules_of(worst)]
         by = f"Rule {', '.join(str(n) for n in named)} would make " if named else ""
         allowed = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
         advice = f"; at most {allowed} storeys there" if allowed is not None else ""
@@ -136,7 +128,7 @@ class CeilingExceeded(Exception):
             f"whose valid_max is {worst.bound:.1f}{advice}."
         )
 
-    def rules_of(self, breach: CeilingBreach) -> tuple[str, ...]:
+    def rules_of(self, breach: CeilingBreach) -> tuple[tuple[str, int], ...]:
         return self.rules.get(breach.feature_id, ())
 
     @property
@@ -816,14 +808,12 @@ def _scenario_aoi(conn: Any, scenario_id: str) -> str:
 class _Resolution:
     """Step 2's answer: what each rule caught and what each block resolves to."""
 
-    #: Rule id -> blocks its area caught (0 included).
+    #: Rule id -> blocks its area caught (0 included), in "later wins" order.
     matched: dict[str, int]
     #: (feature, attribute) -> value, later rules winning.
     values: dict[tuple[str, str], float]
     #: (feature, attribute) -> the rule that supplied the value.
     owner: dict[tuple[str, str], str]
-    #: Rule id -> its 1-based position in "later wins" order.
-    numbers: dict[str, int]
 
 
 def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
@@ -874,12 +864,10 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     matched: dict[str, int] = {}
     values: dict[tuple[str, str], float] = {}
     owner: dict[tuple[str, str], str] = {}
-    numbers: dict[str, int] = {}
     edits: dict[str, list[dict[str, Any]]] = {}
     for rule_id, inputs, feature_id in rows:
         if rule_id not in matched:
             matched[rule_id] = 0
-            numbers[rule_id] = len(numbers) + 1
             edits[rule_id] = edits_for(**inputs)
         if feature_id is None:
             continue
@@ -888,7 +876,7 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
             key = (feature_id, edit["attribute_key"])
             values[key] = float(edit["value_numeric"])
             owner[key] = rule_id
-    return _Resolution(matched, values, owner, numbers)
+    return _Resolution(matched, values, owner)
 
 
 def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
@@ -990,16 +978,13 @@ def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
     for (feature_id, _), rule_id in resolution.owner.items():
         if feature_id in breaching:
             owners.setdefault(feature_id, set()).add(rule_id)
+    # A rule's "Rule N" is its place in ordinal order, which ``matched`` keeps.
+    number = {rule_id: n for n, rule_id in enumerate(resolution.matched, 1)}
     rules = {
-        feature_id: tuple(sorted(ids, key=resolution.numbers.__getitem__))
+        feature_id: tuple(sorted(((r, number[r]) for r in ids), key=lambda p: p[1]))
         for feature_id, ids in owners.items()
     }
-    raise CeilingExceeded(
-        breaches,
-        rules=rules,
-        rule_numbers=resolution.numbers,
-        allowed_levels=allowed,
-    )
+    raise CeilingExceeded(breaches, rules=rules, allowed_levels=allowed)
 
 
 def _delete_unimplied_overrides(

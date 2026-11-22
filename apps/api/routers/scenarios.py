@@ -467,12 +467,8 @@ def _refusals() -> Iterator[None]:
                         "would_be": breach.would_be,
                         # Which rules the block is computed with, and their
                         # "Rule N" numbers, so a form can point at them.
-                        "rule_ids": list(exc.rules_of(breach)),
-                        "rule_numbers": [
-                            exc.rule_numbers[r]
-                            for r in exc.rules_of(breach)
-                            if r in exc.rule_numbers
-                        ],
+                        "rule_ids": [r for r, _ in exc.rules_of(breach)],
+                        "rule_numbers": [n for _, n in exc.rules_of(breach)],
                         "allowed_levels": exc.allowed_levels.get(
                             (breach.feature_id, breach.indicator_slug)
                         ),

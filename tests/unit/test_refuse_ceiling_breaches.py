@@ -48,7 +48,6 @@ def _resolution(resolved: dict[tuple[str, str], float]) -> authoring._Resolution
         matched={"rule-1": 1},
         values=resolved,
         owner=dict.fromkeys(resolved, "rule-1"),
-        numbers={"rule-1": 1},
     )
 
 
@@ -70,7 +69,7 @@ def test_the_floors_bound_still_applies_to_such_a_block():
             ),
         )
     # The refusal names the rule and the storeys the block would allow.
-    assert caught.value.rules == {"block-x": ("rule-1",)}
+    assert caught.value.rules == {"block-x": (("rule-1", 1),)}
     (breach,) = caught.value.breaches
     assert caught.value.allowed_levels[("block-x", breach.indicator_slug)] == int(
         breach.bound
