@@ -12,6 +12,7 @@ backfill). The two compose at the SQL layer.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import partial
 
 from reimagina.indicators.accessibility import ACCESSIBILITY_COMPUTE
 from reimagina.indicators.building_density import compute_block_building_density
@@ -153,13 +154,13 @@ def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], obje
             return None
         cur.execute(f"SET CONSTRAINTS {_UNIT_SCENARIO_FKS} DEFERRED")
         cur.execute("SAVEPOINT reimagina_scenario_unit")
+    from reimagina.scenarios.authoring import ScenarioNotFound, _lock_scenario
+
     result = compute()
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM app_core.scenario WHERE id = %s FOR KEY SHARE",
-            (scenario_id,),
-        )
-        if cur.fetchone() is None:
+        try:
+            _lock_scenario(cur, scenario_id, mode="KEY SHARE")
+        except ScenarioNotFound:
             cur.execute("ROLLBACK TO SAVEPOINT reimagina_scenario_unit")
             return None
         cur.execute("RELEASE SAVEPOINT reimagina_scenario_unit")
@@ -203,29 +204,6 @@ def _scoped(slug: str, compute_fn: IndicatorCompute) -> Runner:
     return run
 
 
-def _composite(spec: IndicatorSpec) -> Runner:
-    """Adapt the generic composite compute to the Runner protocol, per spec."""
-
-    def run(conn, *, features, scenario_id, code_version, aoi_id):
-        def compute():
-            with _recording(conn, spec.slug, features, scenario_id, aoi_id) as outcome:
-                return _record_outcome(
-                    outcome,
-                    compute_composite(
-                        conn,
-                        spec=spec,
-                        feature_ids=list(features) or None,
-                        scenario_id=scenario_id,
-                        code_version=code_version,
-                        aoi_id=aoi_id,
-                    ),
-                )
-
-        return _fenced(conn, scenario_id, spec.slug, compute)
-
-    return run
-
-
 def default_runners(
     registry: Sequence[IndicatorSpec] = SHIPPED_INDICATORS,
 ) -> dict[str, Runner]:
@@ -237,7 +215,9 @@ def default_runners(
     runners: dict[str, Runner] = {}
     for spec in registry:
         if spec.computation_kind == "composite":
-            runners[spec.slug] = _composite(spec)
+            runners[spec.slug] = _scoped(
+                spec.slug, partial(compute_composite, spec=spec)
+            )
         elif spec.slug in _DIRECT_COMPUTE:
             runners[spec.slug] = _scoped(spec.slug, _DIRECT_COMPUTE[spec.slug])
     return runners
