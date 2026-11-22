@@ -142,6 +142,7 @@ neither takes the freshness path when the graph is seeded: on the baseline
 partition it returns indicators in state `stale` or `partial`; with a
 `scenario_id` it returns every indicator that has a node in that scenario's
 partition and whose materialised version is missing, different or partial.
+With an `aoi_id`, indicators already done for that AOI are left out (below).
 Freshness units are whole-grain. A database with no seeded graph falls back to
 the attribute path. `POST /jobs` also accepts `changed_datasets`, which
 `impact.indicators_for_datasets` resolves from the `inputs` edges into an
@@ -160,7 +161,20 @@ Materialisations are written by the runner registry, not by each compute:
 input versions **before** the compute runs, records them only if it succeeds,
 and marks coverage complete only when the unit was neither feature- nor
 AOI-scoped, so a scoped run at the current version reports `partial`, not
-`fresh`.
+`fresh`, in `asset_freshness_v` — the whole-database view.
+
+Coverage is also recorded per AOI. A unit scoped to AOI X with no feature list,
+or a scenario unit whose features include every feature the scenario overrides
+(the recompute footprint: a block without an override reads the baseline through
+the overlay), records `coverage_scope = {"complete": false, "aoi_id": X}`.
+`assets.freshness.fresh_indicator_slugs` counts an indicator as done for X when
+a succeeded materialisation at the expected version covered the database or X,
+and no materialisation at another version came after it (override versions are
+content digests and can return to an older value). Planning with an `aoi_id`
+subtracts those: the freshness path on either partition, and an explicit
+scenario change-set too, so an identical scenario recompute is a noop. A
+feature-scoped baseline unit, or a scenario unit missing an overridden feature,
+stays plain partial; another AOI and the whole database still see `partial`.
 
 ## What a params change does
 

@@ -164,8 +164,8 @@ It takes one of four paths, first match wins (`plan.py:153-211`):
 | Request | Dirty set | Feature scope |
 |---|---|---|
 | `indicators` named | exactly those, in dependency order over the induced subgraph; an unregistered slug raises `UnknownIndicators` (a 422 at the API) | empty — every feature |
-| an explicit change-set (`changed_attributes` or `edited_features`) | `impact.compute_dirty_set` over it | the edited features, propagated downstream |
-| neither, asset graph present | freshness: the indicators whose materialized version is behind the version their inputs imply, at the scenario's partition (`assets.freshness.stale_units`); on the baseline only `stale` and `partial` count, never `absent` | empty — every feature |
+| an explicit change-set (`changed_attributes` or `edited_features`) | `impact.compute_dirty_set` over it; with a `scenario_id`, minus the indicators already done for that scenario and AOI at their current version (`assets.freshness.fresh_indicator_slugs`) | the edited features, propagated downstream |
+| neither, asset graph present | freshness: the indicators whose materialized version is behind the version their inputs imply, at the scenario's partition (`assets.freshness.stale_units`); on the baseline only `stale` and `partial` count, never `absent`; with an `aoi_id`, an indicator done for that AOI does not count | empty — every feature |
 | neither, no asset graph | `compute_dirty_set` over the diff `resolve_change_set` derives from the scenario's override rows | that diff's features |
 
 `scenarios.overrides.resolve_change_set` (`overrides.py:232`) returns the explicit lists when given, else derives them from the scenario's `curated_geo.scenario_override` rows. An override that edits `attribute_key` *is* the `changed_attributes` token the impact engine keys off, so no translation layer is needed (`overrides.py:9-10`).

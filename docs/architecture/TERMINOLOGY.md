@@ -69,7 +69,7 @@ A file a source produced — a GeoTIFF, a batch of Street View images, a LAZ poi
 Not the same thing as a file asset. In the asset graph (`curated_geo.asset`, r041; `ASSET_LAYER.md`) an asset is any named artifact the platform reads or produces — a feature type, an observation prefix, a raster layer, a scenario override attribute, an indicator — of kind `source`, `external` or `derived`, linked by `asset_dependency` edges and versioned per partition (the baseline, or one scenario). A source asset's version is recorded by whatever changed it; a derived asset's version is a hash of its whole upstream closure.
 
 ### Freshness
-Whether a derived asset's materialized version matches the version its inputs imply, computed on read by `serving_geo.asset_freshness_v`: `fresh`, `stale` (versions differ), `partial` (materialized over only some of its features) or `absent` (never materialized in that partition). `stale` and `partial` count as dirty; `absent` counts in a scenario partition but on the baseline only when asked for (`assets/freshness.py`).
+Whether a derived asset's materialized version matches the version its inputs imply, computed on read by `serving_geo.asset_freshness_v`: `fresh`, `stale` (versions differ), `partial` (materialized over only some of its features) or `absent` (never materialized in that partition). `stale` and `partial` count as dirty; `absent` counts in a scenario partition but on the baseline only when asked for (`assets/freshness.py`). A run over a whole AOI is `partial` in the view but done for that AOI: planning scoped to the same AOI does not count it as dirty.
 
 ### Storage type
 The operational classification of a dataset, recorded in `data_source_catalog.storage_type`. It answers "what kind of asset arrived?" and helps determine the loading path.
@@ -327,6 +327,8 @@ An override for one scenario written or removed?    → stale in that scenario's
 A composite's component went stale?                 → stale too: its version hashes the whole upstream closure
 The indicator's own code version or params moved?   → stale everywhere it was materialized
 Materialized over only some of its features?        → partial
+  (over a whole AOI: partial in the view, but not
+   dirty when planning for that same AOI)
 Never computed in that partition?                   → absent (dirty in a scenario partition;
                                                        on the baseline only when asked for)
 A change no pipeline records (hand-copied mirror,   → invisible to the graph

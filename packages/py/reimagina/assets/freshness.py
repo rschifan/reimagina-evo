@@ -27,7 +27,9 @@ from reimagina.orchestration.graph import topological_order
 
 #: States that mean "this needs recomputing". `partial` is included: a partition
 #: materialized over a subset of its features is not finished, and reporting it
-#: as done is the specific lie the coverage record exists to prevent.
+#: as done is the specific lie the coverage record exists to prevent. A run over
+#: a whole AOI is partial here too; planning scoped to that AOI is what sees it
+#: as done (``fresh_indicator_slugs``).
 DIRTY_STATES = ("stale", "partial")
 
 
@@ -62,8 +64,13 @@ def stale_indicator_slugs(
     *,
     partition_key: str = "",
     include_absent: bool = False,
+    aoi_id: str | None = None,
 ) -> list[str]:
-    """Indicator slugs whose results are out of date, unordered."""
+    """Indicator slugs whose results are out of date, unordered.
+
+    With ``aoi_id``, an indicator that is partial for the database but done for
+    that AOI is not out of date there (``fresh_indicator_slugs``).
+    """
     if not graph_available(conn):
         return []
     states = list(DIRTY_STATES) + (["absent"] if include_absent else [])
@@ -74,10 +81,13 @@ def stale_indicator_slugs(
             "AND asset_key LIKE %s",
             (partition_key, states, f"{INDICATOR_PREFIX}%"),
         )
-        return [row[0][len(INDICATOR_PREFIX) :] for row in cur.fetchall()]
+        slugs = [row[0][len(INDICATOR_PREFIX) :] for row in cur.fetchall()]
+    return _not_fresh_for(conn, slugs, partition_key, aoi_id)
 
 
-def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
+def scenario_dirty_slugs(
+    conn: Any, scenario_id: str, aoi_id: str | None = None
+) -> list[str]:
     """Indicators a what-if reaches, and has not yet computed at that version.
 
     Membership is decided by one thing: whether the indicator has a node in this
@@ -110,11 +120,15 @@ def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
     ``absent`` counts here, unlike on the baseline. A scenario partition nobody
     has computed is precisely what a what-if submit is asking for, whereas an
     absent baseline is just a database nobody has run yet.
+
+    With ``aoi_id``, an indicator already done for that AOI under this scenario
+    is not returned, which is what lets a scenario recompute converge.
     """
     if not graph_available(conn):
         return []
     from reimagina.assets.keys import partition_key as make_partition_key
 
+    partition = make_partition_key({"scenario": scenario_id})
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -129,9 +143,68 @@ def scenario_dirty_slugs(conn: Any, scenario_id: str) -> list[str]:
                    OR f.materialized_version <> e.expected_version
                    OR NOT f.coverage_complete)
             """,
-            (make_partition_key({"scenario": scenario_id}), f"{INDICATOR_PREFIX}%"),
+            (partition, f"{INDICATOR_PREFIX}%"),
         )
-        return [row[0][len(INDICATOR_PREFIX) :] for row in cur.fetchall()]
+        slugs = [row[0][len(INDICATOR_PREFIX) :] for row in cur.fetchall()]
+    return _not_fresh_for(conn, slugs, partition, aoi_id)
+
+
+def fresh_indicator_slugs(
+    conn: Any, *, partition_key: str = "", aoi_id: str | None = None
+) -> set[str]:
+    """Indicator slugs whose results are current for one AOI of a partition.
+
+    Fresh there means a succeeded materialization at the expected version that
+    covered the whole database or that AOI, with no materialization at another
+    version after it. That last condition matters because versions are content
+    digests and can come back: a scenario edit undone returns its override
+    version to an older value, and the rows written in between are not the old
+    ones. Several runs at the current version add up — a later subset run at
+    the same version does not undo an earlier AOI run.
+
+    Only ever used to *remove* slugs from a dirty set, never to add one: an
+    indicator with no expected row for this partition is simply not returned.
+    The whole-database answer (``asset_freshness_v``) is not affected.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.asset_key
+            FROM serving_geo.asset_expected_version_v e
+            WHERE e.partition_key = %(partition)s AND e.asset_key LIKE %(prefix)s
+              AND EXISTS (
+                SELECT 1 FROM curated_geo.asset_materialization m
+                WHERE m.asset_id = e.asset_id
+                  AND m.partition_key = e.partition_key
+                  AND m.status = 'succeeded'
+                  AND m.version = e.expected_version
+                  AND ((m.coverage_scope ->> 'complete')::boolean
+                       OR m.coverage_scope ->> 'aoi_id' = %(aoi)s)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM curated_geo.asset_materialization later
+                    WHERE later.asset_id = m.asset_id
+                      AND later.partition_key = m.partition_key
+                      AND later.status = 'succeeded'
+                      AND later.version <> e.expected_version
+                      AND later.completed_at > m.completed_at))
+            """,
+            {
+                "partition": partition_key,
+                "prefix": f"{INDICATOR_PREFIX}%",
+                "aoi": str(aoi_id) if aoi_id else None,
+            },
+        )
+        return {row[0][len(INDICATOR_PREFIX) :] for row in cur.fetchall()}
+
+
+def _not_fresh_for(
+    conn: Any, slugs: list[str], partition_key: str, aoi_id: str | None
+) -> list[str]:
+    """``slugs`` minus those done for ``aoi_id``; unchanged without an AOI."""
+    if not aoi_id or not slugs:
+        return slugs
+    fresh = fresh_indicator_slugs(conn, partition_key=partition_key, aoi_id=aoi_id)
+    return [slug for slug in slugs if slug not in fresh]
 
 
 def stale_units(
@@ -141,6 +214,7 @@ def stale_units(
     partition_key: str = "",
     include_absent: bool = False,
     scenario_id: str | None = None,
+    aoi_id: str | None = None,
 ) -> list[str]:
     """Out-of-date indicator slugs, in dependency order.
 
@@ -150,10 +224,13 @@ def stale_units(
     """
     known = {spec.slug for spec in registry}
     candidates = (
-        scenario_dirty_slugs(conn, scenario_id)
+        scenario_dirty_slugs(conn, scenario_id, aoi_id)
         if scenario_id
         else stale_indicator_slugs(
-            conn, partition_key=partition_key, include_absent=include_absent
+            conn,
+            partition_key=partition_key,
+            include_absent=include_absent,
+            aoi_id=aoi_id,
         )
     )
     dirty = {slug for slug in candidates if slug in known}

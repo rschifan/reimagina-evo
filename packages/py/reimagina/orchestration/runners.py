@@ -63,16 +63,40 @@ def _recording(conn, slug: str, features, scenario_id, aoi_id):
     recording it as complete is the specific lie `coverage_scope` exists to
     prevent — `indicators/edificability.py` relies on partial writes, so this is
     a normal state rather than an error.
+
+    A run that covered all of one AOI is recorded with that ``aoi_id``: still
+    partial for the database, but done for that AOI, so planning scoped to it
+    converges. Under a scenario, covering every overridden feature counts as
+    covering the AOI — a feature without an override reads the baseline through
+    the overlay, which is why the recompute endpoint sends only the footprint.
+    A feature-scoped baseline run, or one missing an overridden feature, stays
+    plain partial.
     """
     from reimagina.assets.keys import partition_key
     from reimagina.assets.materialize import materializing
 
+    covers_aoi = bool(aoi_id) and (
+        not features
+        or (scenario_id is not None and _covers_overrides(conn, scenario_id, features))
+    )
     return materializing(
         conn,
         slug=slug,
         partition_key=partition_key({"scenario": scenario_id}),
         complete=not features and not aoi_id,
+        aoi_id=aoi_id if covers_aoi else None,
     )
+
+
+def _covers_overrides(conn, scenario_id: str, features) -> bool:
+    """Whether ``features`` includes every feature the scenario overrides."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT NOT EXISTS (SELECT 1 FROM curated_geo.scenario_override "
+            "WHERE scenario_id = %s AND feature_id::text <> ALL(%s))",
+            (scenario_id, [str(f) for f in features]),
+        )
+        return bool(cur.fetchone()[0])
 
 
 def _record_outcome(outcome: dict, result: object) -> object:
