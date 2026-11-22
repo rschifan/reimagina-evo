@@ -780,10 +780,15 @@ app.add_typer(perf_app, name="perf")
 
 @perf_app.command(
     "seed-observations",
-    help="Seed deterministic observations and AOIs for benchmark tiers",
+    help="Seed deterministic observations and AOIs for benchmark tiers. "
+    "Writes synthetic current observations onto real features and a "
+    "'Performance Benchmark Project' with four perf_* AOIs: point --dsn at a "
+    "benchmark copy, never at a database people read.",
 )
 def perf_seed_observations(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    # Required, with no DATABASE_URL fallback: the writes are permanent and
+    # there is no cleanup command, so the target must be named on purpose.
+    dsn: str = typer.Option(..., "--dsn", help="Database to seed (required)."),
     dataset_tier: _DatasetTier = typer.Option(
         _DatasetTier.smoke,
         "--dataset-tier",

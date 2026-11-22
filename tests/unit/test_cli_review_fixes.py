@@ -486,3 +486,21 @@ def test_perf_aoi_id_takes_the_extent_from_that_aoi(monkeypatch):
             return _FakeCursor({"A": (10.0, 20.0, 11.0, 21.0)})
 
     assert seed._feature_extent(Conn(), aoi_id="A") == (10.0, 20.0, 11.0, 21.0)
+
+
+def test_perf_seed_needs_an_explicit_dsn(monkeypatch, capsys):
+    """It writes synthetic current observations and AOIs; falling back to
+    DATABASE_URL pointed it at the app database by default."""
+    from apps.cli.app import main
+
+    called = []
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/reimagina")
+    monkeypatch.setattr(
+        "apps.cli.app.seed_observations", lambda **kw: called.append(kw) or {}
+    )
+
+    assert main(["perf", "seed-observations"]) == 2
+    assert called == []
+
+    assert main(["perf", "seed-observations", "--dsn", "postgresql://h/perf"]) == 0
+    assert called[0]["dsn"] == "postgresql://h/perf"

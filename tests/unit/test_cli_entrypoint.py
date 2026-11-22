@@ -156,7 +156,16 @@ def test_cli_perf_seed_observations_delegates(monkeypatch, capsys):
         lambda **kwargs: {"records_written": 25, **kwargs},
     )
 
-    exit_code = main(["perf", "seed-observations", "--dataset-tier", "smoke"])
+    exit_code = main(
+        [
+            "perf",
+            "seed-observations",
+            "--dataset-tier",
+            "smoke",
+            "--dsn",
+            "postgresql://localhost/reimagina_perf",
+        ]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)

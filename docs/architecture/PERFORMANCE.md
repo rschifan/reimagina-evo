@@ -108,6 +108,12 @@ The benchmark framework uses deterministic tiers:
 The same command creates the four benchmark AOIs (`perf_bbox_small`,
 `perf_bbox_dense`, `perf_polygon_small`, `perf_polygon_dense`).
 
+⚠ These are permanent writes into whatever database it targets: synthetic
+`is_current` observations on real features, which then surface through
+`serving_geo.feature_v`, and the AOIs through `aoi list`. There is no cleanup
+command, so `perf seed-observations` takes no `DATABASE_URL` fallback: `--dsn`
+is required. Seed a benchmark copy, not a database people read.
+
 ## Baseline numbers (Cuauhtémoc, Apr 2026)
 
 Captured against real INEGI Marco Geoestadístico 2020 geometry loaded via
@@ -423,7 +429,7 @@ scan counts and last (auto)analyze, and the top `pg_stat_statements` queries
 by total time):
 
 ```bash
-python -m apps.cli.app perf seed-observations
+python -m apps.cli.app perf seed-observations --dsn postgresql://localhost/reimagina_perf
 python -m apps.cli.app perf run --dataset-tier smoke --benchmark bbox_features_small
 python -m apps.cli.app perf explain bbox_features_dense
 python -m apps.cli.app perf report
