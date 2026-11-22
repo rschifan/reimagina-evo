@@ -196,6 +196,7 @@ All via environment variable; sensible defaults for local dev.
 | `REIMAGINA_API_POOL_MAX` | `16` | Max connections. |
 | `REIMAGINA_API_POOL_WAIT_S` | `30` | How long a request waits for a free connection when all `REIMAGINA_API_POOL_MAX` are busy, before answering 503 with `Retry-After`. psycopg2's pool never waits on its own; without this a burst wider than the pool (a map loading at a new zoom) failed with `connection pool exhausted`. |
 | `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed through CORS. The methods allowed cross-origin are `GET`, `POST`, `PATCH`, `DELETE` and `OPTIONS`. |
+| `REIMAGINA_API_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated `Host` header values the API answers (port ignored); any other gets 400. Guards the unauthenticated, loopback-bound API against DNS rebinding. Add the hostname clients use when serving it behind a proxy or on another interface. |
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host (`python -m apps.api`). |
 | `REIMAGINA_API_PORT` | `8001` | uvicorn bind port for `python -m apps.api`. The `make` targets pass `--port $(API_PORT)` (default `8001`) instead. |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level (`python -m apps.api`). |

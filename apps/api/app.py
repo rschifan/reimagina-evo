@@ -20,6 +20,7 @@ import psycopg2
 import psycopg2.errors
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from rio_tiler.errors import PointOutsideBounds
@@ -48,6 +49,17 @@ def _cors_origins_from_env() -> list[str]:
     if raw is None:
         return ["http://localhost:5173", "http://localhost:8001"]
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _allowed_hosts_from_env() -> list[str]:
+    """Parse REIMAGINA_API_ALLOWED_HOSTS (comma-separated) or fall back to
+    the loopback names. Starlette matches the Host header without its port,
+    so these cover the vite proxy (it forwards ``localhost:5173``) and direct
+    calls on :8001 alike."""
+    raw = os.environ.get("REIMAGINA_API_ALLOWED_HOSTS")
+    if raw is None:
+        return ["localhost", "127.0.0.1", "[::1]"]
+    return [host.strip() for host in raw.split(",") if host.strip()]
 
 
 def _log_resolved_dsn() -> None:
@@ -136,6 +148,12 @@ def create_app(
         expose_headers=["X-Request-Id", "X-Truncated", "X-Row-Limit"],
         allow_credentials=False,
     )
+    # Outermost: refuse a Host this API does not serve before anything runs.
+    # Loopback binding is what stands in for authentication here, and DNS
+    # rebinding defeats it — a page on evil.example re-pointed at 127.0.0.1
+    # is same-origin with the API, but its requests still carry
+    # `Host: evil.example`.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts_from_env())
 
     # Order matters: FastAPI walks handlers most-specific → least-specific,
     # so the OperationalError/InterfaceError pair must register *before*

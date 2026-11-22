@@ -483,9 +483,12 @@ class TestTileJson:
         assert body["tiles"] == ["http://testserver/tiles/get_tile/{z}/{x}/{y}"]
         assert body["scheme"] == "xyz"
 
-    def test_the_url_follows_the_request_not_the_configuration(self, served) -> None:
+    def test_the_url_follows_the_request_not_the_configuration(
+        self, served, monkeypatch
+    ) -> None:
         """So a deployment behind a proxy advertises the URL the client
-        actually reached."""
+        actually reached. That deployment must allow-list its host."""
+        monkeypatch.setenv("REIMAGINA_API_ALLOWED_HOSTS", "tiles.example.org")
         client, _ = served(SMALL_TILE)
         body = client.get(
             "/tiles/get_tile", headers={"Host": "tiles.example.org"}

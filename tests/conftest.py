@@ -33,6 +33,11 @@ from reimagina.storage.postgres.migrations import postgres_alembic_config
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+# TestClient sends `Host: testserver`; the API refuses hosts outside its
+# allow-list (DNS-rebinding guard), so tests add it. Set before any test
+# module imports `apps.api.app`, which builds its app at import time.
+os.environ["REIMAGINA_API_ALLOWED_HOSTS"] = "localhost,127.0.0.1,[::1],testserver"
+
 PY_PACKAGES_DIR = Path(__file__).resolve().parents[1] / "packages" / "py"
 if str(PY_PACKAGES_DIR) not in sys.path:
     sys.path.insert(0, str(PY_PACKAGES_DIR))
