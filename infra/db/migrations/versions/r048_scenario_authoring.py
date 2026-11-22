@@ -55,6 +55,8 @@ depends_on = None
 
 # The predicate r011 attaches to curated_geo.area_of_interest: unrestricted
 # while app.current_project_id is unset, otherwise only that project's rows.
+# ⚠ Inert, like r011's: nothing sets that GUC and the owner bypasses ENABLE'd
+# RLS, so this isolates no project from another.
 _PERMISSIVE_CONDITION = """
     current_setting('app.current_project_id', true) IS NULL
     OR current_setting('app.current_project_id', true) = ''

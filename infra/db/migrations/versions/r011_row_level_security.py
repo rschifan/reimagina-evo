@@ -11,6 +11,11 @@ Policy design:
   - Table owners bypass RLS in PostgreSQL by default. FORCE RLS and a
     dedicated app role are deferred until the first API route is deployed.
 
+⚠ Placeholders, not isolation. The API routes have since shipped, but no
+code sets app.current_project_id, FORCE was never added, and the app
+connects as the table owner — so these policies admit every row to every
+caller. Project tenancy is not enforced in the database (see SECURITY.md).
+
 Revision ID: r011
 Revises: r010
 Create Date: 2026-04-14
