@@ -444,9 +444,10 @@ class PostgresFeatureRepository:
     ) -> dict[str, str] | None:
         if not attributes:
             raise ValueError("find_by_attributes requires at least one attribute")
-        # Build one `attributes->>'key' = %s` predicate per input entry.
-        predicates = [f"attributes->>'{key}' = %s" for key in attributes]
-        params: list = list(attributes.values()) + [type_slug]
+        # One `attributes->>%s = %s` predicate per entry. The key is bound,
+        # never spliced: a `'` in it would otherwise rewrite the WHERE clause.
+        predicates = ["attributes->>%s = %s"] * len(attributes)
+        params: list = [p for item in attributes.items() for p in item] + [type_slug]
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
