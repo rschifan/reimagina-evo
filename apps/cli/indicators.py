@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 import os
 import time
 from dataclasses import asdict, is_dataclass
@@ -43,7 +45,7 @@ def compute_indicator(
     runner = runners.get(slug)
     if runner is None:
         known = ", ".join(sorted(runners))
-        raise ValueError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
+        raise UserError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
 
     with connect(dsn) as conn:
         # Empty feature set = AOI-scoped (or whole-grain) compute, which is what
@@ -208,7 +210,7 @@ def evaluate_scenario_cli(
         }
 
     if mode not in ("embedded", "detach"):
-        raise ValueError(f"unknown evaluate-scenario mode: {mode!r}")
+        raise UserError(f"unknown evaluate-scenario mode: {mode!r}")
 
     from reimagina.orchestration.factory import get_orchestrator
 
@@ -327,7 +329,10 @@ def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):
             return status
         if time.monotonic() > deadline:
             last = status.status if status else "unknown"
-            raise TimeoutError(
+            # A UserError, not TimeoutError: the remedy is the person's (a
+            # longer --timeout), and a builtin TimeoutError is also what a
+            # socket raises, which is no refusal.
+            raise UserError(
                 f"run {run_id} did not finish within {timeout_s}s (last: {last})"
             )
         time.sleep(0.2)

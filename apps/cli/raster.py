@@ -18,6 +18,8 @@ output as JSON.
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 import json
 import logging
 import math
@@ -75,8 +77,11 @@ def ingest_raster(
     """Run ingest_raster_source against the given DSN, return JSON-friendly result."""
     captured_at_dt: datetime | None = None
     if captured_at:
-        # Accept ISO-8601 with or without timezone; let datetime raise on malformed.
-        captured_at_dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        # Accept ISO-8601 with or without timezone.
+        try:
+            captured_at_dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise UserError(f"--captured-at: {exc}") from exc
     with connect(dsn) as conn:
         result = ingest_raster_source(
             conn,
@@ -140,7 +145,7 @@ def fetch_worldpop_raster(
     aoi_geometry_wkt: str | None = None
     if aoi_id is not None:
         if dsn is None:
-            raise ValueError(
+            raise UserError(
                 "fetch_worldpop_raster: dsn is required when aoi_id is given "
                 "— the AOI polygon is read from curated_geo.area_of_interest"
             )
@@ -158,14 +163,14 @@ def fetch_worldpop_raster(
                 )
                 row = cur.fetchone()
         if row is None:
-            raise ValueError(
+            raise UserError(
                 f"fetch_worldpop_raster: AOI id {aoi_id!r} not found in "
                 f"curated_geo.area_of_interest. Run `aoi list` to confirm "
                 f"the uuid."
             )
         _aoi_name, aoi_geometry_wkt = row
         if not aoi_geometry_wkt:
-            raise ValueError(
+            raise UserError(
                 f"AOI {aoi_id!r} has no geometry — clipping requires a "
                 f"polygon. Inspect curated_geo.area_of_interest.geometry "
                 f"for this row."
@@ -250,7 +255,7 @@ def run_zonal_stats(
         # small-feature warning check before spending time in the worker.
         layer = backend.raster_layer_repo().get_by_source(source_id)
         if layer is None:
-            raise ValueError(f"No raster_layer for source_id={source_id!r}")
+            raise UserError(f"No raster_layer for source_id={source_id!r}")
 
         # Prefix-collision check (CLI-only; the worker itself doesn't
         # enforce this because internal callers may legitimately share
@@ -390,7 +395,7 @@ def set_raster_published(
         # The UPDATE matches nothing for a mistyped slug; refuse rather than
         # report it published.
         if _raster_layer_id(conn, layer_slug) is None:
-            raise ValueError(f"Unknown raster layer slug: {layer_slug!r}")
+            raise UserError(f"Unknown raster layer slug: {layer_slug!r}")
         backend = backend_for_connection(conn)
         backend.raster_layer_repo().set_published(
             layer_slug=layer_slug,
@@ -437,13 +442,13 @@ def add_derivation(
         input_raster_layer_id: str | None = None
         if input_kind == "raster":
             if not raster_layer_slug:
-                raise ValueError("input_kind='raster' requires --raster-layer-slug")
+                raise UserError("input_kind='raster' requires --raster-layer-slug")
             input_raster_layer_id = _raster_layer_id(conn, raster_layer_slug)
             if input_raster_layer_id is None:
-                raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
+                raise UserError(f"Unknown raster layer slug: {raster_layer_slug!r}")
         else:  # observation
             if not (input_prefix and input_feature_type):
-                raise ValueError(
+                raise UserError(
                     "input_kind='observation' requires --input-prefix and --input-feature-type"
                 )
 
@@ -479,7 +484,7 @@ def list_derivations(
         if raster_layer_slug:
             layer_id = _raster_layer_id(conn, raster_layer_slug)
             if layer_id is None:
-                raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
+                raise UserError(f"Unknown raster layer slug: {raster_layer_slug!r}")
         rows = backend.aggregation_recipe_repo().list_recipes(
             input_raster_layer_id=layer_id,
             enabled_only=not include_disabled,
@@ -525,7 +530,7 @@ def run_derivation(
     )
 
     if not (recipe_id or raster_layer_slug):
-        raise ValueError("Pass --recipe-id OR --raster-layer-slug")
+        raise UserError("Pass --recipe-id OR --raster-layer-slug")
 
     with connect(dsn) as conn:
         if recipe_id:
@@ -536,7 +541,7 @@ def run_derivation(
             assert raster_layer_slug is not None  # guarded above
             layer_id = _raster_layer_id(conn, raster_layer_slug)
             if layer_id is None:
-                raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
+                raise UserError(f"Unknown raster layer slug: {raster_layer_slug!r}")
             results = run_all_for_raster(
                 conn,
                 raster_layer_id=layer_id,
@@ -562,7 +567,7 @@ def _require_recipe(backend, recipe_id: str) -> None:
     """Refuse an id that matches no recipe: the UPDATE/DELETE would match
     nothing and the command would still report success."""
     if backend.aggregation_recipe_repo().get_recipe(recipe_id) is None:
-        raise ValueError(f"Unknown recipe id: {recipe_id!r}")
+        raise UserError(f"Unknown recipe id: {recipe_id!r}")
 
 
 def _raster_layer_id(conn, layer_slug: str) -> str | None:

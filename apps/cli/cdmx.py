@@ -8,6 +8,8 @@ aoi-from-alcaldia convenience command.
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 from pathlib import Path
 from typing import Any
 
@@ -200,7 +202,7 @@ def _lookup_spec(layer: str) -> cdmx_pipeline.CDMXLayerSpec:
     try:
         return cdmx_pipeline.LAYER_SPECS[layer]
     except KeyError as exc:
-        raise ValueError(
+        raise UserError(
             f"Unknown CDMX layer {layer!r}; expected one of "
             f"{sorted(cdmx_pipeline.LAYER_SPECS)}"
         ) from exc

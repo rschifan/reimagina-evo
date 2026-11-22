@@ -47,12 +47,17 @@ def backend_name_for_dsn(dsn: str | None = None) -> str:
     try:
         parsed = psycopg2.extensions.parse_dsn(resolved)
     except psycopg2.ProgrammingError as exc:
-        raise ValueError(_unsupported(resolved)) from exc
+        raise UnsupportedDSN(_unsupported(resolved)) from exc
     # An empty string parses to {} rather than raising, and would otherwise be
     # accepted as "connect to whatever libpq's defaults resolve to".
     if not parsed:
-        raise ValueError(_unsupported(resolved))
+        raise UnsupportedDSN(_unsupported(resolved))
     return "postgres"
+
+
+class UnsupportedDSN(ValueError):
+    """The DSN is not a Postgres one libpq can read — a configuration
+    mistake, which the CLI reports as one line rather than a traceback."""
 
 
 def _unsupported(dsn: str) -> str:

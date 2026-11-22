@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 
+import psycopg2.errors
+import pytest
+
 
 def test_perf_run_report_file_does_not_carry_the_dsn_password(monkeypatch, tmp_path):
     """The report file is the artefact people keep and pass to `perf compare`;
@@ -263,6 +266,52 @@ def test_a_non_uuid_id_is_an_error_line(monkeypatch, capsys):
 
     assert main(["aoi", "delete", "--aoi-id", "x"]) == 2
     assert "invalid input syntax for type uuid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        ValueError("operands could not be broadcast together"),
+        psycopg2.errors.NumericValueOutOfRange("value out of range"),
+    ],
+)
+def test_a_defect_keeps_its_traceback(monkeypatch, defect):
+    """Only refusals of what the user typed are one-line `error:` exits. A
+    ValueError or DataError from compute or pipeline code is a defect, and
+    reporting it as exit 2 with no stack hid where it came from."""
+    from apps.cli.app import main
+
+    def broken(**kwargs):
+        raise defect
+
+    monkeypatch.setattr("apps.cli.app.delete_aoi", broken)
+
+    with pytest.raises(type(defect)):
+        main(["aoi", "delete", "--aoi-id", "x"])
+
+
+def test_an_unusable_dsn_is_an_error_line(capsys):
+    from apps.cli.app import main
+
+    code = main(["aoi", "delete", "--aoi-id", "x", "--dsn", "sqlite:///x.db"])
+
+    assert code == 2
+    assert capsys.readouterr().err.startswith("error: Unsupported storage DSN")
+
+
+def test_an_evaluation_timeout_is_an_error_line(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    states = SimpleNamespace(status="running")
+    orchestrator = SimpleNamespace(get_run=lambda conn, run_id: states)
+    monkeypatch.setattr("reimagina.orchestration.reclaim.sweep", lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    conn = SimpleNamespace(rollback=lambda: None)
+
+    with pytest.raises(cli.UserError, match="did not finish"):
+        cli._await_run(orchestrator, conn, "r1", timeout_s=0)
 
 
 def test_a_concurrent_zonal_stats_run_is_a_refusal(monkeypatch, capsys):

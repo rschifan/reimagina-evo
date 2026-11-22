@@ -46,6 +46,8 @@ proposal that passes here is not thereby safe.
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 import contextlib
 import json
 from dataclasses import asdict
@@ -90,7 +92,7 @@ def _require_positive(**values: float) -> None:
     try:
         require_positive(**values)
     except ProposalValueError as exc:
-        raise ValueError(
+        raise UserError(
             f"--{exc.field.replace('_', '-')} must be a positive number, "
             f"got {exc.value!r}"
         ) from exc
@@ -101,7 +103,7 @@ def _require_coverage(lot_coverage: float) -> None:
     try:
         require_coverage(lot_coverage)
     except ProposalValueError as exc:
-        raise ValueError(
+        raise UserError(
             f"--lot-coverage must be a share between 0 and 1, got {exc.value!r}"
         ) from exc
 
@@ -122,7 +124,7 @@ def _precheck_ceilings(
     try:
         precheck_ceilings(levels, unit_size, people_per_household, lot_coverage)
     except CeilingPrecheckFailed as exc:
-        raise ValueError(
+        raise UserError(
             f"{exc} Lower --levels (or, for the density ceiling, raise "
             f"--unit-size); "
             f"`scenario recompute` is what materialises."
@@ -171,7 +173,7 @@ def create(
     materialise overrides over that project's blocks.
     """
     if project_id is None and aoi_id is None:
-        raise ValueError(
+        raise UserError(
             "a scenario belongs to a project: pass --project-id, or --aoi-id "
             "to take the project from the area of interest"
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 import json
 from pathlib import Path
 from typing import Any
@@ -35,10 +37,10 @@ def parse_bbox(value: str) -> tuple[float, float, float, float]:
     contract — the string form is a presentation concern."""
     parts = [p.strip() for p in value.split(",")]
     if len(parts) != 4:
-        raise ValueError(f"bbox must be xmin,ymin,xmax,ymax (got {value!r})")
+        raise UserError(f"bbox must be xmin,ymin,xmax,ymax (got {value!r})")
     xmin, ymin, xmax, ymax = (float(p) for p in parts)
     if xmin >= xmax or ymin >= ymax:
-        raise ValueError(f"bbox must be ordered xmin<xmax, ymin<ymax (got {value!r})")
+        raise UserError(f"bbox must be ordered xmin<xmax, ymin<ymax (got {value!r})")
     return (xmin, ymin, xmax, ymax)
 
 

@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 import click
 import psycopg2
+import psycopg2.errors
 import typer
 
 try:
@@ -85,7 +86,9 @@ from reimagina.db import (  # noqa: E402
     connect,
     verify_required_relations,
 )
-from reimagina.storage import mask_dsn  # noqa: E402
+from reimagina.storage import UnsupportedDSN, mask_dsn  # noqa: E402
+
+from apps.cli import UserError  # noqa: E402
 from reimagina.logging_setup import configure_logging  # noqa: E402
 from reimagina.tiles.defaults import (  # noqa: E402
     tile_live_base_url,
@@ -2302,12 +2305,18 @@ def main(argv: list[str] | None = None) -> int:
         return int(getattr(exc, "exit_code", 1))
     except (typer.Abort, click.exceptions.Abort):
         return 1
-    except (ValueError, TimeoutError, psycopg2.DataError) as exc:
+    except (
+        UserError,
+        UnsupportedDSN,
+        psycopg2.errors.InvalidTextRepresentation,
+    ) as exc:
         # Bad input the commands refuse (a malformed --bbox, an unknown slug,
-        # a non-UUID the database rejects, a run that outlived --timeout): one
-        # line on stderr and exit 2, not a 40-line traceback. Not LookupError:
-        # a KeyError is a defect, and must keep its traceback (see
-        # test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal).
+        # an unusable --dsn, a non-UUID the database rejects, a run that
+        # outlived --timeout): one line on stderr and exit 2, not a 40-line
+        # traceback. Named types, not ValueError/DataError/LookupError: those
+        # are also what a defect in compute or pipeline code raises, and a
+        # defect must keep its traceback (see test_a_defect_keeps_its_traceback
+        # and test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal).
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except SystemExit as exc:  # pragma: no cover - defensive
