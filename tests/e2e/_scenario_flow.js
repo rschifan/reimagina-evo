@@ -83,9 +83,11 @@ async function run(page) {
       snapped.set(`${i},${j}`, await snap(page, centre(i, j), 0.15 * Math.min(bw, bh)));
     }
   }
+  // Nearly whole cells: a probe's block is caught by its interior point, and
+  // on a real pilot that point can sit well off the cell's centre.
   const span = (i0, j0, i1, j1) => [
-    at(grid.x0 + (i0 + 0.2) * bw, grid.y0 + (j0 + 0.2) * bh),
-    at(grid.x0 + (i1 + 0.8) * bw, grid.y0 + (j1 + 0.8) * bh),
+    at(grid.x0 + (i0 + 0.05) * bw, grid.y0 + (j0 + 0.05) * bh),
+    at(grid.x0 + (i1 + 0.95) * bw, grid.y0 + (j1 + 0.95) * bh),
   ];
   const click = async ([x, y]) => page.mouse.click(at(x, y).x, at(x, y).y);
 
@@ -266,9 +268,13 @@ async function fitToBlocks(page) {
   }, [FILL, FOCUS, GRID, POSITIONS]);
 }
 
-/** The nearest point to `at` within `radius` px where a block is painted. */
+/** A point within `radius` px of `at` on the block whose own centre is
+ *  nearest `at`: a rule catches a block by its interior point, so a probe on
+ *  a large block whose middle lies outside the drawn area would read
+ *  "unchanged" for a reason that has nothing to do with the page. */
 function snap(page, at, radius) {
-  return page.evaluate(([x, y, r, layer]) => {
+  return page.evaluate(([x, y, r, layer, positionsSrc]) => {
+    const positions = eval(positionsSrc);
     const m = window.__scenarioMap;
     const steps = 4;
     let best = null;
@@ -276,13 +282,17 @@ function snap(page, at, radius) {
       for (let j = -steps; j <= steps; j += 1) {
         const px = x + (i * r) / steps;
         const py = y + (j * r) / steps;
-        if (!m.queryRenderedFeatures([px, py], { layers: [layer] }).length) continue;
-        const d = Math.hypot(px - x, py - y);
+        const [f] = m.queryRenderedFeatures([px, py], { layers: [layer] });
+        if (!f) continue;
+        const pts = positions(f.geometry.coordinates).map((c) => m.project(c));
+        const cx = (Math.min(...pts.map((p) => p.x)) + Math.max(...pts.map((p) => p.x))) / 2;
+        const cy = (Math.min(...pts.map((p) => p.y)) + Math.max(...pts.map((p) => p.y))) / 2;
+        const d = Math.hypot(cx - x, cy - y) + 0.01 * Math.hypot(px - x, py - y);
         if (!best || d < best.d) best = { d, p: [px, py] };
       }
     }
     return best ? best.p : [x, y];
-  }, [at[0], at[1], radius, FILL]);
+  }, [at[0], at[1], radius, FILL, POSITIONS]);
 }
 
 async function drawRectangle(page, from, to) {
