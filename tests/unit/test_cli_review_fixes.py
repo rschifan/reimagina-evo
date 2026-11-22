@@ -284,3 +284,28 @@ def test_a_concurrent_zonal_stats_run_is_a_refusal(monkeypatch, capsys):
     )
     assert code == 2
     assert "holds the lock" in capsys.readouterr().err
+
+
+def test_slow_queries_skips_pg_stat_statements_that_is_not_preloaded(monkeypatch):
+    """`CREATE EXTENSION` without the preload leaves a view that raises
+    "must be loaded via shared_preload_libraries", aborting `perf report`."""
+    from reimagina.perf import observability
+
+    monkeypatch.setattr(observability, "_require_postgres", lambda conn: None)
+    monkeypatch.setattr(
+        observability,
+        "pg_extension_status",
+        lambda conn: {
+            "pg_stat_statements_available": True,
+            "pg_stat_statements_preloaded": False,
+        },
+    )
+
+    class NoQueries:
+        def cursor(self):
+            raise AssertionError("pg_stat_statements must not be read")
+
+    assert observability.slow_queries(NoQueries()) == {
+        "available": False,
+        "queries": [],
+    }
