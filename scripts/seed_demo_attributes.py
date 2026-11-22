@@ -96,7 +96,14 @@ rule that does set a dwelling size there has a population to compute.
 
 ⚠ **A block with dwellings but no mapped footprint** (coverage under 0.0001:
 Overture misses some buildings) takes the median coverage of the blocks that
-have both, so its dwellings still come out at the census count.
+have both, so its dwellings still come out at the census count. So does a
+block whose own footprint leaves under ``MIN_UNIT_SIZE_M2`` (20 m²) per
+dwelling: Overture mapped only part of its buildings (Mexicali: 103 blocks,
+e.g. coverage 0.047 for 23 dwellings), and 5 m² per dwelling is a mapping gap,
+not a block of cupboards. The median is taken over the blocks that pass the
+floor. Both kinds are marked ``estimated`` in the attributes, with the reason
+(``no_footprint`` / ``thin_footprint``), and the overlay tile carries it so the
+map says which blocks' inputs are guesses.
 
 ⚠ **Rounded where a sum of floats feeds it.** Coverage is rounded to 0.0001
 and storeys to 0.01 (in ``block_storeys``), because a sum's last bits can
@@ -132,6 +139,13 @@ CONSTANT_ATTRIBUTES = {
     "poi_version": 1,
     "network_version": 1,
 }
+
+#: Fewer m² per dwelling than this, from a block's own footprint, means
+#: Overture mapped only part of its buildings: the block is fitted like an
+#: unmapped one. 20 m² is the owner's plausibility floor: smaller than a
+#: studio flat, and on Mexicali it catches 103 partly mapped blocks (one has
+#: 4.6 m² per dwelling: coverage 0.047 for 23 dwellings).
+MIN_UNIT_SIZE_M2 = 20.0
 
 MIN_LEVELS = 1
 MAX_LEVELS = 6
@@ -183,7 +197,8 @@ def fit_payloads(
 ) -> list[dict[str, object]]:
     """Fitted values for ``(id, area, footprint, dwellings, population, storeys)``."""
     housed = [b for b in blocks if b[3] and b[3] > 0 and b[1] > 0]
-    covered = sorted(c for c in (_coverage(b[1], b[2]) for b in housed) if c > 0)
+    gaps = {b[0]: _gap(b) for b in housed}
+    covered = sorted(_coverage(b[1], b[2]) for b in housed if gaps[b[0]] is None)
     fallback_coverage = covered[len(covered) // 2] if covered else 1.0
     counted = [(b[3] or 0.0, b[4]) for b in housed if b[4] is not None]
     city_dwellings = sum(d for d, _ in counted)
@@ -207,7 +222,9 @@ def fit_payloads(
             "people_per_household": city_ratio,
         }
         if dwellings and dwellings > 0 and area > 0:
-            coverage = coverage or fallback_coverage
+            if gaps[fid] is not None:
+                coverage = fallback_coverage
+                payload["estimated"] = gaps[fid]
             payload["unit_size"] = area * coverage * levels / dwellings
             if population is not None:
                 payload["people_per_household"] = population / dwellings
@@ -218,6 +235,18 @@ def fit_payloads(
 
 def _coverage(area: float, footprint: float) -> float:
     return round(min(1.0, float(footprint) / float(area)), 4)
+
+
+def _gap(block: tuple) -> str | None:
+    """Why a housed block's coverage must be estimated, or None if it need not."""
+    _fid, area, footprint, dwellings, _pop, storeys = block
+    coverage = _coverage(area, footprint)
+    if coverage == 0:
+        return "no_footprint"
+    levels = float(storeys) if storeys else 1.0
+    if area * coverage * levels / dwellings < MIN_UNIT_SIZE_M2:
+        return "thin_footprint"
+    return None
 
 
 def _block_ids(cur, aoi_id: str | None) -> list[tuple[str, str]]:
@@ -306,10 +335,11 @@ def seed(
             # Merge, never assign: `||` keeps the ingest's CVEGEO lineage keys.
             psycopg2.extras.execute_batch(
                 cur,
-                # Minus unit_size first: a block that has none in this fit
-                # must not keep one from an earlier seed.
+                # Minus unit_size and estimated first: a block that has none
+                # in this fit must not keep one from an earlier seed.
                 "UPDATE curated_geo.feature "
-                "SET attributes = (attributes - 'unit_size') || %s::jsonb, "
+                "SET attributes = (attributes - 'unit_size' - 'estimated') "
+                "|| %s::jsonb, "
                 "updated_at = now() "
                 "WHERE id = %s::uuid",
                 payloads,

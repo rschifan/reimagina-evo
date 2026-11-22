@@ -16,7 +16,7 @@ import pytest
 from reimagina.indicators.kernels import housing_units, resident_population
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from seed_demo_attributes import fit_payloads  # noqa: E402
+from seed_demo_attributes import MIN_UNIT_SIZE_M2, fit_payloads  # noqa: E402
 
 #: (id, area m², footprint m², dwellings, population, storeys observation)
 BLOCKS = [
@@ -27,6 +27,8 @@ BLOCKS = [
     ("all-empty", 2_000.0, 500.0, 6.0, 0.0, None),
     ("park", 30_000.0, 100.0, 0.0, 0.0, None),
     ("no-census", 3_000.0, 900.0, None, None, None),
+    # Overture maps a sliver: 100 m² ÷ 23 dwellings = 4.3 m² per dwelling.
+    ("thin", 2_000.0, 100.0, 23.0, 64.0, None),
 ]
 
 
@@ -71,11 +73,35 @@ def test_a_block_without_census_dwellings_is_skipped_not_built_on():
         assert "unit_size" not in fitted[fid]
         # A rule that sets a dwelling size there still has a population.
         assert fitted[fid]["people_per_household"] == round(
-            (110 + 52 + 30 + 41 + 0) / (40 + 20 + 9 + 12 + 6), 4
+            (110 + 52 + 30 + 41 + 0 + 64) / (40 + 20 + 9 + 12 + 6 + 23), 4
         )
 
 
 def test_dwellings_without_a_mapped_footprint_take_the_median_coverage():
     fitted = {p["feature_id"]: p for p in fit_payloads(BLOCKS)}
-    # Covered blocks with dwellings: 0.25, 0.3, 0.4, 1.0 -> upper median 0.4.
+    # Covered blocks with dwellings, the thin one left out: 0.25, 0.3, 0.4,
+    # 1.0 -> upper median 0.4.
     assert fitted["unmapped"]["lot_coverage"] == 0.4
+
+
+def test_a_dwelling_size_under_the_floor_takes_the_median_coverage():
+    """A footprint so thin it leaves under 20 m² per dwelling is a mapping gap,
+    not a block of cupboards: it is treated like an unmapped block."""
+    assert MIN_UNIT_SIZE_M2 == 20.0
+    thin = {p["feature_id"]: p for p in fit_payloads(BLOCKS)}["thin"]
+    assert thin["lot_coverage"] == 0.4
+    assert thin["unit_size"] == pytest.approx(2_000 * 0.4 / 23)
+
+
+def test_estimated_blocks_are_flagged_with_the_reason():
+    fitted = {p["feature_id"]: p for p in fit_payloads(BLOCKS)}
+    assert fitted["unmapped"]["estimated"] == "no_footprint"
+    assert fitted["thin"]["estimated"] == "thin_footprint"
+    flagged = {fid for fid, p in fitted.items() if "estimated" in p}
+    assert flagged == {"unmapped", "thin"}
+
+
+def test_the_fit_is_deterministic_whatever_the_block_order():
+    forward = {p["feature_id"]: p for p in fit_payloads(BLOCKS)}
+    backward = {p["feature_id"]: p for p in fit_payloads(BLOCKS[::-1])}
+    assert forward == backward
