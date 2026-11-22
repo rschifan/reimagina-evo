@@ -238,7 +238,7 @@ def stage_layer(
                 continue
             if not sidecar.is_file():
                 continue
-            bronze.land_file(sidecar, source_id)
+            bronze.land_file(sidecar, source_id, beside=bronze_path)
     gdf = silver.read_vector(bronze_path)
     silver_filename = f"{spec.key}_silver.parquet"
     silver_path = silver.save_silver_vector(gdf, source_id, silver_filename)
