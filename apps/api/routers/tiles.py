@@ -32,8 +32,9 @@ router = APIRouter(prefix="/tile-sources", tags=["tiles"])
 # none of which change on operator-relevant timescales. A 30 s TTL
 # means a page-reload during the same session is a memory hit, but
 # operators who just ran an ingest still see the new layer within a
-# minute. Keyed by the (live, snapshot, raster) base-URL tuple in
-# case different consumers configure different bases.
+# minute. Only the env-default resolution is cached: the base URLs are
+# free-form query params, and keying on them let any client grow the
+# dict without bound (one never-evicted entry per distinct value).
 _CACHE_TTL_SECONDS = 30.0
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str | None, str | None, str | None], tuple[float, list]] = {}
@@ -113,9 +114,14 @@ def list_tile_sources(
         snapshot_base_url or tile_snapshot_base_url(),
         raster_base_url or tile_raster_base_url(),
     )
+    cacheable = (
+        live_tilejson_base_url is None
+        and snapshot_base_url is None
+        and raster_base_url is None
+    )
     now = time.monotonic()
     with _cache_lock:
-        cached = _cache.get(cache_key)
+        cached = _cache.get(cache_key) if cacheable else None
     if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
         rows = cached[1]
     else:
@@ -125,8 +131,9 @@ def list_tile_sources(
             snapshot_base_url=cache_key[1],
             raster_base_url=cache_key[2],
         )
-        with _cache_lock:
-            _cache[cache_key] = (now, rows)
+        if cacheable:
+            with _cache_lock:
+                _cache[cache_key] = (now, rows)
     return [
         TileSource(
             layer_id=row["layer_id"],
