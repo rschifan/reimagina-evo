@@ -164,8 +164,20 @@ def _get_aoi_id(conn, *, logical_name: str) -> str:
     return str(row[0])
 
 
+# Declared in the manifest (budgets and all) but with no parameter builder
+# below yet. A default `perf run` leaves them out, because selecting them made
+# every run raise and lose the results it had already measured.
+_NO_PARAMETER_BUILDER = frozenset(
+    {"tile_z14_small", "tile_z12_dense", "tile_z8_overview", "tile_z14_filtered_type"}
+)
+
+
 def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[object]:
     tier = DATASET_TIERS[dataset_tier]
+    if benchmark_name in _NO_PARAMETER_BUILDER:
+        raise ValueError(
+            f"Benchmark {benchmark_name!r} is declared but has no parameter builder yet."
+        )
 
     # Benchmarks that work off the real INEGI geometry resolve their own
     # references (AOI + type ids) and should not require the generic
@@ -213,7 +225,8 @@ def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
 
     Returns a list suitable for the _OVERLAP_DRYRUN_SQL placeholder order. Raises
     OverlapBenchmarkDataMissing with a clear message when the CDMX bootstrap
-    has not been run, so the runner can decide between skip and fail.
+    has not been run: a default `perf run` records the benchmark as skipped,
+    one that names it explicitly fails.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -471,15 +484,28 @@ def run_benchmarks(
         raise ValueError(f"Unknown dataset tier: {dataset_tier!r}")
 
     tier = DATASET_TIERS[dataset_tier]
-    selected_names = benchmark_names or list(BENCHMARKS.keys())
+    selected_names = benchmark_names or [
+        name for name in BENCHMARKS if name not in _NO_PARAMETER_BUILDER
+    ]
     dataset_summary = _dataset_summary(conn)
 
     results: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
     for name in selected_names:
         if name not in BENCHMARKS:
             raise ValueError(f"Unknown benchmark: {name!r}")
         spec = BENCHMARKS[name]
-        params = _build_params(conn, benchmark_name=name, dataset_tier=dataset_tier)
+        try:
+            params = _build_params(
+                conn, benchmark_name=name, dataset_tier=dataset_tier
+            )
+        except OverlapBenchmarkDataMissing as exc:
+            # Only the CDMX dataset carries it; a default run on any other DB
+            # should still report the rest. Asked for by name, it fails.
+            if benchmark_names:
+                raise
+            skipped.append({"benchmark": name, "reason": str(exc)})
+            continue
         run_summaries = [
             _run_explain_analyze(
                 conn,
@@ -507,6 +533,7 @@ def run_benchmarks(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "dataset_summary": dataset_summary,
         "benchmarks": results,
+        "skipped": skipped,
         "passed": passed,
     }
 

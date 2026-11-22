@@ -36,10 +36,10 @@ These are the workloads that must be benchmarked before adding any frontend perf
 
 All thirteen are declared in `reimagina.perf.manifest.BENCHMARKS`. ⚠ The four
 `tile_*` benchmarks are declared but cannot run yet: `perf.runner._build_params`
-has no case for them and raises `Unknown benchmark name`, and `perf run`
-without `--benchmark` selects every declared benchmark, so it raises on the
-first of them and returns no report. Name the others explicitly with
-`--benchmark`.
+has no case for them. `perf run` without `--benchmark` leaves them out, and
+naming one fails with "has no parameter builder yet". A default run on a
+database without the Cuauhtémoc AOI lists
+`overlap_block_to_ageb_cuauhtemoc` under `skipped` instead of failing.
 
 ## SLOs and measured signals
 
