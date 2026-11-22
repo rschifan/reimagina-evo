@@ -211,7 +211,7 @@ def _extract_remote_overture_subset(
     # Written to a sibling and renamed only on success: the per-file writer
     # closes with a valid footer even when the scan raised, so an interrupted
     # extract would otherwise sit at `output_path` as a readable, partial file
-    # that `mexicali_run.sh` reuses as complete.
+    # that a later load or a source bundle would take as complete.
     partial = output_path.with_name(output_path.name + ".partial")
     try:
         if low_memory:
@@ -367,8 +367,7 @@ def extract_overture_buildings_subset(
     Default stays off: 4.4 GB is affordable on a server and 454 s is not free.
     Turn it on where memory is the binding constraint — a laptop also running
     Postgres, where the failure is not a clean OOM but swapping, which
-    presents as a hung process. ``scripts/mexicali_run.sh`` passes it for
-    exactly that reason.
+    presents as a hung process.
 
     The ceiling is flat rather than proportional (663 MB held across all 512
     files), so ``low_memory`` is also the only path that is known to survive an
@@ -629,7 +628,8 @@ def _clip_buildings_to_aoi(
     about the run: *after clipping, does this source have anything inside the
     AOI?* A re-run leaves 343,707 there; a Mexico City extract leaves nothing.
 
-    That is not theoretical. `scripts/mexicali_run.sh` omitted `--bbox`, so
+    That is not theoretical. `scripts/mexicali_run.sh`, when it still
+    extracted, omitted `--bbox`, so
     `overture extract` used its own default — MEXICO_CITY_BBOX, 1,600 km
     away. Several million Mexico City buildings were extracted, loaded, and
     clipped to nothing against the Mexicali AOI. No error. The run continued

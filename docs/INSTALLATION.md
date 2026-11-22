@@ -343,10 +343,19 @@ service manager only when no other application needs it.
 
 ## 9. Load real territory separately
 
-Synthetic verification does not require private credentials. Real INEGI data
-requires an authorized local mirror under `data/sources/lake/`; Overture,
-OpenStreetMap and optional WorldPop loads require network access. Obtain the
-mirror layout and credentials from the maintainer and follow
-[BOOTSTRAP.md](BOOTSTRAP.md). `scripts/mexicali_run.sh` is a destructive data
-load, not an installation or health check. Preserve real-data databases and
-never point synthetic acceptance at them.
+Synthetic verification needs no data. The real territory is loaded from the
+Mexicali source bundle — INEGI Marco Geoestadístico 2024, Censo 2020 and DENUE
+for Baja California, Overture buildings and places, and an OpenStreetMap
+pedestrian network, with `ATTRIBUTION.md`, `MANIFEST.json` and `SHA256SUMS` —
+which comes with the delivery or is rebuilt with
+`scripts/build_mexicali_bundle.py` (see [BOOTSTRAP.md](BOOTSTRAP.md)). The load
+needs no network:
+
+```bash
+scripts/mexicali_run.sh --bundle /path/to/reimagina-mexicali-bundle
+```
+
+It checks the bundle against `SHA256SUMS` first. `scripts/mexicali_run.sh` is
+a destructive data load, not an installation or health check: it drops and
+recreates `DATABASE_URL` unless given `--keep`. Preserve real-data databases
+and never point synthetic acceptance at them.

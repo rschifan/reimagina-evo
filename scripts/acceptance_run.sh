@@ -9,7 +9,7 @@
 # twelve indicators including the pgRouting network family, a raster through
 # COG staging and zonal statistics, an observation rollup, and a scenario.
 #
-# It needs no credentials to the data lake and no network access. The only
+# It needs no source data and no network access. The only
 # inputs are a Postgres with PostGIS and pgRouting, and this repository.
 #
 # Usage:

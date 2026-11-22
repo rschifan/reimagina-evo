@@ -36,7 +36,7 @@ Bronze and Silver are directories under the data directory (`<repo>/data`, overr
 | **Silver** | Vector: reprojected to EPSG:4326, invalid geometries repaired with `make_valid`, null and empty geometries dropped (`pipeline/silver.py` `clean_vector`), written as GeoParquet. Raster: re-encoded as a COG in its **native** CRS (`pipeline/raster.py`). | Source-agnostic clean data ready to load. |
 | **curated_geo** | Canonical tables with provenance on every row. | What the rest of the platform reads. |
 
-Not every loader uses both file zones. `cdmx`, `overture` (buildings and places) and `raster` land a Bronze copy and write Silver; `inegi-marco` and `points` read the local data-lake mirror under `data/sources/lake/` and write Silver only; `inegi-censo` reads its parquet mirror and writes observations directly; `network bootstrap` loads OSM data straight into `road_node`/`road_edge` with no file zone and no `ingestion_run`.
+Not every loader uses both file zones. `cdmx`, `overture` (buildings and places) and `raster` land a Bronze copy and write Silver; `inegi-marco` and `points` read a local copy named with `--source-root` (the Mexicali source bundle) and write Silver only; `inegi-censo` reads its parquet copy and writes observations directly; `network bootstrap` loads OSM data straight into `road_node`/`road_edge` with no file zone and no `ingestion_run`.
 
 The API never touches Bronze or Silver. Its feature and tile reads go through `serving_geo`, a thin view-and-function layer over `curated_geo`; other endpoints (AOI listing, the indicator catalog, scenario authoring) read and write `curated_geo` tables through the storage repositories (`storage/postgres/repositories.py`).
 
@@ -304,7 +304,7 @@ The loaders are CLI families of `uv run python -m apps.cli.app` (`apps/cli/app.p
   `MEX:municipality`, `MEX:ageb`, `MEX:block`, and `MEX:neighborhood`.
   Colonias download may need manual fallback when the CDMX portal is
   rate-limited (`--from-path LAYER=PATH` accepts a local archive).
-- **INEGI Marco Geoestadístico 2024** — `inegi-marco bootstrap` (`pipeline/inegi_marco.py`); states, municipalities, urban AGEBs and urban blocks for the entidades given with `--cve-ent`, read from the local data-lake mirror.
+- **INEGI Marco Geoestadístico 2024** — `inegi-marco bootstrap` (`pipeline/inegi_marco.py`); states, municipalities, urban AGEBs and urban blocks for the entidades given with `--cve-ent`, read from a local parquet copy of the INEGI product (`--source-root`; the Mexicali source bundle holds Baja California).
 - **INEGI census 2020** — `inegi-censo bootstrap` (`pipeline/inegi_censo.py`); block-level values as `censo_2020_<column>` observations, joined to blocks by CVEGEO.
 - **Amenity points** — `points bootstrap` (`pipeline/points.py`); per-pilot-city GeoParquet layers as `global:establishment`.
 - **Rasters** — `raster ingest`, `raster fetch-worldpop`, `raster zonal-stats` (`pipeline/raster.py`, `jobs/raster_zonal_stats.py`), plus `raster derivation` for aggregation recipes.
@@ -389,16 +389,16 @@ CREATE TABLE curated_geo.data_source_catalog (
 
   storage_uri       text        NOT NULL,
   -- Lineage: where the data came from — the upstream it was fetched or cut from
-  -- (an private path, a publisher's download URL, an Overture release), or the file
+  -- (a publisher's download or product page, an Overture release), or the file
   -- an operator handed in when nothing upstream is known. NOT the local copy:
   -- the Bronze copy is addressed by this row's id at data/bronze/<source_id>/,
   -- and a processed raster's location is file_asset.storage_uri, which is what
   -- tiles and zonal stats read. Nothing opens a file through this column.
   --
-  -- This line used to read "Bronze file location", while
-  -- the private data inventory said the same column "keeps the original private
-  -- URL for lineage". The pipelines split along that contradiction — three wrote
-  -- an origin, three overwrote it with a local path — until it was settled here.
+  -- This line used to read "Bronze file location", while other notes said the
+  -- same column keeps the upstream URL for lineage. The pipelines split along
+  -- that contradiction — three wrote an origin, three overwrote it with a local
+  -- path — until it was settled here.
 
   schema_definition jsonb,
   -- Intended as the JSON Schema of expected source fields, to validate Silver
@@ -1063,12 +1063,12 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, license)
 VALUES
   ('México · Manzanas urbanas (INEGI Marco Geoestadístico 2024)', 'INEGI', 'vector', 'canonical_entity',
-   'lake://private-lake/inegi/marco_geostadistico/2024/manzanas_urbanas.parquet', '2024.01',
+   'https://www.inegi.org.mx/temas/mg/#manzanas_urbanas', '2024.01',
    'Libre uso — Términos de Uso de la Información del INEGI')
 RETURNING id; -- :source_id  (the loader reuses an existing row for the same provider, name, version)
 ```
 
-**2. Land** — copy the raw file to `data/bronze/<source_id>/` unchanged (`pipeline.bronze.land_file`). `inegi-marco` skips this step: it reads the local data-lake mirror under `data/sources/lake/` directly.
+**2. Land** — copy the raw file to `data/bronze/<source_id>/` unchanged (`pipeline.bronze.land_file`). `inegi-marco` skips this step: it reads the local copy given as `--source-root` (the source bundle's `inegi/marco_geoestadistico_2024/`) directly.
 
 **3. Clean (Silver)** — reproject to EPSG:4326, repair invalid geometries, drop null and empty ones (`pipeline.silver.clean_vector`), and write GeoParquet under `data/silver/<source_id>/`.
 
@@ -1117,7 +1117,7 @@ REFRESH MATERIALIZED VIEW serving_geo.feature_current_attributes_mv;
 
 ### Loading a tabular dataset (INEGI census population by block)
 
-Done by `inegi-censo bootstrap` (`pipeline/inegi_censo.py`). It reads the local parquet mirror (`data/sources/lake/inegi/censo/manzanas_2020.parquet/`) directly: no Bronze copy, no Silver file.
+Done by `inegi-censo bootstrap` (`pipeline/inegi_censo.py`). It reads the local parquet copy given as `--source-root` (the source bundle's `inegi/censo_2020/manzanas_2020.parquet/`) directly: no Bronze copy, no Silver file.
 
 **1. Register:**
 ```sql
@@ -1125,7 +1125,7 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, license, notes)
 VALUES
   ('México · Censo de Población 2020 — manzanas (INEGI)', 'INEGI', 'tabular', 'enrichment',
-   'lake://private-lake/inegi/censo/manzanas_2020.parquet', '2020-censo',
+   'https://www.inegi.org.mx/programas/ccpv/2020/', '2020-censo',
    'Libre uso — Términos de Uso de la Información del INEGI', '…')
 RETURNING id;
 ```

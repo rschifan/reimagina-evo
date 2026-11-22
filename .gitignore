@@ -121,7 +121,7 @@ docs/delivery/
 docs/legacy/
 docs/product/
 docs/superpowers/
-docs/DATA_INVENTORY.md
+docs/*_DATA_INVENTORY.md
 docs/ENGINEERING_NOTES.md
 docs/INSTALLATION_VERIFICATION.md
 scripts/render_delivery_pdfs.py

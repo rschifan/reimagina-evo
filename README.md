@@ -45,20 +45,30 @@ configure a separate scratch checkout before running it.
 
 ## Data
 
-The real territory needs two things the repository does not contain:
+The real territory is built from the **Mexicali source bundle**, one
+directory (~77 MB) holding every input the load reads:
 
-- **The lake mirror** — INEGI Marco Geoestadístico 2024, the INEGI 2020
-  census and municipal amenities, copied once from a private private data lake
-  (`private-lake`) to `data/sources/lake/` with credentials (contact the
-  maintainer). The loaders read that offline copy; the layout comes with the
-  credentials.
-- **Internet access** at load time — Overture buildings and places (public
-  S3), the OpenStreetMap pedestrian network (Overpass) and, optionally,
-  WorldPop.
+- INEGI Marco Geoestadístico 2024 (state, municipalities, urban AGEBs and
+  blocks) and the INEGI 2020 census by block, both for Baja California;
+- a selection of INEGI DENUE establishments in Mexicali;
+- the Overture buildings and places extracts for the Mexicali box;
+- a snapshot of the OpenStreetMap pedestrian network.
 
-`scripts/mexicali_run.sh` loads Mexicali end to end;
+Its `ATTRIBUTION.md` carries the credits and licence terms (INEGI's free-use
+terms, ODbL, CDLA-Permissive-2.0), `MANIFEST.json` lists every file with its
+rows, checksum, source and vintage, and `SHA256SUMS` lets the load check it.
+The bundle comes with the delivery, or can be rebuilt from INEGI's public
+downloads (inegi.org.mx: Marco Geoestadístico, Censo de Población y Vivienda
+2020, DENUE) plus an Overture extract and an OSM fetch, with
+`scripts/build_mexicali_bundle.py`.
+
+```bash
+scripts/mexicali_run.sh --bundle /path/to/reimagina-mexicali-bundle
+```
+
+loads Mexicali end to end with no network access;
 [`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) is the step-by-step runbook. Without
-the mirror everything else works — install, migrate, run, test, build, and the
+the bundle everything else works — install, migrate, run, test, build, and the
 generated territory above.
 
 ## Tests

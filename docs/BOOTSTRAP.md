@@ -4,9 +4,10 @@ This is the operator runbook for rebuilding `reimagina_app` from
 scratch. Follow it top-to-bottom on a clean machine that has Postgres
 + PostGIS + pgRouting reachable (r037 runs `CREATE EXTENSION
 pgrouting`; `make stack-up`'s image carries both), the repo checked out,
-`make install` already run, the lake mirror under `data/sources/lake/`
-(INEGI geometry, census, amenities) and internet access (Overture,
-OpenStreetMap, WorldPop).
+`make install` already run, and the Mexicali source bundle (below). The
+bundle makes the Mexicali load offline; internet access is needed only for
+the steps that fetch fresh data (`overture extract`, `network bootstrap`
+without `--graph-dir`, WorldPop).
 
 The delivered installation is what `scripts/mexicali_run.sh` builds:
 
@@ -15,7 +16,7 @@ The delivered installation is what `scripts/mexicali_run.sh` builds:
   "Mexicali Pilot"
 - **Geometry features:** INEGI 2024 (state, municipalities, AGEBs, blocks)
   for entidad 02, the whole state of Baja California; Overture buildings
-  and places clipped to the AOI; IMIP amenities; the OSM walk network
+  and places clipped to the AOI; INEGI DENUE amenities; the OSM walk network
 - **Observations:** INEGI 2020 census headline columns at block grain,
   household size, and baseline storeys
 - **Indicators:** all 12 shipped indicators, computed with `--aoi-id`
@@ -23,7 +24,54 @@ The delivered installation is what `scripts/mexicali_run.sh` builds:
 
 The steps below are the manual form of the same pipeline. They also show
 CDMX as a second AOI (entidad 09); leave out the CDMX commands to match the
-delivered installation.
+delivered installation. The bundle holds entidad 02 only: the CDMX commands
+need their own local copy of the INEGI products in the same layout.
+
+## The Mexicali source bundle
+
+One directory (~77 MB) with every input the Mexicali load reads:
+
+| Path in the bundle | Content |
+|---|---|
+| `inegi/marco_geoestadistico_2024/<layer>.parquet/CVE_ENT=02/CVE_MUN=…/` | INEGI Marco Geoestadístico 2024: state, municipalities, urban AGEBs, urban blocks of Baja California |
+| `inegi/censo_2020/manzanas_2020.parquet/entidad=2/` | INEGI Censo de Población y Vivienda 2020 by block, Baja California, the columns the loader reads |
+| `inegi/denue/equipamientos_mexicali.parquet` | INEGI DENUE selection for Mexicali (health, pharmacy, childcare, cinema), May 2025 |
+| `overture/buildings_<release>.parquet`, `overture/places_<release>.parquet` | Overture extracts of the Mexicali box (places: Mexico only) |
+| `osm/walk_network_<date>/{nodes,edges}.parquet` | the OSM pedestrian graph `network bootstrap` fetched on that date |
+| `ATTRIBUTION.md` | credits and licence terms: INEGI free-use terms with the transformation notice, ODbL, CDLA-Permissive-2.0 |
+| `MANIFEST.json`, `SHA256SUMS` | every file with rows, sha256, source, vintage, licence and how it was produced |
+
+It comes with the delivery. Check it and load it:
+
+```sh
+export BUNDLE=/path/to/reimagina-mexicali-bundle
+uv run python scripts/build_mexicali_bundle.py verify "$BUNDLE"
+scripts/mexicali_run.sh --bundle "$BUNDLE"
+```
+
+**Rebuilding it.** The INEGI inputs are INEGI's public downloads
+(inegi.org.mx: Marco Geoestadístico, Censo de Población y Vivienda 2020
+results by AGEB and urban block, DENUE), converted to hive-partitioned
+parquet: `<layer>.parquet/CVE_ENT=NN/CVE_MUN=NNN/*.parquet` with a WKB
+`geometry` column for the Marco Geoestadístico, `entidad=N/**/*.parquet` with
+INEGI's lower-case column names for the census. The conversion from INEGI's
+shapefile and CSV downloads is not scripted. The rest is made with the CLI:
+`overture extract --bbox -115.70,32.40,-115.20,32.80`, `overture places
+--country MX --aoi-id …` (its `--output-path` keeps the extract), and
+`network bootstrap --aoi-id … --clip-bbox -115.70,32.40,-115.20,32.80
+--save-graph DIR`. Then:
+
+```sh
+uv run python scripts/build_mexicali_bundle.py build --out NEW_DIR \
+  --inegi-marco <marco parquet dir> --inegi-censo <census parquet dir> \
+  --denue-amenities <DENUE amenity GeoParquet> \
+  --overture-buildings <extract> --overture-places <extract> \
+  --overture-release 2026-10-21.0 --osm-network <--save-graph DIR>
+```
+
+It keeps Baja California and the loader columns, copies the rest unchanged,
+and writes `MANIFEST.json`, `ATTRIBUTION.md` and `SHA256SUMS`; the same inputs
+give the same bytes.
 
 ## 0. Pre-flight
 
@@ -32,7 +80,7 @@ five DSNs, database readiness, `make install` and `make migrate`. For Docker,
 start PostgreSQL and PgBouncer before migrations, then start Martin. Then:
 
 ```sh
-make verify-sources            # uses OVERTURE_DEFAULT_RELEASE; needs network/mirror
+make verify-sources            # uses OVERTURE_DEFAULT_RELEASE; needs network
 ```
 
 `.env` is read by every step below: the CLI loads it itself
@@ -52,11 +100,11 @@ shell wins), and `make dev` and `make dev-api` fall back to its
 no `createdb` is needed, then migrates both to head and provisions the
 ops-plane schema.
 
-`make verify-sources` must print `"all_ok": true` before continuing —
-it confirms the private data-lake mirror under `data/sources/`, the
-Overture S3 release, and the WorldPop REST catalogue (`MEX` by
-default) are all reachable. Any red entry blocks ingest: fix the path
-/ network / release version before going further.
+`make verify-sources` must print `"all_ok": true` before any step that
+fetches — it confirms the Overture S3 release and the WorldPop REST
+catalogue (`MEX` by default) are reachable. Fix the network or the release
+version before going further. Loading from the bundle needs neither; the
+bundle is checked by `scripts/build_mexicali_bundle.py verify`.
 
 To target a different Overture release: `make verify-sources` accepts
 no flags; for a non-default release run the CLI directly:
@@ -78,6 +126,7 @@ Idempotent. ~1 s.
 
 ```sh
 uv run python -m apps.cli.app inegi-marco bootstrap \
+  --source-root "$BUNDLE/inegi/marco_geoestadistico_2024" \
   --cve-ent 09 --cve-ent 02 \
   --layers areas_estatales,areas_municipales,agebs_urbanas,manzanas_urbanas
 ```
@@ -86,7 +135,8 @@ uv run python -m apps.cli.app inegi-marco bootstrap \
 one code, `09,02`, which matches no partition.
 
 Loads ~143 k features (states + munis + AGEBs + blocks for entidad 09
-and 02). ~5–8 min depending on disk I/O.
+and 02) from a copy that holds both; the bundle holds 02 only (~71 k).
+`--source-root` has no default.
 
 ## 3. Create AOIs
 
@@ -161,6 +211,17 @@ uv run python -m apps.cli.app overture load \
   --raw-path data/overture_buildings_mexicali.parquet \
   --source-name "Overture Buildings - Mexicali BBox" \
   --aoi-id <MEXICALI_AOI_UUID>
+
+# Mexicali from the bundle instead — no network. --release names the
+# release the extract was cut from (it is in the file name).
+uv run python -m apps.cli.app overture load \
+  --raw-path "$BUNDLE/overture/buildings_2026-10-21.0.parquet" \
+  --release 2026-10-21.0 \
+  --source-name "Overture Buildings - Mexicali BBox" \
+  --aoi-id <MEXICALI_AOI_UUID>
+uv run python -m apps.cli.app overture places \
+  --raw-path "$BUNDLE/overture/places_2026-10-21.0.parquet" \
+  --release 2026-10-21.0 --aoi-id <MEXICALI_AOI_UUID>
 ```
 
 `--aoi-id` triggers an `ST_Intersects` clip inside the load's transaction —
@@ -179,11 +240,10 @@ network, membership, overlaps (`global:building → MEX:block`,
 `MEX:block → MEX:ageb`), the scenario-input baseline (`inegi-censo bootstrap
 --columns prom_ocup`, `overture block-storeys`,
 `scripts/seed_demo_attributes.py --fit-to-census`) and every shipped
-indicator. It checks the mirror first and names each missing path, keeps the
-step order that matters (membership *after* every load, or every tile returns
-204), and treats the census, amenity, places and Overpass loads as non-fatal
-so one failure does not discard the INEGI load. Use the steps in this
-document to run a part of it, or to understand what it does.
+indicator, all from the bundle with no network. It verifies the bundle
+against `SHA256SUMS` before dropping anything and keeps the step order that
+matters (membership *after* every load, or every tile returns 204). Use the
+steps in this document to run a part of it, or to understand what it does.
 
 ```sh
 # ⚠ Without --keep, step 1a DROPS and recreates the DATABASE_URL database.
@@ -191,10 +251,10 @@ document to run a part of it, or to understand what it does.
 # DATABASE_URL_DIRECT identify the same direct host, port and database before
 # dropping anything; DATABASE_URL_ADMIN must use that server and a different
 # maintenance database (default: postgres).
-scripts/mexicali_run.sh                 # --keep, --skip-network, --low-memory
+scripts/mexicali_run.sh --bundle "$BUNDLE"   # --keep reuses the database
 ```
 
-**Where `<MEXICALI_AOI_UUID>` comes from without the lake mirror.** Every
+**Where `<MEXICALI_AOI_UUID>` comes from without the INEGI data.** Every
 other AOI constructor is INEGI-derived (`cdmx aoi-from-alcaldia` needs a
 `MEX:municipality` feature loaded from Marco Geoestadistico). Overture's
 `divisions` theme carries the same boundaries, in the release the buildings
@@ -232,8 +292,7 @@ extract --low-memory` scans one S3 file at a time and streams batches through
 a `ParquetWriter`: 663 MB peak and 454 s instead of 40 s, measured on the same
 bbox and release, and a flat ceiling rather than a proportional one. Use it on
 a laptop also running Postgres, where 4.4 GB does not fail cleanly but swaps
-and looks hung, and for an AOI materially larger than one city;
-`scripts/mexicali_run.sh --low-memory` passes it through.
+and looks hung, and for an AOI materially larger than one city.
 
 ## 5b. WorldPop population raster — per AOI (optional)
 
@@ -295,7 +354,11 @@ geometries. ~3 min per AOI.
 ## 7. INEGI 2020 census
 
 ```sh
-uv run python -m apps.cli.app inegi-censo bootstrap --cve-ent 09 --cve-ent 02
+uv run python -m apps.cli.app inegi-censo bootstrap \
+  --source-root "$BUNDLE/inegi/censo_2020/manzanas_2020.parquet" \
+  --cve-ent 09 --cve-ent 02
+uv run python -m apps.cli.app points bootstrap \
+  --source-root "$BUNDLE" --layers mexicali_amenities
 ```
 
 ~5 min. Block-grain census attributes land in `curated_geo.observation`:
@@ -329,8 +392,11 @@ The edificability indicators, `planned_floors` and `livability_block_score`
 read the scenario-input baseline (`inegi-censo --columns prom_ocup`,
 `overture block-storeys` and `scripts/seed_demo_attributes.py
 --fit-to-census`, as in `scripts/mexicali_run.sh` step 9b); without it they
-write no rows. The accessibility indicators need the OSM walk network
-(`network` commands, `scripts/mexicali_run.sh` step 7).
+write no rows. The accessibility indicators need the OSM walk network:
+`network bootstrap --aoi-id <MEXICALI_AOI_UUID> --graph-dir
+"$BUNDLE"/osm/walk_network_2026-11-10` loads the bundle's snapshot
+(`scripts/mexicali_run.sh` step 7); without `--graph-dir` it fetches from
+Overpass.
 
 ## 9. Integrity probe
 
@@ -375,9 +441,10 @@ choropleth should colour the blocks.
 
 ## Total wall-clock
 
-~1 hour on a modern laptop with a warm `data/sources/` lake mirror.
-Add another 15–30 min if the lake mirror needs to be re-downloaded
-from private.
+~1 hour on a modern laptop, most of it overlaps and indicators. Loading
+from the bundle needs no downloads; rebuilding the bundle adds the INEGI
+downloads and conversion, an Overture extract (40 s to 8 min) and an
+Overpass fetch (minutes).
 
 ## Rolling forward to a new Overture release
 

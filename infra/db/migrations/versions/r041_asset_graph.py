@@ -112,8 +112,8 @@ def upgrade() -> None:
     # Three kinds, because the platform has three genuinely different producers:
     #   source   — a pipeline this graph runs (overture, cdmx, inegi, points)
     #   external — produced outside it entirely (Overpass/osmnx writes
-    #              curated_geo.road_edge with no ingestion_run at all; the private
-    #              mirrors are hand-copied; scripts merge into feature.attributes).
+    #              curated_geo.road_edge with no ingestion_run at all; the INEGI
+    #              copies are hand-copied; scripts merge into feature.attributes).
     #              The graph can observe and version these, never run them.
     #   derived  — this graph produces it.
     #

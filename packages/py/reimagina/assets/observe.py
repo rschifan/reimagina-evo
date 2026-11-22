@@ -1,7 +1,7 @@
 """Observing assets this platform does not produce.
 
 Some data arrives without passing through any pipeline. ``curated_geo.road_edge``
-is loaded straight from Overpass with no ``ingestion_run``; the private mirrors are
+is loaded straight from Overpass with no ``ingestion_run``; the INEGI copies are
 copied by hand; ``scripts/seed_demo_attributes.py`` merges directly into
 ``feature.attributes``. Nothing in the ingest path can publish a version for
 those, so nothing would ever mark their consumers stale — and a staleness system

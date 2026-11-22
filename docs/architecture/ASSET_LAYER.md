@@ -108,7 +108,7 @@ for data that arrives through no pipeline at all: it runs each `observed`
 asset's `probe_sql` and publishes the result when it changes. One shipped asset
 is observed — `global.road_network`, because `curated_geo.road_edge` comes
 straight from Overpass with no `ingestion_run`; its probe is the row count and
-the max `osm_id`. The hand-copied private mirrors and
+the max `osm_id`. The hand-copied INEGI parquet copies and
 `scripts/seed_demo_attributes.py`'s direct merges into `feature.attributes`
 have no observed asset, so the graph cannot see them.
 
