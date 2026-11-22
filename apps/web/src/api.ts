@@ -521,14 +521,6 @@ export function addScenarioEdits(
 }
 
 
-/**
- * Remove one rule from a scenario.
- *
- * ⚠ Not through {@link jsonRequest}: the route answers 204 with an empty body,
- * and `response.json()` on no bytes rejects with a SyntaxError — a successful
- * delete reported to the user as "Unexpected end of JSON input". The status is
- * the whole answer, so there is nothing to parse.
- */
 /** Change one rule in place: it keeps its edits and its place in "later wins". */
 export function updateRule(scenarioId: string, body: UpdateRuleBody): Promise<EditsWritten> {
   return jsonRequest<EditsWritten>(
@@ -538,6 +530,14 @@ export function updateRule(scenarioId: string, body: UpdateRuleBody): Promise<Ed
 }
 
 
+/**
+ * Remove one edit from a scenario (a rule is several: see `removeRule` in scenarios/follow.ts).
+ *
+ * ⚠ Not through {@link jsonRequest}: the route answers 204 with an empty body,
+ * and `response.json()` on no bytes rejects with a SyntaxError — a successful
+ * delete reported to the user as "Unexpected end of JSON input". The status is
+ * the whole answer, so there is nothing to parse.
+ */
 export async function removeScenarioEdit(
   scenarioId: string,
   editId: string,
