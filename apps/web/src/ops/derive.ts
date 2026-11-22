@@ -6,6 +6,7 @@
  * default node environment, and it is also what forces the clock question into
  * the open — see `serverNow`.
  */
+import { decodeOrNull } from "../lib/utils";
 import type { Tone } from "../lib/components/ui/tone";
 import type { RunRow, RunStatus } from "./api";
 
@@ -250,7 +251,7 @@ export function statusCounts(
 
 export function runIdFromHash(hash: string): string | null {
   const m = /^#\/r\/([^?]+)/.exec(hash);
-  return m ? decodeURIComponent(m[1]) : null;
+  return m ? decodeOrNull(m[1]) : null;
 }
 
 export function statusesFromHash(

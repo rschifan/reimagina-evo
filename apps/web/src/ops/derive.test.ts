@@ -286,6 +286,11 @@ describe("hash routing", () => {
     expect(runIdFromHash("#/?status=failed")).toBeNull();
     expect(runIdFromHash("#/")).toBeNull();
   });
+
+  // A hand-edited or truncated link threw URIError inside the route effect.
+  it("a malformed escape reads as no run", () => {
+    expect(runIdFromHash("#/r/%E0")).toBeNull();
+  });
 });
 
 describe("statusCounts", () => {

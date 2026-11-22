@@ -162,6 +162,11 @@ describe("the hash", () => {
     expect(parseHash("#/")).toEqual({ scenarioId: null, slug: null });
   });
 
+  // A hand-edited or truncated link threw URIError inside the route effect.
+  it("a malformed escape selects nothing", () => {
+    expect(parseHash("#/%E0/%")).toEqual({ scenarioId: null, slug: null });
+  });
+
   it("a scenario without an indicator", () => {
     expect(parseHash(formatHash("A", null))).toEqual({ scenarioId: "A", slug: null });
   });
