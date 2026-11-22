@@ -440,6 +440,22 @@ describe("editing on the map", () => {
     expect(store.ws.selectedId).toBe("B");
   });
 
+  // Review: a pilot switch mid-recompute said "Scenario cleared" but kept A
+  // selected, so A's rules landed on the other pilot's map and the next rule
+  // was written into A. A pilot switch clears even a gesture's selection.
+  it("a pilot switch mid-recompute clears the selection", async () => {
+    store.select("A");
+    await settle();
+    const pending = store.applyNewRule(AREA, VALUES);
+    await settle();
+    expect(store.ws.busy).toBe(true);
+    aoi.emit(OTHER_PILOT);
+    await settle();
+    expect(store.ws.selectedId).toBeNull();
+    await settleRun(pending);
+    expect(store.ws.selectedId).toBeNull();
+  });
+
   // Review: the recompute had already withdrawn the rule's overrides at its
   // old place; writing the area back without recomputing left the data
   // saying the rule did nothing while its outline was back on the map.

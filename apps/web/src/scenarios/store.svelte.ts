@@ -225,8 +225,10 @@ async function onPilot(aoi: AOIRow | null): Promise<void> {
   stopAllFollowing();
   if (ws.selectedId !== null) {
     // A scenario belongs to one pilot; carried across, its rules select
-    // nothing here and its overlay is scoped to the wrong city.
-    select(null);
+    // nothing here and its overlay is scoped to the wrong city. Even mid
+    // gesture: a held selection put A's rules on B's map, and the next rule
+    // went into A. The gesture itself keeps its own scenario id.
+    select(null, { duringGesture: true });
     say("Scenario cleared — a scenario belongs to one pilot.");
   }
   ws.cells = {};
@@ -330,7 +332,7 @@ export function select(
   // A gesture holds the selection until it ends: switching mid-recompute left
   // its box, shape and refusal on the other scenario, and the next Apply
   // wrote there. Only the gesture itself (creating, or undoing, a scenario)
-  // may move it.
+  // and a pilot switch may move it.
   if (ws.busy && !options.duringGesture) return;
   ++selection;
   const token = selection;
