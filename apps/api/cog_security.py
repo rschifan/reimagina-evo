@@ -40,6 +40,7 @@ def validated_cog_path(
     """Resolve an incoming ``url`` query parameter to a safe host path.
 
     Rejects with HTTP 400/403/404 if the URL violates any of:
+      - path contains a NUL byte (400)
       - scheme is not ``file``
       - authority (``//host``) is non-empty (we only accept
         ``file:///abs/path``)
@@ -76,6 +77,9 @@ def validated_cog_path(
     raw_path = unquote(parsed.path)
     if not raw_path:
         raise HTTPException(status_code=400, detail="URL has no path component.")
+    # A NUL makes every os-level call raise ValueError, not OSError.
+    if "\x00" in raw_path:
+        raise HTTPException(status_code=400, detail="URL path contains a NUL byte.")
     outside = HTTPException(
         status_code=403,
         detail="URL resolves outside the data root (REIMAGINA_DATA_DIR).",

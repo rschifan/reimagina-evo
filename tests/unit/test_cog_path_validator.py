@@ -61,3 +61,9 @@ def test_a_file_inside_the_root_is_served(data_root):
     cog.write_bytes(b"")
 
     assert validated_cog_path(f"file://{cog}") == str(cog.resolve())
+
+
+def test_a_nul_byte_in_the_path_is_a_400(data_root):
+    # `Path.resolve()` raises ValueError on an embedded NUL; uncaught it was a
+    # 500 with a traceback logged per request.
+    assert _status(f"file://{data_root}/a%00b.tif")[0] == 400
