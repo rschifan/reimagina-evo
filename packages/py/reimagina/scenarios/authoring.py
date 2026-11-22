@@ -1167,13 +1167,12 @@ class DeleteResult:
 _DELETE_STEPS: tuple[tuple[str | None, str, str], ...] = (
     ("overrides", "curated_geo.scenario_override", "scenario_id"),
     ("versions_deleted", "curated_geo.asset_version", "partition_key"),
-    # The four scenario_id tables cascade from the scenario row (r055); they
-    # are deleted explicitly first so each count is its own table's.
+    # The scenario_id tables cascade from the scenario row (r055); the counted
+    # ones are deleted explicitly first so each count is its own table's.
     ("results_deleted", "curated_geo.indicator_result", "scenario_id"),
     ("job_runs_deleted", "jobs_runtime.job_run", "scenario_id"),
     ("materializations", "curated_geo.asset_materialization", "partition_key"),
-    (None, "curated_geo.aoi_indicator_summary", "scenario_id"),
-    # Last: cascades its rules.
+    # Last: cascades its rules and its AOI summaries.
     (None, "app_core.scenario", "id"),
 )
 
