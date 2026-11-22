@@ -49,7 +49,8 @@ itself. On its own:
 export BUNDLE="$(uv run python scripts/build_mexicali_bundle.py fetch)"
 ```
 
-`fetch` downloads the archive into `data/bundles/2026.11/`, refuses it unless
+`fetch` downloads the archive into `data/bundles/2026.11/` (under
+`REIMAGINA_DATA_DIR` when that is set), refuses it unless
 its SHA-256 matches the pin, extracts it, runs `verify` and prints the bundle
 directory, `data/bundles/2026.11/reimagina-mexicali-bundle`. A cached archive
 or an extracted bundle that still verifies is reused with no network access.
