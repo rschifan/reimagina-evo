@@ -351,3 +351,35 @@ def test_mexicali_without_bundle_fetches_the_pinned_archive(tmp_path):
     assert done.returncode != 0
     assert "--bundle DIR" in done.stderr
     assert "ENV=" not in done.stdout
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_help_prints_usage_and_runs_nothing(tmp_path, script):
+    """`--help` is what a reader tries first. acceptance_run.sh used to ignore
+    any argument but --keep, so `--help` dropped and rebuilt the database."""
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", f"scripts/{script}", "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "Usage:" in done.stdout
+    assert "ENV=" not in done.stdout
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_unknown_flag_is_refused_before_anything_runs(tmp_path, script):
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", f"scripts/{script}", "--kep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2
+    assert "unknown flag" in done.stderr
+    assert "ENV=" not in done.stdout

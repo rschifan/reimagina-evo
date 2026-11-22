@@ -15,6 +15,7 @@
 # Usage:
 #   scripts/acceptance_run.sh                 # uses .env
 #   scripts/acceptance_run.sh --keep          # do not drop the database first
+#   scripts/acceptance_run.sh --help          # this text
 #
 # Every step fails the whole run, loudly. A green run means each capability
 # the delivery documents claim was observed working on this machine, in this
@@ -23,7 +24,15 @@
 set -euo pipefail
 
 KEEP=0
-[[ "${1:-}" == "--keep" ]] && KEEP=1
+# Refuse what it does not know: an ignored `--help` would drop the database.
+while (( $# )); do
+  case "$1" in
+    --keep) KEEP=1 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build, or verify, the Mexicali source bundle.
+"""Fetch, verify or build the Mexicali source bundle.
 
 The bundle is every input ``scripts/mexicali_run.sh --bundle`` reads, in one
 directory, so the Mexicali pilot can be rebuilt offline: no network and no
@@ -454,20 +454,45 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build", help="build a bundle into a new directory")
-    b.add_argument("--out", required=True)
-    b.add_argument("--inegi-marco", required=True)
-    b.add_argument("--inegi-censo", required=True)
-    b.add_argument("--denue-amenities", required=True)
-    b.add_argument("--overture-buildings", required=True)
-    b.add_argument("--overture-places", required=True)
-    b.add_argument("--overture-release", required=True)
-    b.add_argument("--osm-network", required=True)
-    b.add_argument("--cve-ent", default="02")
+    b.add_argument("--out", required=True, help="new directory to write")
+    b.add_argument(
+        "--inegi-marco", required=True, help="Marco Geoestadístico parquet dir"
+    )
+    b.add_argument(
+        "--inegi-censo", required=True, help="Censo 2020 by block parquet dir"
+    )
+    b.add_argument("--denue-amenities", required=True, help="DENUE amenity GeoParquet")
+    b.add_argument(
+        "--overture-buildings", required=True, help="`overture extract` output"
+    )
+    b.add_argument("--overture-places", required=True, help="`overture places` extract")
+    b.add_argument(
+        "--overture-release", required=True, help="release the extracts were cut from"
+    )
+    b.add_argument(
+        "--osm-network", required=True, help="`network bootstrap --save-graph` dir"
+    )
+    b.add_argument(
+        "--cve-ent", default="02", help="INEGI state to keep (default: %(default)s)"
+    )
     v = sub.add_parser("verify", help="check a bundle against its SHA256SUMS")
-    v.add_argument("bundle")
-    f = sub.add_parser("fetch", help="download, check and extract the pinned bundle")
-    f.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
-    f.add_argument("--url", default=os.environ.get("MEXICALI_BUNDLE_URL") or BUNDLE_URL)
+    v.add_argument("bundle", help="the bundle directory")
+    f = sub.add_parser(
+        "fetch",
+        help="download, check and extract the pinned bundle; print its directory",
+    )
+    f.add_argument(
+        "--cache",
+        type=Path,
+        default=DEFAULT_CACHE,
+        help="where to download and extract it (default: data/bundles/)",
+    )
+    f.add_argument(
+        "--url",
+        default=os.environ.get("MEXICALI_BUNDLE_URL") or BUNDLE_URL,
+        help="a mirror of the release asset (or MEXICALI_BUNDLE_URL); "
+        "the SHA-256 pin still applies",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "fetch":

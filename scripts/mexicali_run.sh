@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Build the Mexicali pilot from real data, offline, from the source bundle.
+# Build the Mexicali pilot from real data, from the source bundle.
 #
 # The sibling of scripts/acceptance_run.sh: acceptance generates a synthetic
 # territory; this one loads a real city, and every number it produces is
-# about Mexicali. Both need no network.
+# about Mexicali. The only network access is the one-time bundle download
+# from github.com; with --bundle, or once the bundle is cached, none.
 #
 # What it needs:
 #   - PostgreSQL with PostGIS and pgRouting
@@ -21,11 +22,13 @@
 # Usage:
 #   scripts/mexicali_run.sh                       # fetch the bundle, rebuild $DATABASE_URL
 #   scripts/mexicali_run.sh --bundle DIR          # offline, from a local bundle
-#   scripts/mexicali_run.sh --bundle DIR --keep   # reuse the existing database
+#   scripts/mexicali_run.sh --keep                # load into the existing database
+#   scripts/mexicali_run.sh --help                # this text
 #
-# DATABASE_URL comes from .env. DATABASE_URL_ADMIN is derived from it when
-# unset (same server, `postgres` database); set it explicitly on a managed
-# server where the connecting role may not create databases.
+# The target is the database DATABASE_URL names (from .env; an exported value
+# wins), which DATABASE_URL_DIRECT must name too. Without --keep it is DROPPED
+# and recreated through DATABASE_URL_ADMIN, which defaults to the `postgres`
+# database on the same server.
 #
 # ⚠ Reusing one database is fine *without* --keep, because step 1a drops and
 # recreates it: the synthetic acceptance territory cannot survive into a real
@@ -46,7 +49,8 @@ while (( $# )); do
     --keep) KEEP=1 ;;
     --bundle) BUNDLE="${2:-}"; shift ;;
     --bundle=*) BUNDLE="${1#--bundle=}" ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
 done
