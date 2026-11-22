@@ -286,7 +286,7 @@ Both assign a straddling child to one parent only.
 
 ### 6.6 Block indicator → AOI: `aoi_indicator_summary`
 
-`indicators aoi-summary --aoi-id --slug [--scenario-id]` runs `summarise_aoi` (`packages/py/reimagina/jobs/aoi_summary.py`). It reads every `aoi_feature` row of the AOI, left-joined to the indicator's current values (through `scenario_overlay` for a scenario; `fetch_aoi_children`, `repositories.py:2081`), weights each by `aoi_feature.overlap_measure`, applies the shared missing-data policy (`aggregate_children`: missing if more than half of the weight is missing, `prorated` note if some is) and the indicator's `aggregation_method`, and upserts one row per (AOI, scenario, indicator). `GET /aois/{aoi_id}/summaries` reads them.
+`indicators aoi-summary --aoi-id --slug [--scenario-id]` runs `summarise_aoi` (`packages/py/reimagina/jobs/aoi_summary.py`). It reads the AOI's `aoi_feature` rows of the types the indicator `applies_to` (the AOI's other members — AGEBs, the municipality, roads — are not its children), left-joined to the indicator's current values (through `scenario_overlay` for a scenario; `fetch_aoi_children`), weights each by `aoi_feature.overlap_measure`, applies the shared missing-data policy (`aggregate_children`: missing if more than half of the weight is missing, `prorated` note if some is) and the indicator's `aggregation_method`, and upserts one row per (AOI, scenario, indicator). `GET /aois/{aoi_id}/summaries` reads them.
 
 ---
 

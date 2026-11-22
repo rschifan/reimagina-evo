@@ -242,7 +242,8 @@ class AOISummaryRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> list[tuple[float | None, float, str]]:
-        """Return ``(value, weight, quality_flag)`` for each feature in the AOI.
+        """Return ``(value, weight, quality_flag)`` for each AOI feature of a
+        type the indicator ``applies_to`` (other grains are not its children).
 
         Joins ``aoi_feature`` to ``indicator_result`` on the given slug +
         scenario scope. ``weight`` is ``aoi_feature.overlap_measure``

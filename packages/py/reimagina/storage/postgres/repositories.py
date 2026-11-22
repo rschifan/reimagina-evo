@@ -2087,8 +2087,14 @@ class PostgresAOISummaryRepository:
     ) -> list[tuple[float | None, float, str]]:
         # Weight = overlap_measure (absolute area inside the AOI); see
         # Protocol docstring for why overlap_ratio is wrong here.
+        #
+        # ⚠ Only the indicator's own grain (`applies_to`). `aoi_feature` holds
+        # every feature type the AOI intersects — AGEBs, the municipality,
+        # roads, buildings. Unfiltered, each was a `missing` child of a block
+        # indicator, with weights in other units (road metres, a whole
+        # municipality's m²), and a fully-computed AOI summarised as `missing`.
         scenario_clause, scenario_params = _scenario_overlay("ir", scenario_id)
-        params: list = [indicator_slug, *scenario_params, aoi_id]
+        params: list = [indicator_slug, *scenario_params, aoi_id, indicator_slug]
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
@@ -2096,12 +2102,18 @@ class PostgresAOISummaryRepository:
                        af.overlap_measure,
                        ir.quality_flag
                 FROM curated_geo.aoi_feature af
+                JOIN curated_geo.feature f ON f.id = af.feature_id
                 LEFT JOIN curated_geo.indicator_result ir
                      ON ir.feature_id = af.feature_id
                     AND ir.indicator_slug = %s
                     AND ir.status = 'current'
                     AND {scenario_clause}
                 WHERE af.aoi_id = %s
+                  AND f.type_slug = ANY(
+                      SELECT unnest(applies_to)
+                      FROM curated_geo.indicator_catalog
+                      WHERE slug = %s
+                  )
                 """,
                 params,
             )

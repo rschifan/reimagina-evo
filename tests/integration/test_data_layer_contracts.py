@@ -1039,6 +1039,73 @@ def test_summarise_aoi_end_to_end_weighted_mean_postgres(conn):
     assert rows[0][0] == pytest.approx(result.value)
 
 
+def test_summarise_aoi_counts_only_the_indicators_own_grain(conn):
+    """An AOI holds every feature type it intersects, not just the indicator's.
+
+    The AGEB and the municipality covering these blocks are AOI members too.
+    Counted as children of a block indicator, each became a ``missing`` child
+    with a huge weight, and a fully-computed AOI summarised as ``missing``.
+    """
+    seed_catalog(conn)
+    project_id = _insert_project(conn, name="AOI Summary Grain Project")
+    source_id = _register_source(
+        conn,
+        name="aoi_summary_grain_src",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    run_id = _start_run(conn, source_id)
+    block_ids = [
+        _insert_feature(
+            conn,
+            type_id=feat.get_type_id(conn, "MEX", "block"),
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=ref,
+            geometry_wkt=wkt,
+        )
+        for ref, wkt in (
+            ("small", "POLYGON((0 0, 0.001 0, 0.001 0.001, 0 0.001, 0 0))"),
+            ("big", "POLYGON((0.002 0, 0.005 0, 0.005 0.003, 0.002 0.003, 0.002 0))"),
+        )
+    ]
+    for slug in ("ageb", "municipality"):
+        _insert_feature(
+            conn,
+            type_id=feat.get_type_id(conn, "MEX", slug),
+            source_id=source_id,
+            ingestion_run_id=run_id,
+            dataset_version="v1",
+            source_record_ref=slug,
+            geometry_wkt="POLYGON((0 0, 0.006 0, 0.006 0.004, 0 0.004, 0 0))",
+        )
+    aoi_id = aoi.create_aoi(
+        conn,
+        project_id=project_id,
+        name="summary-aoi-grain",
+        geometry_wkt="POLYGON((0 0, 0.006 0, 0.006 0.004, 0 0.004, 0 0))",
+    )
+    aoi.compute_aoi_features(conn, aoi_id)
+
+    backend = backend_for_connection(conn)
+    job_run_id = backend.job_run_repo().start_job(
+        model_family="urban_form", code_version="test", status="running"
+    )
+    backend.indicator_result_repo().bulk_write_numeric_results(
+        [(block_ids[0], 0.9), (block_ids[1], 0.1)],
+        indicator_slug="urban_form_block_compactness",
+        job_run_id=job_run_id,
+    )
+    backend.job_run_repo().complete_job(job_run_id, status="succeeded")
+
+    result = summarise_aoi(
+        conn, aoi_id=aoi_id, indicator_slug="urban_form_block_compactness"
+    )
+    assert result.status == "current", result.aggregation_note
+    assert result.aggregation_note == "weighted_mean over 2 of 2 children"
+
+
 def test_pmtiles_export_end_to_end_against_postgres(migrated_db, tmp_path):
     """Exercise the full PMTiles export path against a real ogr2ogr subprocess.
 
