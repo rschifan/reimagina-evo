@@ -106,6 +106,22 @@ def test_cleanup_removes_every_perf_row_and_only_those(conn):
     prepare_benchmark_dataset(conn, dataset_tier="smoke")
     prepare_benchmark_dataset(conn, dataset_tier="smoke")  # a second source run
     before = _perf_rows(conn)
+    # Counted, not assumed: the seed covers every feature of its types, and
+    # other integration tests commit features into this same database.
+    perf_obs = _one(
+        conn,
+        "SELECT count(*) FROM curated_geo.observation o "
+        "JOIN curated_geo.data_source_catalog s ON s.id = o.source_id "
+        "WHERE s.provider = 'reimagina-perf'",
+    )
+    assert perf_obs >= 9  # at least this test's 2 features x 5 keys - 1 real
+    perf_members = _one(
+        conn,
+        "SELECT count(*) FROM curated_geo.aoi_feature af "
+        "JOIN curated_geo.area_of_interest a ON a.id = af.aoi_id "
+        "JOIN app_core.project p ON p.id = a.project_id "
+        "WHERE p.name = 'Performance Benchmark Project'",
+    )
 
     preview = cleanup_perf_data(conn, dry_run=True)
     assert preview["dry_run"] is True
@@ -114,11 +130,12 @@ def test_cleanup_removes_every_perf_row_and_only_those(conn):
     removed = cleanup_perf_data(conn)
     assert removed["removed"] == preview["removed"]
     counts = removed["removed"]
-    assert counts["curated_geo.observation"] == 9  # 2 features x 5 keys - 1 real
+    assert counts["curated_geo.observation"] == perf_obs
     assert counts["curated_geo.ingestion_run"] == 2
     assert counts["curated_geo.data_source_catalog"] == 1
     assert counts["curated_geo.area_of_interest"] == 4
-    assert counts["curated_geo.aoi_feature"] > 0
+    # Members depend on where the perf AOIs land in whatever the DB holds.
+    assert counts["curated_geo.aoi_feature"] == perf_members
     assert counts["app_core.project"] == 1
     assert _perf_rows(conn) == 0
 
