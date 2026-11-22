@@ -833,7 +833,12 @@ def perf_cleanup(
     # Required for the same reason as seed-observations: it deletes.
     dsn: str = typer.Option(..., "--dsn", help="Database to clean (required)."),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="Print the counts without deleting."
+        False,
+        "--dry-run",
+        help=(
+            "Print the counts and keep the rows: runs the same deletes and rolls "
+            "them back, so it takes the same row locks as a real run."
+        ),
     ),
 ) -> int:
     return _print(cleanup_perf(dsn=dsn, dry_run=dry_run))

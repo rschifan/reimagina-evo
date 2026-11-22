@@ -120,7 +120,7 @@ source, the source itself, the four `perf_*` AOIs of the 'Performance Benchmark
 Project' (with their `aoi_feature` and `aoi_indicator_summary` rows), and the
 project once it holds nothing else. It finds them by the marks the seed has
 always written, so older seeds are cleaned too. It prints the JSON count per
-table, `--dry-run` prints the same counts and deletes nothing, and a second run
+table, `--dry-run` prints the same counts and keeps the rows (it runs the deletes and rolls them back, so it holds the same row locks while it runs), and a second run
 removes 0. It refuses while a scenario, aggregation recipe or orchestration run
 points at a perf AOI, because deleting the AOI would change that row.
 

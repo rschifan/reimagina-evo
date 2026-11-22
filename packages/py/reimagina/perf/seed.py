@@ -399,7 +399,11 @@ _AOI_REFERENCES = (
 def cleanup_perf_data(conn, *, dry_run: bool = False) -> dict[str, object]:
     """Delete every row `seed_observations`/`ensure_perf_aois` wrote, in the
     caller's transaction. ``dry_run`` runs the same deletes and rolls them
-    back, so the counts it reports are exactly what a real run removes."""
+    back, so the counts it reports are exactly what a real run removes. It
+    therefore takes the same row locks for its duration: on a shared database,
+    writers touching the perf rows wait until it finishes. A count-only preview
+    would be lock-free but could disagree with the real run, whose later steps
+    (the project) depend on the earlier deletes."""
     _require_postgres(conn)
     params = {
         "provider": PERF_SOURCE_PROVIDER,
