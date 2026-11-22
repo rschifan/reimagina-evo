@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { create, headline, removeScenario, select, ws } from "./store.svelte";
+  import { statusFor, statusLabel } from "./derive";
+  import { create, headline, recomputeSelected, removeScenario, select, ws } from "./store.svelte";
 
   /**
    * Which scenario is on the map, what it changes, and whether that is
@@ -9,6 +10,13 @@
   let newName = $state("");
 
   const head = $derived(headline(ws.selectedId));
+  const row = $derived(ws.scenarios.find((s) => s.id === ws.selectedId) ?? null);
+  /** The selected scenario's real status, as its table row shows it. */
+  const status = $derived(row ? statusFor(row, ws.following[row.id] ?? null) : null);
+  /** A recompute failed, was never queued, or is behind the rules: offer one. */
+  const canRecompute = $derived(
+    status === "stale" || status === "failed" || status === "partial" || status === "not-computed",
+  );
   const running = $derived(
     ws.busy || (ws.selectedId !== null && ws.following[ws.selectedId] !== undefined),
   );
@@ -82,10 +90,19 @@
       Draw an area on the map to start a scenario.
     {:else if ws.rules.length === 0}
       No rules yet: draw an area on the map.
-    {:else}
-      Up to date
+    {:else if status}
+      {statusLabel(status)}
     {/if}
   </span>
+  {#if canRecompute && !running}
+    <button
+      type="button"
+      class="rounded border border-accent/40 bg-accent/10 px-2.5 py-1 text-accent"
+      onclick={() => void recomputeSelected()}
+    >
+      Recompute
+    </button>
+  {/if}
 
   <form class="ml-auto flex items-center gap-2" onsubmit={submitNew}>
     <input

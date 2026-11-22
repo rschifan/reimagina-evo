@@ -32,7 +32,7 @@
     type TileSourceCatalog,
   } from "../layers";
   import { cn } from "../lib/utils";
-  import type { EditGroup } from "../scenario";
+  import { describeRule, refusalText, sharedNumbers, type Rule } from "../scenario";
   import { createMap, flyToAoi } from "../map-base";
   import { enableSelection, type SelectionController, type SelectionShape } from "../selection";
   import { installSelectionHandle } from "../selection-handle";
@@ -40,7 +40,7 @@
 
   import { anchorBox } from "./box-anchor";
   import { noValuesNote } from "./derive";
-  import { inferShape, rulesToFeatureCollection, wktToGeometry } from "./rule-geometry";
+  import { bboxOf, inferShape, rulesToFeatureCollection, wktToGeometry } from "./rule-geometry";
   import RuleBox from "./RuleBox.svelte";
   import {
     applyNewRule,
@@ -88,10 +88,10 @@
     | { kind: "new" }
     | {
         kind: "rule";
-        group: EditGroup;
+        rule: Rule;
         index: number;
         draggable: boolean;
-        overriddenBy: number | null;
+        overlapNote: string | null;
       };
   let editing = $state<Editing | null>(null);
   let boxPos = $state<{ left: number; top: number } | null>(null);
@@ -168,7 +168,13 @@
         map.on("idle", () => (tilesLoading = false));
         map.on("click", RULES_FILL, (e) => {
           if (editing || ws.busy || selection?.isDrawing()) return;
-          const index = Number(e.features?.[0]?.properties?.index);
+          // Every rule under the click, not the topmost: a small rule inside a
+          // later, larger one had no pixel of its own left to click. The
+          // smallest is the one a click inside it means.
+          const hits = [...(e.features ?? [])].sort(
+            (a, b) => Number(a.properties?.area) - Number(b.properties?.area),
+          );
+          const index = Number(hits[0]?.properties?.index);
           if (Number.isFinite(index)) openRule(index);
         });
         map.on("mouseenter", RULES_FILL, () => {
@@ -240,23 +246,12 @@
     });
   });
 
-  function bboxOf(geometry: Polygon | GeoJSON.MultiPolygon): [[number, number], [number, number]] {
-    const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates.flat();
-    const points = rings.flat();
-    const xs = points.map((p) => p[0]);
-    const ys = points.map((p) => p[1]);
-    return [
-      [Math.min(...xs), Math.min(...ys)],
-      [Math.max(...xs), Math.max(...ys)],
-    ];
-  }
-
   /** Put the box next to the shape being edited, inside the map. */
   function placeBox(): void {
     if (!map || !editing) return;
     const geometry =
       ws.drawn?.geometry ??
-      (editing.kind === "rule" ? wktToGeometry(editing.group.areaWkt) : null);
+      (editing.kind === "rule" ? wktToGeometry(editing.rule.areaWkt) : null);
     if (!geometry) return;
     const [[minLon, minLat], [maxLon, maxLat]] = bboxOf(geometry);
     const topLeft = map.project([minLon, maxLat]);
@@ -271,18 +266,19 @@
 
   /** Open a saved rule — `index` is its 1-based place in "later wins". */
   function openRule(index: number): void {
+    if (editing || ws.busy) return;
     const ordered = [...ws.rules].sort((a, b) => a.ordinal - b.ordinal);
-    const group = ordered[index - 1];
-    if (!group || !map) return;
-    const geometry = wktToGeometry(group.areaWkt);
+    const rule = ordered[index - 1];
+    if (!rule || !map) return;
+    const geometry = wktToGeometry(rule.areaWkt);
     const kind = inferShape(geometry);
     ws.boxError = null;
     editing = {
       kind: "rule",
-      group,
+      rule,
       index,
       draggable: kind !== null,
-      overriddenBy: laterOverlap(index, ordered, geometry),
+      overlapNote: overlapNote(index, ordered, geometry),
     };
     // Hide the static outline: the editable copy is what the planner moves.
     for (const id of [RULES_FILL, RULES_LINE]) map.setFilter(id, ["!=", ["get", "index"], index]);
@@ -296,18 +292,22 @@
   }
 
   /**
-   * The first later rule whose area may overlap this one's.
+   * Which later rules win over this one where they overlap, and for which
+   * numbers. Precedence is the server's — the rules' order — and it is per
+   * number: a later rule that sets only household size leaves this one's
+   * storeys standing, so it is not named for them.
    *
    * ponytail: bounding boxes, not polygons — it can name a rule whose box
    * overlaps but whose shape does not. A polygon intersection when rules get
    * irregular enough for that to mislead.
    */
-  function laterOverlap(
+  function overlapNote(
     index: number,
-    ordered: EditGroup[],
+    ordered: Rule[],
     geometry: Polygon | GeoJSON.MultiPolygon,
-  ): number | null {
+  ): string | null {
     const [[a0, b0], [a1, b1]] = bboxOf(geometry);
+    const notes: string[] = [];
     for (let i = index; i < ordered.length; i += 1) {
       let other;
       try {
@@ -316,9 +316,11 @@
         continue;
       }
       const [[c0, d0], [c1, d1]] = other;
-      if (a0 <= c1 && c0 <= a1 && b0 <= d1 && d0 <= b1) return i + 1;
+      if (!(a0 <= c1 && c0 <= a1 && b0 <= d1 && d0 <= b1)) continue;
+      const shared = sharedNumbers(ordered[index - 1], ordered[i]);
+      if (shared.length) notes.push(`Rule ${i + 1} also sets ${shared.join(", ")}`);
     }
-    return null;
+    return notes.length ? `${notes.join("; ")}: where they overlap, the later rule wins.` : null;
   }
 
   function closeBox(clearShape: boolean): void {
@@ -345,14 +347,14 @@
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
     const scenarioAtStart = ws.selectedId;
-    if ((await saveRule(current.group, area, values)) || ws.selectedId !== scenarioAtStart) closeBox(true);
+    if ((await saveRule(current.rule, area, values)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   async function remove(): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const scenarioAtStart = ws.selectedId;
-    if ((await deleteRule(current.group)) || ws.selectedId !== scenarioAtStart) closeBox(true);
+    if ((await deleteRule(current.rule)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   function onKey(event: KeyboardEvent): void {
@@ -360,7 +362,9 @@
     if (target && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Escape") {
-      if (editing && !ws.busy) closeBox(true);
+      // Mid-recompute the box stays: it is where a refusal will be shown.
+      if (ws.busy) return;
+      if (editing) closeBox(true);
       else clearDrawing();
       return;
     }
@@ -407,12 +411,14 @@
     const grain = defaultGrain(current);
     if (mode === "delta" && scenarioId) {
       let delta: DeltaDomain | null = null;
+      let failure = "";
       try {
         delta = deltaDomainFromComparison(
           await getComparison(scenarioId, { indicator_slug: current.slug, aoi_id: aoiId }),
         );
       } catch (err) {
         console.warn("comparison unavailable; showing values", err);
+        failure = await refusalText(err, "compare");
       }
       // A slower answer for a selection that has since moved is dropped
       // whole: drawing it would put one scenario's change on another's map.
@@ -427,6 +433,8 @@
           `${delta.changed} changed, ${delta.unchanged} unchanged, ${delta.new} new.`;
         return;
       }
+      // Said, not silent: the Change button otherwise seemed to do nothing.
+      mapNote = `${failure} Showing values instead.`;
       setMode("value");
       return;
     }
@@ -451,7 +459,12 @@
       scenarioId ? statsFor(null) : Promise.resolve(null),
     ]);
     if (myToken !== renderToken || !map) return;
-    const shown = scenarioId ? base : stats;
+    // The baseline's range, so a colour means one value on every scenario —
+    // unless the baseline has no values here (the edificability family on
+    // the real pilots), when its "range" would be the catalog's safety
+    // bounds and every block would paint in the palest colour.
+    const baseUsable = scenarioId !== null && base !== null && base.count > 0;
+    const shown = scenarioId ? (baseUsable ? base : stats) : stats;
     const domain = rampDomainFromStats(shown, current);
     // No `selection`: on the explore page it clips the layer to the drawn
     // area; here the planner edits a rule against the whole city.
@@ -462,9 +475,11 @@
     mapNote =
       stats && stats.count === 0
         ? noValuesNote(current.name, scenarioId !== null)
-        : scenarioId
+        : scenarioId && baseUsable
           ? "Colours use the baseline city's range; values above it show in the darkest colour."
-          : "";
+          : scenarioId
+            ? "Colours use this scenario's own range: the baseline city has no values here."
+            : "";
   }
 
   function draw(next: SelectionShape) {
@@ -596,20 +611,20 @@
         style:left="{boxPos?.left ?? 56}px"
         style:top="{boxPos?.top ?? 12}px"
       >
-        {#key current.kind === "rule" ? `rule-${current.index}` : "new"}
+        {#key current.kind === "rule" ? `rule-${current.rule.id}` : "new"}
           <RuleBox
             mode={current.kind}
             values={current.kind === "rule"
               ? {
-                  levels: current.group.levels,
-                  unitSize: current.group.unitSize,
-                  peoplePerHousehold: current.group.peoplePerHousehold,
-                  lotCoverage: current.group.lotCoverage,
+                  levels: current.rule.levels,
+                  unitSize: current.rule.unitSize,
+                  peoplePerHousehold: current.rule.peoplePerHousehold,
+                  lotCoverage: current.rule.lotCoverage,
                 }
               : EMPTY_RULE}
             needsScenarioName={current.kind === "new" && ws.selectedId === null}
             defaultName={`Scenario ${ws.scenarios.length + 1}`}
-            overriddenBy={current.kind === "rule" ? current.overriddenBy : null}
+            overlapNote={current.kind === "rule" ? current.overlapNote : null}
             busy={ws.busy}
             error={ws.boxError}
             draggable={current.kind === "rule" ? current.draggable : true}
@@ -623,4 +638,22 @@
     {/if}
   </div>
   <p class="text-xs text-muted-foreground" role="status">{mapNote}</p>
+  {#if ws.rules.length > 0}
+    <!-- The rules, reachable without a pointer: a rule is otherwise opened
+         only by clicking its outline on the canvas. -->
+    <ol aria-label="Rules" class="flex flex-wrap gap-2 text-xs">
+      {#each [...ws.rules].sort((a, b) => a.ordinal - b.ordinal) as rule, i (rule.id)}
+        <li>
+          <button
+            type="button"
+            class="rounded border border-line px-2 py-0.5 hover:text-foreground disabled:opacity-50"
+            disabled={!ready || ws.busy || editing !== null}
+            onclick={() => openRule(i + 1)}
+          >
+            {describeRule(rule, i + 1)}
+          </button>
+        </li>
+      {/each}
+    </ol>
+  {/if}
 </section>

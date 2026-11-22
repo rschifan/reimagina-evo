@@ -312,7 +312,7 @@ export function downloadUrl(
 
 // ── scenarios ───────────────────────────────────────────────────────────
 //
-// The nine routes of `apps/api/routers/scenarios.py`, typed. Shapes mirror
+// The routes of `apps/api/routers/scenarios.py`, typed. Shapes mirror
 // that module's pydantic models and, as everywhere else in this file, only
 // the fields the map reads.
 //
@@ -330,7 +330,7 @@ export interface ScenarioRow {
   description: string | null;
   created_at: string;
   updated_at: string;
-  /** Null means the edits have not been expanded into overrides yet — a
+  /** Null means the rules have not been expanded into overrides yet — a
    *  different statement from "expanded, and there was nothing to do". */
   materialized_at: string | null;
 }
@@ -339,7 +339,7 @@ export interface ScenarioRow {
 /** A `GET /scenarios` row: the scenario plus what a summary of all of them
  *  needs. Only the list carries these; a detail does not. */
 export interface ScenarioListRow extends ScenarioRow {
-  edit_count: number;
+  rule_count: number;
   /** The newest run (its envelope, the id the Runs page uses), or null. A
    *  queued run has no envelope until a worker opens it, so during that
    *  window this names the previous run. */
@@ -347,44 +347,9 @@ export interface ScenarioListRow extends ScenarioRow {
 }
 
 
-export interface EditRow {
-  id: string;
-  ordinal: number;
-  type_id: string;
-  attribute_key: string;
-  value_numeric: number;
-  geometry_wkt: string;
-  created_at: string;
-}
-
-
-export interface ScenarioDetail extends ScenarioRow {
-  override_count: number;
-  edits: EditRow[];
-}
-
-
-export interface WrittenEdit {
-  id: string;
-  attribute_key: string;
-  value_numeric: number;
-}
-
-
-export interface EditsWritten {
-  scenario_id: string;
-  feature_type: string;
-  edits: WrittenEdit[];
-}
-
-
-/** One proposal: the drawn area and the three numbers proposed over it.
- *  The field names are the API's, which are the domain's, so a refusal can
- *  name the field the form posted without a translation table. */
-/** Each number is optional: one left out is not set by the rule, and every
- *  block keeps its own value. At least one must be sent. */
-export interface ProposalBody {
-  area: GeoJSON.Feature | GeoJSON.FeatureCollection | GeoJSON.Geometry;
+/** The numbers a rule sets, by the API's names. A number left out is not set:
+ *  every block keeps its own value for it. */
+export interface RuleInputs {
   levels?: number;
   unit_size?: number;
   people_per_household?: number;
@@ -393,31 +358,43 @@ export interface ProposalBody {
 }
 
 
-/** `PATCH /scenarios/{id}/rules`: one rule's new numbers, and optionally its
- *  new area, applied to its existing edits in place. */
-export interface UpdateRuleBody {
-  edit_ids: string[];
-  area?: GeoJSON.Feature | GeoJSON.Geometry;
-  /** The rule's whole set: a number left out is no longer set by it. */
-  levels?: number;
-  unit_size?: number;
-  people_per_household?: number;
-  lot_coverage?: number;
+/** One rule as the server stores it: a row with its own id. */
+export interface RuleRow {
+  id: string;
+  /** Its place in "later wins": fixed when the rule was created. */
+  ordinal: number;
+  type_id: string;
+  inputs: RuleInputs;
+  geometry_wkt: string;
+  created_at: string;
+  updated_at: string;
+}
+
+
+export interface ScenarioDetail extends ScenarioRow {
+  override_count: number;
+  rules: RuleRow[];
 }
 
 
 export interface RecomputeResponse {
   scenario_id: string;
-  /** Per *edit*: how many features that edit's area caught inside the AOI.
-   *  Zero is an answer — the area caught nothing — not an omission. */
-  matched_per_edit: Record<string, number>;
+  /** Per rule: how many blocks its area caught inside the AOI. */
+  matched_per_rule: Record<string, number>;
   overrides_written: number;
   overrides_removed: number;
   results_superseded: number;
-  /** Null for a submit that found nothing to recompute. */
+  /** Null when nothing needed recomputing. */
   run_id: string | null;
   run_status: string;
   deduplicated: boolean;
+}
+
+
+/** A rule written (or deleted), materialised, and its recompute enqueued. */
+export interface RuleChangeResponse extends RecomputeResponse {
+  /** The rule as stored; null after a delete. */
+  rule: RuleRow | null;
 }
 
 
@@ -491,7 +468,7 @@ export function listScenarios(
 export function createScenario(body: {
   project_id: string;
   name: string;
-  aoi_id?: string | null;
+  aoi_id: string;
   description?: string | null;
 }): Promise<ScenarioDetail> {
   return jsonRequest<ScenarioDetail>("/scenarios", { body });
@@ -511,48 +488,42 @@ export function deleteScenario(scenarioId: string): Promise<DeleteScenarioRespon
 }
 
 
-export function addScenarioEdits(
+type Area = GeoJSON.Feature | GeoJSON.FeatureCollection | GeoJSON.Geometry;
+
+
+/** Draw a rule. Written and materialised in one transaction, so a refusal
+ *  (4xx) stores nothing; then its recompute is enqueued. */
+export function addRule(
   scenarioId: string,
-  body: ProposalBody,
-): Promise<EditsWritten> {
-  return jsonRequest<EditsWritten>(
-    `/scenarios/${encodeURIComponent(scenarioId)}/edits`,
+  body: { area: Area; inputs: RuleInputs },
+): Promise<RuleChangeResponse> {
+  return jsonRequest<RuleChangeResponse>(
+    `/scenarios/${encodeURIComponent(scenarioId)}/rules`,
     { body },
   );
 }
 
 
-/** Change one rule in place: it keeps its edits and its place in "later wins". */
-export function updateRule(scenarioId: string, body: UpdateRuleBody): Promise<EditsWritten> {
-  return jsonRequest<EditsWritten>(
-    `/scenarios/${encodeURIComponent(scenarioId)}/rules`,
+/** Replace a rule's numbers (its whole set), and its area when given. It
+ *  keeps its id and its place in "later wins"; a refusal changes nothing. */
+export function updateRule(
+  scenarioId: string,
+  ruleId: string,
+  body: { area?: Area; inputs: RuleInputs },
+): Promise<RuleChangeResponse> {
+  return jsonRequest<RuleChangeResponse>(
+    `/scenarios/${encodeURIComponent(scenarioId)}/rules/${encodeURIComponent(ruleId)}`,
     { method: "PATCH", body },
   );
 }
 
 
-/**
- * Remove one edit from a scenario (a rule is several: see `removeRule` in scenarios/follow.ts).
- *
- * ⚠ Not through {@link jsonRequest}: the route answers 204 with an empty body,
- * and `response.json()` on no bytes rejects with a SyntaxError — a successful
- * delete reported to the user as "Unexpected end of JSON input". The status is
- * the whole answer, so there is nothing to parse.
- */
-export async function removeScenarioEdit(
-  scenarioId: string,
-  editId: string,
-): Promise<void> {
-  const path =
-    `/scenarios/${encodeURIComponent(scenarioId)}/edits` +
-    `?edit_id=${encodeURIComponent(editId)}`;
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "DELETE",
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new ApiError(`${response.status} ${response.statusText} on ${path}`, response);
-  }
+/** Delete a rule — one row, one request — and recompute what is left. */
+export function deleteRule(scenarioId: string, ruleId: string): Promise<RuleChangeResponse> {
+  return jsonRequest<RuleChangeResponse>(
+    `/scenarios/${encodeURIComponent(scenarioId)}/rules/${encodeURIComponent(ruleId)}`,
+    { method: "DELETE" },
+  );
 }
 
 
@@ -585,8 +556,8 @@ export interface RunView {
 }
 
 
-/** Read a run's status. Used to follow the recompute a scenario enqueued:
- *  `POST /scenarios/{id}/recompute` answers 202 with a run id, and the
+/** Read a run's status. Used to follow the recompute a rule change enqueued:
+ *  writing a rule answers with a run id, and the
  *  results the map draws do not exist until that run lands. */
 export function getRun(runId: string): Promise<RunView> {
   return jsonRequest<RunView>(`/jobs/${encodeURIComponent(runId)}`);

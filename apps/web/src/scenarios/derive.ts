@@ -76,7 +76,7 @@ export function statusFor(
   row: ScenarioListRow,
   followed: { status: string } | null,
 ): ScenarioStatus {
-  if (row.edit_count === 0) return "no-rules";
+  if (row.rule_count === 0) return "no-rules";
   const live = followed ? fromRun(followed.status) : null;
   if (live) return live;
   if (row.materialized_at === null) return "not-computed";

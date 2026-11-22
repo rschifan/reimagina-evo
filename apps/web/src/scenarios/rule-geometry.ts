@@ -1,6 +1,6 @@
 import type { FeatureCollection, MultiPolygon, Polygon, Position } from "geojson";
 
-import { describeGroup, type EditGroup } from "../scenario";
+import { describeRule, type Rule } from "../scenario";
 import type { SelectionShape } from "../selection";
 
 /**
@@ -74,18 +74,38 @@ function isRound(ring: Position[]): boolean {
   return mean > 0 && radii.every((r) => Math.abs(r - mean) <= 0.02 * mean);
 }
 
+/** `[[minX, minY], [maxX, maxY]]` of a polygon or multipolygon. */
+export function bboxOf(geometry: Polygon | MultiPolygon): [[number, number], [number, number]] {
+  const rings = geometry.type === "Polygon" ? geometry.coordinates : geometry.coordinates.flat();
+  const points = rings.flat();
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  return [
+    [Math.min(...xs), Math.min(...ys)],
+    [Math.max(...xs), Math.max(...ys)],
+  ];
+}
+
+
+/** Area of the bounding box, in square degrees: enough to rank rules. */
+export function bboxArea(geometry: Polygon | MultiPolygon): number {
+  const [[x0, y0], [x1, y1]] = bboxOf(geometry);
+  return (x1 - x0) * (y1 - y0);
+}
+
+
 /**
  * The rules as one GeoJSON source, numbered from 1 in "later wins" order —
  * which is also the order MapLibre draws them in, so a later rule paints over
  * an earlier one where they overlap, as it wins there.
  */
-export function rulesToFeatureCollection(groups: EditGroup[]): FeatureCollection {
-  const ordered = [...groups].sort((a, b) => a.ordinal - b.ordinal);
+export function rulesToFeatureCollection(rules: Rule[]): FeatureCollection {
+  const ordered = [...rules].sort((a, b) => a.ordinal - b.ordinal);
   const features: FeatureCollection["features"] = [];
-  ordered.forEach((group, i) => {
+  ordered.forEach((rule, i) => {
     let geometry: Polygon | MultiPolygon;
     try {
-      geometry = wktToGeometry(group.areaWkt);
+      geometry = wktToGeometry(rule.areaWkt);
     } catch {
       // One unreadable rule must not take the whole layer down.
       return;
@@ -95,8 +115,10 @@ export function rulesToFeatureCollection(groups: EditGroup[]): FeatureCollection
       geometry,
       properties: {
         index: i + 1,
-        label: describeGroup(group, i + 1),
-        editIds: group.editIds.join(","),
+        label: describeRule(rule, i + 1),
+        ruleId: rule.id,
+        // Ranks the rules under a click: the smallest is the one meant.
+        area: bboxArea(geometry),
       },
     });
   });

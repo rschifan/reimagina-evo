@@ -1,14 +1,15 @@
 /**
  * The pure rules a scenario-authoring screen needs: the tile URL, the
- * client-side precheck, refusal wording, the comparison headline and the
- * grouping of a scenario's edits into rules.
+ * client-side precheck, refusal wording and a scenario's rules as the page
+ * shows them.
  *
  * The scenario workspace (`src/scenarios/`) renders them; this module has no
  * DOM. The six operations `apps/cli/scenario.py` offers at a terminal and
  * `apps/api/routers/scenarios.py` offers over HTTP are the same operations.
- * Nothing here owns a rule. The four edits one proposal writes, the
- * refusal of a degenerate number and the density precheck all live in
- * `reimagina.scenarios.proposal`; what this module adds is the one thing a
+ * Nothing here owns a rule: a rule is a server row, refused or stored whole.
+ * The edits its numbers write, the refusal of a degenerate number and the
+ * density precheck all live in `reimagina.scenarios.proposal`; what this
+ * module adds is the one thing a
  * form has that a request body does not — the chance to say no before the
  * round trip, and the obligation to say *why* in the user's own words.
  *
@@ -32,7 +33,7 @@
  * refuses, with the numbers.
  */
 
-import type { EditRow, IndicatorSummary } from "./api";
+import type { IndicatorSummary, RuleInputs, RuleRow } from "./api";
 import { ApiError } from "./http";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
@@ -269,8 +270,8 @@ export function runProducedResults(status: string): boolean {
 export type ScenarioOperation =
   | "list"
   | "create"
-  | "edits"
-  | "removeEdit"
+  | "rule"
+  | "deleteRule"
   | "recompute"
   | "delete"
   | "compare";
@@ -312,6 +313,9 @@ export async function refusalText(
   const served = serverMessage(detail, d, envelope);
 
   if (status === 404) {
+    if (operation === "rule" || operation === "deleteRule") {
+      return `That rule or scenario is not there any more — it changed elsewhere. Reload the page.${suffix(served)}`;
+    }
     if (code === "unknown_reference") {
       const field = typeof d?.field === "string" ? d.field : "reference";
       return `No record matches the ${field} in this request. Reload the page and try again.`;
@@ -326,13 +330,13 @@ export async function refusalText(
       return `That name is taken. Every scenario in a project needs its own name.${suffix(served)}`;
     }
     return (
-      "This scenario has no area of interest, so there is no bound on what " +
-      `its edits would select. Set one before recomputing.${suffix(served)}`
+      "This scenario's area of interest was deleted, so its rules select " +
+      `nothing. Create a new scenario on a pilot and draw them there.${suffix(served)}`
     );
   }
   if (status === 400) {
     if (code === "invalid_geometry") {
-      return `The drawn area is not a polygon.${suffix(served)}`;
+      return `The drawn area is not a polygon in longitude and latitude.${suffix(served)}`;
     }
     const field = typeof d?.field === "string" ? d.field : null;
     return field
@@ -354,8 +358,11 @@ export async function refusalText(
         count === null
           ? "Some blocks would compute a value the indicators cannot store."
           : `${count} block${count === 1 ? "" : "s"} would compute a value the ` +
-            "indicators cannot store, so nothing was materialised.";
+            "indicators cannot store, so nothing was stored.";
       return `${head}${suffix(served)}`;
+    }
+    if (code === "rule_catches_nothing") {
+      return "No block of this pilot falls inside this area, so the rule was not stored. Draw it over the city's blocks.";
     }
     return `The request was refused before it reached the database.${suffix(served)}`;
   }
@@ -370,8 +377,8 @@ export async function refusalText(
         ? "The edits were written and committed"
         : `${written} override${written === 1 ? "" : "s"} were written and committed`;
     return (
-      `${stands}; only the recompute was not queued. Retry — ` +
-      "materialising a scenario twice is the same as materialising it once."
+      `${stands}; only the recompute was not queued. Use Recompute to ` +
+      "retry — materialising a scenario twice is the same as once."
     );
   }
   if (status === 503) {
@@ -419,8 +426,8 @@ export async function refusalText(
 const OPERATION_NOUN: Record<ScenarioOperation, string> = {
   list: "reading the scenario list",
   create: "creating the scenario",
-  edits: "writing the rule",
-  removeEdit: "removing the rule",
+  rule: "writing the rule",
+  deleteRule: "deleting the rule",
   recompute: "the recompute",
   delete: "deleting the scenario",
   compare: "the comparison",
@@ -486,107 +493,87 @@ function fmt(value: number): string {
 }
 
 
-// ── the comparison strip ────────────────────────────────────────────────
-
-
-
-
 // ── a scenario's rules ──────────────────────────────────────────────────
 
-export interface EditGroup {
+/** One rule as the page shows it. */
+export interface Rule {
+  id: string;
+  /** Its place in "later wins"; fixed when it was created. */
+  ordinal: number;
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
   levels: number | null;
   unitSize: number | null;
   peoplePerHousehold: number | null;
-  /** Share of the block built on. Null for a rule written before lot
-   *  coverage existed, which computes at 1, the whole block. */
+  /** Share of the block built on. Null: not set, each block keeps its own. */
   lotCoverage: number | null;
-  /** Every edit in the group, in the order they were written. The remove
-   *  button passes all of them. */
-  editIds: string[];
-  /** True when all four edits of one proposal are present. */
-  complete: boolean;
-  /** Lowest ordinal in the group — what orders the list. */
-  ordinal: number;
 }
 
 
-/**
- * The four edits of one proposal, as one row.
- *
- * ⚠ **Grouped, because a proposal is four edits and three of four is not a
- * proposal.** `edits_for` writes `floors` and `num_levels` from one number
- * precisely so planned floors cannot freeze while edificability moves;
- * `DELETE /scenarios/{id}/edits` removes one edit by id, so a list of four
- * rows with four × buttons would offer the user exactly that half-written
- * state — and the compute's answer to it is to skip the block silently.
- *
- * Keyed on the stored WKT: two strokes of one selection were unioned into one
- * area before the insert, so one drawn shape is one key.
- */
-export function groupEditsByArea(edits: EditRow[]): EditGroup[] {
-  const byArea = new Map<string, EditGroup>();
-  const seen = new Map<string, Set<string>>();
-  for (const edit of edits) {
-    let group = byArea.get(edit.geometry_wkt);
-    if (!group) {
-      group = {
-        areaWkt: edit.geometry_wkt,
-        levels: null,
-        unitSize: null,
-        peoplePerHousehold: null,
-        lotCoverage: null,
-        editIds: [],
-        complete: false,
-        ordinal: edit.ordinal,
-      };
-      byArea.set(edit.geometry_wkt, group);
-      seen.set(edit.geometry_wkt, new Set());
-    }
-    group.editIds.push(edit.id);
-    group.ordinal = Math.min(group.ordinal, edit.ordinal);
-    seen.get(edit.geometry_wkt)?.add(edit.attribute_key);
-    switch (edit.attribute_key) {
-      case "floors":
-      case "num_levels":
-        // The same quantity under two names. Either one answers "how tall",
-        // and `complete` below is what notices when only one was written.
-        group.levels = edit.value_numeric;
-        break;
-      case "unit_size":
-        group.unitSize = edit.value_numeric;
-        break;
-      case "people_per_household":
-        group.peoplePerHousehold = edit.value_numeric;
-        break;
-      case "lot_coverage":
-        group.lotCoverage = edit.value_numeric;
-        break;
-      default:
-        break;
-    }
-  }
-  for (const [wkt, group] of byArea) {
-    const keys = seen.get(wkt) ?? new Set<string>();
-    // A rule sets any of its numbers, but storeys are two edits that must
-    // travel together: one without the other makes the map contradict itself.
-    group.complete = keys.size > 0 && keys.has("floors") === keys.has("num_levels");
-  }
-  return [...byArea.values()].sort((a, b) => a.ordinal - b.ordinal);
+/** The server's rules, in "later wins" order. */
+export function rulesFromRows(rows: RuleRow[]): Rule[] {
+  return [...rows]
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map((row) => ({
+      id: row.id,
+      ordinal: row.ordinal,
+      areaWkt: row.geometry_wkt,
+      levels: row.inputs.levels ?? null,
+      unitSize: row.inputs.unit_size ?? null,
+      peoplePerHousehold: row.inputs.people_per_household ?? null,
+      lotCoverage: row.inputs.lot_coverage ?? null,
+    }));
 }
 
 
-export function describeGroup(group: EditGroup, position: number): string {
+/** The request's `inputs`: the numbers set, and only those. */
+export function ruleInputs(values: {
+  levels: number | null;
+  unitSize: number | null;
+  peoplePerHousehold: number | null;
+  lotCoverage: number | null;
+}): RuleInputs {
+  return {
+    ...(values.levels !== null ? { levels: values.levels } : {}),
+    ...(values.unitSize !== null ? { unit_size: values.unitSize } : {}),
+    ...(values.peoplePerHousehold !== null
+      ? { people_per_household: values.peoplePerHousehold }
+      : {}),
+    ...(values.lotCoverage !== null ? { lot_coverage: values.lotCoverage } : {}),
+  };
+}
+
+
+/** A share as the percent a planner typed: 0.29 is "29", not
+ *  "28.999999999999996", and 0.625 stays "62.5". */
+export function percentOf(share: number): number {
+  return Number((share * 100).toFixed(4));
+}
+
+
+/** What a rule's numbers are called, for "Rule 3 also sets storeys". */
+const RULE_NUMBER_NAMES: Array<[keyof Rule, string]> = [
+  ["levels", "storeys"],
+  ["unitSize", "m² per home"],
+  ["peoplePerHousehold", "people per home"],
+  ["lotCoverage", "lot coverage"],
+];
+
+
+/** The numbers both rules set: where they overlap, the later one's win. */
+export function sharedNumbers(rule: Rule, later: Rule): string[] {
+  return RULE_NUMBER_NAMES.filter(([key]) => rule[key] !== null && later[key] !== null).map(
+    ([, name]) => name,
+  );
+}
+
+
+export function describeRule(rule: Rule, position: number): string {
   // Only what the rule sets; everything else is each block's own value.
   const parts = [`Rule ${position}`];
-  if (group.levels !== null) parts.push(`${fmt(group.levels)} st`);
-  if (group.unitSize !== null) parts.push(`${fmt(group.unitSize)} m²`);
-  if (group.peoplePerHousehold !== null) parts.push(`${fmt(group.peoplePerHousehold)} people`);
-  if (group.lotCoverage !== null) parts.push(`${fmt(group.lotCoverage * 100)} %`);
-  // An incomplete group is named as such rather than papered over: the
-  // edificability family skips any feature missing any of the three, so a
-  // partial rule computes nothing and that is invisible on the map.
-  const flag = group.complete ? "" : " · incomplete, will not compute";
-  return `${parts.join(" · ")}${flag}`;
+  if (rule.levels !== null) parts.push(`${fmt(rule.levels)} st`);
+  if (rule.unitSize !== null) parts.push(`${fmt(rule.unitSize)} m²`);
+  if (rule.peoplePerHousehold !== null) parts.push(`${fmt(rule.peoplePerHousehold)} people`);
+  if (rule.lotCoverage !== null) parts.push(`${fmt(percentOf(rule.lotCoverage))} %`);
+  return parts.join(" · ");
 }

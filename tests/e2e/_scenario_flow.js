@@ -15,6 +15,12 @@ const OUT = process.env.E2E_OUT;
 const FILL = 'indicator_overlay__fill';
 const RULES = 'scenario-rules-fill';
 const NAME = `E2E ${Date.now()}`;
+// On a real pilot the blocks are not a grid: `E2E_FOCUS=lon0,lat0,lon1,lat1`
+// fits the map to that window and addresses it as an `E2E_GRID` x `E2E_GRID`
+// grid of cells (default 4), each probe snapped to a block painted near the
+// cell's centre. Without it the synthetic territory's own grid is used.
+const FOCUS = process.env.E2E_FOCUS ? process.env.E2E_FOCUS.split(',').map(Number) : null;
+const GRID = Number(process.env.E2E_GRID || 4);
 const density = (v) => (v.coverage * v.levels * 10000) / v.unitSize;
 
 const report = { steps: [], errors: [], warnings: [], scenarioId: null };
@@ -67,7 +73,16 @@ async function run(page) {
   const grid = await fitToBlocks(page);
   const bw = (grid.x1 - grid.x0) / grid.cols;
   const bh = (grid.y1 - grid.y0) / grid.rows;
-  const blk = (i, j) => [grid.x0 + (i + 0.5) * bw, grid.y0 + (j + 0.5) * bh];
+  const centre = (i, j) => [grid.x0 + (i + 0.5) * bw, grid.y0 + (j + 0.5) * bh];
+  // A block painted at (or, on a real pilot, near) the cell's centre: a street
+  // there would read as "no feature" and fail a step for nothing.
+  const snapped = new Map();
+  const blk = (i, j) => snapped.get(`${i},${j}`) || centre(i, j);
+  for (let i = 0; i < grid.cols; i += 1) {
+    for (let j = 0; j < grid.rows; j += 1) {
+      snapped.set(`${i},${j}`, await snap(page, centre(i, j), 0.15 * Math.min(bw, bh)));
+    }
+  }
   const span = (i0, j0, i1, j1) => [
     at(grid.x0 + (i0 + 0.2) * bw, grid.y0 + (j0 + 0.2) * bh),
     at(grid.x0 + (i1 + 0.8) * bw, grid.y0 + (j1 + 0.8) * bh),
@@ -96,7 +111,7 @@ async function run(page) {
     changePressed: await page.getByRole('button', { name: 'Change' }).getAttribute('aria-pressed'),
   });
   if (!created) return;
-  const first = await edits(created.id);
+  const first = await rules(created.id);
 
   // 2: change the rule's numbers; the map must paint the new value, not a cached one.
   await click(blk(0, 1));
@@ -115,7 +130,7 @@ async function run(page) {
   await page.getByRole('button', { name: 'Change' }).click();
   await settled(page);
 
-  // 2b: drag the rule; it moves in place (same edits, same order).
+  // 2b: drag the rule; it moves in place (same id, same place in "later wins").
   await click(blk(0, 1));
   await ruleBox.waitFor({ timeout: 10_000 });
   await page.waitForTimeout(300);
@@ -132,9 +147,9 @@ async function run(page) {
   await shot('2b-after-save');
   const oldPlace = await rendered(page, ...blk(0, 1));
   const newPlace = await rendered(page, ...blk(2, 1));
-  const moved = await edits(created.id);
+  const moved = await rules(created.id);
   step('dragging a rule moves it in place', oldPlace && oldPlace.state === 'unchanged' && newPlace && newPlace.state === 'changed'
-    && sameIds(first, moved) && new Set(moved.map((e) => e.geometry_wkt)).size === 1
+    && sameIds(first, moved) && moved.length === 1
     && moved[0].geometry_wkt !== first[0].geometry_wkt, {
     oldPlace, newPlace, sameIds: sameIds(first, moved),
   });
@@ -157,7 +172,7 @@ async function run(page) {
   await click(blk(2, 2));
   await ruleBox.waitFor({ timeout: 10_000 });
   const says = await ruleBox.innerText();
-  step('an earlier rule says which rule overrides it', /Rule 2 overrides this one/.test(says), { box: says });
+  step('an earlier rule says which rule overrides it', /Rule 2 also sets storeys/.test(says), { box: says });
   await page.keyboard.press('Escape');
   await ruleBox.waitFor({ state: 'detached', timeout: 5_000 });
 
@@ -168,10 +183,10 @@ async function run(page) {
     await ruleBox.getByRole('button', { name: 'Delete rule' }).click();
     await gestureDone(page, ruleBox);
   }
-  const left = await edits(created.id);
+  const left = await rules(created.id);
   const after = await rendered(page, ...blk(2, 1));
   step('deleting every rule returns the scenario to the baseline', left.length === 0 && (!after || after.state === 'unchanged'), {
-    edits: left.length, rendered: after,
+    rules: left.length, rendered: after,
   });
 
   // 6: a rule that sets only household size changes population, and density
@@ -208,20 +223,39 @@ async function fillRule(box, { levels, unitSize, people, coverage }) {
   }
 }
 
-/** Fit the map to the indicator's blocks; return their screen box and grid. */
+/** Every [lon, lat] of a geometry, whatever its nesting: a block on a real
+ *  pilot is often a MultiPolygon, one level deeper than the synthetic grid's
+ *  polygons, and flattening once handed fitBounds rings instead of points. */
+const POSITIONS = `(function positions(c) {
+  return typeof c[0] === 'number' ? [c] : c.flatMap(positions);
+})`;
+
+/** Fit the map to the indicator's blocks (or to E2E_FOCUS); return the
+ *  screen box to address and its grid. */
 async function fitToBlocks(page) {
-  await page.evaluate((layer) => {
+  await page.evaluate(([layer, focus, positionsSrc]) => {
+    const positions = eval(positionsSrc);
     const m = window.__scenarioMap;
-    const coords = m.queryRenderedFeatures({ layers: [layer] }).flatMap((f) => f.geometry.coordinates.flat());
+    if (focus) {
+      m.fitBounds([[focus[0], focus[1]], [focus[2], focus[3]]], { padding: 20, animate: false });
+      return;
+    }
+    const coords = m.queryRenderedFeatures({ layers: [layer] }).flatMap((f) => positions(f.geometry.coordinates));
     const xs = coords.map((c) => c[0]);
     const ys = coords.map((c) => c[1]);
     m.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 60, animate: false });
-  }, FILL);
+  }, [FILL, FOCUS, POSITIONS]);
   await settled(page);
-  return page.evaluate((layer) => {
+  return page.evaluate(([layer, focus, grid, positionsSrc]) => {
+    const positions = eval(positionsSrc);
     const m = window.__scenarioMap;
+    if (focus) {
+      const a = m.project([focus[0], focus[3]]);
+      const b = m.project([focus[2], focus[1]]);
+      return { x0: a.x, x1: b.x, y0: a.y, y1: b.y, cols: grid, rows: grid };
+    }
     const features = m.queryRenderedFeatures({ layers: [layer] });
-    const points = features.flatMap((f) => f.geometry.coordinates.flat()).map((c) => m.project(c));
+    const points = features.flatMap((f) => positions(f.geometry.coordinates)).map((c) => m.project(c));
     const ids = new Set(features.map((f) => f.properties.feature_id));
     const side = Math.round(Math.sqrt(ids.size));
     return {
@@ -229,7 +263,26 @@ async function fitToBlocks(page) {
       y0: Math.min(...points.map((p) => p.y)), y1: Math.max(...points.map((p) => p.y)),
       cols: side, rows: side,
     };
-  }, FILL);
+  }, [FILL, FOCUS, GRID, POSITIONS]);
+}
+
+/** The nearest point to `at` within `radius` px where a block is painted. */
+function snap(page, at, radius) {
+  return page.evaluate(([x, y, r, layer]) => {
+    const m = window.__scenarioMap;
+    const steps = 4;
+    let best = null;
+    for (let i = -steps; i <= steps; i += 1) {
+      for (let j = -steps; j <= steps; j += 1) {
+        const px = x + (i * r) / steps;
+        const py = y + (j * r) / steps;
+        if (!m.queryRenderedFeatures([px, py], { layers: [layer] }).length) continue;
+        const d = Math.hypot(px - x, py - y);
+        if (!best || d < best.d) best = { d, p: [px, py] };
+      }
+    }
+    return best ? best.p : [x, y];
+  }, [at[0], at[1], radius, FILL]);
 }
 
 async function drawRectangle(page, from, to) {
@@ -276,12 +329,12 @@ function rendered(page, x, y) {
   );
 }
 
-async function edits(scenarioId) {
-  return (await (await fetch(`${API}/scenarios/${scenarioId}`)).json()).edits;
+async function rules(scenarioId) {
+  return (await (await fetch(`${API}/scenarios/${scenarioId}`)).json()).rules;
 }
 
 const sameIds = (a, b) =>
-  JSON.stringify(a.map((e) => [e.id, e.ordinal]).sort()) === JSON.stringify(b.map((e) => [e.id, e.ordinal]).sort());
+  JSON.stringify(a.map((r) => [r.id, r.ordinal]).sort()) === JSON.stringify(b.map((r) => [r.id, r.ordinal]).sort());
 const approx = (a, b) => typeof a === 'number' && Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b));
 
 main();

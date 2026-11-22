@@ -5,16 +5,19 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "./http";
 import {
   CLIENT_PRECHECK_NOTE,
-  describeGroup,
-  groupEditsByArea,
+  describeRule,
   maxLevelsFor,
+  percentOf,
+  ruleInputs,
+  rulesFromRows,
+  sharedNumbers,
   isTerminalRunStatus,
   refusalText,
   runProducedResults,
   tileUrlFor,
   validateEdit,
 } from "./scenario";
-import type { EditRow } from "./api";
+import type { RuleRow } from "./api";
 
 /**
  * ``valid_max`` of ``edificability_block_density`` in the shipped catalog
@@ -375,7 +378,7 @@ describe("refusalText", () => {
         allowed_levels: 12,
       },
     });
-    const text = await refusalText(err, "edits");
+    const text = await refusalText(err, "rule");
     expect(text).toMatch(/12 storeys/);
   });
 
@@ -399,7 +402,7 @@ describe("refusalText", () => {
         message: "levels must be a positive number, got -3.0",
       },
     });
-    const text = await refusalText(err, "edits");
+    const text = await refusalText(err, "rule");
     expect(text).toMatch(/^levels was refused\./);
     // ⚠ The generic fall-through appends the server's sentence, which also
     // starts with "levels"; it reports a status code, this branch does not.
@@ -414,8 +417,8 @@ describe("refusalText", () => {
         message: "the drawn area carries no polygon: …",
       },
     });
-    const text = await refusalText(err, "edits");
-    expect(text).toMatch(/^The drawn area is not a polygon\./);
+    const text = await refusalText(err, "rule");
+    expect(text).toMatch(/^The drawn area is not a polygon in longitude and latitude\./);
     // Without the geometry branch this lands on the field branch
     // ("area was refused.") or the generic one (a status code).
     expect(text).not.toMatch(/was refused|400/);
@@ -530,103 +533,79 @@ describe("isTerminalRunStatus", () => {
 });
 
 
-// ── the edit list ──────────────────────────────────────────────────────
+// ── a scenario's rules ─────────────────────────────────────────────────
 
-function edit(ordinal: number, key: string, value: number, wkt: string): EditRow {
+function ruleRow(id: string, ordinal: number, inputs: RuleRow["inputs"]): RuleRow {
   return {
-    id: `e${ordinal}`,
+    id,
     ordinal,
     type_id: "t-1",
-    attribute_key: key,
-    value_numeric: value,
-    geometry_wkt: wkt,
+    inputs,
+    geometry_wkt: "POLYGON((0 0,1 0,1 1,0 1,0 0))",
     created_at: "2026-11-12T00:00:00Z",
+    updated_at: "2026-11-12T00:00:00Z",
   };
 }
 
-const AREA_A = "POLYGON((0 0,1 0,1 1,0 1,0 0))";
-const AREA_B = "POLYGON((5 5,6 5,6 6,5 6,5 5))";
-
-function proposalEdits(wkt: string, from: number, levels = 6): EditRow[] {
-  return [
-    edit(from, "floors", levels, wkt),
-    edit(from + 1, "num_levels", levels, wkt),
-    edit(from + 2, "unit_size", 60, wkt),
-    edit(from + 3, "people_per_household", 3.6, wkt),
-  ];
-}
-
-describe("groupEditsByArea", () => {
-  // One proposal is four edits over one area (`edits_for`). Listing four rows
-  // per drawn shape would invite removing one of them, which is the
-  // half-written proposal that function exists to prevent.
-  it("groups the four edits of one proposal into one row", () => {
-    const groups = groupEditsByArea(proposalEdits(AREA_A, 1));
-    expect(groups).toHaveLength(1);
-    expect(groups[0].levels).toBe(6);
-    expect(groups[0].unitSize).toBe(60);
-    expect(groups[0].peoplePerHousehold).toBe(3.6);
-    expect(groups[0].editIds).toHaveLength(4);
-  });
-
-  it("keeps two drawn areas apart, in the order they were written", () => {
-    const groups = groupEditsByArea([
-      ...proposalEdits(AREA_A, 1, 6),
-      ...proposalEdits(AREA_B, 5, 10),
+describe("rulesFromRows", () => {
+  it("is the server's rules in their order, numbers left out left null", () => {
+    const rules = rulesFromRows([
+      ruleRow("b", 4, { people_per_household: 5 }),
+      ruleRow("a", 2, { levels: 6, unit_size: 60, lot_coverage: 0.6 }),
     ]);
-    expect(groups.map((g) => g.levels)).toEqual([6, 10]);
+    expect(rules.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(rules[0]).toMatchObject({ levels: 6, unitSize: 60, peoplePerHousehold: null, lotCoverage: 0.6 });
+    expect(rules[1]).toMatchObject({ levels: null, peoplePerHousehold: 5 });
   });
 
-  // An edit removed one at a time (the CLI can) leaves a group that is not a
-  // proposal. Showing it as one with a missing number invented would hide
-  // exactly the state that makes the compute skip the block.
-  it("leaves a missing number missing rather than inventing one", () => {
-    const partial = proposalEdits(AREA_A, 1).slice(0, 2);
-    const [group] = groupEditsByArea(partial);
-    expect(group.levels).toBe(6);
-    expect(group.unitSize).toBeNull();
-    // Storeys alone are a whole rule now: each block keeps its own unit size.
-    expect(group.complete).toBe(true);
-  });
-
-  it("marks a whole proposal complete", () => {
-    expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].complete).toBe(true);
-  });
-
-  // A rule written before lot coverage existed has four edits: still a whole
-  // proposal, computed at full coverage.
-  it("reads lot coverage when the rule has it, and leaves it null otherwise", () => {
-    expect(groupEditsByArea(proposalEdits(AREA_A, 1))[0].lotCoverage).toBeNull();
-    const five = [...proposalEdits(AREA_A, 1), edit(5, "lot_coverage", 0.6, AREA_A)];
-    const [group] = groupEditsByArea(five);
-    expect(group.lotCoverage).toBe(0.6);
-    expect(group.complete).toBe(true);
-    expect(group.editIds).toHaveLength(5);
+  it("sends back only the numbers set", () => {
+    expect(
+      ruleInputs({ levels: null, unitSize: 70, peoplePerHousehold: null, lotCoverage: 0.5 }),
+    ).toEqual({ unit_size: 70, lot_coverage: 0.5 });
   });
 });
 
 
-describe("describeGroup", () => {
-  const group = (complete: boolean) => ({
-    areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
-    levels: 6,
-    unitSize: 60,
-    peoplePerHousehold: complete ? 3.6 : null,
-    lotCoverage: null as number | null,
-    editIds: ["e1"],
-    complete,
-    ordinal: 1,
+describe("describeRule", () => {
+  const rule = (o: Partial<ReturnType<typeof rulesFromRows>[number]> = {}) => ({
+    id: "r", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
+    levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: null as number | null, ...o,
   });
 
   it("names a rule by its position and its numbers", () => {
-    expect(describeGroup(group(true), 2)).toBe("Rule 2 · 6 st · 60 m² · 3.6 people");
-    expect(describeGroup({ ...group(true), lotCoverage: 0.6 }, 3)).toBe(
+    expect(describeRule(rule(), 2)).toBe("Rule 2 · 6 st · 60 m² · 3.6 people");
+    expect(describeRule(rule({ lotCoverage: 0.6 }), 3)).toBe(
       "Rule 3 · 6 st · 60 m² · 3.6 people · 60 %",
     );
   });
 
-  it("flags an incomplete rule rather than papering over it", () => {
-    expect(describeGroup(group(false), 1)).toMatch(/incomplete, will not compute$/);
+  // B18: 0.29 × 100 is 28.999999999999996 in floating point.
+  it("prints coverage as typed, without float noise or rounding", () => {
+    expect(describeRule(rule({ levels: null, unitSize: null, peoplePerHousehold: null, lotCoverage: 0.29 }), 1)).toBe(
+      "Rule 1 · 29 %",
+    );
+    expect(percentOf(0.625)).toBe(62.5);
+    for (const pct of [7, 14, 29, 55, 57, 58]) expect(percentOf(pct / 100)).toBe(pct);
+  });
+
+  it("is a whole rule with one number, and its label shows only that number", () => {
+    const [one] = rulesFromRows([ruleRow("r", 1, { people_per_household: 5 })]);
+    expect(describeRule(one, 1)).toBe("Rule 1 · 5 people");
+  });
+
+  // W7: later wins per number, so a later rule that sets only household size
+  // does not override an earlier rule's storeys.
+  it("names only the numbers both rules set", () => {
+    const [early, late] = rulesFromRows([
+      ruleRow("a", 1, { levels: 8, unit_size: 60 }),
+      ruleRow("b", 2, { people_per_household: 2.5, unit_size: 90 }),
+    ]);
+    expect(sharedNumbers(early, late)).toEqual(["m² per home"]);
+    const [storeys, people] = rulesFromRows([
+      ruleRow("a", 1, { levels: 8 }),
+      ruleRow("b", 2, { people_per_household: 2.5 }),
+    ]);
+    expect(sharedNumbers(storeys, people)).toEqual([]);
   });
 });
 
@@ -651,15 +630,4 @@ describe("a rule that sets only some numbers", () => {
     );
   });
 
-  it("is a whole rule with one number, and its label shows only that number", () => {
-    const [group] = groupEditsByArea([edit(1, "people_per_household", 5, AREA_A)]);
-    expect(group.complete).toBe(true);
-    expect(group.levels).toBeNull();
-    expect(describeGroup(group, 1)).toBe("Rule 1 · 5 people");
-  });
-
-  it("is incomplete when storeys are half written", () => {
-    const [group] = groupEditsByArea([edit(1, "floors", 3, AREA_A)]);
-    expect(group.complete).toBe(false);
-  });
 });

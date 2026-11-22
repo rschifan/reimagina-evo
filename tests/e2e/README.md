@@ -100,3 +100,9 @@ for the scratch ports. `load_dotenv()` searches upward and never overrides,
 so anything left unset is read from `.env` — and the worker's queue lives in
 whatever `DATABASE_URL_DIRECT` names, so an unset one would take runs from the
 real stack's queue.
+
+On a real pilot (`scripts/mexicali_run.sh`) the blocks are not a grid, and
+many are MultiPolygons. Set `E2E_FOCUS=lon0,lat0,lon1,lat1` to a small window
+of the city (about a kilometre across) and, optionally, `E2E_GRID` (default
+4): the flow fits the map to that window, addresses it as a grid of cells, and
+snaps each probe to a block painted near a cell's centre.

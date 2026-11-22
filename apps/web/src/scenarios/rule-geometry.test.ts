@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { EditGroup } from "../scenario";
+import type { Rule } from "../scenario";
 import { inferShape, rulesToFeatureCollection, wktToGeometry } from "./rule-geometry";
 
 const SQUARE = "POLYGON((0 0,1 0,1 1,0 1,0 0))";
@@ -72,22 +72,30 @@ describe("inferShape", () => {
 });
 
 describe("rulesToFeatureCollection", () => {
-  const group = (ordinal: number, levels: number, wkt = SQUARE): EditGroup => ({
+  const group = (ordinal: number, levels: number, wkt = SQUARE): Rule => ({
+    id: `r${ordinal}`,
+    ordinal,
     areaWkt: wkt,
     levels,
     unitSize: 60,
     peoplePerHousehold: 3.6,
     lotCoverage: 0.6,
-    editIds: [`e${ordinal}`, `f${ordinal}`],
-    complete: true,
-    ordinal,
   });
 
   it("numbers rules from 1 in their order and labels them", () => {
     const fc = rulesToFeatureCollection([group(5, 3), group(1, 6)]);
     expect(fc.features.map((f) => f.properties?.index)).toEqual([1, 2]);
     expect(fc.features[0].properties?.label).toBe("Rule 1 · 6 st · 60 m² · 3.6 people · 60 %");
-    expect(fc.features[1].properties?.editIds).toBe("e5,f5");
+    expect(fc.features[1].properties?.ruleId).toBe("r5");
+  });
+
+  // B15: a small rule inside a later, larger one is picked by its area.
+  it("carries each rule's size, to pick the one a click means", () => {
+    const fc = rulesToFeatureCollection([
+      group(1, 6, "POLYGON((0 0,1 0,1 1,0 1,0 0))"),
+      group(2, 3, "POLYGON((-5 -5,5 -5,5 5,-5 5,-5 -5))"),
+    ]);
+    expect(fc.features[0].properties?.area).toBeLessThan(fc.features[1].properties?.area);
   });
 
   it("skips a rule whose area cannot be read rather than failing the map", () => {

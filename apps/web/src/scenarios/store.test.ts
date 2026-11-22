@@ -11,12 +11,12 @@ const api = vi.hoisted(() => ({
   getIndicatorStats: vi.fn(),
   createScenario: vi.fn(),
   getScenario: vi.fn(),
-  addScenarioEdits: vi.fn(),
+  addRule: vi.fn(),
   recomputeScenario: vi.fn(),
   deleteScenario: vi.fn(),
   getComparison: vi.fn(),
   getRun: vi.fn(),
-  removeScenarioEdit: vi.fn(),
+  deleteRule: vi.fn(),
   updateRule: vi.fn(),
 }));
 vi.mock("../api", () => api);
@@ -32,6 +32,7 @@ const aoi = vi.hoisted(() => {
     },
     module: {
       setKnownAois: vi.fn(),
+      setActiveAoiId: vi.fn(),
       getActiveAoiId: () => (current as { aoi_id?: string } | null)?.aoi_id ?? null,
       subscribe(fn: (row: unknown) => void) {
         listeners.add(fn);
@@ -66,7 +67,7 @@ const row = (id: string, o: Record<string, unknown> = {}) => ({
   created_at: "2026-11-18T10:00:00Z",
   updated_at: "2026-11-18T10:00:00Z",
   materialized_at: "2026-11-18T11:00:00Z",
-  edit_count: 4,
+  rule_count: 2,
   latest_run: null,
   ...o,
 });
@@ -102,7 +103,7 @@ beforeEach(async () => {
   api.getIndicatorStats.mockImplementation(async (_slug: string, o: { scenario_id?: string }) =>
     o.scenario_id ? stats(10, 2) : stats(1, 1),
   );
-  api.getScenario.mockResolvedValue({ edits: [] });
+  api.getScenario.mockResolvedValue({ rules: [] });
   store = await load();
 });
 
@@ -177,11 +178,30 @@ describe("a link opened cold", () => {
   });
 });
 
+const RULE_ROW = (id: string, ordinal: number, inputs: Record<string, number> = { levels: 6 }) => ({
+  id, ordinal, type_id: "t", inputs, geometry_wkt: "POLYGON((0 0,1 0,1 1,0 0))",
+  created_at: "", updated_at: "",
+});
+
 describe("selection", () => {
-  it("a route naming an unknown scenario selects nothing and says so", () => {
+  it("a route naming a scenario that is gone selects nothing and says so", async () => {
+    api.getScenario.mockRejectedValueOnce(new Error("404"));
     store.applyRoute({ scenarioId: "gone", slug: null });
+    await settle();
     expect(store.ws.selectedId).toBeNull();
     expect(store.ws.message?.tone).toBe("bad");
+  });
+
+  it("a route naming another pilot's scenario switches to that pilot and selects it", async () => {
+    // A shared link carries the scenario, not the reader's last pilot.
+    api.getScenario.mockResolvedValueOnce({ id: "C", aoi_id: "aoi-2", rules: [] });
+    api.listScenarios.mockResolvedValue([row("C", { aoi_id: "aoi-2" })]);
+    store.applyRoute({ scenarioId: "C", slug: null });
+    await settle();
+    expect(aoi.module.setActiveAoiId).toHaveBeenCalledWith("aoi-2");
+    aoi.emit(OTHER_PILOT);
+    await settle();
+    expect(store.ws.selectedId).toBe("C");
   });
 
   it("a route naming a known scenario selects it and its indicator", () => {
@@ -193,17 +213,12 @@ describe("selection", () => {
   it("switching scenario drops a late rule load for the previous one", async () => {
     let releaseA!: (v: unknown) => void;
     api.getScenario.mockImplementation((id: string) =>
-      id === "A" ? new Promise((r) => (releaseA = r)) : Promise.resolve({ edits: [] }),
+      id === "A" ? new Promise((r) => (releaseA = r)) : Promise.resolve({ rules: [] }),
     );
     store.select("A");
     store.select("B");
     await settle();
-    releaseA({
-      edits: [
-        { id: "e1", ordinal: 1, type_id: "t", attribute_key: "floors", value_numeric: 6,
-          geometry_wkt: "POLYGON((0 0,1 0,1 1,0 0))", created_at: "" },
-      ],
-    });
+    releaseA({ rules: [RULE_ROW("r1", 1)] });
     await settle();
     expect(store.ws.selectedId).toBe("B");
     expect(store.ws.rules).toEqual([]);
@@ -217,53 +232,15 @@ describe("selection", () => {
   });
 });
 
-describe("refusals and scope", () => {
-  const AREA = {
-    type: "Feature" as const,
-    properties: {},
-    geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] },
-  };
-
-  it("apply refuses locally with validateEdit's text before any request", async () => {
-    store.select("A");
-    const ok = await store.applyNewRule(AREA, { levels: -1, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: 0.6 });
-    expect(ok).toBe(false);
-    expect(api.addScenarioEdits).not.toHaveBeenCalled();
-    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
-  });
-
-  it("deleting a rule sends every DELETE to the scenario it belongs to, even after a switch", async () => {
-    let releaseFirst!: () => void;
-    api.removeScenarioEdit
-      .mockReturnValueOnce(new Promise<void>((r) => (releaseFirst = r)))
-      .mockResolvedValue(undefined);
-    api.recomputeScenario.mockResolvedValue({
-      scenario_id: "A", matched_per_edit: {}, overrides_written: 0, overrides_removed: 4,
-      results_superseded: 0, run_id: null, run_status: "", deduplicated: false,
-    });
-    store.select("A");
-    const removal = store.deleteRule({
-      areaWkt: "POLYGON((0 0,1 0,1 1,0 0))", levels: 6, unitSize: 60, peoplePerHousehold: 3.6,
-      lotCoverage: null, editIds: ["e1", "e2", "e3"], complete: true, ordinal: 1,
-    });
-    store.select("B");
-    releaseFirst();
-    await removal;
-    expect(api.removeScenarioEdit.mock.calls).toEqual([["A", "e1"], ["A", "e2"], ["A", "e3"]]);
-    expect(api.recomputeScenario).toHaveBeenCalledWith("A");
-  });
-});
-
 
 describe("the default view", () => {
   it("is the change when the scenario has rules, the values otherwise", async () => {
-    api.getScenario.mockResolvedValueOnce({
-      edits: [{ id: "e1", ordinal: 1, type_id: "t", attribute_key: "num_levels", value_numeric: 3, geometry_wkt: "POLYGON((0 0,1 0,1 1,0 0))", created_at: "" }],
-    });
+    api.getScenario.mockResolvedValueOnce({ rules: [RULE_ROW("r1", 1)] });
     store.select("A");
     await settle();
     expect(store.ws.mode).toBe("delta");
-    api.getScenario.mockResolvedValueOnce({ edits: [] });
+    expect(store.ws.rules.map((r) => r.id)).toEqual(["r1"]);
+    api.getScenario.mockResolvedValueOnce({ rules: [] });
     store.select("B");
     await settle();
     expect(store.ws.mode).toBe("value");
@@ -278,15 +255,11 @@ describe("editing on the map", () => {
     geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] },
   };
   const VALUES = { levels: 3, unitSize: 66, peoplePerHousehold: 3.6, lotCoverage: 0.6 };
-  const written = (ids: string[]) => ({
-    scenario_id: "A",
-    feature_type: "MEX:block",
-    edits: ids.map((id) => ({ id, attribute_key: "k", value_numeric: 1 })),
-  });
-  const recomputed = (matched: Record<string, number>, runId: string | null = "run-1") => ({
-    scenario_id: "A", matched_per_edit: matched, overrides_written: 5,
+  const changed = (runId: string | null = "run-1", ruleId: string | null = "r9") => ({
+    scenario_id: "A", matched_per_rule: ruleId ? { [ruleId]: 4 } : {}, overrides_written: 5,
     overrides_removed: 0, results_superseded: 0, run_id: runId,
     run_status: "queued", deduplicated: false,
+    rule: ruleId ? RULE_ROW(ruleId, 3) : null,
   });
   // `load()` resets the module registry, so the class the store checks
   // `instanceof` against is the one imported after it, not one from the top
@@ -295,30 +268,24 @@ describe("editing on the map", () => {
   beforeEach(async () => {
     ({ ApiError } = await import("../http"));
   });
-  const ceiling = () => {
-    const response = new Response(
-      JSON.stringify({ detail: { error: "ceiling_exceeded", message: "housing units over 200000" } }),
-      { status: 422 },
-    );
-    return new ApiError("422 Unprocessable Entity on /recompute", response);
-  };
-  const GROUP = {
-    areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
-    levels: 6,
-    unitSize: 60,
-    peoplePerHousehold: 3.6,
-    lotCoverage: null,
-    editIds: ["e1", "e2", "e3", "e4"],
-    complete: true,
-    ordinal: 1,
+  const refusal = (status: number, detail: Record<string, unknown>) =>
+    new ApiError(`${status} on /rules`, new Response(JSON.stringify({ detail }), { status }));
+  const ceiling = () =>
+    refusal(422, {
+      error: "ceiling_exceeded", breach_count: 2,
+      message: "Rule 3 would make block b compute 2500 for density; at most 5 storeys there.",
+    });
+  const RULE = {
+    id: "r1", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
+    levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: null,
   };
 
   beforeEach(() => {
-    api.addScenarioEdits.mockResolvedValue(written(["n1", "n2", "n3", "n4", "n5"]));
-    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 7, n2: 7, n3: 7, n4: 7, n5: 7 }));
+    api.addRule.mockResolvedValue(changed());
+    api.updateRule.mockResolvedValue(changed("run-1", "r1"));
+    api.deleteRule.mockResolvedValue(changed("run-1", null));
+    api.recomputeScenario.mockResolvedValue(changed("run-1", null));
     api.getRun.mockResolvedValue({ run_id: "run-1", status: "succeeded", units: [] });
-    api.removeScenarioEdit.mockResolvedValue(undefined);
-    api.updateRule.mockResolvedValue(written(GROUP.editIds));
   });
 
   const settleRun = async <T,>(p: Promise<T>): Promise<T> => {
@@ -326,40 +293,61 @@ describe("editing on the map", () => {
     return p;
   };
 
-  it("apply on the baseline creates the scenario, then the rule, then recomputes", async () => {
-    api.createScenario.mockResolvedValue({ id: "N", name: "Scenario 3" });
+  it("apply refuses locally with validateEdit's text before any request", async () => {
+    store.select("A");
+    const ok = await store.applyNewRule(AREA, { ...VALUES, levels: -1 });
+    expect(ok).toBe(false);
+    expect(api.addRule).not.toHaveBeenCalled();
+    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
+  });
+
+  it("apply on the baseline creates the scenario, then writes the rule, then follows its run", async () => {
     api.listScenarios.mockResolvedValue([row("A"), row("B"), row("N")]);
     store.select(null);
     const order: string[] = [];
     api.createScenario.mockImplementation(async () => (order.push("create"), { id: "N", name: "S" }));
-    api.addScenarioEdits.mockImplementation(async () => (order.push("edits"), written(["n1"])));
-    api.recomputeScenario.mockImplementation(async () => (order.push("recompute"), recomputed({ n1: 3 })));
+    api.addRule.mockImplementation(async () => (order.push("rule"), changed()));
 
     const ok = await settleRun(store.applyNewRule(AREA, VALUES, "Scenario 3"));
 
     expect(ok).toBe(true);
-    expect(order).toEqual(["create", "edits", "recompute"]);
-    expect(api.addScenarioEdits).toHaveBeenCalledWith("N", expect.objectContaining({ lot_coverage: 0.6, levels: 3 }));
+    expect(order).toEqual(["create", "rule"]);
+    expect(api.createScenario).toHaveBeenCalledWith(expect.objectContaining({ aoi_id: "aoi-1" }));
+    expect(api.addRule).toHaveBeenCalledWith("N", {
+      area: AREA,
+      inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+    });
+    expect(api.getRun).toHaveBeenCalledWith("run-1");
     expect(store.ws.selectedId).toBe("N");
     expect(store.ws.mode).toBe("delta");
     expect(store.ws.busy).toBe(false);
   });
 
-  it("a refused recompute undoes the new rule", async () => {
+  it("a refused rule stored nothing, so nothing is undone and the box says why", async () => {
     store.select("A");
-    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.addRule.mockRejectedValue(ceiling());
 
     const ok = await settleRun(store.applyNewRule(AREA, VALUES));
 
     expect(ok).toBe(false);
-    expect(api.removeScenarioEdit.mock.calls.map((c) => c[1])).toEqual(["n1", "n2", "n3", "n4", "n5"]);
-    expect(store.ws.boxError?.text).toMatch(/200000|ceiling/);
+    expect(api.deleteRule).not.toHaveBeenCalled();
+    expect(api.recomputeScenario).not.toHaveBeenCalled();
+    expect(store.ws.boxError?.text).toMatch(/2 blocks.*at most 5 storeys/);
   });
 
-  it("a refused recompute after creating the scenario deletes the scenario", async () => {
+  it("the field a refusal names is the one the box marks", async () => {
+    store.select("A");
+    api.addRule.mockRejectedValue(
+      refusal(400, { error: "invalid_value", field: "unit_size", message: "unit_size must be more than 15" }),
+    );
+    await settleRun(store.applyNewRule(AREA, VALUES));
+    expect(store.ws.boxError?.field).toBe("unit_size");
+  });
+
+  it("a refused first rule deletes the empty scenario it was going to go into", async () => {
     store.select(null);
     api.createScenario.mockResolvedValue({ id: "N", name: "S" });
-    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.addRule.mockRejectedValue(ceiling());
     api.deleteScenario.mockResolvedValue({ overrides: 0, results_deleted: 0 });
 
     await settleRun(store.applyNewRule(AREA, VALUES, "S"));
@@ -368,81 +356,96 @@ describe("editing on the map", () => {
     expect(store.ws.selectedId).toBeNull();
   });
 
-  it("a rule that catches no block is undone and said so", async () => {
+  // B4: a 500 after the commit (or a lost response) used to delete the rule
+  // from the map while its values stayed in the database.
+  it("a rule whose recompute was not queued stands, and the page says so", async () => {
     store.select("A");
-    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 0, n2: 0, n3: 0, n4: 0, n5: 0 }, null));
+    await settle();
+    api.addRule.mockRejectedValue(
+      refusal(500, {
+        error: "recompute_not_enqueued",
+        materialized: { overrides_written: 8 },
+        message: "materialised and committed",
+      }),
+    );
+    api.getScenario.mockClear();
+    api.getScenario.mockResolvedValue({ rules: [RULE_ROW("r9", 3)] });
 
     const ok = await settleRun(store.applyNewRule(AREA, VALUES));
 
-    expect(ok).toBe(false);
-    expect(api.removeScenarioEdit).toHaveBeenCalledTimes(5);
-    expect(store.ws.boxError?.text).toMatch(/No blocks fall inside this area/);
-  });
-
-  it("save keeps the rule's edit ids", async () => {
-    store.select("A");
-    api.recomputeScenario.mockResolvedValue(recomputed({ e1: 4, e2: 4, e3: 4, e4: 4 }));
-    const ok = await settleRun(store.saveRule(GROUP, AREA, VALUES));
     expect(ok).toBe(true);
-    expect(api.updateRule).toHaveBeenCalledWith("A", expect.objectContaining({
-      edit_ids: GROUP.editIds, area: AREA, levels: 3, lot_coverage: 0.6,
-    }));
-    expect(api.addScenarioEdits).not.toHaveBeenCalled();
+    expect(api.deleteRule).not.toHaveBeenCalled();
+    expect(api.getScenario).toHaveBeenCalledWith("A");
+    expect(store.ws.rules.map((r) => r.id)).toEqual(["r9"]);
+    expect(store.ws.message?.text).toMatch(/8 overrides were written.*Recompute/);
   });
 
-  it("a refused save writes the old numbers and area back", async () => {
+  it("save sends the rule's id and its whole set of numbers", async () => {
     store.select("A");
-    api.recomputeScenario.mockRejectedValue(ceiling());
-    await settleRun(store.saveRule(GROUP, AREA, VALUES));
-    expect(api.updateRule).toHaveBeenCalledTimes(2);
-    const undo = api.updateRule.mock.calls[1][1];
-    expect(undo).toMatchObject({ levels: 6, unit_size: 60, people_per_household: 3.6 });
-    // The rule did not set coverage before, so the restore does not either.
-    expect(undo).not.toHaveProperty("lot_coverage");
-    expect(undo.area.type).toBe("Polygon");
+    const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
+    expect(ok).toBe(true);
+    expect(api.updateRule).toHaveBeenCalledWith("A", "r1", {
+      area: AREA,
+      inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+    });
+  });
+
+  it("a refused save changed nothing: one request, and the box says why", async () => {
+    store.select("A");
+    api.updateRule.mockRejectedValue(ceiling());
+    const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
+    expect(ok).toBe(false);
+    expect(api.updateRule).toHaveBeenCalledTimes(1);
     expect(store.ws.boxError).not.toBeNull();
   });
 
-  it("delete removes every edit then recomputes", async () => {
+  it("delete is one request for the rule, to the scenario it belongs to", async () => {
     store.select("A");
-    api.recomputeScenario.mockResolvedValue(recomputed({}, "run-1"));
-    const ok = await settleRun(store.deleteRule(GROUP));
+    const ok = await settleRun(store.deleteRule(RULE));
     expect(ok).toBe(true);
-    expect(api.removeScenarioEdit.mock.calls.map((c) => c[1])).toEqual(GROUP.editIds);
-    expect(api.recomputeScenario).toHaveBeenCalledWith("A");
+    expect(api.deleteRule.mock.calls).toEqual([["A", "r1"]]);
   });
 
-  // Review: the edits were already gone when the recompute was refused, yet
-  // the box stayed open on the old outline, and a second Delete sent a 404
-  // per edit. The rule is reported gone and the rules reload.
-  it("a delete whose recompute is refused still reports the rule gone", async () => {
+  it("a delete the server refuses leaves the rule and says why", async () => {
     store.select("A");
-    await settle();
-    api.recomputeScenario.mockRejectedValue(ceiling());
-    api.getScenario.mockClear();
-    const ok = await settleRun(store.deleteRule(GROUP));
-    expect(ok).toBe(true);
-    expect(api.getScenario).toHaveBeenCalledWith("A");
-    expect(store.ws.message?.tone).toBe("bad");
-    expect(store.ws.message?.text).toMatch(/deleted/i);
+    api.deleteRule.mockRejectedValue(ceiling());
+    const ok = await settleRun(store.deleteRule(RULE));
+    expect(ok).toBe(false);
+    expect(store.ws.boxError?.text).toMatch(/would compute/);
   });
 
-  // Final review: after a pilot switch mid-recompute said "Scenario cleared",
-  // a refused delete overwrote it with news about a scenario no longer shown.
-  it("a refused delete after a pilot switch keeps the cleared message", async () => {
+  // B6: the table's row was read once, while the run was still queued, and
+  // kept saying "Computing" (or the last run's "Failed") after it landed.
+  it("the scenario list is read again when the run lands", async () => {
     store.select("A");
     await settle();
-    let refuse!: () => void;
-    api.recomputeScenario.mockImplementation(
-      () => new Promise((_, reject) => (refuse = () => reject(ceiling()))),
+    api.listScenarios.mockClear();
+    let land!: () => void;
+    api.getRun.mockImplementation(
+      () => new Promise((r) => (land = () => r({ run_id: "run-1", status: "succeeded", units: [] }))),
     );
-    const pending = store.deleteRule(GROUP);
-    await settle();
-    aoi.emit(OTHER_PILOT);
-    await settle();
-    refuse();
+    const pending = store.applyNewRule(AREA, VALUES);
+    await vi.advanceTimersByTimeAsync(600);
+    const before = api.listScenarios.mock.calls.length;
+    land();
     await settleRun(pending);
-    expect(store.ws.message?.text).toMatch(/Scenario cleared/);
+    expect(api.listScenarios.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("a partial run is not reported as a clean success", async () => {
+    store.select("A");
+    api.getRun.mockResolvedValue({ run_id: "run-1", status: "partial", units: [] });
+    await settleRun(store.applyNewRule(AREA, VALUES));
+    expect(store.ws.message?.tone).toBe("bad");
+    expect(store.ws.message?.text).toMatch(/Some indicators failed/);
+  });
+
+  it("recompute posts once and follows the run", async () => {
+    store.select("A");
+    await settleRun(store.recomputeSelected());
+    expect(api.recomputeScenario).toHaveBeenCalledWith("A");
+    expect(api.getRun).toHaveBeenCalledWith("run-1");
+    expect(store.ws.busy).toBe(false);
   });
 
   it("a second apply while busy is ignored", async () => {
@@ -451,7 +454,7 @@ describe("editing on the map", () => {
     const second = store.applyNewRule(AREA, VALUES);
     expect(await second).toBe(false);
     await settleRun(first);
-    expect(api.addScenarioEdits).toHaveBeenCalledTimes(1);
+    expect(api.addRule).toHaveBeenCalledTimes(1);
   });
 
   // Review: a switch mid-gesture left the box open on B with A's shape and
@@ -459,16 +462,13 @@ describe("editing on the map", () => {
   it("the selection holds until the gesture ends", async () => {
     store.select("A");
     let release!: () => void;
-    api.addScenarioEdits.mockImplementation(
-      () => new Promise((r) => (release = () => r(written(["n1"])))),
-    );
-    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 2 }));
+    api.addRule.mockImplementation(() => new Promise((r) => (release = () => r(changed()))));
     const pending = store.applyNewRule(AREA, VALUES);
     store.select("B");
     expect(store.ws.selectedId).toBe("A");
     release();
     await settleRun(pending);
-    expect(api.recomputeScenario.mock.calls.every((c) => c[0] === "A")).toBe(true);
+    expect(api.addRule.mock.calls.every((c) => c[0] === "A")).toBe(true);
     store.select("B");
     expect(store.ws.selectedId).toBe("B");
   });
@@ -489,59 +489,16 @@ describe("editing on the map", () => {
     expect(store.ws.selectedId).toBeNull();
   });
 
-  // Review: the recompute had already withdrawn the rule's overrides at its
-  // old place; writing the area back without recomputing left the data
-  // saying the rule did nothing while its outline was back on the map.
-  it("a moved rule that catches no block is put back and recomputed", async () => {
-    store.select("A");
-    api.recomputeScenario
-      .mockResolvedValueOnce(recomputed({ e1: 0, e2: 0, e3: 0, e4: 0 }))
-      .mockResolvedValueOnce(recomputed({ e1: 4, e2: 4, e3: 4, e4: 4 }));
-    const ok = await settleRun(store.saveRule(GROUP, AREA, VALUES));
-    expect(ok).toBe(false);
-    expect(api.updateRule).toHaveBeenCalledTimes(2);
-    expect(api.recomputeScenario).toHaveBeenCalledTimes(2);
-    expect(store.ws.boxError?.text).toMatch(/No blocks fall inside this area/);
-  });
-
-  // Review: a failed undo was a console warning, leaving a refused rule half
-  // in the database and undrawn.
-  it("a refused rule whose undo fails says what is left and shows it", async () => {
-    store.select("A");
-    api.recomputeScenario.mockRejectedValue(ceiling());
-    api.removeScenarioEdit
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("network"));
-    api.getScenario.mockClear();
-    await settleRun(store.applyNewRule(AREA, VALUES));
-    expect(store.ws.boxError?.text).toMatch(/1 of 5 .*removed.*delete it/i);
-    expect(api.getScenario).toHaveBeenCalledWith("A");
-  });
-
-  it("a refused save whose restore fails says so and shows the rule", async () => {
-    store.select("A");
-    api.recomputeScenario.mockRejectedValue(ceiling());
-    api.updateRule
-      .mockResolvedValueOnce(written(GROUP.editIds))
-      .mockRejectedValueOnce(new Error("network"));
-    api.getScenario.mockClear();
-    await settleRun(store.saveRule(GROUP, AREA, VALUES));
-    expect(store.ws.boxError?.text).toMatch(/could not be put back/);
-    expect(api.getScenario).toHaveBeenCalledWith("A");
-  });
-
   it("a rule sends only the numbers it sets", async () => {
     store.select("A");
-    api.addScenarioEdits.mockResolvedValue(written(["n1"]));
-    api.recomputeScenario.mockResolvedValue(recomputed({ n1: 3 }));
     await settleRun(
       store.applyNewRule(AREA, { levels: null, unitSize: null, peoplePerHousehold: 5, lotCoverage: null }),
     );
-    const body = api.addScenarioEdits.mock.calls[0][1];
-    expect(body).toEqual({ area: AREA, people_per_household: 5 });
+    expect(api.addRule.mock.calls[0][1]).toEqual({
+      area: AREA,
+      inputs: { people_per_household: 5 },
+    });
   });
-
-
 
   it("the headline reads homes and people from the table's cells", () => {
     store.ws.cells = {

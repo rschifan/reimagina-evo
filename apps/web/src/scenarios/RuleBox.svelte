@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+
+  import { percentOf } from "../scenario";
   import type { RuleValues } from "./store.svelte";
 
   /**
@@ -19,7 +22,9 @@
     values: RuleValues;
     needsScenarioName: boolean;
     defaultName: string;
-    overriddenBy: number | null;
+    /** Which later rules win over this one where they overlap, and for
+     *  which numbers; null when none does. */
+    overlapNote: string | null;
     busy: boolean;
     error: { field: string | null; text: string } | null;
     draggable: boolean;
@@ -34,7 +39,7 @@
     values,
     needsScenarioName,
     defaultName,
-    overriddenBy,
+    overlapNote,
     busy,
     error,
     draggable,
@@ -51,17 +56,43 @@
   let levels = $state<number | null>(initial.levels);
   let unitSize = $state<number | null>(initial.unitSize);
   let people = $state<number | null>(initial.peoplePerHousehold);
+  // Unrounded: a coverage of 0.625 shows as 62.5 and is saved as 0.625, not
+  // rounded to 63 by a Save that only changed the storeys.
   let coveragePct = $state<number | null>(
-    initial.lotCoverage === null ? null : Math.round(initial.lotCoverage * 100),
+    initial.lotCoverage === null ? null : percentOf(initial.lotCoverage),
   );
-  let name = $state((() => defaultName)());
+  const inputs: Record<string, HTMLInputElement | undefined> = $state({});
+  const LABELS: Record<string, string> = {
+    levels: "Storeys",
+    unit_size: "m² per home",
+    people_per_household: "People per home",
+    lot_coverage: "Lot coverage",
+  };
   let localError = $state<string | null>(null);
+  let localField = $state<string | null>(null);
+  /** The field a refusal is about, by the API's name, for aria-invalid. */
+  const badField = $derived(localError ? localField : (error?.field ?? null));
+
+  onMount(() => {
+    // Keyboard users land in the box that just opened.
+    (needsScenarioName ? undefined : inputs.levels)?.focus();
+  });
+  let name = $state((() => defaultName)());
 
   /** A number input's value, or null when it is empty. */
   const set = (v: number | null | undefined | string): number | null =>
     v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v);
 
   function read(): RuleValues | null {
+    // A number the browser could not parse ("3,5" where it expects "3.5")
+    // binds as empty — which would read as "not set" and be dropped silently.
+    for (const [field, el] of Object.entries(inputs)) {
+      if (el?.validity.badInput) {
+        localField = field;
+        localError = `${LABELS[field]} is not a number this browser can read; use a dot for decimals.`;
+        return null;
+      }
+    }
     const next: RuleValues = {
       levels: set(levels),
       unitSize: set(unitSize),
@@ -69,12 +100,14 @@
       lotCoverage: set(coveragePct) === null ? null : (set(coveragePct) as number) / 100,
     };
     if (Object.values(next).every((v) => v === null)) {
+      localField = null;
       localError = "Set at least one number: a rule changes only what you type.";
       return null;
     }
     const pct = set(coveragePct);
-    if (pct !== null && (pct < 1 || pct > 100)) {
-      localError = "Lot coverage must be between 1 and 100 %.";
+    if (pct !== null && (pct <= 0 || pct > 100)) {
+      localField = "lot_coverage";
+      localError = "Lot coverage must be more than 0 and at most 100 %.";
       return null;
     }
     localError = null;
@@ -102,7 +135,8 @@
   onkeydown={(e) => {
     if (e.key === "Escape") {
       e.stopPropagation();
-      oncancel();
+      // Mid-recompute the box stays open: a refusal is shown only here.
+      if (!busy) oncancel();
     }
   }}
 >
@@ -110,24 +144,24 @@
   {#if needsScenarioName}
     <label class="mb-2 flex flex-col gap-1 text-muted-foreground">
       New scenario
-      <input class="rounded border border-line bg-surface px-1.5 py-0.5 text-xs" aria-label="Scenario name" bind:value={name} />
+      <input class="rounded border border-line bg-surface px-1.5 py-0.5 text-xs" aria-label="Scenario name" aria-invalid={badField === "name"} aria-describedby={badField === "name" ? "rule-box-error" : undefined} bind:value={name} />
     </label>
   {/if}
   <p class="mb-2 text-muted-foreground">Set what this area changes. A number left empty keeps each block's own value.</p>
   <div class="flex flex-col gap-1.5">
-    <label class={row}>Storeys <input class={input} type="number" min="1" step="1" aria-label="Storeys" placeholder="as is" bind:value={levels} /></label>
-    <label class={row}>m² per home <input class={input} type="number" min="1" step="1" aria-label="m² per home" placeholder="as is" bind:value={unitSize} /></label>
-    <label class={row}>People per home <input class={input} type="number" min="0.1" step="0.1" aria-label="People per home" placeholder="as is" bind:value={people} /></label>
-    <label class={row}>Lot coverage <input class={input} type="number" min="1" max="100" step="5" aria-label="Lot coverage (%)" placeholder="as is" bind:value={coveragePct} /></label>
+    <label class={row}>Storeys <input class={input} type="number" min="1" step="1" aria-label="Storeys" placeholder="as is" aria-invalid={badField === "levels"} aria-describedby={badField === "levels" ? "rule-box-error" : undefined} bind:this={inputs.levels} bind:value={levels} /></label>
+    <label class={row}>m² per home <input class={input} type="number" min="1" step="1" aria-label="m² per home" placeholder="as is" aria-invalid={badField === "unit_size"} aria-describedby={badField === "unit_size" ? "rule-box-error" : undefined} bind:this={inputs.unit_size} bind:value={unitSize} /></label>
+    <label class={row}>People per home <input class={input} type="number" min="0.1" step="0.1" aria-label="People per home" placeholder="as is" aria-invalid={badField === "people_per_household"} aria-describedby={badField === "people_per_household" ? "rule-box-error" : undefined} bind:this={inputs.people_per_household} bind:value={people} /></label>
+    <label class={row}>Lot coverage <input class={input} type="number" min="1" max="100" step="any" aria-label="Lot coverage (%)" placeholder="as is" aria-invalid={badField === "lot_coverage"} aria-describedby={badField === "lot_coverage" ? "rule-box-error" : undefined} bind:this={inputs.lot_coverage} bind:value={coveragePct} /></label>
   </div>
-  {#if mode === "rule" && overriddenBy !== null}
-    <p class="mt-2 text-muted-foreground">Rule {overriddenBy} overrides this one where they overlap.</p>
+  {#if mode === "rule" && overlapNote !== null}
+    <p class="mt-2 text-muted-foreground">{overlapNote}</p>
   {/if}
   {#if mode === "rule" && !draggable}
     <p class="mt-2 text-muted-foreground">This rule's area is in several pieces, so it can't be dragged. Delete it and draw it again to move it.</p>
   {/if}
   {#if localError ?? error?.text}
-    <p class="mt-2 text-state-error" role="alert">{localError ?? error?.text}</p>
+    <p id="rule-box-error" class="mt-2 text-state-error" role="alert">{localError ?? error?.text}</p>
   {/if}
   <div class="mt-3 flex items-center gap-2">
     {#if mode === "new"}

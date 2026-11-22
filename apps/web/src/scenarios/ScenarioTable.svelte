@@ -56,7 +56,7 @@
         </thead>
         <tbody>
           <tr
-            aria-selected={ws.selectedId === null}
+            aria-current={ws.selectedId === null ? "true" : undefined}
             class={cn(
               "border-b border-line",
               ws.selectedId === null && "bg-accent/10 outline outline-1 outline-accent/40",
@@ -82,7 +82,7 @@
           {#each ws.scenarios as row (row.id)}
             {@const status = statusFor(row, ws.following[row.id] ?? null)}
             <tr
-              aria-selected={ws.selectedId === row.id}
+              aria-current={ws.selectedId === row.id ? "true" : undefined}
               class={cn(
                 "border-b border-line",
                 ws.selectedId === row.id && "bg-accent/10 outline outline-1 outline-accent/40",
