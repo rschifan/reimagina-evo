@@ -56,3 +56,33 @@ it("an open running run is read once on boot, not in a loop", async () => {
   expect(vi.mocked(api.getRunDetail).mock.calls.length).toBeLessThanOrEqual(2);
   expect(vi.mocked(api.listRuns).mock.calls.length).toBeLessThanOrEqual(2);
 });
+
+// `ops.stale` compared `Date.now()`, which is not reactive, with
+// `lastLoadedAt`, which changes only on a success: during an outage nothing
+// re-evaluated it, so the badge written for that case never showed.
+it("an outage of over a minute shows the stale badge", async () => {
+  vi.useFakeTimers();
+  try {
+    location.hash = "#/";
+    const page = {
+      runs: [],
+      executors: [],
+      status_counts: {},
+      total: 0,
+      server_now: new Date().toISOString(),
+    } as unknown as RunListResponse;
+    vi.mocked(api.listRuns).mockReset().mockResolvedValueOnce(page).mockRejectedValue(new Error("Failed to fetch"));
+    const target = document.body.appendChild(document.createElement("div"));
+    const app = mount(App, { target });
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+    expect(target.textContent).toContain("updated");
+    expect(target.textContent).not.toContain("stale");
+    await vi.advanceTimersByTimeAsync(65_000);
+    flushSync();
+    expect(target.textContent).toContain("stale");
+    unmount(app);
+  } finally {
+    vi.useRealTimers();
+  }
+});

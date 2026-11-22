@@ -149,7 +149,9 @@
         updated {ops.lastLoadedAt.toLocaleTimeString()}
       {/if}
     </span>
-    {#if ops.stale}
+    <!-- The page clock, so the badge re-checks every second; less the offset,
+         since `lastLoadedAt` is a client time. -->
+    {#if ops.staleAt(now - ops.offsetMs)}
       <span
         class="rounded border border-state-stale/40 px-1.5 py-0.5 font-mono text-[11px] text-state-stale"
       >

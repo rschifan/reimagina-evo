@@ -113,9 +113,13 @@ export const ops = {
   get offsetMs() {
     return offsetMs;
   },
-  get stale() {
+  /** Whether the last success is over a minute old at `clientNow`. Takes the
+   *  time from the caller's clock: `Date.now()` is not reactive, so a getter
+   *  re-evaluated only when `lastLoadedAt` changed — on a success, when it is
+   *  never stale — and the badge never showed during an outage. */
+  staleAt(clientNow: number) {
     if (!lastLoadedAt) return false;
-    return Date.now() - lastLoadedAt.getTime() > STALE_AFTER_MS;
+    return clientNow - lastLoadedAt.getTime() > STALE_AFTER_MS;
   },
   isBusy(key: string) {
     return busy.has(key);
