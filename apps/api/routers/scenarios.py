@@ -731,9 +731,10 @@ def get_scenario_route(scenario_id: str) -> ScenarioDetail:
 def _cancel(run_ids: list[str]) -> None:
     """Cancel a deleted scenario's unfinished runs. Best effort.
 
-    Not what keeps the database clean — a unit that runs anyway finds no
-    scenario and skips (``runners._scenario_fence``), and one already writing
-    held the delete back until it committed, then was cascaded. This stops the
+    Not what keeps the database clean — a unit still computing finds the
+    scenario gone before it commits and rolls its writes back
+    (``runners._fenced``), and one already committing held the delete back a
+    moment, then was cascaded. This stops the
     queue spending minutes on a scenario nobody can see, and the jobs page
     showing it as running.
     """

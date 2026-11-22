@@ -420,11 +420,11 @@ def _lock_scenario(
       ``asset_version``, which is invisible to freshness.
 
     ``NO KEY UPDATE`` for those writers, ``UPDATE`` for ``delete_scenario``.
-    A compute unit inserts rows whose ``scenario_id`` is an FK (r055), and the
-    FK check holds ``KEY SHARE`` on this row until the unit commits. ``KEY
-    SHARE`` conflicts with ``FOR UPDATE`` and not with ``FOR NO KEY UPDATE``:
-    so a delete waits for an in-flight unit and then cascades what it wrote,
-    while drawing a rule does not wait for a compute.
+    A compute unit takes ``KEY SHARE`` on this row from the end of its compute
+    until it commits (``runners._fenced``). ``KEY SHARE`` conflicts with ``FOR
+    UPDATE`` and not with ``FOR NO KEY UPDATE``: so a delete waits for a unit
+    that is committing and then cascades what it wrote, while drawing a rule
+    does not wait for a compute.
 
     Every writer here locks the scenario before any of its rules, which is the
     order ``delete_scenario`` uses (the rules go last, by cascade).
@@ -1147,10 +1147,11 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     would list it for ever.
 
     The scenario's row lock is taken first, ``FOR UPDATE``, before anything is
-    read or deleted. A compute unit of this scenario holds ``KEY SHARE`` on
-    the row until it commits (its job run's FK check), so the delete waits for
-    an in-flight unit and then removes what it wrote; a unit that starts after
-    finds no scenario and skips (``runners._scenario_fence``). Taking the lock
+    read or deleted. A compute unit takes ``KEY SHARE`` on the row only once
+    its compute is done, until it commits (``runners._fenced``): a delete
+    arriving then waits a moment and removes what the unit wrote; one arriving
+    earlier does not wait, and the unit, finding no scenario, rolls its writes
+    back and skips. Taking the lock
     is also the existence check — an unknown id raises ``ScenarioNotFound``
     rather than reporting zeros for a typo.
 

@@ -767,9 +767,9 @@ def _orphans(conn, sid) -> tuple[int, int]:
 def test_a_delete_waits_for_a_unit_in_flight_and_removes_what_it_wrote(migrated_db):
     """B3: the unit's writes cannot land after the delete.
 
-    The unit holds ``KEY SHARE`` on the scenario row until it commits (the
-    runner's fence, and its job run's FK check), so the delete's ``FOR
-    UPDATE`` waits for it and then deletes its results with the rest.
+    A unit whose compute is done holds ``KEY SHARE`` on the scenario row
+    until it commits (``runners._fenced``), so the delete's ``FOR UPDATE``
+    waits for it and then deletes its results with the rest.
     Without it the delete counted what existed, committed, and the unit then
     committed 19,058 results and a job run under a deleted id.
     """
@@ -874,4 +874,83 @@ def test_two_units_of_one_scenario_and_indicator_run_one_after_the_other(
             c.close()
         delete_scenario(setup, scenario_id=sid)
         setup.commit()
+        _tidy(setup, territory, sid)
+
+
+def test_a_delete_does_not_wait_for_a_unit_still_computing(migrated_db):
+    """A city-wide unit must not hold the delete for its whole compute.
+
+    The unit here has opened its job run and written its results, then keeps
+    computing (a barrier stands in for minutes of PostGIS). The delete must
+    return at once; the unit, finding the scenario gone before it commits,
+    writes nothing and ends without error — not with a ForeignKeyViolation.
+    """
+    from reimagina.orchestration import runners
+
+    setup, territory, sid = _committed_territory(migrated_db, "_computing")
+    worker = psycopg2.connect(migrated_db)
+    deleter = psycopg2.connect(migrated_db)
+    computing = threading.Event()
+    release = threading.Event()
+    real = runners._DIRECT_COMPUTE[_DENSITY]
+
+    def slow_compute(conn, **kwargs):
+        result = real(conn, **kwargs)
+        computing.set()
+        release.wait(timeout=30)
+        return result
+
+    outcome: list[object] = []
+
+    def unit() -> None:
+        try:
+            runner = runners._scoped(_DENSITY, slow_compute)
+            outcome.append(
+                runner(
+                    worker,
+                    features=frozenset(),
+                    scenario_id=sid,
+                    code_version="t",
+                    aoi_id=None,
+                )
+            )
+            worker.commit()
+        except BaseException as exc:  # noqa: BLE001 - asserted on below
+            outcome.append(exc)
+
+    thread = threading.Thread(target=unit)
+    try:
+        thread.start()
+        assert computing.wait(timeout=30), "the unit never reached its compute"
+        deleted: list[object] = []
+
+        def delete() -> None:
+            try:
+                deleted.append(delete_scenario(deleter, scenario_id=sid))
+                deleter.commit()
+            except BaseException as exc:  # noqa: BLE001 - asserted on below
+                deleted.append(exc)
+
+        deleting = threading.Thread(target=delete)
+        deleting.start()
+        deleting.join(timeout=1.5)
+        returned = not deleting.is_alive()
+        release.set()
+        deleting.join(timeout=30)
+        thread.join(timeout=30)
+
+        assert returned, "the delete waited for the unit's compute"
+        assert deleted and not isinstance(deleted[0], BaseException), deleted
+        assert outcome == [None], outcome
+        assert _orphans(setup, sid) == (0, 0)
+        assert _materialization_rows(setup, sid) == []
+        assert _partition_version_count(setup, sid) == 0
+        assert _override_count(setup, sid) == 0
+        assert _rule_count(setup, sid) == 0
+    finally:
+        release.set()
+        thread.join(timeout=30)
+        for c in (worker, deleter):
+            c.rollback()
+            c.close()
         _tidy(setup, territory, sid)

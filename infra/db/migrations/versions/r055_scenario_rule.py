@@ -25,7 +25,10 @@ which silently reordered precedence for it and nothing else.
 The scenario id becomes a foreign key, ``ON DELETE CASCADE``, on
 ``scenario_override``, ``indicator_result``, ``jobs_runtime.job_run`` and
 ``aoi_indicator_summary`` — r016 and r030 left it a bare uuid while the entity
-was deferred, and r048 added the entity without going back. Rows naming a
+was deferred, and r048 added the entity without going back. They are
+``DEFERRABLE INITIALLY IMMEDIATE``: immediate for everyone, deferred by a
+compute unit (``runners._fenced``) so its inserts do not hold a lock on the
+scenario row — and with it ``DELETE /scenarios/{id}`` — for the whole compute. Rows naming a
 scenario that does not exist are deleted first: nothing could read them, and
 the constraint could not be added over them. ``orchestration_run`` keeps no FK
 (it is run history), and asset versions and materialisations are keyed by the
@@ -194,7 +197,7 @@ def upgrade() -> None:
         op.execute(f"""
             ALTER TABLE {table} ADD CONSTRAINT {name}
               FOREIGN KEY (scenario_id) REFERENCES app_core.scenario(id)
-              ON DELETE CASCADE
+              ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
         """)
     # The cascade looks rows up by scenario_id; the other three tables already
     # have an index leading with it.

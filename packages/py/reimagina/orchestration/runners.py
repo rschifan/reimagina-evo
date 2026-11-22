@@ -106,42 +106,64 @@ def _covers_overrides(conn, scenario_id: str, features) -> bool:
         return bool(cur.fetchone()[0])
 
 
-def _scenario_fence(conn, scenario_id: str | None, slug: str) -> bool:
-    """Serialise this scenario's units per indicator, and skip a deleted one.
+#: The FKs a unit's own rows carry to the scenario (r055). Deferred inside a
+#: unit so the inserts take no lock on the scenario row; see ``_fenced``.
+_UNIT_SCENARIO_FKS = (
+    "jobs_runtime.job_run_scenario_id_fkey, "
+    "curated_geo.indicator_result_scenario_id_fkey"
+)
 
-    Two runs of one scenario can overlap (a second rule saved before the
-    first recompute ends, two tabs, the CLI beside the page), and with nothing
-    between them two units writing the same indicator collided on
-    ``ir_one_current_scenario`` — one failed with a UniqueViolation — or the
-    older one, finishing last, left pre-edit values current. A transaction
-    advisory lock on ``(scenario, indicator)`` queues the second behind the
-    first until it commits, and the second then reads the overrides as they
-    are, so the last writer is always computed from the latest rules. Per
-    indicator rather than per scenario, so one run's independent units still
-    run side by side.
 
-    Then the scenario must still exist: a unit of a deleted scenario would
-    otherwise write results, a job run and a materialisation under an id
-    nothing can read or delete. ``KEY SHARE`` — what the unit's own FK checks
-    take anyway (r055) — holds a concurrent ``delete_scenario`` back until
-    this unit commits, and the delete then removes what it wrote. False means
-    skip: the scenario is gone.
+def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], object]):
+    """Run one unit's ``compute`` so it neither collides with nor blocks others.
 
-    Both are held to the end of the caller's transaction, which ``s_compute``
-    commits once, after the compute. The baseline (no scenario) passes.
+    **Serialised per (scenario, indicator).** Two runs of one scenario can
+    overlap (a second rule saved before the first recompute ends, two tabs,
+    the CLI beside the page), and with nothing between them two units writing
+    the same indicator collided on ``ir_one_current_scenario`` — one failed
+    with a UniqueViolation — or the older one, finishing last, left pre-edit
+    values current. A transaction advisory lock on ``(scenario, indicator)``
+    queues the second behind the first until it commits, and the second then
+    reads the overrides as they are. Per indicator rather than per scenario,
+    so one run's independent units still run side by side.
+
+    **No lock on the scenario row while computing.** The unit's job run and
+    results carry FKs to the scenario, and an FK check holds ``KEY SHARE`` on
+    the row until commit — which held ``DELETE /scenarios/{id}`` (``FOR
+    UPDATE``) for the whole of a city-wide compute. Those two FKs are
+    ``DEFERRABLE`` and deferred here, so nothing locks the row until the end.
+
+    **Re-checked before the unit commits.** After the compute, ``KEY SHARE``
+    is taken explicitly: from there to the caller's commit a delete waits (a
+    moment, not the compute) and then removes what the unit wrote. If the
+    scenario is already gone, everything since the savepoint — job run,
+    results, materialisation, versions — is rolled back and the unit returns
+    None, skipped: no orphan rows under an id nothing can read or delete, and
+    no ForeignKeyViolation at commit. The baseline (no scenario) passes.
     """
     if scenario_id is None:
-        return True
+        return compute()
     with conn.cursor() as cur:
         cur.execute(
             "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
             (f"scenario:{scenario_id}", slug),
         )
+        cur.execute("SELECT 1 FROM app_core.scenario WHERE id = %s", (scenario_id,))
+        if cur.fetchone() is None:
+            return None
+        cur.execute(f"SET CONSTRAINTS {_UNIT_SCENARIO_FKS} DEFERRED")
+        cur.execute("SAVEPOINT reimagina_scenario_unit")
+    result = compute()
+    with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM app_core.scenario WHERE id = %s FOR KEY SHARE",
             (scenario_id,),
         )
-        return cur.fetchone() is not None
+        if cur.fetchone() is None:
+            cur.execute("ROLLBACK TO SAVEPOINT reimagina_scenario_unit")
+            return None
+        cur.execute("RELEASE SAVEPOINT reimagina_scenario_unit")
+    return result
 
 
 def _record_outcome(outcome: dict, result: object) -> object:
@@ -163,19 +185,20 @@ def _scoped(slug: str, compute_fn: IndicatorCompute) -> Runner:
     """
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        if not _scenario_fence(conn, scenario_id, slug):
-            return None
-        with _recording(conn, slug, features, scenario_id, aoi_id) as outcome:
-            return _record_outcome(
-                outcome,
-                compute_fn(
-                    conn,
-                    aoi_id=aoi_id,
-                    feature_ids=list(features) or None,
-                    scenario_id=scenario_id,
-                    code_version=code_version,
-                ),
-            )
+        def compute():
+            with _recording(conn, slug, features, scenario_id, aoi_id) as outcome:
+                return _record_outcome(
+                    outcome,
+                    compute_fn(
+                        conn,
+                        aoi_id=aoi_id,
+                        feature_ids=list(features) or None,
+                        scenario_id=scenario_id,
+                        code_version=code_version,
+                    ),
+                )
+
+        return _fenced(conn, scenario_id, slug, compute)
 
     return run
 
@@ -184,20 +207,21 @@ def _composite(spec: IndicatorSpec) -> Runner:
     """Adapt the generic composite compute to the Runner protocol, per spec."""
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        if not _scenario_fence(conn, scenario_id, spec.slug):
-            return None
-        with _recording(conn, spec.slug, features, scenario_id, aoi_id) as outcome:
-            return _record_outcome(
-                outcome,
-                compute_composite(
-                    conn,
-                    spec=spec,
-                    feature_ids=list(features) or None,
-                    scenario_id=scenario_id,
-                    code_version=code_version,
-                    aoi_id=aoi_id,
-                ),
-            )
+        def compute():
+            with _recording(conn, spec.slug, features, scenario_id, aoi_id) as outcome:
+                return _record_outcome(
+                    outcome,
+                    compute_composite(
+                        conn,
+                        spec=spec,
+                        feature_ids=list(features) or None,
+                        scenario_id=scenario_id,
+                        code_version=code_version,
+                        aoi_id=aoi_id,
+                    ),
+                )
+
+        return _fenced(conn, scenario_id, spec.slug, compute)
 
     return run
 
