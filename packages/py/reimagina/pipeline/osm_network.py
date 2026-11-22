@@ -175,8 +175,18 @@ def read_graph(directory):
     # the whole column into floats, which ``_osm_id`` rejects.
     edges["osmid"] = edge_table.column("osmid").to_pylist()
     edges["geometry"] = shapely.from_wkb(edge_table.column("geometry").to_pylist())
-    fetched = (node_table.schema.metadata or {})[b"reimagina.osm_fetched"].decode()
-    return nodes, edges, fetched
+    return nodes, edges, graph_fetched(root)
+
+
+def graph_fetched(directory) -> str:
+    """The fetch date :func:`save_graph` recorded, read from the file
+    metadata alone."""
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    schema = pq.read_schema(Path(directory) / "nodes.parquet")
+    return (schema.metadata or {})[b"reimagina.osm_fetched"].decode()
 
 
 def aoi_polygon(conn, aoi_id: str):

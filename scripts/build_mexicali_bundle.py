@@ -370,7 +370,7 @@ def manifest_entries(out: Path, datasets: list[dict]) -> list[dict]:
 
 
 def build(args: argparse.Namespace) -> dict:
-    from reimagina.pipeline.osm_network import read_graph
+    from reimagina.pipeline.osm_network import graph_fetched
     from reimagina.pipeline.overture import MEXICALI_BBOX
 
     bbox = ",".join(f"{v:.2f}" for v in MEXICALI_BBOX)
@@ -380,7 +380,7 @@ def build(args: argparse.Namespace) -> dict:
         raise SystemExit(f"{out} is not empty; build into a new directory")
     out.mkdir(parents=True, exist_ok=True)
     release = args.overture_release
-    _nodes, _edges, osm_fetched = read_graph(args.osm_network)
+    osm_fetched = graph_fetched(args.osm_network)
     osm_dir = f"osm/walk_network_{osm_fetched}"
 
     marco_rows = subset_marco(Path(args.inegi_marco), out, args.cve_ent)
