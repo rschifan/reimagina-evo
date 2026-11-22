@@ -238,7 +238,8 @@ def test_fitted_baseline_gives_the_census_dwellings_and_population(conn, migrate
     people per dwelling from the census: the formula gives the census back."""
     block_id = _block(conn, {})
     _west_half_building(conn)
-    _census(conn, block_id, vivtot=7, pobtot=19)
+    # ~110 m² of building: 3 dwellings is ~37 m² each, above the 20 m² floor.
+    _census(conn, block_id, vivtot=3, pobtot=8)
     conn.commit()
 
     seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
@@ -246,8 +247,31 @@ def test_fitted_baseline_gives_the_census_dwellings_and_population(conn, migrate
     attributes = _attributes(conn, block_id)
     assert abs(attributes["lot_coverage"] - 0.5) < 0.01
     assert attributes["num_levels"] == attributes["floors"] == 1.0
-    assert abs(_computed(conn, block_id, _HOUSING) - 7) < 1e-6
-    assert abs(_computed(conn, block_id, _POPULATION) - 19) < 1e-6
+    assert "estimated" not in attributes
+    assert abs(_computed(conn, block_id, _HOUSING) - 3) < 1e-6
+    assert abs(_computed(conn, block_id, _POPULATION) - 8) < 1e-6
+
+
+def test_a_thin_footprint_is_estimated_and_still_gives_the_census(conn, migrated_db):
+    """30 dwellings on a ~220 m² block is under 8 m² each whatever is mapped
+    on it (other tests' buildings persist here): a mapping gap. The block is
+    fitted like an unmapped one and marked; a re-seed with a census it can
+    hold clears the mark."""
+    block_id = _block(conn, {})
+    _west_half_building(conn)
+    _census(conn, block_id, vivtot=30, pobtot=80)
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    assert _attributes(conn, block_id)["estimated"] == "thin_footprint"
+    assert abs(_computed(conn, block_id, _HOUSING) - 30) < 1e-6
+    assert abs(_computed(conn, block_id, _POPULATION) - 80) < 1e-6
+
+    _census(conn, block_id, vivtot=3, pobtot=8)
+    conn.commit()
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+    assert "estimated" not in _attributes(conn, block_id)
 
 
 def test_a_block_the_census_found_empty_is_not_built_on(conn, migrated_db):
