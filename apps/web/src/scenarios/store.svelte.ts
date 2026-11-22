@@ -26,6 +26,7 @@ import {
   type ReachableIndicator,
   type RecomputeResponse,
   type RuleChangeResponse,
+  type RuleInputs,
   type RuleRow,
   type ScenarioListRow,
 } from "../api";
@@ -35,8 +36,8 @@ import {
   DENSITY_INDICATOR_SLUG,
   FLOORS_INDICATOR_SLUG,
   densityBoundOf,
+  readBody,
   refusalText,
-  ruleInputs,
   rulesFromRows,
   validateEdit,
   type Rule,
@@ -59,25 +60,10 @@ export interface Message {
   tone: "ok" | "bad";
 }
 
-/** The numbers a rule sets, as the rule box edits them. Null: the rule does
- *  not set it, and every block keeps its own value. */
-export interface RuleValues {
-  levels: number | null;
-  unitSize: number | null;
-  peoplePerHousehold: number | null;
-  /** Share of the block built on, `0 < c ≤ 1`. */
-  lotCoverage: number | null;
-}
-
 /** A new rule's box starts empty. Pre-filled numbers were what flattened an
  *  area: a planner changing household size also set every block's storeys,
  *  unit size and coverage to the same values. */
-export const EMPTY_RULE: RuleValues = {
-  levels: null,
-  unitSize: null,
-  peoplePerHousehold: null,
-  lotCoverage: null,
-};
+export const EMPTY_RULE: RuleInputs = {};
 
 export interface WorkspaceState {
   /** Every pilot, for the picker. The active one is `aoiId`. */
@@ -526,31 +512,22 @@ async function writeUncertain(
 }
 
 const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<void> => {
-  const text = await refusalText(err, operation);
-  let field: string | null = null;
-  if (err instanceof ApiError) {
-    try {
-      const body = (await err.response.clone().json()) as { detail?: { field?: unknown } };
-      if (typeof body?.detail?.field === "string") field = body.detail.field;
-    } catch {
-      // Not JSON: no field to point at.
-    }
-  }
-  ws.boxError = { field, text };
+  const body = err instanceof ApiError ? await readBody(err) : null;
+  const field = (body as { detail?: { field?: unknown } } | null)?.detail?.field;
+  ws.boxError = {
+    field: typeof field === "string" ? field : null,
+    text: await refusalText(err, operation),
+  };
 };
 
-function precheck(values: RuleValues): boolean {
+function precheck(inputs: RuleInputs): boolean {
   const refusal = validateEdit({
-    ...values,
+    ...inputs,
     densityValidMax: ws.densityValidMax,
     floorsValidMax: ws.floorsValidMax,
   });
-  if (!refusal) return true;
-  // The message names the field in parentheses when it is about one field;
-  // the storey and density ceilings are about storeys.
-  const field = /\((\w+)\)/.exec(refusal)?.[1] ?? (/storeys/.test(refusal) ? "levels" : null);
-  ws.boxError = { field, text: refusal };
-  return false;
+  ws.boxError = refusal;
+  return refusal === null;
 }
 
 /** Put the stored rule in place, or take the deleted one out, of the
@@ -616,13 +593,12 @@ async function gesture(
  */
 export async function applyNewRule(
   area: Feature<Polygon>,
-  values: RuleValues,
+  inputs: RuleInputs,
   scenarioName?: string,
 ): Promise<boolean> {
   ws.boxError = null;
-  if (!precheck(values)) return false;
+  if (!precheck(inputs)) return false;
   const scenarioId = ws.selectedId;
-  const inputs = ruleInputs(values);
   if (scenarioId !== null) {
     return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, inputs }), "Rule added.");
   }
@@ -661,13 +637,13 @@ export async function applyNewRule(
 export async function saveRule(
   rule: Rule,
   area: Feature<Polygon> | null,
-  values: RuleValues,
+  inputs: RuleInputs,
 ): Promise<boolean> {
   const scenarioId = ws.selectedId;
   if (scenarioId === null) return false;
   ws.boxError = null;
-  if (!precheck(values)) return false;
-  const body = { ...(area ? { area } : {}), inputs: ruleInputs(values) };
+  if (!precheck(inputs)) return false;
+  const body = { ...(area ? { area } : {}), inputs };
   return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 

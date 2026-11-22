@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import RuleBox from "./RuleBox.svelte";
 
-const VALUES = { levels: 3, unitSize: 66, peoplePerHousehold: 3.6, lotCoverage: 0.6 };
+const VALUES = { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 };
 
 let component: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -63,7 +63,7 @@ describe("the rule box", () => {
     const { type, button, handlers, target } = open();
     type("Lot coverage (%)", "45");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lotCoverage: 0.45 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
     for (const bad of ["0", "120"]) {
       handlers.onapply.mockClear();
       type("Lot coverage (%)", bad);
@@ -77,11 +77,11 @@ describe("the rule box", () => {
   // B18: a coverage of 0.625 showed as 63 and Save wrote 0.63 back, though
   // only the storeys were changed.
   it("keeps a coverage it did not touch exactly as it was", () => {
-    const { input, type, button, handlers } = open({ mode: "rule", values: { ...VALUES, lotCoverage: 0.625 } });
+    const { input, type, button, handlers } = open({ mode: "rule", values: { ...VALUES, lot_coverage: 0.625 } });
     expect(input("Lot coverage (%)").value).toBe("62.5");
     type("Storeys", "4");
     button("Save").click();
-    expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lotCoverage: 0.625 });
+    expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lot_coverage: 0.625 });
   });
 
   // B19: "3,5" in a dot-decimal browser binds as empty, which read as "not
@@ -162,7 +162,7 @@ describe("the rule box", () => {
 
 
 describe("numbers left empty", () => {
-  const EMPTY = { levels: null, unitSize: null, peoplePerHousehold: null, lotCoverage: null };
+  const EMPTY = {};
 
   it("opens empty, saying each block keeps its own value", () => {
     const { input, target } = open({ values: EMPTY });
@@ -175,7 +175,7 @@ describe("numbers left empty", () => {
     const { type, button, handlers } = open({ values: EMPTY });
     type("People per home", "5");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ ...EMPTY, peoplePerHousehold: 5 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ people_per_household: 5 }, undefined);
   });
 
   it("refuses a rule with no number", () => {

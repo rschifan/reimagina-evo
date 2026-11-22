@@ -129,14 +129,9 @@ export function maxLevelsFor(
 }
 
 
-export interface ProposalValues {
-  /** Each number is optional: null means the rule does not set it, and every
-   *  block keeps its own value. At least one must be set. */
-  levels: number | null;
-  unitSize: number | null;
-  peoplePerHousehold: number | null;
-  /** Share of the block built on, `0 < c ≤ 1`; null or absent means not set. */
-  lotCoverage?: number | null;
+/** A rule's numbers by their API names (absent or null: not set, every
+ *  block keeps its own; at least one must be set), and the catalog bounds. */
+export type ProposalValues = { [K in keyof RuleInputs]?: number | null } & {
   /** `valid_max` of {@link DENSITY_INDICATOR_SLUG} from the catalog. Null or
    *  absent when `/indicators/{slug}` could not be read — the check is then
    *  the server's alone. */
@@ -144,6 +139,13 @@ export interface ProposalValues {
   /** `valid_max` of {@link FLOORS_INDICATOR_SLUG} from the catalog; null or
    *  absent on the same terms as `densityValidMax`. */
   floorsValidMax?: number | null;
+};
+
+
+/** A refusal, and the field it is about (an API name) when it is one. */
+export interface EditRefusal {
+  field: string | null;
+  text: string;
 }
 
 
@@ -157,71 +159,72 @@ export interface ProposalValues {
  *   reach the compute as `NaN` and the indicators silently skip the block.
  * * `precheck_ceilings` — the density ceiling, against the catalog bound.
  *
- * The message names the **field**, never the control, so the panel can
+ * The text names the **field**, never the control, so the panel can
  * highlight an input and the CLI could print the same sentence; and it never
- * says a proposal is safe, only that this check found nothing.
+ * says a proposal is safe, only that this check found nothing. `field` is
+ * the API's name for it — the name the server's 400 carries — and the
+ * storey and density ceilings are about `levels`.
  */
-export function validateEdit(values: ProposalValues): string | null {
-  // ⚠ The message names the API's field as well as the form's control. The
-  // fields are camelCase here because this is TypeScript, but `levels`,
-  // `unit_size` and `people_per_household` are the names `require_positive`
-  // raises about and the names the 400 carries in `field` — so a value refused
-  // locally and the same value refused by the server read as the same refusal,
-  // about the same thing, rather than as two unrelated complaints.
-  const fields: Array<[string, string, number | null]> = [
-    ["Storeys", "levels", values.levels],
-    ["m² per dwelling", "unit_size", values.unitSize],
-    ["People per household", "people_per_household", values.peoplePerHousehold],
+export function validateEdit(values: ProposalValues): EditRefusal | null {
+  const set = (value: number | null | undefined): value is number =>
+    value !== null && value !== undefined;
+  const fields: Array<[string, keyof RuleInputs]> = [
+    ["Storeys", "levels"],
+    ["m² per dwelling", "unit_size"],
+    ["People per household", "people_per_household"],
   ];
-  const coverageSet = values.lotCoverage !== null && values.lotCoverage !== undefined;
-  if (fields.every(([, , value]) => value === null) && !coverageSet) {
-    return (
-      "Set at least one number (levels, unit_size, people_per_household or " +
-      "lot_coverage): a rule with none changes nothing."
-    );
+  if (RULE_NUMBERS.every(([key]) => !set(values[key]))) {
+    return {
+      field: null,
+      text:
+        "Set at least one number (levels, unit_size, people_per_household or " +
+        "lot_coverage): a rule with none changes nothing.",
+    };
   }
-  for (const [label, field, value] of fields) {
-    if (value !== null && (!Number.isFinite(value) || value <= 0)) {
-      return `${label} (${field}) must be a positive number, got ${value}.`;
+  for (const [label, field] of fields) {
+    const value = values[field];
+    if (set(value) && (!Number.isFinite(value) || value <= 0)) {
+      return { field, text: `${label} (${field}) must be a positive number, got ${value}.` };
     }
   }
-  const coverage = values.lotCoverage ?? 1;
+  const coverage = values.lot_coverage ?? 1;
   if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
-    return `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`;
+    return {
+      field: "lot_coverage",
+      text: `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`,
+    };
   }
   // The rest needs storeys: without them each block keeps its own, which
   // only the server can see.
-  if (values.levels === null) return null;
+  const levels = values.levels;
+  if (!set(levels)) return null;
   const floorsBound = values.floorsValidMax;
-  if (
-    floorsBound !== null &&
-    floorsBound !== undefined &&
-    Number.isFinite(floorsBound) &&
-    floorsBound > 0 &&
-    values.levels > floorsBound
-  ) {
-    return (
-      `${fmt(values.levels)} storeys is over the planned-floors ceiling of ` +
-      `${fmt(floorsBound)}, whatever the unit size.`
-    );
+  if (set(floorsBound) && Number.isFinite(floorsBound) && floorsBound > 0 && levels > floorsBound) {
+    return {
+      field: "levels",
+      text:
+        `${fmt(levels)} storeys is over the planned-floors ceiling of ` +
+        `${fmt(floorsBound)}, whatever the unit size.`,
+    };
   }
   const bound = values.densityValidMax;
   // ⚠ Unknown bound = no opinion. Guessing the catalog's value would make
   // this frontend the second place a ceiling lives, which is the failure the
   // module docstring describes; the server refuses with 422 either way.
-  if (bound === null || bound === undefined || !Number.isFinite(bound) || bound <= 0) {
-    return null;
-  }
-  if (values.unitSize === null) return null;
-  const density = (M2_PER_HECTARE * values.levels * coverage) / values.unitSize;
+  if (!set(bound) || !Number.isFinite(bound) || bound <= 0) return null;
+  const unitSize = values.unit_size;
+  if (!set(unitSize)) return null;
+  const density = (M2_PER_HECTARE * levels * coverage) / unitSize;
   if (density > bound) {
-    const allowed = maxLevelsFor(values.unitSize, bound, coverage);
-    return (
-      `${fmt(values.levels)} storeys at ${fmt(values.unitSize)} m² per dwelling ` +
-      `is ${density.toFixed(0)} dwellings/ha, over the density ceiling of ` +
-      `${fmt(bound)}. At ${fmt(values.unitSize)} m² per dwelling the ceiling ` +
-      `allows ${allowed} storeys.`
-    );
+    const allowed = maxLevelsFor(unitSize, bound, coverage);
+    return {
+      field: "levels",
+      text:
+        `${fmt(levels)} storeys at ${fmt(unitSize)} m² per dwelling ` +
+        `is ${density.toFixed(0)} dwellings/ha, over the density ceiling of ` +
+        `${fmt(bound)}. At ${fmt(unitSize)} m² per dwelling the ceiling ` +
+        `allows ${allowed} storeys.`,
+    };
   }
   return null;
 }
@@ -434,7 +437,8 @@ const OPERATION_NOUN: Record<ScenarioOperation, string> = {
 };
 
 
-async function readBody(err: ApiError): Promise<unknown> {
+/** A refusal's JSON body, or null when it has none. */
+export async function readBody(err: ApiError): Promise<unknown> {
   try {
     // `clone()` so a caller that reads the body itself is not starved of it.
     return await err.response.clone().json();
@@ -495,52 +499,36 @@ function fmt(value: number): string {
 
 // ── a scenario's rules ──────────────────────────────────────────────────
 
-/** One rule as the page shows it. */
+/** One rule as the page shows it: the server's row, its numbers by their
+ *  API names (absent: not set, each block keeps its own). */
 export interface Rule {
   id: string;
   /** Its place in "later wins"; fixed when it was created. */
   ordinal: number;
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
-  levels: number | null;
-  unitSize: number | null;
-  peoplePerHousehold: number | null;
-  /** Share of the block built on. Null: not set, each block keeps its own. */
-  lotCoverage: number | null;
+  inputs: RuleInputs;
 }
 
 
-/** The server's rules, in "later wins" order. */
+/** Every number a rule can set (`proposal.RULE_INPUTS`): its API name, what
+ *  the page calls it, and its unit in a rule's one-line summary. */
+export const RULE_NUMBERS: ReadonlyArray<readonly [keyof RuleInputs, string, string]> = [
+  ["levels", "Storeys", "st"],
+  ["unit_size", "m² per home", "m²"],
+  ["people_per_household", "People per home", "people"],
+  ["lot_coverage", "Lot coverage", "%"],
+];
+
+
+/** The server's rules, already in "later wins" order. */
 export function rulesFromRows(rows: RuleRow[]): Rule[] {
-  return [...rows]
-    .sort((a, b) => a.ordinal - b.ordinal)
-    .map((row) => ({
-      id: row.id,
-      ordinal: row.ordinal,
-      areaWkt: row.geometry_wkt,
-      levels: row.inputs.levels ?? null,
-      unitSize: row.inputs.unit_size ?? null,
-      peoplePerHousehold: row.inputs.people_per_household ?? null,
-      lotCoverage: row.inputs.lot_coverage ?? null,
-    }));
-}
-
-
-/** The request's `inputs`: the numbers set, and only those. */
-export function ruleInputs(values: {
-  levels: number | null;
-  unitSize: number | null;
-  peoplePerHousehold: number | null;
-  lotCoverage: number | null;
-}): RuleInputs {
-  return {
-    ...(values.levels !== null ? { levels: values.levels } : {}),
-    ...(values.unitSize !== null ? { unit_size: values.unitSize } : {}),
-    ...(values.peoplePerHousehold !== null
-      ? { people_per_household: values.peoplePerHousehold }
-      : {}),
-    ...(values.lotCoverage !== null ? { lot_coverage: values.lotCoverage } : {}),
-  };
+  return rows.map((row) => ({
+    id: row.id,
+    ordinal: row.ordinal,
+    areaWkt: row.geometry_wkt,
+    inputs: row.inputs,
+  }));
 }
 
 
@@ -551,29 +539,21 @@ export function percentOf(share: number): number {
 }
 
 
-/** What a rule's numbers are called, for "Rule 3 also sets storeys". */
-const RULE_NUMBER_NAMES: Array<[keyof Rule, string]> = [
-  ["levels", "storeys"],
-  ["unitSize", "m² per home"],
-  ["peoplePerHousehold", "people per home"],
-  ["lotCoverage", "lot coverage"],
-];
-
-
 /** The numbers both rules set: where they overlap, the later one's win. */
 export function sharedNumbers(rule: Rule, later: Rule): string[] {
-  return RULE_NUMBER_NAMES.filter(([key]) => rule[key] !== null && later[key] !== null).map(
-    ([, name]) => name,
-  );
+  return RULE_NUMBERS.filter(
+    ([key]) => rule.inputs[key] !== undefined && later.inputs[key] !== undefined,
+  ).map(([, label]) => label.toLowerCase());
 }
 
 
 export function describeRule(rule: Rule, position: number): string {
   // Only what the rule sets; everything else is each block's own value.
   const parts = [`Rule ${position}`];
-  if (rule.levels !== null) parts.push(`${fmt(rule.levels)} st`);
-  if (rule.unitSize !== null) parts.push(`${fmt(rule.unitSize)} m²`);
-  if (rule.peoplePerHousehold !== null) parts.push(`${fmt(rule.peoplePerHousehold)} people`);
-  if (rule.lotCoverage !== null) parts.push(`${fmt(percentOf(rule.lotCoverage))} %`);
+  for (const [key, , unit] of RULE_NUMBERS) {
+    const value = rule.inputs[key];
+    if (value === undefined) continue;
+    parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
+  }
   return parts.join(" · ");
 }

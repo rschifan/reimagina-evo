@@ -8,7 +8,6 @@ import {
   describeRule,
   maxLevelsFor,
   percentOf,
-  ruleInputs,
   rulesFromRows,
   sharedNumbers,
   isTerminalRunStatus,
@@ -18,6 +17,10 @@ import {
   validateEdit,
 } from "./scenario";
 import type { RuleRow } from "./api";
+
+/** `validateEdit`'s sentence, or null: what most of these tests read. */
+const refusalOf = (values: Parameters<typeof validateEdit>[0]): string | null =>
+  validateEdit(values)?.text ?? null;
 
 /**
  * ``valid_max`` of ``edificability_block_density`` in the shipped catalog
@@ -142,27 +145,27 @@ describe("maxLevelsFor", () => {
     // same unit size allows half as many.
     [60, 1000, 6],
     [125, 1000, 12],
-  ])("allows %i m² per dwelling under a %i bound exactly %i storeys", (unitSize, bound, allowed) => {
-    expect(maxLevelsFor(unitSize, bound)).toBe(allowed);
+  ])("allows %i m² per dwelling under a %i bound exactly %i storeys", (unit_size, bound, allowed) => {
+    expect(maxLevelsFor(unit_size, bound)).toBe(allowed);
   });
 });
 
 
 describe("lot coverage", () => {
-  const ok = { levels: 6, unitSize: 60, peoplePerHousehold: 3.6 };
+  const ok = { levels: 6, unit_size: 60, people_per_household: 3.6 };
 
   it("must be a share of the block", () => {
     for (const bad of [0, -0.1, 1.2, Number.NaN]) {
-      expect(validateEdit({ ...ok, lotCoverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
+      expect(refusalOf({ ...ok, lot_coverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
     }
-    expect(validateEdit({ ...ok, lotCoverage: 0.6 })).toBeNull();
+    expect(refusalOf({ ...ok, lot_coverage: 0.6 })).toBeNull();
   });
 
   // density = coverage × levels × 10000 / unit_size: 20 storeys at 60 m² is
   // 3333/ha at full coverage, 1666 at half.
   it("scales the density ceiling", () => {
-    const at = (lotCoverage: number) =>
-      validateEdit({ ...ok, levels: 20, lotCoverage, densityValidMax: 2000 });
+    const at = (lot_coverage: number) =>
+      refusalOf({ ...ok, levels: 20, lot_coverage, densityValidMax: 2000 });
     expect(at(1)).toMatch(/density ceiling/);
     expect(at(0.5)).toBeNull();
     expect(maxLevelsFor(60, 2000, 0.5)).toBe(24);
@@ -172,14 +175,14 @@ describe("lot coverage", () => {
 
 
 describe("validateEdit", () => {
-  const ok = { levels: 6, unitSize: 60, peoplePerHousehold: 3.6 };
+  const ok = { levels: 6, unit_size: 60, people_per_household: 3.6 };
 
   it("refuses levels above the density ceiling before submitting", () => {
     expect(
-      validateEdit({
+      refusalOf({
         levels: 13,
-        unitSize: 60,
-        peoplePerHousehold: 3.6,
+        unit_size: 60,
+        people_per_household: 3.6,
         densityValidMax: CATALOG_DENSITY_MAX,
       }),
     ).toMatch(/density/);
@@ -188,20 +191,20 @@ describe("validateEdit", () => {
   // Storeys are capped by the planned-floors indicator whatever the unit
   // size: 250 storeys at 2 000 m² is only 1 250 dwellings/ha, under density.
   it("refuses levels above the floors ceiling even when density is legal", () => {
-    const refusal = validateEdit({
+    const refusal = refusalOf({
       ...ok,
       levels: 250,
-      unitSize: 2000,
+      unit_size: 2000,
       densityValidMax: CATALOG_DENSITY_MAX,
       floorsValidMax: 200,
     });
     expect(refusal).toMatch(/floors/);
     expect(refusal).toContain("200");
     expect(
-      validateEdit({
+      refusalOf({
         ...ok,
         levels: 200,
-        unitSize: 2000,
+        unit_size: 2000,
         densityValidMax: CATALOG_DENSITY_MAX,
         floorsValidMax: 200,
       }),
@@ -210,16 +213,16 @@ describe("validateEdit", () => {
 
   it("derives the floors ceiling from the bound given, and has no opinion without one", () => {
     expect(
-      validateEdit({ ...ok, levels: 60, unitSize: 2000, floorsValidMax: 50 }),
+      refusalOf({ ...ok, levels: 60, unit_size: 2000, floorsValidMax: 50 }),
     ).toMatch(/floors/);
     expect(
-      validateEdit({ ...ok, levels: 250, unitSize: 2000, floorsValidMax: null }),
+      refusalOf({ ...ok, levels: 250, unit_size: 2000, floorsValidMax: null }),
     ).toBeNull();
   });
 
   it("passes the tallest proposal the ceiling allows", () => {
     expect(
-      validateEdit({ ...ok, levels: 12, densityValidMax: CATALOG_DENSITY_MAX }),
+      refusalOf({ ...ok, levels: 12, densityValidMax: CATALOG_DENSITY_MAX }),
     ).toBeNull();
   });
 
@@ -231,18 +234,18 @@ describe("validateEdit", () => {
     [30, 6],
     [60, 12],
     [125, 25],
-  ])("allows %i m² per dwelling exactly %i storeys", (unitSize, allowed) => {
+  ])("allows %i m² per dwelling exactly %i storeys", (unit_size, allowed) => {
     expect(
-      validateEdit({
+      refusalOf({
         ...ok,
-        unitSize,
+        unit_size,
         levels: allowed,
         densityValidMax: CATALOG_DENSITY_MAX,
       }),
     ).toBeNull();
-    const refusal = validateEdit({
+    const refusal = refusalOf({
       ...ok,
-      unitSize,
+      unit_size,
       levels: allowed + 1,
       densityValidMax: CATALOG_DENSITY_MAX,
     });
@@ -259,11 +262,11 @@ describe("validateEdit", () => {
   // 1 000 units/ha the same 60 m² proposal is capped at 6 storeys, so a module
   // carrying 2 000 of its own would wave 12 through.
   it("derives the ceiling from the bound it was given, not a compiled-in one", () => {
-    expect(validateEdit({ ...ok, levels: 6, densityValidMax: 1000 })).toBeNull();
-    expect(validateEdit({ ...ok, levels: 7, densityValidMax: 1000 })).toContain(
+    expect(refusalOf({ ...ok, levels: 6, densityValidMax: 1000 })).toBeNull();
+    expect(refusalOf({ ...ok, levels: 7, densityValidMax: 1000 })).toContain(
       "allows 6 storeys",
     );
-    expect(validateEdit({ ...ok, levels: 12, densityValidMax: 1000 })).toMatch(
+    expect(refusalOf({ ...ok, levels: 12, densityValidMax: 1000 })).toMatch(
       /density/,
     );
   });
@@ -275,12 +278,12 @@ describe("validateEdit", () => {
   it.each([
     [{ levels: 0 }, /levels/],
     [{ levels: -3 }, /levels/],
-    [{ unitSize: 0 }, /unit_size/],
-    [{ peoplePerHousehold: Number.NaN }, /people_per_household/],
+    [{ unit_size: 0 }, /unit_size/],
+    [{ people_per_household: Number.NaN }, /people_per_household/],
     [{ levels: Number.POSITIVE_INFINITY }, /levels/],
   ])("refuses a degenerate %o, naming the field", (patch, expected) => {
     expect(
-      validateEdit({ ...ok, ...patch, densityValidMax: CATALOG_DENSITY_MAX }),
+      refusalOf({ ...ok, ...patch, densityValidMax: CATALOG_DENSITY_MAX }),
     ).toMatch(expected);
   });
 
@@ -289,9 +292,9 @@ describe("validateEdit", () => {
   // guess at the catalog's value — and certainly not a refusal of a proposal
   // the server would have accepted.
   it("leaves the ceiling to the server when the catalog bound is unknown", () => {
-    expect(validateEdit({ levels: 400, unitSize: 60, peoplePerHousehold: 3.6 })).toBeNull();
+    expect(refusalOf({ levels: 400, unit_size: 60, people_per_household: 3.6 })).toBeNull();
     expect(
-      validateEdit({ ...ok, levels: 400, densityValidMax: null }),
+      refusalOf({ ...ok, levels: 400, densityValidMax: null }),
     ).toBeNull();
   });
 });
@@ -548,42 +551,33 @@ function ruleRow(id: string, ordinal: number, inputs: RuleRow["inputs"]): RuleRo
 }
 
 describe("rulesFromRows", () => {
-  it("is the server's rules in their order, numbers left out left null", () => {
+  it("is the server's rules as served, numbers by their API names", () => {
     const rules = rulesFromRows([
-      ruleRow("b", 4, { people_per_household: 5 }),
       ruleRow("a", 2, { levels: 6, unit_size: 60, lot_coverage: 0.6 }),
+      ruleRow("b", 4, { people_per_household: 5 }),
     ]);
     expect(rules.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(rules[0]).toMatchObject({ levels: 6, unitSize: 60, peoplePerHousehold: null, lotCoverage: 0.6 });
-    expect(rules[1]).toMatchObject({ levels: null, peoplePerHousehold: 5 });
-  });
-
-  it("sends back only the numbers set", () => {
-    expect(
-      ruleInputs({ levels: null, unitSize: 70, peoplePerHousehold: null, lotCoverage: 0.5 }),
-    ).toEqual({ unit_size: 70, lot_coverage: 0.5 });
+    expect(rules[0].inputs).toEqual({ levels: 6, unit_size: 60, lot_coverage: 0.6 });
+    expect(rules[1].inputs).toEqual({ people_per_household: 5 });
   });
 });
 
 
 describe("describeRule", () => {
-  const rule = (o: Partial<ReturnType<typeof rulesFromRows>[number]> = {}) => ({
-    id: "r", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
-    levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: null as number | null, ...o,
+  const rule = (inputs: Record<string, number> = { levels: 6, unit_size: 60, people_per_household: 3.6 }) => ({
+    id: "r", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))", inputs,
   });
 
   it("names a rule by its position and its numbers", () => {
     expect(describeRule(rule(), 2)).toBe("Rule 2 · 6 st · 60 m² · 3.6 people");
-    expect(describeRule(rule({ lotCoverage: 0.6 }), 3)).toBe(
+    expect(describeRule(rule({ levels: 6, unit_size: 60, people_per_household: 3.6, lot_coverage: 0.6 }), 3)).toBe(
       "Rule 3 · 6 st · 60 m² · 3.6 people · 60 %",
     );
   });
 
   // B18: 0.29 × 100 is 28.999999999999996 in floating point.
   it("prints coverage as typed, without float noise or rounding", () => {
-    expect(describeRule(rule({ levels: null, unitSize: null, peoplePerHousehold: null, lotCoverage: 0.29 }), 1)).toBe(
-      "Rule 1 · 29 %",
-    );
+    expect(describeRule(rule({ lot_coverage: 0.29 }), 1)).toBe("Rule 1 · 29 %");
     expect(percentOf(0.625)).toBe(62.5);
     for (const pct of [7, 14, 29, 55, 57, 58]) expect(percentOf(pct / 100)).toBe(pct);
   });
@@ -610,22 +604,33 @@ describe("describeRule", () => {
 });
 
 
+describe("the field a local refusal is about", () => {
+  it("is the API's name, and storeys for the ceilings", () => {
+    expect(validateEdit({ unit_size: -1 })?.field).toBe("unit_size");
+    expect(validateEdit({ lot_coverage: 2 })?.field).toBe("lot_coverage");
+    expect(validateEdit({ levels: 40, unit_size: 60, densityValidMax: 2000 })?.field).toBe("levels");
+    expect(validateEdit({ levels: 250, floorsValidMax: 200 })?.field).toBe("levels");
+    expect(validateEdit({})?.field).toBeNull();
+  });
+});
+
+
 describe("a rule that sets only some numbers", () => {
   // Writing all four flattened the area; a number left out keeps each
   // block's own value.
   it("validates only the numbers it sets, and needs one", () => {
-    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: 5 })).toBeNull();
-    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: -1 })).toMatch(
+    expect(refusalOf({ levels: null, unit_size: null, people_per_household: 5 })).toBeNull();
+    expect(refusalOf({ levels: null, unit_size: null, people_per_household: -1 })).toMatch(
       /people_per_household/,
     );
-    expect(validateEdit({ levels: null, unitSize: null, peoplePerHousehold: null })).toMatch(
+    expect(refusalOf({ levels: null, unit_size: null, people_per_household: null })).toMatch(
       /at least one/,
     );
   });
 
   it("checks density only when storeys and unit size are both set", () => {
-    expect(validateEdit({ levels: 40, unitSize: null, peoplePerHousehold: null, densityValidMax: 2000 })).toBeNull();
-    expect(validateEdit({ levels: 40, unitSize: 60, peoplePerHousehold: null, densityValidMax: 2000 })).toMatch(
+    expect(refusalOf({ levels: 40, unit_size: null, people_per_household: null, densityValidMax: 2000 })).toBeNull();
+    expect(refusalOf({ levels: 40, unit_size: 60, people_per_household: null, densityValidMax: 2000 })).toMatch(
       /density ceiling/,
     );
   });

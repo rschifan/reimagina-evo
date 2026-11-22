@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { percentOf } from "../scenario";
-  import type { RuleValues } from "./store.svelte";
+  import type { RuleInputs } from "../api";
+  import { percentOf, RULE_NUMBERS } from "../scenario";
 
   /**
    * The numbers of one rule, next to its shape on the map.
@@ -19,7 +19,7 @@
    */
   interface Props {
     mode: "new" | "rule";
-    values: RuleValues;
+    values: RuleInputs;
     needsScenarioName: boolean;
     defaultName: string;
     /** Which later rules win over this one where they overlap, and for
@@ -28,8 +28,8 @@
     busy: boolean;
     error: { field: string | null; text: string } | null;
     draggable: boolean;
-    onapply: (values: RuleValues, scenarioName?: string) => void;
-    onsave: (values: RuleValues) => void;
+    onapply: (values: RuleInputs, scenarioName?: string) => void;
+    onsave: (values: RuleInputs) => void;
     ondelete: () => void;
     oncancel: () => void;
   }
@@ -53,21 +53,16 @@
   // a prop change mid-typing must not overwrite what is being typed.
   const initial = (() => values)();
   // Empty means "not set by this rule": every block keeps its own value.
-  let levels = $state<number | null>(initial.levels);
-  let unitSize = $state<number | null>(initial.unitSize);
-  let people = $state<number | null>(initial.peoplePerHousehold);
+  let levels = $state<number | null>(initial.levels ?? null);
+  let unitSize = $state<number | null>(initial.unit_size ?? null);
+  let people = $state<number | null>(initial.people_per_household ?? null);
   // Unrounded: a coverage of 0.625 shows as 62.5 and is saved as 0.625, not
   // rounded to 63 by a Save that only changed the storeys.
   let coveragePct = $state<number | null>(
-    initial.lotCoverage === null ? null : percentOf(initial.lotCoverage),
+    initial.lot_coverage === undefined ? null : percentOf(initial.lot_coverage),
   );
   const inputs: Record<string, HTMLInputElement | undefined> = $state({});
-  const LABELS: Record<string, string> = {
-    levels: "Storeys",
-    unit_size: "m² per home",
-    people_per_household: "People per home",
-    lot_coverage: "Lot coverage",
-  };
+  const LABELS = Object.fromEntries(RULE_NUMBERS.map(([key, label]) => [key, label]));
   let localError = $state<string | null>(null);
   let localField = $state<string | null>(null);
   /** The field a refusal is about, by the API's name, for aria-invalid. */
@@ -83,7 +78,7 @@
   const set = (v: number | null | undefined | string): number | null =>
     v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v);
 
-  function read(): RuleValues | null {
+  function read(): RuleInputs | null {
     // A number the browser could not parse ("3,5" where it expects "3.5")
     // binds as empty — which would read as "not set" and be dropped silently.
     for (const [field, el] of Object.entries(inputs)) {
@@ -93,18 +88,20 @@
         return null;
       }
     }
-    const next: RuleValues = {
-      levels: set(levels),
-      unitSize: set(unitSize),
-      peoplePerHousehold: set(people),
-      lotCoverage: set(coveragePct) === null ? null : (set(coveragePct) as number) / 100,
-    };
-    if (Object.values(next).every((v) => v === null)) {
+    const pct = set(coveragePct);
+    const typed: Array<[keyof RuleInputs, number | null]> = [
+      ["levels", set(levels)],
+      ["unit_size", set(unitSize)],
+      ["people_per_household", set(people)],
+      ["lot_coverage", pct === null ? null : pct / 100],
+    ];
+    // Only what was typed: a number left empty is not set.
+    const next: RuleInputs = Object.fromEntries(typed.filter(([, v]) => v !== null));
+    if (Object.keys(next).length === 0) {
       localField = null;
       localError = "Set at least one number: a rule changes only what you type.";
       return null;
     }
-    const pct = set(coveragePct);
     if (pct !== null && (pct <= 0 || pct > 100)) {
       localField = "lot_coverage";
       localError = "Lot coverage must be more than 0 and at most 100 %.";

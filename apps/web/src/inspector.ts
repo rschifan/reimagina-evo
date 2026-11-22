@@ -7,6 +7,7 @@
  * to it. main.ts owns the request, the pinned outline and when it closes.
  */
 import type { FeatureIndicatorValue } from "./api";
+import { ESTIMATED_LABEL } from "./choropleth";
 import { formatValue, grainNoun, shareText } from "./format";
 
 /**
@@ -64,7 +65,8 @@ export function renderInspector(
   container.hidden = false;
   // The tile's `estimated`: this block's scenario inputs are a guess.
   if (feature.estimated) {
-    container.append(el("p", "inspector__estimated", "Estimated \u2014 buildings not fully mapped"));
+    const label = ESTIMATED_LABEL.charAt(0).toUpperCase() + ESTIMATED_LABEL.slice(1);
+    container.append(el("p", "inspector__estimated", label));
   }
 
   if (typeof rows === "string") {

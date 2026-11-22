@@ -254,7 +254,7 @@ describe("editing on the map", () => {
     properties: {},
     geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] },
   };
-  const VALUES = { levels: 3, unitSize: 66, peoplePerHousehold: 3.6, lotCoverage: 0.6 };
+  const VALUES = { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 };
   const changed = (runId: string | null = "run-1", ruleId: string | null = "r9") => ({
     scenario_id: "A", matched_per_rule: ruleId ? { [ruleId]: 4 } : {}, overrides_written: 5,
     overrides_removed: 0, results_superseded: 0, run_id: runId,
@@ -277,7 +277,7 @@ describe("editing on the map", () => {
     });
   const RULE = {
     id: "r1", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
-    levels: 6, unitSize: 60, peoplePerHousehold: 3.6, lotCoverage: null,
+    inputs: { levels: 6, unit_size: 60, people_per_household: 3.6 },
   };
 
   beforeEach(() => {
@@ -397,7 +397,7 @@ describe("editing on the map", () => {
 
     api.updateRule.mockResolvedValue({ ...changed("run-1", null), rule: RULE_ROW("r1", 1, { levels: 4 }) });
     await settleRun(store.saveRule(RULE, null, { ...VALUES, levels: 4 }));
-    expect(store.ws.rules.map((r) => [r.id, r.levels])).toEqual([["r1", 4], ["r9", 6]]);
+    expect(store.ws.rules.map((r) => [r.id, r.inputs.levels])).toEqual([["r1", 4], ["r9", 6]]);
 
     await settleRun(store.deleteRule(RULE));
     expect(store.ws.rules.map((r) => r.id)).toEqual(["r9"]);
@@ -519,7 +519,7 @@ describe("editing on the map", () => {
   it("a rule sends only the numbers it sets", async () => {
     store.select("A");
     await settleRun(
-      store.applyNewRule(AREA, { levels: null, unitSize: null, peoplePerHousehold: 5, lotCoverage: null }),
+      store.applyNewRule(AREA, { people_per_household: 5 }),
     );
     expect(api.addRule.mock.calls[0][1]).toEqual({
       area: AREA,

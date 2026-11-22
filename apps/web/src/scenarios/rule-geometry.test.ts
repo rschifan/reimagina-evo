@@ -76,10 +76,7 @@ describe("rulesToFeatureCollection", () => {
     id: `r${ordinal}`,
     ordinal,
     areaWkt: wkt,
-    levels,
-    unitSize: 60,
-    peoplePerHousehold: 3.6,
-    lotCoverage: 0.6,
+    inputs: { levels, unit_size: 60, people_per_household: 3.6, lot_coverage: 0.6 },
   });
 
   it("numbers rules from 1 in their order and labels them", () => {

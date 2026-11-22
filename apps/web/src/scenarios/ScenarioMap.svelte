@@ -10,6 +10,7 @@
     getIndicatorStats,
     listTileSources,
     type IndicatorValueStats,
+    type RuleInputs,
   } from "../api";
   import {
     activateIndicator,
@@ -51,7 +52,6 @@
     setMode,
     EMPTY_RULE,
     ws,
-    type RuleValues,
   } from "./store.svelte";
 
   /**
@@ -333,7 +333,7 @@
     if (clearShape) selection?.clear();
   }
 
-  async function apply(values: RuleValues, scenarioName?: string): Promise<void> {
+  async function apply(values: RuleInputs, scenarioName?: string): Promise<void> {
     const area = ws.drawn;
     if (!area) return;
     const pilotAtStart = ws.aoiId;
@@ -342,7 +342,7 @@
     if ((await applyNewRule(area, values, scenarioName)) || ws.aoiId !== pilotAtStart) closeBox(true);
   }
 
-  async function save(values: RuleValues): Promise<void> {
+  async function save(values: RuleInputs): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
@@ -615,14 +615,7 @@
         {#key current.kind === "rule" ? `rule-${current.rule.id}` : "new"}
           <RuleBox
             mode={current.kind}
-            values={current.kind === "rule"
-              ? {
-                  levels: current.rule.levels,
-                  unitSize: current.rule.unitSize,
-                  peoplePerHousehold: current.rule.peoplePerHousehold,
-                  lotCoverage: current.rule.lotCoverage,
-                }
-              : EMPTY_RULE}
+            values={current.kind === "rule" ? current.rule.inputs : EMPTY_RULE}
             needsScenarioName={current.kind === "new" && ws.selectedId === null}
             defaultName={`Scenario ${ws.scenarios.length + 1}`}
             overlapNote={current.kind === "rule" ? current.overlapNote : null}
