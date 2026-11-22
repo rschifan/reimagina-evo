@@ -360,7 +360,7 @@ describe("editing on the map", () => {
     store.select(null);
     api.createScenario.mockResolvedValue({ id: "N", name: "S" });
     api.recomputeScenario.mockRejectedValue(ceiling());
-    api.deleteScenario.mockResolvedValue({ overrides: 0, results_superseded: 0 });
+    api.deleteScenario.mockResolvedValue({ overrides: 0, results_deleted: 0 });
 
     await settleRun(store.applyNewRule(AREA, VALUES, "S"));
 

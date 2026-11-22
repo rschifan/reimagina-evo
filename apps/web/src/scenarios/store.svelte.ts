@@ -420,7 +420,7 @@ export async function removeScenario(): Promise<void> {
     await loadScenarios();
     say(
       `Deleted ${name}: ${removed.overrides} overrides, ` +
-        `${removed.results_superseded} results superseded.`,
+        `${removed.results_deleted} results deleted.`,
     );
   } catch (err) {
     await refused(err, "delete");

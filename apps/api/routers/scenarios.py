@@ -349,17 +349,18 @@ class RecomputeResponse(BaseModel):
 
 
 class DeleteScenarioResponse(BaseModel):
-    """Four counts, one per trace that would otherwise outlive the scenario.
+    """One count per table the delete removed rows from.
 
-    A scenario's traces live in four tables no constraint connects, so "it is
-    gone" is four separate claims and counting each is the only way to see
-    that each was made.
+    A scenario's traces live in tables no constraint connects, so "it is gone"
+    is several separate claims and counting each is the only way to see that
+    each was made.
     """
 
     scenario_id: str
     overrides: int = 0
-    versions_retired: int = 0
-    results_superseded: int = 0
+    versions_deleted: int = 0
+    results_deleted: int = 0
+    job_runs_deleted: int = 0
     materializations: int = 0
 
 
@@ -727,7 +728,7 @@ def get_scenario_route(scenario_id: str) -> ScenarioDetail:
 
 @router.delete("/{scenario_id}", response_model=DeleteScenarioResponse)
 def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
-    """Delete a scenario and the four traces that would otherwise outlive it.
+    """Delete a scenario and every row keyed by it.
 
     **404 for an id that is not there, not 204.** The data layer refuses
     rather than "reporting four zeros for a typo" — its own words — and this
@@ -745,8 +746,9 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
     return DeleteScenarioResponse(
         scenario_id=resolved,
         overrides=removed.overrides,
-        versions_retired=removed.versions_retired,
-        results_superseded=removed.results_superseded,
+        versions_deleted=removed.versions_deleted,
+        results_deleted=removed.results_deleted,
+        job_runs_deleted=removed.job_runs_deleted,
         materializations=removed.materializations,
     )
 

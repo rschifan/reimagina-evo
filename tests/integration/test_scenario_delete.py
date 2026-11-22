@@ -1,14 +1,14 @@
-"""Deleting a scenario — and the four traces that outlive the row if you let it.
+"""Deleting a scenario — and the traces that outlive the row if you let it.
 
 ``app_core.scenario`` cascades exactly one thing: its edits. Everything else a
 scenario accumulates is reachable only by its id, from tables that never heard
 of the entity. ``scenario_override.scenario_id`` is a bare uuid (r030 deferred
-``app_core.scenario`` to r048 and never went back to add the FK) and so is
-``indicator_result.scenario_id``; published versions and recorded
+``app_core.scenario`` to r048 and never went back to add the FK) and so are
+``indicator_result``'s, ``job_run``'s and ``aoi_indicator_summary``'s; published versions and recorded
 materialisations are keyed by the *string* ``scenario=<id>``, which no
 constraint can follow.
 
-So ``DELETE FROM app_core.scenario`` on its own leaves four ghosts, and they
+So ``DELETE FROM app_core.scenario`` on its own leaves ghosts, and they
 are not equally quiet. The loudest is the materialisation: ``asset_component_v``
 (r041) unions materialisation rows into its node set with no filter at all, so
 a deleted scenario's partition stays a live node in the graph — and, with its
@@ -175,11 +175,32 @@ def _current_results(conn, scenario_id, slug) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT feature_id::text FROM curated_geo.indicator_result "
-            "WHERE scenario_id = %s AND indicator_slug = %s AND status = 'current' "
+            "WHERE scenario_id IS NOT DISTINCT FROM %s AND indicator_slug = %s "
+            "AND status = 'current' "
             "ORDER BY feature_id",
             (scenario_id, slug),
         )
         return [r[0] for r in cur.fetchall()]
+
+
+def _partition_version_count(conn, scenario_id) -> int:
+    """Every version of the partition, current or retired."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.asset_version WHERE partition_key = %s",
+            (partition_key({"scenario": scenario_id}),),
+        )
+        return int(cur.fetchone()[0])
+
+
+def _job_run_count(conn, scenario_id) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM jobs_runtime.job_run "
+            "WHERE scenario_id IS NOT DISTINCT FROM %s",
+            (scenario_id,),
+        )
+        return int(cur.fetchone()[0])
 
 
 def _result_statuses(conn, scenario_id) -> set[str]:
@@ -256,8 +277,9 @@ def test_delete_removes_overrides_versions_results_and_materialisations(conn):
     result = delete_scenario(conn, scenario_id=sid)
 
     assert result.overrides == 12  # 4 blocks x 3 attributes
-    assert result.versions_retired == 3
-    assert result.results_superseded == 4
+    assert result.versions_deleted == 3
+    assert result.results_deleted == 4
+    assert result.job_runs_deleted == 1
     assert result.materializations == 1
     assert _override_count(conn, sid) == 0
     assert _current_version(conn, sid, "num_levels") is None
@@ -267,22 +289,61 @@ def test_delete_removes_overrides_versions_results_and_materialisations(conn):
     assert _edit_count(conn, sid) == 0  # cascaded
 
 
-def test_superseded_results_are_kept_as_stale_rather_than_deleted(conn):
-    """The numbers the scenario produced are history, not garbage.
+def test_delete_leaves_no_row_that_names_the_scenario(conn):
+    """Nothing keyed by the scenario survives it, in any status.
 
-    ``'stale'`` is what the CHECK allows and what every other supersession in
-    the platform writes; deleting the rows instead would make a what-if that
-    was run, reported on and then tidied away indistinguishable from one that
-    never computed anything.
+    These rows used to be kept — results staled, versions retired — "as
+    history". Nothing could read that history: every surface that shows a
+    scenario's numbers starts from the scenario row, so once it is gone the
+    rows were unreachable and only grew (614,880 of them for three deleted
+    scenarios on the pilot database). The job_run goes too: its scenario_id is
+    the one the r016 trigger forces every result of it to carry, so it ran for
+    this scenario and nothing else.
     """
     t = _Territory(conn)
     sid = t.scenario()
     materialize_scenario(conn, scenario_id=sid)
     _compute_indicator(conn, _DENSITY, scenario_id=sid)
+    # Run twice, so the first run's rows are already stale history when the
+    # delete arrives: the old step only touched `current` ones.
+    materialize_scenario(conn, scenario_id=sid)
+    _compute_indicator(conn, _DENSITY, scenario_id=sid)
+    assert "stale" in _result_statuses(conn, sid)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO curated_geo.aoi_indicator_summary "
+            "(aoi_id, scenario_id, indicator_id, value) "
+            "SELECT %s, %s, id, 1 FROM curated_geo.indicator_catalog WHERE slug = %s",
+            (t.aoi_id, sid, _DENSITY),
+        )
 
     delete_scenario(conn, scenario_id=sid)
 
-    assert _result_statuses(conn, sid) == {"stale"}
+    assert _result_statuses(conn, sid) == set()
+    assert _partition_version_count(conn, sid) == 0
+    assert _job_run_count(conn, sid) == 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.aoi_indicator_summary "
+            "WHERE scenario_id = %s",
+            (sid,),
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_delete_leaves_the_baseline_alone(conn):
+    """Scoped by scenario id: the baseline's results and runs share both tables."""
+    t = _Territory(conn)
+    sid = t.scenario()
+    materialize_scenario(conn, scenario_id=sid)
+    _compute_indicator(conn, _DENSITY, scenario_id=sid)
+    _compute_indicator(conn, _DENSITY, scenario_id=None)
+    baseline = _current_results(conn, None, _DENSITY)
+
+    delete_scenario(conn, scenario_id=sid)
+
+    assert _current_results(conn, None, _DENSITY) == baseline
+    assert _job_run_count(conn, None) >= 1
 
 
 def test_the_name_is_reusable_after_delete(conn):
@@ -376,8 +437,9 @@ def test_deleting_a_scenario_that_was_never_materialised_is_not_an_error(conn):
 
     result = delete_scenario(conn, scenario_id=sid)
 
-    assert (result.overrides, result.versions_retired) == (0, 0)
-    assert (result.results_superseded, result.materializations) == (0, 0)
+    assert (result.overrides, result.versions_deleted) == (0, 0)
+    assert (result.results_deleted, result.materializations) == (0, 0)
+    assert result.job_runs_deleted == 0
     assert get_scenario(conn, sid) is None
     assert _edit_count(conn, sid) == 0
 

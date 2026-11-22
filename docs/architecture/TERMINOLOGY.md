@@ -212,7 +212,7 @@ The lifecycle status of an `indicator_result` row (CHECK in r016).
 | Status | Meaning |
 |---|---|
 | `current` | The latest valid result for this (feature, scenario, indicator). What the API reads. |
-| `stale` | Superseded. Written when a newer result for the same (feature, scenario, indicator) is written (stale-then-insert in the result repository), when materialisation leaves a scenario result with no override behind it, and for every result of a deleted scenario. It does **not** mean "an input changed" — that is freshness, below. |
+| `stale` | Superseded. Written when a newer result for the same (feature, scenario, indicator) is written (stale-then-insert in the result repository), and when materialisation leaves a scenario result with no override behind it. A deleted scenario's results are deleted, not staled. It does **not** mean "an input changed" — that is freshness, below. |
 | `failed` | Permitted by the CHECK, but no code path writes it. A failed compute is recorded on `job_run` (`status = 'failed'`, `error_message`), and the previous `current` row stays. |
 
 Execution state lives on `job_unit` (`queued`, `running`, …) and `job_run` (opened as `running`), not on `indicator_result`.

@@ -424,8 +424,9 @@ export interface RecomputeResponse {
 export interface DeleteScenarioResponse {
   scenario_id: string;
   overrides: number;
-  versions_retired: number;
-  results_superseded: number;
+  versions_deleted: number;
+  results_deleted: number;
+  job_runs_deleted: number;
   materializations: number;
 }
 

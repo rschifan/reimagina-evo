@@ -181,7 +181,7 @@ Consequences worth stating:
 
 - Nothing in the schema enforces that a `scenario_id` on those four tables refers to a scenario row. A typo'd uuid produces a valid, empty scenario, and the low-level `apply_override` path (below) can still write overrides for an id that has no row.
 - ⚠ **A scenario's AOI is tied to its project by code, not by the schema.** r048 declares `aoi_id` as a plain reference to `curated_geo.area_of_interest(id)`, so the database accepts a scenario in project A bounded by project B's AOI. Materialisation scopes its selection by `aoi_id` alone, so such a scenario would write overrides over B's features. `create_scenario` is the column's only writer and refuses the pair (`_require_aoi_in_project`); a new insert path has to repeat that check.
-- Because those four tables have no FK, deleting a scenario does not cascade into them. `delete_scenario` retires the traces by hand, under the scenario's row lock: it removes the scenario's overrides, retires their override-asset versions (`publish_scenario_version`), marks its `current` results `stale` and deletes the `asset_materialization` rows of its partition. Only then does it delete the row, which cascades the edits.
+- Because those tables have no FK, deleting a scenario does not cascade into them. `delete_scenario` deletes the traces by hand, in one transaction under the scenario's row lock: the scenario's overrides, every `asset_version` and `asset_materialization` row of its partition, every `indicator_result` and `aoi_indicator_summary` row with its `scenario_id` (any status), and the `job_run` rows carrying its `scenario_id` (r016's trigger makes a result's scenario equal its run's, so those runs computed this scenario and nothing else; `job_unit.job_run_id` is set to NULL). Only then does it delete the row, which cascades the edits. Recompute runs (`orchestration_run`) are run history and stay until the jobs page clears them.
 
 ---
 
@@ -324,7 +324,7 @@ Examples:
 | POST | `/scenarios` | `project_id`, `name` (non-empty), `aoi_id`?, `description`? | 201: the scenario as `GET` returns it | 404 an AOI of another project, or (`unknown_reference`) a project or AOI that does not exist; 409 a duplicate name in the project |
 | GET | `/scenarios/indicators` | — | 200: the indicators a rule can change, inputs first, each with `statistic` (`sum` for `units` and `people`, else `median`) | — |
 | GET | `/scenarios/{scenario_id}` | — | 200: the scenario, `override_count`, and `edits` (`id`, `ordinal`, `type_id`, `attribute_key`, `value_numeric`, `geometry_wkt`, `created_at`) in ordinal order | 404 |
-| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_retired, results_superseded, materializations}` | 404, also on a second delete |
+| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_deleted, results_deleted, job_runs_deleted, materializations}` | 404, also on a second delete |
 | POST | `/scenarios/{scenario_id}/edits` | `area` (GeoJSON FeatureCollection, Feature or geometry; polygons unioned), any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`; `type_context` (`MEX`), `type_slug` (`block`) | 201: `{scenario_id, feature_type, edits: [{id, attribute_key, value_numeric}]}`, one edit per number set (`levels` → `floors` and `num_levels`) | 400 `empty_proposal`, `invalid_value` (non-positive or non-finite; coverage outside `0 < c ≤ 1`), `invalid_geometry`; 422 `ceiling_precheck_failed` with `levels`, `unit_size`, `allowed_levels`; 404 unknown scenario or feature type |
 | PATCH | `/scenarios/{scenario_id}/rules` | `edit_ids` (≥ 1, one rule's edits), `area`? (omitted keeps it), the rule's whole set of numbers, `type_context`, `type_slug` | 200: the same shape, every edit of the rule after the update | as `POST …/edits`, plus 422 `not_one_rule` (`field: edit_ids`) |
 | DELETE | `/scenarios/{scenario_id}/edits` | `edit_id` (query) | 204 | 404 unknown scenario, or an edit not in this scenario |
@@ -563,7 +563,7 @@ A named scenario is its **edits**; its override rows are derived from them. Clon
 
 A bare override set with no `app_core.scenario` row is still a valid what-if for the engine, as described above, but it is invisible to `explore.scenario_v` and to every authoring surface.
 
-There is no archive operation and no status column. Deleting a scenario retires its traces (see *The scenario id* above): its overrides are removed and its results are marked `stale`, so `current_indicator_v` no longer returns them. The stale rows remain in `indicator_result` as history, but they are no longer readable as the scenario's results or for comparison.
+There is no archive operation and no status column. Deleting a scenario deletes every row keyed by it (see *The scenario id* above): overrides, results in any status, their job runs, and its partition's asset versions and materialisations. Nothing is kept as history, because nothing could read it once the scenario row is gone.
 
 ---
 

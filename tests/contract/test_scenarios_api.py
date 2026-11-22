@@ -90,7 +90,11 @@ MATERIALIZED = MaterializeResult(
     results_superseded=0,
 )
 DELETED = DeleteResult(
-    overrides=16, versions_retired=4, results_superseded=4, materializations=1
+    overrides=16,
+    versions_deleted=4,
+    results_deleted=4,
+    job_runs_deleted=1,
+    materializations=1,
 )
 
 

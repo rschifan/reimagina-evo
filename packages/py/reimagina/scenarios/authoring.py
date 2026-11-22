@@ -9,13 +9,13 @@ scenario, so the ordinary ``evaluate-scenario`` path then recomputes exactly
 the affected indicators. It is the only writer of ``materialized_at``.
 
 ``delete_scenario`` undoes both halves. The row cascades its edits and nothing
-else: overrides, results, versions and materialisations are all reachable only
-by a ``scenario_id`` no FK carries, so each is removed by hand, in an order the
-asset graph cares about.
+else: overrides, results, their job runs, versions and materialisations are
+all reachable only by a ``scenario_id`` no FK carries, so each is deleted by
+hand.
 
 None of them commits. The caller owns the transaction, as with
 ``overrides.py``; an API route opens its own committed connection. That matters
-most for materialisation and deletion, which are seven and five statements that
+most for materialisation and deletion, which are seven and six statements that
 are only correct together: a refusal halfway through must leave no overrides
 behind, and no half-deleted scenario.
 """
@@ -1015,137 +1015,110 @@ def _supersede_unbacked_results(
 
 @dataclass(frozen=True)
 class DeleteResult:
-    """What one deletion took away, one number per step that could take some.
+    """What one deletion took away.
 
-    Four counts rather than a bare ``True``: a scenario's traces live in four
-    tables that no constraint connects, so "it is gone" is four separate
-    claims and the only way to see that each was made is to count it. The
-    scenario row itself is not counted — it is always exactly one, or the call
-    raised.
+    Counts rather than a bare ``True``: a scenario's traces live in tables that
+    no constraint connects, so "it is gone" is several separate claims and the
+    only way to see that each was made is to count it. The scenario row itself
+    is not counted — it is always exactly one, or the call raised.
     """
 
     overrides: int
-    versions_retired: int
-    results_superseded: int
+    versions_deleted: int
+    results_deleted: int
+    job_runs_deleted: int
     materializations: int
 
 
 def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
-    """Delete a scenario and the four traces that would otherwise outlive it.
+    """Delete a scenario and every row keyed by it, in the caller's transaction.
 
-    Five steps, in this order, in the caller's one transaction:
+    1. its ``scenario_override`` rows;
+    2. every ``asset_version`` of its partition, current or retired;
+    3. every ``indicator_result`` it produced, in any status;
+    4. the ``job_run`` rows that produced them;
+    5. the ``asset_materialization`` rows of its partition, and its
+       ``aoi_indicator_summary`` rows (not counted in the result);
+    6. the scenario row, cascading its edits.
 
-    1. delete the scenario's ``scenario_override`` rows;
-    2. ``publish_scenario_version`` with **no** ``attributes``;
-    3. mark every ``current`` ``indicator_result`` of this scenario ``'stale'``;
-    4. delete the ``asset_materialization`` rows of its partition;
-    5. delete the scenario row, cascading its edits.
+    Only the sixth is reachable by a constraint. ``scenario_override``,
+    ``indicator_result``, ``job_run`` and ``aoi_indicator_summary`` carry a bare ``scenario_id`` uuid with
+    no FK — r030 deferred ``app_core.scenario`` to r048 and never went back —
+    and versions and materialisations are keyed by the *string*
+    ``scenario=<id>``, which no FK could follow. ``DELETE FROM
+    app_core.scenario`` alone leaves all of them.
 
-    Only the fifth is reachable by a constraint. ``scenario_override`` and
-    ``indicator_result`` carry a bare ``scenario_id`` uuid with no FK — r030
-    deferred the entity to r048 and never went back — and versions and
-    materialisations are keyed by the *string* ``scenario=<id>``, which no FK
-    could follow. ``DELETE FROM app_core.scenario`` alone leaves all four.
+    **Deleted, not staled or retired.** They used to be kept "as history", but
+    nothing can read it: every surface that shows a scenario's numbers starts
+    from the scenario row. Kept, they only grew — 614,880 results for three
+    deleted scenarios on the pilot database.
 
-    Step 2 passes no ``attributes`` for the same reason materialisation's step
-    6 does: with every override row gone in step 1, the reconciling branch is
-    what notices each attribute whose last row has vanished and retires its
-    version, rather than leaving the final digest current for a scenario that
-    no longer exists. Naming the attributes just deleted would work too, and
-    would be a second place to keep in step with ``overrides.py``.
+    Step 4 is safe to scope by ``scenario_id`` alone: r016's trigger forces a
+    result's ``scenario_id`` to equal its ``job_run``'s, so a run carrying this
+    id produced this scenario's results and nothing else. Its other referrers,
+    ``job_unit`` and ``asset_materialization``, are ``ON DELETE SET NULL``; a
+    recompute *run* (``orchestration_run``) is run history and stays until the
+    jobs page clears it.
 
-    Step 3 is **not** ``_supersede_unbacked_results``. That helper is targeted
-    — it stales the results behind a specific set of removed
-    ``(feature, attribute)`` pairs, which is what a *partial* removal needs.
-    A deleted scenario has no surviving edits to back anything, so every
-    ``current`` row of it is unbacked and the pairing is answered by the
-    scenario id alone. The rows are staled rather than deleted: they are what
-    the what-if actually computed, and ``'stale'`` is the vocabulary r016's
-    CHECK gives for "superseded".
-
-    Step 4 is not cosmetic. ``asset_component_v`` unions
+    Step 5 is not cosmetic. ``asset_component_v`` unions
     ``asset_materialization`` into its node set with no filter, so the
-    partition of a deleted scenario stays a node in the graph — and, with its
-    override versions retired by step 2, one whose upstream components have
-    all fallen to ``'missing'``. It would report ``stale`` for ever, because
-    nothing will ever recompute a scenario that is not there, and ``assets
-    stale`` would grow one permanent line per deleted scenario naming
-    something nobody can look up.
+    partition of a deleted scenario would stay a node in the graph — one whose
+    upstream versions are gone — and ``assets stale`` would list it for ever.
 
     The scenario's row lock is taken first, before anything is read or
     deleted, for the reason ``_lock_scenario`` gives: a materialisation
     resolved against the scenario moments ago would otherwise resume after the
     delete and write its overrides and versions back, orphaned. Taking the
     lock is also the existence check — an unknown id raises ``ScenarioNotFound``
-    rather than reporting four zeros for a typo.
+    rather than reporting zeros for a typo.
 
     Nothing here commits; the caller owns the transaction, so a failure at any
     step leaves the scenario whole.
     """
     _require_postgres(conn)
     scenario_id = _canonical_id(scenario_id)
+    partition = partition_key({"scenario": scenario_id})
     with conn.cursor() as cur:
         _lock_scenario(cur, scenario_id)
-        cur.execute(
+
+        def _delete(sql: str, param: str) -> int:
+            cur.execute(sql, (param,))
+            return int(cur.rowcount)
+
+        overrides = _delete(
             "DELETE FROM curated_geo.scenario_override WHERE scenario_id = %s",
-            (scenario_id,),
+            scenario_id,
         )
-        overrides = cur.rowcount
-
-    retired = publish_scenario_version(conn, scenario_id)
-    superseded = _supersede_all_results(conn, scenario_id)
-    materializations = _delete_materializations(conn, scenario_id)
-
-    with conn.cursor() as cur:
+        versions = _delete(
+            "DELETE FROM curated_geo.asset_version WHERE partition_key = %s",
+            partition,
+        )
+        # Explicit rather than left to job_run's ON DELETE CASCADE, so the
+        # count is the results' and not the runs'.
+        results = _delete(
+            "DELETE FROM curated_geo.indicator_result WHERE scenario_id = %s",
+            scenario_id,
+        )
+        job_runs = _delete(
+            "DELETE FROM jobs_runtime.job_run WHERE scenario_id = %s", scenario_id
+        )
+        materializations = _delete(
+            "DELETE FROM curated_geo.asset_materialization WHERE partition_key = %s",
+            partition,
+        )
+        _delete(
+            "DELETE FROM curated_geo.aoi_indicator_summary WHERE scenario_id = %s",
+            scenario_id,
+        )
         cur.execute("DELETE FROM app_core.scenario WHERE id = %s", (scenario_id,))
 
     return DeleteResult(
         overrides=overrides,
-        versions_retired=sum(1 for version in retired.values() if version is None),
-        results_superseded=superseded,
+        versions_deleted=versions,
+        results_deleted=results,
+        job_runs_deleted=job_runs,
         materializations=materializations,
     )
-
-
-def _supersede_all_results(conn: Any, scenario_id: str) -> int:
-    """Step 3: stale every ``current`` result this scenario produced.
-
-    Scoped by ``scenario_id`` and nothing else, which is the whole difference
-    from ``_supersede_unbacked_results``: there is no surviving edit for any
-    pair to be measured against, so no pairing to compute.
-
-    r016's before-write trigger refuses a change to ``feature_type`` and
-    ``indicator_slug``, not to ``status``, and re-checks the row against its
-    ``job_run`` — which this does not touch, and which outlives the scenario
-    anyway (``job_run.scenario_id`` is a bare uuid too).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE curated_geo.indicator_result
-               SET status = 'stale', updated_at = now()
-             WHERE scenario_id = %s
-               AND status = 'current'
-            """,
-            (scenario_id,),
-        )
-        return cur.rowcount
-
-
-def _delete_materializations(conn: Any, scenario_id: str) -> int:
-    """Step 4: drop the materialisation records of this scenario's partition.
-
-    By partition key alone, across every asset. The key renders one scenario
-    and one scenario only (``partition_key({"scenario": id})``), so there is
-    nothing a join to ``asset`` would narrow — and anything materialised at
-    this partition is by definition a computation of this scenario.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM curated_geo.asset_materialization WHERE partition_key = %s",
-            (partition_key({"scenario": scenario_id}),),
-        )
-        return cur.rowcount
 
 
 def _stringify_ids(row: dict) -> dict:

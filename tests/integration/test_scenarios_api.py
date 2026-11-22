@@ -746,11 +746,12 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
 
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["overrides"] == 8
-    assert deleted.json()["versions_retired"] == 4
+    assert deleted.json()["versions_deleted"] == 4
     # Nothing computed this scenario here — the orchestrator is a fake — so
-    # the other two counts are zero *for a reason*, which is a different claim
+    # the other counts are zero *for a reason*, which is a different claim
     # from being unasserted. Pinned non-zero in the test below.
-    assert deleted.json()["results_superseded"] == 0
+    assert deleted.json()["results_deleted"] == 0
+    assert deleted.json()["job_runs_deleted"] == 0
     assert deleted.json()["materializations"] == 0
     assert client.get(f"/scenarios/{scenario_id}").status_code == 404
     assert client.delete(f"/scenarios/{scenario_id}").status_code == 404
@@ -771,7 +772,7 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
 def test_the_delete_counts_cover_results_and_materialisations_too(
     client, territory, orchestrator, migrated_db
 ):
-    """⚠ All four counts, each against a trace that is really there.
+    """⚠ Every count, each against a trace that is really there.
 
     These four numbers are the reason ``DELETE`` answers 200 with a body
     instead of 204 — "it is gone" is four separate claims about four tables no
@@ -792,11 +793,12 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
     deleted = client.delete(f"/scenarios/{scenario_id}").json()
 
     assert deleted["overrides"] == 8
-    assert deleted["versions_retired"] == 4
-    assert deleted["results_superseded"] == 1
+    assert deleted["versions_deleted"] == 4
+    assert deleted["results_deleted"] == 1
+    assert deleted["job_runs_deleted"] == 1
     assert deleted["materializations"] == 1
 
-    # And the traces are actually gone / staled, not merely counted.
+    # And the traces are actually gone, not merely counted.
     reader = _reader(migrated_db)
     try:
         with reader.cursor() as cur:
@@ -805,7 +807,7 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
                 "WHERE scenario_id = %s",
                 (scenario_id,),
             )
-            assert [row[0] for row in cur.fetchall()] == ["stale"]
+            assert cur.fetchall() == []
             cur.execute(
                 "SELECT count(*) FROM curated_geo.asset_materialization "
                 "WHERE partition_key = %s",
