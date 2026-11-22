@@ -157,6 +157,7 @@ def ingest_raster_source(
     )
     conn.commit()
 
+    partial_cog: Path | None = None
     try:
         # Step 3 — bronze. Immutable copy.
         bronze_path = bronze.land_file(raw_path, source_id)
@@ -170,7 +171,13 @@ def ingest_raster_source(
         # Emit `<input-stem>.cog.tif` so downstream consumers can tell
         # at a glance which Silver files are COGs.
         silver_path = silver_dir / f"{raw_path.stem}.cog.tif"
-        rio_copy(str(bronze_path), str(silver_path), driver="COG")
+        # Encoded beside it and moved into place only once the registry
+        # inserts succeed: a re-ingest at the same (provider, name, version)
+        # resolves to the same Silver path and then fails on file_asset's
+        # UNIQUE (source_id), and writing in place would already have swapped
+        # the live layer's pixels under metadata describing the old file.
+        partial_cog = silver_path.with_name(silver_path.name + ".partial")
+        rio_copy(str(bronze_path), str(partial_cog), driver="COG")
 
         # Step 5 — metadata for the registry tables. storage_uri uses
         # the reimagina-internal form 'file://data/<subpath>' — matches
@@ -205,6 +212,7 @@ def ingest_raster_source(
             published=published,
             aggregation_kind=aggregation_kind,
         )
+        partial_cog.replace(silver_path)
 
         # Step 8 — success. Commit the registry writes + the succeeded
         # status together so partial state can't leak if the caller's
@@ -223,6 +231,8 @@ def ingest_raster_source(
         )
         conn.commit()
     except Exception as exc:
+        if partial_cog is not None:
+            partial_cog.unlink(missing_ok=True)
         # Clear any aborted-transaction state before trying to write
         # the failure status: on Postgres a prior error (e.g.
         # UniqueViolation on layer_slug) leaves the connection in an

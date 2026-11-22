@@ -474,3 +474,49 @@ def test_a_published_raster_is_credited_on_the_map(conn, isolated_data_dir, tmp_
     )
     providers = {a.provider for a in attributions(conn)}
     assert "pytest-raster-credit" in providers
+
+
+def test_a_failed_reingest_leaves_the_live_cog_untouched(
+    conn, isolated_data_dir, tmp_path
+):
+    """Same name/version → same source id → same Silver path. The re-ingest
+    fails at the file_asset/raster_layer inserts; the published layer must
+    keep serving the pixels its metadata describes."""
+    raw = _write_tiny_utm_raster(tmp_path / "live.tif")
+    first = ingest_raster_source(
+        conn,
+        raw_path=raw,
+        source_name="reingest-live",
+        provider="pytest",
+        version="v1",
+        layer_slug="reingest_live",
+    )
+    before = first.silver_path.read_bytes()
+
+    corrected = tmp_path / "corrected" / "live.tif"
+    corrected.parent.mkdir()
+    with rasterio.open(
+        corrected,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=3,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(-99.15, 19.45, 0.01, 0.01),
+    ) as dst:
+        dst.write(np.full((3, 3), 7, dtype="float32"), 1)
+
+    with pytest.raises(Exception):
+        ingest_raster_source(
+            conn,
+            raw_path=corrected,
+            source_name="reingest-live",
+            provider="pytest",
+            version="v1",
+            layer_slug="reingest_live",
+        )
+
+    assert first.silver_path.read_bytes() == before
+    assert list(first.silver_path.parent.glob("*.partial")) == []
