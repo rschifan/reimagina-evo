@@ -13,7 +13,7 @@ from reimagina.data import feature as feat
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_PLANNED_FLOORS, seed_catalog
 from reimagina.orchestration.intake import evaluate_scenario
 from reimagina.orchestration.synchronous import SynchronousOrchestrator
-from reimagina.scenarios.overrides import apply_override
+from reimagina.scenarios.overrides import apply_overrides
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
@@ -66,12 +66,16 @@ def test_scenario_override_changes_planned_floors(conn):
 
     # What-if: scenario S overrides floors=10 → planned_floors(S) = 10.
     scenario = make_scenario(conn)
-    apply_override(
+    apply_overrides(
         conn,
         scenario_id=scenario,
-        feature_id=block_id,
-        attribute_key="floors",
-        value_numeric=10.0,
+        edits=[
+            {
+                "feature_id": block_id,
+                "attribute_key": "floors",
+                "value_numeric": 10.0,
+            }
+        ],
     )
     orch.submit_run(
         conn,
@@ -117,12 +121,16 @@ def test_scenario_run_derives_change_set_from_overrides(conn):
     )
 
     scenario = make_scenario(conn)
-    apply_override(
+    apply_overrides(
         conn,
         scenario_id=scenario,
-        feature_id=block_id,
-        attribute_key="floors",
-        value_numeric=10.0,
+        edits=[
+            {
+                "feature_id": block_id,
+                "attribute_key": "floors",
+                "value_numeric": 10.0,
+            }
+        ],
     )
 
     # No changed_attributes / edited_features — they are derived from the override.
@@ -172,12 +180,16 @@ def test_synchronous_orchestrator_also_derives_the_change_set(conn):
     )
 
     scenario = make_scenario(conn)
-    apply_override(
+    apply_overrides(
         conn,
         scenario_id=scenario,
-        feature_id=block_id,
-        attribute_key="floors",
-        value_numeric=10.0,
+        edits=[
+            {
+                "feature_id": block_id,
+                "attribute_key": "floors",
+                "value_numeric": 10.0,
+            }
+        ],
     )
 
     handle = SynchronousOrchestrator().submit_run(

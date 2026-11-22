@@ -237,15 +237,19 @@ def _block_id(conn, ref="blk-1"):
 
 
 def _edit(conn, scenario_id, feature_id, *, attribute="floors", value=9.0):
-    from reimagina.scenarios.overrides import apply_override
+    from reimagina.scenarios.overrides import apply_overrides
 
     make_scenario(conn, scenario_id)
-    apply_override(
+    apply_overrides(
         conn,
         scenario_id=scenario_id,
-        feature_id=feature_id,
-        attribute_key=attribute,
-        value_numeric=value,
+        edits=[
+            {
+                "feature_id": feature_id,
+                "attribute_key": attribute,
+                "value_numeric": value,
+            }
+        ],
     )
 
 

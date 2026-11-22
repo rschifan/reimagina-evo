@@ -549,7 +549,7 @@ ON CONFLICT (scenario_id, feature_id, attribute_key)
 DO UPDATE SET value_numeric = EXCLUDED.value_numeric;
 ```
 
-A raw `INSERT` publishes no override version, so a submit naming only the `scenario_id` plans from freshness and does not see this edit. Either write through `apply_override` (which publishes) or name the change-set: `{"scenario_id": …, "changed_attributes": ["floors"]}`. There is no separate "mark stale" step to perform: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts, and the partial unique index `ir_one_current_scenario` enforces one current row per triple (`r016:198-200`).
+A raw `INSERT` publishes no override version, so a submit naming only the `scenario_id` plans from freshness and does not see this edit. Either write through `apply_overrides` (which publishes) or name the change-set: `{"scenario_id": …, "changed_attributes": ["floors"]}`. There is no separate "mark stale" step to perform: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts, and the partial unique index `ir_one_current_scenario` enforces one current row per triple (`r016:198-200`).
 
 ---
 

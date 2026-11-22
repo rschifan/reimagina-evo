@@ -26,7 +26,7 @@ from reimagina.indicators.edificability import (
     compute_block_housing_units,
     compute_block_population,
 )
-from reimagina.scenarios.overrides import apply_override
+from reimagina.scenarios.overrides import apply_overrides
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
@@ -140,12 +140,16 @@ def test_scenario_override_moves_all_three(conn):
     )["value_numeric"]
 
     scenario = make_scenario(conn)
-    apply_override(
+    apply_overrides(
         conn,
         scenario_id=scenario,
-        feature_id=block_id,
-        attribute_key="num_levels",
-        value_numeric=6.0,  # double the storeys
+        edits=[
+            {
+                "feature_id": block_id,
+                "attribute_key": "num_levels",
+                "value_numeric": 6.0,  # double the storeys
+            }
+        ],
     )
     for compute in (
         compute_block_housing_units,
