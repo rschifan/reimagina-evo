@@ -38,8 +38,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as pads
 
-from reimagina.assets.publish import publish_version
+from reimagina.assets.publish import asset_key_for_feature_type, publish_version
 from reimagina.data import catalog as cat
+from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 
 
@@ -412,11 +413,17 @@ def bootstrap(
         # inputs as ``mex.block`` attributes (edificability reads
         # ``people_per_household``) — nothing has an edge to ``censo.2020``.
         # Publishing only that would leave every reader "fresh" on old values.
-        # Before complete_ingestion_run, which takes an exclusive MV lock.
-        if observations_written:
+        # Before complete_ingestion_run, which takes an exclusive MV lock;
+        # that call publishes censo.2020, so the block layer is published here.
+        block_key = (
+            asset_key_for_feature_type(conn, feat.get_type_id(conn, "MEX", "block"))
+            if observations_written
+            else None
+        )
+        if block_key:
             publish_version(
                 conn,
-                asset_key="mex.block",
+                asset_key=block_key,
                 version=str(run_id),
                 ingestion_run_id=run_id,
                 dataset_version=CENSO_VERSION,

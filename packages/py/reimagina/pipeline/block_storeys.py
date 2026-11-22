@@ -29,7 +29,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from reimagina.assets.publish import asset_key_for_feature_type
 from reimagina.data import catalog as cat
+from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 
 #: Planned floors' input; see the module docstring for why not ``num_levels``.
@@ -101,6 +103,12 @@ def bootstrap(
         )
 
     written = 0
+    # Derived from the type, as the vector loader does, not a hard-coded key.
+    block_key = (
+        asset_key_for_feature_type(conn, feat.get_type_id(conn, "MEX", "block"))
+        if by_source
+        else None
+    )
     for source_id, records in by_source.items():
         run_id = cat.start_ingestion_run(
             conn,
@@ -121,7 +129,7 @@ def bootstrap(
             details={"blocks": len(records)},
             # Planned floors reads `floors` off mex.block; without a publish
             # it stays "fresh" against storeys that just changed.
-            asset_key="mex.block",
+            asset_key=block_key,
         )
         written += n
     return {
