@@ -152,7 +152,7 @@ Explorer.
 Without it, two things still work:
 
   scripts/acceptance_run.sh
-      fully synthetic, no network, all 11 indicators
+      fully synthetic, no network, all 12 indicators
 
   overture divisions / aoi-from-division / extract / load
       a real municipal boundary and ~343k real buildings on the map, with
@@ -433,7 +433,7 @@ fi
 
 # ── 10. Indicators ───────────────────────────────────────────────────────────
 #
-# ⚠ Unlike acceptance_run.sh, this does NOT require all eleven to produce rows,
+# ⚠ Unlike acceptance_run.sh, this does NOT require all twelve to produce rows,
 # and the difference is not laziness. The synthetic territory is built to
 # satisfy every indicator's inputs; a real city is not. `planned_floors` and
 # the edificability family read scenario inputs that step 9b supplies, mostly

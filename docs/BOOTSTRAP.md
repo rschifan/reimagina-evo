@@ -8,16 +8,22 @@ pgrouting`; `make stack-up`'s image carries both), the repo checked out,
 (INEGI geometry, census, amenities) and internet access (Overture,
 OpenStreetMap, WorldPop).
 
-The current target state is:
+The delivered installation is what `scripts/mexicali_run.sh` builds:
 
-- **2 AOIs:** CDMX (all), Mexicali
-- **Geometry features:** INEGI 2024 (blocks, AGEBs, municipalities,
-  states for entidad codes 09 + 02) + Overture buildings clipped to
-  each AOI's polygon
-- **Observations:** INEGI 2020 census headline columns at block grain
-  (AGEB/municipality rollups are optional — step 7)
-- **Indicators:** `urban_form_block_compactness`,
-  `urban_form_block_building_density` for both AOIs
+- **1 AOI:** Mexicali, bounded by the municipality
+  (`cdmx aoi-from-alcaldia --cve-ent 02 --cve-mun 002`), in project
+  "Mexicali Pilot"
+- **Geometry features:** INEGI 2024 (state, municipalities, AGEBs, blocks)
+  for entidad 02, the whole state of Baja California; Overture buildings
+  and places clipped to the AOI; IMIP amenities; the OSM walk network
+- **Observations:** INEGI 2020 census headline columns at block grain,
+  household size, and baseline storeys
+- **Indicators:** all 12 shipped indicators, computed with `--aoi-id`
+- No scenarios and no orchestration runs
+
+The steps below are the manual form of the same pipeline. They also show
+CDMX as a second AOI (entidad 09); leave out the CDMX commands to match the
+delivered installation.
 
 ## 0. Pre-flight
 
@@ -308,15 +314,23 @@ actually need, when you need them.
 ```sh
 uv run python -m apps.cli.app indicators seed-catalog
 
-for AOI in <CDMX_AOI_UUID> <MEXICALI_AOI_UUID>; do
-  uv run python -m apps.cli.app indicators compute \
-    --slug urban_form_block_compactness --aoi-id $AOI
-  uv run python -m apps.cli.app indicators compute \
-    --slug urban_form_block_building_density --aoi-id $AOI
+# Dependency order: a composite reads its inputs' current rows.
+for SLUG in urban_form_block_compactness urban_form_block_building_density \
+    urban_form_block_planned_floors urban_form_block_composite \
+    edificability_block_housing_units edificability_block_population \
+    edificability_block_density accessibility_block_school_network_m \
+    accessibility_block_health_network_m accessibility_block_park_network_m \
+    accessibility_block_culture_network_m livability_block_score; do
+  uv run python -m apps.cli.app indicators compute --slug $SLUG --aoi-id <MEXICALI_AOI_UUID>
 done
 ```
 
-~5 min per (slug, AOI) pair.
+The edificability indicators, `planned_floors` and `livability_block_score`
+read the scenario-input baseline (`inegi-censo --columns prom_ocup`,
+`overture block-storeys` and `scripts/seed_demo_attributes.py
+--fit-to-census`, as in `scripts/mexicali_run.sh` step 9b); without it they
+write no rows. The accessibility indicators need the OSM walk network
+(`network` commands, `scripts/mexicali_run.sh` step 7).
 
 ## 9. Integrity probe
 
