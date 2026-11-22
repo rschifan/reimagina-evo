@@ -114,6 +114,71 @@ def fetch_walk_graph(polygon, *, network_type: str = WALK):
     return nodes, edges.reset_index()
 
 
+def save_graph(nodes, edges, directory, *, fetched: str) -> None:
+    """Write a fetched graph as ``nodes.parquet`` + ``edges.parquet``.
+
+    Keeps exactly what :func:`load_graph` reads, so a saved graph loads with
+    no Overpass round-trip — that is how the Mexicali source bundle ships the
+    network. ``osmid`` is reduced to one way id (see :func:`_osm_id`) because
+    the mixed list/int column cannot be written as is. ``fetched`` (the fetch
+    date) is kept in the file metadata: it becomes the road features' version.
+
+    Written with pyarrow and no pandas metadata, so the same graph gives the
+    same bytes and the bundle's checksums are reproducible.
+    """
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    meta = {b"reimagina.osm_fetched": fetched.encode()}
+    node_table = pa.table(
+        {
+            "osmid": pa.array([int(i) for i in nodes.index], pa.int64()),
+            "x": pa.array(nodes["x"].astype(float).tolist(), pa.float64()),
+            "y": pa.array(nodes["y"].astype(float).tolist(), pa.float64()),
+        }
+    ).replace_schema_metadata(meta)
+    edge_table = pa.table(
+        {
+            "u": pa.array(edges["u"].astype("int64").tolist(), pa.int64()),
+            "v": pa.array(edges["v"].astype("int64").tolist(), pa.int64()),
+            "osmid": pa.array([_osm_id(v) for v in edges["osmid"]], pa.int64()),
+            "length": pa.array(edges["length"].astype(float).tolist(), pa.float64()),
+            "geometry": pa.array([g.wkb for g in edges.geometry], pa.binary()),
+        }
+    ).replace_schema_metadata(meta)
+    pq.write_table(node_table, out / "nodes.parquet")
+    pq.write_table(edge_table, out / "edges.parquet")
+
+
+def read_graph(directory):
+    """Read a graph written by :func:`save_graph`: ``(nodes, edges, fetched)``.
+
+    The frames have the shape :func:`load_graph` takes from a fetch: nodes
+    indexed by OSM id with ``x``/``y``; edges with ``u``, ``v``, ``length``,
+    ``osmid`` and shapely geometries.
+    """
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+    import shapely
+
+    root = Path(directory)
+    node_table = pq.read_table(root / "nodes.parquet")
+    nodes = node_table.to_pandas().set_index("osmid")
+    edge_table = pq.read_table(root / "edges.parquet")
+    edges = edge_table.drop_columns(["osmid", "geometry"]).to_pandas()
+    # Python ints (or None), not a float column: a null would otherwise turn
+    # the whole column into floats, which ``_osm_id`` rejects.
+    edges["osmid"] = edge_table.column("osmid").to_pylist()
+    edges["geometry"] = shapely.from_wkb(edge_table.column("geometry").to_pylist())
+    fetched = (node_table.schema.metadata or {})[b"reimagina.osm_fetched"].decode()
+    return nodes, edges, fetched
+
+
 def aoi_polygon(conn, aoi_id: str):
     """The AOI's geometry as a shapely polygon in EPSG:4326."""
     from shapely import wkb
@@ -247,11 +312,17 @@ def bootstrap_network(
     network_type: str = WALK,
     publish_features: bool = True,
     clip_bbox: tuple[float, float, float, float] | None = None,
+    graph_dir: str | None = None,
+    save_graph_dir: str | None = None,
 ) -> dict[str, Any]:
     """Fetch the AOI's OSM network, load it, and publish it as features.
 
     ``clip_bbox`` narrows the fetch boundary without narrowing the AOI — see
     :func:`clip_polygon` for why a municipio-sized AOI needs it.
+
+    ``graph_dir`` loads a graph saved by :func:`save_graph` instead of
+    fetching, so no Overpass is needed; ``save_graph_dir`` saves what a fetch
+    returned, which is how a source bundle's network snapshot is made.
 
     ``publish_features`` exists for a caller that wants only the routing
     tables — a graph reload where the drawable layer is being rebuilt
@@ -270,7 +341,13 @@ def bootstrap_network(
     aoi_area = polygon.area
     if clip_bbox is not None:
         polygon = clip_polygon(polygon, clip_bbox)
-    nodes, edges = fetch_walk_graph(polygon, network_type=network_type)
+    if graph_dir is not None:
+        nodes, edges, fetched = read_graph(graph_dir)
+    else:
+        nodes, edges = fetch_walk_graph(polygon, network_type=network_type)
+        fetched = date.today().isoformat()
+        if save_graph_dir is not None:
+            save_graph(nodes, edges, save_graph_dir, fetched=fetched)
     result = load_graph(conn, nodes, edges, network_type=network_type)
     summary: dict[str, Any] = {
         "aoi_id": aoi_id,
@@ -282,6 +359,8 @@ def bootstrap_network(
         # over part of an AOI is not the AOI's network, and a later reader
         # comparing two runs needs to know which one they are looking at.
         "clip_bbox": list(clip_bbox) if clip_bbox else None,
+        "graph_dir": graph_dir,
+        "osm_fetched": fetched,
         "fetched_fraction_of_aoi": (
             round(polygon.area / aoi_area, 4) if aoi_area else None
         ),
@@ -294,7 +373,7 @@ def bootstrap_network(
 
         published = publish_from_network(
             conn,
-            version=f"{network_type}-{date.today().isoformat()}",
+            version=f"{network_type}-{fetched}",
             code_version="osm_network.bootstrap_network",
         )
         summary["road_features"] = published.features_written

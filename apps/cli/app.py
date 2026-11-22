@@ -1236,10 +1236,22 @@ def network_bootstrap(
         "result that is ~99% empty. Membership and indicators still scope to "
         "the full municipal boundary",
     ),
+    graph_dir: Optional[str] = typer.Option(
+        None,
+        "--graph-dir",
+        help="Load a graph saved with --save-graph (nodes.parquet + "
+        "edges.parquet, e.g. the source bundle's osm/ snapshot) instead of "
+        "fetching from Overpass. No network needed",
+    ),
+    save_graph: Optional[str] = typer.Option(
+        None,
+        "--save-graph",
+        help="Also save the fetched graph to this directory, for a source "
+        "bundle or a later offline --graph-dir load",
+    ),
 ) -> int:
-    # Needs network access to Overpass. Where that is blocked, the graph
-    # cannot be fetched at all and the accessibility family stays unavailable;
-    # there is no offline substitute that would not be invented data.
+    # Without --graph-dir this needs Overpass; the offline route is a graph
+    # saved from an earlier fetch, never an invented one.
     return _print(
         bootstrap_osm_network(
             dsn=dsn,
@@ -1247,6 +1259,8 @@ def network_bootstrap(
             network_type=network_type,
             publish_features=publish_features,
             clip_bbox=parse_bbox(clip_bbox) if clip_bbox else None,
+            graph_dir=graph_dir,
+            save_graph_dir=save_graph,
         )
     )
 
