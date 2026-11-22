@@ -193,7 +193,9 @@ def test_every_scenario_id_column_references_the_scenario(conn, table):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT c.confdeltype FROM pg_constraint c
+            SELECT c.confdeltype, c.convalidated, c.condeferrable,
+                   c.condeferred
+            FROM pg_constraint c
             JOIN pg_class t ON t.oid = c.conrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
             WHERE c.contype = 'f' AND n.nspname = %s AND t.relname = %s
@@ -201,7 +203,12 @@ def test_every_scenario_id_column_references_the_scenario(conn, table):
             """,
             (schema, name),
         )
-        assert cur.fetchone()[0] == "c"  # ON DELETE CASCADE
+        cascade, validated, deferrable, deferred = cur.fetchone()
+        assert cascade == "c"  # ON DELETE CASCADE
+        # Added NOT VALID, then validated: existing rows were checked too.
+        assert validated
+        # Immediate for every writer; a compute unit defers it (runners._fenced).
+        assert (deferrable, deferred) == (True, False)
 
 
 def test_scenario_rule_rejects_a_non_polygon_geometry(conn):

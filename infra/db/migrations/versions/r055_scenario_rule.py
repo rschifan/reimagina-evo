@@ -205,17 +205,23 @@ def upgrade() -> None:
     op.execute("DROP TABLE curated_geo.scenario_edit")
     op.execute(_scenario_view("rule_count", "curated_geo.scenario_rule"))
 
+    # NOT VALID first, so no new orphan can land while the old ones are
+    # deleted; then VALIDATE, which scans under SHARE UPDATE EXCLUSIVE rather
+    # than the SHARE ROW EXCLUSIVE a validating ADD CONSTRAINT holds for it.
+    # Only after a commit, or the ADD's lock would still be held through the
+    # scan: the rest of this revision is committed first, and VALIDATE cannot
+    # fail once the orphans are gone behind a constraint already enforced.
     for table, name in _SCENARIO_FKS:
+        op.execute(f"""
+            ALTER TABLE {table} ADD CONSTRAINT {name}
+              FOREIGN KEY (scenario_id) REFERENCES app_core.scenario(id)
+              ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE NOT VALID
+        """)
         op.execute(f"""
             DELETE FROM {table} t
             WHERE t.scenario_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM app_core.scenario s
                                WHERE s.id = t.scenario_id)
-        """)
-        op.execute(f"""
-            ALTER TABLE {table} ADD CONSTRAINT {name}
-              FOREIGN KEY (scenario_id) REFERENCES app_core.scenario(id)
-              ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
         """)
     for statement in DELETE_ORPHAN_PARTITIONS:
         op.execute(statement)
@@ -226,6 +232,9 @@ def upgrade() -> None:
         "ON curated_geo.aoi_indicator_summary (scenario_id) "
         "WHERE scenario_id IS NOT NULL"
     )
+    with op.get_context().autocommit_block():
+        for table, name in _SCENARIO_FKS:
+            op.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {name}")
 
 
 def downgrade() -> None:
