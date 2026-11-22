@@ -89,11 +89,18 @@ def _recording(conn, slug: str, features, scenario_id, aoi_id):
 
 
 def _covers_overrides(conn, scenario_id: str, features) -> bool:
-    """Whether ``features`` includes every feature the scenario overrides."""
+    """Whether ``features`` includes every feature the scenario overrides.
+
+    An anti-join on ``uuid``, not ``feature_id::text <> ALL(...)``: the array
+    form is linear per row unless the planner sees a constant array, and a
+    city-wide rule is ~95k override rows against a ~19k-id footprint. The ids
+    are validated as UUIDs where they enter (``SubmitRunBody``, the CLI).
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT NOT EXISTS (SELECT 1 FROM curated_geo.scenario_override "
-            "WHERE scenario_id = %s AND feature_id::text <> ALL(%s))",
+            "WHERE scenario_id = %s "
+            "AND feature_id NOT IN (SELECT unnest(%s::uuid[])))",
             (scenario_id, [str(f) for f in features]),
         )
         return bool(cur.fetchone()[0])

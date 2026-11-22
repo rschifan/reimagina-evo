@@ -29,3 +29,14 @@ def test_a_valid_id_passes_on_as_its_canonical_string(field):
 def test_ids_stay_optional():
     body = SubmitRunBody()
     assert body.scenario_id is None and body.aoi_id is None
+
+
+def test_a_malformed_edited_feature_is_refused():
+    # Compared as uuid in `runners._covers_overrides`; a typo has to stop here.
+    with pytest.raises(ValidationError):
+        SubmitRunBody(edited_features=[GOOD, "abc"])
+
+
+def test_edited_features_pass_on_as_canonical_strings():
+    body = SubmitRunBody(edited_features=[GOOD.upper()])
+    assert body.edited_features == [GOOD]

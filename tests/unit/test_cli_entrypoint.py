@@ -1080,3 +1080,19 @@ def test_an_empty_dsn_flag_is_unset_not_a_blank_dsn(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["app_dsn"] == "postgresql://localhost/reimagina"
     assert payload["direct_dsn"] is None
+
+
+def test_cli_evaluate_scenario_refuses_a_malformed_feature_before_connecting(
+    monkeypatch, capsys
+):
+    """A non-UUID --feature is one line and exit 2, before any database work."""
+
+    def _no_connect(*_a, **_kw):
+        raise AssertionError("connected with a malformed feature id")
+
+    monkeypatch.setattr("apps.cli.indicators.connect", _no_connect)
+    exit_code = main(
+        ["evaluate-scenario", "--dsn", "postgresql://localhost/x", "--feature", "b1"]
+    )
+    assert exit_code == 2
+    assert "b1" in capsys.readouterr().err

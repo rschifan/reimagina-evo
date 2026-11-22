@@ -158,6 +158,13 @@ class SubmitRunBody(BaseModel):
         # durable run accepted with 202 that could only fail in the worker.
         return None if value is None else str(UUID(value))
 
+    @field_validator("edited_features")
+    @classmethod
+    def _uuids(cls, value: list[str] | None) -> list[str] | None:
+        # Same reason, plus `runners._covers_overrides` compares them as uuid:
+        # a typo there is a DataError in the worker, after a 202.
+        return None if value is None else [str(UUID(f)) for f in value]
+
 
 class SubmitRunResponse(BaseModel):
     # None for a "noop" submit: the dirty-set was empty, so no run row exists

@@ -6,6 +6,7 @@ from apps.cli import UserError
 
 import os
 import time
+import uuid
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING
 
@@ -186,6 +187,14 @@ def evaluate_scenario_cli(
 
     ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
     """
+    # Checked here, before any run is planned or persisted: the runners
+    # compare feature ids as uuid, so a typo would fail a unit mid-run.
+    try:
+        edited_features = [str(uuid.UUID(f)) for f in edited_features]
+    except ValueError as exc:
+        raise UserError(
+            f"--feature must be a feature UUID: {edited_features!r}"
+        ) from exc
     if mode == "sync":
         # Not via the factory: this path returns the coordinator's per-unit
         # RunReport, which is a richer shape than the port's RunStatus and is

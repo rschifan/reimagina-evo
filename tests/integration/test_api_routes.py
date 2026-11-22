@@ -1023,7 +1023,10 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
 
     response = client.post(
         "/jobs",
-        json={"changed_attributes": ["geometry"], "edited_features": ["f1"]},
+        json={
+            "changed_attributes": ["geometry"],
+            "edited_features": ["4f0c1a8e-2b7d-4c1e-9f3a-0d6b5e7c8a91"],
+        },
     )
 
     assert response.status_code == 202
@@ -1056,7 +1059,7 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
         json={
             "wait": True,
             "changed_attributes": ["geometry"],
-            "edited_features": ["f1"],
+            "edited_features": ["4f0c1a8e-2b7d-4c1e-9f3a-0d6b5e7c8a91"],
         },
     )
 
