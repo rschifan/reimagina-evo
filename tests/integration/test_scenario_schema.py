@@ -8,6 +8,8 @@ reject *something*.
 
 from __future__ import annotations
 
+import uuid
+
 import psycopg2.errors
 import pytest
 
@@ -369,3 +371,46 @@ def test_r055_groups_edits_into_rules_and_back(conn):
             ("num_levels", 2),
             ("people_per_household", 3),
         ]
+
+
+def test_r055_deletes_partitions_of_scenarios_that_no_longer_exist(conn):
+    """Versions and materialisations keyed ``scenario=<id>`` with no scenario.
+
+    No FK can follow the partition string, so a scenario deleted before
+    ``delete_scenario`` removed them left these behind; ``asset_component_v``
+    keeps such a partition a node in the graph, and ``assets stale`` lists it
+    for ever. A live scenario's partition, and the baseline's, stay.
+    """
+    from reimagina.assets.keys import partition_key
+
+    r055 = _r055()
+    live = _insert_scenario(conn, insert_project(conn))
+    gone = str(uuid.uuid4())
+    partitions = [partition_key({"scenario": s}) for s in (live, gone)] + [""]
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO curated_geo.asset (asset_key, kind, backing_kind, "
+            "version_strategy) VALUES ('r055.orphan.test', 'source', 'config', "
+            "'digest') RETURNING id"
+        )
+        asset_id = cur.fetchone()[0]
+        for part in partitions:
+            cur.execute(
+                "INSERT INTO curated_geo.asset_version "
+                "(asset_id, partition_key, version, sequence) VALUES (%s, %s, 'v', 1)",
+                (asset_id, part),
+            )
+            cur.execute(
+                "INSERT INTO curated_geo.asset_materialization "
+                "(asset_id, partition_key, version) VALUES (%s, %s, 'v')",
+                (asset_id, part),
+            )
+        for statement in r055.DELETE_ORPHAN_PARTITIONS:
+            cur.execute(statement)
+        for table in ("asset_version", "asset_materialization"):
+            cur.execute(
+                f"SELECT partition_key FROM curated_geo.{table} "
+                "WHERE asset_id = %s ORDER BY partition_key",
+                (asset_id,),
+            )
+            assert [r[0] for r in cur.fetchall()] == sorted(partitions[::2]), table

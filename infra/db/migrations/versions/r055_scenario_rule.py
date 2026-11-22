@@ -33,7 +33,7 @@ scenario that does not exist are deleted first: nothing could read them, and
 the constraint could not be added over them. ``orchestration_run`` keeps no FK
 (it is run history), and asset versions and materialisations are keyed by the
 partition string ``scenario=<id>``, which no FK can follow; ``delete_scenario``
-still deletes those by hand.
+still deletes those by hand, and their orphans are deleted here too.
 
 The downgrade re-expands every rule into r048's edits (``levels`` into
 ``floors`` and ``num_levels``), keeping the rules' order, and drops the FKs.
@@ -119,6 +119,24 @@ EXPAND_RULES = """
     WHERE r.inputs ? k.input
 """
 
+#: Versions and materialisations of a partition ``scenario=<id>`` whose
+#: scenario no longer exists (``assets.keys.partition_key`` renders dimensions
+#: sorted, ``name=value``, joined by ``/``). No FK can follow the string, so a
+#: scenario deleted before ``delete_scenario`` removed them left them behind,
+#: and ``asset_component_v`` keeps such a partition a node in the graph that
+#: ``assets stale`` lists for ever. Public to the tests.
+DELETE_ORPHAN_PARTITIONS = tuple(
+    f"""
+    DELETE FROM curated_geo.{table} t
+    WHERE t.partition_key ~ '(^|/)scenario='
+      AND NOT EXISTS (
+          SELECT 1 FROM app_core.scenario s
+          WHERE s.id::text
+                = substring(t.partition_key from '(?:^|/)scenario=([^/]*)'))
+    """
+    for table in ("asset_materialization", "asset_version")
+)
+
 _SCENARIO_EDIT_DDL = """
     CREATE TABLE curated_geo.scenario_edit (
         id            uuid             PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -199,6 +217,8 @@ def upgrade() -> None:
               FOREIGN KEY (scenario_id) REFERENCES app_core.scenario(id)
               ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
         """)
+    for statement in DELETE_ORPHAN_PARTITIONS:
+        op.execute(statement)
     # The cascade looks rows up by scenario_id; the other three tables already
     # have an index leading with it.
     op.execute(
