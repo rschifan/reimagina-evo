@@ -28,6 +28,9 @@ class _Cursor:
     def execute(self, _sql, params):
         self.sink.append(params)
 
+    def fetchall(self):
+        return []
+
 
 class _Conn:
     def __init__(self):

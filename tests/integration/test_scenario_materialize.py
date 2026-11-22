@@ -388,6 +388,98 @@ def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
     assert _current_version(conn, sid, "num_levels") is None
 
 
+_PLANNED_FLOORS = "urban_form_block_planned_floors"
+
+
+def _recompute(conn, sid: str, aoi_id: str):
+    """What the recompute endpoint does: materialise, then submit the footprint."""
+    from reimagina.orchestration.synchronous import SynchronousOrchestrator
+
+    result = materialize_scenario(conn, scenario_id=sid)
+    return SynchronousOrchestrator().submit_run(
+        conn,
+        changed_attributes=list(result.footprint_attributes),
+        edited_features=list(result.footprint_features),
+        scenario_id=sid,
+        aoi_id=aoi_id,
+        code_version="test",
+    )
+
+
+def _planned(conn, sid: str, aoi_id: str) -> list[str]:
+    from reimagina.orchestration.plan import plan_run
+
+    result = materialize_scenario(conn, scenario_id=sid)
+    plan = plan_run(
+        conn,
+        changed_attributes=list(result.footprint_attributes),
+        edited_features=list(result.footprint_features),
+        scenario_id=sid,
+        aoi_id=aoi_id,
+    )
+    return [unit.indicator for unit in plan.units]
+
+
+def _seed(conn) -> _Territory:
+    feat.seed_feature_types(conn)
+    seed_catalog(conn)
+    seed_assets(conn)
+    return _Territory(conn, attributes={"floors": 2})
+
+
+def test_re_adding_a_removed_rule_before_any_recompute_is_not_fresh(conn):
+    """Removal stales rows; a version that comes back must not vouch for them.
+
+    Re-adding the identical rule returns the override version to the digest
+    the first recompute recorded. Without a record of the staling in between,
+    freshness called that old materialisation current, the plan was a noop,
+    and the blocks were left with only stale rows for good.
+    """
+    t = _seed(conn)
+    sid = t.scenario()
+    eid = t.edit(sid, _AREA_0_3, "floors", 9.0)
+    _recompute(conn, sid, t.aoi_wide)
+    assert _current_results(conn, sid, _PLANNED_FLOORS) != []
+
+    remove_edit(conn, edit_id=eid)
+    materialize_scenario(conn, scenario_id=sid)  # its recompute never completes
+    assert _current_results(conn, sid, _PLANNED_FLOORS) == []
+
+    t.edit(sid, _AREA_0_3, "floors", 9.0)
+    assert _PLANNED_FLOORS in _planned(conn, sid, t.aoi_wide)
+
+
+def test_moving_a_rule_back_before_any_recompute_is_not_fresh(conn):
+    t = _seed(conn)
+    sid = t.scenario()
+    eid = t.edit(sid, _AREA_0_3, "floors", 9.0)
+    _recompute(conn, sid, t.aoi_wide)
+
+    remove_edit(conn, edit_id=eid)
+    moved = t.edit(sid, _rect(-99.1850, -99.1770), "floors", 9.0)
+    materialize_scenario(conn, scenario_id=sid)
+    remove_edit(conn, edit_id=moved)
+    t.edit(sid, _AREA_0_3, "floors", 9.0)
+
+    assert _PLANNED_FLOORS in _planned(conn, sid, t.aoi_wide)
+
+
+def test_a_recompute_after_the_undo_converges(conn):
+    """The marker must not make freshness unreachable: one run clears it."""
+    t = _seed(conn)
+    sid = t.scenario()
+    eid = t.edit(sid, _AREA_0_3, "floors", 9.0)
+    _recompute(conn, sid, t.aoi_wide)
+    remove_edit(conn, edit_id=eid)
+    materialize_scenario(conn, scenario_id=sid)
+    t.edit(sid, _AREA_0_3, "floors", 9.0)
+
+    _recompute(conn, sid, t.aoi_wide)
+
+    assert len(_current_results(conn, sid, _PLANNED_FLOORS)) == 4
+    assert _planned(conn, sid, t.aoi_wide) == []
+
+
 def test_an_uppercase_id_materialises_under_the_canonical_partition(conn):
     """The partition key is a string; the id it is built from must be canonical.
 

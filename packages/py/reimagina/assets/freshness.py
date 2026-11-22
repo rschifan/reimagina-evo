@@ -159,7 +159,10 @@ def fresh_indicator_slugs(
     version after it. That last condition matters because versions are content
     digests and can come back: a scenario edit undone returns its override
     version to an older value, and the rows written in between are not the old
-    ones. Several runs at the current version add up — a later subset run at
+    ones. Materialisation records one at ``"superseded"`` when it stales an
+    indicator's rows (``authoring._supersede_unbacked_results``), so a version
+    that comes back before any recompute does not vouch for rows staled in
+    between. Several runs at the current version add up — a later subset run at
     the same version does not undo an earlier AOI run.
 
     Only ever used to *remove* slugs from a dirty set, never to add one: an

@@ -23,6 +23,7 @@ behind, and no half-deleted scenario.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -943,6 +944,11 @@ def _delete_unimplied_overrides(
         return [(feature_id, key) for feature_id, key in cur.fetchall()]
 
 
+#: The version recorded for an indicator whose rows step 7 staled. Never a
+#: content digest, so it never equals an expected version.
+_SUPERSEDED_VERSION = "superseded"
+
+
 def _supersede_unbacked_results(
     conn: Any, scenario_id: str, removed: list[tuple[str, str]]
 ) -> int:
@@ -964,6 +970,14 @@ def _supersede_unbacked_results(
     ``indicator_slug`` is denormalised onto the row by r016's trigger and
     indexed with ``feature_id``, so no join to the catalog is needed. The
     trigger refuses a change to it, not to ``status``.
+
+    Every indicator it stales also gets a materialisation record at
+    ``_SUPERSEDED_VERSION``. Versions are content digests and come back: re-add
+    the removed rule (or move a moved one back) before any recompute finishes
+    and the override version returns to the one the last run recorded. That
+    run's rows are the ones just staled, yet ``fresh_indicator_slugs`` would
+    call it fresh and plan a noop, leaving the blocks on stale rows for good.
+    A later record at another version is exactly what it refuses to look past.
     """
     if not removed:
         return 0
@@ -1000,6 +1014,7 @@ def _supersede_unbacked_results(
                AND r.status = 'current'
                AND r.indicator_slug = unbacked.slug
                AND r.feature_id = unbacked.feature_id
+            RETURNING r.indicator_slug
             """,
             {
                 "s": scenario_id,
@@ -1007,7 +1022,21 @@ def _supersede_unbacked_results(
                 "fids": [feature_id for _, feature_id in ordered],
             },
         )
-        return cur.rowcount
+        staled = Counter(row[0] for row in cur.fetchall())
+
+    from reimagina.assets import materialize
+    from reimagina.assets.keys import indicator_asset_key
+
+    for slug, count in sorted(staled.items()):
+        materialize.record(
+            conn,
+            asset_key=indicator_asset_key(slug),
+            version=_SUPERSEDED_VERSION,
+            partition_key=partition_key({"scenario": scenario_id}),
+            row_count=count,
+            complete=False,
+        )
+    return sum(staled.values())
 
 
 # ── Deletion ────────────────────────────────────────────────────────────────
