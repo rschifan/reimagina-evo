@@ -336,7 +336,9 @@ def test_mexicali_without_bundle_fetches_the_pinned_archive(tmp_path):
     )
     fetched = tmp_path / "data/bundles"
     assert list(fetched.glob("*/reimagina-mexicali-bundle/SHA256SUMS")), done.stderr
-    assert "all files match" in done.stdout, done.stdout + done.stderr
+    # fetch verified it; step 0 does not hash it a second time.
+    assert "fetched and verified" in done.stdout, done.stdout + done.stderr
+    assert "all files match" not in done.stdout
     assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
 
     # Unreachable and nothing cached: stop before any CLI call, say what to do.

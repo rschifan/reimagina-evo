@@ -78,8 +78,10 @@ unset ENV_EXPORTS
 
 # No --bundle: fetch the pinned release asset. fetch prints the bundle
 # directory and explains on stderr what to do by hand when it cannot.
+FETCHED=0
 if [[ -z "$BUNDLE" ]]; then
   BUNDLE="$($PY scripts/build_mexicali_bundle.py fetch)" || exit 1
+  FETCHED=1
 fi
 CLI="$PY -m apps.cli.app"
 
@@ -96,9 +98,14 @@ PROJECT_NAME="Mexicali Pilot"
 # ── 0. The bundle ────────────────────────────────────────────────────────────
 #
 # Checked before anything is dropped: a truncated or altered file fails here
-# by name rather than four steps later as an indicator with odd numbers.
-step "0. Verifying the source bundle against its SHA256SUMS"
-$PY scripts/build_mexicali_bundle.py verify "$BUNDLE"
+# by name rather than four steps later as an indicator with odd numbers. A
+# fetched bundle was verified by fetch itself; a --bundle DIR is checked here.
+if (( FETCHED )); then
+  step "0. Source bundle fetched and verified: $BUNDLE"
+else
+  step "0. Verifying the source bundle against its SHA256SUMS"
+  $PY scripts/build_mexicali_bundle.py verify "$BUNDLE"
+fi
 
 # One extract of each kind; the Overture release is in the file name and is
 # the version the source rows record.
