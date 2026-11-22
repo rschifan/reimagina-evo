@@ -832,9 +832,10 @@ def _refuse_ceiling_breaches(
     it at ``scenario_id=None`` is deliberate — an override row this run is
     about to delete in step 4 must not stand in for a value that will be gone.
 
-    A missing input reads as 0, which ``check_ceilings`` skips. That is not a
-    silent pass: a block missing any of the three is skipped by the compute
-    too, so it writes no result and no bound can be breached.
+    A block missing any of the three is skipped by the edificability compute,
+    so it writes no density, housing or population row and none of those
+    bounds can be breached: its levels read as 0, which ``check_ceilings``
+    skips. Its ``floors`` is still checked, because planned_floors computes.
 
     Deliberately not narrowed to ``MEX:block``. The bounds belong to the
     edificability indicators, which compute at block grain today, and refusing
@@ -878,10 +879,17 @@ def _refuse_ceiling_breaches(
         absent = 1.0 if key == "lot_coverage" else 0.0
         return resolved.get((feature_id, key), baseline[key].get(feature_id, absent))
 
+    def _computed(feature_id: str) -> bool:
+        return all(
+            (feature_id, key) in resolved or feature_id in baseline[key]
+            for key in _CEILING_ATTRIBUTES
+        )
+
     breaches = check_ceilings(
         BlockInputs(
             feature_id=feature_id,
-            levels=_value(feature_id, "num_levels"),
+            # 0 skips the three edificability bounds, not the floors one.
+            levels=_value(feature_id, "num_levels") if _computed(feature_id) else 0.0,
             unit_size=_value(feature_id, "unit_size"),
             people_per_household=_value(feature_id, "people_per_household"),
             area_m2=float(areas.get(feature_id, 0.0)),
