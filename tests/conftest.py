@@ -139,14 +139,14 @@ def conn(migrated_db: str):
 def perf_db_url() -> str:
     """DSN for benchmarks that expect pre-loaded real data (e.g. INEGI CDMX).
 
-    Defaults to REIMAGINA_PERF_DSN → REIMAGINA_APP_DSN → postgresql://localhost/reimagina_app.
+    Defaults to REIMAGINA_PERF_DSN → REIMAGINA_APP_DSN → postgresql://localhost/reimagina.
     This fixture intentionally does NOT run migrations and does NOT tear down,
     so pointing it at a dev DB with real data is safe by construction.
     """
     return (
         os.environ.get("REIMAGINA_PERF_DSN")
         or os.environ.get("REIMAGINA_APP_DSN")
-        or "postgresql://localhost/reimagina_app"
+        or "postgresql://localhost/reimagina"
     )
 
 

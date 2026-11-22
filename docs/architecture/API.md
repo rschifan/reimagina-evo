@@ -191,7 +191,7 @@ All via environment variable; sensible defaults for local dev.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `REIMAGINA_APP_DSN` | `postgresql://localhost/reimagina_app` | DSN the API connects to. |
+| `REIMAGINA_APP_DSN` | `postgresql://localhost/reimagina` | DSN the API connects to. |
 | `REIMAGINA_API_POOL_MIN` | `1` | Min connections in the `psycopg2.pool.ThreadedConnectionPool`. |
 | `REIMAGINA_API_POOL_MAX` | `16` | Max connections. |
 | `REIMAGINA_API_POOL_WAIT_S` | `30` | How long a request waits for a free connection when all `REIMAGINA_API_POOL_MAX` are busy, before answering 503 with `Retry-After`. psycopg2's pool never waits on its own; without this a burst wider than the pool (a map loading at a new zoom) failed with `connection pool exhausted`. |

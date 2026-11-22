@@ -71,7 +71,7 @@ TEST_DATABASE_URL=postgresql:///reimagina_test pytest tests/integration
 | `tests/e2e` | `make test-e2e` (sets `REIMAGINA_E2E=1`) | not run | an API (`REIMAGINA_E2E_API`, default `http://127.0.0.1:8001`), the web dev server (`REIMAGINA_E2E_WEB`, default `http://localhost:5173` — Vite listens on `localhost`, which macOS resolves to `::1`), and Node with the `playwright` module and its Chromium installed under `apps/web` (`tests/e2e/conftest.py` puts `apps/web/node_modules` on `NODE_PATH`) |
 | `tests/recovery` | `make test-recovery` (sets `REIMAGINA_RECOVERY_TEST=1`) | not run | ≥20,000 blocks; kills processes (below) |
 | `tests/workloads` | `make test-workloads` (sets `REIMAGINA_BENCH=1`) | not run | its own database, `TEST_DATABASE_URL` or `reimagina_test_bench_dbos`, migrated and never downgraded |
-| `tests/performance` | `pytest tests/performance`; no target | not run | `TEST_DATABASE_URL`, plus seeded data at `REIMAGINA_PERF_DSN` → `REIMAGINA_APP_DSN` → `postgresql://localhost/reimagina_app` for `test_overlap_benchmarks.py` |
+| `tests/performance` | `pytest tests/performance`; no target | not run | `TEST_DATABASE_URL`, plus seeded data at `REIMAGINA_PERF_DSN` → `REIMAGINA_APP_DSN` → `postgresql://localhost/reimagina` for `test_overlap_benchmarks.py` |
 
 `tests/e2e` drives Chromium through two Node scripts rather than a Python
 dependency. `test_web_app_loads.py` runs `_browser_probe.js` once per session
