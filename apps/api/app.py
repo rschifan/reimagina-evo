@@ -17,6 +17,7 @@ import os
 from collections.abc import AsyncIterator, Iterable
 
 import psycopg2
+import psycopg2.errors
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -138,6 +139,11 @@ def create_app(
     # so the OperationalError/InterfaceError pair must register *before*
     # the generic psycopg2.Error handler. Otherwise a connectivity outage
     # would wrongly surface as 500 instead of 503.
+    # `QueryCanceled` (a statement timeout) subclasses OperationalError but
+    # is not an outage; Starlette picks the handler by MRO, so this wins.
+    app.add_exception_handler(
+        psycopg2.errors.QueryCanceled, errors.query_timeout_handler
+    )
     app.add_exception_handler(
         psycopg2.OperationalError, errors.database_unavailable_handler
     )
