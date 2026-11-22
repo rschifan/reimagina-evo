@@ -79,11 +79,8 @@ INEGI_TERMS_URL = "https://www.inegi.org.mx/inegi/terminos.html"
 
 
 def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
 def bundle_files(root: Path) -> list[str]:

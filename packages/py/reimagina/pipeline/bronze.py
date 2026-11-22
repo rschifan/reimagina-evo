@@ -57,6 +57,5 @@ def _digest(paths: list[Path]) -> str:
     h = hashlib.sha256()
     for path in paths:
         with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
+            hashlib.file_digest(fh, lambda: h)  # feeds the one running hash
     return h.hexdigest()[:12]
