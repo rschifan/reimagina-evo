@@ -25,6 +25,8 @@ import {
   type AOIRow,
   type ReachableIndicator,
   type RecomputeResponse,
+  type RuleChangeResponse,
+  type RuleRow,
   type ScenarioListRow,
 } from "../api";
 import { setActiveAoiId, setKnownAois, subscribe as subscribeToAoi } from "../aoi";
@@ -455,8 +457,10 @@ const isRefusal = (err: unknown): boolean =>
 
 /** Follow the run a write or recompute enqueued, until it lands. */
 async function follow(scenarioId: string, result: RecomputeResponse): Promise<Landing> {
-  void loadScenarios();
-  if (result.run_id === null) return { outcome: "landed", status: "succeeded" };
+  if (result.run_id === null) {
+    void loadScenarios();
+    return { outcome: "landed", status: "succeeded" };
+  }
   const runId = result.run_id;
   stopFollowing(scenarioId);
   ws.following[scenarioId] = { runId, status: result.run_status };
@@ -464,8 +468,8 @@ async function follow(scenarioId: string, result: RecomputeResponse): Promise<La
     const finish = (landing: Landing): void => {
       followers.delete(scenarioId);
       delete ws.following[scenarioId];
-      // The row's status comes from the list, which was read while the run
-      // was still going; read it again now that it is not.
+      // The row's status and rule count come from the list: read it once the
+      // run has landed.
       void loadScenarios();
       resolve(landing);
     };
@@ -487,11 +491,10 @@ async function follow(scenarioId: string, result: RecomputeResponse): Promise<La
   });
 }
 
-/** After a run: the row, the rules and the map, and the change view. */
+/** After a run: the row and the map, and the change view. */
 async function afterLanding(scenarioId: string, landing: Landing, done: string): Promise<void> {
   void refreshRow(scenarioId);
   if (ws.selectedId !== scenarioId) return;
-  await loadRules(scenarioId, selection);
   refreshMap();
   if (landing.outcome === "landed" && landing.status === "partial") {
     ws.mode = "delta";
@@ -508,13 +511,17 @@ async function afterLanding(scenarioId: string, landing: Landing, done: string):
 
 /** A write that was not refused but did not answer cleanly: what stands is
  *  whatever the server has, so read it back and say what happened. */
-async function writeUncertain(scenarioId: string, err: unknown, operation: ScenarioOperation): Promise<void> {
+async function writeUncertain(
+  scenarioId: string | null,
+  err: unknown,
+  operation: ScenarioOperation,
+): Promise<void> {
   await loadScenarios();
-  if (ws.selectedId === scenarioId) {
+  if (scenarioId !== null && ws.selectedId === scenarioId) {
     await loadRules(scenarioId, selection);
     refreshMap();
   }
-  void refreshRow(scenarioId);
+  if (scenarioId !== null) void refreshRow(scenarioId);
   say(await refusalText(err, operation), "bad");
 }
 
@@ -546,9 +553,65 @@ function precheck(values: RuleValues): boolean {
   return false;
 }
 
+/** Put the stored rule in place, or take the deleted one out, of the
+ *  selected scenario's rules. The response carries the server's row, so
+ *  there is nothing to read back. A new rule has the highest ordinal. */
+function splice(scenarioId: string, row: RuleRow | null, removed: string | null): void {
+  if (ws.selectedId !== scenarioId) return;
+  if (row === null) {
+    ws.rules = ws.rules.filter((r) => r.id !== removed);
+    return;
+  }
+  const [rule] = rulesFromRows([row]);
+  ws.rules = ws.rules.some((r) => r.id === rule.id)
+    ? ws.rules.map((r) => (r.id === rule.id ? rule : r))
+    : [...ws.rules, rule];
+}
+
+/**
+ * One editing gesture: the request, its refusal or its run, and what the
+ * page shows after. `scenarioId` null: the request creates the scenario,
+ * whose id comes back on the result. `removed`: the rule a delete takes
+ * away. One at a time (`busy`). Returns whether the gesture is over.
+ */
+async function gesture(
+  scenarioId: string | null,
+  operation: ScenarioOperation,
+  request: () => Promise<RuleChangeResponse>,
+  done: string,
+  removed: string | null = null,
+): Promise<boolean> {
+  if (ws.busy) return false;
+  ws.busy = true;
+  try {
+    let result: RuleChangeResponse;
+    try {
+      result = await request();
+    } catch (err) {
+      if (!isRefusal(err)) {
+        await writeUncertain(scenarioId, err, operation);
+        return true;
+      }
+      await boxRefusal(err, operation);
+      return false;
+    }
+    const id = result.scenario_id;
+    if (scenarioId === null) {
+      await loadScenarios();
+      select(id, { duringGesture: true });
+    }
+    splice(id, result.rule, removed);
+    await afterLanding(id, await follow(id, result), done);
+    return true;
+  } finally {
+    ws.busy = false;
+  }
+}
+
 /**
  * Write a new rule over `area` and show its effect. On the baseline city
- * (no scenario selected) the scenario is created first, named `scenarioName`.
+ * (no scenario selected) the scenario is created with it, named
+ * `scenarioName`, in one request: a refused rule leaves no scenario behind.
  * Returns whether the gesture is over (the box may close).
  */
 export async function applyNewRule(
@@ -556,62 +619,38 @@ export async function applyNewRule(
   values: RuleValues,
   scenarioName?: string,
 ): Promise<boolean> {
-  if (ws.busy) return false;
   ws.boxError = null;
   if (!precheck(values)) return false;
-  let scenarioId = ws.selectedId;
-  if (scenarioId === null && !(scenarioName ?? "").trim()) {
+  const scenarioId = ws.selectedId;
+  const inputs = ruleInputs(values);
+  if (scenarioId !== null) {
+    return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, inputs }), "Rule added.");
+  }
+  const name = (scenarioName ?? "").trim();
+  if (!name) {
     ws.boxError = { field: "name", text: "Give the new scenario a name." };
     return false;
   }
-  ws.busy = true;
-  try {
-    if (scenarioId === null) {
-      if (!ws.projectId || !ws.aoiId) {
-        ws.boxError = { field: null, text: "No pilot is active, so there is no project to add a scenario to." };
-        return false;
-      }
-      // The scenario and its first rule are one request: a refused rule
-      // leaves no scenario behind, so there is nothing to undo.
-      let created;
-      try {
-        created = await createScenario({
-          project_id: ws.projectId,
-          name: (scenarioName ?? "").trim(),
-          aoi_id: ws.aoiId,
-          rule: { area, inputs: ruleInputs(values) },
-        });
-      } catch (err) {
-        if (!isRefusal(err)) {
-          await loadScenarios();
-          say(await refusalText(err, "create"), "bad");
-          return true;
-        }
-        await boxRefusal(err, "create");
-        return false;
-      }
-      await loadScenarios();
-      select(created.id, { duringGesture: true });
-      if (created.first_rule === null) return true;
-      await afterLanding(created.id, await follow(created.id, created.first_rule), "Rule added.");
-      return true;
-    }
-    let result;
-    try {
-      result = await addRule(scenarioId, { area, inputs: ruleInputs(values) });
-    } catch (err) {
-      if (!isRefusal(err)) {
-        await writeUncertain(scenarioId, err, "rule");
-        return true;
-      }
-      await boxRefusal(err, "rule");
-      return false;
-    }
-    await afterLanding(scenarioId, await follow(scenarioId, result), "Rule added.");
-    return true;
-  } finally {
-    ws.busy = false;
+  const { projectId, aoiId } = ws;
+  if (!projectId || !aoiId) {
+    ws.boxError = { field: null, text: "No pilot is active, so there is no project to add a scenario to." };
+    return false;
   }
+  return gesture(
+    null,
+    "create",
+    async () => {
+      const created = await createScenario({
+        project_id: projectId,
+        name,
+        aoi_id: aoiId,
+        rule: { area, inputs },
+      });
+      // Sent with a rule, so the change is there.
+      return created.first_rule as RuleChangeResponse;
+    },
+    "Rule added.",
+  );
 }
 
 /**
@@ -625,56 +664,26 @@ export async function saveRule(
   values: RuleValues,
 ): Promise<boolean> {
   const scenarioId = ws.selectedId;
-  if (ws.busy || scenarioId === null) return false;
+  if (scenarioId === null) return false;
   ws.boxError = null;
   if (!precheck(values)) return false;
-  ws.busy = true;
-  try {
-    let result;
-    try {
-      result = await updateRule(scenarioId, rule.id, {
-        ...(area ? { area } : {}),
-        inputs: ruleInputs(values),
-      });
-    } catch (err) {
-      if (!isRefusal(err)) {
-        await writeUncertain(scenarioId, err, "rule");
-        return true;
-      }
-      await boxRefusal(err, "rule");
-      return false;
-    }
-    await afterLanding(scenarioId, await follow(scenarioId, result), "Rule saved.");
-    return true;
-  } finally {
-    ws.busy = false;
-  }
+  const body = { ...(area ? { area } : {}), inputs: ruleInputs(values) };
+  return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 
 /** Delete a rule — one request — and show the effect. Returns whether the
  *  gesture is over. */
 export async function deleteRule(rule: Rule): Promise<boolean> {
   const scenarioId = ws.selectedId;
-  if (ws.busy || scenarioId === null) return false;
+  if (scenarioId === null) return false;
   ws.boxError = null;
-  ws.busy = true;
-  try {
-    let result;
-    try {
-      result = await deleteRuleRequest(scenarioId, rule.id);
-    } catch (err) {
-      if (!isRefusal(err)) {
-        await writeUncertain(scenarioId, err, "deleteRule");
-        return true;
-      }
-      await boxRefusal(err, "deleteRule");
-      return false;
-    }
-    await afterLanding(scenarioId, await follow(scenarioId, result), "Rule deleted.");
-    return true;
-  } finally {
-    ws.busy = false;
-  }
+  return gesture(
+    scenarioId,
+    "deleteRule",
+    () => deleteRuleRequest(scenarioId, rule.id),
+    "Rule deleted.",
+    rule.id,
+  );
 }
 
 /** Recompute the selected scenario: what a row whose recompute failed, or

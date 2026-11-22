@@ -304,7 +304,9 @@ describe("editing on the map", () => {
   it("apply on the baseline creates the scenario with its rule in one request, then follows its run", async () => {
     api.listScenarios.mockResolvedValue([row("A"), row("B"), row("N")]);
     store.select(null);
-    api.createScenario.mockResolvedValue({ id: "N", name: "S", rules: [], first_rule: changed() });
+    api.createScenario.mockResolvedValue({
+      id: "N", name: "S", rules: [], first_rule: { ...changed(), scenario_id: "N" },
+    });
 
     const ok = await settleRun(store.applyNewRule(AREA, VALUES, "Scenario 3"));
 
@@ -381,6 +383,28 @@ describe("editing on the map", () => {
     expect(api.getScenario).toHaveBeenCalledWith("A");
     expect(store.ws.rules.map((r) => r.id)).toEqual(["r9"]);
     expect(store.ws.message?.text).toMatch(/8 overrides were written.*Recompute/);
+  });
+
+  it("a written, saved or deleted rule is spliced from the response, not read back", async () => {
+    api.getScenario.mockResolvedValue({ rules: [RULE_ROW("r1", 1)] });
+    store.select("A");
+    await settle();
+    api.getScenario.mockClear();
+    api.listScenarios.mockClear();
+
+    await settleRun(store.applyNewRule(AREA, VALUES));
+    expect(store.ws.rules.map((r) => r.id)).toEqual(["r1", "r9"]);
+
+    api.updateRule.mockResolvedValue({ ...changed("run-1", null), rule: RULE_ROW("r1", 1, { levels: 4 }) });
+    await settleRun(store.saveRule(RULE, null, { ...VALUES, levels: 4 }));
+    expect(store.ws.rules.map((r) => [r.id, r.levels])).toEqual([["r1", 4], ["r9", 6]]);
+
+    await settleRun(store.deleteRule(RULE));
+    expect(store.ws.rules.map((r) => r.id)).toEqual(["r9"]);
+
+    expect(api.getScenario).not.toHaveBeenCalled();
+    // One list read per gesture: when its run lands.
+    expect(api.listScenarios).toHaveBeenCalledTimes(3);
   });
 
   it("save sends the rule's id and its whole set of numbers", async () => {
