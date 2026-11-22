@@ -485,13 +485,6 @@ def _aoi_display_tokens(backend) -> dict[str, tuple[str, ...]]:
 # key like ``pop_worldpop_2020_cdmx_sum`` (segments
 # ``[pop, worldpop, 2020, cdmx, sum]`` — last is a stat → previous is
 # a candidate AOI hint).
-
-
-# Conventional stat suffixes the worker writes after the operator's
-# attribute_key_prefix. Used to spot the AOI-shortcode segment in a
-# key like ``pop_worldpop_2020_cdmx_sum`` (segments
-# ``[pop, worldpop, 2020, cdmx, sum]`` — last is a stat → previous is
-# a candidate AOI hint).
 _STAT_SUFFIXES = frozenset(
     {
         "sum",
@@ -559,27 +552,6 @@ def _list_observation_aoi_affinity(
     for attr_key, type_slug, aoi_id in rows:
         affinity.setdefault((str(attr_key), str(type_slug)), set()).add(str(aoi_id))
     return affinity
-
-
-def _list_source_observation_pairs(backend) -> list[tuple[str, str]]:
-    """Distinct (attribute_key, feature.type_slug) pairs for current obs.
-
-    A single SQL query returns the full pair list; the caller filters
-    out recipe outputs in Python.
-    """
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT DISTINCT o.attribute_key, f.type_slug
-            FROM curated_geo.observation o
-            JOIN curated_geo.feature f ON f.id = o.feature_id
-            WHERE o.is_current
-            ORDER BY o.attribute_key, f.type_slug
-            """
-        )
-        rows = cur.fetchall()
-    return [(str(r[0]), str(r[1])) for r in rows]
 
 
 def _resolve_transitive_raster_parent(
@@ -738,39 +710,11 @@ def _description_for_recipe(recipe: dict[str, object]) -> str:
     )
 
 
-def _latest_observation_version(backend, attribute_key: str) -> str | None:
-    """Return a cache-busting token for the current observation set under
-    ``attribute_key``. Uses ``max(updated_at)`` — a monotonic proxy for
-    "these observations were last rewritten at time X". Safe ignoring of
-    sub-second precision: two re-runs of the same recipe within the same
-    second would yield the same token, but in practice the recipe writes
-    take longer than a second and operators reload the page after.
-
-    The Martin tile function ignores unknown query params, so passing
-    ``?v=<epoch>`` doesn't break the SQL — it just makes the URL unique.
-    """
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXTRACT(EPOCH FROM max(updated_at))::bigint
-            FROM curated_geo.observation
-            WHERE is_current AND attribute_key = %s
-            """,
-            (attribute_key,),
-        )
-        row = cur.fetchone()
-    if not row or row[0] is None:
-        return None
-    return str(row[0])
-
-
 def _aggregation_value_ranges_all(backend) -> dict[str, dict[str, object]]:
     """Compute count/min/p05/p50/p95/max for every current attribute_key
     in one round-trip. ``GROUP BY attribute_key`` lets Postgres do the
-    full-table scan once and bucket per key, instead of the resolver
-    calling :func:`_aggregation_value_range` once per key (each
-    triggering its own scan + percentile sort).
+    full-table scan once and bucket per key, instead of one scan +
+    percentile sort per key.
 
     Cuts /tile-sources from ~2 s to ~150 ms when there are >10 keys
     in the catalog.
@@ -824,46 +768,6 @@ def _latest_observation_versions_all(backend) -> dict[str, str]:
         )
         rows = cur.fetchall()
     return {str(key): str(epoch) for key, epoch in rows if epoch is not None}
-
-
-def _aggregation_value_range(backend, attribute_key: str) -> dict[str, object] | None:
-    """Cheap single-aggregate scan of observations to seed a colour ramp.
-
-    Returns None if the table hasn't received any rows for this key yet
-    (recipe registered but never run) — callers surface that as
-    ``available=false``. The query is bounded by the partial index on
-    ``(feature_id, attribute_key) WHERE is_current`` so cost is roughly
-    O(live observations under this key).
-    """
-    # Raw SQL: the repo interface doesn't expose an aggregate helper and
-    # widening it for one tile-resolver call isn't worth the surface.
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-              count(*),
-              min(value_numeric),
-              percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
-              percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
-              percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
-              max(value_numeric)
-            FROM curated_geo.observation
-            WHERE is_current AND attribute_key = %s AND value_numeric IS NOT NULL
-            """,
-            (attribute_key,),
-        )
-        count, vmin, p05, p50, p95, vmax = cur.fetchone()
-    if not count:
-        return None
-    return {
-        "count": int(count),
-        "min": float(vmin) if vmin is not None else None,
-        "p05": float(p05) if p05 is not None else None,
-        "p50": float(p50) if p50 is not None else None,
-        "p95": float(p95) if p95 is not None else None,
-        "max": float(vmax) if vmax is not None else None,
-    }
 
 
 def _raster_tile_entry(
