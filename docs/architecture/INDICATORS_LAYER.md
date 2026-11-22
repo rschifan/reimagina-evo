@@ -49,7 +49,7 @@ CREATE TABLE curated_geo.indicator_catalog (
   model_family       text,
   -- Which analytical family this indicator belongs to. A grouping label carried
   -- onto job_run, not a dispatch key — the runner registry binds compute
-  -- functions per slug, not per family (`orchestration/runners.py:43-55`, `:132-146`).
+  -- functions per slug, not per family (`runners._DIRECT_COMPUTE`, `runners.default_runners`).
   -- Shipped direct indicators use 'urban_form' or 'accessibility' (`indicators/catalog.py`).
   -- NULL for composite indicators (derived from other indicators, not from a model run);
   -- their job_run rows carry 'composite'.
@@ -341,7 +341,7 @@ WHERE ir.status = 'current';
 ### Adding a new direct indicator
 
 Add an `IndicatorSpec` to `SHIPPED_INDICATORS` in `indicators/catalog.py`, bind a
-compute fn for its slug in `_DIRECT_COMPUTE` (`orchestration/runners.py:43-55`) —
+compute fn for its slug in `_DIRECT_COMPUTE` (`orchestration/runners.py`) —
 usually built with `compute_indicator`, see *How a direct indicator is wired* —
 then run `indicators seed-catalog` and `assets seed` (`bootstrap-db` runs both).
 No migration. `default_runners` binds a direct spec only when `_DIRECT_COMPUTE`
@@ -400,7 +400,7 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(        # abridged
 
 No new model is required. `default_runners` binds every
 `computation_kind="composite"` spec to the generic `compute_composite`
-(`orchestration/runners.py:142-143`), so a new composite needs only a catalog
+(`orchestration/runners.py`), so a new composite needs only a catalog
 entry, not new compute code. `livability_block_score` is the worked example:
 0.4 housing density (`edificability_block_density`) plus 0.2 each for walking
 distance to schools, health facilities and parks, added as a spec and nothing

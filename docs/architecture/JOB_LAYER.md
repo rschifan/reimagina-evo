@@ -16,7 +16,7 @@ caller (apps/api/routers/jobs.py, apps/api/routers/scenarios.py, apps/cli/indica
   ├─ get_orchestrator(mode)          factory.py:54 — the only place an engine is named
   ├─ submit_run(conn, changed_attributes=…, edited_features=…, scenario_id=…, indicators=…)
   │     │
-  │     ├─ plan_run                  plan.py:99  resolve change-set → dirty-set, in dep order
+  │     ├─ plan_run                  plan.plan_run  resolve change-set → dirty-set, in dep order
   │     ├─ _persist_plan             dbos_orchestrator.py:123 → jobs_runtime.run_plan (feature ids)
   │     ├─ project units to JSON     dbos_orchestrator.py:256  (slug, features=[], deps)
   │     └─ enqueue named run_workflow on DBOS `runs` queue   dbos_orchestrator.py:296-346
@@ -30,7 +30,7 @@ caller (apps/api/routers/jobs.py, apps/api/routers/scenarios.py, apps/cli/indica
   │             ├─ s_set_status running          dbos_app.py:719 → runstore.set_unit_status
   │             ├─ s_compute                     dbos_app.py:780
   │             │     ├─ run_plan.features_for(plan_id, slug)
-  │             │     └─ runner(conn, features=…, scenario_id=…)     runners.py:132
+  │             │     └─ runner(conn, features=…, scenario_id=…)     runners._scoped
   │             │           └─ job_run(…)  jobs/_lifecycle.py:54 → jobs_runtime.job_run
   │             │                  └─ writes curated_geo.indicator_result citing job_run_id
   │             └─ s_set_status succeeded | failed
@@ -47,7 +47,7 @@ Three things follow from that shape and are stated plainly here because earlier 
 
 **There is no job message and no job claim.** Nothing in this repository enqueues a per-model-family envelope, and no worker races to `UPDATE … WHERE status='queued'`. `JobRunRepository` says so in the interface itself — "Ops-plane scheduling and claiming belong to the ops-plane, not here — there is no claim_job" (`packages/py/reimagina/storage/interfaces/jobs.py`). `job_unit` rows are a status projection the workflow writes; nothing ever claims one.
 
-**`job_run` is not opened at submit.** `submit_run` returns before any compute exists; the `job_run` row is opened later, by whatever runs the compute, straight to `running` (`jobs/_lifecycle.py:71-78`, `storage/postgres/repositories.py:2125`). A run that is submitted but never executed leaves no `job_run` row at all.
+**`job_run` is not opened at submit.** `submit_run` returns before any compute exists; the `job_run` row is opened later, by whatever runs the compute, straight to `running` (`jobs/_lifecycle.py:71-78`, `PostgresJobRunRepository.start_job` in `storage/postgres/repositories.py`). A run that is submitted but never executed leaves no `job_run` row at all.
 
 **Neither is the run envelope.** `orchestration_run` and `job_unit` are written by the workflow's own first step (`dbos_app.py:942` → `:691`), not by the submitter. That is a deliberate inversion of the queue-era shape and the reason `get_run` needs a fallback — see [The engine is the existence oracle](#the-engine-is-the-existence-oracle). The submitter writes one thing of its own before the enqueue: the resolved feature ids, to `jobs_runtime.run_plan` — see [Run state](#run-state--four-tables-two-owners).
 
@@ -109,11 +109,11 @@ existence oracle (see [below](#the-engine-is-the-existence-oracle)).
 `list_enqueued_runs` returns runs the engine holds that no step has opened an
 envelope for yet — without it a run nothing has dequeued, because no worker is
 running, would be invisible everywhere but its own URL; `GET /jobs` folds them
-into the run list as `queued` (`port.py:191-197`, `apps/api/routers/jobs.py:718-755`).
+into the run list as `queued` (`port.py:191-197`, `apps/api/routers/jobs.py` `list_runs`).
 `forget_runs` drops runs from the engine after the caller has dropped our rows,
 because a run deleted from our tables alone would come back as a ghost through
 `get_run`'s fallback; `DELETE /jobs/{run_id}` and `DELETE /jobs` call it before
-they commit (`port.py:199-205`, `jobs.py:622-682`). The DBOS implementation is
+they commit (`port.py:199-205`, `jobs.delete_run`, `jobs.delete_finished_runs`). The DBOS implementation is
 `DBOSClient.delete_workflows(..., delete_children=True)`
 (`dbos_orchestrator.py:443-452`); the synchronous one has nothing to list or
 forget (`synchronous.py:132-137`).
@@ -143,23 +143,23 @@ Two signatures encode decisions worth keeping:
 
 **Two modes, not four** (`MODES`, `factory.py:41`). `detach` and `embedded` used to be *engines* — enqueue and return, versus enqueue and drain a bounded in-process worker. Under a durable-execution library that is not an engine choice at all, because one process can do both, so asking the factory for either now falls through to the unknown-mode raise (`factory.py:20-23`, `:78-80`).
 
-⚠ **The CLI still uses both words one layer up, and that is not an oversight.** `embedded` explicitly creates a `DBOSOrchestrator(execution_mode="dev")`, which launches a local executor and waits. `detach` uses the normal `dbos` client mode and returns after enqueueing for a worker. They are caller-facing execution choices, not factory modes (`apps/cli/indicators.py:209-221`).
+⚠ **The CLI still uses both words one layer up, and that is not an oversight.** `embedded` explicitly creates a `DBOSOrchestrator(execution_mode="dev")`, which launches a local executor and waits. `detach` uses the normal `dbos` client mode and returns after enqueueing for a worker. They are caller-facing execution choices, not factory modes (`apps/cli/indicators.py`, `evaluate_scenario_cli`).
 
 Mode resolution is `argument → REIMAGINA_ORCHESTRATOR → "dbos"`, and an unknown mode raises rather than falling back (`factory.py:56-57`, `:78-80`).
 
 **The environment may only select a durable mode.** `DURABLE_MODES = ("dbos",)` (`factory.py:43`); `REIMAGINA_ORCHESTRATOR=sync` is rejected with an explanation rather than honoured. `sync` keeps run state in memory *per orchestrator instance*, the factory builds a fresh instance per call, and `POST /jobs`, `GET /jobs/{run_id}` and the SSE route each build their own — so as a deployment default a run would live in an instance no later request can reach. It stays available as an explicit argument, for a caller that holds on to the instance (`factory.py:44-51`, `:58-66`).
 
-The API no longer picks a mode at all: every route calls `get_orchestrator()` with no argument. It is a DBOS **client** by default and queues named workflows for workers; `wait: true` only changes the response shape to 200 after polling the persisted run (every 0.25 s, for at most 300 s, then 504 — `apps/api/routers/jobs.py:252-276`). `dev` is the explicit local one-process exception: set by `REIMAGINA_DBOS_EXECUTION_MODE=dev`, or passed as `DBOSOrchestrator(execution_mode="dev")`, which is how the CLI's `embedded` mode gets it.
+The API no longer picks a mode at all: every route calls `get_orchestrator()` with no argument. It is a DBOS **client** by default and queues named workflows for workers; `wait: true` only changes the response shape to 200 after polling the persisted run (every 0.25 s, for at most 300 s, then 504 — `apps/api/routers/jobs.py` `_await_terminal`). `dev` is the explicit local one-process exception: set by `REIMAGINA_DBOS_EXECUTION_MODE=dev`, or passed as `DBOSOrchestrator(execution_mode="dev")`, which is how the CLI's `embedded` mode gets it.
 
 ---
 
 ## The submit prelude
 
-Everything between "a scenario changed" and "run it" is engine-independent, so it lives outside every engine: "an engine replaces the *execution* of a run, never the decision of what the run contains" (`orchestration/plan.py:5-6`). Swapping the ops-plane did not touch the dirty-set logic at all, which is the claim that split was made to be able to test.
+Everything between "a scenario changed" and "run it" is engine-independent, so it lives outside every engine: "an engine replaces the *execution* of a run, never the decision of what the run contains" (`orchestration/plan.py` module docstring). Swapping the ops-plane did not touch the dirty-set logic at all, which is the claim that split was made to be able to test.
 
-**`plan_run`** (`plan.py:99`) resolves the effective change-set and derives the dirty-set, returning a `RunPlan(units, params)` where `params` is exactly `{scenario_id, aoi_id, code_version}` — kept as a dict because both `run_dirty_set` and `runstore.create_run` take them as keywords and an engine has to serialize them (`plan.py:44-47`). Here they are serialized into the workflow's input together with a `plan_id` (`dbos_orchestrator.py:268-274`).
+**`plan_run`** (`orchestration/plan.py`) resolves the effective change-set and derives the dirty-set, returning a `RunPlan(units, params)` where `params` is exactly `{scenario_id, aoi_id, code_version}` — kept as a dict because both `run_dirty_set` and `runstore.create_run` take them as keywords and an engine has to serialize them (`plan.RunPlan`). Here they are serialized into the workflow's input together with a `plan_id` (`dbos_orchestrator.py:268-274`).
 
-It takes one of four paths, first match wins (`plan.py:153-211`):
+It takes one of four paths, first match wins (`plan.plan_run`):
 
 | Request | Dirty set | Feature scope |
 |---|---|---|
@@ -168,11 +168,11 @@ It takes one of four paths, first match wins (`plan.py:153-211`):
 | neither, asset graph present | freshness: the indicators whose materialized version is behind the version their inputs imply, at the scenario's partition (`assets.freshness.stale_units`); on the baseline only `stale` and `partial` count, never `absent`; with an `aoi_id`, an indicator done for that AOI does not count | empty — every feature |
 | neither, no asset graph | `compute_dirty_set` over the diff `resolve_change_set` derives from the scenario's override rows | that diff's features |
 
-`scenarios.overrides.resolve_change_set` (`overrides.py:232`) returns the explicit lists when given, else derives them from the scenario's `curated_geo.scenario_override` rows. An override that edits `attribute_key` *is* the `changed_attributes` token the impact engine keys off, so no translation layer is needed (`overrides.py:9-10`).
+`scenarios.overrides.resolve_change_set` returns the explicit lists when given, else derives them from the scenario's `curated_geo.scenario_override` rows. An override that edits `attribute_key` *is* the `changed_attributes` token the impact engine keys off, so no translation layer is needed (`scenarios/overrides.py` module docstring).
 
-The callers pick their path. `POST /jobs` passes whatever the body names, and resolves a `changed_datasets` list to `indicators` first (`impact.indicators_for_datasets`, below). `POST /jobs/{run_id}/rerun` names the source run's non-succeeded indicators. `POST /scenarios/{id}/recompute` passes the scenario's **footprint** as an explicit change-set — every block a current rule overrides plus every block whose override that materialisation removed, with their attributes — so a scenario recompute is feature-scoped rather than whole-AOI (`apps/api/routers/scenarios.py:928-936`, `:972-979`). The CLI's ingest trigger passes no change-set by default and gets freshness (`apps/cli/indicators.py:92-147`). `POST /jobs/preview` runs `plan_run` as a dry run and persists nothing (`apps/api/routers/jobs.py:416-480`).
+The callers pick their path. `POST /jobs` passes whatever the body names, and resolves a `changed_datasets` list to `indicators` first (`impact.indicators_for_datasets`, below). `POST /jobs/{run_id}/rerun` names the source run's non-succeeded indicators. `POST /scenarios/{id}/recompute` passes the scenario's **footprint** as an explicit change-set — every block a current rule overrides plus every block whose override that materialisation removed, with their attributes — so a scenario recompute is feature-scoped rather than whole-AOI (`apps/api/routers/scenarios.py` `_enqueue`, called from `recompute_route`). The CLI's ingest trigger passes no change-set by default and gets freshness (`apps/cli/indicators.py`, `submit_after_ingest`). `POST /jobs/preview` runs `plan_run` as a dry run and persists nothing (`apps/api/routers/jobs.py` `preview_impact`).
 
-**Noop is a first-class answer.** An empty dirty-set means nothing was invalidated, which is not a run that succeeded at doing nothing. `noop_handle` (`plan.py:214`) is the one shape every implementation returns for it, and `noop` is deliberately **return-only** — `orchestration_run.status` has no such value and a noop persists no run (`plan.py:19-21`). No workflow is started either (`dbos_orchestrator.py:244-245`). The API suppresses the id rather than handing back one that 404s (`apps/api/routers/jobs.py:179-187`, and the scenario recompute at `scenarios.py:987`), and so does the CLI (`apps/cli/indicators.py:148-150`, `:231-240`).
+**Noop is a first-class answer.** An empty dirty-set means nothing was invalidated, which is not a run that succeeded at doing nothing. `noop_handle` (`orchestration/plan.py`) is the one shape every implementation returns for it, and `noop` is deliberately **return-only** — `orchestration_run.status` has no such value and a noop persists no run (`plan` module docstring). No workflow is started either (`dbos_orchestrator.py:244-245`). The API suppresses the id rather than handing back one that 404s (`apps/api/routers/jobs.py` `_submit_response`, and the scenario recompute in `scenarios._enqueue`), and so does the CLI (`apps/cli/indicators.py`, `submit_after_ingest` and `evaluate_scenario_cli`).
 
 ### Impact engine — what to recompute
 
@@ -216,7 +216,7 @@ The readiness rule is stated twice on purpose, in two shapes: `plan_wave` answer
 
 Fault isolation is the point: independent units do not block each other, and a failure stops only what depends on it. The result is a `RunReport`, whose `status` rolls up through the shared `overall_status` — except for the empty case, which is `noop` (`coordinator.py:89-91`).
 
-Runners are injected, never defined here. `orchestration/runners.py:132` (`default_runners`) binds slugs to compute functions: direct indicators to their bespoke function, composites to the generic `compute_composite` keyed by spec. The adapter passes a unit's `features` on as `feature_ids` (empty means none, so the compute falls back to `aoi_id` scoping) and records an asset materialisation around the compute, complete only when the run was neither feature- nor AOI-scoped (`runners.py:58-109`). A runner owns its own `job_run` row — provenance lives where the compute happens (`coordinator.py:17-19`).
+Runners are injected, never defined here. `orchestration/runners.py` (`default_runners`) binds slugs to compute functions: direct indicators to their bespoke function, composites to the generic `compute_composite` keyed by spec. The adapter passes a unit's `features` on as `feature_ids` (empty means none, so the compute falls back to `aoi_id` scoping) and records an asset materialisation around the compute, complete only when the run was neither feature- nor AOI-scoped (`runners._scoped`, `runners._recording`). A runner owns its own `job_run` row — provenance lives where the compute happens (`coordinator.py:17-19`).
 
 `orchestration/intake.py` (`evaluate_scenario`) is `plan_run` + `run_dirty_set` in one call. Its only caller is the CLI's `evaluate-scenario --sync`, which wants the coordinator's per-unit `RunReport` rather than the port's `RunStatus`.
 
@@ -229,7 +229,7 @@ Runners are injected, never defined here. `orchestration/runners.py:132` (`defau
 | `jobs_runtime.orchestration_run` | ops-plane | `runstore.create_run` / `finalize_run` | kept here; dropped by an engine-owned ops-plane |
 | `jobs_runtime.job_unit` | ops-plane | `runstore.record_units` / `set_unit_status` | kept here; dropped by an engine-owned ops-plane |
 | `jobs_runtime.job_run` | domain | `jobs/_lifecycle.job_run`; `record_failed_job_run` for a unit whose transaction was rolled back | survives every branch |
-| `jobs_runtime.run_plan` (r036) | ops-plane | `RunPlanRepository.write` at submit (`dbos_orchestrator._persist_plan`); read by `features_for`; removed by `delete` / `sweep` | the resolved feature set, one row per dirty indicator, `feature_ids uuid[]`. Written once and committed before the enqueue, read by each unit, deleted when the run is terminal (`s_release_plan`). Orphans — a submit that crashed, a plan abandoned by a deduplicated submit — are swept on the next submit once older than `REIMAGINA_RUN_PLAN_TTL_HOURS` (default 24), sparing any plan whose workflow is still `ENQUEUED`, `PENDING` or `DELAYED` (`dbos_orchestrator.py:123-162`, `storage/postgres/repositories.py:3100`). Exists on **both** branches: carrying the ids in the workflow input made a full-city run 258,675 uuids, which Hatchet's 4 MiB gRPC limit refused outright and DBOS merely persisted (`r036_run_plan.py:12-20`). Claim Check |
+| `jobs_runtime.run_plan` (r036) | ops-plane | `RunPlanRepository.write` at submit (`dbos_orchestrator._persist_plan`); read by `features_for`; removed by `delete` / `sweep` | the resolved feature set, one row per dirty indicator, `feature_ids uuid[]`. Written once and committed before the enqueue, read by each unit, deleted when the run is terminal (`s_release_plan`). Orphans — a submit that crashed, a plan abandoned by a deduplicated submit — are swept on the next submit once older than `REIMAGINA_RUN_PLAN_TTL_HOURS` (default 24), sparing any plan whose workflow is still `ENQUEUED`, `PENDING` or `DELAYED` (`dbos_orchestrator.py:123-162`, `PostgresRunPlanRepository.sweep`). Exists on **both** branches: carrying the ids in the workflow input made a full-city run 258,675 uuids, which Hatchet's 4 MiB gRPC limit refused outright and DBOS merely persisted (`r036_run_plan.py:12-20`). Claim Check |
 
 ### orchestration_run + job_unit (r028, + `aoi_id` in r029)
 
@@ -272,7 +272,7 @@ CREATE INDEX job_run_run_idx ON jobs_runtime.job_run (run_id, status) WHERE run_
 
 `run_id` is nullable with no FK on purpose: a direct CLI compute belongs to no run, and an ops-plane that owns run state natively drops `orchestration_run` entirely — which an FK would forbid (`r031:15-21`).
 
-**The row is opened at compute time, straight to `running`.** `jobs/_lifecycle.job_run` (`_lifecycle.py:54`) is the context manager every compute function uses: `start_job(status="running")`, yield the id, then `complete_job('succeeded')` on clean exit or `complete_job('failed', "<ExcType>: <msg>")` on an exception before re-raising (`_lifecycle.py:71-85`). Marking the row failed is best-effort and never replaces the original exception: the compute usually failed by aborting the transaction, so that `UPDATE` can itself raise (`_lifecycle.py:88-120`). `started_at` is set by the repository — `clock_timestamp()`, not `now()`, so a unit's start and end are not the same transaction timestamp — when status is `running`, and `pg_backend_pid()` is evaluated on that same connection because it is the one that will run the compute — "capturing it anywhere else would record a pid nobody needs to cancel" (`repositories.py:2125`, `:2135-2164`).
+**The row is opened at compute time, straight to `running`.** `jobs/_lifecycle.job_run` (`_lifecycle.py:54`) is the context manager every compute function uses: `start_job(status="running")`, yield the id, then `complete_job('succeeded')` on clean exit or `complete_job('failed', "<ExcType>: <msg>")` on an exception before re-raising (`_lifecycle.py:71-85`). Marking the row failed is best-effort and never replaces the original exception: the compute usually failed by aborting the transaction, so that `UPDATE` can itself raise (`_lifecycle.py:88-120`). `started_at` is set by the repository — `clock_timestamp()`, not `now()`, so a unit's start and end are not the same transaction timestamp — when status is `running`, and `pg_backend_pid()` is evaluated on that same connection because it is the one that will run the compute — "capturing it anywhere else would record a pid nobody needs to cancel" (`PostgresJobRunRepository.start_job`).
 
 **A failed unit's row is re-recorded on its own connection.** `s_compute` rolls its connection back when the runner raises, which takes the `failed` row the runner opened with it. It then calls `record_failed_job_run` with the DSN it connected with, the run id and the unit's start time, which writes a fresh `failed` row on a second connection the rollback cannot reach (`dbos_app.py:847-868`, `_lifecycle.py:123-203`). The in-process coordinator keeps its connection and commits, so it does not call it.
 
@@ -300,7 +300,7 @@ FROM (
 ) AS live(pid);
 ```
 
-`pg_cancel_backend` cancels the *statement*, not the session — the runner's psycopg call raises `QueryCanceled` and its own error handling takes over (`repositories.py:2192-2195`). This is the mechanism r031 exists to make possible, and it is addressed to Postgres rather than to a scheduler, which is why it works on any engine (`r031:1-13`).
+`pg_cancel_backend` cancels the *statement*, not the session — the runner's psycopg call raises `QueryCanceled` and its own error handling takes over (`PostgresJobRunRepository.cancel_run_backends`). This is the mechanism r031 exists to make possible, and it is addressed to Postgres rather than to a scheduler, which is why it works on any engine (`r031:1-13`).
 
 **Three — close the run in our own vocabulary.** Every non-terminal unit is marked `cancelled` and the run is finalised (`dbos_orchestrator.py:475-491`). `plan_wave` treats `cancelled` as terminal and unsatisfying, so a unit closed this way neither dispatches nor unblocks its dependents (`wave.py:53`, `:61`, `port.py:35`, `:38`).
 
@@ -362,7 +362,7 @@ Unifying Python did not unify the schema, and widening the CHECKs is a migration
 | `partial` | — | **✓ only** | — |
 | `cancelling` | — | ✓ (never written) | — |
 
-`noop` appears in none of them, which is precisely why it is return-only (`plan.py:19-21`).
+`noop` appears in none of them, which is precisely why it is return-only (`plan` module docstring).
 
 **Execution state lives on the run/unit tables, not on `indicator_result`.** `indicator_result.status` is `current | stale | failed` (`r016:187`) — lifecycle states of a *result*. Unit and run statuses are lifecycle states of an *execution*. Different concerns; still true.
 
@@ -392,7 +392,7 @@ The subscriber (`dbos_orchestrator.py:546-673`) reads through a `DBOSClient` rat
 
 The run-level snapshot is taken first, on its own connection, because the port hands `subscribe_progress` none (`dbos_orchestrator.py:675-696`).
 
-**`apps/api/routers/jobs.py` — route policy.** `GET /jobs/{run_id}/events` returns a `StreamingResponse` over `_event_stream` after a 404 check on a short-lived connection of its own, closed before streaming starts, so a subscription does not hold a pooled connection for its whole life (`jobs.py:929-954`). The route owns frame format, a 15 s keep-alive, and a 300 s lifetime cap; the orchestrator owns *what happened*, and where the events come from is not this module's business (`jobs.py:882-888`, `:44-45`). One subtlety worth preserving: a single pending `__anext__` is held across heartbeats rather than re-awaited, because wrapping the await in a timeout cancels it mid-flight and leaves the async generator unresumable — the keep-alive would break the stream it exists to keep open (`jobs.py:895-899`).
+**`apps/api/routers/jobs.py` — route policy.** `GET /jobs/{run_id}/events` returns a `StreamingResponse` over `_event_stream` after a 404 check on a short-lived connection of its own, closed before streaming starts, so a subscription does not hold a pooled connection for its whole life (`jobs.stream_run_events`). The route owns frame format, a 15 s keep-alive, and a 300 s lifetime cap; the orchestrator owns *what happened*, and where the events come from is not this module's business (`jobs._event_stream`, `_STREAM_MAX_SECONDS`, `_HEARTBEAT_SECONDS`). One subtlety worth preserving: a single pending `__anext__` is held across heartbeats rather than re-awaited, because wrapping the await in a timeout cancels it mid-flight and leaves the async generator unresumable — the keep-alive would break the stream it exists to keep open (`jobs._event_stream`).
 
 ---
 
@@ -494,7 +494,7 @@ Checkpoints live in schema `dbos` beside the application's own; `pg_dump` of the
 
 `bootstrap_local_platform` now calls `dbos_app.ensure_system_database()`, so `make migrate` provisions it alongside the feature types, the indicator catalog and the asset registry (`packages/py/reimagina/db/bootstrap.py:95-138`, `dbos_app.py:335-420`). It provisions without launching: `launch()` would also start the dequeuer and startup recovery, so a bootstrap command would begin *executing* work as a side effect of creating a schema. Idempotent, advisory-locked, and guarded by the same `_assert_domain_database` check as `launch()` — pointed at a database that does not exist, DBOS creates one, and a bootstrap command is exactly where a DSN typo gets typed.
 
-Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which **every route that submits** answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped. The handler is registered app-wide in `create_app` (`apps/api/app.py:167-170`), not caught per route: three routes reach `submit_run` — `POST /jobs`, `POST /jobs/{id}/rerun` and `POST /scenarios/{id}/recompute` — and a per-route `except` covered the first while the other two answered 500 for the same condition with the same remedy.
+Two layers, because bootstrap is not the only way a database gets migrated. A submit that still finds the schema missing raises `port.OpsPlaneNotProvisioned`, which **every route that submits** answers as **503** with the remedy named — not a 500, because nothing is wrong with the request or the code; a step was skipped. The handler is registered app-wide in `create_app` (`apps/api/app.py`), not caught per route: three routes reach `submit_run` — `POST /jobs`, `POST /jobs/{id}/rerun` and `POST /scenarios/{id}/recompute` — and a per-route `except` covered the first while the other two answered 500 for the same condition with the same remedy.
 
 **Both DDL steps in a bootstrap take the direct route.** `bootstrap-db` carries a `--direct-dsn` (defaulting to `$DATABASE_URL_DIRECT`, then to `--app-dsn`), and Alembic and the ops-plane schema both travel over it. Alembic would survive a pooler — every migration here avoids `CONCURRENTLY` so it runs inside one transaction, and a transaction-mode pooler pins a backend for a transaction's duration — so routing it direct is consistency rather than repair. The ops-plane schema is the one that genuinely needs it: its session advisory lock does not survive transaction pooling. The flag beats the environment variable, and a direct DSN naming a different database is refused, since a direct DSN is another route to the same database and only host and port may differ. With no direct DSN, the fallback to `--app-dsn` is checked rather than trusted: `ensure_system_database` opens two connections and refuses when their `pg_backend_pid()` answers show a pooler sharing backends between clients, the one condition no DSN string reveals.
 
@@ -680,7 +680,7 @@ Unchanged by any of this, and the reason an engine swap is safe:
 
 - canonical baseline is written in `curated_geo`;
 - scenario edits are authored as drawn rules in `curated_geo.scenario_rule` (r055) and materialised (`scenarios.authoring.materialize_scenario`) into `curated_geo.scenario_override` — one row per `(scenario_id, feature_id, attribute_key)`, exactly one of `value_numeric` / `value_text` (`r030_scenario_override.py:26-36`) — which is what runs read;
-- the effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:169`); baseline collapses to `observation ⊕ base`;
+- the effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric`; baseline collapses to `observation ⊕ base`;
 - runners apply that overlay on read and never write back to feature tables;
 - computed outputs go to `curated_geo.indicator_result`, each citing its `job_run_id`.
 
@@ -718,14 +718,14 @@ aggregations:
   aggregation), from `feature_overlap` in the observation rollup and from
   `aoi_feature` in the AOI summary — not `overlap_ratio`, which collapses to
   ~1.0 for fully-nested children and degrades a weighted mean into an
-  arithmetic one (`storage/interfaces/indicators.py:247-250`,
+  arithmetic one (`AOISummaryRepository.fetch_aoi_children` in `storage/interfaces/indicators.py`,
   `storage/interfaces/features.py:306-308`).
 - Missing-data policy lives in `aggregation.aggregate_children`
   (`aggregation.py:108`): sum weights, classify the missing share against a
   threshold defaulting to 0.5, drop missing children, aggregate the rest.
 - Idempotency comes from the write path, not from any worker: the repository
   stales any existing `current` row for the same `(feature, scenario,
-  indicator)` before inserting (`repositories.py:2568-2585`, `:2673-2683`), and the partial
+  indicator)` before inserting (`PostgresIndicatorResultRepository._mark_existing_current_stale`, `.bulk_write_numeric_results`), and the partial
   unique indexes `ir_one_current_base` / `ir_one_current_scenario`
   (`r016:193-196`, `:198-201`) enforce it in the database.
 - Stale-propagation upward was never automatic and is now moot for indicators:
@@ -771,7 +771,7 @@ What r032 deliberately does *not* drop is recorded in its own docstring: `orches
 | A narrow port, engine types never leaked | The engine changes; callers must not — and did not, through one swap (`port.py:1-11`) |
 | One factory names the engine | An ops-plane swap is a rewrite of one file, and tests patch a seam rather than a class path (`factory.py:1-6`) |
 | Two modes, `dbos` and `sync` | `detach`/`embedded` were an engine distinction a library does not have; the CLI keeps the words for caller behaviour (`factory.py:20-28`) |
-| Submit prelude outside every engine | An engine replaces the *execution* of a run, never the decision of what it contains (`plan.py:5-6`) |
+| Submit prelude outside every engine | An engine replaces the *execution* of a run, never the decision of what it contains (`plan` module docstring) |
 | Impact engine is pure, and deterministically ordered | Dirty-set derivation is unit-testable with no DB, and a positionally-replayed workflow needs the same order in every process (`impact.py:11-13`, `:138-157`) |
 | The run id *is* the workflow id | A run is addressable across processes with no mapping table, and submit is idempotent (`dbos_orchestrator.py:7-11`) |
 | The dirty set is a workflow input | Replay matches steps by position; a body that re-derived its units would misattribute one indicator's result to another, silently (`dbos_app.py:12-22`, spike 2) |
@@ -779,7 +779,7 @@ What r032 deliberately does *not* drop is recorded in its own docstring: `orches
 | Steps are idempotent | An interrupted step re-runs from the top, so its writes must survive being applied twice (`runstore.py:42-51`, `:136-139`) |
 | Progress is written from the body, never a step | Exactly-once from a workflow, at-least-once from a step; a duplicated terminal event closes a subscriber early (`dbos_app.py:674-676`) |
 | Partial success, not all-or-nothing | One unit's failure must not abort a run, only its dependents (`coordinator.py:122-126`, `dbos_app.py:1022-1027`) |
-| `noop` is return-only | No status CHECK has it, and no run row exists to give it to (`plan.py:19-21`) |
+| `noop` is return-only | No status CHECK has it, and no run row exists to give it to (`plan` module docstring) |
 | Execution state on run/unit, not on `indicator_result` | Execution lifecycle and result lifecycle are different concerns |
 | `job_run` opened at compute time by the runner | Provenance belongs where the compute happens (`coordinator.py:17-19`) |
 | Cancellation needs three mechanisms | Stop scheduling, stop the statement, close the run — none of the three does another's job (`dbos_orchestrator.py:457-464`, `r031:1-13`) |

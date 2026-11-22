@@ -171,10 +171,10 @@ A **rule** is one row of `curated_geo.scenario_rule` (r055): one drawn area (pol
 Resolving a scenario's edits into per-feature `scenario_override` rows inside its AOI (`scenarios/authoring.py::materialize_scenario`). It refuses the whole scenario if any block would breach an indicator ceiling, deletes overrides no edit implies any more, marks the scenario's now-unbacked results `stale`, and sets `app_core.scenario.materialized_at`. Its **footprint** — every block a current rule overrides plus every block whose override it removed, and the attributes involved — is the change-set `POST /scenarios/{id}/recompute` submits.
 
 ### Attribute override
-One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. Override rows are written by materialisation, not drawn directly, and reading them back yields the scenario's change-set (`scenarios/overrides.py:215`, `scenario_change_set`).
+One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. Override rows are written by materialisation, not drawn directly, and reading them back yields the scenario's change-set (`scenarios.overrides.scenario_change_set`).
 
 ### Effective value
-What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:169`). With no scenario it collapses to `observation ⊕ base` — the baseline.
+What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric`. With no scenario it collapses to `observation ⊕ base` — the baseline.
 
 ### Base state
 The city as it exists today. Represented by `indicator_result` rows where `scenario_id IS NULL`. This is the Diagnosis mode output.
@@ -193,7 +193,7 @@ A computed value for a specific spatial feature in a specific state of the world
 An indicator produced directly by a model worker reading city data — `computation_kind = 'direct'`, with a `model_family` set. Examples: `accessibility_block_school_network_m` (`model_family = 'accessibility'`), `urban_form_block_compactness` and the edificability family (`'urban_form'`).
 
 ### Composite indicator
-An indicator derived from a weighted combination of other indicators — `computation_kind = 'composite'`, with `model_family = NULL` (enforced by a CHECK, r016:77-78). Defined via `indicator_dependency`. Two ship: `urban_form_block_composite` (compactness + building density, 0.5/0.5) and `livability_block_score` (housing density 0.4, scored against a 50–150 units/ha target band, network distance to school, health and park 0.2 each — the distances are lower-is-better and flipped before weighting). Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`orchestration/runners.py:112`, chosen at `:142-143`).
+An indicator derived from a weighted combination of other indicators — `computation_kind = 'composite'`, with `model_family = NULL` (enforced by a CHECK, r016:77-78). Defined via `indicator_dependency`. Two ship: `urban_form_block_composite` (compactness + building density, 0.5/0.5) and `livability_block_score` (housing density 0.4, scored against a 50–150 units/ha target band, network distance to school, health and park 0.2 each — the distances are lower-is-better and flipped before weighting). Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`composite.compute_composite`, bound in `runners.default_runners`).
 
 ### Quality flag (ISO 19157)
 A classification of how reliable a computed indicator value is.

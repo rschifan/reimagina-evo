@@ -23,7 +23,7 @@ project  →  scenario  →  scenario_rule (drawn areas)  →  scenario_override
 - **Run** — an execution submitted through the `Orchestrator` port. Defined in `JOB_LAYER.md`.
 - **Indicator result** — the output, in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
 
-**The baseline is never touched.** An override is a *read-time overlay resolved in SQL*, not an edit to `feature` or `observation` and not an in-memory merge inside a worker. The effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins (`effective_numeric`, `scenarios/overrides.py:169`).
+**The baseline is never touched.** An override is a *read-time overlay resolved in SQL*, not an edit to `feature` or `observation` and not an in-memory merge inside a worker. The effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins (`scenarios.overrides.effective_numeric`).
 
 **The same rule applies on the way out** (r043). A scenario stores only what it
 changed, so an indicator it did not recompute has no row under it. Reads
@@ -230,24 +230,27 @@ Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by thi
 ## How a scenario edit becomes recomputed results
 
 ```
-1. Record the edit
-     apply_override(conn, scenario_id=…, feature_id=…,
-                    attribute_key="floors", value_numeric=10.0)   overrides.py:26
-     → INSERT … ON CONFLICT (scenario_id, feature_id, attribute_key) DO UPDATE
-     → publish_scenario_version(conn, scenario_id, ["floors"])     overrides.py:85
-       -- a new version of scenario.override.floors at this scenario's
-       -- partition; this is what freshness sees
+1. Draw a rule
+     add_rule(conn, scenario_id=…, geometry_wkt=…, type_id=…,
+              inputs={"levels": 10})                   authoring.add_rule
+     → check_inputs, then INSERT INTO curated_geo.scenario_rule
+     → materialize_scenario, in the same transaction  authoring.materialize_scenario
+       -- the rules resolve to per-block edits (proposal.edits_for)
+     → apply_overrides: one upsert into scenario_override  overrides.apply_overrides
+     → publish_scenario_version(conn, scenario_id)    overrides.publish_scenario_version
+       -- a new version of scenario.override.floors (and num_levels) at this
+       -- scenario's partition; this is what freshness sees
 
 2. Submit a run
      orchestrator.submit_run(conn, changed_attributes=…, edited_features=…,
                              scenario_id=…)                        JOB_LAYER.md
 
-3. Plan it                                                         plan.py:174-204
+3. Plan it                                                         plan.plan_run
      -- An explicit change-set wins: compute_dirty_set over it.
      -- Nothing named and an asset graph present: the dirty set comes from
      --   freshness at this scenario's partition (the versions step 1 published).
      -- Nothing named and no asset graph: resolve_change_set reads the diff
-     --   back from the scenario's override rows (overrides.py:232-252) — the
+     --   back from the scenario's override rows (overrides.resolve_change_set) — the
      --   rows are the diff, so a caller need not re-declare what changed.
 
 4. Run the dirty set                                               JOB_LAYER.md
@@ -256,22 +259,22 @@ Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by thi
 
 5. Each runner reads effective values, not baseline values
      effective_numeric(conn, type_id=…, attribute_key="floors",
-                       scenario_id=…, feature_ids=…)               overrides.py:169
+                       scenario_id=…, feature_ids=…)               overrides.effective_numeric
 
 6. Results are written to curated_geo.indicator_result with the run's scenario_id
 ```
 
-Step 3 is why an override edits `attribute_key` rather than some scenario-specific vocabulary: the key *is* the `changed_attributes` token the impact engine keys the dirty-set off, so no translation layer is needed (`overrides.py:9-10`).
+Step 3 is why an override edits `attribute_key` rather than some scenario-specific vocabulary: the key *is* the `changed_attributes` token the impact engine keys the dirty-set off, so no translation layer is needed (`scenarios/overrides.py` module docstring).
 
-**Attribute scoping depends on the path, and so does feature scoping.** A scenario submit that names nothing goes through the asset graph, where there is one override asset per overridable attribute (`assets/registry.py`, `scenario_override_assets`). Editing `floors` publishes a version for `scenario.override.floors` alone, so only the indicators declaring an edge to `floors` — and whatever is downstream of them — are recomputed. Editing an attribute no indicator reads recomputes nothing. That path is whole-indicator in *features*: every unit it plans covers every feature the indicator applies to (`plan.py:55-82`).
+**Attribute scoping depends on the path, and so does feature scoping.** A scenario submit that names nothing goes through the asset graph, where there is one override asset per overridable attribute (`assets/registry.py`, `scenario_override_assets`). Editing `floors` publishes a version for `scenario.override.floors` alone, so only the indicators declaring an edge to `floors` — and whatever is downstream of them — are recomputed. Editing an attribute no indicator reads recomputes nothing. That path is whole-indicator in *features*: every unit it plans covers every feature the indicator applies to (`plan._units_from_freshness`).
 
-An explicit change-set — `POST /jobs` with `changed_attributes` / `edited_features`, and `POST /scenarios/{id}/recompute`, which passes the materialisation's footprint — goes through `impact.compute_dirty_set` (`impact.py:97`). Its attribute half is a flat union: every indicator reading *any* named attribute is recomputed over *every* named feature. Its feature half is scoped: a seed indicator gets the named features and a dependent the union of its inputs' features, which the runner passes on as `feature_ids` (`runners.py:103`). With no asset graph the scenario-only submit takes this path too, with `resolve_change_set`'s union of the override rows. Widening or remapping a feature set per indicator (`impact.FeatureExpander`) is a hook with only the identity implementation. With a `scenario_id` the graph still has a say: an indicator already computed for that scenario and AOI at its current version is dropped, and a run over the whole footprint is recorded as covering the AOI (`runners._recording`), so recomputing an unchanged scenario is a noop.
+An explicit change-set — `POST /jobs` with `changed_attributes` / `edited_features`, and `POST /scenarios/{id}/recompute`, which passes the materialisation's footprint — goes through `impact.compute_dirty_set` (`impact.py:97`). Its attribute half is a flat union: every indicator reading *any* named attribute is recomputed over *every* named feature. Its feature half is scoped: a seed indicator gets the named features and a dependent the union of its inputs' features, which the runner passes on as `feature_ids` (`runners._scoped`). With no asset graph the scenario-only submit takes this path too, with `resolve_change_set`'s union of the override rows. Widening or remapping a feature set per indicator (`impact.FeatureExpander`) is a hook with only the identity implementation. With a `scenario_id` the graph still has a say: an indicator already computed for that scenario and AOI at its current version is dropped, and a run over the whole footprint is recorded as covering the AOI (`runners._recording`), so recomputing an unchanged scenario is a noop.
 
 ---
 
 ## Effective attribute resolution
 
-The overlay is one `COALESCE` over three sources, evaluated in the database (`overrides.py:191-211`):
+The overlay is one `COALESCE` over three sources, evaluated in the database (`overrides.effective_numeric`):
 
 ```sql
 SELECT f.id::text,
@@ -292,7 +295,7 @@ WHERE f.type_id = %(type_id)s
 
 With `scenario_id = NULL` the override join matches nothing and the expression collapses to `observation ⊕ base` — the baseline. The same function therefore serves both modes, which is what makes a base/scenario comparison an apples-to-apples one.
 
-Only features whose effective value is non-null are returned (`overrides.py:179`, `:212`). Postgres only — the function rejects any other backend (`overrides.py:21-23`).
+Only features whose effective value is non-null are returned (`overrides.effective_numeric`). Postgres only — the function rejects any other backend (`overrides._require_postgres`).
 
 `compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function (`indicators/planned_floors.py:39-45`) and writes the result inside a `job_run` context (`:47-58`).
 
@@ -404,26 +407,6 @@ On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an
 
 Materialisation selects the AOI's blocks — members in `aoi_feature` — with `ST_Covers(area, geometry_centroid)`; later rules win where areas overlap, per number; a per-block ceiling breach refuses the whole materialisation. A block a rule has left loses every scenario row (it reads the baseline through the overlay), so recomputing never writes copies of the baseline under the scenario that would later shadow a baseline change; and the freshness records of the indicators a removed number fed are dropped, so re-adding a rule (whose override version, a content digest, comes back) recomputes rather than being called fresh over the retired rows.
 
----
-
-### Recording an override directly
-
-The low-level path writes override rows for an existing scenario without a rule. It remains for code (and tests) that need one attribute on one block; it still needs a scenario row, because `scenario_id` is an FK (r055). The next materialisation of that scenario deletes any override no rule implies.
-
-```python
-from reimagina.scenarios.overrides import apply_override
-
-apply_override(
-    conn,
-    scenario_id=scenario_id,
-    feature_id=block_id,
-    attribute_key="floors",
-    value_numeric=10.0,
-)
-```
-
-`apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an override replaces it rather than failing, and publishes a new version of that attribute's override asset for the scenario unless `publish=False` (`apply_overrides` writes many in one set-based statement that leaves an unchanged row alone, and publishes once per attribute).
-
 Three surfaces author a rule, and the rule is the server's. `apps/cli/scenario.py` at a terminal, `apps/api/routers/scenarios.py` over HTTP, and the scenario workspace in the browser (`apps/web/scenarios.html`; its pure rules in `apps/web/src/scenario.ts`, its page in `apps/web/src/scenarios/`) all reach `reimagina.scenarios.authoring` and `reimagina.scenarios.proposal` (the workspace through the API), which is where the registry of a rule's numbers (`RULE_INPUTS`), the edits a rule writes (`edits_for`), the refusal of a degenerate or implausible number (`check_inputs`), the ceiling precheck (`precheck_ceilings`) and the unioning of a drawn area (`polygon_wkt`) live — so the three refuse the same things for the same reasons. A surface adds exactly two things of its own: the dialect of its refusals (`--levels` on a command line, `levels` in a request body, a highlighted input on a form) and, in the workspace, the one check a form can make before the round trip.
 
 **The workspace's precheck is a saved round trip, not a guarantee**, and the rule form says so next to its inputs (`CLIENT_PRECHECK_NOTE` in `scenario.ts`). Only the density and storey ceilings are independent of block area, so they are the only ones checkable before a block is chosen; the housing-unit and population ceilings are the server's, per block, at materialisation. The bounds themselves are read from `GET /indicators/edificability_block_density` and `GET /indicators/urban_form_block_planned_floors` (each one's `valid_max`) rather than compiled into the frontend, because `ceilings._bound_for` reads them from the same catalog — a second copy would agree until the day the catalog moved.
@@ -442,7 +425,7 @@ Submit a run; when no change-set is given, it is planned from the scenario's ove
 python -m apps.cli.app evaluate-scenario --scenario-id "$SCENARIO_ID" --changed-attribute floors
 ```
 
-The CLI's flags are `--changed-attribute` (repeatable), `--feature` (repeatable), `--scenario-id`, `--aoi-id`, `--dsn`, `--code-version`, `--timeout` (seconds, default 600), plus the mutually exclusive mode flags `--detach` / `--sync` (`apps/cli/app.py:696-756`).
+The CLI's flags are `--changed-attribute` (repeatable), `--feature` (repeatable), `--scenario-id`, `--aoi-id`, `--dsn`, `--code-version`, `--timeout` (seconds, default 600), plus the mutually exclusive mode flags `--detach` / `--sync` (`apps/cli/app.py`, `evaluate_scenario`).
 
 Over HTTP:
 
@@ -452,9 +435,9 @@ POST /jobs
 → 202 {"run_id": "…", "status": "queued", "deduplicated": false}
 ```
 
-Omitting `changed_attributes` and `edited_features` is the supported shape when a `scenario_id` is given — the plan is derived from the scenario's overrides (`apps/api/routers/jobs.py:132-133`, `plan.py:190-204`).
+Omitting `changed_attributes` and `edited_features` is the supported shape when a `scenario_id` is given — the plan is derived from the scenario's overrides (`apps/api/routers/jobs.py` `SubmitRunBody`, `plan.plan_run`).
 
-A run whose dirty-set is empty comes back as `{"run_id": null, "status": "noop"}`: nothing was invalidated, no run row exists, and an id would 404 (`jobs.py:152-156`, `:179-186`).
+A run whose dirty-set is empty comes back as `{"run_id": null, "status": "noop"}`: nothing was invalidated, no run row exists, and an id would 404 (`jobs.SubmitRunResponse`, `jobs._submit_response`).
 
 See `JOB_LAYER.md` for run modes, run state, and cancellation.
 
@@ -476,7 +459,7 @@ WHERE so.scenario_id = :scenario_id
 ORDER BY f.type_slug, so.attribute_key, so.feature_id;
 ```
 
-The same read, reduced to `(changed_attributes, edited_features)`, is what `scenario_change_set` returns for the planner on a database with no asset graph (`overrides.py:215`).
+The same read, reduced to `(changed_attributes, edited_features)`, is what `scenario_change_set` returns for the planner on a database with no asset graph (`overrides.scenario_change_set`).
 
 ---
 
@@ -535,7 +518,7 @@ JOIN serving_geo.current_indicator_v scen
 WHERE f.type_slug = 'block';
 ```
 
-Swap `base.scenario_id IS NULL` for a second `= :scenario_b_id` to compare two scenarios. The inner joins keep only features both sides wrote, so this misses every block the scenario did not recompute and every indicator with no baseline row (the edificability family, wherever its baseline has not been computed). `GET /scenarios/{id}/comparison` (`scenarios/comparison.py`) is the complete form: a `FULL OUTER JOIN`, the scenario side read as `COALESCE(scenario, baseline)`, and each row classified `changed`, `unchanged` or `new`. Any of the twelve slugs in `SHIPPED_INDICATORS` (`indicators/catalog.py:709`) can be compared.
+Swap `base.scenario_id IS NULL` for a second `= :scenario_b_id` to compare two scenarios. The inner joins keep only features both sides wrote, so this misses every block the scenario did not recompute and every indicator with no baseline row (the edificability family, wherever its baseline has not been computed). `GET /scenarios/{id}/comparison` (`scenarios/comparison.py`) is the complete form: a `FULL OUTER JOIN`, the scenario side read as `COALESCE(scenario, baseline)`, and each row classified `changed`, `unchanged` or `new`. Any of the twelve slugs in `SHIPPED_INDICATORS` (`indicators/catalog.py`) can be compared.
 
 ---
 
@@ -607,4 +590,4 @@ curated_geo.observation ─────┼──► scenario_override ──► 
 
 `feature` is the shared anchor. Scenarios contribute only override rows. A run resolves the three-way overlay in SQL at read time and writes its effects to `indicator_result`. The baseline is never modified.
 
-Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`effective_numeric`, `overrides.py:169-212`).
+Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`overrides.effective_numeric`).

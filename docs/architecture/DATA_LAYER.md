@@ -810,7 +810,7 @@ rule is **per feature, not per AOI**:
 
 Applied uniformly across the polygon, line and point families so the three
 cannot disagree (`PostgresAOIRepository.compute_overlaps`,
-`storage/postgres/repositories.py:1045`). `cdmx aoi-from-alcaldia` and
+`storage/postgres/repositories.py`). `cdmx aoi-from-alcaldia` and
 `cdmx aoi-from-state` populate the key; `overture aoi-from-division` leaves it
 NULL (an Overture boundary carries no INEGI codes), as does any `create_aoi`
 call that passes none, and those AOIs keep the geometric behaviour.
@@ -819,7 +819,7 @@ call that passes none, and those AOIs keep the geometric behaviour.
 intersect to a sliver with nonzero floating-point area, and `overlap_ratio > 0`
 does not reject it — Coyoacán and Xochimilco were members of Tlalpan at ratios
 of 6.2e-12 and 8.1e-12, and their whole polygons rendered on an AOI-scoped map.
-`MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9` (`storage/postgres/repositories.py:44`)
+`MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9` (`storage/postgres/repositories.py`)
 is the floor for the polygon and line families, measured rather than
 guessed: largest noise ratio 8.1e-12, smallest genuine overlap 2.9e-06, and
 **zero rows** between 1e-9 and 1e-6. Points are members when `ST_Within` the
@@ -936,7 +936,7 @@ FROM serving_geo.feature_v f
 JOIN curated_geo.aoi_feature af ON af.feature_id = f.id;
 ```
 
-The MV is refreshed (non-concurrently, inside the run's transaction) whenever an ingestion run is marked `succeeded` (`PostgresSourceCatalogRepository.complete_ingestion_run`, `storage/postgres/repositories.py:159-180`). Until then a new observation is in `feature_current_attributes_v` but not in `feature_v`. The API's feature endpoints read `feature_v` / `feature_aoi_v` (`PostgresServingReader`); the base tile function `serving_geo.get_tile` reads `curated_geo.feature` and the MV directly (see `TILE_SERVING.md`).
+The MV is refreshed (non-concurrently, inside the run's transaction) whenever an ingestion run is marked `succeeded` (`PostgresSourceCatalogRepository.complete_ingestion_run`, `storage/postgres/repositories.py`). Until then a new observation is in `feature_current_attributes_v` but not in `feature_v`. The API's feature endpoints read `feature_v` / `feature_aoi_v` (`PostgresServingReader`); the base tile function `serving_geo.get_tile` reads `curated_geo.feature` and the MV directly (see `TILE_SERVING.md`).
 
 ### Role-based views
 
@@ -1034,7 +1034,7 @@ The key boundary is simple:
 - Indicator runs resolve `override ⊕ current observation ⊕ base feature.attributes` in SQL and write `indicator_result`.
 - No scenario writes back into `feature` or `observation`.
 
-Note that indicator computation does **not** go through `serving_geo.feature_v`. That view merges base attributes with current observations for the API, but knows nothing about scenarios; the compute path reads `curated_geo` directly and applies the three-way overlay itself (`effective_numeric`, `scenarios/overrides.py:169-212`: `COALESCE(so.value_numeric, obs.value_numeric, f.attributes->>key)`).
+Note that indicator computation does **not** go through `serving_geo.feature_v`. That view merges base attributes with current observations for the API, but knows nothing about scenarios; the compute path reads `curated_geo` directly and applies the three-way overlay itself (`scenarios.overrides.effective_numeric`: `COALESCE(so.value_numeric, obs.value_numeric, f.attributes->>key)`).
 
 ---
 
