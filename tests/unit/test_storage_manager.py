@@ -48,3 +48,28 @@ def test_an_empty_database_url_is_not_a_usable_default(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     with pytest.raises(ValueError):
         backend_name_for_dsn()
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://u:s3cret@db/reimagina",
+        # libpq's keyword/value form, which `backend_name_for_dsn` accepts.
+        "host=db user=u password=s3cret dbname=reimagina",
+        # libpq also reads the password from a URL query parameter.
+        "postgresql://u@db/reimagina?password=s3cret",
+    ],
+)
+def test_mask_dsn_hides_the_password_in_every_libpq_spelling(dsn):
+    from reimagina.storage.manager import mask_dsn
+
+    masked = mask_dsn(dsn)
+    assert "s3cret" not in masked
+    assert "password=***" in masked
+
+
+def test_mask_dsn_leaves_a_passwordless_dsn_alone():
+    from reimagina.storage.manager import mask_dsn
+
+    assert mask_dsn("postgresql://localhost/reimagina") == "postgresql://localhost/reimagina"
+    assert mask_dsn("") == ""

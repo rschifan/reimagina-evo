@@ -70,20 +70,19 @@ def backend_for_connection(connection) -> StorageBackend:
 def mask_dsn(dsn: str | None) -> str:
     """Return ``dsn`` with any password replaced by ``***`` for safe logging or
     echo. DSNs without a password are returned unchanged.
+
+    libpq takes the password from a URL's userinfo, from a ``?password=``
+    query parameter, or from a ``password=`` keyword, and this app accepts all
+    three (see `backend_name_for_dsn`). Reading only ``urlparse().password``
+    returned the last two verbatim, so `parse_dsn` does the reading and the
+    masked DSN comes back in keyword/value form, as psycopg2 itself spells it.
     """
     if not dsn:
         return ""
-    from urllib.parse import urlparse, urlunparse
-
     try:
-        parts = urlparse(dsn)
-        if not parts.password:
-            return dsn
-        netloc = parts.hostname or ""
-        if parts.port:
-            netloc = f"{netloc}:{parts.port}"
-        if parts.username:
-            netloc = f"{parts.username}:***@{netloc}"
-        return urlunparse(parts._replace(netloc=netloc))
-    except Exception:
+        parsed = psycopg2.extensions.parse_dsn(dsn)
+    except psycopg2.ProgrammingError:
         return "(dsn parse failed)"
+    if "password" not in parsed:
+        return dsn
+    return psycopg2.extensions.make_dsn(**{**parsed, "password": "***"})

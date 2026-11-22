@@ -943,7 +943,9 @@ def test_print_masks_a_top_level_dsn(capsys):
     assert _print({"dsn": DSN_WITH_PASSWORD}) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["dsn"] == "postgresql://reimagina:***@127.0.0.1:5432/reimagina_app"
+    assert payload["dsn"] == (
+        "user=reimagina password=*** dbname=reimagina_app host=127.0.0.1 port=5432"
+    )
 
 
 def test_print_masks_a_dsn_nested_inside_a_list(capsys):
@@ -973,9 +975,7 @@ def test_print_masks_a_dsn_nested_inside_a_list(capsys):
     assert "hunter2" not in out
     payload = json.loads(out)
     # Two levels of list between the root and the password.
-    assert payload["outcomes"][0]["runs"][0]["dsn"].endswith(
-        "reimagina:***@127.0.0.1:5432/reimagina_app"
-    )
+    assert "password=***" in payload["outcomes"][0]["runs"][0]["dsn"]
     assert out.count("***") == 3
 
 
