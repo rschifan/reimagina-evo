@@ -65,6 +65,8 @@ BUNDLE_URL = (
 BUNDLE_SHA256 = "58e03f78f683065f3e5154eb3fde0d8b336b2df814796ad736b887e8eada4d3b"
 BUNDLE_TOP = "reimagina-mexicali-bundle"  # the archive's one top-level directory
 DEFAULT_CACHE = Path(__file__).resolve().parents[1] / "data" / "bundles"
+#: Seconds without data before a download is abandoned for the manual route.
+DOWNLOAD_TIMEOUT_S = 60.0
 
 INEGI_LICENCE = "INEGI Términos de Libre Uso de la Información"
 INEGI_TERMS_URL = "https://www.inegi.org.mx/inegi/terminos.html"
@@ -130,20 +132,38 @@ def _manual(reason: str) -> SystemExit:
     )
 
 
+def _archived_sums(archive: Path) -> bytes | None:
+    """The SHA256SUMS inside ``archive``, read without extracting the rest."""
+    try:
+        with tarfile.open(archive) as tar:
+            member = tar.extractfile(f"{BUNDLE_TOP}/{SUMS}")
+            return member.read() if member else None
+    except (tarfile.TarError, KeyError):
+        return None
+
+
 def fetch(cache: Path, url: str) -> Path:
     """The pinned bundle under ``cache``, downloaded and extracted if needed."""
     home = cache / BUNDLE_VERSION
     bundle = home / BUNDLE_TOP
-    if bundle.is_dir() and not verify(bundle):
-        return bundle
-    home.mkdir(parents=True, exist_ok=True)
     archive = home / f"reimagina-mexicali-bundle-{BUNDLE_VERSION}.tar.gz"
-    if not (archive.is_file() and sha256(archive) == BUNDLE_SHA256):
+    archive_ok = archive.is_file() and sha256(archive) == BUNDLE_SHA256
+    # Reuse the extracted copy only as far as the pinned archive vouches for
+    # it: its SHA256SUMS must be the archive's, byte for byte, and the files
+    # must match that list. A self-consistent but edited copy is re-extracted.
+    if archive_ok and bundle.is_dir() and not verify(bundle):
+        if (bundle / SUMS).read_bytes() == _archived_sums(archive):
+            return bundle
+    home.mkdir(parents=True, exist_ok=True)
+    if not archive_ok:
         print(f"downloading {url}", file=sys.stderr)
         fd, tmp_name = tempfile.mkstemp(dir=home, suffix=".part")
         tmp = Path(tmp_name)
         try:
-            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url) as resp:
+            with (
+                os.fdopen(fd, "wb") as out,
+                urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp,
+            ):
                 shutil.copyfileobj(resp, out, 1 << 20)
             if sha256(tmp) != BUNDLE_SHA256:
                 raise _manual(f"{url}: SHA-256 does not match the pinned checksum")

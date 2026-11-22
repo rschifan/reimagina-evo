@@ -91,3 +91,42 @@ def test_cached_archive_is_reused_without_downloading(served):
 def test_unreachable_url_points_at_the_manual_route(tmp_path):
     with pytest.raises(SystemExit, match="--bundle DIR"):
         bb.fetch(tmp_path, "file:///nonexistent.tar.gz")
+
+
+def test_a_stalled_download_times_out_with_the_manual_route(tmp_path, monkeypatch):
+    """A server that accepts and never answers must not hang the install."""
+    import socket
+    import threading
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    held: list[socket.socket] = []
+    threading.Thread(
+        target=lambda: held.append(server.accept()[0]), daemon=True
+    ).start()
+    monkeypatch.setattr(bb, "DOWNLOAD_TIMEOUT_S", 0.5)
+    url = f"http://127.0.0.1:{server.getsockname()[1]}/bundle.tar.gz"
+    try:
+        with pytest.raises(SystemExit, match="by hand"):
+            bb.fetch(tmp_path / "cache", url)
+    finally:
+        server.close()
+        for conn in held:
+            conn.close()
+
+
+def test_a_tampered_cached_bundle_is_not_reused(served):
+    """The cache is trusted only as far as the pinned archive vouches for it."""
+    url, cache = served
+    bundle = bb.fetch(cache, url)
+    edited = b"edited rows"
+    (bundle / "osm" / "edges.parquet").write_bytes(edited)
+    (bundle / bb.SUMS).write_text(
+        f"{hashlib.sha256(edited).hexdigest()}  osm/edges.parquet\n"
+    )
+    assert bb.verify(bundle) == [], "precondition: self-consistent but altered"
+
+    bundle = bb.fetch(cache, url)
+
+    assert (bundle / "osm" / "edges.parquet").read_bytes() == b"rows"
