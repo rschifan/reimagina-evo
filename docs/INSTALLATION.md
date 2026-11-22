@@ -347,15 +347,22 @@ Synthetic verification needs no data. The real territory is loaded from the
 Mexicali source bundle — INEGI Marco Geoestadístico 2024, Censo 2020 and DENUE
 for Baja California, Overture buildings and places, and an OpenStreetMap
 pedestrian network, with `ATTRIBUTION.md`, `MANIFEST.json` and `SHA256SUMS` —
-which comes with the delivery or is rebuilt with
-`scripts/build_mexicali_bundle.py` (see [BOOTSTRAP.md](BOOTSTRAP.md)). The load
-needs no network:
+published as a GitHub Release asset (tag `mexicali-bundle-2026.11`) with its
+SHA-256 pinned in `scripts/build_mexicali_bundle.py`:
 
 ```bash
-scripts/mexicali_run.sh --bundle /path/to/reimagina-mexicali-bundle
+scripts/mexicali_run.sh                  # fetch the bundle, then load
+scripts/mexicali_run.sh --bundle DIR     # offline, from a local copy
 ```
 
-It checks the bundle against `SHA256SUMS` first. `scripts/mexicali_run.sh` is
+Without `--bundle` the script downloads the archive into `data/bundles/`,
+refuses it unless its checksum matches the pin, and extracts it; later runs
+reuse it. With no network access, download
+<https://github.com/rschifan/reimagina-evo/releases/download/mexicali-bundle-2026.11/reimagina-mexicali-bundle-2026.11.tar.gz>, extract it, and pass the `reimagina-mexicali-bundle` directory with
+`--bundle`. A published archive is never replaced; new data gets a new tag and
+a new pin. The bundle can also be rebuilt with
+`scripts/build_mexicali_bundle.py build` (see [BOOTSTRAP.md](BOOTSTRAP.md)).
+Either way the load checks the bundle against `SHA256SUMS` first. `scripts/mexicali_run.sh` is
 a destructive data load, not an installation or health check: it drops and
 recreates `DATABASE_URL` unless given `--keep`. Preserve real-data databases
 and never point synthetic acceptance at them.

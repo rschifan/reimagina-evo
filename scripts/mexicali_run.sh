@@ -8,15 +8,19 @@
 #
 # What it needs:
 #   - PostgreSQL with PostGIS and pgRouting
-#   - the Mexicali source bundle (--bundle DIR): INEGI Marco Geoestadístico
-#     2024 and Censo 2020 for Baja California, the INEGI DENUE amenity layer,
-#     the Overture buildings and places extracts and the OSM walking network,
-#     with MANIFEST.json, ATTRIBUTION.md and SHA256SUMS. It comes with the
-#     delivery, or is rebuilt from INEGI's public downloads with
-#     scripts/build_mexicali_bundle.py (see docs/BOOTSTRAP.md).
+#   - the Mexicali source bundle: INEGI Marco Geoestadístico 2024 and Censo
+#     2020 for Baja California, the INEGI DENUE amenity layer, the Overture
+#     buildings and places extracts and the OSM walking network, with
+#     MANIFEST.json, ATTRIBUTION.md and SHA256SUMS. Without --bundle it is
+#     fetched from its GitHub Release (checksum-pinned in
+#     scripts/build_mexicali_bundle.py) into data/bundles/; --bundle DIR uses
+#     a local copy and needs no network. It can also be rebuilt from INEGI's
+#     public downloads with scripts/build_mexicali_bundle.py (see
+#     docs/BOOTSTRAP.md).
 #
 # Usage:
-#   scripts/mexicali_run.sh --bundle DIR          # drops and rebuilds $DATABASE_URL
+#   scripts/mexicali_run.sh                       # fetch the bundle, rebuild $DATABASE_URL
+#   scripts/mexicali_run.sh --bundle DIR          # offline, from a local bundle
 #   scripts/mexicali_run.sh --bundle DIR --keep   # reuse the existing database
 #
 # DATABASE_URL comes from .env. DATABASE_URL_ADMIN is derived from it when
@@ -46,20 +50,24 @@ while (( $# )); do
   esac
   shift
 done
-if [[ -z "$BUNDLE" ]]; then
-  echo "usage: scripts/mexicali_run.sh --bundle DIR [--keep]" >&2
-  exit 2
-fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Absolute before the cd below, so a path relative to the caller still works.
-BUNDLE="$(cd "$BUNDLE" 2>/dev/null && pwd)" || {
-  echo "--bundle: no such directory" >&2
-  exit 2
-}
+if [[ -n "$BUNDLE" ]]; then
+  BUNDLE="$(cd "$BUNDLE" 2>/dev/null && pwd)" || {
+    echo "--bundle: no such directory" >&2
+    exit 2
+  }
+fi
 cd "$ROOT"
 
 PY="${PYTHON:-uv run python}"
+
+# No --bundle: fetch the pinned release asset. fetch prints the bundle
+# directory and explains on stderr what to do by hand when it cannot.
+if [[ -z "$BUNDLE" ]]; then
+  BUNDLE="$($PY scripts/build_mexicali_bundle.py fetch)" || exit 1
+fi
 CLI="$PY -m apps.cli.app"
 
 # Parse .env as data; exported caller values always win.

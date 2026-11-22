@@ -13,6 +13,15 @@ access to wherever the inputs first came from.
         --overture-places  <`overture places` extract> --overture-release REL \\
         --osm-network      <directory written by `network bootstrap --save-graph`>
     python scripts/build_mexicali_bundle.py verify DIR
+    python scripts/build_mexicali_bundle.py fetch [--cache DIR] [--url URL]
+
+``fetch`` downloads the published bundle (a GitHub Release asset, pinned
+below by URL and SHA-256), checks the archive's SHA-256 before extracting
+anything, extracts it under ``--cache`` (default ``data/bundles/``), runs
+``verify`` on the result and prints the bundle directory. A cached archive or
+an already-extracted bundle that verifies is reused. ``--url`` (or
+``MEXICALI_BUNDLE_URL``) points at a mirror; the checksum cannot be
+overridden, so a mirror can only serve the same bytes.
 
 The INEGI inputs are parquet copies of INEGI's public products, hive-
 partitioned the way the loaders read them (``<layer>.parquet/CVE_ENT=NN/
@@ -32,8 +41,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
+import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 
 #: Bundle layout. scripts/mexicali_run.sh reads the same paths.
@@ -41,6 +54,17 @@ MARCO_DIR = "inegi/marco_geoestadistico_2024"
 CENSO_DIR = "inegi/censo_2020/manzanas_2020.parquet"
 DENUE_FILE = "inegi/denue/equipamientos_mexicali.parquet"
 SUMS = "SHA256SUMS"
+
+#: The published bundle, the one pin. A published archive is never replaced:
+#: new data gets a new release tag, and a new pin here.
+BUNDLE_VERSION = "2026.11"
+BUNDLE_URL = (
+    "https://github.com/rschifan/reimagina-evo/releases/download/"
+    f"mexicali-bundle-{BUNDLE_VERSION}/reimagina-mexicali-bundle-{BUNDLE_VERSION}.tar.gz"
+)
+BUNDLE_SHA256 = "58e03f78f683065f3e5154eb3fde0d8b336b2df814796ad736b887e8eada4d3b"
+BUNDLE_TOP = "reimagina-mexicali-bundle"  # the archive's one top-level directory
+DEFAULT_CACHE = Path(__file__).resolve().parents[1] / "data" / "bundles"
 
 INEGI_LICENCE = "INEGI Términos de Libre Uso de la Información"
 INEGI_TERMS_URL = "https://www.inegi.org.mx/inegi/terminos.html"
@@ -93,6 +117,59 @@ def verify(root: Path) -> list[str]:
         f"not in {SUMS}: {rel}" for rel in bundle_files(root) if rel not in listed
     ]
     return problems
+
+
+# ── fetch ────────────────────────────────────────────────────────────────────
+
+
+def _manual(reason: str) -> SystemExit:
+    return SystemExit(
+        f"{reason}\nDownload {BUNDLE_URL} by hand, check that its SHA-256 is "
+        f"{BUNDLE_SHA256}, extract it and pass the directory: "
+        "scripts/mexicali_run.sh --bundle DIR"
+    )
+
+
+def fetch(cache: Path, url: str) -> Path:
+    """The pinned bundle under ``cache``, downloaded and extracted if needed."""
+    home = cache / BUNDLE_VERSION
+    bundle = home / BUNDLE_TOP
+    if bundle.is_dir() and not verify(bundle):
+        return bundle
+    home.mkdir(parents=True, exist_ok=True)
+    archive = home / f"reimagina-mexicali-bundle-{BUNDLE_VERSION}.tar.gz"
+    if not (archive.is_file() and sha256(archive) == BUNDLE_SHA256):
+        print(f"downloading {url}", file=sys.stderr)
+        fd, tmp_name = tempfile.mkstemp(dir=home, suffix=".part")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as out, urllib.request.urlopen(url) as resp:
+                shutil.copyfileobj(resp, out, 1 << 20)
+            if sha256(tmp) != BUNDLE_SHA256:
+                raise _manual(f"{url}: SHA-256 does not match the pinned checksum")
+            tmp.replace(archive)
+        except OSError as exc:  # URLError and HTTPError are OSErrors
+            raise _manual(f"cannot download {url}: {exc}") from exc
+        finally:
+            tmp.unlink(missing_ok=True)
+    # Extract next to the target and move into place, so a failed or refused
+    # extraction never leaves a half bundle where the next call would look.
+    with tempfile.TemporaryDirectory(dir=home) as staging:
+        try:
+            with tarfile.open(archive) as tar:
+                # "data" refuses absolute paths, "..", links leaving the
+                # destination and device files.
+                tar.extractall(staging, filter="data")
+        except tarfile.TarError as exc:
+            raise SystemExit(f"{archive}: refused to extract: {exc}") from exc
+        if not (Path(staging) / BUNDLE_TOP).is_dir():
+            raise SystemExit(f"{archive}: no top-level {BUNDLE_TOP}/ directory")
+        shutil.rmtree(bundle, ignore_errors=True)
+        (Path(staging) / BUNDLE_TOP).replace(bundle)
+    problems = verify(bundle)
+    if problems:
+        raise SystemExit(f"{bundle} does not verify:\n" + "\n".join(problems))
+    return bundle
 
 
 # ── subsetting ───────────────────────────────────────────────────────────────
@@ -388,7 +465,14 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--cve-ent", default="02")
     v = sub.add_parser("verify", help="check a bundle against its SHA256SUMS")
     v.add_argument("bundle")
+    f = sub.add_parser("fetch", help="download, check and extract the pinned bundle")
+    f.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
+    f.add_argument("--url", default=os.environ.get("MEXICALI_BUNDLE_URL") or BUNDLE_URL)
     args = parser.parse_args(argv)
+
+    if args.command == "fetch":
+        print(fetch(args.cache, args.url))
+        return 0
 
     if args.command == "verify":
         problems = verify(Path(args.bundle))

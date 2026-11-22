@@ -4,9 +4,9 @@ This is the operator runbook for rebuilding `reimagina_app` from
 scratch. Follow it top-to-bottom on a clean machine that has Postgres
 + PostGIS + pgRouting reachable (r037 runs `CREATE EXTENSION
 pgrouting`; `make stack-up`'s image carries both), the repo checked out,
-`make install` already run, and the Mexicali source bundle (below). The
-bundle makes the Mexicali load offline; internet access is needed only for
-the steps that fetch fresh data (`overture extract`, `network bootstrap`
+`make install` already run, and the Mexicali source bundle (below). Once
+fetched, the bundle makes the Mexicali load offline; internet access is
+otherwise needed only for the steps that fetch fresh data (`overture extract`, `network bootstrap`
 without `--graph-dir`, WorldPop).
 
 The delivered installation is what `scripts/mexicali_run.sh` builds:
@@ -41,13 +41,33 @@ One directory (~77 MB) with every input the Mexicali load reads:
 | `ATTRIBUTION.md` | credits and licence terms: INEGI free-use terms with the transformation notice, ODbL, CDLA-Permissive-2.0 |
 | `MANIFEST.json`, `SHA256SUMS` | every file with rows, sha256, source, vintage, licence and how it was produced |
 
-It comes with the delivery. Check it and load it:
+It is published as a GitHub Release asset, tag `mexicali-bundle-2026.11`:
+<https://github.com/rschifan/reimagina-evo/releases/download/mexicali-bundle-2026.11/reimagina-mexicali-bundle-2026.11.tar.gz>. Its version, URL, SHA-256 and top-level directory are pinned in
+`scripts/build_mexicali_bundle.py`. `fetch` downloads it into
+`data/bundles/<version>/`, checks the archive against the pinned SHA-256
+before extracting anything, extracts it, runs `verify`, and prints the bundle
+directory; a cached archive or an extracted bundle that still verifies is
+reused. `scripts/mexicali_run.sh` without `--bundle` does this itself.
 
 ```sh
-export BUNDLE=/path/to/reimagina-mexicali-bundle
+export BUNDLE="$(uv run python scripts/build_mexicali_bundle.py fetch)"
+scripts/mexicali_run.sh --bundle "$BUNDLE"
+```
+
+`fetch --url URL` (or `MEXICALI_BUNDLE_URL`) reads from a mirror; the
+checksum cannot be overridden. Offline, or when GitHub is unreachable,
+download the asset by hand, check it and extract it:
+
+```sh
+shasum -a 256 reimagina-mexicali-bundle-2026.11.tar.gz   # must match the pin
+tar -xzf reimagina-mexicali-bundle-2026.11.tar.gz
+export BUNDLE="$PWD/reimagina-mexicali-bundle"
 uv run python scripts/build_mexicali_bundle.py verify "$BUNDLE"
 scripts/mexicali_run.sh --bundle "$BUNDLE"
 ```
+
+A published archive is never replaced. New data gets a new release tag
+(`mexicali-bundle-<version>`) and a new pin in the repository.
 
 **Rebuilding it.** The INEGI inputs are INEGI's public downloads
 (inegi.org.mx: Marco Geoestadístico, Censo de Población y Vivienda 2020

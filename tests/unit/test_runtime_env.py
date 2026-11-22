@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 import hashlib
+import re
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 
 import pytest
 
@@ -302,3 +304,50 @@ def test_drop_rejects_unsupported_migration_dsns_before_connect(tmp_path, key, d
     assert done.returncode != 0
     assert "UNSAFE_CONNECT" not in done.stdout + done.stderr
     assert key in done.stderr
+
+
+def test_mexicali_without_bundle_fetches_the_pinned_archive(tmp_path):
+    env = fixture_repo(tmp_path)
+    env.update(
+        DATABASE_URL="postgresql://localhost/scratch",
+        DATABASE_URL_DIRECT="postgresql://localhost/scratch",
+        DATABASE_URL_ADMIN="postgresql://localhost/postgres",
+    )
+    archive = tmp_path / "asset.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(tmp_path / "bundle", arcname="reimagina-mexicali-bundle")
+    # Pin the copied script to the synthetic asset; the real pin is untouched.
+    script = tmp_path / "scripts/build_mexicali_bundle.py"
+    script.write_text(
+        re.sub(
+            r'BUNDLE_SHA256 = "[0-9a-f]{64}"',
+            f'BUNDLE_SHA256 = "{hashlib.sha256(archive.read_bytes()).hexdigest()}"',
+            script.read_text(),
+        )
+    )
+    env["MEXICALI_BUNDLE_URL"] = archive.as_uri()
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    fetched = tmp_path / "data/bundles"
+    assert list(fetched.glob("*/reimagina-mexicali-bundle/SHA256SUMS")), done.stderr
+    assert "all files match" in done.stdout, done.stdout + done.stderr
+    assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
+
+    # Unreachable and nothing cached: stop before any CLI call, say what to do.
+    shutil.rmtree(fetched)
+    env["MEXICALI_BUNDLE_URL"] = (tmp_path / "missing.tar.gz").as_uri()
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode != 0
+    assert "--bundle DIR" in done.stderr
+    assert "ENV=" not in done.stdout
