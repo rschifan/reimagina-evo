@@ -412,6 +412,21 @@ describe("editing on the map", () => {
     expect(api.recomputeScenario).toHaveBeenCalledWith("A");
   });
 
+  // Review: the edits were already gone when the recompute was refused, yet
+  // the box stayed open on the old outline, and a second Delete sent a 404
+  // per edit. The rule is reported gone and the rules reload.
+  it("a delete whose recompute is refused still reports the rule gone", async () => {
+    store.select("A");
+    await settle();
+    api.recomputeScenario.mockRejectedValue(ceiling());
+    api.getScenario.mockClear();
+    const ok = await settleRun(store.deleteRule(GROUP));
+    expect(ok).toBe(true);
+    expect(api.getScenario).toHaveBeenCalledWith("A");
+    expect(store.ws.message?.tone).toBe("bad");
+    expect(store.ws.message?.text).toMatch(/deleted/i);
+  });
+
   it("a second apply while busy is ignored", async () => {
     store.select("A");
     const first = store.applyNewRule(AREA, VALUES);

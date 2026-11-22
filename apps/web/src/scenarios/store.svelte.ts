@@ -694,7 +694,8 @@ export async function saveRule(
   }
 }
 
-/** Remove a rule — every edit of it — and show the effect. */
+/** Remove a rule — every edit of it — and show the effect. Returns whether
+ *  the rule is gone. */
 export async function deleteRule(group: EditGroup): Promise<boolean> {
   const scenarioId = ws.selectedId;
   if (ws.busy || scenarioId === null) return false;
@@ -715,8 +716,16 @@ export async function deleteRule(group: EditGroup): Promise<boolean> {
     }
     const landing = await recomputeAndWait(scenarioId);
     if (landing.outcome === "refused") {
-      await boxRefusal(landing.error, "recompute");
-      return false;
+      // The edits are already gone, so the rule is too: keeping its box open
+      // on the old outline invited a second Delete, a 404 per edit. Say it
+      // on the page, since the box closes.
+      const text = await refusalText(landing.error, "recompute");
+      if (ws.selectedId === scenarioId) {
+        await loadRules(scenarioId, selection);
+        refreshMap();
+      }
+      say(`Rule deleted, but the recompute was refused: ${text}`, "bad");
+      return true;
     }
     await afterLanding(scenarioId, landing, "Rule deleted.");
     return true;
