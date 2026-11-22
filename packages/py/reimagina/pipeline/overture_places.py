@@ -423,21 +423,29 @@ def bootstrap_places(
     aoi_id: str | None = None,
     code_version: str = "dev",
     output_path: str | Path = PLACES_BRONZE_FILENAME,
+    raw_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Extract, stage, load and summarize places for one bbox."""
+    """Extract, stage, load and summarize places for one bbox.
+
+    ``raw_path`` names an extract made earlier (the source bundle ships one):
+    it is loaded as is and nothing is fetched, so ``bbox``, ``categories`` and
+    ``country`` are whatever that extract was cut with. ``release`` must still
+    name the release it came from — it is the source row's version.
+    """
     feat.seed_feature_types(conn)
     conn.commit()
 
     source_id = ensure_places_source(conn, version=release)
     conn.commit()
 
-    raw_path = extract_places_subset(
-        output_path=output_path,
-        bbox=bbox,
-        release=release,
-        categories=categories,
-        country=country,
-    )
+    if raw_path is None:
+        raw_path = extract_places_subset(
+            output_path=output_path,
+            bbox=bbox,
+            release=release,
+            categories=categories,
+            country=country,
+        )
     bronze_path, silver_path = stage_places_subset(raw_path, source_id=source_id)
 
     load_result = load_places_subset(

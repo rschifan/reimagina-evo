@@ -292,6 +292,7 @@ def load_overture_places(
     country: str | None = None,
     aoi_id: str | None = None,
     output_path: str | Path = "data/overture_places.parquet",
+    raw_path: str | None = None,
     orchestrator_run_id: str | None = None,
     code_version: str = "dev",
 ) -> dict[str, Any]:
@@ -314,6 +315,7 @@ def load_overture_places(
             country=country,
             aoi_id=aoi_id,
             output_path=output_path,
+            raw_path=raw_path,
             orchestrator_run_id=orchestrator_run_id or str(uuid4()),
             code_version=code_version,
         )

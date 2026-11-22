@@ -586,6 +586,12 @@ def overture_places(
         "park just outside the boundary is one the adjacent blocks walk to",
     ),
     output_path: str = typer.Option("data/overture_places.parquet", "--output-path"),
+    raw_path: Optional[str] = typer.Option(
+        None,
+        "--raw-path",
+        help="Load this existing extract (e.g. the source bundle's) instead of "
+        "extracting from S3. --release must name the release it was cut from",
+    ),
 ) -> int:
     return _print(
         load_overture_places(
@@ -595,6 +601,7 @@ def overture_places(
             country=country,
             aoi_id=aoi_id,
             output_path=output_path,
+            raw_path=raw_path,
         )
     )
 
