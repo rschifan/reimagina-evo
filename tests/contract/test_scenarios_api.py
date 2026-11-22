@@ -158,8 +158,7 @@ def events(monkeypatch) -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _rule_reads(monkeypatch):
-    """The two reads a write route makes after writing, answered without SQL."""
-    monkeypatch.setattr(mod, "list_rules", lambda conn, sid: [dict(RULE_ROW)])
+    """The read the enqueue makes after a write, answered without SQL."""
     monkeypatch.setattr(mod, "unfinished_runs", lambda conn, sid: [])
 
 

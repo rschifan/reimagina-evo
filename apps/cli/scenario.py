@@ -51,7 +51,7 @@ from reimagina.scenarios.authoring import (
     create_scenario,
     delete_rule as delete_rule_row,
     delete_scenario,
-    list_rules,
+    get_scenario,
     materialize_scenario,
     project_of_aoi,
     update_rule as update_rule_row,
@@ -339,8 +339,10 @@ def rules(*, dsn: str, scenario_id: str) -> dict[str, Any]:
     """One scenario's rules, in "later wins" order, with their ids."""
     scenario_id = _canonical_id(scenario_id)
     with contextlib.closing(connect(dsn)) as conn:
-        show(dsn=dsn, scenario_id=scenario_id)
-        rows = list_rules(conn, scenario_id)
+        found = get_scenario(conn, scenario_id)
+    if found is None:
+        raise ScenarioNotFound(f"no scenario with id {scenario_id}")
+    rows = found["rules"]
     return {"dsn": dsn, "scenario_id": scenario_id, "count": len(rows), "rules": rows}
 
 

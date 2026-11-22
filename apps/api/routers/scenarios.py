@@ -141,7 +141,6 @@ from reimagina.scenarios.authoring import (
     delete_rule,
     delete_scenario,
     get_scenario,
-    list_rules,
     list_scenarios,
     materialize_scenario,
     unfinished_runs,
@@ -779,10 +778,10 @@ def list_rules_route(scenario_id: str) -> list[RuleRow]:
     with _refusals():
         resolved = _scenario_id(scenario_id)
         with contextlib.closing(connect(api_dsn())) as conn:
-            if get_scenario(conn, resolved) is None:
-                raise ScenarioNotFound(f"no scenario with id {scenario_id!r}")
-            rows = list_rules(conn, resolved)
-    return [RuleRow(**row) for row in rows]
+            found = get_scenario(conn, resolved)
+        if found is None:
+            raise ScenarioNotFound(f"no scenario with id {scenario_id!r}")
+    return [RuleRow(**row) for row in found["rules"]]
 
 
 @router.post("/{scenario_id}/rules", status_code=201, response_model=RuleChangeResponse)
