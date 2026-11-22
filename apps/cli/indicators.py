@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING
@@ -216,6 +217,15 @@ def evaluate_scenario_cli(
         # processes stay client-only; this is an explicit caller choice.
         from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
 
+        # ⚠ An executor id of this process's own. The default `<host>:<role>`
+        # is shared by every CLI on the host, and a launch recovers PENDING
+        # work recorded against its id — so a second concurrent
+        # `evaluate-scenario` re-ran the first one's in-flight units. This
+        # process is short-lived: what it abandons by dying is what the
+        # reclaim sweep picks up. An explicit REIMAGINA_EXECUTOR_ID still wins.
+        os.environ.setdefault(
+            "REIMAGINA_EXECUTOR_ID", f"{os.uname().nodename}:cli:{os.getpid()}"
+        )
         orchestrator: Orchestrator = DBOSOrchestrator(execution_mode="dev")
     else:
         orchestrator = get_orchestrator("dbos")
@@ -239,6 +249,7 @@ def evaluate_scenario_cli(
                 "mode": mode,
             }
         final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
+    _retire_executor()
 
     return {
         "dsn": dsn,
@@ -250,6 +261,25 @@ def evaluate_scenario_cli(
             for u in final.units
         ],
     }
+
+
+def _retire_executor() -> None:
+    """Drop this process's liveness row once its work is done.
+
+    A per-process id would otherwise leave one stale heartbeat row per CLI
+    invocation, each read as a dead executor until a sweep forgets it.
+    ``forget_executor`` keeps the row if anything is still open against it.
+    """
+    from contextlib import closing
+
+    import psycopg2
+
+    from reimagina.orchestration import dbos_app
+    from reimagina.orchestration.reclaim import forget_executor
+
+    dbos_app.stop_liveness()
+    with closing(psycopg2.connect(dbos_app.dbos_dsn())) as conn, conn:
+        forget_executor(conn, dbos_app._executor_id())
 
 
 def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):

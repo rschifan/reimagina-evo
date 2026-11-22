@@ -70,3 +70,43 @@ def test_the_worker_entrypoint_claims_its_own_role(monkeypatch):
 
     assert launched == [True]
     assert os.environ["REIMAGINA_EXECUTOR_ROLE"] == "worker"
+
+
+def test_an_embedded_cli_run_has_an_executor_id_of_its_own(monkeypatch):
+    """Two `evaluate-scenario` processes on one host must not share an id.
+
+    Both used to be `<host>:app`, so the second one's launch recovered the
+    first one's in-flight run and its units executed twice. A CLI executor is
+    short-lived; work it abandons is what the reclaim sweep picks up.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ID", raising=False)
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ROLE", raising=False)
+    seen: list[str] = []
+
+    class _Orchestrator:
+        def __init__(self, **_kw):
+            pass
+
+        def submit_run(self, conn, **_kw):
+            seen.append(_executor_id())
+            return SimpleNamespace(status=None, run_id="r1")
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_orchestrator.DBOSOrchestrator", _Orchestrator
+    )
+    monkeypatch.setattr(cli, "connect", lambda dsn: nullcontext(object()))
+    monkeypatch.setattr(
+        cli,
+        "_await_run",
+        lambda *a, **k: SimpleNamespace(run_id="r1", status="succeeded", units=()),
+    )
+    monkeypatch.setattr(cli, "_retire_executor", lambda: None)
+
+    cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+
+    assert seen and str(os.getpid()) in seen[0]
