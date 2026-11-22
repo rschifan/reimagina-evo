@@ -446,12 +446,17 @@ async function main(): Promise<void> {
      * torn down rather than left painting the previous AOI's tiles.
      */
     async function refreshIndicatorList(aoiId: string | null): Promise<void> {
+      let listed: IndicatorSummary[];
       try {
-        indicators = await listIndicators(aoiId);
+        listed = await listIndicators(aoiId);
       } catch (err) {
         console.warn("indicator list refresh failed; keeping previous list", err);
         return;
       }
+      // Responses land in arrival order: after a quick A → B → C, B's list
+      // can answer last and would fill C's picker.
+      if (aoiId !== getActiveAoiId()) return;
+      indicators = listed;
       const el = document.getElementById("indicator-select") as HTMLSelectElement | null;
       if (!el) return;
       const previous = state.activeIndicator?.slug ?? "";
