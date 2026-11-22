@@ -301,22 +301,25 @@ describe("editing on the map", () => {
     expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
   });
 
-  it("apply on the baseline creates the scenario, then writes the rule, then follows its run", async () => {
+  it("apply on the baseline creates the scenario with its rule in one request, then follows its run", async () => {
     api.listScenarios.mockResolvedValue([row("A"), row("B"), row("N")]);
     store.select(null);
-    const order: string[] = [];
-    api.createScenario.mockImplementation(async () => (order.push("create"), { id: "N", name: "S" }));
-    api.addRule.mockImplementation(async () => (order.push("rule"), changed()));
+    api.createScenario.mockResolvedValue({ id: "N", name: "S", rules: [], first_rule: changed() });
 
     const ok = await settleRun(store.applyNewRule(AREA, VALUES, "Scenario 3"));
 
     expect(ok).toBe(true);
-    expect(order).toEqual(["create", "rule"]);
-    expect(api.createScenario).toHaveBeenCalledWith(expect.objectContaining({ aoi_id: "aoi-1" }));
-    expect(api.addRule).toHaveBeenCalledWith("N", {
-      area: AREA,
-      inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
-    });
+    expect(api.createScenario).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aoi_id: "aoi-1",
+        name: "Scenario 3",
+        rule: {
+          area: AREA,
+          inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+        },
+      }),
+    );
+    expect(api.addRule).not.toHaveBeenCalled();
     expect(api.getRun).toHaveBeenCalledWith("run-1");
     expect(store.ws.selectedId).toBe("N");
     expect(store.ws.mode).toBe("delta");
@@ -344,16 +347,16 @@ describe("editing on the map", () => {
     expect(store.ws.boxError?.field).toBe("unit_size");
   });
 
-  it("a refused first rule deletes the empty scenario it was going to go into", async () => {
+  it("a refused first rule left no scenario, so nothing is deleted and the box says why", async () => {
     store.select(null);
-    api.createScenario.mockResolvedValue({ id: "N", name: "S" });
-    api.addRule.mockRejectedValue(ceiling());
-    api.deleteScenario.mockResolvedValue({ overrides: 0, results_deleted: 0 });
+    api.createScenario.mockRejectedValue(ceiling());
 
-    await settleRun(store.applyNewRule(AREA, VALUES, "S"));
+    const ok = await settleRun(store.applyNewRule(AREA, VALUES, "S"));
 
-    expect(api.deleteScenario).toHaveBeenCalledWith("N");
+    expect(ok).toBe(false);
+    expect(api.deleteScenario).not.toHaveBeenCalled();
     expect(store.ws.selectedId).toBeNull();
+    expect(store.ws.boxError?.text).toMatch(/2 blocks/);
   });
 
   // B4: a 500 after the commit (or a lost response) used to delete the rule

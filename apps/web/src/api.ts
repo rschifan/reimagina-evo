@@ -469,13 +469,25 @@ export function listScenarios(
 }
 
 
+type Area = GeoJSON.Feature | GeoJSON.FeatureCollection | GeoJSON.Geometry;
+
+
+/** A created scenario, and its first rule's change when one was sent. */
+export interface CreatedScenario extends ScenarioDetail {
+  first_rule: RuleChangeResponse | null;
+}
+
+
+/** Create a scenario, optionally with its first rule: one transaction, so a
+ *  refused rule (4xx) leaves no scenario behind. */
 export function createScenario(body: {
   project_id: string;
   name: string;
   aoi_id: string;
   description?: string | null;
-}): Promise<ScenarioDetail> {
-  return jsonRequest<ScenarioDetail>("/scenarios", { body });
+  rule?: { area: Area; inputs: RuleInputs };
+}): Promise<CreatedScenario> {
+  return jsonRequest<CreatedScenario>("/scenarios", { body });
 }
 
 
@@ -490,9 +502,6 @@ export function deleteScenario(scenarioId: string): Promise<DeleteScenarioRespon
     { method: "DELETE" },
   );
 }
-
-
-type Area = GeoJSON.Feature | GeoJSON.FeatureCollection | GeoJSON.Geometry;
 
 
 /** Draw a rule. Written and materialised in one transaction, so a refusal

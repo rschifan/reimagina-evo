@@ -630,6 +630,55 @@ def test_one_rule_is_written_materialised_and_enqueued_in_one_request(
     assert [r["id"] for r in shown["rules"]] == [body["rule"]["id"]]
 
 
+def test_a_scenario_and_its_first_rule_are_one_request(
+    client, territory, orchestrator, migrated_db
+):
+    """Drawing on the baseline city: the scenario, its rule, the
+    materialisation and the enqueue, from one POST."""
+    created = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "First rule",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    rule = body["first_rule"]["rule"]
+    assert [r["id"] for r in body["rules"]] == [rule["id"]]
+    assert body["override_count"] == 8
+    assert body["first_rule"]["run_id"] == "run-123"
+    assert orchestrator[0]["scenario_id"] == body["id"]
+    assert _overrides(migrated_db, body["id"])[0] == ("floors", 2)
+
+
+def test_a_refused_first_rule_leaves_no_scenario(
+    client, territory, orchestrator, migrated_db
+):
+    """The scenario rolls back with its refused rule: nothing to delete."""
+    refused = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "Refused",
+            "rule": {**PROPOSAL, "area": _as_geojson(-140.0, -139.9, 10.0, 10.1)},
+        },
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["error"] == "rule_catches_nothing"
+    reader = _reader(migrated_db)
+    try:
+        assert _scenario_ids(reader, territory.project_id) == []
+    finally:
+        reader.close()
+    assert orchestrator == []
+
+
 def test_a_rule_the_density_bound_rules_out_never_reaches_the_database(
     client, territory, orchestrator
 ):

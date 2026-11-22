@@ -176,25 +176,6 @@ _MAX_BREACHES_REPORTED = 20
 # ── wire shapes ──────────────────────────────────────────────────────────
 
 
-class CreateScenarioBody(BaseModel):
-    """A named what-if inside a project, bounded by one of its AOIs.
-
-    ``project_id`` is required rather than derived from ``aoi_id`` the way
-    ``scenario create`` derives it. The CLI derives it because a person at a
-    terminal would otherwise type a uuid they have to look up first; an HTTP
-    client already has it — ``GET /aois`` carries ``project_id`` on every row.
-
-    ``aoi_id`` is required. A scenario without one could hold rules but never
-    materialise them, and nothing can set it later — its rules are drawn over
-    that AOI's blocks — so it was a dead end.
-    """
-
-    project_id: UUID
-    name: str = Field(min_length=1)
-    aoi_id: UUID
-    description: str | None = None
-
-
 class RuleBody(BaseModel):
     """One rule: an area and the numbers a planner sets over it.
 
@@ -218,6 +199,34 @@ class RuleBody(BaseModel):
     )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
+
+
+class CreateScenarioBody(BaseModel):
+    """A named what-if inside a project, bounded by one of its AOIs.
+
+    ``project_id`` is required rather than derived from ``aoi_id`` the way
+    ``scenario create`` derives it. The CLI derives it because a person at a
+    terminal would otherwise type a uuid they have to look up first; an HTTP
+    client already has it — ``GET /aois`` carries ``project_id`` on every row.
+
+    ``aoi_id`` is required. A scenario without one could hold rules but never
+    materialise them, and nothing can set it later — its rules are drawn over
+    that AOI's blocks — so it was a dead end.
+
+    ``rule`` is optional: drawing on the baseline city creates the scenario
+    and its first rule together, and a refusal of either stores neither.
+    """
+
+    project_id: UUID
+    name: str = Field(min_length=1)
+    aoi_id: UUID
+    description: str | None = None
+    rule: RuleBody | None = Field(
+        None,
+        description="The scenario's first rule. Created, written and "
+        "materialised in one transaction, so a refused rule leaves no "
+        "scenario behind.",
+    )
 
 
 class RuleUpdateBody(BaseModel):
@@ -321,6 +330,13 @@ class RuleChangeResponse(RecomputeResponse):
     """
 
     rule: RuleRow | None = None
+
+
+class CreatedScenario(ScenarioDetail):
+    """The scenario as ``GET`` returns it, and its first rule's change when
+    the body carried one (null otherwise)."""
+
+    first_rule: RuleChangeResponse | None = None
 
 
 class DeleteScenarioResponse(BaseModel):
@@ -636,14 +652,21 @@ def list_scenarios_route(
     return [ScenarioListRow(**row) for row in rows]
 
 
-@router.post("", status_code=201, response_model=ScenarioDetail)
-def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
+@router.post("", status_code=201, response_model=CreatedScenario)
+def create_scenario_route(body: CreateScenarioBody) -> CreatedScenario:
     """Create a named what-if and answer with it, as ``GET`` would.
 
     One shape for the created resource and for a later read, so a client that
     just created a scenario does not need a second request to learn what it
     looks like.
+
+    With a ``rule``, the scenario and the rule are one transaction — the
+    rule's refusals (``POST …/rules``) roll the scenario back with it, so no
+    client has to delete an empty scenario its refused first rule was going
+    into — and the rule's recompute is enqueued after the commit
+    (``first_rule``).
     """
+    first = body.rule
     with _refusals(), contextlib.closing(connect(api_dsn())) as conn, conn:
         scenario_id = create_scenario(
             conn,
@@ -651,6 +674,17 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
             name=body.name,
             aoi_id=str(body.aoi_id),
             description=body.description,
+        )
+        change = (
+            None
+            if first is None
+            else add_rule(
+                conn,
+                scenario_id=scenario_id,
+                geometry_wkt=polygon_wkt(first.area),
+                type_id=_feature_type_id(conn, first.type_context, first.type_slug),
+                inputs=first.inputs,
+            )
         )
         created = get_scenario(conn, scenario_id)
         if created is None:
@@ -662,7 +696,15 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
                 f"scenario {scenario_id} is not readable in the transaction "
                 "that created it"
             )
-    return ScenarioDetail(**created)
+    if change is None:
+        return CreatedScenario(**created)
+    rule, result = change
+    return CreatedScenario(
+        **created,
+        first_rule=RuleChangeResponse(
+            **_enqueue(scenario_id, result), rule=RuleRow(**rule)
+        ),
+    )
 
 
 class ReachableIndicator(IndicatorSummary):

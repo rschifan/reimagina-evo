@@ -565,27 +565,36 @@ export async function applyNewRule(
     return false;
   }
   ws.busy = true;
-  let created: string | null = null;
   try {
     if (scenarioId === null) {
       if (!ws.projectId || !ws.aoiId) {
         ws.boxError = { field: null, text: "No pilot is active, so there is no project to add a scenario to." };
         return false;
       }
+      // The scenario and its first rule are one request: a refused rule
+      // leaves no scenario behind, so there is nothing to undo.
+      let created;
       try {
-        const scenario = await createScenario({
+        created = await createScenario({
           project_id: ws.projectId,
           name: (scenarioName ?? "").trim(),
           aoi_id: ws.aoiId,
+          rule: { area, inputs: ruleInputs(values) },
         });
-        created = scenario.id;
       } catch (err) {
+        if (!isRefusal(err)) {
+          await loadScenarios();
+          say(await refusalText(err, "create"), "bad");
+          return true;
+        }
         await boxRefusal(err, "create");
         return false;
       }
       await loadScenarios();
-      select(created, { duringGesture: true });
-      scenarioId = created;
+      select(created.id, { duringGesture: true });
+      if (created.first_rule === null) return true;
+      await afterLanding(created.id, await follow(created.id, created.first_rule), "Rule added.");
+      return true;
     }
     let result;
     try {
@@ -596,8 +605,6 @@ export async function applyNewRule(
         return true;
       }
       await boxRefusal(err, "rule");
-      // The refused rule stored nothing; a scenario made for it is empty.
-      await undoCreated(created);
       return false;
     }
     await afterLanding(scenarioId, await follow(scenarioId, result), "Rule added.");
@@ -605,19 +612,6 @@ export async function applyNewRule(
   } finally {
     ws.busy = false;
   }
-}
-
-/** Delete a scenario this gesture created, when its first rule was refused. */
-async function undoCreated(created: string | null): Promise<void> {
-  if (created === null) return;
-  try {
-    await deleteScenario(created);
-  } catch (err) {
-    console.warn("could not delete the scenario the refused rule created", err);
-  }
-  if (ws.selectedId === created) select(null, { duringGesture: true });
-  delete ws.cells[created];
-  await loadScenarios();
 }
 
 /**

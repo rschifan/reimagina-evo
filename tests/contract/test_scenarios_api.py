@@ -891,6 +891,87 @@ def test_a_rule_and_its_materialisation_commit_together_before_the_enqueue(
     assert asked == [("MEX", "block")]
 
 
+def test_a_first_rule_is_created_with_its_scenario_in_one_transaction(
+    client, events, monkeypatch
+):
+    """The scenario, its first rule and the materialisation commit together,
+    then the enqueue runs on its own connection."""
+    _patch(
+        monkeypatch,
+        create_scenario=lambda c, **kw: (events.append("create"), SCENARIO_ID)[1],
+        add_rule=lambda c, **kw: (
+            events.append(f"add_rule:{kw['scenario_id']}"),
+            (dict(RULE_ROW), MATERIALIZED),
+        )[1],
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, rules=[dict(RULE_ROW)]),
+    )
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
+
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": PROJECT_ID,
+            "aoi_id": AOI_ID,
+            "name": "N",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert events == [
+        "connect",
+        "create",
+        f"add_rule:{SCENARIO_ID}",
+        "commit",
+        "close",
+        "connect",
+        "submit_run",
+        "commit",
+        "close",
+    ]
+    body = response.json()
+    assert body["first_rule"]["rule"]["id"] == RULE_ID
+    assert body["first_rule"]["run_id"] == "run-123"
+
+
+def test_a_refused_first_rule_rolls_its_scenario_back(client, events, monkeypatch):
+    def _raise(conn, **kwargs):
+        raise RuleCatchesNothing(RULE_ID)
+
+    _patch(monkeypatch, create_scenario=lambda c, **kw: SCENARIO_ID, add_rule=_raise)
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
+
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": PROJECT_ID,
+            "aoi_id": AOI_ID,
+            "name": "N",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "rollback" in events and "commit" not in events
+    assert "submit_run" not in events
+
+
+def test_a_scenario_without_a_rule_has_no_first_rule(client, events, monkeypatch):
+    _patch(
+        monkeypatch,
+        create_scenario=lambda c, **kw: SCENARIO_ID,
+        add_rule=lambda c, **kw: pytest.fail("no rule was sent"),
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+    )
+
+    response = _call(client, "create")
+
+    assert response.status_code == 201, response.text
+    assert response.json()["first_rule"] is None
+
+
 @pytest.mark.parametrize(
     "refusal",
     [
