@@ -960,12 +960,23 @@ def _supersede_unbacked_results(
     if not removed:
         return 0
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import compute_dirty_set
 
-    pairs: set[tuple[str, str]] = set()
-    for feature_id, attribute_key in removed:
-        for spec in SHIPPED_INDICATORS:
-            if attribute_key in spec.reads:
-                pairs.add((spec.slug, feature_id))
+    # The same closure a recompute runs: the readers of the attribute *and*
+    # their dependents. A composite reads no attribute, so selecting on
+    # `reads` alone left a livability score current over a removed rule —
+    # its recompute writes only features every input still covers.
+    # One closure per attribute, not per removed pair: a large rule removes
+    # thousands of pairs over a handful of attributes.
+    slugs_for = {
+        key: [u.indicator for u in compute_dirty_set([key], [], SHIPPED_INDICATORS)]
+        for key in {attribute_key for _, attribute_key in removed}
+    }
+    pairs = {
+        (slug, feature_id)
+        for feature_id, attribute_key in removed
+        for slug in slugs_for[attribute_key]
+    }
     if not pairs:
         return 0
 
