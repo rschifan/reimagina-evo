@@ -11,9 +11,10 @@ recomputes exactly the affected indicators. It is the only writer of
 
 A rule's ``ordinal`` is its place in "later wins". It is assigned when the rule
 is created and never changes after: editing a rule's numbers or moving it keeps
-its place. Writing a rule and materialising the scenario belong in one
-transaction (``materialize_for_rule``): a rule the materialisation refuses is
-then never stored, so no client has to undo it.
+its place. ``add_rule``, ``update_rule`` and ``delete_rule`` each write the
+rule and materialise the scenario in the caller's one transaction
+(``materialize_for_rule``): a rule the materialisation refuses is then never
+stored, so no client has to undo it.
 
 ``delete_scenario`` undoes both halves. Overrides, results, job runs and AOI
 summaries cascade from the scenario row (r055); versions and materialisations
@@ -31,6 +32,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -383,17 +385,19 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
     return scenario
 
 
+#: A rule as every surface shows it, read straight off ``RETURNING`` or a list.
+_RULE_COLUMNS = (
+    "id, ordinal, type_id, inputs, ST_AsText(geometry) AS geometry_wkt, "
+    "created_at, updated_at"
+)
+
+
 def list_rules(conn: Any, scenario_id: str) -> list[dict]:
     """A scenario's rules, in "later wins" order (ordinal)."""
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT id, ordinal, type_id, inputs,
-                   ST_AsText(geometry) AS geometry_wkt, created_at, updated_at
-            FROM curated_geo.scenario_rule
-            WHERE scenario_id = %s
-            ORDER BY ordinal
-            """,
+            f"SELECT {_RULE_COLUMNS} FROM curated_geo.scenario_rule "
+            "WHERE scenario_id = %s ORDER BY ordinal",
             (scenario_id,),
         )
         cols = [d[0] for d in cur.description]
@@ -463,15 +467,28 @@ class RuleCatchesNothing(Exception):
         )
 
 
+def _rule_row(cur: Any) -> dict:
+    cols = [d[0] for d in cur.description]
+    return _stringify_ids(dict(zip(cols, cur.fetchone(), strict=True)))
+
+
+def _rule_id(rule_id: str) -> str:
+    """A rule id in canonical spelling; a malformed one names no rule."""
+    try:
+        return str(uuid.UUID(str(rule_id)))
+    except ValueError as exc:
+        raise RuleNotFound(f"no rule with id {rule_id!r}") from exc
+
+
 def add_rule(
     conn: Any,
     *,
     scenario_id: str,
     geometry_wkt: str,
     type_id: str,
-    inputs: dict[str, float],
-) -> str:
-    """Append one rule to a scenario and return its id.
+    inputs: Mapping[str, Any],
+) -> tuple[dict, MaterializeResult]:
+    """Append one rule, materialise the scenario, and return both.
 
     * ``inputs`` are the planner's numbers, checked by ``proposal.check_inputs``
       (the one place every surface's refusals come from); a number left out is
@@ -481,29 +498,35 @@ def add_rule(
       changes after. ``ordinal`` rather than ``created_at`` orders rules
       because ``now()`` is transaction-start time: two rules written together
       share it.
+    * Materialised in the same transaction (``materialize_for_rule``), so a
+      rule the materialisation refuses is never stored.
+
+    Returns the rule as stored and what the materialisation did.
     """
     from reimagina.scenarios.proposal import check_inputs
 
-    _require_postgres(conn)
+    # Before any SQL: a refused id or number costs no lock.
+    scenario_id = _canonical_id(scenario_id)
     checked = check_inputs(inputs)
+    _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
         cur.execute(
-            """
+            f"""
             INSERT INTO curated_geo.scenario_rule
               (scenario_id, ordinal, type_id, geometry, inputs)
             SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
                    ST_GeomFromEWKB(%(g)s), %(i)s::jsonb
             FROM curated_geo.scenario_rule
             WHERE scenario_id = %(s)s
-            RETURNING id
+            RETURNING {_RULE_COLUMNS}
             """,
             {"s": scenario_id, "t": type_id, "g": repaired, "i": json.dumps(checked)},
         )
-        rule_id = str(cur.fetchone()[0])
+        rule = _rule_row(cur)
         _touch(cur, scenario_id)
-        return rule_id
+    return rule, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule["id"])
 
 
 def update_rule(
@@ -512,44 +535,79 @@ def update_rule(
     scenario_id: str,
     rule_id: str,
     geometry_wkt: str | None,
-    inputs: dict[str, float],
-) -> None:
-    """Replace one rule's numbers, and its area when one is given, in place.
+    inputs: Mapping[str, Any],
+    unset: Sequence[str] = (),
+    merge: bool = False,
+) -> tuple[dict, MaterializeResult]:
+    """Change one rule in place, materialise, and return both.
 
-    ``inputs`` is the rule's **whole** set: a number left out is no longer set
-    by the rule. In place is the point: the rule keeps its id and its ordinal,
-    so it keeps its position in "later wins" — re-adding a number it had
-    dropped does not move it ahead of a later rule.
+    ``merge=False`` (the API's ``PATCH``, sent from a form holding every
+    number): ``inputs`` is the rule's **whole** set, and a number left out is
+    no longer set. ``merge=True`` (a typed command naming only what changes):
+    the numbers given replace the rule's own, those in ``unset`` are removed,
+    the rest are kept — merged on the rule as it is under the scenario's lock.
+    Its area changes when one is given.
+
+    In place is the point: the rule keeps its id and its ordinal, so it keeps
+    its position in "later wins" — re-adding a number it had dropped does not
+    move it ahead of a later rule.
     """
     from reimagina.scenarios.proposal import check_inputs
 
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _rule_id(rule_id)
+    missing = RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
+
+    def _checked(current: dict[str, Any]) -> dict[str, float]:
+        given = {k: v for k, v in inputs.items() if v is not None or not merge}
+        merged = {**current, **given}
+        return check_inputs({k: v for k, v in merged.items() if k not in unset})
+
+    # A whole set is checked before any SQL; a merge needs the rule first.
+    checked = None if merge else _checked({})
     _require_postgres(conn)
-    checked = check_inputs(inputs)
     with conn.cursor() as cur:
         repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
+        if checked is None:
+            cur.execute(
+                "SELECT inputs FROM curated_geo.scenario_rule "
+                "WHERE id = %s AND scenario_id = %s",
+                (rule_id, scenario_id),
+            )
+            found = cur.fetchone()
+            if found is None:
+                raise missing
+            checked = _checked(found[0])
         cur.execute(
-            """
+            f"""
             UPDATE curated_geo.scenario_rule
                SET inputs = %(i)s::jsonb,
                    geometry = COALESCE(ST_GeomFromEWKB(%(g)s), geometry),
                    updated_at = now()
              WHERE id = %(r)s AND scenario_id = %(s)s
-            RETURNING 1
+            RETURNING {_RULE_COLUMNS}
             """,
             {"i": json.dumps(checked), "g": repaired, "r": rule_id, "s": scenario_id},
         )
-        if cur.fetchone() is None:
-            raise RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
+        if cur.rowcount == 0:
+            raise missing
+        rule = _rule_row(cur)
         _touch(cur, scenario_id)
+    return rule, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
 
 
-def delete_rule(conn: Any, *, scenario_id: str, rule_id: str) -> None:
-    """Delete one rule, atomically: it is one row.
+def delete_rule(
+    conn: Any, *, scenario_id: str, rule_id: str
+) -> tuple[None, MaterializeResult]:
+    """Delete one rule and materialise what is left.
 
     Ordinals are not renumbered: they only have to be ordered, not dense.
-    The scenario is locked first, the order ``delete_scenario`` uses.
+    The scenario is locked first, the order ``delete_scenario`` uses. Returns
+    ``(None, result)``, the shape the other two writers return.
     """
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _rule_id(rule_id)
     _require_postgres(conn)
     with conn.cursor() as cur:
         _lock_scenario(cur, scenario_id)
@@ -561,6 +619,7 @@ def delete_rule(conn: Any, *, scenario_id: str, rule_id: str) -> None:
         if cur.fetchone() is None:
             raise RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
         _touch(cur, scenario_id)
+    return None, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=None)
 
 
 def _repair_geometry(cur: Any, geometry_wkt: str) -> bytes:

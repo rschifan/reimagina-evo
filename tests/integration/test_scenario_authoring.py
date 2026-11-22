@@ -21,13 +21,30 @@ from reimagina.scenarios.authoring import (
     update_rule,
 )
 from reimagina.scenarios.proposal import ProposalValueError
-from tests.integration._helpers import insert_project
+from reimagina.data.aoi import compute_aoi_features
+from tests.integration._helpers import (
+    insert_feature,
+    insert_project,
+    register_source,
+    start_run,
+)
 
 _SQUARE = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"
 _BOWTIE = "POLYGON((0 0, 1 1, 1 0, 0 1, 0 0))"
 
 
+#: A block whose interior point every drawn area below covers — the square,
+#: the bowtie's left half and the Z triangle alike — so a rule catches it.
+_BLOCK = "POLYGON((0.199 0.599, 0.201 0.599, 0.201 0.601, 0.199 0.601, 0.199 0.599))"
+
+
 def _type_id(conn, slug: str = "block_authoring_test") -> str:
+    """A feature type with one block of it, inside every test AOI.
+
+    A rule is materialised as it is written and refused if it catches no
+    block, so authoring needs something to catch. Call it before ``_scenario``,
+    which computes the AOI's membership.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -38,7 +55,23 @@ def _type_id(conn, slug: str = "block_authoring_test") -> str:
             """,
             (slug,),
         )
-        return str(cur.fetchone()[0])
+        type_id = str(cur.fetchone()[0])
+    source_id = register_source(
+        conn,
+        name=f"src_{slug}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    insert_feature(
+        conn,
+        type_id=type_id,
+        source_id=source_id,
+        ingestion_run_id=start_run(conn, source_id),
+        dataset_version="v1",
+        source_record_ref=f"blk-{slug}",
+        geometry_wkt=_BLOCK,
+    )
+    return type_id
 
 
 def _aoi(conn, project_id: str) -> str:
@@ -51,17 +84,28 @@ def _aoi(conn, project_id: str) -> str:
             """,
             (project_id, _SQUARE),
         )
-        return str(cur.fetchone()[0])
+        aoi_id = str(cur.fetchone()[0])
+    compute_aoi_features(conn, aoi_id)
+    return aoi_id
+
+
+def _scenario(conn, name: str = "N", project_id: str | None = None) -> str:
+    """A scenario a rule can be drawn on: in a project, over an AOI."""
+    project_id = project_id or insert_project(conn)
+    return create_scenario(
+        conn, project_id=project_id, name=name, aoi_id=_aoi(conn, project_id)
+    )
 
 
 def _rule(conn, sid, type_id, wkt=_SQUARE, **inputs) -> str:
-    return add_rule(
+    rule, _ = add_rule(
         conn,
         scenario_id=sid,
         geometry_wkt=wkt,
         type_id=type_id,
         inputs=inputs or {"levels": 6},
     )
+    return rule["id"]
 
 
 def test_create_then_find_again(conn):
@@ -99,10 +143,10 @@ def _unit_provenance(conn, sid, status, queued_at):
 def test_the_list_counts_each_scenarios_rules(conn):
     """The workspace says "no rules yet" from the list, not one read per row."""
     p = insert_project(conn)
+    t = _type_id(conn)
     a = _aoi(conn, p)
     with_rules = create_scenario(conn, project_id=p, name="with", aoi_id=a)
     create_scenario(conn, project_id=p, name="without", aoi_id=a)
-    t = _type_id(conn)
     _rule(conn, with_rules, t, levels=6, unit_size=60)
     _rule(conn, with_rules, t, people_per_household=3)
 
@@ -206,8 +250,8 @@ def test_an_aoi_that_exists_nowhere_is_still_the_foreign_keys_refusal(conn):
 
 
 def test_rules_get_increasing_ordinals(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
+    sid = _scenario(conn)
     a1 = _rule(conn, sid, t, levels=6)
     a2 = _rule(conn, sid, t, levels=8)
     ords = {r["id"]: r["ordinal"] for r in get_scenario(conn, sid)["rules"]}
@@ -215,8 +259,9 @@ def test_rules_get_increasing_ordinals(conn):
 
 
 def test_a_rule_stores_only_the_numbers_set_and_storeys_once(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    _rule(conn, sid, _type_id(conn), levels=4, lot_coverage=0.6)
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    _rule(conn, sid, t, levels=4, lot_coverage=0.6)
     (rule,) = get_scenario(conn, sid)["rules"]
     assert rule["inputs"] == {"levels": 4.0, "lot_coverage": 0.6}
 
@@ -224,8 +269,8 @@ def test_a_rule_stores_only_the_numbers_set_and_storeys_once(conn):
 def test_updating_a_rule_keeps_its_id_and_its_place(conn):
     """Re-adding a number a rule had dropped does not move it ahead of a
     later rule: precedence is the rule's ordinal, assigned once (B5)."""
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
+    sid = _scenario(conn)
     first = _rule(conn, sid, t, levels=4, unit_size=90)
     second = _rule(conn, sid, t, unit_size=60)
     update_rule(
@@ -244,11 +289,42 @@ def test_updating_a_rule_keeps_its_id_and_its_place(conn):
     assert rules[0]["inputs"] == {"levels": 4.0, "unit_size": 90.0}
 
 
+def test_a_merged_update_keeps_the_numbers_it_does_not_name(conn):
+    """The CLI's ``update-rule``: merged under the scenario's lock, and the
+    row handed back is the stored one."""
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    rid = _rule(conn, sid, t, levels=4, unit_size=90)
+
+    rule, result = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rid.upper(),
+        geometry_wkt=None,
+        inputs={"people_per_household": 3, "levels": None},
+        unset=["unit_size"],
+        merge=True,
+    )
+
+    assert rule["id"] == rid
+    assert rule["inputs"] == {"levels": 4.0, "people_per_household": 3.0}
+    assert get_scenario(conn, sid)["rules"] == [rule]
+    assert result.matched_per_rule == {rid: 1}
+
+
+def test_a_malformed_rule_id_names_no_rule(conn):
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    _rule(conn, sid, t)
+    with pytest.raises(RuleNotFound, match="no rule"):
+        delete_rule(conn, scenario_id=sid, rule_id="not-a-uuid")
+
+
 def test_a_rule_of_another_scenario_cannot_be_changed_through_this_one(conn):
     p = insert_project(conn)
-    mine = create_scenario(conn, project_id=p, name="mine")
-    theirs = create_scenario(conn, project_id=p, name="theirs")
     t = _type_id(conn)
+    mine = _scenario(conn, "mine", p)
+    theirs = _scenario(conn, "theirs", p)
     their_rule = _rule(conn, theirs, t)
 
     with pytest.raises(RuleNotFound):
@@ -265,8 +341,9 @@ def test_a_rule_of_another_scenario_cannot_be_changed_through_this_one(conn):
 
 
 def test_deleting_a_rule_is_one_row_and_a_second_delete_is_refused(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    rid = _rule(conn, sid, _type_id(conn), levels=6, unit_size=60)
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    rid = _rule(conn, sid, t, levels=6, unit_size=60)
     delete_rule(conn, scenario_id=sid, rule_id=rid)
     with pytest.raises(RuleNotFound):
         delete_rule(conn, scenario_id=sid, rule_id=rid)
@@ -274,8 +351,8 @@ def test_deleting_a_rule_is_one_row_and_a_second_delete_is_refused(conn):
 
 
 def test_ordinals_are_not_reused_after_a_removal_of_the_latest(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
+    sid = _scenario(conn)
     _rule(conn, sid, t)
     r2 = _rule(conn, sid, t)
     delete_rule(conn, scenario_id=sid, rule_id=r2)
@@ -293,15 +370,17 @@ def _is_valid(conn, rid) -> bool:
 
 
 def test_a_self_intersecting_polygon_is_repaired_not_stored_raw(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    rid = _rule(conn, sid, _type_id(conn), wkt=_BOWTIE)
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    rid = _rule(conn, sid, t, wkt=_BOWTIE)
     assert _is_valid(conn, rid)
 
 
 def test_a_third_coordinate_is_dropped_not_a_500(conn):
     """QGIS and GPS exports carry Z; the column is 2D and the insert raised."""
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    rid = _rule(conn, sid, _type_id(conn), wkt="POLYGON Z((0 0 5,0 1 5,1 1 5,0 0 5))")
+    t = _type_id(conn)
+    sid = _scenario(conn)
+    rid = _rule(conn, sid, t, wkt="POLYGON Z((0 0 5,0 1 5,1 1 5,0 0 5))")
     with conn.cursor() as cur:
         cur.execute(
             "SELECT ST_NDims(geometry) FROM curated_geo.scenario_rule WHERE id = %s",
@@ -311,14 +390,15 @@ def test_a_third_coordinate_is_dropped_not_a_500(conn):
 
 
 def test_an_unrepairable_geometry_is_rejected_with_a_reason(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    t = _type_id(conn)
+    sid = _scenario(conn)
     with pytest.raises(InvalidGeometry):
-        _rule(conn, sid, _type_id(conn), wkt="POLYGON EMPTY")
+        _rule(conn, sid, t, wkt="POLYGON EMPTY")
 
 
 def test_unparseable_wkt_is_an_invalid_geometry_too(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
+    sid = _scenario(conn)
     with pytest.raises(InvalidGeometry):
         _rule(conn, sid, t, wkt="not wkt")
     # and the transaction is still usable
@@ -326,15 +406,17 @@ def test_unparseable_wkt_is_an_invalid_geometry_too(conn):
 
 
 def test_a_line_is_rejected_not_stored(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    t = _type_id(conn)
+    sid = _scenario(conn)
     with pytest.raises(InvalidGeometry):
-        _rule(conn, sid, _type_id(conn), wkt="LINESTRING(0 0, 1 1)")
+        _rule(conn, sid, t, wkt="LINESTRING(0 0, 1 1)")
 
 
 def test_an_unknown_number_is_refused(conn):
-    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    t = _type_id(conn)
+    sid = _scenario(conn)
     with pytest.raises(ProposalValueError, match="network_version"):
-        _rule(conn, sid, _type_id(conn), network_version=3)
+        _rule(conn, sid, t, network_version=3)
 
 
 def test_a_rule_on_a_missing_scenario_is_refused(conn):
@@ -359,7 +441,7 @@ def test_concurrent_add_rule_does_not_collide_on_ordinal(migrated_db):
     try:
         project = insert_project(setup, "concurrency")
         t = _type_id(setup, "block_authoring_concurrency")
-        sid = create_scenario(setup, project_id=project, name="race")
+        sid = _scenario(setup, "race", project)
         setup.commit()
 
         first = _rule(c1, sid, t, levels=6)
@@ -388,10 +470,25 @@ def test_concurrent_add_rule_does_not_collide_on_ordinal(migrated_db):
         c2.rollback()
         setup.rollback()
         with setup.cursor() as cur:
+            # Cascades scenario, rules, overrides, AOI and its membership.
             cur.execute("DELETE FROM app_core.project WHERE name = 'concurrency'")
+            cur.execute(
+                "DELETE FROM curated_geo.feature WHERE type_id IN (SELECT id "
+                "FROM curated_geo.feature_type_catalog "
+                "WHERE type_slug = 'block_authoring_concurrency')"
+            )
             cur.execute(
                 "DELETE FROM curated_geo.feature_type_catalog "
                 "WHERE type_slug = 'block_authoring_concurrency'"
+            )
+            cur.execute(
+                "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
+                "(SELECT id FROM curated_geo.data_source_catalog "
+                "WHERE name = 'src_block_authoring_concurrency')"
+            )
+            cur.execute(
+                "DELETE FROM curated_geo.data_source_catalog "
+                "WHERE name = 'src_block_authoring_concurrency'"
             )
         setup.commit()
         for c in (c1, c2, setup):

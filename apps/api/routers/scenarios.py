@@ -134,7 +134,6 @@ from reimagina.scenarios.authoring import (
     InvalidGeometry,
     MaterializeResult,
     RuleCatchesNothing,
-    RuleNotFound,
     ScenarioHasNoAOI,
     ScenarioNotFound,
     add_rule,
@@ -144,7 +143,6 @@ from reimagina.scenarios.authoring import (
     get_scenario,
     list_rules,
     list_scenarios,
-    materialize_for_rule,
     materialize_scenario,
     unfinished_runs,
     update_rule,
@@ -154,7 +152,6 @@ from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     EmptyProposal,
     ProposalValueError,
-    check_inputs,
     polygon_wkt,
     reachable_indicators,
     table_statistic,
@@ -590,14 +587,6 @@ def _reference_field(exc: psycopg2.Error) -> str | None:
     return None
 
 
-def _rule_id(raw: str) -> str:
-    """A rule id from the path, normalised — or 404, as a scenario id is."""
-    try:
-        return str(UUID(raw))
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise RuleNotFound(f"no rule with id {raw!r}") from exc
-
-
 def _scenario_id(raw: str) -> str:
     """A path id, normalised — or the same 404 an unknown one gets.
 
@@ -796,43 +785,31 @@ def list_rules_route(scenario_id: str) -> list[RuleRow]:
     return [RuleRow(**row) for row in rows]
 
 
-def _rule_row(conn: Any, scenario_id: str, rule_id: str) -> RuleRow:
-    return next(
-        RuleRow(**row) for row in list_rules(conn, scenario_id) if row["id"] == rule_id
-    )
-
-
 @router.post("/{scenario_id}/rules", status_code=201, response_model=RuleChangeResponse)
 def add_rule_route(scenario_id: str, body: RuleBody) -> RuleChangeResponse:
     """Draw one rule, materialise the scenario, and enqueue its recompute.
 
-    **The rule and the materialisation are one transaction.** A rule that
-    breaches a ceiling on any block, or catches no block of the scenario's
-    AOI, is refused (422) and nothing is stored — the server never keeps a
-    rule it would not materialise, so no client has to undo one. The
-    recompute is enqueued after the commit, for the reason ``recompute``
-    gives; if only the enqueue fails, the rule stands (500
+    **The rule and the materialisation are one transaction** (``add_rule``
+    does both). A rule that breaches a ceiling on any block, or catches no
+    block of the scenario's AOI, is refused (422) and nothing is stored — the
+    server never keeps a rule it would not materialise, so no client has to
+    undo one. The recompute is enqueued after the commit, for the reason
+    ``recompute`` gives; if only the enqueue fails, the rule stands (500
     ``recompute_not_enqueued``) and a later recompute picks it up.
-
-    The cheap refusals come first — the id, the numbers, the area — so a rule
-    that cannot be stored costs no connection.
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        inputs = check_inputs(body.inputs)
         geometry_wkt = polygon_wkt(body.area)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
             type_id = _feature_type_id(conn, body.type_context, body.type_slug)
-            rule_id = add_rule(
+            rule, result = add_rule(
                 conn,
                 scenario_id=resolved,
                 geometry_wkt=geometry_wkt,
                 type_id=type_id,
-                inputs=inputs,
+                inputs=body.inputs,
             )
-            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=rule_id)
-            rule = _rule_row(conn, resolved, rule_id)
-    return RuleChangeResponse(**_enqueue(resolved, result), rule=rule)
+    return RuleChangeResponse(**_enqueue(resolved, result), rule=RuleRow(**rule))
 
 
 @router.patch("/{scenario_id}/rules/{rule_id}", response_model=RuleChangeResponse)
@@ -841,26 +818,22 @@ def update_rule_route(
 ) -> RuleChangeResponse:
     """Change one rule's numbers, and optionally its area, in place.
 
-    The rule keeps its id and its place in "later wins". Same refusals, in
-    the same transaction, as ``POST …/rules``: a refused change leaves the
-    rule as it was.
+    ``inputs`` is the rule's whole set (``merge=False``). The rule keeps its
+    id and its place in "later wins". Same refusals, in the same transaction,
+    as ``POST …/rules``: a refused change leaves the rule as it was.
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        rule = _rule_id(rule_id)
-        inputs = check_inputs(body.inputs)
         geometry_wkt = None if body.area is None else polygon_wkt(body.area)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
-            update_rule(
+            rule, result = update_rule(
                 conn,
                 scenario_id=resolved,
-                rule_id=rule,
+                rule_id=rule_id,
                 geometry_wkt=geometry_wkt,
-                inputs=inputs,
+                inputs=body.inputs,
             )
-            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=rule)
-            row = _rule_row(conn, resolved, rule)
-    return RuleChangeResponse(**_enqueue(resolved, result), rule=row)
+    return RuleChangeResponse(**_enqueue(resolved, result), rule=RuleRow(**rule))
 
 
 @router.delete("/{scenario_id}/rules/{rule_id}", response_model=RuleChangeResponse)
@@ -873,10 +846,8 @@ def delete_rule_route(scenario_id: str, rule_id: str) -> RuleChangeResponse:
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        rule = _rule_id(rule_id)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
-            delete_rule(conn, scenario_id=resolved, rule_id=rule)
-            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=None)
+            _, result = delete_rule(conn, scenario_id=resolved, rule_id=rule_id)
     return RuleChangeResponse(**_enqueue(resolved, result))
 
 

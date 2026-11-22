@@ -122,22 +122,26 @@ MATERIALIZED = MaterializeResult(
 
 
 def _writes(monkeypatch, calls: list[dict] | None = None, conn=None):
-    """Install a fake connection and record the rule writes the CLI makes."""
+    """Install a fake connection and record the rule writes the CLI makes.
+
+    The fake ``add_rule`` keeps the one part of the real one these tests are
+    about — its numbers go through ``check_inputs`` — and stands in for the
+    write and the materialisation it does in the same transaction.
+    """
+    from reimagina.scenarios.proposal import check_inputs
+
     conn = conn or _FakeConn([])
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
     monkeypatch.setattr(scenario_cli, "get_type_id", lambda c, ctx, slug: TYPE_ID)
-    monkeypatch.setattr(
-        scenario_cli,
-        "add_rule_row",
-        lambda c, **kw: ((calls.append(kw) if calls is not None else None), "rule-1")[
-            1
-        ],
-    )
-    monkeypatch.setattr(
-        scenario_cli,
-        "materialize_for_rule",
-        lambda c, **kw: (conn.events.append("materialize"), MATERIALIZED)[1],
-    )
+
+    def _add_rule(c, **kw):
+        checked = check_inputs(kw["inputs"])
+        if calls is not None:
+            calls.append(kw)
+        conn.events.append("add_rule")
+        return {"id": "rule-1", "inputs": checked}, MATERIALIZED
+
+    monkeypatch.setattr(scenario_cli, "add_rule_row", _add_rule)
     return conn
 
 
@@ -176,12 +180,11 @@ def test_add_rule_sets_only_the_numbers_given(monkeypatch, tmp_path, capsys):
     )
 
     assert code == 0
-    assert [c["inputs"] for c in calls] == [
-        {"levels": 6.0, "people_per_household": 3.6}
-    ]
+    out = _out(capsys)
+    assert out["inputs"] == {"levels": 6.0, "people_per_household": 3.6}
     assert calls[0]["geometry_wkt"] == "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"
     assert calls[0]["type_id"] == TYPE_ID
-    assert _out(capsys)["rule_id"] == "rule-1"
+    assert out["rule_id"] == "rule-1"
 
 
 def test_add_rule_and_its_materialisation_are_one_transaction(monkeypatch, tmp_path):
@@ -190,7 +193,7 @@ def test_add_rule_and_its_materialisation_are_one_transaction(monkeypatch, tmp_p
 
     assert _add_rule(tmp_path, levels=6) == 0
 
-    assert conn.events == ["materialize", "commit", "close"]
+    assert conn.events == ["add_rule", "commit", "close"]
 
 
 def test_a_geojson_path_that_is_not_there_is_a_message_not_a_traceback(
@@ -362,21 +365,13 @@ def _add_rule(tmp_path, *, levels, unit_size=60, people_per_household=3.6):
 
 
 def test_add_rule_prechecks_the_density_ceiling(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(
-        scenario_cli,
-        "connect",
-        lambda dsn: pytest.fail("the refusal must precede the connection"),
-    )
-    monkeypatch.setattr(
-        scenario_cli,
-        "add_rule_row",
-        lambda conn, **kw: pytest.fail("nothing may be written"),
-    )
+    conn = _writes(monkeypatch)
 
     code = _add_rule(tmp_path, levels=13, unit_size=60)
 
     assert code != 0
     assert DENSITY in capsys.readouterr().err
+    assert "commit" not in conn.events
 
 
 @pytest.mark.parametrize("unit_size", [30, 60, 120])
@@ -409,9 +404,7 @@ def test_the_cli_says_flags_where_the_domain_says_fields(monkeypatch, tmp_path, 
     it — and if it stopped, the refusal would send them looking for a
     `levels` they never typed.
     """
-    monkeypatch.setattr(
-        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be opened")
-    )
+    _writes(monkeypatch)
 
     assert _add_rule(tmp_path, levels=13, unit_size=60) == 2
 
@@ -450,13 +443,12 @@ def test_a_degenerate_value_is_refused(monkeypatch, tmp_path, capsys, levels):
     Nothing downstream would stop them: the kernels return 0 for a
     non-positive input and NaN propagates into the override row.
     """
-    monkeypatch.setattr(
-        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be written")
-    )
+    conn = _writes(monkeypatch)
 
     code = _add_rule(tmp_path, levels=levels)
 
     assert code == 2
+    assert "commit" not in conn.events
     assert "--levels" in capsys.readouterr().err
 
 

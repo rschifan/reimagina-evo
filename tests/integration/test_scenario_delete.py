@@ -428,9 +428,12 @@ def test_deleting_an_unknown_scenario_raises(conn):
 
 
 def test_deleting_a_scenario_that_was_never_materialised_is_not_an_error(conn):
-    """Nothing to retire, nothing to stale — and still a scenario to remove."""
+    """Nothing to retire, nothing to stale — and still a scenario to remove.
+
+    No rule: drawing one materialises it.
+    """
     t = _Territory(conn)
-    sid = t.scenario()
+    sid = create_scenario(conn, project_id=t.project_id, name="Bare", aoi_id=t.aoi_id)
 
     result = delete_scenario(conn, scenario_id=sid)
 

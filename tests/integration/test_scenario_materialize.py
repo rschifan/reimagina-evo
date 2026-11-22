@@ -15,6 +15,7 @@ longer written at all. The second ghost is the one a user sees, because
 
 from __future__ import annotations
 
+import json
 import threading
 import warnings
 
@@ -36,7 +37,6 @@ from reimagina.scenarios.authoring import (
     create_scenario,
     delete_rule,
     delete_scenario,
-    materialize_for_rule,
     materialize_scenario,
     update_rule,
 )
@@ -158,13 +158,33 @@ class _Territory:
         )
 
     def rule(self, sid: str, wkt: str, **inputs: float) -> str:
-        return add_rule(
+        """Draw a rule the way every surface does: written and materialised."""
+        rule, _ = add_rule(
             self.conn,
             scenario_id=sid,
             geometry_wkt=wkt,
             type_id=self.type_id,
             inputs=inputs,
         )
+        return rule["id"]
+
+    def raw_rule(self, sid: str, wkt: str, **inputs: float) -> str:
+        """A rule row and nothing else: a state ``add_rule`` refuses to leave
+        (an area catching nothing, a breach), for the tests of what
+        ``materialize_scenario`` makes of it."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.scenario_rule
+                  (scenario_id, ordinal, type_id, geometry, inputs)
+                SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
+                       ST_GeomFromText(%(g)s, 4326), %(i)s::jsonb
+                FROM curated_geo.scenario_rule WHERE scenario_id = %(s)s
+                RETURNING id::text
+                """,
+                {"s": sid, "t": self.type_id, "g": wkt, "i": json.dumps(inputs)},
+            )
+            return cur.fetchone()[0]
 
 
 def _override_value(conn, scenario_id, feature_id, attribute_key):
@@ -328,7 +348,7 @@ def test_a_half_covered_block_is_caught_by_its_centroid(conn):
 def test_an_area_catching_no_blocks_reports_zero_and_writes_nothing(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    rid = t.rule(sid, _AREA_EMPTY, levels=6)
+    rid = t.raw_rule(sid, _AREA_EMPTY, levels=6)
 
     result = materialize_scenario(conn, scenario_id=sid)
 
@@ -342,19 +362,16 @@ def test_a_rule_catching_no_block_is_refused_when_it_is_written(conn):
     longitude and latitude swapped is refused, not stored (B8)."""
     t = _Territory(conn)
     sid = t.scenario()
-    rid = t.rule(sid, _AREA_EMPTY, levels=6)
 
     with pytest.raises(RuleCatchesNothing):
-        materialize_for_rule(conn, scenario_id=sid, rule_id=rid)
+        t.rule(sid, _AREA_EMPTY, levels=6)
 
 
 def test_a_rule_outside_the_aoi_catches_nothing(conn):
     t = _Territory(conn)
     sid = t.scenario(aoi_id=t.aoi_narrow)
-    rid = t.rule(sid, _rect(-99.1850, -99.1770), levels=6)  # blocks 4-5 only
-
     with pytest.raises(RuleCatchesNothing):
-        materialize_for_rule(conn, scenario_id=sid, rule_id=rid)
+        t.rule(sid, _rect(-99.1850, -99.1770), levels=6)  # blocks 4-5 only
 
 
 def test_blocks_outside_the_aoi_are_excluded_and_the_count_says_so(conn):
@@ -371,7 +388,7 @@ def test_blocks_outside_the_aoi_are_excluded_and_the_count_says_so(conn):
 def test_it_refuses_when_the_scenario_has_no_aoi(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    t.rule(sid, _AREA_0_3, levels=6)
+    t.raw_rule(sid, _AREA_0_3, levels=6)
     _set_aoi_null(conn, sid)
 
     with pytest.raises(ScenarioHasNoAOI):
@@ -416,14 +433,13 @@ def test_removing_a_number_supersedes_the_results_it_was_behind(conn):
     _compute_density(conn, sid)
     assert _current_results(conn, sid, _DENSITY) != []
 
-    update_rule(
+    _, result = update_rule(
         conn,
         scenario_id=sid,
         rule_id=rid,
         geometry_wkt=None,
         inputs={"unit_size": 60, "people_per_household": 3.6},
     )
-    result = materialize_scenario(conn, scenario_id=sid)
 
     assert result.overrides_removed == 8  # 4 blocks x floors and num_levels
     assert result.results_superseded == 4
@@ -470,8 +486,7 @@ def test_deleting_the_last_rule_leaves_nothing_to_compute(conn):
     rid = t.rule(sid, _AREA_0_3, levels=6)
     materialize_scenario(conn, scenario_id=sid)
 
-    delete_rule(conn, scenario_id=sid, rule_id=rid)
-    result = materialize_for_rule(conn, scenario_id=sid, rule_id=None)
+    _, result = delete_rule(conn, scenario_id=sid, rule_id=rid)
 
     assert result.footprint_features == ()
     assert _override_count(conn, sid) == 0
@@ -625,7 +640,7 @@ _BASE = {"unit_size": 60, "people_per_household": 3.6}
 def test_a_ceiling_breach_refuses_the_whole_run(conn):
     t = _Territory(conn, attributes=_BASE)
     sid = t.scenario()
-    rid = t.rule(sid, _AREA_0_3, levels=13)  # 10000 * 13 / 60 = 2166 > 2000
+    rid = t.raw_rule(sid, _AREA_0_3, levels=13)  # 10000 * 13 / 60 = 2166 > 2000
 
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid)
@@ -659,7 +674,7 @@ def test_a_baseline_floors_above_the_bound_is_judged_on_floors(conn):
     only household size leaves in place."""
     t = _Territory(conn, attributes={**_BASE, "num_levels": 6, "floors": 201})
     sid = t.scenario()
-    t.rule(sid, _AREA_0_3, people_per_household=3)
+    t.raw_rule(sid, _AREA_0_3, people_per_household=3)
 
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid)
@@ -730,20 +745,20 @@ def test_one_district_breaching_does_not_refuse_on_a_blend(conn):
         type_id=type_id,
         inputs={"levels": 6},
     )
-    add_rule(
-        conn,
-        scenario_id=sid,
-        geometry_wkt=tall_area,
-        type_id=type_id,
-        inputs={"levels": 13},
-    )
 
     with pytest.raises(CeilingExceeded) as exc:
-        materialize_scenario(conn, scenario_id=sid)
+        add_rule(
+            conn,
+            scenario_id=sid,
+            geometry_wkt=tall_area,
+            type_id=type_id,
+            inputs={"levels": 13},
+        )
 
     assert {b.feature_id for b in exc.value.breaches} == set(tall)
     assert set(small).isdisjoint({b.feature_id for b in exc.value.breaches})
-    assert _override_count(conn, sid) == 0
+    # Nothing written on top of the first rule's two blocks x two attributes.
+    assert _override_count(conn, sid) == 4
 
 
 # ── Concurrency ─────────────────────────────────────────────────────────────

@@ -403,10 +403,9 @@ WRITES = ["create", "add_rule", "update_rule", "delete_rule", "recompute", "dele
 #: Every domain write a route makes, succeeding.
 _WRITES_OK = {
     "create_scenario": lambda c, **kw: SCENARIO_ID,
-    "add_rule": lambda c, **kw: RULE_ID,
-    "update_rule": lambda c, **kw: None,
-    "delete_rule": lambda c, **kw: None,
-    "materialize_for_rule": lambda c, **kw: MATERIALIZED,
+    "add_rule": lambda c, **kw: (dict(RULE_ROW), MATERIALIZED),
+    "update_rule": lambda c, **kw: (dict(RULE_ROW), MATERIALIZED),
+    "delete_rule": lambda c, **kw: (None, MATERIALIZED),
     "materialize_scenario": lambda c, **kw: MATERIALIZED,
     "delete_scenario": lambda c, **kw: DELETED,
 }
@@ -839,22 +838,14 @@ def test_a_run_that_was_already_doing_this_work_says_so(client, events, monkeypa
 # ── a rule: one row, written and materialised together ───────────────────
 
 
-def test_the_rule_route_checks_its_numbers_through_the_domain(
-    client, events, monkeypatch
-):
-    """The refusals of a rule's numbers have one home, ``proposal.check_inputs``.
-
-    The assertion is that the router *calls* it and stores what it returns,
-    not that it happens to agree with it today: a local reimplementation
-    passes the second kind of test and fails this one.
-    """
+def test_the_rule_route_leaves_its_numbers_to_the_domain(client, events, monkeypatch):
+    """The refusals of a rule's numbers have one home, inside ``add_rule``
+    (``proposal.check_inputs``): the router hands the body's numbers over as
+    sent, and a local reimplementation of the check would show up here."""
     calls: list[dict] = []
-    sentinel = {"levels": 99.0}
     _patch(
         monkeypatch,
-        check_inputs=lambda inputs: sentinel,
-        add_rule=lambda c, **kw: (calls.append(kw), RULE_ID)[1],
-        materialize_for_rule=lambda c, **kw: MATERIALIZED,
+        add_rule=lambda c, **kw: (calls.append(kw), (dict(RULE_ROW), MATERIALIZED))[1],
     )
     _type_id(monkeypatch)
     _orchestrator(monkeypatch)
@@ -862,7 +853,7 @@ def test_the_rule_route_checks_its_numbers_through_the_domain(
     response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
 
     assert response.status_code == 201, response.text
-    assert [c["inputs"] for c in calls] == [sentinel]
+    assert [c["inputs"] for c in calls] == [INPUTS]
 
 
 def test_a_rule_and_its_materialisation_commit_together_before_the_enqueue(
@@ -872,10 +863,9 @@ def test_a_rule_and_its_materialisation_commit_together_before_the_enqueue(
     either stores nothing; a second, after it, for the enqueue."""
     _patch(
         monkeypatch,
-        add_rule=lambda c, **kw: (events.append("add_rule"), RULE_ID)[1],
-        materialize_for_rule=lambda c, **kw: (
-            events.append(f"materialize:{kw['rule_id']}"),
-            MATERIALIZED,
+        add_rule=lambda c, **kw: (
+            events.append("add_rule"),
+            (dict(RULE_ROW), MATERIALIZED),
         )[1],
     )
     asked = _type_id(monkeypatch)
@@ -887,7 +877,6 @@ def test_a_rule_and_its_materialisation_commit_together_before_the_enqueue(
     assert events == [
         "connect",
         "add_rule",
-        f"materialize:{RULE_ID}",
         "commit",
         "close",
         "connect",
@@ -919,11 +908,7 @@ def test_a_refused_rule_is_rolled_back_with_its_materialisation(
     def _raise(conn, **kwargs):
         raise refusal
 
-    _patch(
-        monkeypatch,
-        add_rule=lambda c, **kw: RULE_ID,
-        materialize_for_rule=_raise,
-    )
+    _patch(monkeypatch, add_rule=_raise)
     _type_id(monkeypatch)
     _orchestrator(monkeypatch, events)
 
@@ -938,7 +923,7 @@ def test_a_rule_catching_no_block_is_named_as_such(client, events, monkeypatch):
     def _raise(conn, **kwargs):
         raise RuleCatchesNothing(RULE_ID)
 
-    _patch(monkeypatch, add_rule=lambda c, **kw: RULE_ID, materialize_for_rule=_raise)
+    _patch(monkeypatch, add_rule=_raise)
     _type_id(monkeypatch)
 
     response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
@@ -976,8 +961,9 @@ def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
     calls: list[dict] = []
     _patch(
         monkeypatch,
-        update_rule=lambda c, **kw: calls.append(kw),
-        materialize_for_rule=lambda c, **kw: (calls.append(kw), MATERIALIZED)[1],
+        update_rule=lambda c, **kw: (calls.append(kw), (dict(RULE_ROW), MATERIALIZED))[
+            1
+        ],
     )
     _orchestrator(monkeypatch)
 
@@ -986,13 +972,15 @@ def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
     )
 
     assert response.status_code == 200, response.text
-    assert calls[0] == {
-        "scenario_id": SCENARIO_ID,
-        "rule_id": RULE_ID,
-        "geometry_wkt": None,
-        "inputs": {"levels": 4.0},
-    }
-    assert calls[1] == {"scenario_id": SCENARIO_ID, "rule_id": RULE_ID}
+    # The whole set, not merged: what the form sends is what the rule sets.
+    assert calls == [
+        {
+            "scenario_id": SCENARIO_ID,
+            "rule_id": RULE_ID,
+            "geometry_wkt": None,
+            "inputs": {"levels": 4},
+        }
+    ]
 
 
 def test_deleting_a_rule_materialises_without_a_rule_to_check(
@@ -1001,18 +989,14 @@ def test_deleting_a_rule_materialises_without_a_rule_to_check(
     calls: list[dict] = []
     _patch(
         monkeypatch,
-        delete_rule=lambda c, **kw: calls.append(kw),
-        materialize_for_rule=lambda c, **kw: (calls.append(kw), MATERIALIZED)[1],
+        delete_rule=lambda c, **kw: (calls.append(kw), (None, MATERIALIZED))[1],
     )
     _orchestrator(monkeypatch)
 
     response = client.delete(f"/scenarios/{SCENARIO_ID}/rules/{RULE_ID}")
 
     assert response.status_code == 200, response.text
-    assert calls == [
-        {"scenario_id": SCENARIO_ID, "rule_id": RULE_ID},
-        {"scenario_id": SCENARIO_ID, "rule_id": None},
-    ]
+    assert calls == [{"scenario_id": SCENARIO_ID, "rule_id": RULE_ID}]
     assert response.json()["rule"] is None
 
 
@@ -1048,7 +1032,13 @@ def test_the_drawn_area_may_be_a_feature_collection(client, events, monkeypatch)
     calls: list[dict] = []
     _patch(
         monkeypatch,
-        **{**_WRITES_OK, "add_rule": lambda c, **kw: (calls.append(kw), RULE_ID)[1]},
+        **{
+            **_WRITES_OK,
+            "add_rule": lambda c, **kw: (
+                calls.append(kw),
+                (dict(RULE_ROW), MATERIALIZED),
+            )[1],
+        },
     )
     _type_id(monkeypatch)
     _orchestrator(monkeypatch)
@@ -1333,7 +1323,7 @@ def test_an_unknown_reference_in_the_body_is_404_naming_its_field(
 @pytest.mark.parametrize("field", ["levels", "unit_size", "people_per_household"])
 @pytest.mark.parametrize("value", [0, -3])
 def test_a_degenerate_value_is_400_naming_the_json_field(
-    client, no_connection, field, value
+    client, events, monkeypatch, field, value
 ):
     """⚠ The HTTP mirror of ``test_the_domain_messages_name_fields_not_flags``.
 
@@ -1342,7 +1332,11 @@ def test_a_degenerate_value_is_400_naming_the_json_field(
     run ``scenario recompute`` describes a command line the client does not
     have. The field it names must be the field the client sent, so it is
     asserted against the request model rather than against a literal.
+
+    The real ``add_rule`` on a connection that refuses SQL: the number is
+    refused before any statement.
     """
+    _type_id(monkeypatch)
     response = client.post(
         f"/scenarios/{SCENARIO_ID}/rules",
         json={**PROPOSAL, "inputs": {**INPUTS, field: value}},
@@ -1359,7 +1353,7 @@ def test_a_degenerate_value_is_400_naming_the_json_field(
 
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_a_non_finite_value_is_refused_before_it_reaches_the_database(
-    client, no_connection, literal
+    client, events, monkeypatch, literal
 ):
     """⚠ ``value_numeric`` is a bare ``double precision``.
 
@@ -1369,6 +1363,7 @@ def test_a_non_finite_value_is_refused_before_it_reaches_the_database(
     uses — parses both literals happily. So nothing between the wire and the
     override row refuses them except this.
     """
+    _type_id(monkeypatch)
     body = (
         '{"area": %s, "inputs": {"levels": %s, "unit_size": 60, '
         '"people_per_household": 3.6}}' % (json.dumps(POLYGON), literal)
@@ -1396,15 +1391,16 @@ def test_the_json_parser_really_does_accept_those_literals():
 
 
 def test_a_density_breach_is_422_with_the_allowance_the_form_needs(
-    client, no_connection
+    client, events, monkeypatch
 ):
-    """Refused before a connection, because the bound needs no block.
+    """Refused before any SQL, because the bound needs no block.
 
     422 rather than 400: every number parses and is individually plausible;
     what cannot be processed is the combination, against a bound the catalog
     declares. The response carries ``allowed_levels`` so a form can clamp its
     own slider instead of re-deriving the rule.
     """
+    _type_id(monkeypatch)
     allowed = math.floor(max_levels_for(60.0))
 
     response = client.post(
@@ -1432,7 +1428,15 @@ def test_the_boundary_is_the_catalog_bound_at_every_unit_size(
     honest answer and a constant agree exactly. 30 m² allows 6 storeys and
     120 allows 24.
     """
-    _patch(monkeypatch, **_WRITES_OK)
+    from reimagina.scenarios.proposal import check_inputs
+
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (
+            check_inputs(kw["inputs"]),
+            (dict(RULE_ROW), MATERIALIZED),
+        )[1],
+    )
     _type_id(monkeypatch)
     _orchestrator(monkeypatch)
 
@@ -1504,9 +1508,11 @@ def test_a_malformed_body_reference_is_422(client, no_connection):
 
 @pytest.mark.parametrize("method", ["PATCH", "DELETE"])
 def test_a_malformed_rule_id_is_404_without_touching_the_database(
-    client, no_connection, method
+    client, events, method
 ):
-    """The rule id names a resource, like the scenario id: 404, not 422."""
+    """The rule id names a resource, like the scenario id: 404, not 422.
+
+    Refused by the domain before any SQL (the fake connection refuses it)."""
     response = client.request(
         method, f"/scenarios/{SCENARIO_ID}/rules/{BAD}", json={"inputs": INPUTS}
     )

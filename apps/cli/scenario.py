@@ -26,7 +26,7 @@ What stays here is dialect. The domain says ``levels``; a person at a
 terminal typed ``--levels``, and a sentence that tells them to call
 ``scenario recompute`` is useful to them and meaningless to an HTTP client.
 So each refusal is caught and re-raised with the flag name attached — see
-``_checked`` below.
+``_flags`` below.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from apps.cli import UserError
 import contextlib
 import json
 from dataclasses import asdict
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,17 +45,13 @@ from reimagina.data.feature import get_type_id
 from reimagina.db import connect
 from reimagina.scenarios.authoring import (
     InvalidGeometry,
-    MaterializeResult,
-    RuleNotFound,
     ScenarioNotFound,
     _canonical_id,
-    _lock_scenario,
     add_rule as add_rule_row,
     create_scenario,
     delete_rule as delete_rule_row,
     delete_scenario,
     list_rules,
-    materialize_for_rule,
     materialize_scenario,
     project_of_aoi,
     update_rule as update_rule_row,
@@ -65,7 +61,6 @@ from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     RULE_INPUTS,
     ProposalValueError,
-    check_inputs,
     polygon_wkt,
 )
 
@@ -75,10 +70,11 @@ DEFAULT_TYPE_CONTEXT = "MEX"
 DEFAULT_TYPE_SLUG = "block"
 
 
-def _checked(inputs: dict[str, float | None]) -> dict[str, float]:
-    """``check_inputs``, with each refusal spelled as its command-line flag."""
+@contextlib.contextmanager
+def _flags() -> Iterator[None]:
+    """The domain's number refusals, each spelled as its command-line flag."""
     try:
-        return check_inputs(inputs)
+        yield
     except ProposalValueError as exc:
         raise UserError(
             f"--{exc.field.replace('_', '-')} must {exc.must}, got {exc.value!r}"
@@ -96,10 +92,6 @@ def _polygon_wkt(geojson_path: str | Path) -> str:
         return polygon_wkt(raw)
     except InvalidGeometry as exc:
         raise InvalidGeometry(f"{geojson_path}: {exc}") from exc
-
-
-def _materialized(result: MaterializeResult) -> dict[str, Any]:
-    return asdict(result)
 
 
 # ── write paths ─────────────────────────────────────────────────────────
@@ -150,34 +142,30 @@ def add_rule(
 ) -> dict[str, Any]:
     """Draw one rule and materialise the scenario, in one transaction.
 
-    Only the numbers given are set. The cheap refusals come first — the
-    numbers, then the area — so a rule that cannot be stored costs no
-    connection; a ceiling breach or an area that catches no block is refused
-    by the materialisation and rolls the rule back with it. ``recompute`` is
-    what then computes the indicators.
+    Only the numbers given are set. A ceiling breach or an area that catches
+    no block is refused by the materialisation and rolls the rule back with
+    it. ``recompute`` is what then computes the indicators.
     """
     scenario_id = _canonical_id(scenario_id)
-    checked = _checked(inputs)
     geometry_wkt = _polygon_wkt(geojson)
-    with contextlib.closing(connect(dsn)) as conn:
+    with _flags(), contextlib.closing(connect(dsn)) as conn:
         type_id = get_type_id(conn, type_context, type_slug)
-        rule_id = add_rule_row(
+        rule, result = add_rule_row(
             conn,
             scenario_id=scenario_id,
             geometry_wkt=geometry_wkt,
             type_id=type_id,
-            inputs=checked,
+            inputs=inputs,
         )
-        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
         conn.commit()
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
-        "rule_id": rule_id,
-        "inputs": checked,
+        "rule_id": rule["id"],
+        "inputs": rule["inputs"],
         "feature_type": f"{type_context}:{type_slug}",
         "geojson": str(geojson),
-        "materialized": _materialized(result),
+        "materialized": asdict(result),
     }
 
 
@@ -193,17 +181,13 @@ def update_rule(
     """Change one rule: the numbers given replace its own, those named in
     ``unset`` are removed, the rest are kept; its area changes if given.
 
-    Merged here, on the rule as it is under the scenario's lock — not in
-    ``authoring.update_rule``, which (like the API's ``PATCH``, what the page
-    sends from a form holding every number) takes the rule's whole set. A
-    typed command names only what changes: ``--levels 8`` alone must not drop
-    the rule's other numbers, and ``--geojson`` alone moves the rule.
-
-    The rule keeps its id and its place in "later wins". Refused changes roll
-    back, leaving the rule as it was.
+    ``merge=True``: a typed command names only what changes, so ``--levels 8``
+    alone must not drop the rule's other numbers, and ``--geojson`` alone
+    moves the rule. The merge happens in ``authoring.update_rule``, under the
+    scenario's lock. The rule keeps its id and its place in "later wins".
+    Refused changes roll back, leaving the rule as it was.
     """
     scenario_id = _canonical_id(scenario_id)
-    rule_id = _canonical_id(rule_id)
     removed = {name.replace("-", "_") for name in unset}
     unknown = sorted(removed - set(RULE_INPUTS))
     if unknown:
@@ -212,50 +196,38 @@ def update_rule(
     both = sorted(n for n in removed if inputs.get(n) is not None)
     if both:
         raise UserError(f"--{both[0].replace('_', '-')} is both set and unset")
-    given = {name: value for name, value in inputs.items() if value is not None}
     geometry_wkt = None if geojson is None else _polygon_wkt(geojson)
-    with contextlib.closing(connect(dsn)) as conn:
-        with conn.cursor() as cur:
-            _lock_scenario(cur, scenario_id)
-        current = next(
-            (r["inputs"] for r in list_rules(conn, scenario_id) if r["id"] == rule_id),
-            None,
-        )
-        if current is None:
-            raise RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
-        merged = {**current, **given}
-        checked = _checked({k: v for k, v in merged.items() if k not in removed})
-        update_rule_row(
+    with _flags(), contextlib.closing(connect(dsn)) as conn:
+        rule, result = update_rule_row(
             conn,
             scenario_id=scenario_id,
             rule_id=rule_id,
             geometry_wkt=geometry_wkt,
-            inputs=checked,
+            inputs=inputs,
+            unset=sorted(removed),
+            merge=True,
         )
-        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
         conn.commit()
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
-        "rule_id": rule_id,
-        "inputs": checked,
-        "materialized": _materialized(result),
+        "rule_id": rule["id"],
+        "inputs": rule["inputs"],
+        "materialized": asdict(result),
     }
 
 
 def delete_rule(*, dsn: str, scenario_id: str, rule_id: str) -> dict[str, Any]:
     """Delete one rule and materialise what is left, in one transaction."""
     scenario_id = _canonical_id(scenario_id)
-    rule_id = _canonical_id(rule_id)
     with contextlib.closing(connect(dsn)) as conn:
-        delete_rule_row(conn, scenario_id=scenario_id, rule_id=rule_id)
-        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=None)
+        _, result = delete_rule_row(conn, scenario_id=scenario_id, rule_id=rule_id)
         conn.commit()
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
         "rule_id": rule_id,
-        "materialized": _materialized(result),
+        "materialized": asdict(result),
     }
 
 
@@ -318,7 +290,7 @@ def recompute(
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
-        "materialized": _materialized(result),
+        "materialized": asdict(result),
         "evaluation": {k: v for k, v in evaluation.items() if k != "dsn"},
     }
 

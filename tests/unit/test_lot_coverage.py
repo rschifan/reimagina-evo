@@ -77,15 +77,12 @@ def test_precheck_uses_coverage() -> None:
     precheck_ceilings(20, 60, 3, 0.5)
 
 
-def test_the_cli_refuses_coverage_by_its_flag_before_connecting() -> None:
-    from apps.cli.scenario import add_rule
+def test_the_cli_names_a_refused_coverage_by_its_flag() -> None:
+    from apps.cli.scenario import _flags
+    from reimagina.scenarios.proposal import check_inputs
 
     with pytest.raises(
         ValueError, match="--lot-coverage must be a share between 0 and 1"
     ):
-        add_rule(
-            dsn="postgresql://nowhere.invalid/none",
-            scenario_id="00000000-0000-0000-0000-000000000000",
-            geojson="unused.geojson",
-            inputs={"levels": 3, "unit_size": 66, "lot_coverage": 1.5},
-        )
+        with _flags():
+            check_inputs({"levels": 3, "unit_size": 66, "lot_coverage": 1.5})
