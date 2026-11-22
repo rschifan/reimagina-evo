@@ -6,12 +6,10 @@ shells out to GDAL, lives in ``tiles.export``.
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-import psycopg2
 
 from reimagina.storage import backend_for_connection
 from reimagina.tiles.functions import DEFAULT_TILE_FUNCTION, TILE_FUNCTIONS
@@ -24,9 +22,6 @@ from .defaults import (
     to_titiler_url,
 )
 from .manifest import load_tile_layers
-
-
-logger = logging.getLogger(__name__)
 
 
 #: Kept as an alias rather than a second list. The names live in
@@ -634,31 +629,20 @@ def _observation_key_exists(backend, attribute_key: str) -> bool:
 
     Used by the resolver to detect the bare-prefix output convention
     that ``observation_rollup`` writes when the input has no method
-    suffix. One indexed point lookup; result is callsite-cached by
-    being invoked once per recipe.
+    suffix. One indexed point lookup per call.
 
-    On a transient psycopg2 error (closed connection mid-request,
-    server restart) we log + fall back to ``False`` so /tile-sources
-    still serves SOMETHING — but we DON'T swallow programmer errors
-    like a missing column. A bare ``except Exception`` would mask
-    genuine bugs as silent fallback to the suffixed convention.
+    A DB error propagates: the probe shares the request's transaction,
+    so after a failure every later resolver query would fail anyway
+    (``InFailedSqlTransaction``). Letting it through keeps the real
+    cause — and the API's 503/504 classification of it.
     """
-    try:
-        with backend.connection.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM curated_geo.observation "
-                "WHERE attribute_key = %s AND is_current LIMIT 1",
-                (attribute_key,),
-            )
-            return cur.fetchone() is not None
-    except psycopg2.Error as exc:
-        logger.warning(
-            "tile resolver: observation-key probe failed for %r — "
-            "falling back to suffixed convention. Error: %s",
-            attribute_key,
-            exc,
+    with backend.connection.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM curated_geo.observation "
+            "WHERE attribute_key = %s AND is_current LIMIT 1",
+            (attribute_key,),
         )
-        return False
+        return cur.fetchone() is not None
 
 
 def _logical_name_for_recipe(
