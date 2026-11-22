@@ -102,12 +102,18 @@
     setFilters(statusesFromHash(hash, RUN_STATUSES));
   });
 
-  $effect(() => {
-    void boot();
-    const poll = startPolling();
-    refresh = poll.refreshNow;
-    return poll.stop;
-  });
+  // Once per mount. `untrack`, because `boot()` reads the store's filters,
+  // limit and open run before its first await: tracked, every detail response
+  // of a running run re-ran this effect, a request storm at network speed that
+  // also aborted its own list read and blanked the table on each pass.
+  $effect(() =>
+    untrack(() => {
+      void boot();
+      const poll = startPolling();
+      refresh = poll.refreshNow;
+      return poll.stop;
+    }),
+  );
 
   $effect(() => {
     const t = setInterval(() => {
