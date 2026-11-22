@@ -158,10 +158,10 @@ def test_ensure_system_database_refuses_a_transaction_mode_pooler():
     reported success. That migration holds a session advisory lock across
     statements, which transaction pooling does not keep for one client.
 
-    Needs a real pooler, so CI skips it: no fake can show that the probe tells
-    pgbouncer from Postgres, which is the whole claim. Run it against the
-    compose stack's pooler. The database needs no migration — the pooler check
-    comes before the domain-table check.
+    Needs a real pooler: no fake can show that the probe tells pgbouncer from
+    Postgres, which is the whole claim. CI runs a pgbouncer service for it;
+    locally, run it against the compose stack's pooler. The database needs no
+    migration — the pooler check comes before the domain-table check.
     """
     assert POOLED_DSN is not None
     assert _regclass(POOLED_DSN, "dbos.workflow_status") is None, (

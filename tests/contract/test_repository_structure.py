@@ -482,6 +482,23 @@ def test_ci_requires_the_database_it_attaches_rather_than_skipping():
     )
 
 
+def test_ci_gives_the_integration_job_what_its_conditional_tests_need():
+    """Two integration tests skip on prerequisites other than the database.
+
+    ``REIMAGINA_REQUIRE_DB`` only turns an unreachable database into a
+    failure. The PMTiles end-to-end export skips without ``ogr2ogr`` and the
+    pooler guard skips without ``REIMAGINA_POOLED_TEST_DSN``, so in a job that
+    provides neither they never ran anywhere automated: every run reported
+    them SKIPPED and the export's connection-string bug shipped green.
+    """
+    body = _ci_jobs((ROOT / ".github" / "workflows" / "ci.yml").read_text())[
+        "test-py-integration"
+    ]
+    assert "gdal-bin" in body, "ogr2ogr ships in gdal-bin, not libgdal-dev"
+    assert "REIMAGINA_POOLED_TEST_DSN:" in body
+    assert "edoburu/pgbouncer" in body, "the pooler guard needs a real pooler"
+
+
 def test_the_api_and_martin_resolve_to_the_same_live_tile_url_shape():
     """Switching tile servers must be one environment variable, or nothing.
 
