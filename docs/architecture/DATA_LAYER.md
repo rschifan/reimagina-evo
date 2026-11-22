@@ -652,7 +652,7 @@ CREATE TABLE curated_geo.observation (
   feature_id       uuid             NOT NULL REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
 
   attribute_key    text             NOT NULL CHECK (attribute_key <> ''),
-  -- e.g. 'censo_2020_pobtot' (census), 'people_per_household' (census prom_ocup),
+  -- e.g. 'censo_2020_pobtot' (census),
   -- '<prefix>_mean' / '<prefix>_sum' (raster zonal stats), 'floors' (block-storeys)
 
   value_type       text             NOT NULL
@@ -1136,7 +1136,7 @@ RETURNING id;
 
 **2.** Start an ingestion run (`'manual'`, `'silver_to_curated'`, as for vector).
 
-**3. Write observations — close old values, insert new** (`bulk_upsert_observations`; keys are `censo_2020_<column>`, except `prom_ocup`, which lands as `people_per_household`):
+**3. Write observations — close old values, insert new** (`bulk_upsert_observations`; keys are `censo_2020_<column>`):
 ```sql
 -- Close prior current values for these features and keys
 UPDATE curated_geo.observation
@@ -1157,7 +1157,7 @@ JOIN curated_geo.feature f
   ON f.source_record_ref = c.cvegeo AND f.type_slug = 'block';
 ```
 
-**How scenarios use it:** these are baseline evidence rows. A scenario does not edit census observations directly. `people_per_household` (from `prom_ocup`) is the baseline the edificability indicators resolve through `effective_numeric`, and a scenario rule can override it; the `censo_2020_*` keys are read by no shipped indicator.
+**How scenarios use it:** these are baseline evidence rows. A scenario does not edit census observations directly. `scripts/seed_demo_attributes.py --fit-to-census` reads `censo_2020_vivtot` and `censo_2020_pobtot` to fit the edificability baseline (m² per dwelling, people per household), which a scenario rule can override; no shipped indicator reads the `censo_2020_*` keys directly.
 
 ---
 

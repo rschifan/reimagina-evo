@@ -250,7 +250,10 @@ def subset_censo(src: Path, out: Path, cve_ent: str) -> int:
         "ageb",
         "mza",
         *inegi_censo.HEADLINE_COLUMNS,
-        *inegi_censo.SCENARIO_INPUT_COLUMNS,
+        # Loaded by nothing since the scenario baseline is fitted on
+        # pobtot ÷ vivtot, but kept: the published bundle carries it, and
+        # dropping it would change its bytes and its pinned checksum.
+        "prom_ocup",
     ]
     part = src / f"entidad={entidad}"
     files = _parquet_files(part) if part.is_dir() else []

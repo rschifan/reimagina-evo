@@ -9,8 +9,10 @@ collaborators supplied:
 
 ``lot_coverage`` — the share of the block that is built on (COS) — is the one
 addition to their example, and it is optional: a block without it is computed
-at 1.0, the whole block, which is the example exactly. The census-fitted
-baseline carries none, so it does not move. A scenario rule writes it.
+at 1.0, the whole block, which is the example exactly. The fitted baseline
+(``scripts/seed_demo_attributes.py --fit-to-census``) carries the block's real
+coverage, so ``unit_size`` there is m² of floor per dwelling and the baseline
+inputs give the census dwellings and population back.
 
 Computed at **block** grain: `lot_size` is the manzana's geodesic area, because
 no cadastral lot layer exists yet (`MEX:lot` is a declared feature type with

@@ -8,12 +8,10 @@
 That gap is worth stating plainly, because it is not obvious: INEGI's marco
 geoestadístico carries only identifiers (`CVE_ENT`, `CVE_MUN`, `CVE_AGEB`, …),
 Overture's `num_floors` lands on `global:building` rather than on blocks, and
-`infra/db/seeds/` is empty. Two real sources cover part of it —
-`overture block-storeys` writes a block's median `num_floors` as a `floors`
-observation (83 Mexicali blocks are tagged) and `inegi-censo bootstrap
---columns prom_ocup` writes household size — and nothing writes `num_levels`
-or `unit_size`, so the edificability family returns zero rows against a
-freshly bootstrapped database without this script.
+`infra/db/seeds/` is empty. `overture block-storeys` writes a block's storeys
+as a `floors` observation (83 Mexicali blocks are tagged), and nothing writes
+`num_levels`, `unit_size` or `lot_coverage`, so the edificability family
+returns zero rows against a freshly bootstrapped database without this script.
 
 Writes six keys onto `curated_geo.feature.attributes` for `MEX:block` features:
 
@@ -58,31 +56,52 @@ instead — correct for a fixture, wrong for real data. `effective_numeric`
 resolves override → observation → jsonb, so real observations later shadow
 these values without anyone having to delete them first.
 
-**Fitted to the census (``--fit-to-census``).** The flat values above are
-generic, and on a real city they are absurd: over Mexicali they gave 13.8
-million potential dwellings against the census's 340,169, because the 1–6
-storeys average 3.5 where the city is mostly single-storey, and the formula
-builds every block over wall to wall at 60 m². Fitted mode keeps the values
-synthetic but shapes them to the place, so the baseline reads as the city that
-exists and a scenario rule's change is measured against it:
+**Fitted to real buildings and the census (``--fit-to-census``).** The flat
+values above are generic, and on a real city they are absurd: over Mexicali
+they gave 13.8 million potential dwellings against the census's 340,169.
+Fitted mode derives every input from what the install loaded, so each term of
 
-    num_levels / floors   drawn per block (keyed by its CVEGEO) from the storey mix of the
-                          Overture buildings in the selected blocks
-                          (Mexicali: 94% one storey); 1–6 if none is tagged
-                          — or, where a ``floors`` observation holds a real
-                          height, that height
-    unit_size             block area × storeys ÷ census dwellings
-                          (``censo_2020_vivtot``), so the formula gives the
-                          census count exactly
-    people_per_household  the median of the census's own values
-                          (``people_per_household`` observations), else 3.6
+    housing_units = block_area × lot_coverage × num_levels ÷ unit_size
+    population    = housing_units × people_per_household
 
-⚠ A block the census found without dwellings gets ``num_levels`` 0, so the
-baseline invents no homes on it, while ``floors`` keeps a height for planned
-floors; its ``unit_size`` is the fitted median, which multiplies zero. This
-holds only because real heights land as ``floors`` observations and never as
-``num_levels`` ones (``reimagina.pipeline.block_storeys``): an observation
-would shadow the 0.
+means what the scenario form says it means, and the formula gives each block's
+census dwellings and population back exactly:
+
+    lot_coverage          Overture footprint clipped to the block ÷ block
+                          area (geodesic), capped at 1
+    num_levels / floors   the block's ``floors`` observation — the
+                          footprint-weighted mean storeys, untagged buildings
+                          counting one (``reimagina.pipeline.block_storeys``)
+                          — else 1
+    unit_size             built floor area (footprint × storeys) ÷ census
+                          dwellings (``censo_2020_vivtot``): m² per dwelling
+    people_per_household  census population ÷ census dwellings
+                          (``censo_2020_pobtot`` ÷ ``censo_2020_vivtot``)
+
+So a planner's "80 m² per dwelling, coverage 0.6, 4 storeys" is compared with
+the block's own m² per dwelling, coverage and storeys, not with a gross land
+share per dwelling that had coverage, yards and shops folded into it.
+
+⚠ **People per household is per dwelling, occupied or not.** The census
+dwelling count includes empty ones, and INEGI's ``prom_ocup`` divides by
+occupied ones only; multiplying the two overstated Mexicali's population by
+13.8%. Folding the occupancy into this one ratio keeps the formula at two
+terms and the baseline at the census population. A rule's value is read the
+same way, so a planner typing household size gets a fully occupied block.
+
+⚠ **A block without census dwellings gets no ``unit_size``**, so the formula
+skips it, as it skips any block missing an input, rather than inventing homes
+on a park or a factory. Its people per household is the city's ratio, so a
+rule that does set a dwelling size there has a population to compute.
+
+⚠ **A block with dwellings but no mapped footprint** (coverage under 0.0001:
+Overture misses some buildings) takes the median coverage of the blocks that
+have both, so its dwellings still come out at the census count.
+
+⚠ **Rounded where a sum of floats feeds it.** Coverage is rounded to 0.0001
+and storeys to 0.01 (in ``block_storeys``), because a sum's last bits can
+follow the query plan; ``unit_size`` is then computed from the rounded values,
+so it still reproduces the census and two installs store the same numbers.
 
 Usage:
 
@@ -101,6 +120,8 @@ import sys
 
 import psycopg2
 import psycopg2.extras  # execute_batch lives on the extras module, not the root
+
+from reimagina.pipeline.block_storeys import CLIPPED_AREA
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost/reimagina")
 
@@ -127,99 +148,76 @@ def levels_for(block_code: str) -> int:
     return MIN_LEVELS + int.from_bytes(digest, "big") % (MAX_LEVELS - MIN_LEVELS + 1)
 
 
-def storeys_from_mix(block_code: str, mix: dict[int, int]) -> int:
-    """A stable storey count for a block, drawn from ``{storeys: buildings}``.
-
-    The same blake2b as ``levels_for``, mapped onto the mix's cumulative
-    counts, so the share of blocks at each height follows the share of
-    buildings at it and a re-run draws the same value for the same block.
-    """
-    digest = hashlib.blake2b(block_code.encode("utf-8"), digest_size=8).digest()
-    pick = int.from_bytes(digest, "big") % sum(mix.values())
-    for storeys, count in sorted(mix.items()):
-        if pick < count:
-            return storeys
-        pick -= count
-    raise AssertionError("unreachable: pick < sum(mix)")
-
-
 def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
-    """Per-block synthetic values shaped to the census; see the module docstring."""
-    cur.execute(
-        """
-        SELECT ROUND((b.attributes->>'num_floors')::numeric)::int, count(*)
-        FROM curated_geo.feature blk
-        JOIN curated_geo.feature b
-          ON b.type_slug = 'building'
-         AND jsonb_typeof(b.attributes->'num_floors') = 'number'
-         AND ST_Contains(blk.geometry, b.geometry_centroid)
-        WHERE blk.id = ANY(%s::uuid[])
-          AND (b.attributes->>'num_floors')::numeric >= 0.5
-        GROUP BY 1
-        """,
-        (feature_ids,),
-    )
-    mix = dict(cur.fetchall())
-    cur.execute(
-        """
-        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY value_numeric)
-        FROM curated_geo.observation
-        WHERE attribute_key = 'people_per_household' AND is_current
-          AND feature_id = ANY(%s::uuid[])
-        """,
-        (feature_ids,),
-    )
-    household = cur.fetchone()[0] or CONSTANT_ATTRIBUTES["people_per_household"]
+    """Per-block values fitted to buildings and the census; see the docstring."""
 
     def current(key: str) -> str:
         return (
             "(SELECT o.value_numeric FROM curated_geo.observation o "
-            f"WHERE o.feature_id = f.id AND o.attribute_key = '{key}' AND o.is_current)"
+            f"WHERE o.feature_id = blk.id AND o.attribute_key = '{key}' AND o.is_current)"
         )
 
     # Area as the indicator measures it (geodesic), or the fit is off by the
     # projection's scale and the census count is not reproduced.
     cur.execute(
         f"""
-        SELECT f.id::text, f.source_record_ref, ST_Area(f.geometry::geography),
-               {current("censo_2020_vivtot")}, {current("floors")}
-        FROM curated_geo.feature f
-        WHERE f.id = ANY(%s::uuid[])
+        SELECT blk.id::text, ST_Area(blk.geometry::geography),
+               COALESCE((
+                   SELECT sum({CLIPPED_AREA})
+                   FROM curated_geo.feature b
+                   WHERE b.type_slug = 'building'
+                     AND ST_Intersects(blk.geometry, b.geometry)
+               ), 0),
+               {current("censo_2020_vivtot")}, {current("censo_2020_pobtot")},
+               {current("floors")}
+        FROM curated_geo.feature blk
+        WHERE blk.id = ANY(%s::uuid[])
         """,
         (feature_ids,),
     )
-    return fit_payloads(cur.fetchall(), mix, household)
+    return fit_payloads(cur.fetchall())
 
 
 def fit_payloads(
-    blocks: list[tuple[str, str, float, float | None, float | None]],
-    mix: dict[int, int],
-    household: float,
+    blocks: list[tuple[str, float, float, float | None, float | None, float | None]],
 ) -> list[dict[str, object]]:
-    """Fitted values for ``(id, code, area, dwellings, real_floors)`` rows."""
-    payloads: dict[str, dict[str, object]] = {}
-    sizes: list[float] = []
-    for fid, code, area, dwellings, real_floors in blocks:
-        storeys = storeys_from_mix(code, mix) if mix else levels_for(code)
-        levels = int(real_floors) if real_floors else storeys
+    """Fitted values for ``(id, area, footprint, dwellings, population, storeys)``."""
+    housed = [b for b in blocks if b[3] and b[3] > 0 and b[1] > 0]
+    covered = sorted(c for c in (_coverage(b[1], b[2]) for b in housed) if c > 0)
+    fallback_coverage = covered[len(covered) // 2] if covered else 1.0
+    counted = [(b[3] or 0.0, b[4]) for b in housed if b[4] is not None]
+    city_dwellings = sum(d for d, _ in counted)
+    city_ratio = (
+        round(sum(p for _, p in counted) / city_dwellings, 4)
+        if city_dwellings
+        else CONSTANT_ATTRIBUTES["people_per_household"]
+    )
+
+    payloads = []
+    for fid, area, footprint, dwellings, population, storeys in blocks:
+        levels = float(storeys) if storeys else 1.0
+        coverage = _coverage(area, footprint) if area > 0 else 0.0
         payload: dict[str, object] = {
+            "feature_id": fid,
             "poi_version": CONSTANT_ATTRIBUTES["poi_version"],
             "network_version": CONSTANT_ATTRIBUTES["network_version"],
-            "people_per_household": round(float(household), 2),
-            "floors": storeys,
+            # Same value, two keys -- see the module docstring.
+            "floors": levels,
+            "num_levels": levels,
+            "people_per_household": city_ratio,
         }
         if dwellings and dwellings > 0 and area > 0:
-            size = area * levels / dwellings
-            payload.update(num_levels=levels, unit_size=size)
-            sizes.append(size)
-        else:
-            payload["num_levels"] = 0
-        payloads[fid] = payload
-    sizes.sort()
-    median = sizes[len(sizes) // 2] if sizes else CONSTANT_ATTRIBUTES["unit_size"]
-    for payload in payloads.values():
-        payload.setdefault("unit_size", median)
-    return [{"feature_id": fid, **p} for fid, p in payloads.items()]
+            coverage = coverage or fallback_coverage
+            payload["unit_size"] = area * coverage * levels / dwellings
+            if population is not None:
+                payload["people_per_household"] = population / dwellings
+        payload["lot_coverage"] = coverage
+        payloads.append(payload)
+    return payloads
+
+
+def _coverage(area: float, footprint: float) -> float:
+    return round(min(1.0, float(footprint) / float(area)), 4)
 
 
 def _block_ids(cur, aoi_id: str | None) -> list[tuple[str, str]]:
@@ -308,8 +306,11 @@ def seed(
             # Merge, never assign: `||` keeps the ingest's CVEGEO lineage keys.
             psycopg2.extras.execute_batch(
                 cur,
+                # Minus unit_size first: a block that has none in this fit
+                # must not keep one from an earlier seed.
                 "UPDATE curated_geo.feature "
-                "SET attributes = attributes || %s::jsonb, updated_at = now() "
+                "SET attributes = (attributes - 'unit_size') || %s::jsonb, "
+                "updated_at = now() "
                 "WHERE id = %s::uuid",
                 payloads,
                 page_size=500,
@@ -334,8 +335,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fit-to-census",
         action="store_true",
-        help="Shape the synthetic values to the place: storeys from the tagged "
-        "buildings' mix, m² per dwelling so each block's dwellings equal the census",
+        help="Fit the inputs to the place: coverage and storeys from the "
+        "buildings, m² per dwelling and people per household from the census",
     )
     args = parser.parse_args(argv)
 

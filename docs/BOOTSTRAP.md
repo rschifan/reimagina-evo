@@ -253,17 +253,19 @@ they run through the aggregation recipes (`raster derivation add`, `list`,
 ## 9b. The scenario-input baseline
 
 ```sh
-uv run python -m apps.cli.app inegi-censo bootstrap \
-  --source-root "$BUNDLE/inegi/censo_2020/manzanas_2020.parquet" \
-  --cve-ent 02 --columns prom_ocup
 uv run python -m apps.cli.app overture block-storeys --aoi-id "$AOI_ID"
 uv run python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
 ```
 
-Household size is INEGI's `prom_ocup` (landed as `people_per_household`),
-storeys are the median Overture `num_floors` per block where buildings are
-tagged (written as `floors`), and the rest is synthetic and fitted to the
-census (`scripts/seed_demo_attributes.py` says how). Without this step
+Every input is fitted from the buildings (step 6) and the census (step 4), so
+the formula gives each block's census dwellings and population back. Storeys
+are the footprint-weighted mean Overture `num_floors` per block, untagged
+buildings counting one (written as `floors` where a building is tagged, 1
+elsewhere); lot coverage is the Overture footprint ÷ block area; m² per
+dwelling is footprint × storeys ÷ census dwellings; people per household is
+census population ÷ census dwellings (`scripts/seed_demo_attributes.py` says
+why). A block the census counts no dwellings on gets no m² per dwelling and
+the edificability family skips it. Without this step
 `planned_floors`, the edificability family and `livability_block_score` write
 no rows.
 

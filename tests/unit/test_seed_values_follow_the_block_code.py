@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from seed_demo_attributes import constant_payloads, fit_payloads  # noqa: E402
 
 REFS = [f"02002000100{n:02d}0{n:02d}" for n in range(40)]
-MIX = {1: 1049, 2: 39, 3: 23, 4: 3, 5: 2, 6: 1}
 
 
 def _two_installs():
@@ -44,10 +43,16 @@ def test_fitted_seed_is_identical_across_installs():
     a, b = _two_installs()
 
     def by_ref(ids):
-        blocks = [(fid, ref, 1000.0, 10.0, None) for fid, ref in ids.items()]
+        # Real inputs vary by block; the fit must not depend on row order.
+        blocks = [
+            (fid, 1000.0 + n, 300.0 + 7 * n, 10.0 + n % 3, 30.0 + n, None)
+            for n, (fid, ref) in enumerate(sorted(ids.items(), key=lambda i: i[1]))
+        ]
+        if list(ids.values())[0] != REFS[0]:
+            blocks.reverse()
         return {
             ids[p["feature_id"]]: {k: v for k, v in p.items() if k != "feature_id"}
-            for p in fit_payloads(blocks, MIX, 3.4)
+            for p in fit_payloads(blocks)
         }
 
     assert by_ref(a) == by_ref(b)

@@ -233,22 +233,20 @@ $CLI overlap compute-all --aoi-id "$AOI_ID"
 
 # ── 9b. The baseline of the scenario inputs ──────────────────────────────────
 #
-# A scenario rule overrides storeys, m² per dwelling and people per household;
-# the scenario workspace compares it against the baseline, so the baseline
-# needs them too. Real where a source has them, synthetic and fitted to the
-# census where not (scripts/seed_demo_attributes.py says how):
+# A scenario rule overrides storeys, lot coverage, m² per dwelling and people
+# per household; the scenario workspace compares it against the baseline, so
+# the baseline needs them too. Fitted from what steps 4 and 6 loaded
+# (scripts/seed_demo_attributes.py says how), so each means what the form says
+# and the formula gives the census back (340,169 dwellings over Mexicali):
 #
-#   people per household  INEGI 2020 `prom_ocup`, ~71% of Mexicali's blocks
-#   storeys               Overture `num_floors`, median per block — 83 blocks
-#   everything else       synthetic: storeys from the tagged buildings' mix,
-#                         m² per dwelling so each block's dwellings equal the
-#                         census count (340,169 over Mexicali)
+#   storeys               footprint-weighted mean Overture `num_floors`,
+#                         untagged buildings counting one (83 blocks tagged)
+#   lot coverage          Overture footprint ÷ block area
+#   m² per dwelling       footprint × storeys ÷ census dwellings (`vivtot`)
+#   people per household  census population ÷ census dwellings (`pobtot`)
 #
-# Real values land as observations and shadow the synthetic jsonb, so the
-# order of these three does not matter; the fit reads the real heights, so it
-# runs last.
-step "9b. Loading the baseline of the scenario inputs"
-$CLI inegi-censo bootstrap --source-root "$CENSO" --cve-ent "$CVE_ENT" --columns prom_ocup
+# The fit reads the storeys, so it runs after them.
+step "9b. Fitting the baseline of the scenario inputs"
 $CLI overture block-storeys --aoi-id "$AOI_ID"
 $PY scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
 
@@ -257,8 +255,8 @@ $PY scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
 # ⚠ Unlike acceptance_run.sh, this does NOT require all twelve to produce rows,
 # and the difference is not laziness. The synthetic territory is built to
 # satisfy every indicator's inputs; a real city is not. `planned_floors` and
-# the edificability family read scenario inputs that step 9b supplies, mostly
-# synthetically; if 9b failed they have nothing to read, and that is a fact
+# the edificability family read scenario inputs that step 9b fits from the
+# buildings and census; if 9b failed they have nothing to read, and that is a fact
 # about the inputs rather than a broken run.
 #
 # So: REQUIRED must produce rows, because their inputs were just loaded.

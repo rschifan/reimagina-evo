@@ -79,21 +79,6 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
 
 ATTRIBUTE_KEY_PREFIX = "censo_2020"
 
-#: Census columns that are the baseline of a scenario input, and land under
-#: that input's key instead of ``censo_2020_<column>``. ``prom_ocup`` is INEGI's
-#: average occupants per occupied private dwelling: the quantity a scenario
-#: rule's "people per household" overrides, and what the edificability family
-#: reads through ``effective_numeric`` (override, then observation, then the
-#: demo jsonb of ``scripts/seed_demo_attributes.py``).
-#:
-#: ⚠ Not a headline column, so the default load leaves it out; ask for it with
-#: ``--columns prom_ocup``.
-#:
-#: ⚠ 0 is skipped, not written. INEGI writes 0 for a block with no occupied
-#: dwelling, which is an absence and not a household of nobody: written, it
-#: would zero that block's potential population under every scenario.
-SCENARIO_INPUT_COLUMNS: dict[str, str] = {"prom_ocup": "people_per_household"}
-
 
 @dataclass(frozen=True)
 class CensoBootstrapResult:
@@ -390,13 +375,10 @@ def bootstrap(
             ):
                 if pd.isna(raw):
                     continue
-                input_key = SCENARIO_INPUT_COLUMNS.get(col)
-                if input_key is not None and float(raw) <= 0:
-                    continue
                 records.append(
                     {
                         "feature_id": feature_id,
-                        "attribute_key": input_key or f"{ATTRIBUTE_KEY_PREFIX}_{col}",
+                        "attribute_key": f"{ATTRIBUTE_KEY_PREFIX}_{col}",
                         "value_type": "numeric",
                         "value": float(raw),
                     }
@@ -409,9 +391,11 @@ def bootstrap(
             ingestion_run_id=run_id,
         )
 
-        # The observations sit on blocks, and indicators declare their census
-        # inputs as ``mex.block`` attributes (edificability reads
-        # ``people_per_household``) — nothing has an edge to ``censo.2020``.
+        # The observations sit on blocks, and their readers declare block
+        # inputs as ``mex.block`` attributes (the census fit in
+        # ``scripts/seed_demo_attributes.py`` turns ``censo_2020_vivtot`` and
+        # ``_pobtot`` into edificability inputs) — nothing has an edge to
+        # ``censo.2020``.
         # Publishing only that would leave every reader "fresh" on old values.
         # Before complete_ingestion_run, which takes an exclusive MV lock;
         # that call publishes censo.2020, so the block layer is published here.
