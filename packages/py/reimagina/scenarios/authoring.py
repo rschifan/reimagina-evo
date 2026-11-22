@@ -48,7 +48,6 @@ from reimagina.scenarios.ceilings import (
 from reimagina.scenarios.overrides import (
     _require_postgres,
     apply_overrides,
-    effective_numeric,
     publish_scenario_version,
 )
 
@@ -823,8 +822,6 @@ class _Resolution:
     values: dict[tuple[str, str], float]
     #: (feature, attribute) -> the rule that supplied the value.
     owner: dict[tuple[str, str], str]
-    #: feature -> its type id.
-    feature_type: dict[str, str]
     #: Rule id -> its 1-based position in "later wins" order.
     numbers: dict[str, int]
 
@@ -858,7 +855,7 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT r.id::text, r.inputs, f.id::text, f.type_id::text
+            SELECT r.id::text, r.inputs, f.id::text
             FROM curated_geo.scenario_rule r
             LEFT JOIN curated_geo.feature f
                    ON f.type_id = r.type_id
@@ -877,10 +874,9 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     matched: dict[str, int] = {}
     values: dict[tuple[str, str], float] = {}
     owner: dict[tuple[str, str], str] = {}
-    feature_type: dict[str, str] = {}
     numbers: dict[str, int] = {}
     edits: dict[str, list[dict[str, Any]]] = {}
-    for rule_id, inputs, feature_id, type_id in rows:
+    for rule_id, inputs, feature_id in rows:
         if rule_id not in matched:
             matched[rule_id] = 0
             numbers[rule_id] = len(numbers) + 1
@@ -888,12 +884,11 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
         if feature_id is None:
             continue
         matched[rule_id] += 1
-        feature_type[feature_id] = type_id
         for edit in edits[rule_id]:
             key = (feature_id, edit["attribute_key"])
             values[key] = float(edit["value_numeric"])
             owner[key] = rule_id
-    return _Resolution(matched, values, owner, feature_type, numbers)
+    return _Resolution(matched, values, owner, numbers)
 
 
 def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
@@ -925,24 +920,29 @@ def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
     if not feature_ids:
         return
 
-    by_type: dict[str, list[str]] = {}
-    for feature_id in feature_ids:
-        by_type.setdefault(resolution.feature_type[feature_id], []).append(feature_id)
     checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
     baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
-    for type_id, ids in by_type.items():
-        for key in checked:
-            baseline[key].update(
-                effective_numeric(
-                    conn,
-                    type_id=type_id,
-                    attribute_key=key,
-                    scenario_id=None,
-                    feature_ids=ids,
-                )
-            )
-
     with conn.cursor() as cur:
+        # ``effective_numeric`` at ``scenario_id=None`` (observation ⊕ base),
+        # for every key at once: one statement, not one per key and type.
+        cur.execute(
+            """
+            SELECT f.id::text, k.key,
+                   COALESCE(obs.value_numeric,
+                            NULLIF(f.attributes->>k.key, '')::double precision)
+            FROM curated_geo.feature f
+            CROSS JOIN unnest(%s::text[]) AS k(key)
+            LEFT JOIN curated_geo.observation obs
+                   ON obs.feature_id = f.id
+                  AND obs.attribute_key = k.key
+                  AND obs.is_current
+            WHERE f.id = ANY(%s::uuid[])
+            """,
+            (list(checked), feature_ids),
+        )
+        for feature_id, key, value in cur.fetchall():
+            if value is not None:
+                baseline[key][feature_id] = value
         cur.execute(
             "SELECT id::text, ST_Area(geometry::geography) "
             "FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
