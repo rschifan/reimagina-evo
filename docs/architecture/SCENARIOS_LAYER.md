@@ -388,7 +388,7 @@ python -m apps.cli.app scenario add-rule --scenario-id <uuid> \
     [--people-per-household 3.2] [--lot-coverage 0.6]
 python -m apps.cli.app scenario rules --scenario-id <uuid>
 python -m apps.cli.app scenario update-rule --scenario-id <uuid> --rule-id <uuid> \
-    [--geojson moved.geojson] [--levels 8] …
+    [--geojson moved.geojson] [--levels 8] [--unset lot-coverage] …
 python -m apps.cli.app scenario delete-rule --scenario-id <uuid> --rule-id <uuid>
 python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
 python -m apps.cli.app scenario compare --scenario-id <uuid> \
@@ -398,7 +398,7 @@ python -m apps.cli.app scenario show --scenario-id <uuid>
 python -m apps.cli.app scenario delete --scenario-id <uuid>
 ```
 
-The CLI writes a rule exactly as the API does: only the numbers given (no default coverage), checked by `proposal.check_inputs`, and materialised in the transaction that writes it, so a refused rule is not stored. `update-rule` takes the rule's whole set of numbers. `recompute` submits the materialisation's footprint, scoped to the AOI the materialisation read under its lock, as `POST …/recompute` does; `scripts/acceptance_run.sh` step 10 exercises it (`scenario recompute --sync`).
+The CLI writes a rule exactly as the API does: only the numbers given (no default coverage), checked by `proposal.check_inputs`, and materialised in the transaction that writes it, so a refused rule is not stored. `update-rule` merges: the numbers given replace the rule's own, `--unset NAME` (repeatable) removes one, the rest are kept, and `--geojson` alone moves the rule keeping its numbers. The API's `PATCH …/rules/{rule_id}` instead takes the rule's whole set (a number left out is no longer set) — the page sends it from a form that holds every number. `recompute` submits the materialisation's footprint, scoped to the AOI the materialisation read under its lock, as `POST …/recompute` does; `scripts/acceptance_run.sh` step 10 exercises it (`scenario recompute --sync`).
 
 On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an area, type the numbers this area changes in the box that opens beside it (empty — a field left empty keeps each block's own value), Apply. Apply writes the rule — which materialises it and enqueues its recompute — and switches the map to the change; on the baseline city it creates the scenario first. A saved rule is opened from the map or from the list of rules beside it, to change its numbers, drag or resize it, or delete it. A refusal stores nothing, so the page has nothing to undo; when only the enqueue failed, the rule stands and the scenario's row offers a Recompute.
 

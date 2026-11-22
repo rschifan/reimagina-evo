@@ -36,6 +36,7 @@ from apps.cli import UserError
 import contextlib
 import json
 from dataclasses import asdict
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +46,10 @@ from reimagina.db import connect
 from reimagina.scenarios.authoring import (
     InvalidGeometry,
     MaterializeResult,
+    RuleNotFound,
     ScenarioNotFound,
     _canonical_id,
+    _lock_scenario,
     add_rule as add_rule_row,
     create_scenario,
     delete_rule as delete_rule_row,
@@ -60,6 +63,7 @@ from reimagina.scenarios.authoring import (
 from reimagina.scenarios.comparison import compare
 from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
+    RULE_INPUTS,
     ProposalValueError,
     check_inputs,
     polygon_wkt,
@@ -183,18 +187,44 @@ def update_rule(
     scenario_id: str,
     rule_id: str,
     inputs: dict[str, float | None],
+    unset: Sequence[str] = (),
     geojson: str | None = None,
 ) -> dict[str, Any]:
-    """Replace one rule's numbers (its whole set), and its area if given.
+    """Change one rule: the numbers given replace its own, those named in
+    ``unset`` are removed, the rest are kept; its area changes if given.
+
+    Merged here, on the rule as it is under the scenario's lock — not in
+    ``authoring.update_rule``, which (like the API's ``PATCH``, what the page
+    sends from a form holding every number) takes the rule's whole set. A
+    typed command names only what changes: ``--levels 8`` alone must not drop
+    the rule's other numbers, and ``--geojson`` alone moves the rule.
 
     The rule keeps its id and its place in "later wins". Refused changes roll
     back, leaving the rule as it was.
     """
     scenario_id = _canonical_id(scenario_id)
     rule_id = _canonical_id(rule_id)
-    checked = _checked(inputs)
+    removed = {name.replace("-", "_") for name in unset}
+    unknown = sorted(removed - set(RULE_INPUTS))
+    if unknown:
+        flags = ", ".join(name.replace("_", "-") for name in RULE_INPUTS)
+        raise UserError(f"--unset must name one of {flags}, got {', '.join(unknown)}")
+    both = sorted(n for n in removed if inputs.get(n) is not None)
+    if both:
+        raise UserError(f"--{both[0].replace('_', '-')} is both set and unset")
+    given = {name: value for name, value in inputs.items() if value is not None}
     geometry_wkt = None if geojson is None else _polygon_wkt(geojson)
     with contextlib.closing(connect(dsn)) as conn:
+        with conn.cursor() as cur:
+            _lock_scenario(cur, scenario_id)
+        current = next(
+            (r["inputs"] for r in list_rules(conn, scenario_id) if r["id"] == rule_id),
+            None,
+        )
+        if current is None:
+            raise RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
+        merged = {**current, **given}
+        checked = _checked({k: v for k, v in merged.items() if k not in removed})
         update_rule_row(
             conn,
             scenario_id=scenario_id,

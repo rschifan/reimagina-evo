@@ -234,8 +234,9 @@ def test_create_add_rule_list_and_show_round_trip(
         migrated_db,
     )
     rules = _run(capsys, "rules", "--scenario-id", scenario_id, "--dsn", migrated_db)
+    # Merged: the numbers not given are kept.
     assert [(r["id"], r["inputs"]) for r in rules["rules"]] == [
-        (rule_id, {"levels": 4.0})
+        (rule_id, {"levels": 4.0, "people_per_household": 3.6})
     ]
 
     _run(
@@ -328,3 +329,88 @@ def test_create_refuses_a_duplicate_name_in_the_same_project(
 
     assert main(argv) == 2
     assert "already exists" in capsys.readouterr().err
+
+
+def _polygon_file(path, ring) -> str:
+    path.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}))
+    return str(path)
+
+
+def test_update_rule_merges_unsets_and_moves(territory, migrated_db, tmp_path, capsys):
+    """``update-rule`` changes what it is given and keeps the rest.
+
+    It used to replace the rule's whole set, so ``--levels 8`` alone silently
+    dropped the rule's other numbers, and ``--geojson`` alone was refused as
+    an empty set. ``--unset`` is now how a number is removed.
+    """
+    scenario_id = _run(
+        capsys,
+        "create",
+        "--name",
+        "Merge",
+        "--aoi-id",
+        territory["aoi_id"],
+        "--dsn",
+        migrated_db,
+    )["scenario_id"]
+    area = _polygon_file(
+        tmp_path / "a.geojson", [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]
+    )
+    rule_id = _run(
+        capsys,
+        "add-rule",
+        "--scenario-id",
+        scenario_id,
+        "--geojson",
+        area,
+        "--levels",
+        "6",
+        "--lot-coverage",
+        "0.6",
+        "--people-per-household",
+        "3.6",
+        "--type-slug",
+        _TYPE_SLUG,
+        "--dsn",
+        migrated_db,
+    )["rule_id"]
+    base = ["--scenario-id", scenario_id, "--rule-id", rule_id, "--dsn", migrated_db]
+
+    def rule() -> dict:
+        rows = _run(capsys, "rules", "--scenario-id", scenario_id, "--dsn", migrated_db)
+        return rows["rules"][0]
+
+    _run(capsys, "update-rule", *base, "--levels", "8")
+    assert rule()["inputs"] == {
+        "levels": 8.0,
+        "lot_coverage": 0.6,
+        "people_per_household": 3.6,
+    }
+
+    _run(
+        capsys,
+        "update-rule",
+        *base,
+        "--unset",
+        "lot-coverage",
+        "--unset",
+        "people_per_household",
+    )
+    assert rule()["inputs"] == {"levels": 8.0}
+
+    moved = _polygon_file(
+        tmp_path / "b.geojson", [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0], [0, 0]]
+    )
+    before = rule()["geometry_wkt"]
+    _run(capsys, "update-rule", *base, "--geojson", moved)
+    after = rule()
+    assert after["inputs"] == {"levels": 8.0}
+    assert after["geometry_wkt"] != before
+
+    # Removing the last number is refused, not stored as an empty rule.
+    assert main(["scenario", "update-rule", *base, "--unset", "levels"]) != 0
+    capsys.readouterr()
+    assert rule()["inputs"] == {"levels": 8.0}
+    # An unknown name is a refusal too.
+    assert main(["scenario", "update-rule", *base, "--unset", "storeys"]) != 0
+    capsys.readouterr()

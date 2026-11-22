@@ -1745,13 +1745,22 @@ def scenario_add_rule(
 
 @scenario_app.command(
     "update-rule",
-    help="Replace one rule's numbers (its whole set), and its area if --geojson "
-    "is given; it keeps its place in 'later wins'",
+    help="Change one rule: the numbers given replace its own, --unset removes "
+    "one, the rest are kept; --geojson moves it. It keeps its place in 'later "
+    "wins'. (The API's PATCH, by contrast, takes the rule's whole set.)",
 )
 def scenario_update_rule(
     scenario_id: str = typer.Option(..., "--scenario-id"),
     rule_id: str = typer.Option(..., "--rule-id"),
-    geojson: Optional[str] = typer.Option(None, "--geojson"),
+    geojson: Optional[str] = typer.Option(
+        None, "--geojson", help="Path to the rule's new area; omitted keeps it."
+    ),
+    unset: list[str] = typer.Option(
+        [],
+        "--unset",
+        help="A number the rule stops setting: levels, unit-size, "
+        "people-per-household or lot-coverage. Repeatable.",
+    ),
     levels: Optional[float] = _RULE["levels"],
     unit_size: Optional[float] = _RULE["unit_size"],
     people_per_household: Optional[float] = _RULE["people_per_household"],
@@ -1764,6 +1773,7 @@ def scenario_update_rule(
             scenario_id=scenario_id,
             rule_id=rule_id,
             geojson=geojson,
+            unset=unset,
             inputs={
                 "levels": levels,
                 "unit_size": unit_size,
