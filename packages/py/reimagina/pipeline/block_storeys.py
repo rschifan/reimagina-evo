@@ -22,6 +22,12 @@ definition, which is the fit's default. The fit writes the same value as
 ``num_levels`` (the dwelling formula's storeys), so planned floors and housing
 read one height.
 
+Weights are summed, not unioned: two overlapping footprints both weigh,
+so the overlap counts twice. Only their mix of storeys is affected — a mean
+over buildings that agree is the same either way — and the block's floor area
+the fit uses is its *unioned* coverage times this mean, so no area is
+double-counted there.
+
 Rounded to 0.01 storey: a sum of floating-point areas can differ in its last
 bits with the plan's summation order, and two installs must store the same
 value.
@@ -49,13 +55,16 @@ _FLOORS = (
     "THEN (b.attributes->>'num_floors')::double precision ELSE 1 END)"
 )
 
-#: A building ``b``'s footprint clipped to its block ``blk``, geodesic like
-#: every block area here; the census fit sums it into lot coverage. Most
-#: buildings sit wholly inside one block, which skips the intersection.
-CLIPPED_AREA = (
-    "CASE WHEN ST_Within(b.geometry, blk.geometry) THEN ST_Area(b.geometry::geography) "
-    "ELSE ST_Area(ST_Intersection(b.geometry, blk.geometry)::geography) END"
+#: A building ``b``'s footprint clipped to its block ``blk``. Most buildings
+#: sit wholly inside one block, which skips the intersection. The census fit
+#: unions these into lot coverage (overlapping footprints count once).
+CLIPPED_FOOTPRINT = (
+    "CASE WHEN ST_Within(b.geometry, blk.geometry) THEN b.geometry "
+    "ELSE ST_Intersection(b.geometry, blk.geometry) END"
 )
+
+#: Its area, geodesic like every block area here: the storeys' weight.
+CLIPPED_AREA = f"ST_Area(({CLIPPED_FOOTPRINT})::geography)"
 
 _MEANS = f"""
     SELECT min(b.source_id::text) FILTER (WHERE jsonb_typeof(b.attributes->'num_floors') = 'number'),

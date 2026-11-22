@@ -241,7 +241,7 @@ $CLI overlap compute-all --aoi-id "$AOI_ID"
 #
 #   storeys               footprint-weighted mean Overture `num_floors`,
 #                         untagged buildings counting one (83 blocks tagged)
-#   lot coverage          Overture footprint ÷ block area
+#   lot coverage          union of the Overture footprints ÷ block area
 #   m² per dwelling       footprint × storeys ÷ census dwellings (`vivtot`)
 #   people per household  census population ÷ census dwellings (`pobtot`)
 #

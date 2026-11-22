@@ -67,8 +67,9 @@ Fitted mode derives every input from what the install loaded, so each term of
 means what the scenario form says it means, and the formula gives each block's
 census dwellings and population back exactly:
 
-    lot_coverage          Overture footprint clipped to the block ÷ block
-                          area (geodesic), capped at 1
+    lot_coverage          the union of the Overture footprints clipped to
+                          the block (an overlap counts once) ÷ block area
+                          (geodesic), capped at 1
     num_levels / floors   the block's ``floors`` observation — the
                           footprint-weighted mean storeys, untagged buildings
                           counting one (``reimagina.pipeline.block_storeys``)
@@ -106,8 +107,8 @@ floor. Both kinds are marked ``estimated`` in the attributes, with the reason
 map says which blocks' inputs are guesses.
 
 ⚠ **Rounded where a sum of floats feeds it.** Coverage is rounded to 0.0001
-and storeys to 0.01 (in ``block_storeys``), because a sum's last bits can
-follow the query plan; ``unit_size`` is then computed from the rounded values,
+and storeys to 0.01 (in ``block_storeys``), because the last bits of a
+geometric sum can follow the query plan or the input order; ``unit_size`` is then computed from the rounded values,
 so it still reproduces the census and two installs store the same numbers.
 
 Usage:
@@ -128,7 +129,7 @@ import sys
 import psycopg2
 import psycopg2.extras  # execute_batch lives on the extras module, not the root
 
-from reimagina.pipeline.block_storeys import CLIPPED_AREA
+from reimagina.pipeline.block_storeys import CLIPPED_FOOTPRINT
 
 DEFAULT_DSN = os.environ.get("DATABASE_URL", "postgresql://localhost/reimagina")
 
@@ -172,12 +173,18 @@ def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
         )
 
     # Area as the indicator measures it (geodesic), or the fit is off by the
-    # projection's scale and the census count is not reproduced.
+    # projection's scale and the census count is not reproduced. Footprint is
+    # the area of the *union* of the clipped buildings: Overture carries
+    # overlapping and duplicated footprints, and a sum counted them twice
+    # (coverage is then capped at 1 by `_coverage`). Ordered so the union, and
+    # its area to the last bit, is the same on every install.
     cur.execute(
         f"""
         SELECT blk.id::text, ST_Area(blk.geometry::geography),
                COALESCE((
-                   SELECT sum({CLIPPED_AREA})
+                   SELECT ST_Area(ST_Union({CLIPPED_FOOTPRINT}
+                                           ORDER BY b.source_record_ref, b.id)
+                                  ::geography)
                    FROM curated_geo.feature b
                    WHERE b.type_slug = 'building'
                      AND ST_Intersects(blk.geometry, b.geometry)

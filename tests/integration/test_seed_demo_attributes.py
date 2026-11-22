@@ -44,7 +44,7 @@ _WKT = (
 )
 
 
-def _block(conn, attributes, ref=None):
+def _block(conn, attributes, ref=None, wkt=_WKT):
     source_id = _register_source(
         conn,
         name=f"seed_src_{uuid4().hex[:8]}",
@@ -59,7 +59,7 @@ def _block(conn, attributes, ref=None):
         ingestion_run_id=ingest,
         dataset_version="v1",
         source_record_ref=ref or f"seed-blk-{uuid4().hex[:8]}",
-        geometry_wkt=_WKT,
+        geometry_wkt=wkt,
         attributes=attributes,
     )
 
@@ -183,6 +183,31 @@ def _real_floors(conn, block_id: str, floors: float) -> None:
         value=floors,
         source_id=source_id,
         ingestion_run_id=_start_run(conn, source_id),
+    )
+
+
+def _box(west: float, east: float, south=19.430000, north=19.430134) -> str:
+    return (
+        f"POLYGON(({west} {south},{east} {south},{east} {north},"
+        f"{west} {north},{west} {south}))"
+    )
+
+
+def _building(conn, wkt: str) -> None:
+    source_id = _register_source(
+        conn,
+        name=f"bldg_{uuid4().hex[:8]}",
+        storage_type="vector",
+        integration_role="canonical_entity",
+    )
+    _insert_feature(
+        conn,
+        type_id=feat.get_type_id(conn, "global", "building"),
+        source_id=source_id,
+        ingestion_run_id=_start_run(conn, source_id),
+        dataset_version="v1",
+        source_record_ref=f"bldg-{uuid4().hex[:8]}",
+        geometry_wkt=wkt,
     )
 
 
@@ -312,3 +337,26 @@ def test_fitted_dwellings_use_the_real_height_where_there_is_one(conn, migrated_
 
     assert _attributes(conn, block_id)["num_levels"] == 3
     assert abs(_computed(conn, block_id, _HOUSING) - 4) < 1e-6
+
+
+def test_overlapping_buildings_cover_their_union_not_their_sum(conn, migrated_db):
+    """Two footprints that overlap on a quarter of the block cover three
+    quarters of it. Summed, they claimed the whole block — Overture carries
+    overlapping and duplicated footprints — and inflated m² per dwelling; the
+    census is given back either way, since m² per dwelling is fitted from the
+    same coverage."""
+    west, east = -99.150000, -99.149859
+    width = east - west
+    block_id = _block(conn, {}, wkt=_box(west, east))
+    _building(conn, _box(west, west + width / 2))
+    _building(conn, _box(west + width / 4, west + 3 * width / 4))
+    _census(conn, block_id, vivtot=3, pobtot=8)
+    conn.commit()
+
+    seed(migrated_db, aoi_id=None, dry_run=False, fit_to_census=True)
+
+    attributes = _attributes(conn, block_id)
+    assert abs(attributes["lot_coverage"] - 0.75) < 0.01
+    assert "estimated" not in attributes
+    assert abs(_computed(conn, block_id, _HOUSING) - 3) < 1e-6
+    assert abs(_computed(conn, block_id, _POPULATION) - 8) < 1e-6
