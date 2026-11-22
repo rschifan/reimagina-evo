@@ -45,6 +45,54 @@ def _runner(log, name, *, fail=False):
     return run
 
 
+class _InFailedSqlTransaction(Exception):
+    """Stand-in for psycopg2's InFailedSqlTransaction."""
+
+
+class _PgLikeConn:
+    """Just enough of a Postgres transaction to show what a failure poisons.
+
+    A failed statement aborts the transaction: every later statement raises
+    until a ``ROLLBACK TO SAVEPOINT``, and ``commit()`` on an aborted
+    transaction silently rolls *everything* back — what psycopg2 really does.
+    """
+
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+        self.aborted = False
+        self._savepoints: list[int] = []
+
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql: str, params=None) -> None:
+        if sql.startswith("ROLLBACK TO SAVEPOINT"):
+            del self.writes[self._savepoints[-1] :]
+            self.aborted = False
+            return
+        if self.aborted:
+            raise _InFailedSqlTransaction("current transaction is aborted")
+        if sql.startswith("SAVEPOINT"):
+            self._savepoints.append(len(self.writes))
+        elif sql.startswith("RELEASE SAVEPOINT"):
+            self._savepoints.pop()
+        elif sql.startswith("WRITE "):
+            self.writes.append(sql.removeprefix("WRITE "))
+        elif sql == "FAIL":
+            self.aborted = True
+            raise RuntimeError("constraint violation")
+
+    def commit(self) -> None:
+        if self.aborted:
+            self.writes.clear()
+
+
 def _dirty(changed=("land_use",), edited=("b1",)):
     return compute_dirty_set(set(changed), set(edited), REGISTRY)
 
@@ -144,3 +192,36 @@ def test_features_are_passed_to_the_runner():
     dirty = compute_dirty_set({"land_use"}, {"b1", "b2"}, REGISTRY)
     run_dirty_set(None, dirty, REGISTRY, {"green_coverage": capture})
     assert seen["green_coverage"] == frozenset({"b1", "b2"})
+
+
+def test_a_failed_unit_does_not_poison_the_rest_of_the_transaction():
+    """`--sync` runs every unit on one connection and commits once at the end.
+
+    Without a per-unit savepoint, one SQL failure aborted the transaction: every
+    later unit failed with "current transaction is aborted", and the final
+    commit silently rolled back the units already reported ``succeeded``.
+    """
+    a = _spec("a", reads=("x",))
+    b = _spec("b", reads=("x",))
+    c = _spec("c", reads=("x",))
+    registry = (a, b, c)
+    dirty = compute_dirty_set({"x"}, {"f1"}, registry)
+
+    def _sql(statement):
+        def run(conn, *, features, scenario_id, code_version, aoi_id):
+            with conn.cursor() as cur:
+                cur.execute(statement)
+
+        return run
+
+    conn = _PgLikeConn()
+    runners = {"a": _sql("WRITE a"), "b": _sql("FAIL"), "c": _sql("WRITE c")}
+
+    by = run_dirty_set(conn, dirty, registry, runners).by_indicator()
+    conn.commit()
+
+    assert by["a"].status is UnitStatus.SUCCEEDED
+    assert by["b"].status is UnitStatus.FAILED
+    assert by["c"].status is UnitStatus.SUCCEEDED
+    # What was reported succeeded is what is actually committed.
+    assert conn.writes == ["a", "c"]
