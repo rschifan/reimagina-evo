@@ -78,6 +78,8 @@ class PointsLayerSpec:
         "fecha",
         "entidad",
     )
+    credit: str | None = None
+    """``data_source_catalog.credit``; only where the licence prescribes it."""
 
 
 TLALPAN_AMENITIES = PointsLayerSpec(
@@ -104,15 +106,19 @@ MEXICALI_AMENITIES = PointsLayerSpec(
     # Every row's `fuente` is DENUE and `fecha` 2025-05: this is INEGI data.
     # It used to be labelled "IMIP Mexicali", which put the wrong provider on
     # the map's credit line. Same provider and licence strings as the INEGI
-    # boundaries and census (`inegi_marco`), so the map credits INEGI once.
+    # boundaries and census (`inegi_marco`); the map line is `credit` below.
     provider=INEGI_MARCO_PROVIDER,
     license=INEGI_MARCO_LICENSE,
     version="2025-05",
     notes=(
         "A selection of INEGI DENUE units for Mexicali (Baja California): "
         "Consultorio medico, Farmacia, Guarderia, Hospital, Cine. 1,493 point "
-        "features. Fuente: INEGI, Directorio Estadístico Nacional de Unidades "
-        "Económicas (DENUE), 05/2025."
+        "features."
+    ),
+    # INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+    credit=(
+        "Fuente: INEGI, Directorio Estadístico Nacional de Unidades Económicas "
+        "(DENUE), 05/2025"
     ),
 )
 
@@ -147,6 +153,7 @@ def ensure_layer_source(conn, spec: PointsLayerSpec) -> str:
         version=spec.version,
         license=spec.license,
         notes=spec.notes,
+        credit=spec.credit,
     )
 
 

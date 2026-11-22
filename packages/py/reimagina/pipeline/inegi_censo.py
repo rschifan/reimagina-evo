@@ -46,6 +46,8 @@ from reimagina.data import observation as obs
 CENSO_PROVIDER = "INEGI"
 CENSO_LICENSE = "Libre uso — Términos de Uso de la Información del INEGI"
 CENSO_VERSION = "2020-censo"
+# INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+CENSO_CREDIT = "Fuente: INEGI, Censo de Población y Vivienda 2020"
 CENSO_DATASET_NAME = "México · Censo de Población 2020 — manzanas (INEGI)"
 
 # INEGI's public page for the census: the lineage in storage_uri.
@@ -269,6 +271,7 @@ def ensure_censo_source(conn) -> str:
             "INEGI Censo 2020 manzana-level demographics + housing. "
             "Read from a local parquet copy of the INEGI product."
         ),
+        credit=CENSO_CREDIT,
     )
 
 

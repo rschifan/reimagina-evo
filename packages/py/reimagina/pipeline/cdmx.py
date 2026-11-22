@@ -33,6 +33,8 @@ CDMX_PROVIDER_CDMX = "Gobierno de la Ciudad de México"
 CDMX_LICENSE_INEGI = "Libre uso — Términos de Uso de la Información del INEGI"
 CDMX_LICENSE_CDMX = "Licencia CDMX Open Data"
 CDMX_MARCO_VERSION = "2020.1"
+# INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+CDMX_MARCO_CREDIT = "Fuente: INEGI, Marco Geoestadístico 2020"
 CDMX_COLONIAS_VERSION = "2024.open"
 
 
@@ -62,6 +64,8 @@ class CDMXLayerSpec:
     # For shapefile sources, `archive_filename` is the zip; `shp_suffix`
     # picks the target layer out of the archive. For GeoJSON sources,
     # `archive_filename` is the .geojson and `shp_suffix` is None.
+    credit: str | None = None
+    """``data_source_catalog.credit``; only where the licence prescribes it."""
 
 
 CDMX_MUNICIPALITIES = CDMXLayerSpec(
@@ -80,6 +84,7 @@ CDMX_MUNICIPALITIES = CDMXLayerSpec(
     archive_filename="09_ciudaddemexico.zip",
     shp_suffix="09mun.shp",
     download_url=inegi.INEGI_MARCO_CDMX_URL,
+    credit=CDMX_MARCO_CREDIT,
 )
 
 CDMX_AGEBS = CDMXLayerSpec(
@@ -98,6 +103,7 @@ CDMX_AGEBS = CDMXLayerSpec(
     archive_filename="09_ciudaddemexico.zip",
     shp_suffix="09a.shp",
     download_url=inegi.INEGI_MARCO_CDMX_URL,
+    credit=CDMX_MARCO_CREDIT,
 )
 
 CDMX_BLOCKS = CDMXLayerSpec(
@@ -116,6 +122,7 @@ CDMX_BLOCKS = CDMXLayerSpec(
     archive_filename="09_ciudaddemexico.zip",
     shp_suffix="09m.shp",
     download_url=inegi.INEGI_MARCO_CDMX_URL,
+    credit=CDMX_MARCO_CREDIT,
 )
 
 CDMX_COLONIAS = CDMXLayerSpec(
@@ -216,6 +223,7 @@ def ensure_layer_source(conn, spec: CDMXLayerSpec) -> str:
         version=spec.version,
         license=spec.license,
         notes=spec.notes,
+        credit=spec.credit,
     )
 
 

@@ -18,8 +18,13 @@ def register_source(
     version: str,
     license: str | None = None,
     notes: str | None = None,
+    credit: str | None = None,
 ) -> str:
-    """Register a data source before any data is loaded. Returns the new source UUID."""
+    """Register a data source before any data is loaded. Returns the new source UUID.
+
+    ``credit`` is the exact line the map shows for this source, when its
+    licence prescribes one per product (INEGI); leave it ``None`` otherwise.
+    """
     return (
         backend_for_connection(conn)
         .catalog_repo()
@@ -32,6 +37,7 @@ def register_source(
             version=version,
             license=license,
             notes=notes,
+            credit=credit,
         )
     )
 

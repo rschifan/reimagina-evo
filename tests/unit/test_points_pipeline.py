@@ -97,9 +97,9 @@ def test_dataclass_signature_supports_minimal_construction():
 
 def test_mexicali_amenities_credit_inegi_not_imip():
     """The Mexicali file is INEGI DENUE (every row's ``fuente`` is DENUE,
-    ``fecha`` 2025-05), so the map credit must name INEGI under INEGI's terms —
-    the same provider and licence as the INEGI boundaries and census, which
-    makes it the same credit line. It used to credit "IMIP Mexicali"."""
+    ``fecha`` 2025-05), so the source must name INEGI under INEGI's terms —
+    the same provider and licence as the INEGI boundaries and census. It used
+    to credit "IMIP Mexicali"."""
     from reimagina.data.attribution import attribution_text
     from reimagina.pipeline.inegi_marco import (
         INEGI_MARCO_LICENSE,

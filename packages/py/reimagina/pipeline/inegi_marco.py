@@ -46,6 +46,8 @@ from .loader import load_vector_source
 INEGI_MARCO_PROVIDER = "INEGI"
 INEGI_MARCO_LICENSE = "Libre uso — Términos de Uso de la Información del INEGI"
 INEGI_MARCO_VERSION = "2024.01"
+# INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+INEGI_MARCO_CREDIT = "Fuente: INEGI, Marco Geoestadístico 2024"
 
 # Source data is in EPSG:4326 already (verified by sampling MultiPolygon
 # bounds — they were lon/lat values, not projected metres).
@@ -252,6 +254,7 @@ def ensure_layer_source(conn, spec: InegiMarcoLayerSpec) -> str:
             f"INEGI Marco Geoestadístico 2024 — {spec.feature_type_slug}. "
             "Read from a local parquet copy of the INEGI product."
         ),
+        credit=INEGI_MARCO_CREDIT,
     )
 
 

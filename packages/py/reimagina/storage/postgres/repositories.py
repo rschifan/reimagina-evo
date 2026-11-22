@@ -67,19 +67,22 @@ class PostgresSourceCatalogRepository:
         version: str,
         license: str | None = None,
         notes: str | None = None,
+        credit: str | None = None,
     ) -> str:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.data_source_catalog
-                  (name, provider, storage_type, integration_role, storage_uri, version, license, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  (name, provider, storage_type, integration_role, storage_uri, version, license, notes,
+                   credit)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider, name, version) DO UPDATE
                    SET storage_type = EXCLUDED.storage_type,
                        integration_role = EXCLUDED.integration_role,
                        storage_uri = EXCLUDED.storage_uri,
                        license = COALESCE(EXCLUDED.license, curated_geo.data_source_catalog.license),
-                       notes = COALESCE(EXCLUDED.notes, curated_geo.data_source_catalog.notes)
+                       notes = COALESCE(EXCLUDED.notes, curated_geo.data_source_catalog.notes),
+                       credit = COALESCE(EXCLUDED.credit, curated_geo.data_source_catalog.credit)
                 RETURNING id
                 """,
                 (
@@ -91,6 +94,7 @@ class PostgresSourceCatalogRepository:
                     version,
                     license,
                     notes,
+                    credit,
                 ),
             )
             return str(cur.fetchone()[0])

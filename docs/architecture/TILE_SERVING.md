@@ -192,8 +192,11 @@ docstring.
 
 **Attribution is derived, not declared.** `GET /tile-sources/attribution`
 returns a credit line per source that actually has features or a published
-raster layer, built from
-`data_source_catalog.license`. OpenStreetMap gets the wording ODbL
+raster layer (or, for a source that declares a credit, current observations —
+the INEGI census), deduplicated by text. The line is
+`data_source_catalog.credit` where the loader recorded one — each INEGI product
+gets its own "Fuente: INEGI, <producto>, <fecha>" — otherwise
+`provider (license)`. OpenStreetMap gets the wording ODbL
 prescribes; a synthetic territory credits the synthetic source and makes no
 OSM claim. Hardcoding the credit in the frontend would be a false provenance
 statement on every demo.
