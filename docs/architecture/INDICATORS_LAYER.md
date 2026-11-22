@@ -599,7 +599,7 @@ ORDER BY f.id, ci.indicator_slug;
 
 When a scenario override changes features, all affected indicator results — including composite indicators that depend on them — can be marked stale before recomputation.
 
-This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed (`_supersede_unbacked_results`), and deleting a scenario stales all of its rows (`_supersede_all_results`).
+This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed, the indicators that read the attribute and their dependents such as the livability composite (`_supersede_unbacked_results`), and deleting a scenario stales all of its rows (`_supersede_all_results`).
 
 ```sql
 WITH RECURSIVE impacted AS (
