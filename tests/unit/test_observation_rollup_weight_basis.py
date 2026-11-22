@@ -15,8 +15,8 @@ from reimagina.jobs.observation_rollup import _compute_rollup_records
 
 # Two polygon sources in one target: a large one valued 10, a small one 0.
 _ROWS = [
-    ("t1", "pop_sum", 10.0, 900.0, "area"),
-    ("t1", "pop_sum", 0.0, 100.0, "area"),
+    ("t1", "s1", "pop_sum", 10.0, 900.0, 1.0, "area"),
+    ("t1", "s2", "pop_sum", 0.0, 100.0, 1.0, "area"),
 ]
 
 

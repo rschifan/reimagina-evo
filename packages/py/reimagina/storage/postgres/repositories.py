@@ -1572,7 +1572,10 @@ class PostgresOverlapRepository:
                     FROM curated_geo.feature sf
                     JOIN curated_geo.feature tf
                         ON tf.type_id = %s
-                        AND ST_Within(sf.geometry, tf.geometry){aoi_join}
+                        -- ST_Covers, not ST_Within: a point on a shared
+                        -- boundary is within neither target and was lost.
+                        -- The rollup keeps one of its rows (lowest target id).
+                        AND ST_Covers(tf.geometry, sf.geometry){aoi_join}
                     WHERE sf.type_id = %s
                     ON CONFLICT (source_feature_id, target_feature_id) DO UPDATE
                         SET overlap_basis    = EXCLUDED.overlap_basis,
@@ -1593,7 +1596,7 @@ class PostgresOverlapRepository:
         source_feature_type: str,
         target_feature_type: str,
         aoi_id: str | None = None,
-    ) -> list[tuple[str, str, float, float, str]]:
+    ) -> list[tuple[str, str, str, float, float, float, str]]:
         if not input_attribute_key_prefix:
             raise ValueError("input_attribute_key_prefix is required")
         aoi_clause = ""
@@ -1605,9 +1608,11 @@ class PostgresOverlapRepository:
             cur.execute(
                 f"""
                 SELECT fo.target_feature_id::text,
+                       fo.source_feature_id::text,
                        obs.attribute_key,
                        obs.value_numeric,
                        fo.overlap_measure,
+                       fo.overlap_ratio,
                        fo.overlap_basis
                 FROM curated_geo.feature_overlap fo
                 JOIN curated_geo.feature src ON src.id = fo.source_feature_id
@@ -1633,8 +1638,18 @@ class PostgresOverlapRepository:
                 ),
             )
             return [
-                (str(target_id), str(attr_key), float(value), float(weight), basis)
-                for target_id, attr_key, value, weight, basis in cur.fetchall()
+                (
+                    str(target_id),
+                    str(source_id),
+                    str(attr_key),
+                    float(value),
+                    float(weight),
+                    float(ratio),
+                    basis,
+                )
+                for target_id, source_id, attr_key, value, weight, ratio, basis in (
+                    cur.fetchall()
+                )
                 if value is not None
             ]
 

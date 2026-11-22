@@ -502,7 +502,55 @@ def test_rollup_input_prefix_underscore_is_not_a_wildcard(conn):
         source_feature_type="block",
         target_feature_type="ageb",
     )
-    assert [row[1] for row in rows] == [f"{prefix}_sum"]
+    assert [row[2] for row in rows] == [f"{prefix}_sum"]
+
+
+def test_point_on_a_shared_boundary_is_overlapped_by_both_targets(conn):
+    """`ST_Within` excluded a point on the boundary of two targets from both,
+    so its value never reached any rollup. `ST_Covers` keeps it in both; the
+    rollup then assigns it to one (unit-tested in
+    test_observation_rollup_apportion.py).
+    """
+    from pyproj import Transformer
+
+    seed_feature_types(conn)
+    backend = backend_for_connection(conn)
+    feat_source_id, feat_run_id = _seed_feature_source(conn)
+    block_type = backend.feature_repo().get_type_id("MEX", "block")
+    tree_type = backend.feature_repo().get_type_id("global", "tree")
+    blocks = [
+        _seed_feature(
+            conn,
+            type_id=block_type,
+            source_id=feat_source_id,
+            run_id=feat_run_id,
+            ref=f"r20-block-{uuid4()}",
+            wkt_4326=_utm_square_wkt(min_x, 2_150_800, 60.0),
+        )
+        for min_x in (500_000, 500_060)
+    ]
+    # The shared corner: the same transformed vertex as in both squares.
+    x, y = Transformer.from_crs("EPSG:32614", "EPSG:4326", always_xy=True).transform(
+        500_060, 2_150_800
+    )
+    tree_id = _seed_feature(
+        conn,
+        type_id=tree_type,
+        source_id=feat_source_id,
+        run_id=feat_run_id,
+        ref=f"r20-tree-{uuid4()}",
+        wkt_4326=f"POINT({x} {y})",
+    )
+
+    backend.overlap_repo().compute_feature_overlaps(tree_type, block_type)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT target_feature_id::text FROM curated_geo.feature_overlap "
+            "WHERE source_feature_id = %s",
+            (tree_id,),
+        )
+        assert sorted(r[0] for r in cur.fetchall()) == sorted(blocks)
 
 
 def test_db_xor_check_rejects_malformed_recipe(conn, test_dsn):

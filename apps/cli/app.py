@@ -2138,6 +2138,9 @@ def derivation_add(
     method: _AggregationMethod = typer.Option(
         ...,
         "--method",
+        help="For observation inputs: sum splits each source by its share "
+        "inside each target; mean/min/max refuse sources that overlap more "
+        "than one target; weighted_mean weights by --weight-basis",
     ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     raster_layer_slug: Optional[str] = typer.Option(
