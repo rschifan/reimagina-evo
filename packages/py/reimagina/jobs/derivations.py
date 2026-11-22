@@ -107,6 +107,23 @@ def run_all_for_raster(
 # ─── Arm wrappers ─────────────────────────────────────────────────────
 
 
+def raster_statistics(method: str, params: dict | None) -> tuple[str, ...]:
+    """The zonal statistics a raster recipe asks the worker for.
+
+    ``params.stats`` wins; otherwise the method implies one statistic. A method
+    with no single-pixel analogue (``weighted_mean``) must name its stats.
+    """
+    stats = (params or {}).get("stats")
+    if stats is not None:
+        return tuple(stats)
+    if method not in _METHOD_TO_RASTERSTAT:
+        raise ValueError(
+            f"method {method!r} has no single-pixel statistic for a raster "
+            'input; set params.stats, e.g. --params \'{"stats": ["mean"]}\''
+        )
+    return (_METHOD_TO_RASTERSTAT[method],)
+
+
 def _run_raster_recipe(
     conn,
     recipe: dict[str, Any],
@@ -128,12 +145,7 @@ def _run_raster_recipe(
     # ``statistics`` tuple. If params.stats isn't set, use a
     # method-implied default so a recipe authored with just method='sum'
     # still produces exactly one stat.
-    params = recipe.get("params") or {}
-    stats = params.get("stats")
-    if stats is None:
-        stats = (_METHOD_TO_RASTERSTAT[recipe["method"]],)
-    else:
-        stats = tuple(stats)
+    stats = raster_statistics(recipe["method"], recipe.get("params"))
 
     inner = run_raster_zonal_stats(
         conn,

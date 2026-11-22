@@ -329,7 +329,7 @@ the API at `GET /tiles/aggregation_overlay_tile/{z}/{x}/{y}?…`. One MVT layer,
   (see "Source classification") and appends `v=<epoch of the key's latest
   current-observation update>` to each URL. The function ignores `v`; it
   changes the URL when the key's observations change, so a cached tile is
-  not reused for new values. The entries advertise `minzoom: 10`. The
+  not reused for new values. The entries advertise `minzoom: 8` (`OVERLAY_MIN_ZOOM`, the functions' floor since r025). The
   explore map (`installAggregationOverlays` in `apps/web/src/layers.ts`)
   appends the active `aoi_id`, replaces that floor with its baseline floor
   for the target grain (`minzoomForGrain`), and colours the layer over the

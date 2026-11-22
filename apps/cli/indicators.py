@@ -95,7 +95,7 @@ def submit_after_ingest(
     changed_attributes: list[str] | None = None,
     aoi_id: str | None = None,
     code_version: str = "dev",
-    mode: str = "detach",
+    mode: str | None = None,
 ) -> dict[str, object]:
     """Recompute the indicators a completed ingestion invalidated.
 

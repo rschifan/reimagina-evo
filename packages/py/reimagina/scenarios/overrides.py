@@ -242,7 +242,7 @@ def resolve_change_set(
     ponytail: flat union of (attributes, features) — a safe over-approximation.
     With several overridden attributes a dependent may recompute a feature whose
     specific attribute didn't change; never wrong, just not minimal. Per-attribute
-    scoping is the upgrade path, moot while only ``floors`` is overridable.
+    scoping is the upgrade path.
     """
     changed = list(changed_attributes or [])
     features = list(edited_features or [])

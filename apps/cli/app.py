@@ -2150,7 +2150,7 @@ def derivation_list(
 
 
 @derivation_app.command(
-    "enable", help="Flip enabled=true on a recipe (opposite: `derivation disable`)"
+    "enable", help="Flip enabled=true on a recipe (`--disable` flips it back)"
 )
 def derivation_enable(
     recipe_id: str = typer.Option(..., "--recipe-id"),

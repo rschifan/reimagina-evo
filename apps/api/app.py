@@ -127,7 +127,7 @@ def create_app(
         # It is invisible in dev — vite proxies :5173 to :8001, so the browser
         # sees one origin and sends no preflight — and a non-proxied
         # deployment cannot call either route without it.
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-Id"],
         allow_credentials=False,

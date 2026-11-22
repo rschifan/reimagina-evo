@@ -343,6 +343,24 @@ def test_a_browser_may_preflight_the_two_deletes(client, path):
     assert "DELETE" in response.headers["access-control-allow-methods"]
 
 
+def test_a_browser_may_preflight_the_rule_patch(client):
+    """``PATCH /scenarios/{id}/rules`` needs the same CORS allowance as the deletes.
+
+    Dev proxies through Vite and never preflights, so only a cross-origin
+    deployment would find out the browser refuses the edit.
+    """
+    response = client.options(
+        f"/scenarios/{SCENARIO_ID}/rules",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "PATCH",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
 def test_the_router_is_mounted_on_the_app(client):
     """Read off the published schema: a router nobody included serves nothing."""
     paths = set(client.get("/openapi.json").json()["paths"])

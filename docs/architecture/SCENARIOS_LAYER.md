@@ -316,7 +316,7 @@ Examples:
 
 ## The HTTP surface
 
-`apps/api/routers/scenarios.py`, mounted at `/scenarios`. Every handler opens its own committed connection (`contextlib.closing(connect(api_dsn()))`), never the pooled `get_db_conn`, which rolls back on success. A malformed scenario id in the path answers 404, as an unknown one does; a malformed uuid in a query or body field answers 422. ⚠ The API's CORS policy allows `GET`, `POST`, `DELETE` and `OPTIONS` (`apps/api/app.py`), not `PATCH`, so `PATCH …/rules` works only same-origin — as the scenarios page reaches it, through the Vite `/api` proxy.
+`apps/api/routers/scenarios.py`, mounted at `/scenarios`. Every handler opens its own committed connection (`contextlib.closing(connect(api_dsn()))`), never the pooled `get_db_conn`, which rolls back on success. A malformed scenario id in the path answers 404, as an unknown one does; a malformed uuid in a query or body field answers 422. The API's CORS policy allows `PATCH` alongside `GET`, `POST`, `DELETE` and `OPTIONS` (`apps/api/app.py`), so `PATCH …/rules` also works from a cross-origin frontend.
 
 | Method | Path | Body / query | Success | Refusals |
 |---|---|---|---|---|

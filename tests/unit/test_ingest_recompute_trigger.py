@@ -222,3 +222,17 @@ def test_coverage_threshold_defaults_agree_across_entry_points():
         )
         == 0.0
     )
+
+
+def test_the_default_mode_is_one_the_factory_builds():
+    """``overture load --recompute`` passes no mode, so the default must be valid.
+
+    It used to be ``"detach"``, which ``get_orchestrator`` rejects with
+    ``ValueError`` — every recompute after a load that wrote rows failed.
+    """
+    import inspect
+
+    from reimagina.orchestration.factory import MODES
+
+    default = inspect.signature(submit_after_ingest).parameters["mode"].default
+    assert default is None or default in MODES

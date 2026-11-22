@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 _KNOWN_MARTIN_FUNCTION_TAILS = TILE_FUNCTIONS
 
 
+#: Lowest zoom the overlay tile functions answer (``z >= 8`` since r025).
+OVERLAY_MIN_ZOOM = 8
+
+
 def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:
     """Split a legacy `{base}/{function}` URL into its components.
 
@@ -305,9 +309,9 @@ def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, o
                     "parent_raster_layer_id": parent_id,
                     "parent_raster_layer_slug": parent_slug,
                     "value_range": value_range,
-                    # z<10 returns empty tiles server-side; surface the floor
-                    # so the frontend can set the layer's minzoom to match.
-                    "minzoom": 10,
+                    # The overlay functions return empty tiles below this
+                    # floor; surface it so the frontend's minzoom matches.
+                    "minzoom": OVERLAY_MIN_ZOOM,
                     "maxzoom": 16,
                 },
             }
@@ -426,7 +430,7 @@ def _resolve_source_observation_overlays(
                     # for any future code path that writes observations
                     # without going through aoi_feature).
                     "aois": aois,
-                    "minzoom": 10,
+                    "minzoom": OVERLAY_MIN_ZOOM,
                     "maxzoom": 16,
                 },
             }

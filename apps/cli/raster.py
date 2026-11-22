@@ -421,6 +421,11 @@ def add_derivation(
     from reimagina.jobs.derivations import run_recipe  # noqa: F401  (surface import)
 
     params = json.loads(params_json) if params_json else None
+    if input_kind == "raster":
+        # Refuse at registration what the worker would refuse at run time.
+        from reimagina.jobs.derivations import raster_statistics
+
+        raster_statistics(method, params)
 
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
