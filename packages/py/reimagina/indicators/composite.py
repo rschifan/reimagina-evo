@@ -61,6 +61,7 @@ otherwise orient to a negative contribution.
 
 from __future__ import annotations
 
+from reimagina.data.feature import get_type_id
 from reimagina.indicators._compute import ComputeResult as ComputeResult
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import job_run
@@ -132,6 +133,19 @@ def compute_composite(
     common = set.intersection(*(set(v) for _, v in weighted_inputs))
     if feature_ids is not None:
         common &= {str(f) for f in feature_ids}
+    if aoi_id is not None:
+        # The input rows are unscoped; without this an AOI-scoped run writes
+        # every block in the database. Same AOI test the direct indicators use.
+        feature_repo = backend.feature_repo()
+        common &= {
+            fid
+            for grain in spec.applies_to
+            for fid, _area, _perim in feature_repo.geodesic_metrics_by_type(
+                type_id=get_type_id(conn, "MEX", grain),
+                aoi_id=aoi_id,
+                feature_ids=feature_ids,
+            )
+        }
 
     numeric_rows = [
         (fid, sum(weight * values[fid] for weight, values in weighted_inputs))

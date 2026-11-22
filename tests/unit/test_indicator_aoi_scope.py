@@ -11,7 +11,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from reimagina.indicators import planned_floors
+from reimagina.indicators import composite, planned_floors
+from reimagina.indicators.catalog import URBAN_FORM_BLOCK_COMPOSITE
 
 
 class _Results:
@@ -66,6 +67,22 @@ def _wire(monkeypatch, module, backend, entered: list[str]):
         monkeypatch.setattr(module, "get_type_id", lambda *_a: "block-type")
 
 
+def test_planned_floors_writes_only_blocks_in_the_aoi(monkeypatch):
+    results, entered = _Results(), []
+    _wire(monkeypatch, planned_floors, _Backend(results, _Features(["a"])), entered)
+    monkeypatch.setattr(planned_floors, "require_seeded", lambda *_a: None)
+    monkeypatch.setattr(
+        planned_floors,
+        "effective_numeric",
+        lambda *_a, **_kw: {"a": 3.0, "b": 4.0, "outside": 5.0},
+    )
+
+    out = planned_floors.compute_planned_floors(object(), aoi_id="aoi-1")
+
+    assert results.written == [("a", 3.0)]
+    assert out.features_considered == 1
+
+
 def test_planned_floors_reads_inside_the_job_run(monkeypatch):
     """A raising read must still leave a failed job_run row (see _compute.py)."""
     entered: list[str] = []
@@ -80,3 +97,17 @@ def test_planned_floors_reads_inside_the_job_run(monkeypatch):
     with pytest.raises(RuntimeError):
         planned_floors.compute_planned_floors(object())
     assert entered == ["job_run"]
+
+
+def test_composite_writes_only_blocks_in_the_aoi(monkeypatch):
+    every = {"a": 0.5, "b": 0.5, "outside": 0.5}
+    results = _Results(
+        {slug: dict(every) for slug, _ in URBAN_FORM_BLOCK_COMPOSITE.depends_on}
+    )
+    _wire(monkeypatch, composite, _Backend(results, _Features(["a", "b"])), [])
+
+    composite.compute_composite(
+        object(), spec=URBAN_FORM_BLOCK_COMPOSITE, aoi_id="aoi-1"
+    )
+
+    assert sorted(fid for fid, _ in results.written) == ["a", "b"]

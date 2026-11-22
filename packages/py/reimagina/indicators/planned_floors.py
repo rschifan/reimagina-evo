@@ -51,6 +51,17 @@ def compute_planned_floors(
             scenario_id=scenario_id,
             feature_ids=feature_ids,
         )
+        if aoi_id is not None:
+            # effective_numeric scopes by feature id alone; the runner passes
+            # aoi_id with feature_ids=None, which used to write every block in
+            # the database. Same AOI filter edificability applies.
+            in_aoi = {
+                fid
+                for fid, _area, _perim in backend.feature_repo().geodesic_metrics_by_type(
+                    type_id=block_type_id, aoi_id=aoi_id, feature_ids=feature_ids
+                )
+            }
+            effective = {k: v for k, v in effective.items() if k in in_aoi}
         numeric_rows = list(effective.items())
         rows_written = backend.indicator_result_repo().bulk_write_numeric_results(
             numeric_rows,
