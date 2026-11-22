@@ -113,6 +113,31 @@ def test_a_new_release_replaces_the_previous_one(conn, tmp_path) -> None:
     assert _buildings(conn, name) == 2, "both releases' buildings are live"
 
 
+def test_rerunning_a_release_repairs_a_doubled_database(
+    conn, tmp_path, monkeypatch
+) -> None:
+    """A database doubled before the supersede existed is cleaned by re-running
+    the current release: every row conflicts, so the area must come from the
+    input file, not from what this run inserted (nothing)."""
+    import reimagina.pipeline.loader as loader
+
+    name = f"Overture Buildings - doubled {uuid4().hex[:6]}"
+    aoi = _aoi(conn)
+    conn.commit()
+    _load(conn, _extract(tmp_path), name=name, release="2026-10-21.0", aoi_id=aoi)
+    with monkeypatch.context() as m:
+        m.setattr(loader, "supersede_other_versions", lambda *a, **k: 0)
+        _load(conn, _extract(tmp_path), name=name, release="2026-11-18.0", aoi_id=aoi)
+    assert _buildings(conn, name) == 4, "precondition: both releases are live"
+
+    result = _load(
+        conn, _extract(tmp_path), name=name, release="2026-11-18.0", aoi_id=aoi
+    )
+
+    assert _buildings(conn, name) == 2
+    assert result["records_superseded"] == 2
+
+
 def test_a_release_under_another_name_is_left_alone(conn, tmp_path) -> None:
     """The supersede is scoped to one source's lineage, not to the layer."""
     aoi = _aoi(conn)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
 import pandas as pd
 
 from reimagina.data import catalog as cat
@@ -89,6 +91,7 @@ def load_vector_source(
     try:
         backend = backend_for_connection(conn)
         feature_repo = backend.feature_repo()
+        gdf = None
         if Path(silver_path).suffix.lower() == ".parquet" and hasattr(
             feature_repo, "bulk_insert_features_from_parquet"
         ):
@@ -117,13 +120,19 @@ def load_vector_source(
             )
         if after_insert is not None:
             count = after_insert(run_id, count)
-        superseded = (
-            supersede_other_versions(
-                conn, source_id=source_id, type_id=type_id, ingestion_run_id=run_id
+        superseded = 0
+        if supersede:
+            if gdf is None:
+                gdf = gpd.read_parquet(silver_path, columns=["geometry"])
+            geoms = gdf.geometry  # in 4326, as load_features stores it
+            if geoms.crs is not None and geoms.crs.to_epsg() != 4326:
+                geoms = geoms.to_crs(epsg=4326)
+            superseded = supersede_other_versions(
+                conn,
+                source_id=source_id,
+                type_id=type_id,
+                bounds=tuple(geoms.total_bounds),
             )
-            if supersede
-            else 0
-        )
         cat.complete_ingestion_run(
             conn,
             run_id,
@@ -160,7 +169,11 @@ class SupersededFeaturesInUse(RuntimeError):
 
 
 def supersede_other_versions(
-    conn, *, source_id: str, type_id: str, ingestion_run_id: str
+    conn,
+    *,
+    source_id: str,
+    type_id: str,
+    bounds: tuple[float, float, float, float],
 ) -> int:
     """Delete this layer's features from other releases of the same source.
 
@@ -172,23 +185,23 @@ def supersede_other_versions(
     so the bump is not optional.
 
     Scoped to the same provider + name (a source name is one extent — "…
-    Mexicali BBox") and to the envelope of what this run wrote, so another
-    city's rows under a shared name (places) are untouched. This run, not the
-    whole source: two cities loaded at the new release would otherwise span
-    an envelope over every city between them. Deleting a feature
+    Mexicali BBox") and to ``bounds``, the envelope of the input file, so
+    another city's rows under a shared name (places) are untouched. The input,
+    not the whole source: two cities loaded at the new release would otherwise
+    span an envelope over every city between them. And the input, not the rows
+    this run inserted: a re-run of a release already loaded inserts nothing
+    (every row conflicts), and must still clean a database doubled before
+    this supersede existed. Deleting a feature
     cascades to its derived rows (AOI membership, overlaps, observations,
     results), which the next membership/overlap/indicator run rebuilds — but
     also to scenario edits, which are user data: the load refuses rather than
     drop one.
     """
+    if any(math.isnan(b) for b in bounds):  # an empty input covers nothing
+        return 0
     superseded = """
-        WITH extent AS (
-            SELECT ST_SetSRID(ST_Extent(geometry)::geometry, 4326) AS g
-            FROM curated_geo.feature
-            WHERE ingestion_run_id = %(run_id)s::uuid
-        )
         SELECT f.id
-        FROM curated_geo.feature f, extent
+        FROM curated_geo.feature f
         WHERE f.type_id = %(type_id)s::uuid
           AND f.source_id IN (
               SELECT other.id
@@ -199,9 +212,13 @@ def supersede_other_versions(
                AND other.id <> this.id
               WHERE this.id = %(source_id)s::uuid
           )
-          AND ST_Intersects(f.geometry, extent.g)
+          AND ST_Intersects(
+              f.geometry, ST_MakeEnvelope(%(x0)s, %(y0)s, %(x1)s, %(y1)s, 4326)
+          )
     """
-    params = {"source_id": source_id, "type_id": type_id, "run_id": ingestion_run_id}
+    x0, y0, x1, y1 = (float(b) for b in bounds)
+    params = {"source_id": source_id, "type_id": type_id, "x0": x0, "y0": y0}
+    params |= {"x1": x1, "y1": y1}
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT count(*) FROM curated_geo.scenario_override "
