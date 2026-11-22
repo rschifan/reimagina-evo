@@ -59,7 +59,9 @@ def apply_override(
         publish_scenario_version(conn, scenario_id, [attribute_key])
 
 
-def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> int:
+def apply_overrides(
+    conn: Any, *, scenario_id: str, edits: Iterable[dict], publish: bool = True
+) -> int:
     """Apply many edits to one scenario, publishing each touched attribute once.
 
     ⚠ Use this for anything that edits more than one feature. An attribute's
@@ -76,6 +78,9 @@ def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> in
 
     Each edit is a dict of the keyword arguments ``apply_override`` takes, minus
     ``scenario_id``. Returns the number applied (changed or not).
+
+    ``publish=False`` leaves the versions to the caller: materialisation
+    publishes every attribute once, retirements included, right after.
     """
     _require_postgres(conn)
     rows = list(edits)
@@ -105,7 +110,8 @@ def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> in
                 "t": [r.get("value_text") for r in rows],
             },
         )
-    publish_scenario_version(conn, scenario_id, {r["attribute_key"] for r in rows})
+    if publish:
+        publish_scenario_version(conn, scenario_id, {r["attribute_key"] for r in rows})
     return len(rows)
 
 

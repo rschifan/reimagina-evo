@@ -706,19 +706,19 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
     2. select the features each rule's area covers, scoped to the AOI;
     3. refuse the whole run if any resolved block breaches a ceiling;
     4. delete the overrides no rule implies any more;
-    5. upsert the resolved ones in a single ``apply_overrides``;
-    6. ``publish_scenario_version`` with **no** ``attributes``;
+    5. upsert the resolved ones in a single ``apply_overrides``, unpublished;
+    6. ``publish_scenario_version`` with **no** ``attributes``, once;
     7. retire the scenario results the removed overrides were behind
        (``_supersede_unbacked_results``).
 
     **Steps 6 and 7 are the two halves of the same ghost**, and both are easy
     to leave out because nothing fails when you do.
 
-    ``apply_overrides`` publishes only the attributes it just touched, so an
-    attribute whose last override row vanished in step 4 would keep a current
-    version forever and the indicators reading it would never go stale. Step 6
-    passes no ``attributes`` precisely so ``publish_scenario_version``
-    reconciles retirements too — see its docstring.
+    Publishing only the attributes step 5 touched would leave an attribute
+    whose last override row vanished in step 4 with a current version forever,
+    and the indicators reading it would never go stale. Step 6 passes no
+    ``attributes`` precisely so ``publish_scenario_version`` reconciles
+    retirements too — see its docstring.
 
     ``bulk_write_numeric_results`` marks stale only the features it is
     *writing*, and a recompute covers only blocks that still carry an
@@ -746,9 +746,10 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
             {"feature_id": feature_id, "attribute_key": key, "value_numeric": value}
             for (feature_id, key), value in sorted(resolved.items())
         ],
+        publish=False,
     )
-    # No ``attributes``: this is the call that retires an attribute whose last
-    # override row step 4 deleted.
+    # The one publish, with no ``attributes``: it versions what step 5 wrote
+    # and retires an attribute whose last override row step 4 deleted.
     publish_scenario_version(conn, scenario_id)
     superseded = _supersede_unbacked_results(conn, scenario_id, removed)
 
