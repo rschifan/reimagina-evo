@@ -17,7 +17,7 @@ SQL-level contract tests for the database schema. These tests verify that the tr
 CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Build the schema by running the Alembic migrations (r001 → r052; there is no r033):
+-- Build the schema by running the Alembic migrations (r001 → r053; there is no r033):
 --   make migrate        # apps.cli.app bootstrap-db --with-test-db
 -- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:

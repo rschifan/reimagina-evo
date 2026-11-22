@@ -151,7 +151,7 @@ def test_the_category_lands_in_attributes_not_only_in_the_name(conn, tmp_path):
 
 
 def test_places_land_as_the_shared_establishment_type(conn, tmp_path):
-    """Same feature type as the IMIP amenities, which is what lets the two
+    """Same feature type as the DENUE amenities, which is what lets the two
     layers feed one indicator without a catalog change."""
     source_id, result = _load(conn, tmp_path)
     assert result["records_written"] == len(_PLACES)

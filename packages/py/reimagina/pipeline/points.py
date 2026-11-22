@@ -31,6 +31,7 @@ from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
 
 from . import silver
+from .inegi_marco import INEGI_MARCO_LICENSE, INEGI_MARCO_PROVIDER
 from .loader import load_vector_source
 
 
@@ -99,15 +100,19 @@ MEXICALI_AMENITIES = PointsLayerSpec(
     key="mexicali_amenities",
     geoparquet_relative="inegi/denue/equipamientos_mexicali.parquet",
     lineage_uri="https://www.inegi.org.mx/app/mapa/denue/",
-    display_name="Mexicali · Amenities (IMIP / DENUE)",
-    provider="IMIP Mexicali",
-    # Every row's `fuente` is DENUE: INEGI's terms govern the data, whoever
-    # compiled the selection.
-    license="Libre uso — Términos de Uso de la Información del INEGI",
+    display_name="Mexicali · Amenities (INEGI DENUE)",
+    # Every row's `fuente` is DENUE and `fecha` 2025-05: this is INEGI data.
+    # It used to be labelled "IMIP Mexicali", which put the wrong provider on
+    # the map's credit line. Same provider and licence strings as the INEGI
+    # boundaries and census (`inegi_marco`), so the map credits INEGI once.
+    provider=INEGI_MARCO_PROVIDER,
+    license=INEGI_MARCO_LICENSE,
     version="2025-05",
     notes=(
-        "Amenities for Mexicali (Baja California) selected from INEGI's DENUE "
-        "(May 2025): health, pharmacy, childcare and cinema. 1.5k point features."
+        "A selection of INEGI DENUE units for Mexicali (Baja California): "
+        "Consultorio medico, Farmacia, Guarderia, Hospital, Cine. 1,493 point "
+        "features. Fuente: INEGI, Directorio Estadístico Nacional de Unidades "
+        "Económicas (DENUE), 05/2025."
     ),
 )
 

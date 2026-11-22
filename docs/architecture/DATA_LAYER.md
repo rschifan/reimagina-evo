@@ -375,7 +375,7 @@ CREATE TABLE curated_geo.data_source_catalog (
   name              text        NOT NULL,
   provider          text        NOT NULL,
   -- Free text. Values the loaders write include 'INEGI', 'Overture Maps Foundation',
-  -- 'Gobierno de la Ciudad de México', 'SIG-CDMX', 'IMIP Mexicali', 'openstreetmap',
+  -- 'Gobierno de la Ciudad de México', 'SIG-CDMX', 'openstreetmap',
   -- 'reimagina-rollup'; `raster ingest` takes it from --provider.
 
   storage_type      text        NOT NULL
@@ -1400,7 +1400,7 @@ Applied as Alembic migrations — `make migrate` runs the whole chain.
 27. `area_of_interest.membership_key` + `area_of_interest_membership_key_nonempty` — r040
 28. Asset graph (`asset`, `asset_version`, `asset_dependency`, `asset_materialization`, `serving_geo.asset_*_v`) — r041; see `ASSET_LAYER.md`
 
-The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r052.
+The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r053.
 
 ---
 

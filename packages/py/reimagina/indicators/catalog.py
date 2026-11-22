@@ -439,7 +439,7 @@ ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
         ),
         amen.OVERTURE_PARK_CATEGORIES,
     ),
-    # ⚠ The IMIP half of this is ``Cine`` alone — 10 cinemas. The category
+    # ⚠ The DENUE half of this is ``Cine`` alone — 10 cinemas. The category
     # exists because those 10 points were being ingested as establishments that
     # no indicator read, and because folding them into ``park`` to make that
     # layer non-flat would have manufactured a finding: a cinema is not open

@@ -285,7 +285,7 @@ def _warn_if_category_absent(cur, slug: str, categories: tuple[str, ...]) -> Non
     spot because 1500 m looks like a measurement in a way 0.0 does not." That
     is exactly what the first real-data run produced:
     `accessibility_block_park_network_m` returned 1500.0 for all 19,058
-    Mexicali blocks, because the IMIP amenity file carries no park-like
+    Mexicali blocks, because the DENUE amenity file carries no park-like
     category at all.
 
     So this changes no value and refuses nothing — it makes the degenerate

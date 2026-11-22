@@ -278,7 +278,7 @@ def aoi_from_overture_division(
 # ─── Places → amenity destinations ─────────────────────────────────────────
 #
 # The ingest that makes the accessibility park and culture indicators
-# measurable. Before it, the Mexicali pilot's only amenity layer was IMIP's,
+# measurable. Before it, the Mexicali pilot's only amenity layer was INEGI DENUE's,
 # which holds no park-like category, so `accessibility_block_park_network_m`
 # reported the 1,500 m cutoff for all 19,058 blocks and the map drew that as a
 # flat choropleth.

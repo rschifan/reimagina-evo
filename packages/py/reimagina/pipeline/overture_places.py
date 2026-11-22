@@ -2,7 +2,7 @@
 
 **The gap this fills.** ``accessibility_block_park_network_m`` measures metres
 from each block to the nearest park or recreation site. On the Mexicali pilot it
-reported 1,500 m — the cutoff — for all 19,058 blocks, because the IMIP amenity
+reported 1,500 m — the cutoff — for all 19,058 blocks, because the DENUE amenity
 layer holds only ``Consultorio medico``, ``Farmacia``, ``Hospital``,
 ``Guarderia`` and ``Cine``. There was nothing park-like to route to, so the
 multi-source Dijkstra had no start vertices and every block reported the cap.
@@ -16,7 +16,7 @@ disk. Which of its 221 categories count is
 same vocabulary is needed by the indicator catalog, and ``pipeline`` and
 ``indicators`` do not otherwise import each other.
 
-**Places land as ``global:establishment``**, the same feature type as the IMIP
+**Places land as ``global:establishment``**, the same feature type as the DENUE
 amenities, with ``attributes->>'category'`` carrying the Overture
 ``basic_category`` verbatim. That is what
 ``reimagina.indicators.accessibility`` matches on, so a loaded place is
@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 PLACES_THEME = "places"
 PLACES_TYPE = "place"
 
-#: Feature type places land as — the same one the IMIP amenities use, so the
+#: Feature type places land as — the same one the DENUE amenities use, so the
 #: accessibility indicators pick them up without a catalog change.
 PLACES_FEATURE_TYPE_CONTEXT = "global"
 PLACES_FEATURE_TYPE_SLUG = "establishment"

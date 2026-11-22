@@ -12,7 +12,7 @@ like a measurement in a way 0.0 does not."
 
 That is precisely what the first real-data run produced.
 `accessibility_block_park_network_m` returned **1500.0 for all 19,058**
-Mexicali blocks, because the IMIP amenity file carries no park-like category
+Mexicali blocks, because the DENUE amenity file carries no park-like category
 at all — its five categories are `Cine`, `Consultorio medico`, `Farmacia`,
 `Guarderia`, `Hospital`. The surface was uniform, the run said `"status":
 "ok"`, and nothing distinguished "no parks nearby" from "no parks in the

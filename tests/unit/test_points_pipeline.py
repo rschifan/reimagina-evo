@@ -93,3 +93,23 @@ def test_dataclass_signature_supports_minimal_construction():
     assert spec.source_record_ref_col == "id"
     assert spec.name_col == "category"
     assert "category" in spec.attributes_cols
+
+
+def test_mexicali_amenities_credit_inegi_not_imip():
+    """The Mexicali file is INEGI DENUE (every row's ``fuente`` is DENUE,
+    ``fecha`` 2025-05), so the map credit must name INEGI under INEGI's terms —
+    the same provider and licence as the INEGI boundaries and census, which
+    makes it the same credit line. It used to credit "IMIP Mexicali"."""
+    from reimagina.data.attribution import attribution_text
+    from reimagina.pipeline.inegi_marco import (
+        INEGI_MARCO_LICENSE,
+        INEGI_MARCO_PROVIDER,
+    )
+
+    assert MEXICALI_AMENITIES.provider == INEGI_MARCO_PROVIDER
+    assert MEXICALI_AMENITIES.license == INEGI_MARCO_LICENSE
+    assert MEXICALI_AMENITIES.display_name == "Mexicali · Amenities (INEGI DENUE)"
+    assert attribution_text(
+        MEXICALI_AMENITIES.provider, MEXICALI_AMENITIES.license
+    ) == attribution_text(INEGI_MARCO_PROVIDER, INEGI_MARCO_LICENSE)
+    assert "IMIP" not in f"{MEXICALI_AMENITIES.display_name} {MEXICALI_AMENITIES.notes}"
