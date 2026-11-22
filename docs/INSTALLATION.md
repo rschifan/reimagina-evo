@@ -46,7 +46,8 @@ optional PMTiles export workflow.
 For the database, choose Docker Engine/Desktop with Compose v2, or PostgreSQL
 16+ with PostGIS 3.4+ and pgRouting 3.6+. Reserve ports 8001 (API) and 5173 (web).
 The Docker stack also uses 5433 (direct PostgreSQL), 5432 (PgBouncer), 3000
-(Martin) and 3001 (PMTiles host). Allow several GB for environments and Docker
+(Martin) and 3001 (PMTiles host), bound to 127.0.0.1 unless
+`REIMAGINA_BIND_ADDRESS` in `.env` says otherwise. Allow several GB for environments and Docker
 images, plus separate capacity for data; real mirror storage is workload dependent.
 
 ## 2. Clone and select Python

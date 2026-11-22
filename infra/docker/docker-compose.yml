@@ -11,6 +11,12 @@
 #   docker compose -f infra/docker/docker-compose.yml --env-file .env up -d
 #   # Run migrations against postgres directly (not via pgbouncer):
 #   DATABASE_URL=$DATABASE_URL_DIRECT alembic upgrade head
+#
+# Published ports bind 127.0.0.1 by default. A bare "H:C" binds every
+# interface and slips past host firewalls, which would expose a superuser
+# Postgres and unauthenticated tiles to the whole network. To reach the stack
+# from another machine, set REIMAGINA_BIND_ADDRESS (e.g. 0.0.0.0) in .env and
+# change POSTGRES_PASSWORD first.
 
 name: reimagina
 
@@ -34,7 +40,7 @@ services:
     ports:
       # Exposed for direct admin access (DBeaver, QGIS, migration runner).
       # Application code must use pgbouncer:5432, not this port.
-      - "5433:5432"
+      - "${REIMAGINA_BIND_ADDRESS:-127.0.0.1}:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reimagina_app} -d ${POSTGRES_DB:-reimagina}"]
       interval: 5s
@@ -86,7 +92,7 @@ services:
       LOG_CONNECTIONS:      0
       LOG_DISCONNECTIONS:   0
     ports:
-      - "5432:5432"
+      - "${REIMAGINA_BIND_ADDRESS:-127.0.0.1}:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
       interval: 5s
@@ -118,7 +124,7 @@ services:
       - ./martin.yaml:/config.yaml:ro
     command: ["--config", "/config.yaml"]
     ports:
-      - "3000:3000"
+      - "${REIMAGINA_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     healthcheck:
       # 127.0.0.1: `localhost` resolves to ::1 here and Martin listens on IPv4.
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
@@ -136,7 +142,7 @@ services:
     volumes:
       - ../../data/tiles/pmtiles:/usr/share/nginx/html:ro
     ports:
-      - "3001:80"
+      - "${REIMAGINA_BIND_ADDRESS:-127.0.0.1}:3001:80"
 
 volumes:
   postgres_data:
