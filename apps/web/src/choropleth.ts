@@ -32,7 +32,7 @@ import type {
 } from "./api";
 import { minzoomForGrain } from "./layers";
 import { distributionSvg } from "./distribution";
-import { escapeHtml, fmtNumber, formatValue, grainLabel, grainNoun, shareText } from "./format";
+import { escapeHtml, fmtNumber, formatValue, grainLabel, grainNoun, shareText, unitSuffix } from "./format";
 import { enableHoverHighlight } from "./hover-highlight";
 import { tileUrlFor } from "./scenario";
 import { SELECTION_MASK_LAYER_ID } from "./selection-mask";
@@ -394,7 +394,7 @@ export function deltaScopeText(domain: DeltaDomain, unit: string | null): string
   if (domain.basis === "none") {
     return "ramp: no block changed — nothing to scale by";
   }
-  const u = unit ? ` ${unit}` : "";
+  const u = unitSuffix(unit);
   return (
     `ramp: ±${fmtNumber(domain.limit)}${u} — 95th percentile of the ` +
     `change across ${fmtNumber(domain.changed)} changed blocks`
@@ -636,7 +636,7 @@ export function deltaTooltip(
   props: Record<string, unknown>,
   indicator: Pick<IndicatorSummary, "name" | "unit">,
 ): { title: string; detail: string } | null {
-  const unit = indicator.unit ? ` ${indicator.unit}` : "";
+  const unit = unitSuffix(indicator.unit);
   switch (props.state) {
     case "new":
       return { title: indicator.name, detail: "new in this scenario \u2014 no baseline value" };
@@ -800,7 +800,7 @@ export function renderDeltaLegend(
   domain: DeltaDomain,
 ): void {
   container.hidden = false;
-  const unit = indicator.unit ?? "";
+  const unit = unitSuffix(indicator.unit).trim();
   const bound = (n: number, sign: string): string =>
     domain.basis === "none" ? "" : `${sign}${fmtNumber(n)}`;
   container.innerHTML = `

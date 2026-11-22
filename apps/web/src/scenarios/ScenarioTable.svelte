@@ -1,6 +1,7 @@
 <script lang="ts">
   import Badge from "../lib/components/ui/Badge.svelte";
   import Card from "../lib/components/ui/Card.svelte";
+  import { unitLabel } from "../format";
   import { cn } from "../lib/utils";
 
   import { formatCell, NO_BASELINE, statusFor, statusLabel, statusTone } from "./derive";
@@ -46,7 +47,7 @@
               >
                 {indicator.name}
                 <span class="block font-mono text-[10px] text-muted-foreground">
-                  {indicator.statistic === "sum" ? "total" : "median"} · {indicator.unit ?? "—"}
+                  {indicator.statistic === "sum" ? "total" : "median"} · {indicator.unit ? unitLabel(indicator.unit) : "—"}
                 </span>
               </th>
             {/each}
