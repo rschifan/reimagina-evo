@@ -68,7 +68,7 @@ def _feature_extent(
         row = cur.fetchone()
     if row is None or any(value is None for value in row):
         raise ValueError(
-            "No feature extent available. Load canonical features before seeding performance data."
+            "No canonical features are loaded. Seeding and benchmarks need feature data."
         )
     return tuple(float(value) for value in row)
 

@@ -11,7 +11,7 @@ from statistics import median
 from reimagina.storage import backend_for_connection
 
 from .manifest import BENCHMARKS, DATASET_TIERS, BenchmarkSpec
-from .seed import AOI_EXTENT_SQL, PERF_AOI_NAMES
+from .seed import PERF_AOI_NAMES, _bbox_from_extent, _feature_extent
 
 
 def _require_postgres(conn) -> None:
@@ -51,60 +51,6 @@ def _dataset_summary(conn) -> dict[str, object]:
         "observation_rows": int(observation_row[0]),
         "current_observation_rows": int(observation_row[1]),
     }
-
-
-def _extent_bounds(
-    conn, aoi_id: str | None = None
-) -> tuple[float, float, float, float]:
-    """Bounds the benchmark boxes are cut from: every feature's extent, or
-    the AOI ``aoi_id``'s. With two cities loaded the centre of the global
-    extent lies between them and the boxes read nothing; an AOI keeps them
-    inside one city."""
-    if aoi_id is not None:
-        row = _query_one(conn, AOI_EXTENT_SQL, (aoi_id,))
-        if row is None:
-            raise ValueError(f"No AOI with id {aoi_id!r}.")
-        return tuple(float(value) for value in row)
-    row = _query_one(
-        conn,
-        """
-        SELECT
-          ST_XMin(extent::geometry),
-          ST_YMin(extent::geometry),
-          ST_XMax(extent::geometry),
-          ST_YMax(extent::geometry)
-        FROM (
-          SELECT ST_Extent(geometry) AS extent
-          FROM curated_geo.feature
-        ) bounds
-        """,
-    )
-    if row is None or any(value is None for value in row):
-        raise ValueError(
-            "No canonical features are loaded. Benchmarks require feature data."
-        )
-    return tuple(float(value) for value in row)
-
-
-def _bbox_from_extent(
-    extent: tuple[float, float, float, float],
-    *,
-    width_ratio: float,
-    height_ratio: float,
-) -> tuple[float, float, float, float]:
-    min_x, min_y, max_x, max_y = extent
-    width = max_x - min_x
-    height = max_y - min_y
-    center_x = min_x + width / 2
-    center_y = min_y + height / 2
-    half_width = max(width * width_ratio / 2, 0.0001)
-    half_height = max(height * height_ratio / 2, 0.0001)
-    return (
-        center_x - half_width,
-        center_y - half_height,
-        center_x + half_width,
-        center_y + half_height,
-    )
 
 
 def _polygon_wkt_from_bbox(
@@ -194,11 +140,11 @@ def _build_params(
 
     # Benchmarks that work off the real INEGI geometry resolve their own
     # references (AOI + type ids) and should not require the generic
-    # _extent_bounds probe, which fails when synthetic fixture data is absent.
+    # _feature_extent probe, which fails when synthetic fixture data is absent.
     if benchmark_name == "overlap_block_to_ageb_cuauhtemoc":
         return _build_overlap_block_ageb_cuauhtemoc_params(conn)
 
-    extent = _extent_bounds(conn, aoi_id)
+    extent = _feature_extent(conn, aoi_id)
     if benchmark_name == "bbox_features_small":
         bounds = _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
         return [*bounds, *bounds]
