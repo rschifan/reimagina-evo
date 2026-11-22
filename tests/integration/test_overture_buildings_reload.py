@@ -45,6 +45,39 @@ def _isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(silver_mod, "SILVER_DIR", tmp_path / "silver")
 
 
+@pytest.fixture(autouse=True)
+def _undo_commits(migrated_db: str):
+    """These loads COMMIT, which the rolling-back `conn` fixture cannot undo.
+
+    Left behind, the published `global.building` versions made
+    test_asset_publish.py fail whenever it ran after this file. Restore the
+    asset graph and drop this file's sources (features cascade) afterwards.
+    """
+    import psycopg2
+
+    with psycopg2.connect(migrated_db) as before, before.cursor() as cur:
+        cur.execute("SELECT id, is_current, valid_to FROM curated_geo.asset_version")
+        snapshot = cur.fetchall()
+    before.close()
+    yield
+    with psycopg2.connect(migrated_db) as after, after.cursor() as cur:
+        cur.execute(
+            "DELETE FROM curated_geo.asset_version WHERE NOT (id = ANY(%s::uuid[]))",
+            ([str(row[0]) for row in snapshot],),
+        )
+        for version_id, is_current, valid_to in snapshot:
+            cur.execute(
+                "UPDATE curated_geo.asset_version SET is_current = %s, valid_to = %s "
+                "WHERE id = %s",
+                (is_current, valid_to, version_id),
+            )
+        cur.execute(
+            "DELETE FROM curated_geo.feature f USING curated_geo.data_source_catalog s "
+            "WHERE s.id = f.source_id AND s.name LIKE 'Overture Buildings - %%'"
+        )
+    after.close()
+
+
 def _extract(tmp_path: Path) -> Path:
     """Two buildings inside the AOI, one in the bbox but outside it."""
     path = tmp_path / f"extract_{uuid4().hex[:6]}.parquet"
