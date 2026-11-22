@@ -231,14 +231,18 @@ def stage_layer(
     sidecars next to the target .shp are landed together so Silver can open
     the bronze copy without reaching back into the sources cache.
     """
-    bronze_path = bronze.land_file(source_file, source_id)
-    if source_file.suffix.lower() == ".shp":
-        for sidecar in source_file.parent.iterdir():
-            if sidecar == source_file or sidecar.stem != source_file.stem:
-                continue
-            if not sidecar.is_file():
-                continue
-            bronze.land_file(sidecar, source_id, beside=bronze_path)
+    sidecars = (
+        [
+            sidecar
+            for sidecar in source_file.parent.iterdir()
+            if sidecar != source_file
+            and sidecar.stem == source_file.stem
+            and sidecar.is_file()
+        ]
+        if source_file.suffix.lower() == ".shp"
+        else []
+    )
+    bronze_path = bronze.land_file(source_file, source_id, sidecars=sidecars)
     gdf = silver.read_vector(bronze_path)
     silver_filename = f"{spec.key}_silver.parquet"
     silver_path = silver.save_silver_vector(gdf, source_id, silver_filename)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import filecmp
 import hashlib
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 from reimagina.paths import data_dir
@@ -13,7 +14,7 @@ BRONZE_DIR = data_dir() / "bronze"
 
 
 def land_file(
-    source_path: str | Path, source_id: str, *, beside: Path | None = None
+    source_path: str | Path, source_id: str, *, sidecars: Iterable[Path] = ()
 ) -> Path:
     """Copy a raw file into data/bronze/<source_id>/ unchanged.
 
@@ -24,8 +25,11 @@ def land_file(
     a name already landed (places extracted for a second bbox at the same
     release) go to ``<source_id>/<sha256[:12]>/`` instead of overwriting the
     first, whose rows are still loaded and still need their provenance.
-    ``beside`` lands a sidecar (``.dbf`` next to ``.shp``) in the main file's
-    folder, because a shapefile family only opens from one directory.
+    ``sidecars`` (``.dbf`` next to ``.shp``) land with the main file as one
+    family, in one folder, because a shapefile family only opens from one
+    directory: if any member differs from what is landed, the whole family
+    goes to a folder named by the digest of all its members. A re-exported
+    ``.dbf`` under an identical ``.shp`` is a new version, not a conflict.
 
     ⚠ The bronze copy is addressed by ``source_id``, and that is why no column
     records it: a ``data_source_catalog`` row's own id finds its bronze files.
@@ -33,19 +37,26 @@ def land_file(
     is no longer overwritten with this path, which is what ``bronze_uri`` used
     to exist for.
     """
-    src = Path(source_path)
-    folder = beside.parent if beside is not None else BRONZE_DIR / source_id
-    dest = folder / src.name
-    if dest.exists() and not filecmp.cmp(src, dest, shallow=False):
-        if beside is not None:
-            raise FileExistsError(f"refusing to overwrite immutable bronze file {dest}")
-        dest = folder / _digest(src) / src.name
-    if not dest.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-    return dest
+    family = [Path(source_path), *sorted(Path(s) for s in sidecars)]
+    folder = BRONZE_DIR / source_id
+    if any(
+        (folder / m.name).exists()
+        and not filecmp.cmp(m, folder / m.name, shallow=False)
+        for m in family
+    ):
+        folder = folder / _digest(family)
+    folder.mkdir(parents=True, exist_ok=True)
+    for member in family:
+        if not (folder / member.name).exists():
+            shutil.copy2(member, folder / member.name)
+    return folder / family[0].name
 
 
-def _digest(path: Path) -> str:
-    with path.open("rb") as fh:
-        return hashlib.file_digest(fh, "sha256").hexdigest()[:12]
+def _digest(paths: list[Path]) -> str:
+    """sha256 over the members' bytes in order; one file = its own sha256."""
+    h = hashlib.sha256()
+    for path in paths:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()[:12]
