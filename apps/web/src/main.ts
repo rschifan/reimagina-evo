@@ -390,6 +390,15 @@ async function main(): Promise<void> {
       else if (id !== pinned?.id) void pin(id);
     });
 
+    // Monotonic token bumped on every renderIndicator entry so a slow
+    // stats fetch from request N doesn't overwrite the result of a
+    // newer request N+1. Without this, switching AOI or indicator
+    // rapidly leaves the map showing the older combination's ramp +
+    // tile source — a subtle "stale state" bug. `clearIndicator` bumps it
+    // too, or a render in flight repaints the overlay just cleared.
+    // Declared before the AOI subscription, whose handler can reach it.
+    let renderToken = 0;
+
     // React to any AOI change — picker, localStorage hydration, or a
     // future programmatic setActiveAoiId call. One central handler
     // keeps every consumer (map, tiles, ramp) in sync.
@@ -455,12 +464,15 @@ async function main(): Promise<void> {
     /** Take the overlay and everything describing it off the page. Resolves
      *  its elements by id for the same hoisting reason as above. */
     function clearIndicator(): void {
+      renderToken++;
       closeInspector();
       state.activeIndicator = null;
       state.activeGrain = null;
       cardContext = renderingContext(null, null);
       selectionCard.refresh();
       setBanner("values", null);
+      // The render it cancelled set this and will not land to clear it.
+      setBanner("loading", null);
       removeIndicator(map);
       renderIndicatorInfo(null);
       const grainEl = document.getElementById("grain-toggle");
@@ -475,13 +487,6 @@ async function main(): Promise<void> {
     const grainToggle = document.getElementById("grain-toggle");
     const legend = document.getElementById("map-legend");
     const downloads = document.getElementById("downloads");
-
-    // Monotonic token bumped on every renderIndicator entry so a slow
-    // stats fetch from request N doesn't overwrite the result of a
-    // newer request N+1. Without this, switching AOI or indicator
-    // rapidly leaves the map showing the older combination's ramp +
-    // tile source — a subtle "stale state" bug.
-    let renderToken = 0;
 
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
       const myToken = ++renderToken;
