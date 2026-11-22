@@ -26,11 +26,12 @@ import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from enum import Enum
+from uuid import UUID
 
 import psycopg2
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from reimagina import settings
 from reimagina.storage._utils import is_run_id
@@ -147,6 +148,15 @@ class SubmitRunBody(BaseModel):
     # simple/test clients; production should stay fire-and-forget (default) with
     # a real worker fleet, since this ties up the request for the whole compute.
     wait: bool = False
+
+    @field_validator("scenario_id", "aoi_id")
+    @classmethod
+    def _uuid(cls, value: str | None) -> str | None:
+        # Every other route types these ids as UUID so a typo is a 422. Kept a
+        # canonical str here because the orchestrator persists them as run
+        # params; unvalidated, a typo was a 500 at the uuid column, or worse a
+        # durable run accepted with 202 that could only fail in the worker.
+        return None if value is None else str(UUID(value))
 
 
 class SubmitRunResponse(BaseModel):
