@@ -427,6 +427,24 @@ describe("editing on the map", () => {
     expect(store.ws.message?.text).toMatch(/deleted/i);
   });
 
+  // Final review: after a pilot switch mid-recompute said "Scenario cleared",
+  // a refused delete overwrote it with news about a scenario no longer shown.
+  it("a refused delete after a pilot switch keeps the cleared message", async () => {
+    store.select("A");
+    await settle();
+    let refuse!: () => void;
+    api.recomputeScenario.mockImplementation(
+      () => new Promise((_, reject) => (refuse = () => reject(ceiling()))),
+    );
+    const pending = store.deleteRule(GROUP);
+    await settle();
+    aoi.emit(OTHER_PILOT);
+    await settle();
+    refuse();
+    await settleRun(pending);
+    expect(store.ws.message?.text).toMatch(/Scenario cleared/);
+  });
+
   it("a second apply while busy is ignored", async () => {
     store.select("A");
     const first = store.applyNewRule(AREA, VALUES);

@@ -720,11 +720,13 @@ export async function deleteRule(group: EditGroup): Promise<boolean> {
       // on the old outline invited a second Delete, a 404 per edit. Say it
       // on the page, since the box closes.
       const text = await refusalText(landing.error, "recompute");
+      // Gated like `afterLanding`: a pilot switch mid-recompute already said
+      // "Scenario cleared"; this message is about a scenario no longer shown.
       if (ws.selectedId === scenarioId) {
         await loadRules(scenarioId, selection);
         refreshMap();
+        say(`Rule deleted, but the recompute was refused: ${text}`, "bad");
       }
-      say(`Rule deleted, but the recompute was refused: ${text}`, "bad");
       return true;
     }
     await afterLanding(scenarioId, landing, "Rule deleted.");

@@ -334,20 +334,25 @@
   async function apply(values: RuleValues, scenarioName?: string): Promise<void> {
     const area = ws.drawn;
     if (!area) return;
-    if (await applyNewRule(area, values, scenarioName)) closeBox(true);
+    const pilotAtStart = ws.aoiId;
+    // A pilot switch mid-gesture clears the selection while busy, when the
+    // effect above stands down; close here or the box outlives its city.
+    if ((await applyNewRule(area, values, scenarioName)) || ws.aoiId !== pilotAtStart) closeBox(true);
   }
 
   async function save(values: RuleValues): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
-    if (await saveRule(current.group, area, values)) closeBox(true);
+    const scenarioAtStart = ws.selectedId;
+    if ((await saveRule(current.group, area, values)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   async function remove(): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
-    if (await deleteRule(current.group)) closeBox(true);
+    const scenarioAtStart = ws.selectedId;
+    if ((await deleteRule(current.group)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   function onKey(event: KeyboardEvent): void {
