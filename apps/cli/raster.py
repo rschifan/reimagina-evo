@@ -434,11 +434,9 @@ def add_derivation(
         if input_kind == "raster":
             if not raster_layer_slug:
                 raise ValueError("input_kind='raster' requires --raster-layer-slug")
-            # Resolve slug → layer id via the serving view.
-            layer = _find_raster_layer_by_slug(backend, raster_layer_slug)
-            if layer is None:
+            input_raster_layer_id = _raster_layer_id(conn, raster_layer_slug)
+            if input_raster_layer_id is None:
                 raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
-            input_raster_layer_id = layer["id"]
         else:  # observation
             if not (input_prefix and input_feature_type):
                 raise ValueError(
@@ -475,10 +473,9 @@ def list_derivations(
         backend = backend_for_connection(conn)
         layer_id: str | None = None
         if raster_layer_slug:
-            layer = _find_raster_layer_by_slug(backend, raster_layer_slug)
-            if layer is None:
+            layer_id = _raster_layer_id(conn, raster_layer_slug)
+            if layer_id is None:
                 raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
-            layer_id = layer["id"]
         rows = backend.aggregation_recipe_repo().list_recipes(
             input_raster_layer_id=layer_id,
             enabled_only=not include_disabled,
@@ -525,19 +522,18 @@ def run_derivation(
         raise ValueError("Pass --recipe-id OR --raster-layer-slug")
 
     with connect(dsn) as conn:
-        backend = backend_for_connection(conn)
         if recipe_id:
             results: list[RecipeRunResult] = [
                 run_recipe(conn, recipe_id=recipe_id, direct_dsn=direct_dsn)
             ]
         else:
             assert raster_layer_slug is not None  # guarded above
-            layer = _find_raster_layer_by_slug(backend, raster_layer_slug)
-            if layer is None:
+            layer_id = _raster_layer_id(conn, raster_layer_slug)
+            if layer_id is None:
                 raise ValueError(f"Unknown raster layer slug: {raster_layer_slug!r}")
             results = run_all_for_raster(
                 conn,
-                raster_layer_id=layer["id"],
+                raster_layer_id=layer_id,
                 direct_dsn=direct_dsn,
             )
 
@@ -556,16 +552,19 @@ def run_derivation(
     }
 
 
-def _find_raster_layer_by_slug(backend, layer_slug: str) -> dict | None:
-    """Resolve a *published* raster ``layer_slug`` to its row, or ``None``.
+def _raster_layer_id(conn, layer_slug: str) -> str | None:
+    """Resolve a raster ``layer_slug`` to its id, published or not, or ``None``.
 
-    Scans the published list (cheap in v1 — a handful of rasters per
-    deployment). Unpublished layers are not resolvable by slug here; callers
-    pass a published layer (the common case)."""
-    for row in backend.raster_layer_repo().list_published_layers():
-        if row["layer_slug"] == layer_slug:
-            return row
-    return None
+    Not limited to published layers: ``raster ingest --unpublished`` is the
+    documented way to stage a layer, and resolving through the published list
+    told an operator staging recipes on it that the slug did not exist."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id::text FROM serving_geo.raster_layer_v WHERE layer_slug = %s",
+            (layer_slug,),
+        )
+        row = cur.fetchone()
+    return None if row is None else row[0]
 
 
 def as_json(data: dict[str, Any]) -> str:
