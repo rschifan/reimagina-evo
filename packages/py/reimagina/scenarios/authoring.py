@@ -1030,18 +1030,28 @@ class DeleteResult:
     materializations: int
 
 
+#: What ``delete_scenario`` deletes, in order: (DeleteResult field or None for
+#: uncounted, table, key column). A ``partition_key`` column is matched against
+#: the scenario's partition string, any other against its id.
+_DELETE_STEPS: tuple[tuple[str | None, str, str], ...] = (
+    ("overrides", "curated_geo.scenario_override", "scenario_id"),
+    ("versions_deleted", "curated_geo.asset_version", "partition_key"),
+    # Explicit rather than left to job_run's ON DELETE CASCADE, so the count
+    # is the results' and not the runs'.
+    ("results_deleted", "curated_geo.indicator_result", "scenario_id"),
+    ("job_runs_deleted", "jobs_runtime.job_run", "scenario_id"),
+    ("materializations", "curated_geo.asset_materialization", "partition_key"),
+    (None, "curated_geo.aoi_indicator_summary", "scenario_id"),
+    # Last: cascades its edits.
+    (None, "app_core.scenario", "id"),
+)
+
+
 def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
-    """Delete a scenario and every row keyed by it, in the caller's transaction.
+    """Delete a scenario and every row keyed by it (``_DELETE_STEPS``), in the
+    caller's transaction.
 
-    1. its ``scenario_override`` rows;
-    2. every ``asset_version`` of its partition, current or retired;
-    3. every ``indicator_result`` it produced, in any status;
-    4. the ``job_run`` rows that produced them;
-    5. the ``asset_materialization`` rows of its partition, and its
-       ``aoi_indicator_summary`` rows (not counted in the result);
-    6. the scenario row, cascading its edits.
-
-    Only the sixth is reachable by a constraint. ``scenario_override``,
+    Only the scenario row is reachable by a constraint. ``scenario_override``,
     ``indicator_result``, ``job_run`` and ``aoi_indicator_summary`` carry a bare ``scenario_id`` uuid with
     no FK — r030 deferred ``app_core.scenario`` to r048 and never went back —
     and versions and materialisations are keyed by the *string*
@@ -1053,17 +1063,18 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     from the scenario row. Kept, they only grew — 614,880 results for three
     deleted scenarios on the pilot database.
 
-    Step 4 is safe to scope by ``scenario_id`` alone: r016's trigger forces a
-    result's ``scenario_id`` to equal its ``job_run``'s, so a run carrying this
-    id produced this scenario's results and nothing else. Its other referrers,
-    ``job_unit`` and ``asset_materialization``, are ``ON DELETE SET NULL``; a
-    recompute *run* (``orchestration_run``) is run history and stays until the
-    jobs page clears it.
+    The ``job_run`` delete is safe to scope by ``scenario_id`` alone: r016's
+    trigger forces a result's ``scenario_id`` to equal its ``job_run``'s, so a
+    run carrying this id produced this scenario's results and nothing else. Its
+    other referrers, ``job_unit`` and ``asset_materialization``, are ``ON
+    DELETE SET NULL``; a recompute *run* (``orchestration_run``) is run history
+    and stays until the jobs page clears it.
 
-    Step 5 is not cosmetic. ``asset_component_v`` unions
-    ``asset_materialization`` into its node set with no filter, so the
-    partition of a deleted scenario would stay a node in the graph — one whose
-    upstream versions are gone — and ``assets stale`` would list it for ever.
+    The ``asset_materialization`` delete is not cosmetic.
+    ``asset_component_v`` unions ``asset_materialization`` into its node set
+    with no filter, so the partition of a deleted scenario would stay a node in
+    the graph — one whose upstream versions are gone — and ``assets stale``
+    would list it for ever.
 
     The scenario's row lock is taken first, before anything is read or
     deleted, for the reason ``_lock_scenario`` gives: a materialisation
@@ -1078,47 +1089,15 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     _require_postgres(conn)
     scenario_id = _canonical_id(scenario_id)
     partition = partition_key({"scenario": scenario_id})
+    counts: dict[str, int] = {}
     with conn.cursor() as cur:
         _lock_scenario(cur, scenario_id)
-
-        def _delete(sql: str, param: str) -> int:
-            cur.execute(sql, (param,))
-            return int(cur.rowcount)
-
-        overrides = _delete(
-            "DELETE FROM curated_geo.scenario_override WHERE scenario_id = %s",
-            scenario_id,
-        )
-        versions = _delete(
-            "DELETE FROM curated_geo.asset_version WHERE partition_key = %s",
-            partition,
-        )
-        # Explicit rather than left to job_run's ON DELETE CASCADE, so the
-        # count is the results' and not the runs'.
-        results = _delete(
-            "DELETE FROM curated_geo.indicator_result WHERE scenario_id = %s",
-            scenario_id,
-        )
-        job_runs = _delete(
-            "DELETE FROM jobs_runtime.job_run WHERE scenario_id = %s", scenario_id
-        )
-        materializations = _delete(
-            "DELETE FROM curated_geo.asset_materialization WHERE partition_key = %s",
-            partition,
-        )
-        _delete(
-            "DELETE FROM curated_geo.aoi_indicator_summary WHERE scenario_id = %s",
-            scenario_id,
-        )
-        cur.execute("DELETE FROM app_core.scenario WHERE id = %s", (scenario_id,))
-
-    return DeleteResult(
-        overrides=overrides,
-        versions_deleted=versions,
-        results_deleted=results,
-        job_runs_deleted=job_runs,
-        materializations=materializations,
-    )
+        for field, table, column in _DELETE_STEPS:
+            param = partition if column == "partition_key" else scenario_id
+            cur.execute(f"DELETE FROM {table} WHERE {column} = %s", (param,))
+            if field is not None:
+                counts[field] = int(cur.rowcount)
+    return DeleteResult(**counts)
 
 
 def _stringify_ids(row: dict) -> dict:
