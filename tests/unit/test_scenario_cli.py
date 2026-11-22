@@ -497,7 +497,7 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
 
 def test_list_reads_explore_scenario_v(fake_conn, capsys):
     conn = fake_conn(
-        [(("id", "name", "edit_count"), [(SCENARIO_ID, "Centralidad norte", 4)])]
+        [(("id", "name", "rule_count"), [(SCENARIO_ID, "Centralidad norte", 4)])]
     )
 
     code = main(["scenario", "list"])
@@ -507,7 +507,7 @@ def test_list_reads_explore_scenario_v(fake_conn, capsys):
     assert "explore.scenario_v" in conn.statements[0][0]
     payload = _out(capsys)
     assert payload["scenarios"] == [
-        {"id": SCENARIO_ID, "name": "Centralidad norte", "edit_count": 4}
+        {"id": SCENARIO_ID, "name": "Centralidad norte", "rule_count": 4}
     ]
 
 
@@ -524,7 +524,7 @@ def test_show_reads_explore_scenario_v(fake_conn, capsys):
     conn = fake_conn(
         [
             (
-                ("id", "edit_count", "override_count", "materialized_at"),
+                ("id", "rule_count", "override_count", "materialized_at"),
                 [(SCENARIO_ID, 4, 12, None)],
             )
         ]

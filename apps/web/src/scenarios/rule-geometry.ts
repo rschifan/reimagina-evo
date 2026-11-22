@@ -7,7 +7,7 @@ import type { SelectionShape } from "../selection";
  * A scenario's rules as map geometry.
  *
  * The API stores a rule's area as the WKT `ST_MakeValid` produced — always a
- * `POLYGON` or `MULTIPOLYGON` (`add_edit` keeps only the polygonal part) — and
+ * `POLYGON` or `MULTIPOLYGON` (`add_rule` keeps only the polygonal part) — and
  * not the tool it was drawn with. So the area is parsed here, and the shape
  * kind that decides which handles an edit gets is inferred from the ring.
  */

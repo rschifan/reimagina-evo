@@ -302,7 +302,7 @@ def polygon_wkt(geojson: Any) -> str:
     several parts into one area: a selection made with two strokes is one
     rule, not two. Each part is repaired before the union, because GEOS
     overlay raises ``TopologyException`` on a self-intersecting stroke (a
-    bowtie plus a second stroke was an HTTP 500); ``add_edit`` still runs
+    bowtie plus a second stroke was an HTTP 500); ``add_rule`` still runs
     ``ST_MakeValid`` on write. The one thing refused here is input with no
     polygonal part at all, because the error PostGIS gives for it arrives
     after a connection and a savepoint.
@@ -320,7 +320,7 @@ def polygon_wkt(geojson: Any) -> str:
     none of them is a refusal any surface should pass on raw. They become
     the one exception that already means this: ``InvalidGeometry``, whose
     docstring covers "the drawn area is not, and cannot be repaired into, a
-    polygon", and which ``add_edit`` raises for the same condition when
+    polygon", and which ``add_rule`` raises for the same condition when
     PostGIS is the one to notice it. The original error is chained, because
     "a linearring requires at least 4 coordinates" is the useful half.
     """
