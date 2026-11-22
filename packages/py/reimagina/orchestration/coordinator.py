@@ -101,8 +101,10 @@ def _dep_map(registry: Sequence[IndicatorSpec]) -> dict[str, set[str]]:
 
 def _execute(conn: Any, statement: str) -> None:
     # No SQL connection (None, or an in-memory stand-in): nothing to protect,
-    # the same way runstore no-ops on a None connection.
-    if not hasattr(conn, "cursor"):
+    # the same way runstore no-ops on a None connection. An autocommit
+    # connection has no shared transaction to poison — each statement commits
+    # itself — and Postgres refuses SAVEPOINT outside a transaction block.
+    if not hasattr(conn, "cursor") or getattr(conn, "autocommit", False):
         return
     with conn.cursor() as cur:
         cur.execute(statement)

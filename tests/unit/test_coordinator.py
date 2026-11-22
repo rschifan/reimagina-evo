@@ -225,3 +225,33 @@ def test_a_failed_unit_does_not_poison_the_rest_of_the_transaction():
     assert by["c"].status is UnitStatus.SUCCEEDED
     # What was reported succeeded is what is actually committed.
     assert conn.writes == ["a", "c"]
+
+
+class _AutocommitConn(_PgLikeConn):
+    """Autocommit: every statement commits itself; SAVEPOINT is an error."""
+
+    autocommit = True
+
+    def execute(self, sql: str, params=None) -> None:
+        if "SAVEPOINT" in sql:
+            raise RuntimeError("SAVEPOINT can only be used in transaction blocks")
+        super().execute(sql, params)
+
+
+def test_an_autocommit_connection_runs_without_savepoints():
+    """The conformance suite drives `sync` on an autocommit connection.
+
+    There is no shared transaction to poison there, and Postgres refuses
+    SAVEPOINT outside a transaction block, so the guard must stand down.
+    """
+    a = _spec("a", reads=("x",))
+    registry = (a,)
+    dirty = compute_dirty_set({"x"}, {"f1"}, registry)
+
+    def _write(conn, *, features, scenario_id, code_version, aoi_id):
+        with conn.cursor() as cur:
+            cur.execute("WRITE a")
+
+    by = run_dirty_set(_AutocommitConn(), dirty, registry, {"a": _write}).by_indicator()
+
+    assert by["a"].status is UnitStatus.SUCCEEDED
