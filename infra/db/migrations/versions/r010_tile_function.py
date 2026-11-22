@@ -144,5 +144,6 @@ def downgrade() -> None:
     op.execute(
         "DROP FUNCTION IF EXISTS serving_geo.get_tile(integer, integer, integer, json)"
     )
-    # DROP INDEX takes just the index name, never a schema-qualified name.
-    op.execute("DROP INDEX IF EXISTS feature_context_geom_idx")
+    # Schema-qualified: unqualified, search_path misses curated_geo and
+    # IF EXISTS turns that into a silent no-op.
+    op.execute("DROP INDEX IF EXISTS curated_geo.feature_context_geom_idx")
