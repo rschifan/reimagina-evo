@@ -587,7 +587,8 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # **The weights are a choice, and an arbitrary one.** 0.4 to density, 0.2 to
 # each of three amenity classes. No literature backs that split; it is declared
 # here so it can be argued with, and changing it is a one-line edit that
-# restages the score through `params_digest`. What the platform guarantees is
+# restages the score: each weight is part of the composite's expected version
+# (the edge term of `asset_component_v`). What the platform guarantees is
 # not that these weights are right but that they are *applied* — each input is
 # brought to 0-1 before weighting (density against its target band, the
 # distances against their declared bounds), so a 0-2000 units/ha density cannot
