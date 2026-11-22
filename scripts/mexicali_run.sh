@@ -47,7 +47,9 @@ BUNDLE=""
 while (( $# )); do
   case "$1" in
     --keep) KEEP=1 ;;
-    --bundle) BUNDLE="${2:-}"; shift ;;
+    --bundle)
+      [[ -n "${2:-}" ]] || { echo "--bundle needs a directory" >&2; exit 2; }
+      BUNDLE="$2"; shift ;;
     --bundle=*) BUNDLE="${1#--bundle=}" ;;
     -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
@@ -67,17 +69,19 @@ cd "$ROOT"
 
 PY="${PYTHON:-uv run python}"
 
+# Parse .env as data; exported caller values always win. Before the fetch, so
+# a mirror named in .env (MEXICALI_BUNDLE_URL) is honoured like every other
+# setting.
+ENV_EXPORTS="$($PY scripts/runtime_env.py harness)"
+eval "$ENV_EXPORTS"
+unset ENV_EXPORTS
+
 # No --bundle: fetch the pinned release asset. fetch prints the bundle
 # directory and explains on stderr what to do by hand when it cannot.
 if [[ -z "$BUNDLE" ]]; then
   BUNDLE="$($PY scripts/build_mexicali_bundle.py fetch)" || exit 1
 fi
 CLI="$PY -m apps.cli.app"
-
-# Parse .env as data; exported caller values always win.
-ENV_EXPORTS="$($PY scripts/runtime_env.py harness)"
-eval "$ENV_EXPORTS"
-unset ENV_EXPORTS
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }

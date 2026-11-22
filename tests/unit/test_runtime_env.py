@@ -383,3 +383,51 @@ def test_unknown_flag_is_refused_before_anything_runs(tmp_path, script):
     assert done.returncode == 2
     assert "unknown flag" in done.stderr
     assert "ENV=" not in done.stdout
+
+
+def test_bundle_without_a_value_says_so(tmp_path):
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--bundle"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2
+    assert "--bundle needs a directory" in done.stderr
+    assert "ENV=" not in done.stdout
+
+
+def test_a_mirror_named_in_dotenv_is_used(tmp_path):
+    """Every other setting comes from .env; the mirror URL did not, because
+    the bundle was fetched before .env was read."""
+    env = fixture_repo(tmp_path)
+    archive = tmp_path / "asset.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(tmp_path / "bundle", arcname="reimagina-mexicali-bundle")
+    script = tmp_path / "scripts/build_mexicali_bundle.py"
+    script.write_text(
+        re.sub(
+            r'BUNDLE_SHA256 = "[0-9a-f]{64}"',
+            f'BUNDLE_SHA256 = "{hashlib.sha256(archive.read_bytes()).hexdigest()}"',
+            script.read_text(),
+        )
+    )
+    (tmp_path / ".env").write_text(
+        "DATABASE_URL=postgresql://localhost/scratch\n"
+        "DATABASE_URL_DIRECT=postgresql://localhost/scratch\n"
+        "DATABASE_URL_ADMIN=postgresql://localhost/postgres\n"
+        f"MEXICALI_BUNDLE_URL={archive.as_uri()}\n"
+    )
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert list((tmp_path / "data/bundles").glob("*/reimagina-mexicali-bundle")), (
+        done.stderr
+    )
+    assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
