@@ -11,7 +11,7 @@ from statistics import median
 from reimagina.storage import backend_for_connection
 
 from .manifest import BENCHMARKS, DATASET_TIERS, BenchmarkSpec
-from .seed import PERF_AOI_NAMES
+from .seed import AOI_EXTENT_SQL, PERF_AOI_NAMES
 
 
 def _require_postgres(conn) -> None:
@@ -53,7 +53,18 @@ def _dataset_summary(conn) -> dict[str, object]:
     }
 
 
-def _extent_bounds(conn) -> tuple[float, float, float, float]:
+def _extent_bounds(
+    conn, aoi_id: str | None = None
+) -> tuple[float, float, float, float]:
+    """Bounds the benchmark boxes are cut from: every feature's extent, or
+    the AOI ``aoi_id``'s. With two cities loaded the centre of the global
+    extent lies between them and the boxes read nothing; an AOI keeps them
+    inside one city."""
+    if aoi_id is not None:
+        row = _query_one(conn, AOI_EXTENT_SQL, (aoi_id,))
+        if row is None:
+            raise ValueError(f"No AOI with id {aoi_id!r}.")
+        return tuple(float(value) for value in row)
     row = _query_one(
         conn,
         """
@@ -172,7 +183,9 @@ _NO_PARAMETER_BUILDER = frozenset(
 )
 
 
-def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[object]:
+def _build_params(
+    conn, *, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
+) -> list[object]:
     tier = DATASET_TIERS[dataset_tier]
     if benchmark_name in _NO_PARAMETER_BUILDER:
         raise ValueError(
@@ -185,7 +198,7 @@ def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[objec
     if benchmark_name == "overlap_block_to_ageb_cuauhtemoc":
         return _build_overlap_block_ageb_cuauhtemoc_params(conn)
 
-    extent = _extent_bounds(conn)
+    extent = _extent_bounds(conn, aoi_id)
     if benchmark_name == "bbox_features_small":
         bounds = _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
         return [*bounds, *bounds]
@@ -446,7 +459,7 @@ def _evaluate_result(
 
 
 def explain_benchmark(
-    conn, *, benchmark_name: str, dataset_tier: str
+    conn, *, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
 ) -> dict[str, object]:
     _require_postgres(conn)
     if benchmark_name not in BENCHMARKS:
@@ -456,7 +469,7 @@ def explain_benchmark(
 
     spec = BENCHMARKS[benchmark_name]
     params = _build_params(
-        conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier
+        conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier, aoi_id=aoi_id
     )
     summary = _run_explain_analyze(
         conn,
@@ -478,6 +491,7 @@ def run_benchmarks(
     dataset_tier: str,
     benchmark_names: list[str] | None = None,
     iterations: int | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, object]:
     _require_postgres(conn)
     if dataset_tier not in DATASET_TIERS:
@@ -497,7 +511,7 @@ def run_benchmarks(
         spec = BENCHMARKS[name]
         try:
             params = _build_params(
-                conn, benchmark_name=name, dataset_tier=dataset_tier
+                conn, benchmark_name=name, dataset_tier=dataset_tier, aoi_id=aoi_id
             )
         except OverlapBenchmarkDataMissing as exc:
             # Only the CDMX dataset carries it; a default run on any other DB

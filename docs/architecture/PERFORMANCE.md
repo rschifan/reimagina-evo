@@ -430,6 +430,11 @@ python -m apps.cli.app perf report
 python -m apps.cli.app perf compare baseline.json candidate.json
 ```
 
+The viewport and polygon boxes, and the four `perf_*` AOIs, are cut from the
+centre of every feature's extent. With more than one city loaded that centre
+falls between them and the boxes read nothing; pass `--aoi-id` (the same one
+to `seed-observations`, `run` and `explain`) to cut them from one AOI instead.
+
 `perf run` exits 1 when any benchmark fails a check. `perf compare` marks a
 benchmark `regressed` when its p95 rose more than 10% over the baseline, and
 exits 1 on a regression or a failed candidate.

@@ -25,14 +25,33 @@ PERF_AOI_NAMES = {
 }
 
 
+AOI_EXTENT_SQL = """
+SELECT ST_XMin(geometry), ST_YMin(geometry), ST_XMax(geometry), ST_YMax(geometry)
+FROM curated_geo.area_of_interest
+WHERE id = %s
+"""
+
+
 def _require_postgres(conn) -> None:
     backend = backend_for_connection(conn)
     if backend.name != "postgres":
         raise ValueError("Performance seeding is Postgres/PostGIS-only.")
 
 
-def _feature_extent(conn) -> tuple[float, float, float, float]:
+def _feature_extent(
+    conn, aoi_id: str | None = None
+) -> tuple[float, float, float, float]:
+    """Bounds the benchmark boxes are cut from: every feature's extent, or
+    the AOI ``aoi_id``'s. With two cities loaded the centre of the global
+    extent lies between them and the boxes read nothing; an AOI keeps them
+    inside one city."""
     with conn.cursor() as cur:
+        if aoi_id is not None:
+            cur.execute(AOI_EXTENT_SQL, (aoi_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No AOI with id {aoi_id!r}.")
+            return tuple(float(value) for value in row)
         cur.execute(
             """
             SELECT
@@ -150,9 +169,9 @@ def _upsert_aoi(conn, *, project_id: str, name: str, geometry_wkt: str) -> str:
     )
 
 
-def ensure_perf_aois(conn) -> dict[str, str]:
+def ensure_perf_aois(conn, aoi_id: str | None = None) -> dict[str, str]:
     _require_postgres(conn)
-    extent = _feature_extent(conn)
+    extent = _feature_extent(conn, aoi_id)
     project_id = _ensure_perf_project(conn)
     geometries = {
         "bbox_small": _bbox_wkt(
@@ -317,6 +336,7 @@ def prepare_benchmark_dataset(
     *,
     dataset_tier: str,
     feature_limit: int | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, object]:
     if dataset_tier not in DATASET_TIERS:
         raise ValueError(f"Unknown dataset tier: {dataset_tier!r}")
@@ -326,7 +346,7 @@ def prepare_benchmark_dataset(
         dataset_tier=dataset_tier,
         feature_limit=feature_limit,
     )
-    aoi_ids = ensure_perf_aois(conn)
+    aoi_ids = ensure_perf_aois(conn, aoi_id)
     return {
         "dataset_tier": dataset_tier,
         "tier": asdict(DATASET_TIERS[dataset_tier]),

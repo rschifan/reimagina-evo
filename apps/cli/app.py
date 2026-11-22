@@ -789,12 +789,20 @@ def perf_seed_observations(
         "--dataset-tier",
     ),
     feature_limit: Optional[int] = typer.Option(None, "--feature-limit"),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Cut the benchmark boxes from this AOI instead of the extent of "
+        "every feature, whose centre falls between cities when more than one "
+        "is loaded. Pass the same AOI to seed-observations and run.",
+    ),
 ) -> int:
     return _print(
         seed_observations(
             dsn=dsn,
             dataset_tier=dataset_tier,
             feature_limit=feature_limit,
+            aoi_id=aoi_id,
         )
     )
 
@@ -811,6 +819,13 @@ def perf_run(
     benchmark: Optional[list[str]] = typer.Option(None, "--benchmark"),
     iterations: Optional[int] = typer.Option(None, "--iterations"),
     output_path: Optional[str] = typer.Option(None, "--output-path"),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Cut the benchmark boxes from this AOI instead of the extent of "
+        "every feature, whose centre falls between cities when more than one "
+        "is loaded. Pass the same AOI to seed-observations and run.",
+    ),
 ) -> int:
     payload = run_perf_benchmarks(
         dsn=dsn,
@@ -818,6 +833,7 @@ def perf_run(
         benchmark_names=benchmark,
         iterations=iterations,
         output_path=output_path,
+        aoi_id=aoi_id,
     )
     return _print(payload, failed=not payload["passed"])
 
@@ -832,12 +848,20 @@ def perf_explain(
         _DatasetTier.smoke,
         "--dataset-tier",
     ),
+    aoi_id: Optional[str] = typer.Option(
+        None,
+        "--aoi-id",
+        help="Cut the benchmark boxes from this AOI instead of the extent of "
+        "every feature, whose centre falls between cities when more than one "
+        "is loaded. Pass the same AOI to seed-observations and run.",
+    ),
 ) -> int:
     return _print(
         explain_query(
             dsn=dsn,
             benchmark_name=benchmark_name,
             dataset_tier=dataset_tier,
+            aoi_id=aoi_id,
         )
     )
 

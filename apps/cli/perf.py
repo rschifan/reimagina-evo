@@ -18,13 +18,18 @@ from reimagina.perf import (
 
 
 def seed_observations(
-    *, dsn: str, dataset_tier: str, feature_limit: int | None = None
+    *,
+    dsn: str,
+    dataset_tier: str,
+    feature_limit: int | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, Any]:
     with connect(dsn) as conn:
         result = prepare_benchmark_dataset(
             conn,
             dataset_tier=dataset_tier,
             feature_limit=feature_limit,
+            aoi_id=aoi_id,
         )
         return {"dsn": dsn, **result}
 
@@ -36,6 +41,7 @@ def run_perf_benchmarks(
     benchmark_names: list[str] | None = None,
     iterations: int | None = None,
     output_path: str | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, Any]:
     with connect(dsn) as conn:
         result = run_benchmarks(
@@ -43,6 +49,7 @@ def run_perf_benchmarks(
             dataset_tier=dataset_tier,
             benchmark_names=benchmark_names,
             iterations=iterations,
+            aoi_id=aoi_id,
         )
     payload = {"dsn": dsn, **result}
     if output_path:
@@ -57,7 +64,7 @@ def run_perf_benchmarks(
 
 
 def explain_query(
-    *, dsn: str, benchmark_name: str, dataset_tier: str
+    *, dsn: str, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
 ) -> dict[str, Any]:
     with connect(dsn) as conn:
         return {
@@ -66,6 +73,7 @@ def explain_query(
                 conn,
                 benchmark_name=benchmark_name,
                 dataset_tier=dataset_tier,
+                aoi_id=aoi_id,
             ),
         }
 

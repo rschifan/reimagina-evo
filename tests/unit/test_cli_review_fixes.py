@@ -37,7 +37,9 @@ def _stub_runner(monkeypatch, *, overlap_missing: bool):
         "_dataset_summary",
         lambda conn: {"feature_rows": 10, "observation_rows": 10},
     )
-    monkeypatch.setattr(runner, "_extent_bounds", lambda conn: (0.0, 0.0, 1.0, 1.0))
+    monkeypatch.setattr(
+        runner, "_extent_bounds", lambda conn, aoi_id=None: (0.0, 0.0, 1.0, 1.0)
+    )
     monkeypatch.setattr(runner, "_get_feature_id", lambda conn: "f1")
     monkeypatch.setattr(runner, "_get_selected_feature_ids", lambda conn, count: ["f1"])
     monkeypatch.setattr(runner, "_get_aoi_id", lambda conn, logical_name: "a1")
@@ -454,3 +456,33 @@ def test_derivation_commands_resolve_an_unpublished_layer(monkeypatch):
     assert repo.calls == [
         ("list_recipes", {"input_raster_layer_id": "L9", "enabled_only": True})
     ]
+
+
+# ── CP-05: benchmarks can be aimed at one city, not the whole extent ─────
+
+
+def test_perf_aoi_id_takes_the_extent_from_that_aoi(monkeypatch):
+    """The centre of every feature's extent lands between two pilot cities;
+    `--aoi-id` puts the boxes and the perf AOIs inside one of them."""
+    from reimagina.perf import runner, seed
+
+    seen = []
+
+    def query_one(conn, sql, params=None):
+        seen.append(params)
+        return (10.0, 20.0, 11.0, 21.0)
+
+    monkeypatch.setattr(runner, "_query_one", query_one)
+
+    params = runner._build_params(
+        object(), benchmark_name="bbox_features_small", dataset_tier="smoke", aoi_id="A"
+    )
+
+    assert seen == [("A",)]
+    assert 10.0 < params[0] < params[2] < 11.0
+
+    class Conn:
+        def cursor(self):
+            return _FakeCursor({"A": (10.0, 20.0, 11.0, 21.0)})
+
+    assert seed._feature_extent(Conn(), aoi_id="A") == (10.0, 20.0, 11.0, 21.0)
