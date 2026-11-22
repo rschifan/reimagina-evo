@@ -25,7 +25,6 @@ export const SHORTCUTS: Shortcut[] = [
 ];
 
 export interface ShortcutHandlers {
-  onPalette: () => void;
   onFit: () => void;
   onPanel: () => void;
   onDraw: (shape: "rectangle" | "polygon" | "circle") => void;

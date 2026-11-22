@@ -33,8 +33,6 @@ export interface PaletteController {
   open: () => void;
   close: () => void;
   isOpen: () => boolean;
-  /** Replace the command set — the AOI and indicator lists arrive async. */
-  setCommands: (commands: Command[]) => void;
   dispose: () => void;
 }
 
@@ -62,11 +60,16 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/**
+ * `getCommands` is called on every open: the list describes current state —
+ * which layer is on, which AOI's indicators — and a list cached at the last
+ * AOI change offered stale toggles and the previous AOI's indicators.
+ */
 export function enablePalette(
-  initial: Command[],
+  getCommands: () => Command[],
   shortcuts: Shortcut[],
 ): PaletteController {
-  let commands = initial;
+  let commands: Command[] = [];
   let open = false;
   let active = 0;
   let shown: ScoredCommand[] = [];
@@ -207,6 +210,7 @@ export function enablePalette(
     if (open) return;
     restoreFocus = document.activeElement as HTMLElement | null;
     open = true;
+    commands = getCommands();
     root.hidden = false;
     input.value = "";
     active = 0;
@@ -308,10 +312,6 @@ export function enablePalette(
     open: openPalette,
     close,
     isOpen: () => open,
-    setCommands: (next) => {
-      commands = next;
-      if (open) renderList();
-    },
     dispose: () => {
       input.removeEventListener("input", onInput);
       panel.removeEventListener("keydown", onPanelKey);

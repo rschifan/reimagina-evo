@@ -739,17 +739,10 @@ async function main(): Promise<void> {
       return list;
     };
 
-    const palette = enablePalette(buildCommands(), SHORTCUTS);
-    // The command list describes current state — which layer is on, which
-    // indicator is drawn — so it is rebuilt on open rather than cached.
-    const refreshCommands = (): void => palette.setCommands(buildCommands());
-    subscribeToAoi(() => refreshCommands());
+    // Rebuilt on every open: see enablePalette.
+    const palette = enablePalette(buildCommands, SHORTCUTS);
 
     wireShortcuts({
-      onPalette: () => {
-        refreshCommands();
-        palette.open();
-      },
       onFit: () => fitToActiveAoi(),
       onPanel: () => sidebar?.toggle(),
       onDraw: (shape) => selectionController?.startDrawing(shape),
