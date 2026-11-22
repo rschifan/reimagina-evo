@@ -214,9 +214,12 @@ def test_overture_validate_fails_on_an_empty_layer(monkeypatch, capsys):
             return Reader()
 
     monkeypatch.setattr(overture, "backend_for_connection", lambda conn: Backend())
-    assert overture.validate_overture_buildings_layer(object())[
-        "queryable_through_serving"
-    ] is False
+    assert (
+        overture.validate_overture_buildings_layer(object())[
+            "queryable_through_serving"
+        ]
+        is False
+    )
 
     _patch(monkeypatch, "validate_mexico_city_buildings", {"count": 0})
     assert main(["overture", "validate"]) == 1
@@ -327,3 +330,127 @@ def test_pertask_simulation_never_beats_the_slot_bound():
 
     assert simulate(workload, slots=4, strategy="pertask") == 3 * unit
     assert simulate(workload, slots=4, strategy="wave") == 3 * unit
+
+
+# ── CP-07 / CP-08: raster slugs and recipe ids that match nothing ────────
+
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.params = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.params = params
+
+    def fetchone(self):
+        return self.rows.get(self.params[0]) if self.params else None
+
+
+class _FakeConn:
+    def __init__(self, layer_ids_by_slug):
+        self.layer_ids_by_slug = layer_ids_by_slug
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self, **kw):
+        return _FakeCursor(
+            {slug: (layer_id,) for slug, layer_id in self.layer_ids_by_slug.items()}
+        )
+
+    def commit(self):
+        pass
+
+
+class _FakeRepo:
+    def __init__(self, recipes=()):
+        self.recipes = set(recipes)
+        self.calls = []
+
+    def set_published(self, **kw):
+        self.calls.append(("set_published", kw))
+
+    def get_recipe(self, recipe_id):
+        return {"id": recipe_id} if recipe_id in self.recipes else None
+
+    def set_enabled(self, **kw):
+        self.calls.append(("set_enabled", kw))
+
+    def delete_recipe(self, recipe_id):
+        self.calls.append(("delete_recipe", recipe_id))
+
+    def list_recipes(self, **kw):
+        self.calls.append(("list_recipes", kw))
+        return []
+
+    def list_published_layers(self):
+        return []
+
+
+def _raster_fakes(monkeypatch, *, layers, recipes=()):
+    from apps.cli import raster
+
+    repo = _FakeRepo(recipes)
+
+    class Backend:
+        def raster_layer_repo(self):
+            return repo
+
+        def aggregation_recipe_repo(self):
+            return repo
+
+    monkeypatch.setattr(raster, "connect", lambda dsn: _FakeConn(layers))
+    monkeypatch.setattr(raster, "backend_for_connection", lambda conn: Backend())
+    return raster, repo
+
+
+def test_raster_publish_refuses_a_slug_that_matches_nothing(monkeypatch):
+    import pytest
+
+    raster, repo = _raster_fakes(monkeypatch, layers={"lst_day": "L1"})
+
+    with pytest.raises(ValueError, match="lst_dya"):
+        raster.set_raster_published(dsn="d", layer_slug="lst_dya", published=True)
+    assert repo.calls == []
+
+    raster.set_raster_published(dsn="d", layer_slug="lst_day", published=True)
+    assert repo.calls == [
+        ("set_published", {"layer_slug": "lst_day", "published": True})
+    ]
+
+
+def test_derivation_enable_and_remove_refuse_an_unknown_recipe(monkeypatch):
+    import pytest
+
+    raster, repo = _raster_fakes(monkeypatch, layers={}, recipes={"r1"})
+
+    with pytest.raises(ValueError, match="r2"):
+        raster.set_derivation_enabled(dsn="d", recipe_id="r2", enabled=True)
+    with pytest.raises(ValueError, match="r2"):
+        raster.remove_derivation(dsn="d", recipe_id="r2")
+    assert repo.calls == []
+
+    raster.remove_derivation(dsn="d", recipe_id="r1")
+    assert repo.calls == [("delete_recipe", "r1")]
+
+
+def test_derivation_commands_resolve_an_unpublished_layer(monkeypatch):
+    """`raster ingest --unpublished` is how a layer is staged; the resolver
+    scanned only published layers and called it an unknown slug."""
+    raster, repo = _raster_fakes(monkeypatch, layers={"wp_2020": "L9"})
+
+    raster.list_derivations(dsn="d", raster_layer_slug="wp_2020")
+
+    assert repo.calls == [
+        ("list_recipes", {"input_raster_layer_id": "L9", "enabled_only": True})
+    ]

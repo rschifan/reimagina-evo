@@ -387,6 +387,10 @@ def set_raster_published(
 ) -> dict[str, Any]:
     """Flip the published flag on a raster_layer row."""
     with connect(dsn) as conn:
+        # The UPDATE matches nothing for a mistyped slug; refuse rather than
+        # report it published.
+        if _raster_layer_id(conn, layer_slug) is None:
+            raise ValueError(f"Unknown raster layer slug: {layer_slug!r}")
         backend = backend_for_connection(conn)
         backend.raster_layer_repo().set_published(
             layer_slug=layer_slug,
@@ -488,6 +492,7 @@ def set_derivation_enabled(
 ) -> dict[str, Any]:
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
+        _require_recipe(backend, recipe_id)
         backend.aggregation_recipe_repo().set_enabled(
             recipe_id=recipe_id,
             enabled=enabled,
@@ -499,6 +504,7 @@ def set_derivation_enabled(
 def remove_derivation(*, dsn: str, recipe_id: str) -> dict[str, Any]:
     with connect(dsn) as conn:
         backend = backend_for_connection(conn)
+        _require_recipe(backend, recipe_id)
         backend.aggregation_recipe_repo().delete_recipe(recipe_id)
         conn.commit()
     return {"dsn": dsn, "recipe_id": recipe_id, "deleted": True}
@@ -550,6 +556,13 @@ def run_derivation(
             for r in results
         ],
     }
+
+
+def _require_recipe(backend, recipe_id: str) -> None:
+    """Refuse an id that matches no recipe: the UPDATE/DELETE would match
+    nothing and the command would still report success."""
+    if backend.aggregation_recipe_repo().get_recipe(recipe_id) is None:
+        raise ValueError(f"Unknown recipe id: {recipe_id!r}")
 
 
 def _raster_layer_id(conn, layer_slug: str) -> str | None:
