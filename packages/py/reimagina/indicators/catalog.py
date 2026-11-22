@@ -589,9 +589,9 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # here so it can be argued with, and changing it is a one-line edit that
 # restages the score through `params_digest`. What the platform guarantees is
 # not that these weights are right but that they are *applied* — each input is
-# rescaled to 0-1 against its declared bounds before weighting, so a 0-2000
-# units/ha density cannot drown three 0-1500 m distances the way raw summing
-# would.
+# brought to 0-1 before weighting (density against its target band, the
+# distances against their declared bounds), so a 0-2000 units/ha density cannot
+# drown three 0-1500 m distances the way raw summing would.
 #
 # ⚠ The three distance inputs are `higher_is_better=False`, so `compute_composite`
 # folds them in as `1 - normalised`. Without that a block far from every school,
@@ -620,6 +620,16 @@ LIVABILITY_ACCESSIBILITY_CATEGORIES: tuple[str, ...] = ("school", "health", "par
 # Derived rather than written as 0.2 so the weights sum to 1.0 whatever
 # :data:`LIVABILITY_ACCESSIBILITY_CATEGORIES` holds. The literal is what broke.
 _LIVABILITY_DENSITY_WEIGHT = 0.4
+
+#: Livability's housing-density target band, dwellings per hectare.
+#
+# Density scores 1 inside it and falls linearly to 0 at 0 units/ha below and at
+# twice the upper end (300) above (`composite.component_score`). Normalised
+# against density's 2,000 units/ha safety cap instead, the score rose with
+# density all the way up, so a rule that piled on storeys always read as more
+# livable. 50-150 is the owner's stated target for this pilot, not a finding.
+LIVABILITY_DENSITY_BAND_LOW = 50.0
+LIVABILITY_DENSITY_BAND_HIGH = 150.0
 # Rounded because the bare division yields 0.19999999999999998, and this value
 # is persisted to `indicator_catalog.inputs`. The stored weight should read 0.2
 # where 0.2 is meant; the noise would otherwise show up in every diff of the
@@ -634,10 +644,14 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(
     name="Livability Score",
     description=(
         "Blend of housing density and walking distance to schools, health "
-        "facilities and parks, on a 0-1 scale where 1 is the densest and "
-        "best-served block. Density contributes 40%, each amenity class 20%. "
-        "Each input is first rescaled against its own declared bounds, and the "
-        "three distances are inverted so nearer scores higher. A relative "
+        "facilities and parks, on a 0-1 scale where 1 is a block inside the "
+        "density target band and best served. Density contributes 40%, each "
+        "amenity class 20%. Density scores 1 between "
+        f"{LIVABILITY_DENSITY_BAND_LOW:.0f} and "
+        f"{LIVABILITY_DENSITY_BAND_HIGH:.0f} dwellings/ha, falling linearly to "
+        f"0 at 0 and at {2 * LIVABILITY_DENSITY_BAND_HIGH:.0f}; each distance "
+        "is rescaled against its declared bounds and inverted so nearer scores "
+        "higher. A relative "
         "ranking of blocks against each other, not an absolute measure of "
         "livability — the weights are a stated choice, not a finding."
     ),
@@ -653,6 +667,7 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(
             indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
             relation="derived_from",
             weight=_LIVABILITY_DENSITY_WEIGHT,
+            target_band=(LIVABILITY_DENSITY_BAND_LOW, LIVABILITY_DENSITY_BAND_HIGH),
         ),
         *(
             AssetEdge(

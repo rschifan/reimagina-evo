@@ -116,7 +116,7 @@ CREATE TABLE curated_geo.indicator_catalog (
 | `accessibility_block_health_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
 | `accessibility_block_park_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
 | `accessibility_block_culture_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
-| `livability_block_score` | composite | NULL | score_0_1 | 0–1 | — | true | `edificability_block_density` 0.4; school, health and park `*_network_m` 0.2 each |
+| `livability_block_score` | composite | NULL | score_0_1 | 0–1 | — | true | `edificability_block_density` 0.4, scored against a 50–150 units/ha target band; school, health and park `*_network_m` 0.2 each |
 
 What each computes:
 
@@ -388,7 +388,9 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(        # abridged
     aggregation_method="weighted_mean",
     inputs=(
         AssetEdge(indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
-                  relation="derived_from", weight=0.4),
+                  relation="derived_from", weight=0.4,
+                  target_band=(LIVABILITY_DENSITY_BAND_LOW,     # 50
+                               LIVABILITY_DENSITY_BAND_HIGH)),  # 150
         # ...one 0.2 edge per category in LIVABILITY_ACCESSIBILITY_CATEGORIES
         # ("school", "health", "park")
     ),
@@ -417,6 +419,17 @@ dwellings-per-hectare do not add.
 exceed its weight and the result cannot leave 0–1. An input that declares no
 bounds, or `valid_max <= valid_min`, makes it refuse with `ValueError` rather
 than fall back to the raw value.
+
+**A target band, for an input that is good in a range.** An edge may carry
+`target_band=(low, high)`; that input then scores 1 inside the band and falls
+linearly to 0 at its `valid_min` below and at `2 × high` above, clamped to 0–1,
+instead of being normalised and oriented (`composite.component_score`).
+Livability's density edge uses it with `LIVABILITY_DENSITY_BAND_LOW` /
+`_HIGH` = 50 / 150 units/ha (`indicators/catalog.py`): density scores 0 at 0,
+0.5 at 25, 1 from 50 to 150, 0.5 at 225 and 0 from 300 up. Normalised against
+its 2,000 units/ha safety cap, the score rose with density all the way, so the
+densest block was the most livable. The bands are folded into the indicator's
+`params_digest`, so moving one restages its results.
 
 Against the *declared* bounds, not the observed population, on purpose:
 percentile or AOI min–max would make every value depend on every other value, so
@@ -508,7 +521,7 @@ indicator refuses to compute against a missing input*.
 `compute_composite` (`indicators/composite.py`) follows the same stale-then-insert write, but reads component results instead of city data, and combines them in Python rather than SQL. It is an ordinary unit in the same run as its components, ordered after them by the impact engine's topological sort — not a separate worker or a second run (see `JOB_LAYER.md` — *Impact engine*).
 
 1. For each `(input, weight)` in `spec.depends_on`, read the input's current results with `list_current_for_indicator` — under a scenario, an overlay of the scenario's rows on the baseline's. Keep rows with a `value_numeric` at a feature type in the composite's `applies_to`.
-2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False`.
+2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False` — or, for an edge with a `target_band`, score it against the band.
 3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped (`aoi_id` does not narrow it), and sum the weighted values.
 4. Open a `job_run` (`model_family='composite'`) and write with `bulk_write_numeric_results`.
 
@@ -517,8 +530,9 @@ composite(f) = Σᵢ wᵢ · orientᵢ( clamp₀₁( (xᵢ(f) − valid_minᵢ) 
 orientᵢ(v)   = v if higher_is_betterᵢ else 1 − v          (a NULL wᵢ counts as 0)
 
 urban_form_block_composite = 0.5·n(compactness) + 0.5·n(building_density)
-livability_block_score     = 0.4·n(edificability_block_density)
+livability_block_score     = 0.4·band(edificability_block_density)
                            + 0.2·(1 − n(school)) + 0.2·(1 − n(health)) + 0.2·(1 − n(park))
+band(d)      = clamp₀₁( d < 50 ? d / 50 : d > 150 ? (300 − d) / 150 : 1 )
 ```
 
 A feature missing any component gets no composite row in that run — not a `missing` row — and keeps whatever composite row it already had. No partial composite is produced.
