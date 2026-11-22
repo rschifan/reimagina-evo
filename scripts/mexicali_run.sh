@@ -258,7 +258,9 @@ BUILDINGS=data/overture_buildings_mexicali.parquet
 # `urban_form_block_building_density` — four steps later, about blocks.
 #
 # Reading the footer is enough to catch it: a truncated parquet has no valid
-# metadata, and a zero-row one has nothing to load.
+# metadata, and a zero-row one has nothing to load. (The remote extract itself
+# now writes to a .partial and renames only on success, so an interrupted run
+# leaves no file at all; this check still guards copies made by hand.)
 buildings_usable() {
   [[ -f "$BUILDINGS" ]] || return 1
   $PY - "$BUILDINGS" "$MEXICALI_BBOX" <<'PYEOF' 2>/dev/null

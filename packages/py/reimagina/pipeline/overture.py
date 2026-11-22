@@ -207,14 +207,24 @@ def _extract_remote_overture_subset(
         & (pc.field("bbox", "ymin") <= max_lat)
     )
 
-    if low_memory:
-        _write_subset_per_file(dataset, flt, output_path, s3, source_glob)
-    else:
-        # Materialises the bbox subset in one table. Fast, and the memory cost
-        # is NOT the rows — see `low_memory` in
-        # :func:`extract_overture_buildings_subset` for the measurement that
-        # says where it actually goes.
-        pq.write_table(dataset.to_table(filter=flt), str(output_path))
+    # Written to a sibling and renamed only on success: the per-file writer
+    # closes with a valid footer even when the scan raised, so an interrupted
+    # extract would otherwise sit at `output_path` as a readable, partial file
+    # that `mexicali_run.sh` reuses as complete.
+    partial = output_path.with_name(output_path.name + ".partial")
+    try:
+        if low_memory:
+            _write_subset_per_file(dataset, flt, partial, s3, source_glob)
+        else:
+            # Materialises the bbox subset in one table. Fast, and the memory
+            # cost is NOT the rows — see `low_memory` in
+            # :func:`extract_overture_buildings_subset` for the measurement
+            # that says where it actually goes.
+            pq.write_table(dataset.to_table(filter=flt), str(partial))
+        partial.replace(output_path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def _progress(message: str) -> None:
