@@ -110,3 +110,56 @@ def test_an_embedded_cli_run_has_an_executor_id_of_its_own(monkeypatch):
     cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
 
     assert seen and str(os.getpid()) in seen[0]
+
+
+def _embedded_cli(monkeypatch, *, handle_status, await_run):
+    """`evaluate_scenario_cli` in embedded mode with DBOS and the DB faked out;
+    returns the list `_retire_executor` appends to."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ID", raising=False)
+
+    class _Orchestrator:
+        def __init__(self, **_kw):
+            pass
+
+        def submit_run(self, conn, **_kw):
+            return SimpleNamespace(status=handle_status, run_id="r1")
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_orchestrator.DBOSOrchestrator", _Orchestrator
+    )
+    monkeypatch.setattr(cli, "connect", lambda dsn: nullcontext(object()))
+    monkeypatch.setattr(cli, "_await_run", await_run)
+    retired: list[bool] = []
+    monkeypatch.setattr(cli, "_retire_executor", lambda: retired.append(True))
+    return cli, retired
+
+
+def test_an_embedded_noop_retires_its_executor(monkeypatch):
+    """A noop returns at submit; its per-process liveness row must not be left
+    behind to read as a dead executor."""
+    from types import SimpleNamespace
+
+    cli, retired = _embedded_cli(
+        monkeypatch,
+        handle_status=SimpleNamespace(status="noop"),
+        await_run=lambda *a, **k: None,
+    )
+    cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+    assert retired == [True]
+
+
+def test_an_embedded_timeout_retires_its_executor(monkeypatch):
+    import pytest
+
+    def _timeout(*_a, **_k):
+        raise TimeoutError("run r1 did not finish")
+
+    cli, retired = _embedded_cli(monkeypatch, handle_status=None, await_run=_timeout)
+    with pytest.raises(TimeoutError):
+        cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+    assert retired == [True]

@@ -229,27 +229,33 @@ def evaluate_scenario_cli(
         orchestrator: Orchestrator = DBOSOrchestrator(execution_mode="dev")
     else:
         orchestrator = get_orchestrator("dbos")
-    with connect(dsn) as conn:
-        handle = orchestrator.submit_run(
-            conn,
-            changed_attributes=changed_attributes,
-            edited_features=edited_features,
-            scenario_id=scenario_id,
-            aoi_id=aoi_id,
-            code_version=code_version,
-        )
-        # A noop finishes at submit and persists no run, so there is nothing to
-        # wait for and the id would 404 on lookup.
-        if handle.status is not None or mode == "detach":
-            status = handle.status.status if handle.status else "queued"
-            return {
-                "dsn": dsn,
-                "run_id": None if status == "noop" else handle.run_id,
-                "status": status,
-                "mode": mode,
-            }
-        final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
-    _retire_executor()
+    try:
+        with connect(dsn) as conn:
+            handle = orchestrator.submit_run(
+                conn,
+                changed_attributes=changed_attributes,
+                edited_features=edited_features,
+                scenario_id=scenario_id,
+                aoi_id=aoi_id,
+                code_version=code_version,
+            )
+            # A noop finishes at submit and persists no run, so there is nothing
+            # to wait for and the id would 404 on lookup.
+            if handle.status is not None or mode == "detach":
+                status = handle.status.status if handle.status else "queued"
+                return {
+                    "dsn": dsn,
+                    "run_id": None if status == "noop" else handle.run_id,
+                    "status": status,
+                    "mode": mode,
+                }
+            final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
+    finally:
+        # Every exit, not just success: a noop or a timeout otherwise left this
+        # pid's liveness row behind, read as a dead executor forever when no
+        # worker sweeps. Detach launched no executor, so has none to retire.
+        if mode == "embedded":
+            _retire_executor()
 
     return {
         "dsn": dsn,
@@ -277,6 +283,8 @@ def _retire_executor() -> None:
     from reimagina.orchestration import dbos_app
     from reimagina.orchestration.reclaim import forget_executor
 
+    if not dbos_app._dbos_launched:  # failed before launch: no row was written
+        return
     dbos_app.stop_liveness()
     with closing(psycopg2.connect(dbos_app.dbos_dsn())) as conn, conn:
         forget_executor(conn, dbos_app._executor_id())
