@@ -38,8 +38,10 @@ consequences, not a fixture change. Writing both keeps the fixture honest about
 the duplication instead of hiding it.
 
 ⚠ **Deterministic, never `random`.** `num_levels` is derived from a blake2b of
-the feature id, so re-running produces identical values and two developers see
-the same map. An unseeded RNG here would make every run a different dataset and
+the block's stable code — `source_record_ref`, the CVEGEO for INEGI blocks — so
+re-running produces identical values and two installs see the same map. Not the
+feature id: that is `gen_random_uuid()`, so hashing it gave every install
+different storeys and different edificability numbers. An unseeded RNG here would make every run a different dataset and
 every comparison meaningless — the same class of trap `impact.py` documents at
 length for `PYTHONHASHSEED`.
 
@@ -62,7 +64,7 @@ builds every block over wall to wall at 60 m². Fitted mode keeps the values
 synthetic but shapes them to the place, so the baseline reads as the city that
 exists and a scenario rule's change is measured against it:
 
-    num_levels / floors   drawn per block from the storey mix of the
+    num_levels / floors   drawn per block (keyed by its CVEGEO) from the storey mix of the
                           Overture buildings in the selected blocks
                           (Mexicali: 94% one storey); 1–6 if none is tagged
                           — or, where a ``floors`` observation holds a real
@@ -112,25 +114,25 @@ MIN_LEVELS = 1
 MAX_LEVELS = 6
 
 
-def levels_for(feature_id: str) -> int:
-    """A stable 1–6 storey count for a feature id.
+def levels_for(block_code: str) -> int:
+    """A stable 1–6 storey count for a block code (``source_record_ref``).
 
     blake2b rather than `hash()`: the builtin is salted per process by
     PYTHONHASHSEED, so it would hand out different values on every run — which
     is precisely the non-determinism this script exists to avoid.
     """
-    digest = hashlib.blake2b(feature_id.encode("utf-8"), digest_size=8).digest()
+    digest = hashlib.blake2b(block_code.encode("utf-8"), digest_size=8).digest()
     return MIN_LEVELS + int.from_bytes(digest, "big") % (MAX_LEVELS - MIN_LEVELS + 1)
 
 
-def storeys_from_mix(feature_id: str, mix: dict[int, int]) -> int:
+def storeys_from_mix(block_code: str, mix: dict[int, int]) -> int:
     """A stable storey count for a block, drawn from ``{storeys: buildings}``.
 
     The same blake2b as ``levels_for``, mapped onto the mix's cumulative
     counts, so the share of blocks at each height follows the share of
     buildings at it and a re-run draws the same value for the same block.
     """
-    digest = hashlib.blake2b(feature_id.encode("utf-8"), digest_size=8).digest()
+    digest = hashlib.blake2b(block_code.encode("utf-8"), digest_size=8).digest()
     pick = int.from_bytes(digest, "big") % sum(mix.values())
     for storeys, count in sorted(mix.items()):
         if pick < count:
@@ -177,19 +179,26 @@ def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
     # projection's scale and the census count is not reproduced.
     cur.execute(
         f"""
-        SELECT f.id::text, ST_Area(f.geometry::geography),
+        SELECT f.id::text, f.source_record_ref, ST_Area(f.geometry::geography),
                {current("censo_2020_vivtot")}, {current("floors")}
         FROM curated_geo.feature f
         WHERE f.id = ANY(%s::uuid[])
         """,
         (feature_ids,),
     )
-    blocks = cur.fetchall()
+    return fit_payloads(cur.fetchall(), mix, household)
 
+
+def fit_payloads(
+    blocks: list[tuple[str, str, float, float | None, float | None]],
+    mix: dict[int, int],
+    household: float,
+) -> list[dict[str, object]]:
+    """Fitted values for ``(id, code, area, dwellings, real_floors)`` rows."""
     payloads: dict[str, dict[str, object]] = {}
     sizes: list[float] = []
-    for fid, area, dwellings, real_floors in blocks:
-        storeys = storeys_from_mix(fid, mix) if mix else levels_for(fid)
+    for fid, code, area, dwellings, real_floors in blocks:
+        storeys = storeys_from_mix(code, mix) if mix else levels_for(code)
         levels = int(real_floors) if real_floors else storeys
         payload: dict[str, object] = {
             "poi_version": CONSTANT_ATTRIBUTES["poi_version"],
@@ -211,15 +220,15 @@ def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
     return [{"feature_id": fid, **p} for fid, p in payloads.items()]
 
 
-def _block_ids(cur, aoi_id: str | None) -> list[str]:
-    """Every MEX:block feature, optionally restricted to one AOI.
+def _block_ids(cur, aoi_id: str | None) -> list[tuple[str, str]]:
+    """``(id, source_record_ref)`` of every MEX:block, optionally in one AOI.
 
     The AOI join mirrors `FeatureRepository.geodesic_metrics_by_type`, so the
     seeded set and the set the indicators later compute over are the same.
     """
     if aoi_id is None:
         cur.execute("""
-            SELECT f.id::text
+            SELECT f.id::text, f.source_record_ref
             FROM curated_geo.feature f
             JOIN curated_geo.feature_type_catalog t ON t.id = f.type_id
             WHERE t.context = 'MEX' AND t.type_slug = 'block'
@@ -227,7 +236,7 @@ def _block_ids(cur, aoi_id: str | None) -> list[str]:
     else:
         cur.execute(
             """
-            SELECT f.id::text
+            SELECT f.id::text, f.source_record_ref
             FROM curated_geo.feature f
             JOIN curated_geo.feature_type_catalog t ON t.id = f.type_id
             JOIN curated_geo.area_of_interest aoi
@@ -236,7 +245,25 @@ def _block_ids(cur, aoi_id: str | None) -> list[str]:
             """,
             (aoi_id,),
         )
-    return [row[0] for row in cur.fetchall()]
+    return [(fid, ref) for fid, ref in cur.fetchall()]
+
+
+def constant_payloads(blocks: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """``(json, id)`` for the unfitted seed of ``(id, code)`` blocks."""
+    return [
+        (
+            json.dumps(
+                {
+                    **CONSTANT_ATTRIBUTES,
+                    # Same value, two keys -- see the module docstring.
+                    "num_levels": levels_for(code),
+                    "floors": levels_for(code),
+                }
+            ),
+            fid,
+        )
+        for fid, code in blocks
+    ]
 
 
 def seed(
@@ -245,7 +272,8 @@ def seed(
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor() as cur:
-            feature_ids = _block_ids(cur, aoi_id)
+            blocks = _block_ids(cur, aoi_id)
+            feature_ids = [fid for fid, _ in blocks]
             if not feature_ids:
                 return {
                     "blocks": 0,
@@ -265,20 +293,7 @@ def seed(
                     for p in _fitted_payloads(cur, feature_ids)
                 ]
             else:
-                payloads = [
-                    (
-                        json.dumps(
-                            {
-                                **CONSTANT_ATTRIBUTES,
-                                # Same value, two keys -- see the module docstring.
-                                "num_levels": levels_for(fid),
-                                "floors": levels_for(fid),
-                            }
-                        ),
-                        fid,
-                    )
-                    for fid in feature_ids
-                ]
+                payloads = constant_payloads(blocks)
             if dry_run:
                 sample = json.loads(payloads[0][0])
                 return {

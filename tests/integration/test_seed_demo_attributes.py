@@ -40,7 +40,7 @@ _WKT = (
 )
 
 
-def _block(conn, attributes):
+def _block(conn, attributes, ref=None):
     source_id = _register_source(
         conn,
         name=f"seed_src_{uuid4().hex[:8]}",
@@ -54,7 +54,7 @@ def _block(conn, attributes):
         source_id=source_id,
         ingestion_run_id=ingest,
         dataset_version="v1",
-        source_record_ref=f"seed-blk-{uuid4().hex[:8]}",
+        source_record_ref=ref or f"seed-blk-{uuid4().hex[:8]}",
         geometry_wkt=_WKT,
         attributes=attributes,
     )
@@ -62,7 +62,8 @@ def _block(conn, attributes):
 
 def test_seed_merges_and_preserves_existing_attributes(conn, migrated_db):
     """`||`, not assignment: CVEGEO must survive the seed."""
-    block_id = _block(conn, {"CVEGEO": "0901500011234", "AMBITO": "Urbana"})
+    ref = f"0901500011234-{uuid4().hex[:8]}"
+    block_id = _block(conn, {"CVEGEO": "0901500011234", "AMBITO": "Urbana"}, ref)
     conn.commit()
 
     result = seed(migrated_db, aoi_id=None, dry_run=False)
@@ -81,7 +82,7 @@ def test_seed_merges_and_preserves_existing_attributes(conn, migrated_db):
     # ...alongside every seeded key.
     for key, value in CONSTANT_ATTRIBUTES.items():
         assert attributes[key] == value
-    assert attributes["num_levels"] == levels_for(block_id)
+    assert attributes["num_levels"] == levels_for(ref)
     assert 1 <= attributes["num_levels"] <= 6
 
 
@@ -93,7 +94,8 @@ def test_seeded_attributes_drive_a_real_compute(conn, migrated_db):
     reporting success with zero rows.
     """
     seed_catalog(conn)
-    block_id = _block(conn, {})
+    ref = f"seed-blk-{uuid4().hex[:8]}"
+    block_id = _block(conn, {}, ref)
     conn.commit()
 
     seed(migrated_db, aoi_id=None, dry_run=False)
@@ -112,7 +114,7 @@ def test_seeded_attributes_drive_a_real_compute(conn, migrated_db):
         )
     )
     # ~220 m² at the seeded levels and 60 m²/unit.
-    expected_levels = levels_for(block_id)
+    expected_levels = levels_for(ref)
     assert written["value_numeric"] > 0
     assert written["value_numeric"] < 220 * expected_levels / 60 * 1.05
 
