@@ -2667,6 +2667,19 @@ class PostgresIndicatorResultRepository:
             [feature_id, *scenario_params, indicator_id],
         )
 
+    @staticmethod
+    def _flag_for(quality_flag: str, scenario_id: str | None) -> str:
+        """A scenario's value is a projection, never a measurement.
+
+        Every compute writes the default ``measured``, which a scenario row
+        carried into downloads and tooltips — a what-if presented as observed.
+        Under a scenario that default becomes ``estimated``; an explicit
+        ``missing`` or ``not_applicable`` is kept.
+        """
+        if scenario_id is not None and quality_flag == "measured":
+            return "estimated"
+        return quality_flag
+
     def write_result(
         self,
         *,
@@ -2721,7 +2734,7 @@ class PostgresIndicatorResultRepository:
                     value_numeric,
                     value_text,
                     value_json_serialised,
-                    quality_flag,
+                    self._flag_for(quality_flag, scenario_id),
                     confidence,
                     missing_reason,
                 ),
@@ -2739,6 +2752,7 @@ class PostgresIndicatorResultRepository:
     ) -> int:
         if not rows:
             return 0
+        quality_flag = self._flag_for(quality_flag, scenario_id)
         with self.connection.cursor() as cur:
             cur.execute(
                 "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",

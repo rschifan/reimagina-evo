@@ -1167,18 +1167,24 @@ ROLLBACK;
 
 ## 8. Scenarios Layer
 
-A scenario is an `app_core.scenario` row, and its drawn rules are
-`curated_geo.scenario_edit` rows, one attribute value each (both r048).
+A scenario is an `app_core.scenario` row (r048), and its drawn rules are
+`curated_geo.scenario_rule` rows, one area and its numbers each (r055).
 `materialize_scenario` (`packages/py/reimagina/scenarios/authoring.py`)
 expands those rules into per-feature `curated_geo.scenario_override` rows
-(r030), whose `scenario_id` is still a bare uuid with no foreign key to
-`app_core.scenario`. So the override cases below need no scenario row.
+(r030), whose `scenario_id` references `app_core.scenario` since r055. So
+the override cases below insert the scenario row first.
 
 ### 8.1 Overrides
 
 ```sql
 BEGIN;
 SELECT plan(4);
+
+INSERT INTO app_core.project (id, name)
+VALUES ('44444444-0000-0000-0000-000000000004', 'Test Project 4');
+INSERT INTO app_core.scenario (id, project_id, name)
+VALUES ('88888888-0000-0000-0000-000000000003',
+        '44444444-0000-0000-0000-000000000004', 'Overrides');
 
 -- One typed value per override: exactly one of value_numeric / value_text.
 SELECT lives_ok(
@@ -1242,11 +1248,11 @@ INSERT INTO app_core.scenario (id, project_id, name)
 VALUES ('88888888-0000-0000-0000-000000000004',
         '44444444-0000-0000-0000-000000000003', 'Taller blocks');
 
-INSERT INTO curated_geo.scenario_edit
-  (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+INSERT INTO curated_geo.scenario_rule
+  (scenario_id, ordinal, geometry, type_id, inputs)
 SELECT '88888888-0000-0000-0000-000000000004', 1,
        ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
-       id, 'floors', 10
+       id, '{"levels": 10}'
 FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX';
 
 -- A scenario is addressed by name inside its project: UNIQUE (project_id, name)
@@ -1262,25 +1268,25 @@ SELECT throws_ok(
 -- A drawn rule is polygonal (type check only; validity is the API's job)
 SELECT throws_ok(
   $$
-    INSERT INTO curated_geo.scenario_edit
-      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    INSERT INTO curated_geo.scenario_rule
+      (scenario_id, ordinal, geometry, type_id, inputs)
     SELECT '88888888-0000-0000-0000-000000000004', 2,
            ST_SetSRID(ST_MakePoint(-99.14, 19.43), 4326),
-           id, 'floors', 10
+           id, '{"levels": 10}'
     FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
   $$,
   '23514',
-  'Non-polygon scenario_edit geometry must be rejected'
+  'Non-polygon scenario_rule geometry must be rejected'
 );
 
 -- ordinal decides which overlapping rule wins, so it is unique per scenario
 SELECT throws_ok(
   $$
-    INSERT INTO curated_geo.scenario_edit
-      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    INSERT INTO curated_geo.scenario_rule
+      (scenario_id, ordinal, geometry, type_id, inputs)
     SELECT '88888888-0000-0000-0000-000000000004', 1,
            ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
-           id, 'num_levels', 3
+           id, '{"unit_size": 60}'
     FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
   $$,
   '23505',

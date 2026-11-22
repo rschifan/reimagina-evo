@@ -88,7 +88,7 @@ Run-time geometry tests remain where the geometry exists only at request time, a
 | Where | Predicate |
 |---|---|
 | `POST /metrics/within-polygon`, `POST /metrics/indicator-within-polygon` | `ST_Covers(polygon, geometry_centroid)` (`POLYGON_COVERS_CENTROID`, `packages/py/reimagina/storage/_utils.py`) |
-| Scenario materialisation | `ST_Covers(scenario_edit.geometry, feature.geometry_centroid)`, plus `EXISTS` on `aoi_feature` |
+| Scenario materialisation | `ST_Covers(scenario_rule.geometry, feature.geometry_centroid)`, plus `EXISTS` on `aoi_feature` |
 | `raster zonal-stats --aoi-id` (feature selection) | `ST_Intersects(feature.geometry, aoi.geometry)` (`iter_geometries_by_type`) |
 | `overlap compute-all --aoi-id` | `ST_Intersects(source.geometry, aoi.geometry)` |
 | Indicator computes run with an AOI | `ST_Intersects(feature.geometry, aoi.geometry)` (`geodesic_metrics_by_type`, `centroid_in_parent_counts`, `_AOI_JOIN` in `packages/py/reimagina/indicators/accessibility.py`) |
@@ -163,7 +163,7 @@ There is no grid or CRS registry. The spatial reference is fixed by column types
 
 | Data | CRS / measure | Fixed by |
 |---|---|---|
-| Vector geometry: `feature.geometry`, `area_of_interest.geometry`, `scenario_edit.geometry` | EPSG:4326 | Column type `geometry(Geometry, 4326)` (r003, r004, r048) |
+| Vector geometry: `feature.geometry`, `area_of_interest.geometry`, `scenario_rule.geometry` | EPSG:4326 | Column type `geometry(Geometry, 4326)` (r003, r004, r055) |
 | Vector input | Reprojected to EPSG:4326, invalid geometry repaired with `make_valid`, null and empty dropped | `clean_vector` in `packages/py/reimagina/pipeline/silver.py` |
 | Areas and lengths in `aoi_feature`, `feature_overlap` | Geodesic, through `::geography` (m², m) | `PostgresAOIRepository.compute_overlaps`, `PostgresOverlapRepository.compute_feature_overlaps` |
 | Raster pixels | The input's native CRS, recorded in `file_asset.crs` | `ingest_raster_source` |
@@ -311,7 +311,7 @@ titiler only opens `file://` URLs that resolve, after symlinks, to an existing f
 
 Scenarios touch only the feature path, and in practice only blocks:
 
-- A scenario edit is a drawn polygon over one feature type (the API default is `MEX:block`). Materialisation catches a feature when `ST_Covers(edit.geometry, feature.geometry_centroid)` holds and the feature is a member of the scenario's AOI in `aoi_feature`, and writes `scenario_override` rows.
+- A scenario rule is a drawn polygon over one feature type (the API default is `MEX:block`); its vertices must be longitude/latitude degrees, and a third coordinate is dropped. Materialisation catches a feature when `ST_Covers(rule.geometry, feature.geometry_centroid)` holds and the feature is a member of the scenario's AOI in `aoi_feature`, and writes `scenario_override` rows.
 - Indicators read `override ⊕ current observation ⊕ feature.attributes` (`effective_numeric`) and write `indicator_result` rows under the scenario's `scenario_id`. The baseline is `scenario_id IS NULL`.
 - Rasters, zonal statistics, rollup observations, `aoi_feature` and `feature_overlap` have no scenario dimension. A scenario never edits geometry.
 - `aoi_indicator_summary` has a `scenario_id` and reads indicator values through `scenario_overlay`.
@@ -468,7 +468,7 @@ Related tables documented elsewhere:
 | `curated_geo.area_of_interest` | `geometry geometry(Geometry, 4326) NOT NULL` with a Polygon/MultiPolygon CHECK; `membership_key jsonb` (r040) | `DATA_LAYER.md` |
 | `curated_geo.aoi_indicator_summary` | One row per (AOI, scenario, indicator); partial unique indexes `aoi_indicator_summary_base_uk`, `aoi_indicator_summary_scenario_uk` (r015) | `DATA_LAYER.md` |
 | `curated_geo.indicator_result` | Per feature; trigger rejects a feature type outside `indicator_catalog.applies_to` unless `quality_flag = 'not_applicable'` | `INDICATORS_LAYER.md` |
-| `curated_geo.scenario_edit`, `curated_geo.scenario_override` | Drawn `geometry geometry(Geometry, 4326)` (r048); per-feature overrides (r030) | `SCENARIOS_LAYER.md` |
+| `curated_geo.scenario_rule`, `curated_geo.scenario_override` | Drawn `geometry geometry(Geometry, 4326)` (r055); per-feature overrides (r030) | `SCENARIOS_LAYER.md` |
 
 ---
 

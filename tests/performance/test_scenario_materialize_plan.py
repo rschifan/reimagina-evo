@@ -5,7 +5,7 @@ first statement until the caller commits, so its cost is also the time every
 other writer to that scenario waits. The statement that dominates it is the
 one that resolves a drawn area to features:
 
-    ST_Covers(e.geometry, f.geometry_centroid)
+    ST_Covers(r.geometry, f.geometry_centroid)
 
 The plan uses ``feature_centroid_gist`` (r027) for it. Lose that index and
 the same statement still returns the right rows, so nothing functional fails;
@@ -23,7 +23,7 @@ This is a **plan** contract, not a timing budget. ``docs/architecture/
 PERFORMANCE.md`` records the measured wall-clock figures and the machine and
 method behind them.
 
-The SQL under test is captured from ``_resolve_edits`` as it executes, not
+The SQL under test is captured from ``_resolve_rules`` as it executes, not
 copied here, so the contract follows the shipped statement.
 """
 
@@ -34,7 +34,7 @@ from alembic.script import ScriptDirectory
 
 from reimagina.data import aoi as aoi_mod, feature as feat
 from reimagina.scenarios import authoring
-from reimagina.scenarios.authoring import add_edit, create_scenario
+from reimagina.scenarios.authoring import add_rule, create_scenario
 from tests.integration._helpers import insert_project, register_source, start_run
 
 #: Blocks in the fixture, all of one feature type. Without the centroid index
@@ -115,7 +115,7 @@ def build_territory(conn, *, grid: int = GRID) -> dict:
     with conn.cursor() as cur:
         cur.execute("ANALYZE curated_geo.feature")
         cur.execute("ANALYZE curated_geo.aoi_feature")
-        cur.execute("ANALYZE curated_geo.scenario_edit")
+        cur.execute("ANALYZE curated_geo.scenario_rule")
     return {"type_id": type_id, "aoi_id": aoi_id, "scenario_id": scenario_id}
 
 
@@ -156,7 +156,7 @@ class _RecordingConn:
 def materialize_select(conn, scenario_id: str, aoi_id: str) -> tuple[str, dict]:
     """The exact ``(sql, params)`` that step 2 of materialisation executes."""
     sink: list = []
-    authoring._resolve_edits(_RecordingConn(conn, sink), scenario_id, aoi_id)
+    authoring._resolve_rules(_RecordingConn(conn, sink), scenario_id, aoi_id)
     assert len(sink) == 1, f"step 2 is expected to be one statement, saw {len(sink)}"
     return sink[0]
 
@@ -169,16 +169,15 @@ def explain(conn, sql: str, params: dict) -> str:
 
 def _scenario_with_selective_edit(conn) -> tuple[str, str]:
     t = build_territory(conn)
-    add_edit(
+    add_rule(
         conn,
         scenario_id=t["scenario_id"],
         geometry_wkt=SELECTIVE_AREA,
         type_id=t["type_id"],
-        attribute_key="num_levels",
-        value_numeric=6,
+        inputs={"levels": 6},
     )
     with conn.cursor() as cur:
-        cur.execute("ANALYZE curated_geo.scenario_edit")
+        cur.execute("ANALYZE curated_geo.scenario_rule")
     return t["scenario_id"], t["aoi_id"]
 
 
@@ -211,7 +210,7 @@ def test_the_materialisation_select_uses_the_centroid_index(conn):
     assert "Seq Scan on feature" not in plan, plan
     assert "feature_centroid_gist" in plan, plan
     # The index is used as the access path, not merely mentioned.
-    assert "geometry_centroid @ e.geometry" in plan, plan
+    assert "geometry_centroid @ r.geometry" in plan, plan
 
 
 def test_the_seq_scan_assertion_is_reachable(conn):
@@ -256,7 +255,7 @@ def test_the_index_is_what_the_plan_depends_on(conn):
     plan = explain(conn, sql, params)
 
     assert "feature_centroid_gist" not in plan, plan
-    assert "Index Cond: (type_id = e.type_id)" in plan or "Seq Scan on feature" in plan
+    assert "Index Cond: (type_id = r.type_id)" in plan or "Seq Scan on feature" in plan
 
 
 def test_the_select_is_written_against_the_stored_centroid(conn):

@@ -679,7 +679,7 @@ One thing Phase 0 did *not* anticipate and this branch's spikes caught: the dirt
 Unchanged by any of this, and the reason an engine swap is safe:
 
 - canonical baseline is written in `curated_geo`;
-- scenario edits are authored as drawn rules in `curated_geo.scenario_edit` (r048) and materialised (`scenarios.authoring.materialize_scenario`) into `curated_geo.scenario_override` — one row per `(scenario_id, feature_id, attribute_key)`, exactly one of `value_numeric` / `value_text` (`r030_scenario_override.py:26-36`) — which is what runs read;
+- scenario edits are authored as drawn rules in `curated_geo.scenario_rule` (r055) and materialised (`scenarios.authoring.materialize_scenario`) into `curated_geo.scenario_override` — one row per `(scenario_id, feature_id, attribute_key)`, exactly one of `value_numeric` / `value_text` (`r030_scenario_override.py:26-36`) — which is what runs read;
 - the effective value of an attribute is `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric` (`overrides.py:169`); baseline collapses to `observation ⊕ base`;
 - runners apply that overlay on read and never write back to feature tables;
 - computed outputs go to `curated_geo.indicator_result`, each citing its `job_run_id`.

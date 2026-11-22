@@ -14,6 +14,7 @@ from reimagina.assets.publish import publish_version
 from reimagina.assets.registry import seed_assets
 from reimagina.indicators.catalog import ACCESSIBILITY_NETWORK, SHIPPED_INDICATORS
 from reimagina.orchestration.plan import plan_run
+from tests.integration._helpers import make_scenario
 
 
 def _materialize_everything(conn):
@@ -238,6 +239,7 @@ def _block_id(conn, ref="blk-1"):
 def _edit(conn, scenario_id, feature_id, *, attribute="floors", value=9.0):
     from reimagina.scenarios.overrides import apply_override
 
+    make_scenario(conn, scenario_id)
     apply_override(
         conn,
         scenario_id=scenario_id,

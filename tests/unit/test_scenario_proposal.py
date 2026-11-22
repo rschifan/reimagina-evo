@@ -18,11 +18,12 @@ from reimagina.scenarios.ceilings import DENSITY, max_levels_for
 from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     ProposalValueError,
+    RULE_INPUTS,
+    check_inputs,
     edits_for,
     polygon_wkt,
     precheck_ceilings,
     reachable_indicators,
-    require_positive,
     table_statistic,
 )
 
@@ -60,7 +61,7 @@ def test_every_edit_key_is_authorable():
     """A key the authoring layer refuses is a four-way write that half-lands."""
     from reimagina.assets.registry import authorable_attributes
 
-    keys = {e["attribute_key"] for e in edits_for(6, 60, 3.6, 0.6)}
+    keys = {e["attribute_key"] for e in edits_for(**dict.fromkeys(RULE_INPUTS, 1.0))}
     assert keys == set(authorable_attributes())
 
 
@@ -70,10 +71,10 @@ def test_every_edit_key_is_authorable():
 @pytest.mark.parametrize("value", [0.0, -3.0, float("nan"), float("inf")])
 def test_a_degenerate_value_is_refused_and_names_its_field(value):
     with pytest.raises(ProposalValueError) as caught:
-        require_positive(levels=value)
+        check_inputs({"levels": value})
 
     assert caught.value.field == "levels"
-    assert caught.value.value is value or math.isnan(value)
+    assert caught.value.value == value or math.isnan(value)
 
 
 def test_the_precheck_carries_the_breach_and_the_allowance():
@@ -95,11 +96,11 @@ def test_the_precheck_carries_the_breach_and_the_allowance():
 @pytest.mark.parametrize(
     "raise_it",
     [
-        lambda: require_positive(unit_size=-1.0),
+        lambda: check_inputs({"unit_size": -1.0}),
         lambda: precheck_ceilings(10_000, 1.0, 3.6),
         lambda: polygon_wkt({"type": "Point", "coordinates": [0.0, 0.0]}),
     ],
-    ids=["require_positive", "precheck_ceilings", "polygon_wkt"],
+    ids=["check_inputs", "precheck_ceilings", "polygon_wkt"],
 )
 def test_the_domain_messages_name_fields_not_flags(raise_it):
     """⚠ The whole reason these functions moved out of `apps/cli`.
@@ -131,7 +132,61 @@ def test_the_precheck_still_says_what_it_cannot_check():
     assert "materialisation" in message
 
 
+@pytest.mark.parametrize(
+    ("inputs", "field"),
+    [
+        ({"unit_size": 0.5}, "unit_size"),
+        ({"unit_size": 15}, "unit_size"),
+        ({"people_per_household": 1000}, "people_per_household"),
+        ({"storeys": 3}, "storeys"),
+        ({"levels": True}, "levels"),
+        ({"levels": "3"}, "levels"),
+    ],
+    ids=["tiny-unit", "unit-at-bound", "huge-household", "unknown", "bool", "text"],
+)
+def test_implausible_or_unknown_inputs_are_refused_by_name(inputs, field):
+    """0.5 m² per dwelling or 1,000 people per household used to pass, and
+    failed later as a per-block breach naming a block id, not a field."""
+    with pytest.raises(ProposalValueError) as caught:
+        check_inputs(inputs)
+    assert caught.value.field == field
+
+
+def test_check_inputs_keeps_only_the_numbers_set_in_registry_order():
+    assert check_inputs({"lot_coverage": 0.5, "levels": 3, "unit_size": None}) == {
+        "levels": 3.0,
+        "lot_coverage": 0.5,
+    }
+
+
 # ── the drawn area ───────────────────────────────────────────────────────
+
+
+def test_polygon_wkt_drops_a_third_coordinate():
+    """QGIS and GPS exports carry Z; the column is 2D and the insert was a 500."""
+    z = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0, 5], [1, 0, 5], [1, 1, 5], [0, 1, 5], [0, 0, 5]]],
+    }
+    assert polygon_wkt(z) == "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"
+
+
+@pytest.mark.parametrize(
+    "ring",
+    [
+        # Latitude and longitude swapped for Mexicali: latitude -115 is no
+        # latitude at all.
+        [[32.6, -115.5], [32.7, -115.5], [32.7, -115.4], [32.6, -115.5]],
+        [[-500, 95], [-499, 95], [-499, 96], [-500, 95]],
+        # Projected metres (UTM), stored as SRID 4326, would select nothing.
+        [[500000, 2100000], [500100, 2100000], [500100, 2100100], [500000, 2100000]],
+        [[0, 0], [0, float("nan")], [1, 1], [0, 0]],
+    ],
+    ids=["swapped", "out-of-range", "projected", "nan"],
+)
+def test_polygon_wkt_refuses_what_is_not_lon_lat_degrees(ring):
+    with pytest.raises(InvalidGeometry, match="longitude/latitude"):
+        polygon_wkt({"type": "Polygon", "coordinates": [ring]})
 
 
 def test_polygon_wkt_accepts_a_bare_geometry():

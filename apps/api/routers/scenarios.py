@@ -1,13 +1,14 @@
 """Scenario authoring over HTTP: create it, draw rules on it, recompute, compare.
 
-The same six operations ``apps/cli/scenario.py`` offers, for the map. Nothing
-here owns a rule: the five edits one proposal writes, the refusal of a
-degenerate value, the density precheck and the unioning of a drawn
-FeatureCollection all come from ``reimagina.scenarios.proposal``, which exists
-so that this router and the CLI refuse the same things for the same reasons.
-A router that re-derived them would bring back the failure the five-edit rule
-prevents — planned floors frozen on the baseline while edificability moves —
-and one that imported them from ``apps/cli`` would make a deployable app
+The same operations ``apps/cli/scenario.py`` offers, for the map. A rule is a
+row (``curated_geo.scenario_rule``) with its own id; the edits its numbers
+write, the refusal of a degenerate or implausible value, the density precheck
+and the unioning of a drawn FeatureCollection all come from
+``reimagina.scenarios.proposal``, which exists so that this router and the CLI
+refuse the same things for the same reasons. A router that re-derived them
+would bring back the failure ``edits_for`` prevents — planned floors frozen on
+the baseline while edificability moves — and one that imported them from
+``apps/cli`` would make a deployable app
 depend on another deployable app, which is the mistake
 ``test_the_shared_backend_never_imports_a_deployable_app`` forbids in the
 other direction.
@@ -29,7 +30,7 @@ because psycopg2's connection context manager scopes the *transaction*: it
 commits or rolls back and leaves the socket open. In a long-lived API process
 that is a leaked backend per request, which is what ``POST /jobs`` learned.
 
-**The status code of every refusal.** The scenario layer raises nine distinct
+**The status code of every refusal.** The scenario layer raises ten distinct
 things and leaves two driver errors raw; each becomes one status, chosen
 once, in ``_refusals``. The last row is the exception — handled app-wide rather
 than here, for the reason given under it:
@@ -46,10 +47,14 @@ raised                           status  why
                                         resource's state is not
 ``ProposalValueError``           400     a number no indicator could be
                                         computed from, whatever is stored
-``InvalidGeometry``              400     a point is not an area, ever
+``InvalidGeometry``              400     a point is not an area, ever; nor
+                                        is one outside lon/lat degrees
+``RuleCatchesNothing``           422     the area parses and catches no block
+                                        of the AOI; nothing is stored
 ``CeilingPrecheckFailed``        422     every field parses and is plausible;
                                         the *combination* cannot be processed
-``CeilingExceeded``              422     same, per block, with the blocks
+``CeilingExceeded``              422     same, per block, with the blocks,
+                                        the rules and the storeys allowed
 ``ForeignKeyViolation``          404     a well-formed id naming no record —
                                         the same answer the layer gives when
                                         it does the check itself
@@ -119,7 +124,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import psycopg2
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from reimagina.db import connect
@@ -128,16 +133,20 @@ from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
+    RuleCatchesNothing,
     RuleNotFound,
     ScenarioHasNoAOI,
     ScenarioNotFound,
-    add_edit,
+    add_rule,
     create_scenario,
+    delete_rule,
     delete_scenario,
     get_scenario,
+    list_rules,
     list_scenarios,
+    materialize_for_rule,
     materialize_scenario,
-    remove_edit,
+    unfinished_runs,
     update_rule,
 )
 from reimagina.scenarios.comparison import compare
@@ -145,12 +154,9 @@ from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     EmptyProposal,
     ProposalValueError,
-    edits_for,
+    check_inputs,
     polygon_wkt,
-    precheck_ceilings,
     reachable_indicators,
-    require_coverage,
-    require_positive,
     table_statistic,
 )
 
@@ -175,44 +181,33 @@ _MAX_BREACHES_REPORTED = 20
 
 
 class CreateScenarioBody(BaseModel):
-    """A named what-if inside a project, optionally bounded by an AOI.
+    """A named what-if inside a project, bounded by one of its AOIs.
 
     ``project_id`` is required rather than derived from ``aoi_id`` the way
     ``scenario create`` derives it. The CLI derives it because a person at a
     terminal would otherwise type a uuid they have to look up first; an HTTP
-    client already has it — ``GET /aois`` carries ``project_id`` on every row
-    — so deriving it here would buy nothing and would put a SELECT of its own
-    in a router that has none.
+    client already has it — ``GET /aois`` carries ``project_id`` on every row.
 
-    ``aoi_id`` is optional here and required by ``recompute``: a scenario can
-    be named before its scope is chosen, and the refusal when it is still
-    missing says so.
+    ``aoi_id`` is required. A scenario without one could hold rules but never
+    materialise them, and nothing can set it later — its rules are drawn over
+    that AOI's blocks — so it was a dead end.
     """
 
     project_id: UUID
     name: str = Field(min_length=1)
-    aoi_id: UUID | None = None
+    aoi_id: UUID
     description: str | None = None
 
 
-class ProposalBody(BaseModel):
-    """One proposal: an area and the three numbers a planner proposes over it.
+class RuleBody(BaseModel):
+    """One rule: an area and the numbers a planner sets over it.
 
-    The field names are the domain's own (``proposal.require_positive`` raises
-    about ``levels``, not ``storeys``), so a refusal can name the field the
-    client actually sent without a translation table that could rot.
-
-    ``levels`` writes **both** ``floors`` and ``num_levels`` — the same
-    quantity under the two names the indicators read. All three numbers are
-    required because ``edificability.py`` skips any feature missing any of
-    them, and a scenario that silently computed nothing is the hardest failure
-    to see.
-
-    Non-finite values are *not* refused here, deliberately. ``allow_inf_nan``
-    would make ``NaN`` a 422 from the model, which reads as a transport
-    complaint; it is a domain refusal — ``require_positive`` owns zero,
-    negative and non-finite together, for this surface and the CLI both — and
-    it is answered with the field name a form can highlight.
+    ``inputs`` maps a number's name (``proposal.RULE_INPUTS``: ``levels``,
+    ``unit_size``, ``people_per_household``, ``lot_coverage``) to its value. A
+    number left out, or null, is not set: each block keeps its own value for
+    it. At least one must be set. Values are refused by the domain
+    (``proposal.check_inputs``) rather than by this model, so a refusal is a
+    400 naming the field rather than a schema complaint.
     """
 
     area: dict[str, Any] = Field(
@@ -220,51 +215,37 @@ class ProposalBody(BaseModel):
         "Feature, or a bare geometry. Several polygons are unioned into one "
         "area, because a selection made with two strokes is one rule."
     )
-    levels: float | None = None
-    unit_size: float | None = None
-    people_per_household: float | None = None
-    lot_coverage: float | None = Field(
-        None,
-        description="Share of the block built on (COS), 0 < c ≤ 1. Like every "
-        "number here, omitted means the rule does not set it and each block "
-        "keeps its own (1.0, the whole block, when it has none). At least one "
-        "number must be set.",
+    inputs: dict[str, Any] = Field(
+        description="The numbers the rule sets, by name: levels, unit_size, "
+        "people_per_household, lot_coverage (0 < c ≤ 1). Omitted or null: "
+        "not set."
     )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
 
 
-class UpdateRuleBody(BaseModel):
-    """One rule's new numbers, and optionally its new area.
+class RuleUpdateBody(BaseModel):
+    """A rule's whole new set of numbers, and optionally its new area.
 
-    ``edit_ids`` are the rule's edits as ``GET /scenarios/{id}`` lists them —
-    every edit of one area. They are updated in place, so the rule keeps its
-    position in "later wins".
-
-    The numbers are the rule's **whole** set: one left out is no longer set by
-    the rule, and each block keeps its own value for it.
+    ``inputs`` replaces the rule's numbers: one left out is no longer set.
+    The rule keeps its id and its place in "later wins".
     """
 
-    edit_ids: list[UUID] = Field(min_length=1)
     area: dict[str, Any] | None = Field(
         None, description="The moved or resized area; omitted keeps the area."
     )
-    levels: float | None = None
-    unit_size: float | None = None
-    people_per_household: float | None = None
-    lot_coverage: float | None = None
-    type_context: str = DEFAULT_TYPE_CONTEXT
-    type_slug: str = DEFAULT_TYPE_SLUG
+    inputs: dict[str, Any]
 
 
-class EditRow(BaseModel):
+class RuleRow(BaseModel):
     id: str
+    #: Its place in "later wins": assigned at creation, never changed after.
     ordinal: int
     type_id: str
-    attribute_key: str
-    value_numeric: float
+    inputs: dict[str, float]
     geometry_wkt: str
     created_at: datetime
+    updated_at: datetime
 
 
 class ScenarioRow(BaseModel):
@@ -275,7 +256,7 @@ class ScenarioRow(BaseModel):
     description: str | None = None
     created_at: datetime
     updated_at: datetime
-    # None means the edits have not been expanded into overrides yet, which is
+    # None means the rules have not been expanded into overrides yet, which is
     # a different statement from "expanded, and there was nothing to do".
     materialized_at: datetime | None = None
 
@@ -289,11 +270,11 @@ class ScenarioListRow(ScenarioRow):
     """A list row: the scenario plus what a summary of every scenario needs.
 
     Only on the list. ``get_scenario`` does not compute them, and a detail
-    defaulting ``edit_count`` to 0 beside its own non-empty ``edits`` would be
+    defaulting ``rule_count`` to 0 beside its own non-empty ``rules`` would be
     a response contradicting itself.
     """
 
-    edit_count: int
+    rule_count: int
     #: The newest run envelope (``orchestration_run``), or None. A queued run
     #: has no envelope until a worker opens it, so during that window this is
     #: the previous run.
@@ -302,37 +283,26 @@ class ScenarioListRow(ScenarioRow):
 
 class ScenarioDetail(ScenarioRow):
     override_count: int = 0
-    edits: list[EditRow] = []
-
-
-class WrittenEdit(BaseModel):
-    id: str
-    attribute_key: str
-    value_numeric: float
-
-
-class EditsWritten(BaseModel):
-    scenario_id: str
-    feature_type: str
-    edits: list[WrittenEdit] = []
+    rules: list[RuleRow] = []
 
 
 class RecomputeResponse(BaseModel):
     """What the materialisation did, and the run that will recompute from it.
 
-    ``matched_per_edit`` is per *edit* and counts what that edit's area caught
+    ``matched_per_rule`` is per *rule* and counts what that rule's area caught
     inside the AOI — the number a drawing UI needs ("your shape caught 4
-    blocks"). Zero is an answer, not an omission: it means the area caught
-    nothing, which is the one thing a client has to be told.
+    blocks").
 
     ``run_id`` is null for a submit that found nothing to recompute. The
     materialisation still happened and its counts still stand; handing back an
     id that ``GET /jobs/{run_id}`` would 404 is what the jobs router already
-    refuses to do.
+    refuses to do. When a run of this scenario is still outstanding, that run
+    is answered instead (``deduplicated``): "nothing to do" would read as
+    "done" while it is not.
     """
 
     scenario_id: str
-    matched_per_edit: dict[str, int] = {}
+    matched_per_rule: dict[str, int] = {}
     overrides_written: int = 0
     overrides_removed: int = 0
     results_superseded: int = 0
@@ -348,12 +318,20 @@ class RecomputeResponse(BaseModel):
     the same orchestrator answer differ by which route asked."""
 
 
+class RuleChangeResponse(RecomputeResponse):
+    """A rule written (or deleted), materialised, and its recompute enqueued.
+
+    ``rule`` is the rule as stored, or null after a delete.
+    """
+
+    rule: RuleRow | None = None
+
+
 class DeleteScenarioResponse(BaseModel):
     """One count per table the delete removed rows from.
 
-    A scenario's traces live in tables no constraint connects, so "it is gone"
-    is several separate claims and counting each is the only way to see that
-    each was made.
+    "It is gone" is several separate claims, and counting each is the only way
+    to see that each was made.
     """
 
     scenario_id: str
@@ -430,10 +408,15 @@ def _refusals() -> Iterator[None]:
         yield
     except ScenarioNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RuleNotFound as exc:
+    except RuleCatchesNothing as exc:
         raise HTTPException(
             status_code=422,
-            detail={"error": "not_one_rule", "field": "edit_ids", "message": str(exc)},
+            detail={
+                "error": "rule_catches_nothing",
+                "field": "area",
+                "message": f"{exc}. Nothing was stored; draw it over the "
+                "scenario's blocks.",
+            },
         ) from exc
     except DuplicateScenarioName as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -486,6 +469,17 @@ def _refusals() -> Iterator[None]:
                         "indicator_slug": breach.indicator_slug,
                         "bound": breach.bound,
                         "would_be": breach.would_be,
+                        # Which rules the block is computed with, and their
+                        # "Rule N" numbers, so a form can point at them.
+                        "rule_ids": list(exc.rules_of(breach)),
+                        "rule_numbers": [
+                            exc.rule_numbers[r]
+                            for r in exc.rules_of(breach)
+                            if r in exc.rule_numbers
+                        ],
+                        "allowed_levels": exc.allowed_levels.get(
+                            (breach.feature_id, breach.indicator_slug)
+                        ),
                     }
                     for breach in exc.breaches[:_MAX_BREACHES_REPORTED]
                 ],
@@ -596,6 +590,14 @@ def _reference_field(exc: psycopg2.Error) -> str | None:
     return None
 
 
+def _rule_id(raw: str) -> str:
+    """A rule id from the path, normalised — or 404, as a scenario id is."""
+    try:
+        return str(UUID(raw))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuleNotFound(f"no rule with id {raw!r}") from exc
+
+
 def _scenario_id(raw: str) -> str:
     """A path id, normalised — or the same 404 an unknown one gets.
 
@@ -643,7 +645,7 @@ def list_scenarios_route(
 ) -> list[ScenarioListRow]:
     """Scenarios, newest first, optionally narrowed by project and/or AOI.
 
-    Each row carries its ``edit_count`` and ``latest_run``.
+    Each row carries its ``rule_count`` and ``latest_run``.
     """
     with _refusals(), contextlib.closing(connect(api_dsn())) as conn:
         rows = list_scenarios(conn, project_id=_opt(project_id), aoi_id=_opt(aoi_id))
@@ -663,7 +665,7 @@ def create_scenario_route(body: CreateScenarioBody) -> ScenarioDetail:
             conn,
             project_id=str(body.project_id),
             name=body.name,
-            aoi_id=_opt(body.aoi_id),
+            aoi_id=str(body.aoi_id),
             description=body.description,
         )
         created = get_scenario(conn, scenario_id)
@@ -714,7 +716,7 @@ def reachable_indicators_route() -> list[ReachableIndicator]:
 
 @router.get("/{scenario_id}", response_model=ScenarioDetail)
 def get_scenario_route(scenario_id: str) -> ScenarioDetail:
-    """One scenario with its edits in ordinal order, and its override count."""
+    """One scenario with its rules in ordinal order, and its override count."""
     with _refusals():
         resolved = _scenario_id(scenario_id)
         with contextlib.closing(connect(api_dsn())) as conn:
@@ -724,6 +726,29 @@ def get_scenario_route(scenario_id: str) -> ScenarioDetail:
                 status_code=404, detail=f"no scenario with id {scenario_id!r}"
             )
     return ScenarioDetail(**found)
+
+
+def _cancel(run_ids: list[str]) -> None:
+    """Cancel a deleted scenario's unfinished runs. Best effort.
+
+    Not what keeps the database clean — a unit that runs anyway finds no
+    scenario and skips (``runners._scenario_fence``), and one already writing
+    held the delete back until it committed, then was cascaded. This stops the
+    queue spending minutes on a scenario nobody can see, and the jobs page
+    showing it as running.
+    """
+    import logging
+
+    from reimagina.orchestration.factory import get_orchestrator
+
+    for run_id in run_ids:
+        try:
+            with contextlib.closing(connect(api_dsn())) as conn, conn:
+                get_orchestrator().cancel_run(conn, run_id)
+        except Exception:  # noqa: BLE001 — the delete has committed; this is tidying
+            logging.getLogger(__name__).warning(
+                "could not cancel run %s of a deleted scenario", run_id, exc_info=True
+            )
 
 
 @router.delete("/{scenario_id}", response_model=DeleteScenarioResponse)
@@ -742,7 +767,9 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
     with _refusals():
         resolved = _scenario_id(scenario_id)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
+            running = unfinished_runs(conn, resolved)
             removed = delete_scenario(conn, scenario_id=resolved)
+    _cancel([run_id for run_id, _ in running])
     return DeleteScenarioResponse(
         scenario_id=resolved,
         overrides=removed.overrides,
@@ -753,243 +780,204 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
     )
 
 
-# ── edits ────────────────────────────────────────────────────────────────
+# ── rules ────────────────────────────────────────────────────────────────
 
 
-def _checked_edits(body: ProposalBody | UpdateRuleBody) -> list[dict[str, Any]]:
-    """The edits a rule writes, after the value and ceiling refusals.
+@router.get("/{scenario_id}/rules", response_model=list[RuleRow])
+def list_rules_route(scenario_id: str) -> list[RuleRow]:
+    """A scenario's rules in "later wins" order."""
+    with _refusals():
+        resolved = _scenario_id(scenario_id)
+        with contextlib.closing(connect(api_dsn())) as conn:
+            if get_scenario(conn, resolved) is None:
+                raise ScenarioNotFound(f"no scenario with id {scenario_id!r}")
+            rows = list_rules(conn, resolved)
+    return [RuleRow(**row) for row in rows]
 
-    Only the numbers set are written or checked: one left out keeps each
-    block's own value (``proposal.edits_for``).
-    """
-    proposed = edits_for(
-        body.levels, body.unit_size, body.people_per_household, body.lot_coverage
+
+def _rule_row(conn: Any, scenario_id: str, rule_id: str) -> RuleRow:
+    return next(
+        RuleRow(**row) for row in list_rules(conn, scenario_id) if row["id"] == rule_id
     )
-    require_positive(
-        **{
-            field: value
-            for field, value in (
-                ("levels", body.levels),
-                ("unit_size", body.unit_size),
-                ("people_per_household", body.people_per_household),
-            )
-            if value is not None
-        }
-    )
-    if body.lot_coverage is not None:
-        require_coverage(body.lot_coverage)
-    precheck_ceilings(
-        body.levels, body.unit_size, body.people_per_household, body.lot_coverage
-    )
-    return proposed
 
 
-@router.post("/{scenario_id}/edits", status_code=201, response_model=EditsWritten)
-def add_edits_route(scenario_id: str, body: ProposalBody) -> EditsWritten:
-    """Draw one area and write the five edits of one proposal over it.
+@router.post("/{scenario_id}/rules", status_code=201, response_model=RuleChangeResponse)
+def add_rule_route(scenario_id: str, body: RuleBody) -> RuleChangeResponse:
+    """Draw one rule, materialise the scenario, and enqueue its recompute.
 
-    The refusals come first, and in this order — the id, then the values, then
-    the ceiling, then the geometry — so a proposal that cannot be stored costs
-    no connection and leaves no half-written rule behind. The five writes then
-    share one transaction: some edits of five is not a proposal, it is a
-    block the edificability family skips while planned floors moves.
+    **The rule and the materialisation are one transaction.** A rule that
+    breaches a ceiling on any block, or catches no block of the scenario's
+    AOI, is refused (422) and nothing is stored — the server never keeps a
+    rule it would not materialise, so no client has to undo one. The
+    recompute is enqueued after the commit, for the reason ``recompute``
+    gives; if only the enqueue fails, the rule stands (500
+    ``recompute_not_enqueued``) and a later recompute picks it up.
+
+    The cheap refusals come first — the id, the numbers, the area — so a rule
+    that cannot be stored costs no connection.
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
-        proposed = _checked_edits(body)
+        inputs = check_inputs(body.inputs)
         geometry_wkt = polygon_wkt(body.area)
-
-        written: list[WrittenEdit] = []
         with contextlib.closing(connect(api_dsn())) as conn, conn:
             type_id = _feature_type_id(conn, body.type_context, body.type_slug)
-            for edit in proposed:
-                edit_id = add_edit(
-                    conn,
-                    scenario_id=resolved,
-                    geometry_wkt=geometry_wkt,
-                    type_id=type_id,
-                    attribute_key=edit["attribute_key"],
-                    value_numeric=edit["value_numeric"],
-                )
-                written.append(
-                    WrittenEdit(
-                        id=edit_id,
-                        attribute_key=edit["attribute_key"],
-                        value_numeric=edit["value_numeric"],
-                    )
-                )
-    return EditsWritten(
-        scenario_id=resolved,
-        feature_type=f"{body.type_context}:{body.type_slug}",
-        edits=written,
-    )
-
-
-@router.patch("/{scenario_id}/rules", response_model=EditsWritten)
-def update_rule_route(scenario_id: str, body: UpdateRuleBody) -> EditsWritten:
-    """Change one rule's numbers, and optionally move or resize it, in place.
-
-    Same refusals, in the same order, as ``POST …/edits``. Does not
-    recompute: the caller does, as after a POST.
-    """
-    with _refusals():
-        resolved = _scenario_id(scenario_id)
-        values = {e["attribute_key"]: e["value_numeric"] for e in _checked_edits(body)}
-        geometry_wkt = None if body.area is None else polygon_wkt(body.area)
-        with contextlib.closing(connect(api_dsn())) as conn, conn:
-            type_id = _feature_type_id(conn, body.type_context, body.type_slug)
-            rows = update_rule(
+            rule_id = add_rule(
                 conn,
                 scenario_id=resolved,
-                edit_ids=[str(edit_id) for edit_id in body.edit_ids],
                 geometry_wkt=geometry_wkt,
-                values=values,
                 type_id=type_id,
+                inputs=inputs,
             )
-    return EditsWritten(
-        scenario_id=resolved,
-        feature_type=f"{body.type_context}:{body.type_slug}",
-        edits=[
-            WrittenEdit(id=edit_id, attribute_key=key, value_numeric=value)
-            for edit_id, key, value in rows
-        ],
-    )
+            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=rule_id)
+            rule = _rule_row(conn, resolved, rule_id)
+    return RuleChangeResponse(**_enqueue(resolved, result), rule=rule)
 
 
-@router.delete("/{scenario_id}/edits", status_code=204, response_class=Response)
-def remove_edit_route(
-    scenario_id: str, edit_id: UUID = Query(description="The edit to remove.")
-) -> Response:
-    """Remove one rule from this scenario.
+@router.patch("/{scenario_id}/rules/{rule_id}", response_model=RuleChangeResponse)
+def update_rule_route(
+    scenario_id: str, rule_id: str, body: RuleUpdateBody
+) -> RuleChangeResponse:
+    """Change one rule's numbers, and optionally its area, in place.
 
-    ⚠ The scenario in the path is checked, not decoration. ``remove_edit`` is
-    keyed by ``edit_id`` alone — nothing in the data layer ties the edit to a
-    scenario — so without this, ``DELETE /scenarios/<A>/edits?edit_id=<an
-    edit of B>`` would delete B's rule and report success.
-
-    The overrides the removed rule produced are **not** withdrawn here: that
-    happens on the next ``recompute``, which deletes the overrides no edit
-    implies any more and stales the results behind them. The alternative is a
-    materialisation inside a DELETE, which would hold the scenario's write
-    lock for a city-scale resolution in a request nobody expects to be slow.
-
-    204, because there is nothing to say that the request did not already
-    contain. The refusal for an unknown or foreign edit is a 404.
+    The rule keeps its id and its place in "later wins". Same refusals, in
+    the same transaction, as ``POST …/rules``: a refused change leaves the
+    rule as it was.
     """
     with _refusals():
         resolved = _scenario_id(scenario_id)
+        rule = _rule_id(rule_id)
+        inputs = check_inputs(body.inputs)
+        geometry_wkt = None if body.area is None else polygon_wkt(body.area)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
-            scenario = get_scenario(conn, resolved)
-            if scenario is None:
-                raise HTTPException(
-                    status_code=404, detail=f"no scenario with id {scenario_id!r}"
-                )
-            if str(edit_id) not in {edit["id"] for edit in scenario["edits"]}:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"scenario {resolved} has no edit {edit_id}",
-                )
-            if not remove_edit(conn, edit_id=str(edit_id)):
-                # Lost a race with another remover between read and write.
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"scenario {resolved} has no edit {edit_id}",
-                )
-    return Response(status_code=204)
+            update_rule(
+                conn,
+                scenario_id=resolved,
+                rule_id=rule,
+                geometry_wkt=geometry_wkt,
+                inputs=inputs,
+            )
+            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=rule)
+            row = _rule_row(conn, resolved, rule)
+    return RuleChangeResponse(**_enqueue(resolved, result), rule=row)
+
+
+@router.delete("/{scenario_id}/rules/{rule_id}", response_model=RuleChangeResponse)
+def delete_rule_route(scenario_id: str, rule_id: str) -> RuleChangeResponse:
+    """Delete one rule — one row, one transaction — and recompute.
+
+    Refused (422) only when what is left breaches a ceiling: an earlier rule
+    the deleted one was overriding can then win, and its numbers are checked
+    like any other.
+    """
+    with _refusals():
+        resolved = _scenario_id(scenario_id)
+        rule = _rule_id(rule_id)
+        with contextlib.closing(connect(api_dsn())) as conn, conn:
+            delete_rule(conn, scenario_id=resolved, rule_id=rule)
+            result = materialize_for_rule(conn, scenario_id=resolved, rule_id=None)
+    return RuleChangeResponse(**_enqueue(resolved, result))
 
 
 # ── recompute ────────────────────────────────────────────────────────────
+
+
+def _enqueue(scenario_id: str, result: MaterializeResult) -> dict[str, Any]:
+    """Enqueue the recompute of a committed materialisation's footprint.
+
+    **The dirty set is the footprint**, not freshness: every block a current
+    rule overrides, with the attributes involved (removed ones included).
+    Planned from freshness, every indicator reading a changed attribute
+    recomputed every block of the AOI under the scenario — 19,058 in Mexicali
+    for a rule over 2,400 — though a block without an override reads the
+    baseline through the overlay anyway.
+
+    An empty footprint enqueues nothing: an empty feature list means "every
+    feature" to the planner, and a scenario with no override left has nothing
+    to compute — materialisation already retired its rows.
+
+    A noop while a run of this scenario is still going answers that run
+    (``deduplicated``): the change is being computed, and "nothing to do"
+    would read as "done".
+
+    Runs on its own connection, after the materialisation committed: see
+    ``recompute_route``. Answers the fields of ``RecomputeResponse``.
+    """
+    from reimagina.orchestration.factory import get_orchestrator
+    from reimagina.provenance import code_version
+
+    fields: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "matched_per_rule": result.matched_per_rule,
+        "overrides_written": result.overrides_written,
+        "overrides_removed": result.overrides_removed,
+        "results_superseded": result.results_superseded,
+        "run_id": None,
+        "run_status": "noop",
+        "deduplicated": False,
+    }
+    # ⚠ Outside `_refusals`: the materialisation is committed, so a refusal
+    # raised from here on is about the *enqueue* — see `_enqueue_failure`.
+    with (
+        _enqueue_failure(scenario_id, result),
+        contextlib.closing(connect(api_dsn())) as conn,
+        conn,
+    ):
+        if result.footprint_features:
+            handle = get_orchestrator().submit_run(
+                conn,
+                changed_attributes=list(result.footprint_attributes),
+                edited_features=list(result.footprint_features),
+                scenario_id=scenario_id,
+                aoi_id=result.aoi_id,
+                code_version=code_version(),
+            )
+            status = handle.status.status if handle.status else "queued"
+            if status != "noop":
+                fields.update(
+                    run_id=handle.run_id,
+                    run_status=status,
+                    deduplicated=handle.deduplicated,
+                )
+                return fields
+        running = unfinished_runs(conn, scenario_id)
+    if running:
+        fields.update(run_id=running[0][0], run_status=running[0][1], deduplicated=True)
+    return fields
 
 
 @router.post(
     "/{scenario_id}/recompute", status_code=202, response_model=RecomputeResponse
 )
 def recompute_route(scenario_id: str) -> RecomputeResponse:
-    """Materialise the scenario's edits, then enqueue the recompute.
+    """Materialise the scenario's rules, then enqueue the recompute.
+
+    Writing a rule already does both; this is for retrying a recompute that
+    was not enqueued, or that failed.
 
     **Two transactions, and the boundary is a decision rather than an
-    accident.** ``materialize_scenario`` takes ``FOR UPDATE`` on the scenario
-    row as its first statement and holds it until the caller commits. The
-    evaluation that follows computes indicators over every block of the AOI —
-    tens of thousands on the Mexicali pilot. Under one transaction that lock
-    would be held for the whole compute, blocking every other writer: a
-    second drawn rule, a delete, another recompute. So this commits the
-    materialisation, closes the connection, and enqueues on its own.
+    accident.** ``materialize_scenario`` locks the scenario row as its first
+    statement and holds it until the caller commits. The evaluation that
+    follows computes indicators over the footprint — up to every block of the
+    AOI. Under one transaction that lock would be held for the whole compute,
+    blocking every other writer. So this commits the materialisation, closes
+    the connection, and enqueues on its own.
 
     The state in between — overrides current, results not yet recomputed — is
     one the platform already models: it is exactly what ``asset_freshness_v``
     calls stale, and what a crash between the two steps would leave anyway.
     The next recompute converges from it, because materialisation is
-    idempotent and freshness is derived rather than remembered.
-
-    The AOI is read **after** the materialisation, inside the same
-    transaction, so it is read under the row lock the materialisation holds
-    and is therefore the AOI the materialisation actually scoped itself to.
-    Read before, it could be moved by a concurrent writer in between and the
-    evaluation would be scoped to the other one.
-
-    **The dirty set is the scenario's footprint**, not freshness. Planned from
-    freshness, every indicator reading a changed attribute recomputed every
-    block of the AOI under the scenario — 19,058 in Mexicali for a rule over
-    2,400, about 20 s a run — though a block without an override reads the
-    baseline through the overlay anyway. The footprint is every block a current
-    rule overrides plus every block whose override this materialisation removed
-    (so a rule's old place is recomputed when it moves or goes), with their
-    attributes — removed ones included, which is what freshness was covering.
+    idempotent and freshness is derived rather than remembered. The AOI the
+    run is scoped to is the one the materialisation read under its lock.
 
     202, not 200: the materialisation is done and committed, the indicator
     recompute is accepted. ``run_id`` is what follows it.
     """
-    from reimagina.orchestration.factory import get_orchestrator
-    from reimagina.provenance import code_version
-
     with _refusals():
         resolved = _scenario_id(scenario_id)
         with contextlib.closing(connect(api_dsn())) as conn, conn:
             result = materialize_scenario(conn, scenario_id=resolved)
-            scenario = get_scenario(conn, resolved)
-            if scenario is None:
-                # Materialisation holds this row's lock, so this is
-                # unreachable. A `raise` rather than an `assert` because
-                # `python -O` strips asserts and the next line would then
-                # subscript None.
-                raise RuntimeError(
-                    f"scenario {resolved} vanished under the lock "
-                    "materialisation holds on it"
-                )
-            aoi_id = scenario["aoi_id"]
-
-    # ⚠ Outside `_refusals`, and that is the point. The materialisation above
-    # is committed. A refusal raised from here on is about the *enqueue*, and
-    # translating it with the same mapping would describe the wrong half —
-    # a `ForeignKeyViolation` from `submit_run` would answer 404
-    # `unknown_reference`, as if the client's ids were bad and nothing had
-    # happened, after overrides had already been written.
-    with (
-        _enqueue_failure(resolved, result),
-        contextlib.closing(connect(api_dsn())) as conn,
-        conn,
-    ):
-        # A second connection, because the first is gone: see above.
-        handle = get_orchestrator().submit_run(
-            conn,
-            changed_attributes=list(result.footprint_attributes),
-            edited_features=list(result.footprint_features),
-            scenario_id=resolved,
-            aoi_id=aoi_id,
-            code_version=code_version(),
-        )
-    status = handle.status.status if handle.status else "queued"
-    return RecomputeResponse(
-        scenario_id=resolved,
-        matched_per_edit=result.matched_per_edit,
-        overrides_written=result.overrides_written,
-        overrides_removed=result.overrides_removed,
-        results_superseded=result.results_superseded,
-        run_id=None if status == "noop" else handle.run_id,
-        run_status=status,
-        deduplicated=handle.deduplicated,
-    )
+    return RecomputeResponse(**_enqueue(resolved, result))
 
 
 # ── comparison ───────────────────────────────────────────────────────────

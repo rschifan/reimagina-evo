@@ -6,8 +6,8 @@ does not move.
 """
 
 from __future__ import annotations
+from tests.integration._helpers import make_scenario
 
-from uuid import uuid4
 
 import pytest
 
@@ -65,7 +65,7 @@ def test_rule_coverage_scales_units_population_and_density(conn):
     block_id = _block(conn, _ATTRS)
     baseline = _values(conn, block_id)
 
-    scenario = str(uuid4())
+    scenario = make_scenario(conn)
     apply_override(
         conn,
         scenario_id=scenario,

@@ -181,17 +181,22 @@ from .overlap import (  # noqa: E402
 from .scenario import (  # noqa: E402
     DEFAULT_TYPE_CONTEXT,
     DEFAULT_TYPE_SLUG,
+    add_rule as add_rule_cli,
     compare_to_baseline as compare_scenario_cli,
     create as create_scenario_cli,
+    delete as delete_scenario_cli,
+    delete_rule as delete_rule_cli,
     list_scenarios as list_scenarios_cli,
     recompute as recompute_scenario_cli,
-    set_attribute as set_scenario_attribute_cli,
+    rules as list_rules_cli,
     show as show_scenario_cli,
+    update_rule as update_rule_cli,
 )
 from reimagina.scenarios.authoring import (  # noqa: E402
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
+    RuleCatchesNothing,
     ScenarioHasNoAOI,
     ScenarioNotFound,
 )
@@ -1584,12 +1589,13 @@ app.add_typer(scenario_app, name="scenario")
 #: `OSError` is here rather than `exists=True` on the option because it also
 #: covers a directory, an unreadable file and a broken symlink, and because
 #: every refusal on this sub-app should read the same way; a mistyped
-#: `--geojson` path is the likeliest mistake on `set-attribute` and it used
+#: `--geojson` path is the likeliest mistake on `add-rule` and it used
 #: to raise a traceback.
 _SCENARIO_USER_ERRORS = (
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
+    RuleCatchesNothing,
     ScenarioHasNoAOI,
     ScenarioNotFound,
     OSError,
@@ -1613,20 +1619,21 @@ def _scenario_command(
         return 2
 
 
-@scenario_app.command("create", help="Create a named what-if inside a project")
+@scenario_app.command("create", help="Create a named what-if on an area of interest")
 def scenario_create(
     name: str = typer.Option(..., "--name", help="Unique within the project."),
+    aoi_id: str = typer.Option(
+        ...,
+        "--aoi-id",
+        help="Area of interest the scenario's rules are bounded by. Its project "
+        "is the scenario's.",
+    ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     project_id: Optional[str] = typer.Option(
         None,
         "--project-id",
-        help="Project the scenario belongs to. Taken from --aoi-id when omitted.",
-    ),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Area of interest the scenario's rules are bounded by. Optional "
-        "here, required by `scenario recompute`.",
+        help="Project the scenario belongs to; must be the AOI's. Read off "
+        "--aoi-id when omitted.",
     ),
     description: Optional[str] = typer.Option(None, "--description"),
 ) -> int:
@@ -1642,7 +1649,7 @@ def scenario_create(
 
 
 @scenario_app.command(
-    "list", help="List scenarios with their edit and override counts (explore)"
+    "list", help="List scenarios with their rule and override counts (explore)"
 )
 def scenario_list(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
@@ -1655,7 +1662,7 @@ def scenario_list(
 
 
 @scenario_app.command(
-    "show", help="Show one scenario: edit count, override count, materialised-at"
+    "show", help="Show one scenario: rule count, override count, materialised-at"
 )
 def scenario_show(
     scenario_id: str = typer.Option(..., "--scenario-id"),
@@ -1666,11 +1673,39 @@ def scenario_show(
     )
 
 
+def _rule_options():
+    """The four numbers a rule can set, each optional: left out, not set."""
+    return {
+        "levels": typer.Option(
+            None,
+            "--levels",
+            help="Storeys. Written to both `floors` and `num_levels` — the same "
+            "quantity under the two names the indicators read.",
+        ),
+        "unit_size": typer.Option(
+            None, "--unit-size", help="Square metres per dwelling (more than 15)."
+        ),
+        "people_per_household": typer.Option(
+            None, "--people-per-household", help="Between 0 and 15."
+        ),
+        "lot_coverage": typer.Option(
+            None,
+            "--lot-coverage",
+            help="Share of the block built on (COS), 0 < c ≤ 1. Left out, each "
+            "block keeps its own (1.0, the whole block, when it has none).",
+        ),
+    }
+
+
+_RULE = _rule_options()
+
+
 @scenario_app.command(
-    "set-attribute",
-    help="Draw an area and set the four policy inputs over it (five edits)",
+    "add-rule",
+    help="Draw an area and set some of the four policy numbers over it; the "
+    "scenario is materialised in the same transaction",
 )
-def scenario_set_attribute(
+def scenario_add_rule(
     scenario_id: str = typer.Option(..., "--scenario-id"),
     geojson: str = typer.Option(
         ...,
@@ -1678,22 +1713,10 @@ def scenario_set_attribute(
         help="Path to the drawn area: a FeatureCollection, a Feature, or a "
         "bare geometry. Several polygons are unioned into one area.",
     ),
-    levels: float = typer.Option(
-        ...,
-        "--levels",
-        help="Storeys. Writes BOTH `floors` and `num_levels` — the same "
-        "quantity under the two names the indicators read.",
-    ),
-    unit_size: float = typer.Option(
-        ..., "--unit-size", help="Square metres per dwelling."
-    ),
-    people_per_household: float = typer.Option(..., "--people-per-household"),
-    lot_coverage: float = typer.Option(
-        1.0,
-        "--lot-coverage",
-        help="Share of the block built on (COS), 0 < c ≤ 1. 1.0, the whole "
-        "block, is the formula without it.",
-    ),
+    levels: Optional[float] = _RULE["levels"],
+    unit_size: Optional[float] = _RULE["unit_size"],
+    people_per_household: Optional[float] = _RULE["people_per_household"],
+    lot_coverage: Optional[float] = _RULE["lot_coverage"],
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     type_context: str = typer.Option(DEFAULT_TYPE_CONTEXT, "--type-context"),
     type_slug: str = typer.Option(
@@ -1704,14 +1727,16 @@ def scenario_set_attribute(
     ),
 ) -> int:
     return _scenario_command(
-        lambda: set_scenario_attribute_cli(
+        lambda: add_rule_cli(
             dsn=dsn,
             scenario_id=scenario_id,
             geojson=geojson,
-            levels=levels,
-            unit_size=unit_size,
-            people_per_household=people_per_household,
-            lot_coverage=lot_coverage,
+            inputs={
+                "levels": levels,
+                "unit_size": unit_size,
+                "people_per_household": people_per_household,
+                "lot_coverage": lot_coverage,
+            },
             type_context=type_context,
             type_slug=type_slug,
         )
@@ -1719,18 +1744,72 @@ def scenario_set_attribute(
 
 
 @scenario_app.command(
+    "update-rule",
+    help="Replace one rule's numbers (its whole set), and its area if --geojson "
+    "is given; it keeps its place in 'later wins'",
+)
+def scenario_update_rule(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    rule_id: str = typer.Option(..., "--rule-id"),
+    geojson: Optional[str] = typer.Option(None, "--geojson"),
+    levels: Optional[float] = _RULE["levels"],
+    unit_size: Optional[float] = _RULE["unit_size"],
+    people_per_household: Optional[float] = _RULE["people_per_household"],
+    lot_coverage: Optional[float] = _RULE["lot_coverage"],
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: update_rule_cli(
+            dsn=dsn,
+            scenario_id=scenario_id,
+            rule_id=rule_id,
+            geojson=geojson,
+            inputs={
+                "levels": levels,
+                "unit_size": unit_size,
+                "people_per_household": people_per_household,
+                "lot_coverage": lot_coverage,
+            },
+        )
+    )
+
+
+@scenario_app.command("delete-rule", help="Delete one rule and materialise the rest")
+def scenario_delete_rule(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    rule_id: str = typer.Option(..., "--rule-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: delete_rule_cli(dsn=dsn, scenario_id=scenario_id, rule_id=rule_id)
+    )
+
+
+@scenario_app.command("rules", help="List one scenario's rules with their ids")
+def scenario_rules(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(lambda: list_rules_cli(dsn=dsn, scenario_id=scenario_id))
+
+
+@scenario_app.command("delete", help="Delete a scenario and every row keyed by it")
+def scenario_delete(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: delete_scenario_cli(dsn=dsn, scenario_id=scenario_id)
+    )
+
+
+@scenario_app.command(
     "recompute",
-    help="Materialise the scenario's edits, then recompute what they changed",
+    help="Materialise the scenario's rules, then recompute their footprint",
 )
 def scenario_recompute(
     scenario_id: str = typer.Option(..., "--scenario-id"),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Scope for the evaluation. Defaults to the scenario's own AOI, "
-        "which is also what bounds the materialisation.",
-    ),
     code_version: str = typer.Option("dev", "--code-version"),
     timeout: float = typer.Option(
         600.0,
@@ -1757,7 +1836,6 @@ def scenario_recompute(
         lambda: recompute_scenario_cli(
             dsn=dsn,
             scenario_id=scenario_id,
-            aoi_id=aoi_id,
             mode=mode,
             code_version=code_version,
             timeout_s=timeout,

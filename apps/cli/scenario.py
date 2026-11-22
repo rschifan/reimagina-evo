@@ -1,47 +1,32 @@
-"""CLI helpers for authoring a scenario: create, draw, recompute, compare.
+"""CLI helpers for authoring a scenario: create, draw rules, recompute, compare.
 
 The sub-app is two halves that deliberately read different relations.
 
-**The write half** — ``create``, ``set-attribute``, ``recompute`` — calls
+**The write half** — ``create``, ``add-rule``, ``update-rule``,
+``delete-rule``, ``delete``, ``recompute`` — calls
 ``reimagina.scenarios.authoring`` directly. Nothing in that module commits, so
 each function here owns one transaction and ends it explicitly.
 
-**The read half** — ``list`` and ``show`` — reads ``explore.scenario_v``, not
-``authoring.list_scenarios``/``get_scenario``. The rule: CLI
-inspection commands read from ``explore``. That is not a stylistic preference
-— the view is the engineer-facing contract, so a column added to it reaches
-the CLI without an edit here (the select is ``*``), and a question the CLI can
-answer is a question the engineer can also answer in DBeaver with the same
-statement. The two Python readers exist for the API, which needs a scenario's
-edits; the view carries the counts, which is what inspection asks for:
-``scenario show`` reports an edit count and a materialised-at timestamp, so
-the state between runs (edits drawn, and whether a materialisation has seen
-them) is visible without recomputing anything.
+**The read half** — ``list``, ``show`` and ``rules`` — reads
+``explore.scenario_v`` (and the rule rows), not ``authoring.list_scenarios``.
+The rule: CLI inspection commands read from ``explore``. The view is the
+engineer-facing contract, so a column added to it reaches the CLI without an
+edit here (the select is ``*``), and a question the CLI can answer is a
+question the engineer can also answer in DBeaver with the same statement.
 
-**The rules of a proposal are not in this file.** ``reimagina.scenarios.proposal``
-owns them — the five edits four numbers write, the refusal of a non-positive
-or non-finite value, the density precheck, and the unioning of a drawn
-FeatureCollection into one area. They are domain policy, and the API router
-needs the same ones; a router that imported them from ``apps/cli`` would have
-the dependency backwards, and one that re-derived them would bring back the
-failure the four-edit rule exists to prevent.
+**The same rules as the API, and the same refusals.** A rule writes only the
+numbers given (no default coverage), is checked by ``proposal.check_inputs``
+and materialised in the transaction that writes it, so a rule the server would
+refuse — a ceiling breach on any block, or an area that catches no block — is
+never stored, from either surface. ``recompute`` submits the materialisation's
+footprint, exactly as ``POST /scenarios/{id}/recompute`` does, scoped to the
+AOI the materialisation read under its lock.
 
 What stays here is dialect. The domain says ``levels``; a person at a
 terminal typed ``--levels``, and a sentence that tells them to call
 ``scenario recompute`` is useful to them and meaningless to an HTTP client.
-So each refusal is caught and re-raised with the flag name and the command
-attached — see ``_require_positive`` and ``_precheck_ceilings`` below.
-
-**The ceiling precheck is partial, on purpose.**
-``set-attribute`` refuses, before it opens a connection, values that would
-breach a bound independent of block area: *density* (a property of levels and
-unit size alone; ``ceilings.max_levels_for``) and *floors* (``--levels`` is
-written to ``floors`` unchanged, so it is bounded by the planned-floors
-indicator's ``valid_max`` whatever the unit size; ``ceilings.max_floors``).
-Both come from the catalog at call time. The housing-unit and population
-bounds scale with block area and are checked per block by
-``materialize_scenario``, which is where `scenario recompute` meets them. A
-proposal that passes here is not thereby safe.
+So each refusal is caught and re-raised with the flag name attached — see
+``_checked`` below.
 """
 
 from __future__ import annotations
@@ -59,21 +44,25 @@ from reimagina.data.feature import get_type_id
 from reimagina.db import connect
 from reimagina.scenarios.authoring import (
     InvalidGeometry,
+    MaterializeResult,
     ScenarioNotFound,
-    add_edit,
+    _canonical_id,
+    add_rule as add_rule_row,
     create_scenario,
+    delete_rule as delete_rule_row,
+    delete_scenario,
+    list_rules,
+    materialize_for_rule,
     materialize_scenario,
     project_of_aoi,
+    update_rule as update_rule_row,
 )
 from reimagina.scenarios.comparison import compare
 from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     ProposalValueError,
-    edits_for,
+    check_inputs,
     polygon_wkt,
-    precheck_ceilings,
-    require_coverage,
-    require_positive,
 )
 
 #: Every shipped indicator is block-grain, so this is the type a
@@ -82,69 +71,31 @@ DEFAULT_TYPE_CONTEXT = "MEX"
 DEFAULT_TYPE_SLUG = "block"
 
 
-def _require_positive(**values: float) -> None:
-    """``require_positive``, with the refusal spelled as a command-line flag.
-
-    The domain names the field (``levels``); the person at the terminal typed
-    ``--levels``, and telling them to fix ``levels`` is telling them to go
-    looking for it.
-    """
+def _checked(inputs: dict[str, float | None]) -> dict[str, float]:
+    """``check_inputs``, with each refusal spelled as its command-line flag."""
     try:
-        require_positive(**values)
+        return check_inputs(inputs)
     except ProposalValueError as exc:
         raise UserError(
-            f"--{exc.field.replace('_', '-')} must be a positive number, "
-            f"got {exc.value!r}"
+            f"--{exc.field.replace('_', '-')} must {exc.must}, got {exc.value!r}"
         ) from exc
-
-
-def _require_coverage(lot_coverage: float) -> None:
-    """``require_coverage``, with the refusal spelled as its flag."""
-    try:
-        require_coverage(lot_coverage)
-    except ProposalValueError as exc:
-        raise UserError(
-            f"--lot-coverage must be a share between 0 and 1, got {exc.value!r}"
-        ) from exc
-
-
-def _precheck_ceilings(
-    levels: float,
-    unit_size: float,
-    people_per_household: float,
-    lot_coverage: float = 1.0,
-) -> None:
-    """``precheck_ceilings``, with the two flags and the next command named.
-
-    The domain message states the breach and is honest about the two bounds
-    it cannot check; what it must not state is *how* to act, because that is
-    different on every surface. Here the act is lowering a flag and running a
-    command, so this is where those words go.
-    """
-    try:
-        precheck_ceilings(levels, unit_size, people_per_household, lot_coverage)
     except CeilingPrecheckFailed as exc:
         raise UserError(
-            f"{exc} Lower --levels (or, for the density ceiling, raise "
-            f"--unit-size); "
-            f"`scenario recompute` is what materialises."
+            f"{exc} Lower --levels (or, for the density ceiling, raise --unit-size)."
         ) from exc
 
 
 def _polygon_wkt(geojson_path: str | Path) -> str:
-    """Read the drawn area from disk and hand the parsed GeoJSON to the domain.
-
-    The reading is all that is left here: a request body and a drawn file
-    differ in where the bytes come from and in nothing else, so
-    ``proposal.polygon_wkt`` owns the FeatureCollection / Feature /
-    bare-geometry unioning that the HTTP router needs too, and this adds the one thing
-    it cannot know — which file the user named.
-    """
+    """Read the drawn area from disk and hand the parsed GeoJSON to the domain."""
     raw = json.loads(Path(geojson_path).read_text())
     try:
         return polygon_wkt(raw)
     except InvalidGeometry as exc:
         raise InvalidGeometry(f"{geojson_path}: {exc}") from exc
+
+
+def _materialized(result: MaterializeResult) -> dict[str, Any]:
+    return asdict(result)
 
 
 # ── write paths ─────────────────────────────────────────────────────────
@@ -154,29 +105,17 @@ def create(
     *,
     dsn: str,
     name: str,
+    aoi_id: str,
     project_id: str | None = None,
-    aoi_id: str | None = None,
     description: str | None = None,
 ) -> dict[str, Any]:
-    """Create a named what-if, deriving its project from its AOI if need be.
+    """Create a named what-if on an area of interest.
 
-    ``app_core.scenario.project_id`` is NOT NULL and ``aoi_id`` is not, so the
-    project cannot simply be read off the AOI in general (r048). It can be
-    whenever an AOI *is* given, and the documented example passes
-    only ``--name`` and ``--aoi-id``; deriving it there is what makes that command
-    line work, and the alternative is asking the user for a uuid the database
-    already knows.
-
-    Passing **both** and having them disagree is refused by ``create_scenario``
-    — the AOI must belong to the project — because the schema does not tie the
-    two columns together and a scenario bounded by another project's AOI would
-    materialise overrides over that project's blocks.
+    The AOI is required: a scenario without one can hold rules but never
+    materialise them, and nothing can set it later. The project is read off
+    the AOI unless given; given and disagreeing is refused by
+    ``create_scenario``, because the schema does not tie the two together.
     """
-    if project_id is None and aoi_id is None:
-        raise UserError(
-            "a scenario belongs to a project: pass --project-id, or --aoi-id "
-            "to take the project from the area of interest"
-        )
     with contextlib.closing(connect(dsn)) as conn:
         resolved = project_id or project_of_aoi(conn, aoi_id)
         scenario_id = create_scenario(
@@ -196,136 +135,162 @@ def create(
     }
 
 
-def set_attribute(
+def add_rule(
     *,
     dsn: str,
     scenario_id: str,
     geojson: str,
-    levels: float,
-    unit_size: float,
-    people_per_household: float,
-    lot_coverage: float = 1.0,
+    inputs: dict[str, float | None],
     type_context: str = DEFAULT_TYPE_CONTEXT,
     type_slug: str = DEFAULT_TYPE_SLUG,
 ) -> dict[str, Any]:
-    """Draw one area and write the five edits of one proposal over it.
+    """Draw one rule and materialise the scenario, in one transaction.
 
-    The refusals come first and in this order — values, then ceiling, then
-    geometry — so a proposal that cannot be stored costs no connection and
-    leaves no partial rule behind. The five writes then share one
-    transaction: some edits of five is not a proposal, it is a block the
-    edificability family skips.
+    Only the numbers given are set. The cheap refusals come first — the
+    numbers, then the area — so a rule that cannot be stored costs no
+    connection; a ceiling breach or an area that catches no block is refused
+    by the materialisation and rolls the rule back with it. ``recompute`` is
+    what then computes the indicators.
     """
-    _require_positive(
-        levels=levels, unit_size=unit_size, people_per_household=people_per_household
-    )
-    _require_coverage(lot_coverage)
-    _precheck_ceilings(levels, unit_size, people_per_household, lot_coverage)
+    scenario_id = _canonical_id(scenario_id)
+    checked = _checked(inputs)
     geometry_wkt = _polygon_wkt(geojson)
-
-    written = []
     with contextlib.closing(connect(dsn)) as conn:
         type_id = get_type_id(conn, type_context, type_slug)
-        for edit in edits_for(levels, unit_size, people_per_household, lot_coverage):
-            edit_id = add_edit(
-                conn,
-                scenario_id=scenario_id,
-                geometry_wkt=geometry_wkt,
-                type_id=type_id,
-                attribute_key=edit["attribute_key"],
-                value_numeric=edit["value_numeric"],
-            )
-            written.append({"edit_id": edit_id, **edit})
+        rule_id = add_rule_row(
+            conn,
+            scenario_id=scenario_id,
+            geometry_wkt=geometry_wkt,
+            type_id=type_id,
+            inputs=checked,
+        )
+        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
         conn.commit()
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
+        "rule_id": rule_id,
+        "inputs": checked,
         "feature_type": f"{type_context}:{type_slug}",
         "geojson": str(geojson),
-        "edits": written,
+        "materialized": _materialized(result),
     }
+
+
+def update_rule(
+    *,
+    dsn: str,
+    scenario_id: str,
+    rule_id: str,
+    inputs: dict[str, float | None],
+    geojson: str | None = None,
+) -> dict[str, Any]:
+    """Replace one rule's numbers (its whole set), and its area if given.
+
+    The rule keeps its id and its place in "later wins". Refused changes roll
+    back, leaving the rule as it was.
+    """
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _canonical_id(rule_id)
+    checked = _checked(inputs)
+    geometry_wkt = None if geojson is None else _polygon_wkt(geojson)
+    with contextlib.closing(connect(dsn)) as conn:
+        update_rule_row(
+            conn,
+            scenario_id=scenario_id,
+            rule_id=rule_id,
+            geometry_wkt=geometry_wkt,
+            inputs=checked,
+        )
+        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
+        conn.commit()
+    return {
+        "dsn": dsn,
+        "scenario_id": scenario_id,
+        "rule_id": rule_id,
+        "inputs": checked,
+        "materialized": _materialized(result),
+    }
+
+
+def delete_rule(*, dsn: str, scenario_id: str, rule_id: str) -> dict[str, Any]:
+    """Delete one rule and materialise what is left, in one transaction."""
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _canonical_id(rule_id)
+    with contextlib.closing(connect(dsn)) as conn:
+        delete_rule_row(conn, scenario_id=scenario_id, rule_id=rule_id)
+        result = materialize_for_rule(conn, scenario_id=scenario_id, rule_id=None)
+        conn.commit()
+    return {
+        "dsn": dsn,
+        "scenario_id": scenario_id,
+        "rule_id": rule_id,
+        "materialized": _materialized(result),
+    }
+
+
+def delete(*, dsn: str, scenario_id: str) -> dict[str, Any]:
+    """Delete a scenario and every row keyed by it."""
+    scenario_id = _canonical_id(scenario_id)
+    with contextlib.closing(connect(dsn)) as conn:
+        removed = delete_scenario(conn, scenario_id=scenario_id)
+        conn.commit()
+    return {"dsn": dsn, "scenario_id": scenario_id, "deleted": asdict(removed)}
 
 
 def recompute(
     *,
     dsn: str,
     scenario_id: str,
-    aoi_id: str | None = None,
     mode: str = "embedded",
     code_version: str = "dev",
     timeout_s: float = 600.0,
 ) -> dict[str, Any]:
-    """Materialise the scenario's edits, then recompute what they invalidated.
+    """Materialise the scenario's rules, then recompute their footprint.
 
     **Two transactions, and the boundary is a decision rather than an
-    accident.** ``materialize_scenario`` takes ``FOR UPDATE`` on the scenario
-    row as its first statement and holds it until the caller commits, while
-    the evaluation that follows computes indicators over every block of the
-    AOI — tens of thousands of them on the Mexicali pilot. Running both under
-    one transaction would hold a write lock on the scenario for the whole
-    compute, blocking every other writer: a second ``set-attribute``, a
-    delete, the API's own recompute. So this commits the materialisation,
-    closes the connection, and evaluates on its own.
+    accident.** ``materialize_scenario`` locks the scenario row as its first
+    statement and holds it until the caller commits, while the evaluation that
+    follows computes indicators over the footprint. Running both under one
+    transaction would hold that lock for the whole compute, blocking every
+    other writer. So this commits the materialisation, closes the connection,
+    and evaluates on its own.
 
-    The state in between — overrides current, results not yet recomputed — is
-    one the platform already models: it is exactly what ``asset_freshness_v``
-    calls stale, and what a crash between the two steps would leave anyway.
-    The next ``recompute`` converges from it, because materialisation is
-    idempotent and freshness is derived rather than remembered.
-
-    **The dirty set is left empty on purpose.** Materialisation's
-    ``publish_scenario_version`` has just moved the version of every override
-    asset this scenario touches, so ``plan_run`` with no attributes and no
-    features resolves the work from freshness at this scenario's partition —
-    which also covers an attribute whose *last* edit was removed, something a
-    list of the surviving edits' keys could not name.
+    **The dirty set is the footprint**, as the API sends it: every block a
+    current rule overrides, with the attributes involved. Planned from
+    freshness instead, the evaluation wrote a scenario row for every block of
+    the AOI — 95,290 rows against 15 for a three-block rule. The AOI is the
+    one the materialisation read under its lock; an empty footprint (no
+    override left) runs nothing.
 
     ⚠ The evaluation's own ``dsn`` key is dropped from the payload rather
-    than nested. It first had to go because ``_print`` masked only
-    ``data["dsn"]`` and a nested copy printed the password in full; ``_print``
-    now walks the whole payload, so the drop is no longer the thing standing
-    between a password and a terminal. It stays because the key is redundant
-    — the top level carries the same DSN — and because one masked DSN per
+    than nested: the top level carries the same DSN, and one masked DSN per
     payload is easier to be sure about than two.
     """
+    scenario_id = _canonical_id(scenario_id)
     with contextlib.closing(connect(dsn)) as conn:
-        scope = aoi_id if aoi_id is not None else _scenario_aoi(conn, scenario_id)
         result = materialize_scenario(conn, scenario_id=scenario_id)
         conn.commit()
 
-    evaluation = evaluate_scenario_cli(
-        dsn=dsn,
-        changed_attributes=[],
-        edited_features=[],
-        scenario_id=scenario_id,
-        aoi_id=scope,
-        code_version=code_version,
-        mode=mode,
-        timeout_s=timeout_s,
-    )
+    if result.footprint_features:
+        evaluation = evaluate_scenario_cli(
+            dsn=dsn,
+            changed_attributes=list(result.footprint_attributes),
+            edited_features=list(result.footprint_features),
+            scenario_id=scenario_id,
+            aoi_id=result.aoi_id,
+            code_version=code_version,
+            mode=mode,
+            timeout_s=timeout_s,
+        )
+    else:
+        evaluation = {"status": "noop", "run_id": None}
     return {
         "dsn": dsn,
         "scenario_id": scenario_id,
-        "materialized": asdict(result),
+        "materialized": _materialized(result),
         "evaluation": {k: v for k, v in evaluation.items() if k != "dsn"},
     }
-
-
-def _scenario_aoi(conn: Any, scenario_id: str) -> str | None:
-    """The scenario's AOI, read from the inspection view the CLI already uses.
-
-    Null is returned rather than refused: ``materialize_scenario`` raises
-    ``ScenarioHasNoAOI`` for it two statements later, with the explanation,
-    and duplicating that refusal here would mean two messages for one state.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT aoi_id::text FROM explore.scenario_v WHERE id = %s", (scenario_id,)
-        )
-        row = cur.fetchone()
-    if row is None:
-        raise ScenarioNotFound(f"no scenario with id {scenario_id}")
-    return None if row[0] is None else str(row[0])
 
 
 # ── read paths: explore.scenario_v ──────────────────────────────────────
@@ -353,9 +318,10 @@ def list_scenarios(
 def show(*, dsn: str, scenario_id: str) -> dict[str, Any]:
     """One scenario's row of the inspection view.
 
-    ``edit_count`` and ``materialized_at`` together are the state between
-    runs: edits drawn, and whether a materialisation has seen them.
+    ``rule_count`` and ``materialized_at`` together are the state between
+    runs: rules drawn, and whether a materialisation has seen them.
     """
+    scenario_id = _canonical_id(scenario_id)
     with contextlib.closing(connect(dsn)) as conn:
         rows = _select(
             conn,
@@ -365,6 +331,15 @@ def show(*, dsn: str, scenario_id: str) -> dict[str, Any]:
     if not rows:
         raise ScenarioNotFound(f"no scenario with id {scenario_id}")
     return {"dsn": dsn, "scenario": rows[0]}
+
+
+def rules(*, dsn: str, scenario_id: str) -> dict[str, Any]:
+    """One scenario's rules, in "later wins" order, with their ids."""
+    scenario_id = _canonical_id(scenario_id)
+    with contextlib.closing(connect(dsn)) as conn:
+        show(dsn=dsn, scenario_id=scenario_id)
+        rows = list_rules(conn, scenario_id)
+    return {"dsn": dsn, "scenario_id": scenario_id, "count": len(rows), "rules": rows}
 
 
 def _select(conn: Any, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -400,6 +375,7 @@ def compare_to_baseline(
     ``ComparisonResult.summary`` is counted off its own rows. ``--limit 0``
     prints every row, for a caller piping into ``jq``.
     """
+    scenario_id = _canonical_id(scenario_id)
     with contextlib.closing(connect(dsn)) as conn:
         result = compare(
             conn,

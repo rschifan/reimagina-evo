@@ -13,13 +13,13 @@ A scenario is a named "what if" — a proposed state of the city that has not ha
 The workflow is:
 
 ```
-project  →  scenario  →  scenario_edit (drawn areas)  →  scenario_override rows  →  submit_run  →  indicator_result
+project  →  scenario  →  scenario_rule (drawn areas)  →  scenario_override rows  →  submit_run  →  indicator_result
 ```
 
 - **Project** — `app_core.project`, the workspace an area of interest and its scenarios belong to (`r001_schemas_and_extensions.py:26-34`).
-- **Scenario** — a named row in `app_core.scenario` (r048), unique by name within its project. It is the addressed resource: created, listed, shown, recomputed, compared and deleted by id. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` are still plain uuids with no FK (`r016_indicator_layer.py:7-8`, `r030_scenario_override.py:5-6`), so what ties them to the scenario row is code, not schema — see *The scenario* below.
-- **Edit** — one drawn area carrying one attribute value, in `curated_geo.scenario_edit` (r048). This is what a person authors.
-- **Override** — one per-feature attribute edit, in `curated_geo.scenario_override` (r030). Materialising a scenario expands its edits into override rows, and those rows are what the indicators read.
+- **Scenario** — a named row in `app_core.scenario` (r048), unique by name within its project and bound to an AOI. It is the addressed resource: created, listed, shown, recomputed, compared and deleted by id. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` reference it `ON DELETE CASCADE` (r055) — see *The scenario id* below.
+- **Rule** — one drawn area and the numbers a planner set over it, a row of `curated_geo.scenario_rule` (r055) with its own id and its own place in "later wins". This is what a person authors.
+- **Override** — one per-feature attribute value, in `curated_geo.scenario_override` (r030). Materialising a scenario expands its rules into override rows, and those rows are what the indicators read.
 - **Run** — an execution submitted through the `Orchestrator` port. Defined in `JOB_LAYER.md`.
 - **Indicator result** — the output, in `curated_geo.indicator_result` with `scenario_id` set (see `INDICATORS_LAYER.md`).
 
@@ -136,7 +136,7 @@ Pinned in `tests/integration/test_indicator_picker_scenario.py`, whose
 `test_an_indicator_is_offered_exactly_once_under_a_scenario` gives one feature
 both rows — the state a join would duplicate.
 
-⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created. The mechanism is `curated_geo.scenario_edit` expanded into `curated_geo.scenario_override`, with `app_core.scenario` naming the whole.
+⚠ The previous version of this document described this layer in terms of `app_core.intervention`, `app_core.intervention_feature.attribute_overrides` and `app_core.configuration`. None of those tables exist and none were ever created. The mechanism is `curated_geo.scenario_rule` (r048's `scenario_edit` until r055) expanded into `curated_geo.scenario_override`, with `app_core.scenario` naming the whole.
 
 ---
 
@@ -163,37 +163,44 @@ It exists because `curated_geo.area_of_interest.project_id` references it (`r004
 
 ### app_core.scenario
 
-A named what-if inside a project (r048). `project_id` is required and `aoi_id` is not: a scenario may be created before any AOI exists, so the project cannot always be derived from the AOI. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn edits have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`, but it is **inert today**: the policy admits every row while `app.current_project_id` is unset, nothing outside tests sets it, and the API connects as the table owner, so it provides no tenant isolation yet (a known, deferred risk).
+A named what-if inside a project (r048). `project_id` is required; `aoi_id` is nullable in the schema (it empties itself when the AOI is deleted) but every surface requires it at creation — see *The scenario id* below. `UNIQUE (project_id, name)` is what lets a scenario be addressed by name. `materialized_at` is null until the drawn rules have first been expanded into overrides. Row-level security is enabled on this table, keyed on `project_id`, but it is **inert today**: the policy admits every row while `app.current_project_id` is unset, nothing outside tests sets it, and the API connects as the table owner, so it provides no tenant isolation yet (a known, deferred risk).
 
-### curated_geo.scenario_edit
+### curated_geo.scenario_rule
 
-One drawn area carrying one attribute value, ordered by `ordinal` ("later edits win"; not `created_at`, because `now()` is transaction-start time). The geometry CHECK is a type check only, so `add_edit` repairs the area on write (`_repair_geometry`: `ST_MakeValid`, then its polygonal part) and refuses one with nothing polygonal left as `InvalidGeometry`. `attribute_key` must be one of `authorable_attributes()` (`assets/registry.py`) — today `floors`, `lot_coverage`, `num_levels`, `people_per_household` and `unit_size`: every overridable attribute except `geometry`, `poi_version` and `network_version`. A rule writes one edit per number it **sets** — levels (as both `floors` and `num_levels`), unit size, people per household, lot coverage — and nothing for the numbers it leaves out, so every block keeps its own value for those. At least one must be set. Writing all of them, as rules once did, flattened the area: a rule meant to change household size also gave every block the same storeys, unit size and coverage, and so the same density (`coverage × levels × 10 000 / unit size`, block area cancelling). Deleting the scenario cascades the edits.
+One drawn area and the numbers set over it (r055): `id`, `scenario_id` (FK, `ON DELETE CASCADE`), `ordinal`, `type_id`, `geometry`, `inputs` (jsonb), `created_at`, `updated_at`.
 
-**A rule is the edits one proposal wrote over one area.** Nothing in the schema groups them: `update_rule` treats a set of edit ids as one rule when every id is an edit of the scenario and all share one stored geometry, and the workspace groups a scenario's edits into rules the same way, by identical `geometry_wkt` (`groupEditsByArea` in `scenario.ts`). `PATCH /scenarios/{id}/rules` sends the rule's **whole** set of numbers — one left out is no longer set by the rule — and optionally its area, applied **in place**: the edits keep their ids and ordinals, so the rule keeps its position in "later wins" (deleting and re-adding would renumber it after every other rule, and editing rule 1 would make it beat rule 2 where they overlap). Ids that are not one rule of the scenario are a 422. A number the rule did not set before is appended as an edit over the rule's area, at the next ordinal; one it no longer sets is deleted. The PATCH does not recompute; the caller does.
+- **`inputs`** holds the planner's numbers by name — `levels`, `unit_size`, `people_per_household`, `lot_coverage` — and nothing for a number left out, so every block keeps its own value for it. At least one is set (a CHECK refuses `{}`). The names, the attributes each writes and each one's range are one registry, `proposal.RULE_INPUTS`; `proposal.check_inputs` refuses an unknown name, a non-number, a non-finite value, a value outside its range (levels > 0; unit size more than 15 m² per dwelling; people per household in (0, 15]; coverage in (0, 1]) and the area-independent ceilings, on every surface. Writing all four numbers, as rules once did, flattened the area: a rule meant to change household size also gave every block the same storeys, unit size and coverage, and so the same density (`coverage × levels × 10 000 / unit size`, block area cancelling).
+- **Storeys are one number.** A rule stores `levels` once; materialisation writes it to both `floors` and `num_levels` (`proposal.edits_for`), the names the two indicator families read, so the map cannot contradict itself.
+- **`ordinal`** is the rule's place in "later wins". It is assigned when the rule is created (`max + 1` under the scenario's row lock) and never changes after: editing a rule's numbers or moving it keeps its place, so dropping a number and typing it again does not move the rule ahead of a later one. Not `created_at`, because `now()` is transaction-start time.
+- **The geometry** is repaired on write (`_repair_geometry`: `ST_Force2D`, `ST_MakeValid`, then its polygonal part) and refused as `InvalidGeometry` when nothing polygonal is left. `proposal.polygon_wkt` has already dropped a third coordinate and refused vertices that are not longitude/latitude degrees.
 
-**Lot coverage.** `lot_coverage` is the share of the block that is built on (COS, `0 < c ≤ 1`). The edificability family computes `housing_units = area × lot_coverage × num_levels / unit_size`; a block without `lot_coverage` is computed at 1.0, the whole block — the collaborators' formula exactly. The fitted baseline carries each block's real coverage (Overture footprint ÷ block area), so a rule's coverage is compared with what is built today. The API writes coverage only when it is sent; the CLI writes 1.0 unless `--lot-coverage` says otherwise; the scenarios page sends what the planner types. The ceiling checks (precheck and materialisation) count it.
+**A rule the server would refuse is never stored.** Writing a rule (`add_rule`, `update_rule`, `delete_rule`) and materialising the scenario happen in one transaction (`materialize_for_rule`): a ceiling breach on any block, or a rule whose area catches no block of the AOI (`RuleCatchesNothing` — over the sea, outside the AOI, longitude and latitude swapped near the equator), rolls the write back. There is therefore no rule state to track and no client-side undo.
 
-### The scenario id — what the schema does not tie together
+r055 converted r048's `scenario_edit` rows into rules, grouped as the workspace grouped them (scenario, type, identical geometry): the rule's ordinal is the rank of its first edit and each number the one its latest edit carried. Its downgrade expands rules back into edits.
 
-`curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` still take a plain `uuid` with no foreign key: r016 and r030 chose that while the entity was deferred, and r048 added the entity without adding the FKs. `NULL` means baseline — the city as it is today.
+**Lot coverage.** `lot_coverage` is the share of the block that is built on (COS, `0 < c ≤ 1`). The edificability family computes `housing_units = area × lot_coverage × num_levels / unit_size`; a block without `lot_coverage` is computed at 1.0, the whole block — the collaborators' formula exactly. The fitted baseline carries each block's real coverage (Overture footprint ÷ block area), so a rule's coverage is compared with what is built today. Every surface writes it only when it is set. The ceiling checks (precheck and materialisation) count it.
 
-Consequences worth stating:
+### The scenario id
 
-- Nothing in the schema enforces that a `scenario_id` on those four tables refers to a scenario row. A typo'd uuid produces a valid, empty scenario, and the low-level `apply_override` path (below) can still write overrides for an id that has no row.
-- ⚠ **A scenario's AOI is tied to its project by code, not by the schema.** r048 declares `aoi_id` as a plain reference to `curated_geo.area_of_interest(id)`, so the database accepts a scenario in project A bounded by project B's AOI. Materialisation scopes its selection by `aoi_id` alone, so such a scenario would write overrides over B's features. `create_scenario` is the column's only writer and refuses the pair (`_require_aoi_in_project`); a new insert path has to repeat that check.
-- Because those tables have no FK, deleting a scenario does not cascade into them. `delete_scenario` deletes the traces by hand, in one transaction under the scenario's row lock: the scenario's overrides, every `asset_version` and `asset_materialization` row of its partition, every `indicator_result` and `aoi_indicator_summary` row with its `scenario_id` (any status), and the `job_run` rows carrying its `scenario_id` (r016's trigger makes a result's scenario equal its run's, so those runs computed this scenario and nothing else; `job_unit.job_run_id` is set to NULL). Only then does it delete the row, which cascades the edits. Recompute runs (`orchestration_run`) are run history and stay until the jobs page clears them.
+`curated_geo.scenario_override`, `curated_geo.indicator_result`, `jobs_runtime.job_run` and `curated_geo.aoi_indicator_summary` reference `app_core.scenario(id)` `ON DELETE CASCADE` (r055; r016 and r030 had left them bare uuids while the entity was deferred). `NULL` means baseline — the city as it is today. r055 deleted the rows that named no scenario before adding the constraints.
+
+- A made-up uuid is refused: a scenario row must exist before anything is written under its id.
+- ⚠ **A scenario's AOI is tied to its project by code, not by the schema.** r048 declares `aoi_id` as a plain reference to `curated_geo.area_of_interest(id)`, so the database accepts a scenario in project A bounded by project B's AOI. Materialisation scopes its selection by `aoi_id` alone, so such a scenario would write overrides over B's features. `create_scenario` is the column's only writer and refuses the pair (`_require_aoi_in_project`); a new insert path has to repeat that check. Every surface requires `aoi_id` at creation: without one a scenario can hold rules and never materialise them, and nothing sets it later (its rules are drawn over that AOI's blocks). It can still become null when the AOI is deleted (`ON DELETE SET NULL`), and materialisation then refuses with `ScenarioHasNoAOI`.
+- `delete_scenario` locks the scenario row `FOR UPDATE` and deletes, in one transaction, the scenario's overrides, every `asset_version` and `asset_materialization` row of its partition (keyed by the string `scenario=<id>`, which no FK can follow), its `indicator_result`, `job_run` and `aoi_indicator_summary` rows (explicitly first, so each count is its own table's; the FKs would cascade them anyway), then the row, which cascades its rules. Recompute runs (`orchestration_run`) are run history and stay; the API cancels the scenario's unfinished ones after the delete commits.
+- **A compute unit cannot outlive the delete.** Each unit of a scenario run takes, before it computes, a transaction advisory lock on (scenario, indicator) and `FOR KEY SHARE` on the scenario row (`runners._scenario_fence`), held until it commits. The delete's `FOR UPDATE` therefore waits for an in-flight unit and then removes what it wrote; a unit that starts after the delete finds no row and skips. The same advisory lock serialises two runs of one scenario per indicator, so they no longer collide on `ir_one_current_scenario`, and the last to commit has read the latest overrides. Writers of rules lock the scenario `FOR NO KEY UPDATE`, which `KEY SHARE` does not block, so drawing a rule does not wait for a compute.
+- Deleting a project cascades its scenarios and, through them, everything above except the partition-keyed versions and materialisations (no project-delete path exists today).
 
 ---
 
 ### curated_geo.scenario_override
 
-One attribute edit for one feature under one scenario. Keyed like `observation`'s one-current-per-`(feature, attribute)` shape.
+One attribute value for one feature under one scenario, the resolution of its rules. Keyed like `observation`'s one-current-per-`(feature, attribute)` shape. Since r055 `scenario_id` is an FK to `app_core.scenario`, `ON DELETE CASCADE`.
 
 ```sql
 -- r030_scenario_override.py:27-46
 CREATE TABLE curated_geo.scenario_override (
   id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  scenario_id   uuid        NOT NULL,
+  scenario_id   uuid        NOT NULL,   -- FK to app_core.scenario since r055
   feature_id    uuid        NOT NULL
                             REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
   attribute_key text        NOT NULL,
@@ -316,22 +323,23 @@ Examples:
 
 ## The HTTP surface
 
-`apps/api/routers/scenarios.py`, mounted at `/scenarios`. Every handler opens its own committed connection (`contextlib.closing(connect(api_dsn()))`), never the pooled `get_db_conn`, which rolls back on success. A malformed scenario id in the path answers 404, as an unknown one does; a malformed uuid in a query or body field answers 422. The API's CORS policy allows `PATCH` alongside `GET`, `POST`, `DELETE` and `OPTIONS` (`apps/api/app.py`), so `PATCH …/rules` also works from a cross-origin frontend.
+`apps/api/routers/scenarios.py`, mounted at `/scenarios`. Every handler opens its own committed connection (`contextlib.closing(connect(api_dsn()))`), never the pooled `get_db_conn`, which rolls back on success. A malformed scenario id in the path answers 404, as an unknown one does; a malformed uuid in a query or body field answers 422. The API's CORS policy allows `PATCH` alongside `GET`, `POST`, `DELETE` and `OPTIONS` (`apps/api/app.py`), so `PATCH …/rules/{rule_id}` also works from a cross-origin frontend. A malformed rule id in the path answers 404, as a scenario id does.
 
 | Method | Path | Body / query | Success | Refusals |
 |---|---|---|---|---|
-| GET | `/scenarios` | `project_id`, `aoi_id` (both optional) | 200: rows newest first, each with `edit_count` and `latest_run` (`{id, status}` or `null`) | — |
-| POST | `/scenarios` | `project_id`, `name` (non-empty), `aoi_id`?, `description`? | 201: the scenario as `GET` returns it | 404 an AOI of another project, or (`unknown_reference`) a project or AOI that does not exist; 409 a duplicate name in the project |
+| GET | `/scenarios` | `project_id`, `aoi_id` (both optional) | 200: rows newest first, each with `rule_count` and `latest_run` (`{id, status}` or `null`) | — |
+| POST | `/scenarios` | `project_id`, `aoi_id`, `name` (non-empty), `description`? | 201: the scenario as `GET` returns it | 422 no `aoi_id`; 404 an AOI of another project, or (`unknown_reference`) a project or AOI that does not exist; 409 a duplicate name in the project |
 | GET | `/scenarios/indicators` | — | 200: the indicators a rule can change, inputs first, each with `statistic` (`sum` for `units` and `people`, else `median`) | — |
-| GET | `/scenarios/{scenario_id}` | — | 200: the scenario, `override_count`, and `edits` (`id`, `ordinal`, `type_id`, `attribute_key`, `value_numeric`, `geometry_wkt`, `created_at`) in ordinal order | 404 |
-| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_deleted, results_deleted, job_runs_deleted, materializations}` | 404, also on a second delete |
-| POST | `/scenarios/{scenario_id}/edits` | `area` (GeoJSON FeatureCollection, Feature or geometry; polygons unioned), any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`; `type_context` (`MEX`), `type_slug` (`block`) | 201: `{scenario_id, feature_type, edits: [{id, attribute_key, value_numeric}]}`, one edit per number set (`levels` → `floors` and `num_levels`) | 400 `empty_proposal`, `invalid_value` (non-positive or non-finite; coverage outside `0 < c ≤ 1`), `invalid_geometry`; 422 `ceiling_precheck_failed` with `levels`, `unit_size`, `allowed_levels`; 404 unknown scenario or feature type |
-| PATCH | `/scenarios/{scenario_id}/rules` | `edit_ids` (≥ 1, one rule's edits), `area`? (omitted keeps it), the rule's whole set of numbers, `type_context`, `type_slug` | 200: the same shape, every edit of the rule after the update | as `POST …/edits`, plus 422 `not_one_rule` (`field: edit_ids`) |
-| DELETE | `/scenarios/{scenario_id}/edits` | `edit_id` (query) | 204 | 404 unknown scenario, or an edit not in this scenario |
-| POST | `/scenarios/{scenario_id}/recompute` | — | 202: `{scenario_id, matched_per_edit, overrides_written, overrides_removed, results_superseded, run_id, run_status, deduplicated}`; `run_id` is `null` on a noop | 404; 409 the scenario has no AOI; 422 `ceiling_exceeded` with `breach_count` and up to 20 `breaches`; 500 `recompute_not_enqueued` (materialised and committed, enqueue refused — retry is safe); 503 `ops_plane_not_provisioned` or `database_unavailable` |
+| GET | `/scenarios/{scenario_id}` | — | 200: the scenario, `override_count`, and `rules` (`id`, `ordinal`, `type_id`, `inputs`, `geometry_wkt`, `created_at`, `updated_at`) in ordinal order | 404 |
+| GET | `/scenarios/{scenario_id}/rules` | — | 200: the rules, as above | 404 |
+| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_deleted, results_deleted, job_runs_deleted, materializations}`; the scenario's unfinished runs are then cancelled | 404, also on a second delete |
+| POST | `/scenarios/{scenario_id}/rules` | `area` (GeoJSON FeatureCollection, Feature or geometry; polygons unioned), `inputs` (any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`; omitted or null is not set), `type_context` (`MEX`), `type_slug` (`block`) | 201: the recompute shape below plus `rule`; the rule is written and the scenario materialised in one transaction, then the recompute is enqueued | 400 `empty_proposal`, `invalid_value` (`field` names the number: unknown, non-finite, or out of range), `invalid_geometry` (no polygon; not lon/lat degrees); 422 `ceiling_precheck_failed` with `levels`, `unit_size`, `allowed_levels`; 422 `ceiling_exceeded` (as recompute); 422 `rule_catches_nothing` (`field: area`); 404 unknown scenario or feature type; nothing is stored on any refusal; 500 `recompute_not_enqueued` (the rule stands) |
+| PATCH | `/scenarios/{scenario_id}/rules/{rule_id}` | `inputs` (the rule's whole set: a number left out is no longer set), `area`? (omitted keeps it) | 200: as `POST …/rules`; the rule keeps its id and its ordinal | as `POST …/rules`, plus 404 a rule not of this scenario; a refused change leaves the rule as it was |
+| DELETE | `/scenarios/{scenario_id}/rules/{rule_id}` | — | 200: as `POST …/rules` with `rule: null`; no run is enqueued when no override is left | 404 a rule not of this scenario; 422 `ceiling_exceeded` when what is left breaches (an earlier rule now wins) |
+| POST | `/scenarios/{scenario_id}/recompute` | — | 202: `{scenario_id, matched_per_rule, overrides_written, overrides_removed, results_superseded, run_id, run_status, deduplicated}`; `run_id` is `null` on a noop, unless a run of the scenario is still going, which is then answered with `deduplicated: true` | 404; 409 the scenario has no AOI (it was deleted); 422 `ceiling_exceeded` with `breach_count` and up to 20 `breaches`, each with `rule_ids`, `rule_numbers` (the "Rule N" a planner sees) and `allowed_levels`; 500 `recompute_not_enqueued` (materialised and committed, enqueue refused — retry is safe); 503 `ops_plane_not_provisioned` or `database_unavailable` |
 | GET | `/scenarios/{scenario_id}/comparison` | `indicator_slug`, `aoi_id`?, `limit`? (≥ 1; omitted returns every row) | 200: `{scenario_id, indicator_slug, aoi_id, summary: {changed, unchanged, new, mean_delta, higher_is_better}, row_count, rows: [{feature_id, baseline, scenario, delta, state}], rows_truncated}` | 404 unknown scenario, indicator or AOI |
 
-Neither `DELETE …/edits` nor `PATCH …/rules` recomputes: the overrides a removed or changed rule produced are withdrawn or rewritten by the next `recompute`. `recompute` is two transactions — the materialisation is committed before the run is enqueued — so the scenario's row lock is not held through the compute.
+Writing a rule is two transactions, like `recompute`: the rule and the materialisation commit together, and the run is enqueued after, so the scenario's row lock is not held through the compute. The run covers the **footprint** — the blocks that carry an override, with the attributes involved — and an empty footprint enqueues nothing (an empty feature list would mean "every block" to the planner).
 
 ---
 
@@ -375,33 +383,36 @@ Create the scenario, draw an area with the policy inputs, then recompute:
 
 ```bash
 python -m apps.cli.app scenario create --name "Upzoning" --aoi-id <uuid>
-python -m apps.cli.app scenario set-attribute --scenario-id <uuid> \
-    --geojson area.geojson --levels 12 --unit-size 80 --people-per-household 3.2 \
-    [--lot-coverage 0.6]
+python -m apps.cli.app scenario add-rule --scenario-id <uuid> \
+    --geojson area.geojson [--levels 12] [--unit-size 80] \
+    [--people-per-household 3.2] [--lot-coverage 0.6]
+python -m apps.cli.app scenario rules --scenario-id <uuid>
+python -m apps.cli.app scenario update-rule --scenario-id <uuid> --rule-id <uuid> \
+    [--geojson moved.geojson] [--levels 8] …
+python -m apps.cli.app scenario delete-rule --scenario-id <uuid> --rule-id <uuid>
 python -m apps.cli.app scenario recompute --scenario-id <uuid> [--sync | --detach]
 python -m apps.cli.app scenario compare --scenario-id <uuid> \
     --slug urban_form_block_planned_floors
 python -m apps.cli.app scenario list      # reads explore.scenario_v
 python -m apps.cli.app scenario show --scenario-id <uuid>
+python -m apps.cli.app scenario delete --scenario-id <uuid>
 ```
 
-`set-attribute` requires `--levels`, `--unit-size` and `--people-per-household` and always writes lot coverage (1.0 unless `--lot-coverage`), so a rule drawn at the terminal is always five edits; only the API and the page write a rule that leaves numbers out.
+The CLI writes a rule exactly as the API does: only the numbers given (no default coverage), checked by `proposal.check_inputs`, and materialised in the transaction that writes it, so a refused rule is not stored. `update-rule` takes the rule's whole set of numbers. `recompute` submits the materialisation's footprint, scoped to the AOI the materialisation read under its lock, as `POST …/recompute` does; `scripts/acceptance_run.sh` step 10 exercises it (`scenario recompute --sync`).
 
-On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an area, type the numbers this area changes in the box that opens beside it (empty — a field left empty keeps each block's own value), Apply. Apply writes the rule, recomputes and switches the map to the change; on the baseline city it creates the scenario first. A saved rule is clicked to change its numbers, dragged or resized, or deleted, each followed by a recompute. When the recompute refuses (a per-block ceiling) or the rule catches no block, the page undoes its own write.
+On the scenarios page (`/scenarios.html`) the same thing is one gesture: draw an area, type the numbers this area changes in the box that opens beside it (empty — a field left empty keeps each block's own value), Apply. Apply writes the rule — which materialises it and enqueues its recompute — and switches the map to the change; on the baseline city it creates the scenario first. A saved rule is opened from the map or from the list of rules beside it, to change its numbers, drag or resize it, or delete it. A refusal stores nothing, so the page has nothing to undo; when only the enqueue failed, the rule stands and the scenario's row offers a Recompute.
 
-`recompute` materialises the edits into override rows (selecting the AOI's blocks — members in `aoi_feature` — with `ST_Covers(area, geometry_centroid)`; later ordinals win where areas overlap; a per-block ceiling breach refuses the whole materialisation) and then runs the selective recompute. From the API the run covers the scenario's **footprint** only — every block a current rule overrides, plus every block whose override this materialisation removed, with their attributes — rather than every block of the AOI: a block without an override reads the baseline through the overlay, so recomputing it under the scenario only rewrote baseline values (on Mexicali, 19,058 blocks for a rule over 2,400; about 20 s a run). The API passes that footprint to `submit_run` as an explicit change-set (`MaterializeResult.footprint_attributes` → `changed_attributes`, `footprint_features` → `edited_features`). The CLI's `scenario recompute` still plans from freshness; `scripts/acceptance_run.sh` step 10 exercises that CLI path (`scenario recompute --sync`).
+Materialisation selects the AOI's blocks — members in `aoi_feature` — with `ST_Covers(area, geometry_centroid)`; later rules win where areas overlap, per number; a per-block ceiling breach refuses the whole materialisation. A block a rule has left loses every scenario row (it reads the baseline through the overlay), so recomputing never writes copies of the baseline under the scenario that would later shadow a baseline change; and the freshness records of the indicators a removed number fed are dropped, so re-adding a rule (whose override version, a content digest, comes back) recomputes rather than being called fresh over the retired rows.
 
 ---
 
-### Recording a scenario edit directly
+### Recording an override directly
 
-The low-level path writes override rows without a scenario row. It remains for code that already holds a scenario id; the authoring path above is the one that creates a scenario others can find by name.
+The low-level path writes override rows for an existing scenario without a rule. It remains for code (and tests) that need one attribute on one block; it still needs a scenario row, because `scenario_id` is an FK (r055). The next materialisation of that scenario deletes any override no rule implies.
 
 ```python
-from uuid import uuid4
 from reimagina.scenarios.overrides import apply_override
 
-scenario_id = str(uuid4())
 apply_override(
     conn,
     scenario_id=scenario_id,
@@ -411,13 +422,13 @@ apply_override(
 )
 ```
 
-`apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an edit replaces it rather than failing (`overrides.py:52-54`), and publishes a new version of that attribute's override asset for the scenario unless `publish=False` (`apply_overrides` batches with it and publishes once per attribute).
+`apply_override` upserts on `(scenario_id, feature_id, attribute_key)`, so re-recording an override replaces it rather than failing, and publishes a new version of that attribute's override asset for the scenario unless `publish=False` (`apply_overrides` writes many in one set-based statement that leaves an unchanged row alone, and publishes once per attribute).
 
-Three surfaces author an edit, and none of them owns a rule. `apps/cli/scenario.py` at a terminal, `apps/api/routers/scenarios.py` over HTTP, and the scenario workspace in the browser (`apps/web/scenarios.html`; its pure rules in `apps/web/src/scenario.ts`, its page in `apps/web/src/scenarios/`) all reach `reimagina.scenarios.proposal` (the workspace through the API), which is where the edits a rule writes (`edits_for`, one per number it sets), the refusal of a degenerate number (`require_positive`, `require_coverage`), the ceiling precheck (`precheck_ceilings`) and the unioning of a drawn area (`polygon_wkt`) live — so the three refuse the same things for the same reasons. A surface adds exactly two things of its own: the dialect of its refusals (`--levels` on a command line, `levels` in a request body, a highlighted input on a form) and, in the workspace, the one check a form can make before the round trip.
+Three surfaces author a rule, and the rule is the server's. `apps/cli/scenario.py` at a terminal, `apps/api/routers/scenarios.py` over HTTP, and the scenario workspace in the browser (`apps/web/scenarios.html`; its pure rules in `apps/web/src/scenario.ts`, its page in `apps/web/src/scenarios/`) all reach `reimagina.scenarios.authoring` and `reimagina.scenarios.proposal` (the workspace through the API), which is where the registry of a rule's numbers (`RULE_INPUTS`), the edits a rule writes (`edits_for`), the refusal of a degenerate or implausible number (`check_inputs`), the ceiling precheck (`precheck_ceilings`) and the unioning of a drawn area (`polygon_wkt`) live — so the three refuse the same things for the same reasons. A surface adds exactly two things of its own: the dialect of its refusals (`--levels` on a command line, `levels` in a request body, a highlighted input on a form) and, in the workspace, the one check a form can make before the round trip.
 
 **The workspace's precheck is a saved round trip, not a guarantee**, and the rule form says so next to its inputs (`CLIENT_PRECHECK_NOTE` in `scenario.ts`). Only the density and storey ceilings are independent of block area, so they are the only ones checkable before a block is chosen; the housing-unit and population ceilings are the server's, per block, at materialisation. The bounds themselves are read from `GET /indicators/edificability_block_density` and `GET /indicators/urban_form_block_planned_floors` (each one's `valid_max`) rather than compiled into the frontend, because `ceilings._bound_for` reads them from the same catalog — a second copy would agree until the day the catalog moved.
 
-**The workspace shows only what a rule can change.** A rule writes up to five block attributes (`proposal.edits_for`), and `GET /scenarios/indicators` returns the indicators they reach — `proposal.reachable_indicators`, which asks `impact.compute_dirty_set`, the function that decides what a recompute runs. It asks with `floors`, `num_levels`, `unit_size` and `people_per_household`; `lot_coverage` is read only by the edificability family, which those already reach. Today that is five: planned floors, potential housing units, potential population, housing density, and the livability score through density. The other seven cannot move under any scenario, and the workspace does not offer them. Each row also says which number a summary table shows (`table_statistic`): a total for counts, a median for rates. **The baseline those indicators start from** is fitted per block from the Overture buildings and the 2020 census, so each input is the physical quantity the rule form names (`scripts/seed_demo_attributes.py --fit-to-census`): storeys are the footprint-weighted mean Overture `num_floors`, untagged buildings counting one (`overture block-storeys` writes it as a `floors` observation where a building is tagged; the fit copies it into `num_levels`, and 1 elsewhere); lot coverage is the building footprint clipped to the block ÷ block area; m² per dwelling is built floor area (footprint × storeys) ÷ census dwellings (`vivtot`); people per household is census population ÷ census dwellings (`pobtot ÷ vivtot`). With those inputs the formula gives every block's census dwellings and population back: 340,169 dwellings over Mexicali. ⚠ People per household is per dwelling, *occupied or not*: INEGI's `prom_ocup` divides by occupied dwellings only, and multiplying it by all dwellings put the baseline 13.8% above the census population. A rule's value is read the same way. ⚠ A block the census counts no dwellings on gets no m² per dwelling, so the family skips it; a rule that sets one there builds on it. A block with dwellings but no Overture footprint takes the median coverage of the blocks that have both.
+**The workspace shows only what a rule can change.** A rule writes up to five block attributes (`proposal.edits_for`), and `GET /scenarios/indicators` returns the indicators they reach — `proposal.reachable_indicators`, which asks `impact.compute_dirty_set`, the function that decides what a recompute runs, with every attribute a rule can write. Today that is five: planned floors, potential housing units, potential population, housing density, and the livability score through density. The other seven cannot move under any scenario, and the workspace does not offer them. Each row also says which number a summary table shows (`table_statistic`): a total for counts, a median for rates. **The baseline those indicators start from** is fitted per block from the Overture buildings and the 2020 census, so each input is the physical quantity the rule form names (`scripts/seed_demo_attributes.py --fit-to-census`): storeys are the footprint-weighted mean Overture `num_floors`, untagged buildings counting one (`overture block-storeys` writes it as a `floors` observation where a building is tagged; the fit copies it into `num_levels`, and 1 elsewhere); lot coverage is the building footprint clipped to the block ÷ block area; m² per dwelling is built floor area (footprint × storeys) ÷ census dwellings (`vivtot`); people per household is census population ÷ census dwellings (`pobtot ÷ vivtot`). With those inputs the formula gives every block's census dwellings and population back: 340,169 dwellings over Mexicali. ⚠ People per household is per dwelling, *occupied or not*: INEGI's `prom_ocup` divides by occupied dwellings only, and multiplying it by all dwellings put the baseline 13.8% above the census population. A rule's value is read the same way. ⚠ A block the census counts no dwellings on gets no m² per dwelling, so the family skips it; a rule that sets one there builds on it. A block with dwellings but no Overture footprint takes the median coverage of the blocks that have both.
 
 **The workspace carries the scenario in one place.** The selected scenario goes on the overlay's tile URL, the ramp's stats, the table's cells and the download URLs — and nowhere else, because the overlay is resolved in SQL (r043) rather than in the client. The map page (`index.html`) shows the baseline city only. ⚠ The baseline's tile URL is byte-identical to the one that existed before scenarios: MapLibre caches tiles by URL, so a parameter added to the baseline invalidates every cached tile of every indicator on every AOI. Both pages build it with `scenario.tileUrlFor`, which asserts that.
 
@@ -544,22 +555,22 @@ A raw `INSERT` publishes no override version, so a submit naming only the `scena
 
 ### Duplicating a scenario
 
-A named scenario is its **edits**; its override rows are derived from them. Clone the edits, not the overrides, and let materialisation write the rest.
+A named scenario is its **rules**; its override rows are derived from them. Clone the rules, not the overrides, and let materialisation write the rest.
 
-⚠ Copying only `scenario_override` rows looks complete and is not. The clone shows no drawn areas and cannot be edited, and the first `scenario recompute` on it deletes every copied override, because materialisation step 4 removes any override that no surviving edit implies. A clone with no edits implies none.
+⚠ Copying only `scenario_override` rows looks complete and is not. The clone shows no drawn areas and cannot be edited, and the first `scenario recompute` on it deletes every copied override, because materialisation step 4 removes any override that no surviving rule implies. A clone with no rules implies none.
 
 1. Create the scenario through `create_scenario` (or `scenario create`, or `POST /scenarios`) rather than inserting the row. That call is the only place an AOI is checked against the project, a tie the schema does not enforce (see r048).
-2. Copy the edits, keeping their ordinals so the clone resolves overlapping areas in the same order:
+2. Copy the rules, keeping their ordinals so the clone resolves overlapping areas in the same order:
 
    ```sql
-   INSERT INTO curated_geo.scenario_edit
-     (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
-   SELECT :new_scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric
-   FROM curated_geo.scenario_edit
+   INSERT INTO curated_geo.scenario_rule
+     (scenario_id, ordinal, geometry, type_id, inputs)
+   SELECT :new_scenario_id, ordinal, geometry, type_id, inputs
+   FROM curated_geo.scenario_rule
    WHERE scenario_id = :source_scenario_id;
    ```
 
-3. Recompute the new id. Materialisation writes its overrides and publishes its versions, and the run that follows computes its results. Until then the clone has edits but no overrides and no results, which `explore.scenario_v` shows as an `override_count` of 0.
+3. Recompute the new id. Materialisation writes its overrides and publishes its versions, and the run that follows computes its results. Until then the clone has rules but no overrides and no results, which `explore.scenario_v` shows as an `override_count` of 0.
 
 A bare override set with no `app_core.scenario` row is still a valid what-if for the engine, as described above, but it is invisible to `explore.scenario_v` and to every authoring surface.
 
@@ -574,7 +585,8 @@ Within this layer:
 1. `app_core.project` — r001, needed by `area_of_interest`
 2. `curated_geo.feature` — DATA_LAYER (r003); `scenario_override.feature_id` references it
 3. `curated_geo.scenario_override` — r030
-4. `app_core.scenario` and `curated_geo.scenario_edit` — r048
+4. `app_core.scenario` — r048
+5. `curated_geo.scenario_rule`, and the scenario id as an FK on overrides, results, job runs and AOI summaries — r055
 
 `scenario_override` is created late (r030) rather than with `project`, because it depends on `feature` and nothing depends on it. See `JOB_LAYER.md` — *Migration order* for how the job-layer tables interleave.
 

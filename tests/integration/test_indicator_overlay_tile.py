@@ -159,9 +159,10 @@ def test_tile_filters_by_scenario_id(conn):
         model_family="urban_form", code_version="test", status="running"
     )
     # We can't reuse the real scenario table (no Layer 3 yet), so use a
-    # random uuid as a sentinel scenario_id. The indicator_result trigger
-    # accepts any uuid — only later Layer 3 adds the FK.
-    scenario_id = str(uuid4())
+    # A scenario row: scenario_id is an FK to app_core.scenario (r055).
+    from tests.integration._helpers import make_scenario
+
+    scenario_id = make_scenario(conn)
     # Override job_run.scenario_id so the indicator_result scenario match
     # accepts the write. Direct UPDATE because we don't expose this through
     # the JobRunRepository contract.

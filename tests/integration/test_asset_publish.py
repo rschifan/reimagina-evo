@@ -391,9 +391,11 @@ def test_batched_overrides_publish_once(seeded, conn):
         for i in range(3)
     ]
 
+    from tests.integration._helpers import make_scenario
+
     applied = apply_overrides(
         conn,
-        scenario_id="33333333-3333-3333-3333-333333333333",
+        scenario_id=make_scenario(conn, "33333333-3333-3333-3333-333333333333"),
         edits=[
             {"feature_id": f, "attribute_key": "floors", "value_numeric": 9.0}
             for f in features
@@ -495,8 +497,9 @@ def test_deleting_a_scenario_last_override_retires_that_attribute(seeded, conn):
     """
     from reimagina.scenarios.overrides import apply_override, publish_scenario_version
 
-    scenario = "99999999-9999-9999-9999-999999999999"
-    from tests.integration._helpers import insert_feature, start_run
+    from tests.integration._helpers import insert_feature, make_scenario, start_run
+
+    scenario = make_scenario(conn, "99999999-9999-9999-9999-999999999999")
 
     source_id = register_source(
         conn,

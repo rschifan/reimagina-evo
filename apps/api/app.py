@@ -131,11 +131,11 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_origins,
-        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/edits`.
+        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/rules/{rule_id}`.
         # It is invisible in dev — vite proxies :5173 to :8001, so the browser
         # sees one origin and sends no preflight — and a non-proxied
         # deployment cannot call either route without it. PATCH is here for
-        # the same reason: `PATCH /scenarios/{id}/rules` edits a rule in place.
+        # the same reason: `PATCH /scenarios/{id}/rules/{rule_id}` edits a rule in place.
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         # X-Truncated / X-Row-Limit: the capped indicator reads say whether

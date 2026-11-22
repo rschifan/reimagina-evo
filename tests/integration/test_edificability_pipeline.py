@@ -30,6 +30,7 @@ from reimagina.scenarios.overrides import apply_override
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
+    make_scenario,
     insert_feature as _insert_feature,
     register_source as _register_source,
     start_run as _start_run,
@@ -138,7 +139,7 @@ def test_scenario_override_moves_all_three(conn):
         feature_id=block_id, indicator_slug=EDIFICABILITY_BLOCK_HOUSING_UNITS.slug
     )["value_numeric"]
 
-    scenario = str(uuid4())
+    scenario = make_scenario(conn)
     apply_override(
         conn,
         scenario_id=scenario,

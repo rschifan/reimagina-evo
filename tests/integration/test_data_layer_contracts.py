@@ -895,7 +895,9 @@ def test_aoi_summary_upsert_list_and_serving_view(conn):
     assert current["aggregation_note"] == "reran"
     assert current["status"] == "current"
 
-    scenario_id = str(uuid4())
+    from tests.integration._helpers import make_scenario
+
+    scenario_id = make_scenario(conn)
     scenario_summary_id = summary_repo.upsert_summary(
         aoi_id=aoi_id,
         indicator_id=indicator_id,

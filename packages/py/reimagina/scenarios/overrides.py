@@ -37,10 +37,10 @@ def apply_override(
 
     ``publish`` writes a new version for this scenario's partition of
     ``scenario.override.<attribute_key>``, which is what makes the edit visible
-    to freshness. Pass ``publish=False`` only when batching —
-    ``apply_overrides`` does, and publishes once per attribute at the end,
-    because the version digests every override row for that attribute in the
-    scenario and doing that per edit is quadratic.
+    to freshness. Pass ``publish=False`` only when batching and publishing
+    once per attribute at the end yourself, because the version digests every
+    override row for that attribute in the scenario and doing that per edit is
+    quadratic. For many edits use ``apply_overrides``.
     """
     _require_postgres(conn)
     with conn.cursor() as cur:
@@ -68,18 +68,45 @@ def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> in
     digests 1 row, then 2, then 10,000 — roughly 50 million row reads to record
     10,000 upserts.
 
+    **One statement, and unchanged rows are left alone.** A city-wide rule is
+    about 95,000 rows, written while the caller holds the scenario's lock; one
+    round trip per row was most of that time on a remote database. The
+    ``WHERE … IS DISTINCT FROM`` keeps a re-materialisation of an unchanged
+    scenario from rewriting (and WAL-logging) every row it already has.
+
     Each edit is a dict of the keyword arguments ``apply_override`` takes, minus
-    ``scenario_id``. Returns the number applied.
+    ``scenario_id``. Returns the number applied (changed or not).
     """
-    count = 0
-    touched: set[str] = set()
-    for edit in edits:
-        apply_override(conn, scenario_id=scenario_id, publish=False, **edit)
-        touched.add(edit["attribute_key"])
-        count += 1
-    if touched:
-        publish_scenario_version(conn, scenario_id, touched)
-    return count
+    _require_postgres(conn)
+    rows = list(edits)
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO curated_geo.scenario_override AS so
+              (scenario_id, feature_id, attribute_key, value_numeric, value_text)
+            SELECT %(s)s, u.feature_id, u.attribute_key, u.value_numeric,
+                   u.value_text
+            FROM unnest(%(f)s::uuid[], %(k)s::text[], %(n)s::double precision[],
+                        %(t)s::text[])
+                 AS u(feature_id, attribute_key, value_numeric, value_text)
+            ON CONFLICT (scenario_id, feature_id, attribute_key)
+            DO UPDATE SET value_numeric = EXCLUDED.value_numeric,
+                          value_text = EXCLUDED.value_text
+            WHERE (so.value_numeric, so.value_text)
+                  IS DISTINCT FROM (EXCLUDED.value_numeric, EXCLUDED.value_text)
+            """,
+            {
+                "s": scenario_id,
+                "f": [str(r["feature_id"]) for r in rows],
+                "k": [r["attribute_key"] for r in rows],
+                "n": [r.get("value_numeric") for r in rows],
+                "t": [r.get("value_text") for r in rows],
+            },
+        )
+    publish_scenario_version(conn, scenario_id, {r["attribute_key"] for r in rows})
+    return len(rows)
 
 
 def publish_scenario_version(

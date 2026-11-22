@@ -20,7 +20,12 @@ from reimagina.indicators.catalog import (
     URBAN_FORM_BLOCK_PLANNED_FLOORS,
 )
 from reimagina.storage import backend_for_connection
-from tests.integration._helpers import insert_feature, register_source, start_run
+from tests.integration._helpers import (
+    make_scenario,
+    insert_feature,
+    register_source,
+    start_run,
+)
 
 SCENARIO = "44444444-4444-4444-4444-444444444444"
 OTHER = "55555555-5555-5555-5555-555555555555"
@@ -57,6 +62,8 @@ def blocks(conn):
 def _write(conn, *, slug, feature_id, value, scenario_id=None):
     """One indicator_result row, through the repository's own write path."""
     backend = backend_for_connection(conn)
+    if scenario_id is not None:
+        make_scenario(conn, scenario_id)
     with conn.cursor() as cur:
         # scenario_id must match on both rows — indicator_result_before_write
         # rejects a scenario result written under a baseline run.
@@ -113,6 +120,22 @@ def test_an_untouched_indicator_reads_through_to_the_baseline(blocks, conn):
     assert _values(conn, URBAN_FORM_BLOCK_COMPACTNESS.slug, SCENARIO) == _values(
         conn, URBAN_FORM_BLOCK_COMPACTNESS.slug, None
     )
+
+
+def test_a_scenario_value_is_flagged_estimated_not_measured(blocks, conn):
+    """B21: a what-if is a projection. Every compute writes the default
+    ``measured``, which carried a hypothetical 4-storey block into tooltips
+    and downloads as an observation."""
+    slug = URBAN_FORM_BLOCK_COMPACTNESS.slug
+    _write(conn, slug=slug, feature_id=blocks[0], value=0.5)
+    _write(conn, slug=slug, feature_id=blocks[0], value=0.9, scenario_id=SCENARIO)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT scenario_id IS NULL, quality_flag FROM curated_geo.indicator_result "
+            "WHERE feature_id = %s AND indicator_slug = %s AND status = 'current'",
+            (blocks[0], slug),
+        )
+        assert dict(cur.fetchall()) == {True: "measured", False: "estimated"}
 
 
 def test_a_recomputed_indicator_wins_over_the_baseline(blocks, conn):
@@ -263,6 +286,7 @@ def _write_missing(conn, *, slug, feature_id, scenario_id):
     by design — a scenario run that could not compute a feature records one.
     """
     backend = backend_for_connection(conn)
+    make_scenario(conn, scenario_id)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO jobs_runtime.job_run "

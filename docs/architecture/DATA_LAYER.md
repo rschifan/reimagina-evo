@@ -119,7 +119,7 @@ The API's feature reads and the tile functions go through `serving_geo` (`featur
 
 - Baseline-defining data lives only in the data layer.
 - Baseline evidence stays read-only but can influence scenario recomputation.
-- Scenario rules are drawn into `curated_geo.scenario_edit` (r048) and materialized into per-feature `curated_geo.scenario_override` rows (r030), never back into `feature` or `observation`.
+- Scenario rules are drawn into `curated_geo.scenario_rule` (r055) and materialized into per-feature `curated_geo.scenario_override` rows (r030), never back into `feature` or `observation`.
 - A scenario can only author the attributes the shipped indicators read, minus geometry and the two dirty markers (`assets.registry.authorable_attributes()`): today `floors`, `lot_coverage`, `num_levels`, `people_per_household`, `unit_size`. Everything else in the data layer is read-only to scenarios.
 
 This means a source can be essential to scenario evaluation without ever becoming scenario-owned data.
@@ -290,7 +290,7 @@ Other `curated_geo` tables the data layer owns but the diagram leaves out:
 - `road_node` / `road_edge` (r037) — the pgRouting walking graph. Node ids are OSM node ids; `road_edge` carries `osm_id`, `source`/`target` (FKs to `road_node`, `ON DELETE CASCADE`), `cost` and `reverse_cost` (both edge length in metres) and a `LineString` geometry. Loaded by `network bootstrap` (`pipeline/osm_network.py`), which replaces the whole graph and opens no `ingestion_run`; by default the same command publishes the edges as `global:road` features (`data/roads.py`, `transformation_step = 'publish_road_features'`).
 - `tile_snapshot_registry` (r013) — PMTiles snapshot registry; see `TILE_SERVING.md`.
 - `asset`, `asset_version`, `asset_dependency`, `asset_materialization` (r041) — the asset graph; see `ASSET_LAYER.md`.
-- `aggregation_recipe` (r020) — the declarative raster→observation and observation→observation bindings; see `docs/SYSTEM_OVERVIEW.md`. The indicator tables (`indicator_catalog`, `indicator_dependency`, `indicator_result`) are in `INDICATORS_LAYER.md`; `scenario_override` and `scenario_edit` are in `SCENARIOS_LAYER.md`.
+- `aggregation_recipe` (r020) — the declarative raster→observation and observation→observation bindings; see `docs/SYSTEM_OVERVIEW.md`. The indicator tables (`indicator_catalog`, `indicator_dependency`, `indicator_result`) are in `INDICATORS_LAYER.md`; `scenario_override` and `scenario_rule` are in `SCENARIOS_LAYER.md`.
 
 ### Shipped loaders and the CDMX bootstrap
 
@@ -478,7 +478,7 @@ Defines what spatial types exist. New types are rows here — no table or schema
 **Purpose:** registry of valid feature kinds, their geometry family, and their semantic role.  
 **Use this when:** introducing a canonical object type the catalog does not have yet, such as `grid_cell`.  
 **Do not use this for:** source-specific datasets or ad hoc attributes.  
-**Relationships:** referenced by `feature.type_id`, `feature_overlap_type_pair` (both sides), `scenario_edit.type_id` (r048) and `asset.feature_type_id` (r041); drives `role`-based serving views.  
+**Relationships:** referenced by `feature.type_id`, `feature_overlap_type_pair` (both sides), `scenario_rule.type_id` (r055) and `asset.feature_type_id` (r041); drives `role`-based serving views.  
 **Examples:** `block`, `lot`, `tree`, `road`, `bus_stop`, `building`.
 
 ```sql
@@ -1030,7 +1030,7 @@ serving_geo.feature_v / feature_aoi_v
 The key boundary is simple:
 
 - Canonical writes go to `curated_geo`.
-- Scenario rules live in `curated_geo.scenario_edit` (r048) and are materialized into `curated_geo.scenario_override` (r030), the overlay the compute path reads.
+- Scenario rules live in `curated_geo.scenario_rule` (r055) and are materialized into `curated_geo.scenario_override` (r030), the overlay the compute path reads.
 - Indicator runs resolve `override ⊕ current observation ⊕ base feature.attributes` in SQL and write `indicator_result`.
 - No scenario writes back into `feature` or `observation`.
 

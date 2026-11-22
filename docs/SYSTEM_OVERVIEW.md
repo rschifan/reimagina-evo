@@ -432,7 +432,7 @@ introduced are drawn as `raster_layer_tbl` and `aggregation_recipe_tbl`
 (see the note under the diagram); everything else pre-existed and this
 work only added references to it. Tables added to `curated_geo` since —
 `scenario_override` (r030), `road_node` / `road_edge` (r037), the asset
-graph (r041), `scenario_edit` (r048) — are not shown.
+graph (r041), `scenario_rule` (r055) — are not shown.
 
 ```mermaid
 erDiagram

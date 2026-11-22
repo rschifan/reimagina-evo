@@ -169,7 +169,7 @@ step "10. A scenario, authored through the CLI, and the selective recompute it t
 #
 # The area is drawn as GeoJSON, as a person would hand it over: the envelope of
 # four blocks, grown a few metres so four collinear centroids still enclose
-# something. `set-attribute` selects by centroid, so the polygon may catch more
+# something. `add-rule` selects by centroid, so the polygon may catch more
 # than those four; the table in step 11 reports exactly how many it did.
 AREA_GEOJSON="${TMPDIR:-/tmp}/reimagina-acceptance-area.geojson"
 export AREA_GEOJSON
@@ -251,7 +251,7 @@ LISTED="$($CLI scenario list --aoi-id "$AOI_ID")"
 $PY -c 'import json,sys; n=json.load(sys.stdin)["count"]; print(f"  explore.scenario_v reports {n} scenario(s) in the AOI"); sys.exit(0 if n >= 1 else 1)' <<<"$LISTED" \
   || { echo "explore.scenario_v reports zero scenarios right after create" >&2; exit 1; }
 
-$CLI scenario set-attribute \
+$CLI scenario add-rule \
   --scenario-id "$SCENARIO_ID" \
   --geojson "$AREA_GEOJSON" \
   --levels 12 --unit-size 80 --people-per-household 3.2

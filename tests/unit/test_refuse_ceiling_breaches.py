@@ -31,6 +31,16 @@ class _Conn:
         return _Cursor()
 
 
+def _resolution(resolved: dict[tuple[str, str], float]) -> authoring._Resolution:
+    return authoring._Resolution(
+        matched={"rule-1": 1},
+        values=resolved,
+        owner=dict.fromkeys(resolved, "rule-1"),
+        feature_type={"block-x": "block-type"},
+        numbers={"rule-1": 1},
+    )
+
+
 def _baseline(monkeypatch, values: dict[str, float]):
     monkeypatch.setattr(
         authoring,
@@ -48,17 +58,24 @@ def test_a_block_the_compute_skips_is_not_refused_on_density(monkeypatch):
 
     authoring._refuse_ceiling_breaches(
         _Conn(),
-        resolved={("block-x", "num_levels"): 12.0, ("block-x", "floors"): 12.0},
-        feature_type={"block-x": "block-type"},
+        _resolution({("block-x", "num_levels"): 12.0, ("block-x", "floors"): 12.0}),
     )
 
 
 def test_the_floors_bound_still_applies_to_such_a_block(monkeypatch):
     _baseline(monkeypatch, {"unit_size": 50.0})
 
-    with pytest.raises(authoring.CeilingExceeded):
+    with pytest.raises(authoring.CeilingExceeded) as caught:
         authoring._refuse_ceiling_breaches(
             _Conn(),
-            resolved={("block-x", "num_levels"): 500.0, ("block-x", "floors"): 500.0},
-            feature_type={"block-x": "block-type"},
+            _resolution(
+                {("block-x", "num_levels"): 500.0, ("block-x", "floors"): 500.0}
+            ),
         )
+    # The refusal names the rule and the storeys the block would allow.
+    assert caught.value.rules == {"block-x": ("rule-1",)}
+    (breach,) = caught.value.breaches
+    assert caught.value.allowed_levels[("block-x", breach.indicator_slug)] == int(
+        breach.bound
+    )
+    assert "Rule 1 would make block block-x" in str(caught.value)

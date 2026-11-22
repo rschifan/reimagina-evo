@@ -1,4 +1,4 @@
-"""Creating scenarios and adding the edits that a later step resolves to overrides."""
+"""Creating scenarios and adding the rules that a later step resolves to overrides."""
 
 from __future__ import annotations
 
@@ -11,13 +11,16 @@ import pytest
 from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
+    RuleNotFound,
     ScenarioNotFound,
-    add_edit,
+    add_rule,
     create_scenario,
+    delete_rule,
     get_scenario,
     list_scenarios,
-    remove_edit,
+    update_rule,
 )
+from reimagina.scenarios.proposal import ProposalValueError
 from tests.integration._helpers import insert_project
 
 _SQUARE = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"
@@ -51,14 +54,13 @@ def _aoi(conn, project_id: str) -> str:
         return str(cur.fetchone()[0])
 
 
-def _edit(conn, sid, type_id, wkt=_SQUARE, value=6, attribute_key="floors") -> str:
-    return add_edit(
+def _rule(conn, sid, type_id, wkt=_SQUARE, **inputs) -> str:
+    return add_rule(
         conn,
         scenario_id=sid,
         geometry_wkt=wkt,
         type_id=type_id,
-        attribute_key=attribute_key,
-        value_numeric=value,
+        inputs=inputs or {"levels": 6},
     )
 
 
@@ -94,20 +96,20 @@ def _unit_provenance(conn, sid, status, queued_at):
         )
 
 
-def test_the_list_counts_each_scenarios_edits(conn):
+def test_the_list_counts_each_scenarios_rules(conn):
     """The workspace says "no rules yet" from the list, not one read per row."""
     p = insert_project(conn)
     a = _aoi(conn, p)
     with_rules = create_scenario(conn, project_id=p, name="with", aoi_id=a)
     create_scenario(conn, project_id=p, name="without", aoi_id=a)
     t = _type_id(conn)
-    for key in ("floors", "num_levels", "unit_size", "people_per_household"):
-        _edit(conn, with_rules, t, attribute_key=key)
+    _rule(conn, with_rules, t, levels=6, unit_size=60)
+    _rule(conn, with_rules, t, people_per_household=3)
 
     rows = {r["name"]: r for r in list_scenarios(conn, aoi_id=a)}
 
-    assert rows["with"]["edit_count"] == 4
-    assert rows["without"]["edit_count"] == 0
+    assert rows["with"]["rule_count"] == 2
+    assert rows["without"]["rule_count"] == 0
 
 
 def test_the_list_names_each_scenarios_newest_run(conn):
@@ -141,7 +143,7 @@ def test_a_fresh_scenario_is_not_materialized_and_has_no_overrides(conn):
     got = get_scenario(conn, sid)
     assert got["materialized_at"] is None
     assert got["override_count"] == 0
-    assert got["edits"] == []
+    assert got["rules"] == []
 
 
 def test_duplicate_name_in_one_project_raises_its_own_error(conn):
@@ -203,87 +205,150 @@ def test_an_aoi_that_exists_nowhere_is_still_the_foreign_keys_refusal(conn):
         )
 
 
-def test_edits_get_increasing_ordinals(conn):
+def test_rules_get_increasing_ordinals(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
-    a1 = _edit(conn, sid, t, value=6)
-    a2 = _edit(conn, sid, t, value=8)
-    ords = {e["id"]: e["ordinal"] for e in get_scenario(conn, sid)["edits"]}
+    a1 = _rule(conn, sid, t, levels=6)
+    a2 = _rule(conn, sid, t, levels=8)
+    ords = {r["id"]: r["ordinal"] for r in get_scenario(conn, sid)["rules"]}
     assert ords[a2] > ords[a1]
 
 
-def test_remove_edit_reports_whether_it_removed_anything(conn):
+def test_a_rule_stores_only_the_numbers_set_and_storeys_once(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    eid = _edit(conn, sid, _type_id(conn))
-    assert remove_edit(conn, edit_id=eid) is True
-    assert remove_edit(conn, edit_id=eid) is False
-    assert get_scenario(conn, sid)["edits"] == []
+    _rule(conn, sid, _type_id(conn), levels=4, lot_coverage=0.6)
+    (rule,) = get_scenario(conn, sid)["rules"]
+    assert rule["inputs"] == {"levels": 4.0, "lot_coverage": 0.6}
+
+
+def test_updating_a_rule_keeps_its_id_and_its_place(conn):
+    """Re-adding a number a rule had dropped does not move it ahead of a
+    later rule: precedence is the rule's ordinal, assigned once (B5)."""
+    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    t = _type_id(conn)
+    first = _rule(conn, sid, t, levels=4, unit_size=90)
+    second = _rule(conn, sid, t, unit_size=60)
+    update_rule(
+        conn, scenario_id=sid, rule_id=first, geometry_wkt=None, inputs={"levels": 4}
+    )
+    update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=first,
+        geometry_wkt=None,
+        inputs={"levels": 4, "unit_size": 90},
+    )
+
+    rules = get_scenario(conn, sid)["rules"]
+    assert [r["id"] for r in rules] == [first, second]
+    assert rules[0]["inputs"] == {"levels": 4.0, "unit_size": 90.0}
+
+
+def test_a_rule_of_another_scenario_cannot_be_changed_through_this_one(conn):
+    p = insert_project(conn)
+    mine = create_scenario(conn, project_id=p, name="mine")
+    theirs = create_scenario(conn, project_id=p, name="theirs")
+    t = _type_id(conn)
+    their_rule = _rule(conn, theirs, t)
+
+    with pytest.raises(RuleNotFound):
+        update_rule(
+            conn,
+            scenario_id=mine,
+            rule_id=their_rule,
+            geometry_wkt=None,
+            inputs={"levels": 9},
+        )
+    with pytest.raises(RuleNotFound):
+        delete_rule(conn, scenario_id=mine, rule_id=their_rule)
+    assert get_scenario(conn, theirs)["rules"][0]["inputs"] == {"levels": 6.0}
+
+
+def test_deleting_a_rule_is_one_row_and_a_second_delete_is_refused(conn):
+    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    rid = _rule(conn, sid, _type_id(conn), levels=6, unit_size=60)
+    delete_rule(conn, scenario_id=sid, rule_id=rid)
+    with pytest.raises(RuleNotFound):
+        delete_rule(conn, scenario_id=sid, rule_id=rid)
+    assert get_scenario(conn, sid)["rules"] == []
 
 
 def test_ordinals_are_not_reused_after_a_removal_of_the_latest(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
-    _edit(conn, sid, t)
-    e2 = _edit(conn, sid, t)
-    remove_edit(conn, edit_id=e2)
-    e3 = _edit(conn, sid, t)
-    assert [e["id"] for e in get_scenario(conn, sid)["edits"]][-1] == e3
+    _rule(conn, sid, t)
+    r2 = _rule(conn, sid, t)
+    delete_rule(conn, scenario_id=sid, rule_id=r2)
+    r3 = _rule(conn, sid, t)
+    assert [r["id"] for r in get_scenario(conn, sid)["rules"]][-1] == r3
 
 
-def _is_valid(conn, eid) -> bool:
+def _is_valid(conn, rid) -> bool:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT ST_IsValid(geometry) FROM curated_geo.scenario_edit WHERE id = %s",
-            (eid,),
+            "SELECT ST_IsValid(geometry) FROM curated_geo.scenario_rule WHERE id = %s",
+            (rid,),
         )
         return cur.fetchone()[0]
 
 
 def test_a_self_intersecting_polygon_is_repaired_not_stored_raw(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    eid = _edit(conn, sid, _type_id(conn), wkt=_BOWTIE)
-    assert _is_valid(conn, eid)
+    rid = _rule(conn, sid, _type_id(conn), wkt=_BOWTIE)
+    assert _is_valid(conn, rid)
+
+
+def test_a_third_coordinate_is_dropped_not_a_500(conn):
+    """QGIS and GPS exports carry Z; the column is 2D and the insert raised."""
+    sid = create_scenario(conn, project_id=insert_project(conn), name="N")
+    rid = _rule(conn, sid, _type_id(conn), wkt="POLYGON Z((0 0 5,0 1 5,1 1 5,0 0 5))")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT ST_NDims(geometry) FROM curated_geo.scenario_rule WHERE id = %s",
+            (rid,),
+        )
+        assert cur.fetchone()[0] == 2
 
 
 def test_an_unrepairable_geometry_is_rejected_with_a_reason(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     with pytest.raises(InvalidGeometry):
-        _edit(conn, sid, _type_id(conn), wkt="POLYGON EMPTY")
+        _rule(conn, sid, _type_id(conn), wkt="POLYGON EMPTY")
 
 
 def test_unparseable_wkt_is_an_invalid_geometry_too(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     t = _type_id(conn)
     with pytest.raises(InvalidGeometry):
-        _edit(conn, sid, t, wkt="not wkt")
+        _rule(conn, sid, t, wkt="not wkt")
     # and the transaction is still usable
-    assert _edit(conn, sid, t)
+    assert _rule(conn, sid, t)
 
 
 def test_a_line_is_rejected_not_stored(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
     with pytest.raises(InvalidGeometry):
-        _edit(conn, sid, _type_id(conn), wkt="LINESTRING(0 0, 1 1)")
+        _rule(conn, sid, _type_id(conn), wkt="LINESTRING(0 0, 1 1)")
 
 
-def test_an_unauthorable_attribute_is_refused(conn):
+def test_an_unknown_number_is_refused(conn):
     sid = create_scenario(conn, project_id=insert_project(conn), name="N")
-    with pytest.raises(ValueError, match="network_version"):
-        _edit(conn, sid, _type_id(conn), attribute_key="network_version")
+    with pytest.raises(ProposalValueError, match="network_version"):
+        _rule(conn, sid, _type_id(conn), network_version=3)
 
 
-def test_an_edit_on_a_missing_scenario_is_refused(conn):
+def test_a_rule_on_a_missing_scenario_is_refused(conn):
     with pytest.raises(LookupError):
-        _edit(conn, "00000000-0000-0000-0000-000000000000", _type_id(conn))
+        _rule(conn, "00000000-0000-0000-0000-000000000000", _type_id(conn))
 
 
-def test_concurrent_add_edit_does_not_collide_on_ordinal(migrated_db):
+def test_concurrent_add_rule_does_not_collide_on_ordinal(migrated_db):
     """Two committed transactions racing for the same scenario's next ordinal.
 
     The fixture ``conn`` never commits, so a second connection could not even see
     the scenario. This test commits its own setup and removes it afterwards.
 
-    Deterministic, not lucky: the first transaction adds its edit and holds the
+    Deterministic, not lucky: the first transaction adds its rule and holds the
     scenario row lock uncommitted; the second then starts. Without the lock it
     reads the same max, inserts the same ordinal, blocks on the unique index and
     raises once the first commits. With it, it waits on the lock instead.
@@ -297,13 +362,13 @@ def test_concurrent_add_edit_does_not_collide_on_ordinal(migrated_db):
         sid = create_scenario(setup, project_id=project, name="race")
         setup.commit()
 
-        first = _edit(c1, sid, t, value=6)
+        first = _rule(c1, sid, t, levels=6)
         errors: list[BaseException] = []
         result: list[str] = []
 
         def second() -> None:
             try:
-                result.append(_edit(c2, sid, t, value=8))
+                result.append(_rule(c2, sid, t, levels=8))
                 c2.commit()
             except BaseException as exc:  # noqa: BLE001 - reported below
                 errors.append(exc)
@@ -315,9 +380,9 @@ def test_concurrent_add_edit_does_not_collide_on_ordinal(migrated_db):
         thread.join(timeout=10)
 
         assert not errors, errors
-        edits = get_scenario(setup, sid)["edits"]
-        assert {e["id"] for e in edits} == {first, result[0]}
-        assert len({e["ordinal"] for e in edits}) == 2
+        rules = get_scenario(setup, sid)["rules"]
+        assert {r["id"] for r in rules} == {first, result[0]}
+        assert len({r["ordinal"] for r in rules}) == 2
     finally:
         c1.rollback()
         c2.rollback()

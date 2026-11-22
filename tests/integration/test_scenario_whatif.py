@@ -8,7 +8,6 @@ engine's attribute-keyed dirty-set through the full orchestrator.
 
 from __future__ import annotations
 
-from uuid import uuid4
 
 from reimagina.data import feature as feat
 from reimagina.indicators.catalog import URBAN_FORM_BLOCK_PLANNED_FLOORS, seed_catalog
@@ -18,6 +17,7 @@ from reimagina.scenarios.overrides import apply_override
 from reimagina.storage import backend_for_connection
 
 from tests.integration._helpers import (
+    make_scenario,
     insert_feature as _insert_feature,
     register_source as _register_source,
     start_run as _start_run,
@@ -65,7 +65,7 @@ def test_scenario_override_changes_planned_floors(conn):
     assert base["value_numeric"] == 3.0
 
     # What-if: scenario S overrides floors=10 → planned_floors(S) = 10.
-    scenario = str(uuid4())
+    scenario = make_scenario(conn)
     apply_override(
         conn,
         scenario_id=scenario,
@@ -116,7 +116,7 @@ def test_scenario_run_derives_change_set_from_overrides(conn):
         attributes={"floors": 3},
     )
 
-    scenario = str(uuid4())
+    scenario = make_scenario(conn)
     apply_override(
         conn,
         scenario_id=scenario,
@@ -171,7 +171,7 @@ def test_synchronous_orchestrator_also_derives_the_change_set(conn):
         attributes={"floors": 3},
     )
 
-    scenario = str(uuid4())
+    scenario = make_scenario(conn)
     apply_override(
         conn,
         scenario_id=scenario,

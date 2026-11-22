@@ -1,20 +1,17 @@
 """Deleting a scenario — and the traces that outlive the row if you let it.
 
-``app_core.scenario`` cascades exactly one thing: its edits. Everything else a
-scenario accumulates is reachable only by its id, from tables that never heard
-of the entity. ``scenario_override.scenario_id`` is a bare uuid (r030 deferred
-``app_core.scenario`` to r048 and never went back to add the FK) and so are
-``indicator_result``'s, ``job_run``'s and ``aoi_indicator_summary``'s; published versions and recorded
-materialisations are keyed by the *string* ``scenario=<id>``, which no
-constraint can follow.
+``app_core.scenario`` cascades its rules and, since r055, every row that
+carries its id: overrides, results, job runs and AOI summaries. Published
+versions and recorded materialisations are keyed by the *string*
+``scenario=<id>``, which no constraint can follow, so those are deleted by
+hand — and they are not quiet. ``asset_component_v`` (r041) unions
+materialisation rows into its node set with no filter at all, so a deleted
+scenario's partition would stay a live node in the graph — and, with its
+override versions retired out from under it, a permanently *stale* one.
 
-So ``DELETE FROM app_core.scenario`` on its own leaves ghosts, and they
-are not equally quiet. The loudest is the materialisation: ``asset_component_v``
-(r041) unions materialisation rows into its node set with no filter at all, so
-a deleted scenario's partition stays a live node in the graph — and, with its
-override versions retired out from under it, a permanently *stale* one. Every
-deleted scenario would add a line to ``assets stale`` naming a scenario nobody
-can look up.
+The other trace is the one a delete cannot see: a compute unit still running
+for the scenario. It must either finish before the delete (which then removes
+what it wrote) or find the scenario gone and write nothing.
 """
 
 from __future__ import annotations
@@ -33,7 +30,8 @@ from reimagina.orchestration.runners import default_runners
 from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
-    add_edit,
+    ScenarioNotFound,
+    add_rule,
     create_scenario,
     delete_scenario,
     get_scenario,
@@ -49,10 +47,11 @@ from tests.integration._helpers import (
 
 _DENSITY = EDIFICABILITY_BLOCK_DENSITY.slug
 
-#: The three attributes ``edificability.py`` needs together — it skips a block
-#: missing any one of them, so a one-attribute scenario computes no results and
-#: the supersession step would be tested against an empty set.
-_POLICY = (("num_levels", 6.0), ("unit_size", 60.0), ("people_per_household", 3.6))
+#: The three numbers ``edificability.py`` needs together — it skips a block
+#: missing any one of them, so a one-number scenario computes no results and
+#: the supersession step would be tested against an empty set. Storeys write
+#: two attributes, so the rule writes four.
+_POLICY = {"levels": 6.0, "unit_size": 60.0, "people_per_household": 3.6}
 
 # Four ~210 m squares at 19.40°N, and one rectangle that covers all of them.
 _LAT0, _LAT1 = 19.4000, 19.4020
@@ -114,19 +113,17 @@ class _Territory:
         aoi_mod.compute_aoi_features(self.conn, self.aoi_id)
 
     def scenario(self, name: str = "Centralidad norte") -> str:
-        """A scenario with all three policy attributes drawn over every block."""
+        """A scenario with one rule setting the three policy numbers everywhere."""
         scenario_id = create_scenario(
             self.conn, project_id=self.project_id, name=name, aoi_id=self.aoi_id
         )
-        for attribute_key, value in _POLICY:
-            add_edit(
-                self.conn,
-                scenario_id=scenario_id,
-                geometry_wkt=_AREA,
-                type_id=self.type_id,
-                attribute_key=attribute_key,
-                value_numeric=value,
-            )
+        add_rule(
+            self.conn,
+            scenario_id=scenario_id,
+            geometry_wkt=_AREA,
+            type_id=self.type_id,
+            inputs=dict(_POLICY),
+        )
         return scenario_id
 
 
@@ -254,10 +251,10 @@ def _stale_assets(conn) -> list[dict]:
         ]
 
 
-def _edit_count(conn, scenario_id) -> int:
+def _rule_count(conn, scenario_id) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT count(*) FROM curated_geo.scenario_edit WHERE scenario_id = %s",
+            "SELECT count(*) FROM curated_geo.scenario_rule WHERE scenario_id = %s",
             (scenario_id,),
         )
         return int(cur.fetchone()[0])
@@ -276,8 +273,8 @@ def test_delete_removes_overrides_versions_results_and_materialisations(conn):
 
     result = delete_scenario(conn, scenario_id=sid)
 
-    assert result.overrides == 12  # 4 blocks x 3 attributes
-    assert result.versions_deleted == 3
+    assert result.overrides == 16  # 4 blocks x 4 attributes
+    assert result.versions_deleted == 4
     assert result.results_deleted == 4
     assert result.job_runs_deleted == 1
     assert result.materializations == 1
@@ -286,7 +283,7 @@ def test_delete_removes_overrides_versions_results_and_materialisations(conn):
     assert _current_results(conn, sid, _DENSITY) == []
     assert _materialization_rows(conn, sid) == []
     assert get_scenario(conn, sid) is None
-    assert _edit_count(conn, sid) == 0  # cascaded
+    assert _rule_count(conn, sid) == 0  # cascaded
 
 
 def test_delete_leaves_no_row_that_names_the_scenario(conn):
@@ -379,7 +376,7 @@ def test_a_second_scenario_in_the_project_is_untouched(conn):
 
     delete_scenario(conn, scenario_id=doomed)
 
-    assert _override_count(conn, keeper) == 12
+    assert _override_count(conn, keeper) == 16
     assert _current_version(conn, keeper, "num_levels") is not None
     assert _current_results(conn, keeper, _DENSITY) != []
     assert _materialization_rows(conn, keeper) != []
@@ -441,7 +438,7 @@ def test_deleting_a_scenario_that_was_never_materialised_is_not_an_error(conn):
     assert (result.results_deleted, result.materializations) == (0, 0)
     assert result.job_runs_deleted == 0
     assert get_scenario(conn, sid) is None
-    assert _edit_count(conn, sid) == 0
+    assert _rule_count(conn, sid) == 0
 
 
 def test_a_duplicate_name_is_still_refused_while_the_scenario_lives(conn):
@@ -466,7 +463,7 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
 ):
     """A materialisation in flight must not re-populate a scenario being deleted.
 
-    ``c1`` resolves the scenario's edits and then pauses, exactly as the
+    ``c1`` resolves the scenario's rules and then pauses, exactly as the
     materialisation concurrency test does, before any override row is written.
     ``c2`` deletes the scenario. Without the row lock as ``delete_scenario``'s
     first act, ``c2`` sees nothing to remove, drops the scenario row and
@@ -499,8 +496,8 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
         errors: list[BaseException] = []
         unpaused = authoring._refuse_ceiling_breaches
 
-        def pause_after_resolution(conn, **kwargs):
-            unpaused(conn, **kwargs)
+        def pause_after_resolution(conn, *args, **kwargs):
+            unpaused(conn, *args, **kwargs)
             if conn is c1:  # only the run this test holds open
                 resolved.set()
                 # Bounded: with the lock, c2 is blocked and never arrives.
@@ -561,7 +558,7 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
                     "WHERE partition_key = %s",
                     partition_key({"scenario": sid}),
                 )
-            # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
+            # Cascades scenario, scenario_rule, area_of_interest, aoi_feature.
             discard(
                 setup,
                 "DELETE FROM app_core.project WHERE id = %s",
@@ -590,25 +587,22 @@ def test_a_concurrent_materialisation_cannot_outlive_the_delete(
                 warnings.warn(f"close failed: {exc}", stacklevel=2)
 
 
-def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
+def test_removing_a_rule_while_its_scenario_is_deleted_does_not_deadlock(
     migrated_db,
 ):
-    """``remove_edit`` and ``delete_scenario`` take their locks in one order.
+    """``delete_rule`` and ``delete_scenario`` take their locks in one order.
 
-    ``delete_scenario`` locks the scenario row first and reaches the edits
-    last, through the cascade. ``remove_edit`` used to do the opposite: delete
-    the edit, then touch the scenario's ``updated_at``. Run together, each
-    holds what the other waits for — the remover holds the edit row and waits
-    on the scenario, the delete holds the scenario and its cascade waits on the
-    edit — and Postgres breaks the cycle by aborting one of them with
-    ``DeadlockDetected``. An edit removal from the map racing a delete from
-    the CLI is the ordinary way to get there.
+    ``delete_scenario`` locks the scenario row first and reaches the rules
+    last, through the cascade. A remover that deleted the rule first and then
+    touched the scenario's ``updated_at`` would hold what the delete waits for
+    and wait for what it holds, and Postgres would abort one of them with
+    ``DeadlockDetected``.
 
     Deterministic rather than timed: the delete takes its lock, the remover is
     started, and the test waits until Postgres reports that backend blocked on
     a lock before letting the delete run on to its cascade. With the lock
-    taken first, the remover is blocked before it has touched the edit, so the
-    delete finishes and the remover then finds nothing to remove.
+    taken first, the remover is blocked before it has touched the rule, so the
+    delete finishes and the remover then finds no scenario.
     """
     c_del = psycopg2.connect(migrated_db)
     c_rm = psycopg2.connect(migrated_db)
@@ -619,16 +613,17 @@ def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
         territory = _Territory(setup, suffix="_remove_vs_delete")
         sid = territory.scenario(name="Removed while deleted")
         setup.commit()
-        edit_id = get_scenario(setup, sid)["edits"][0]["id"]
+        rule_id = get_scenario(setup, sid)["rules"][0]["id"]
 
         with c_del.cursor() as cur:
-            authoring._lock_scenario(cur, sid)
+            authoring._lock_scenario(cur, sid, mode="UPDATE")
 
         outcome: list[object] = []
 
         def remove() -> None:
             try:
-                outcome.append(authoring.remove_edit(c_rm, edit_id=edit_id))
+                authoring.delete_rule(c_rm, scenario_id=sid, rule_id=rule_id)
+                outcome.append("deleted")
                 c_rm.commit()
             except BaseException as exc:  # noqa: BLE001 - asserted on below
                 outcome.append(exc)
@@ -649,7 +644,7 @@ def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
                         break
                     threading.Event().wait(0.05)
                 else:
-                    pytest.fail("remove_edit never blocked on a lock")
+                    pytest.fail("delete_rule never blocked on a lock")
 
             delete_scenario(c_del, scenario_id=sid)
             c_del.commit()
@@ -657,7 +652,7 @@ def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
             remover.join(timeout=30)
 
         assert not remover.is_alive()
-        assert outcome == [False], outcome
+        assert len(outcome) == 1 and isinstance(outcome[0], ScenarioNotFound), outcome
         assert get_scenario(setup, sid) is None
     finally:
         for c in (c_del, c_rm):
@@ -700,3 +695,183 @@ def test_removing_an_edit_while_its_scenario_is_deleted_does_not_deadlock(
                 c.close()
             except Exception as exc:  # noqa: BLE001 - warned about, never fatal
                 warnings.warn(f"close failed: {exc}", stacklevel=2)
+
+
+# ── In-flight compute units (B2, B3) ────────────────────────────────────────
+
+
+def _committed_territory(migrated_db, suffix):
+    setup = psycopg2.connect(migrated_db)
+    seed_catalog(setup)
+    seed_assets(setup)
+    territory = _Territory(setup, suffix=suffix)
+    sid = territory.scenario(name=f"In flight{suffix}")
+    materialize_scenario(setup, scenario_id=sid)
+    setup.commit()
+    return setup, territory, sid
+
+
+def _tidy(setup, territory, sid):
+    setup.rollback()
+    for table in ("asset_version", "asset_materialization"):
+        discard(
+            setup,
+            f"DELETE FROM curated_geo.{table} WHERE partition_key = %s",
+            partition_key({"scenario": sid}),
+        )
+    discard(setup, "DELETE FROM app_core.project WHERE id = %s", territory.project_id)
+    discard(
+        setup,
+        "DELETE FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
+        territory.blocks,
+    )
+    discard(
+        setup,
+        "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
+        "(SELECT id FROM curated_geo.data_source_catalog WHERE name = %s)",
+        territory.source_name,
+    )
+    discard(
+        setup,
+        "DELETE FROM curated_geo.data_source_catalog WHERE name = %s",
+        territory.source_name,
+    )
+    setup.close()
+
+
+def _wait_until_blocked(setup, pid) -> None:
+    with setup.cursor() as cur:
+        for _ in range(300):
+            cur.execute(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s", (pid,)
+            )
+            row = cur.fetchone()
+            setup.rollback()
+            if row is not None and row[0] == "Lock":
+                return
+            threading.Event().wait(0.05)
+    pytest.fail("the second connection never blocked on a lock")
+
+
+def _orphans(conn, sid) -> tuple[int, int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT (SELECT count(*) FROM curated_geo.indicator_result "
+            "        WHERE scenario_id = %s), "
+            "       (SELECT count(*) FROM jobs_runtime.job_run WHERE scenario_id = %s)",
+            (sid, sid),
+        )
+        return cur.fetchone()
+
+
+def test_a_delete_waits_for_a_unit_in_flight_and_removes_what_it_wrote(migrated_db):
+    """B3: the unit's writes cannot land after the delete.
+
+    The unit holds ``KEY SHARE`` on the scenario row until it commits (the
+    runner's fence, and its job run's FK check), so the delete's ``FOR
+    UPDATE`` waits for it and then deletes its results with the rest.
+    Without it the delete counted what existed, committed, and the unit then
+    committed 19,058 results and a job run under a deleted id.
+    """
+    setup, territory, sid = _committed_territory(migrated_db, "_inflight")
+    worker = psycopg2.connect(migrated_db)
+    deleter = psycopg2.connect(migrated_db)
+    try:
+        runner = default_runners()[_DENSITY]
+        runner(
+            worker, features=frozenset(), scenario_id=sid, code_version="t", aoi_id=None
+        )
+        done: list[object] = []
+
+        def delete() -> None:
+            try:
+                done.append(delete_scenario(deleter, scenario_id=sid))
+                deleter.commit()
+            except BaseException as exc:  # noqa: BLE001 - asserted on below
+                done.append(exc)
+
+        thread = threading.Thread(target=delete)
+        thread.start()
+        _wait_until_blocked(setup, deleter.get_backend_pid())
+        worker.commit()
+        thread.join(timeout=30)
+
+        assert done and not isinstance(done[0], BaseException), done
+        assert done[0].results_deleted == 4
+        assert _orphans(setup, sid) == (0, 0)
+    finally:
+        for c in (worker, deleter):
+            c.rollback()
+            c.close()
+        _tidy(setup, territory, sid)
+
+
+def test_a_unit_of_a_deleted_scenario_writes_nothing(migrated_db):
+    setup, territory, sid = _committed_territory(migrated_db, "_after")
+    worker = psycopg2.connect(migrated_db)
+    try:
+        delete_scenario(setup, scenario_id=sid)
+        setup.commit()
+
+        runner = default_runners()[_DENSITY]
+        result = runner(
+            worker, features=frozenset(), scenario_id=sid, code_version="t", aoi_id=None
+        )
+        worker.commit()
+
+        assert result is None
+        assert _orphans(setup, sid) == (0, 0)
+        assert _materialization_rows(setup, sid) == []
+    finally:
+        worker.rollback()
+        worker.close()
+        _tidy(setup, territory, sid)
+
+
+def test_two_units_of_one_scenario_and_indicator_run_one_after_the_other(
+    migrated_db,
+):
+    """B2: two runs of one scenario computing the same indicator at once.
+
+    The second insert used to hit ``ir_one_current_scenario`` once the first
+    committed and fail the unit. It now waits on the (scenario, indicator)
+    lock, then supersedes the first's rows.
+    """
+    setup, territory, sid = _committed_territory(migrated_db, "_twice")
+    first = psycopg2.connect(migrated_db)
+    second = psycopg2.connect(migrated_db)
+    try:
+        runner = default_runners()[_DENSITY]
+        runner(
+            first, features=frozenset(), scenario_id=sid, code_version="t", aoi_id=None
+        )
+        errors: list[BaseException] = []
+
+        def run_second() -> None:
+            try:
+                runner(
+                    second,
+                    features=frozenset(),
+                    scenario_id=sid,
+                    code_version="t",
+                    aoi_id=None,
+                )
+                second.commit()
+            except BaseException as exc:  # noqa: BLE001 - asserted on below
+                errors.append(exc)
+
+        thread = threading.Thread(target=run_second)
+        thread.start()
+        _wait_until_blocked(setup, second.get_backend_pid())
+        first.commit()
+        thread.join(timeout=30)
+
+        assert not errors, errors
+        assert len(_current_results(setup, sid, _DENSITY)) == 4
+    finally:
+        for c in (first, second):
+            c.rollback()
+            c.close()
+        delete_scenario(setup, scenario_id=sid)
+        setup.commit()
+        _tidy(setup, territory, sid)

@@ -45,7 +45,15 @@ def test_a_removed_input_stales_the_composite_that_consumes_it():
 
     _supersede_unbacked_results(conn, "s1", [("block-x", "unit_size")])
 
-    (params,) = conn.params
+    # [0] deletes rows of blocks with no override left, [1] stales these,
+    # [2] drops the partition's materialisation records for these slugs.
+    params = conn.params[1]
     staled = set(zip(params["slugs"], params["fids"], strict=True))
     assert (EDIFICABILITY_BLOCK_DENSITY.slug, "block-x") in staled
     assert (LIVABILITY_BLOCK_SCORE.slug, "block-x") in staled
+    # And freshness may not vouch for either any more.
+    _partition, keys = conn.params[2]
+    assert {k.split(".", 1)[1] for k in keys} >= {
+        EDIFICABILITY_BLOCK_DENSITY.slug,
+        LIVABILITY_BLOCK_SCORE.slug,
+    }

@@ -11,7 +11,7 @@ The platform operates in three modes. Understanding which mode you are in determ
 | Mode | What it does | Key tables involved |
 |---|---|---|
 | **Diagnosis** | Describes the city as it exists today. No scenario. | `feature`, `observation`, `indicator_result` (where `scenario_id IS NULL`) |
-| **Exploration** | Sketches proposed changes to the city without running full models. | `app_core.scenario`, `scenario_edit`, `scenario_override` |
+| **Exploration** | Sketches proposed changes to the city without running full models. | `app_core.scenario`, `scenario_rule`, `scenario_override` |
 | **Evaluation** | Computes indicators for a specific scenario and compares results against the base state. | `orchestration_run`, `job_unit`, `job_run`, `indicator_result` (where `scenario_id IS NOT NULL`) |
 
 These modes are not mutually exclusive — a project will typically use all three in sequence.
@@ -162,10 +162,10 @@ The fraction of a feature's area, length, or presence that falls inside an AOI. 
 A workspace row in `app_core.project` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It groups scenarios: `app_core.scenario.project_id` (r048) references it.
 
 ### Scenario
-A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, bound to an AOI (`aoi_id`, nullable), and is the addressed resource for authoring. Only `curated_geo.scenario_edit.scenario_id` has a foreign key to it; the `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` remain plain uuids with no foreign key (r016:7-10, r030:6-7, r015:55); the authoring code, not the schema, keeps them consistent with the row. A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
+A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, bound to an AOI (`aoi_id`, required at creation; nullable only because deleting the AOI empties it), and is the addressed resource for authoring. Its rules, overrides, results, job runs and AOI summaries reference it `ON DELETE CASCADE` (r055). A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
 
-### Scenario edit and rule
-A **scenario edit** is one row of `curated_geo.scenario_edit` (r048): one drawn area (polygon or multipolygon), one feature type, one authorable attribute and one numeric value. `ordinal` orders the edits of a scenario, and later edits win where areas overlap. A **rule** is the edits one proposal wrote over one area: a planner sets up to four numbers — storeys, m² per dwelling, people per household, lot coverage — and only the numbers given are written, storeys as both `floors` and `num_levels` (`scenarios/proposal.py::edits_for`). `PATCH /scenarios/{id}/rules` updates a rule in place, keeping its ordinals.
+### Rule
+A **rule** is one row of `curated_geo.scenario_rule` (r055): one drawn area (polygon or multipolygon), one feature type, and the numbers a planner set over it (`inputs`: storeys, m² per dwelling, people per household, lot coverage — only the ones given). Its `ordinal` is its place in "later wins" where areas overlap, per number; it is assigned when the rule is created and kept when the rule is edited or moved. Materialisation writes storeys as both `floors` and `num_levels` (`scenarios/proposal.py::edits_for`). Before r055 a rule was a set of per-attribute **scenario edits** (`scenario_edit`, r048) grouped by identical geometry.
 
 ### Materialisation
 Resolving a scenario's edits into per-feature `scenario_override` rows inside its AOI (`scenarios/authoring.py::materialize_scenario`). It refuses the whole scenario if any block would breach an indicator ceiling, deletes overrides no edit implies any more, marks the scenario's now-unbacked results `stale`, and sets `app_core.scenario.materialized_at`. Its **footprint** — every block a current rule overrides plus every block whose override it removed, and the attributes involved — is the change-set `POST /scenarios/{id}/recompute` submits.
@@ -303,7 +303,7 @@ How much of a feature lies inside a project AOI?   → aoi_feature overlap field
 
 **Where do scenario-related edits go?**
 ```
-Changing an attribute over an area, for one scenario? → curated_geo.scenario_edit (a rule),
+Changing an attribute over an area, for one scenario? → curated_geo.scenario_rule (a rule),
                                                      materialised into
                                                      curated_geo.scenario_override
                                                      (one row per feature × attribute)
