@@ -35,21 +35,23 @@ def compute_planned_floors(
     # an unseeded database failed later with a foreign-key error instead of the
     # actionable message. Exactly the drift five copies of one envelope produce.
     require_seeded(backend, spec)
-    block_type_id = get_type_id(conn, "MEX", "block")
-    effective = effective_numeric(
-        conn,
-        type_id=block_type_id,
-        attribute_key="floors",
-        scenario_id=scenario_id,
-        feature_ids=feature_ids,
-    )
-    numeric_rows = list(effective.items())
     with job_run(
         backend,
         model_family=spec.model_family or "urban_form",
         code_version=code_version,
         scenario_id=scenario_id,
     ) as job_run_id:
+        # Read inside the job_run (see _compute.py): the cast of a non-numeric
+        # `floors` raises here, and outside it left no failed provenance row.
+        block_type_id = get_type_id(conn, "MEX", "block")
+        effective = effective_numeric(
+            conn,
+            type_id=block_type_id,
+            attribute_key="floors",
+            scenario_id=scenario_id,
+            feature_ids=feature_ids,
+        )
+        numeric_rows = list(effective.items())
         rows_written = backend.indicator_result_repo().bulk_write_numeric_results(
             numeric_rows,
             indicator_slug=spec.slug,
