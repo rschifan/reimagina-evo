@@ -1,7 +1,7 @@
 """Integration tests for reimagina.pipeline.inegi_censo.bootstrap.
 
-Builds a tiny synthetic 2020 census parquet that mirrors the data
-lake's lowercase ``entidad=N/`` partition shape (no nested ``mun``),
+Builds a tiny synthetic 2020 census parquet that mirrors the INEGI
+parquet copy's lowercase ``entidad=N/`` partition shape (no nested ``mun``),
 seeds matching municipality + block features so the (nom_mun → CVE_MUN)
 lookup and the CVEGEO join both hit, runs ``bootstrap()`` against the
 migrated test DB, and asserts:
@@ -281,7 +281,7 @@ def test_bootstrap_records_lineage_via_storage_uri(
             (result.source_id,),
         )
         storage_uri, storage_type, integration_role = cur.fetchone()
-    assert storage_uri == inegi_censo.LAKE_PREFIX
+    assert storage_uri == inegi_censo.CENSO_URL
     assert storage_type == "tabular"
     assert integration_role == "enrichment"
 

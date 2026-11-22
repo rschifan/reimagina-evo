@@ -61,7 +61,7 @@ def read_vector(path: str | Path) -> gpd.GeoDataFrame:
     GeoParquet is preferred for large analytical subsets, while GeoJSON and
     other GDAL-supported formats remain supported for smaller/manual inputs.
 
-    The data lake exposes its amenity layers with the ``.geoparquet``
+    Some amenity layers carry the ``.geoparquet``
     suffix; treat it as the same format as ``.parquet`` so callers don't
     have to fight the dispatch.
     """

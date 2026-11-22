@@ -17,7 +17,7 @@ def bootstrap_points(
     *,
     dsn: str,
     layers: list[str] | None = None,
-    source_root: str | None = None,
+    source_root: str,
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stage + load the requested amenity layers into curated_geo.feature."""
@@ -25,7 +25,7 @@ def bootstrap_points(
         result = points.bootstrap(
             conn,
             layers=layers,
-            source_root=Path(source_root) if source_root else None,
+            source_root=Path(source_root),
             code_version=code_version,
         )
     return {"dsn": dsn, **result}

@@ -1,7 +1,9 @@
 """Ingest INEGI 2020 census per-block attributes into curated_geo.observation.
 
-Targets ``data/sources/lake/inegi/censo/manzanas_2020.parquet/``,
-hive-partitioned by ``entidad=N/`` only (the 2020 release dropped the
+Reads a local parquet copy of INEGI's 2020 census results by block
+(the Mexicali source bundle's ``inegi/censo_2020/manzanas_2020.parquet/``;
+the caller names it, there is no default location), hive-partitioned by
+``entidad=N/`` only (the 2020 release dropped the
 nested ``mun`` partition that the 2010 release used). Municipality
 identification lives inside each row as the human-readable ``nom_mun``
 string, not a numeric ``CVE_MUN`` — see :func:`_build_muni_lookup` for
@@ -46,10 +48,8 @@ CENSO_LICENSE = "Libre uso — Términos de Uso de la Información del INEGI"
 CENSO_VERSION = "2020-censo"
 CENSO_DATASET_NAME = "México · Censo de Población 2020 — manzanas (INEGI)"
 
-# Default location relative to repo root; overridable for tests.
-DEFAULT_SOURCE_ROOT = Path("data/sources/lake/inegi/censo/manzanas_2020.parquet")
-
-LAKE_PREFIX = "lake://private-lake/inegi/censo/manzanas_2020.parquet"
+# INEGI's public page for the census: the lineage in storage_uri.
+CENSO_URL = "https://www.inegi.org.mx/programas/ccpv/2020/"
 
 
 # Headline subset of the ~225-column census schema. Names match the
@@ -262,12 +262,12 @@ def ensure_censo_source(conn) -> str:
         provider=CENSO_PROVIDER,
         storage_type="tabular",
         integration_role="enrichment",
-        storage_uri=LAKE_PREFIX,
+        storage_uri=CENSO_URL,
         version=CENSO_VERSION,
         license=CENSO_LICENSE,
         notes=(
             "INEGI Censo 2020 manzana-level demographics + housing. "
-            "Read from the private-lake private data lake mirror."
+            "Read from a local parquet copy of the INEGI product."
         ),
     )
 
@@ -298,9 +298,9 @@ def _fetch_feature_ids_by_cvegeo(conn, cvegeos: list[str]) -> dict[str, str]:
 def bootstrap(
     conn,
     *,
+    source_root: Path,
     cve_ent_filter: list[str] | None = None,
     columns: tuple[str, ...] = HEADLINE_COLUMNS,
-    source_root: Path | None = None,
     code_version: str = "dev",
     orchestrator_run_id: str | None = None,
 ) -> CensoBootstrapResult:
@@ -317,18 +317,15 @@ def bootstrap(
     every 2020 manzana, or when ``nom_mun`` resolves to a CVE_MUN we
     haven't loaded. The count is reported in the return value.
     """
-    if source_root is not None:
-        root = Path(source_root)
-    else:
-        root = DEFAULT_SOURCE_ROOT
+    root = Path(source_root)
     if not root.is_absolute():
         root = REPO_ROOT / root
 
     if not root.exists():
         raise FileNotFoundError(
             f"INEGI 2020 census parquet not found: {root}. "
-            "Verify the data lake mirror at "
-            "data/sources/lake/inegi/censo/manzanas_2020.parquet/ exists."
+            "--source-root must be the census parquet directory, e.g. the "
+            "source bundle's inegi/censo_2020/manzanas_2020.parquet/."
         )
 
     df = read_layer_to_dataframe(

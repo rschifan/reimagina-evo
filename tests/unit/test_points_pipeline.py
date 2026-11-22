@@ -48,12 +48,11 @@ def test_feature_type_target_is_global_establishment():
     assert POINTS_FEATURE_TYPE_SLUG == "establishment"
 
 
-def test_specs_carry_lake_lineage_subpath():
-    """data_source_catalog.storage_uri = LAKE_RAW_PREFIX/lake_subpath;
-    each spec must declare a subpath that matches the on-disk relative
-    path so lineage and content stay coherent."""
+def test_specs_carry_a_public_lineage_uri():
+    """data_source_catalog.storage_uri is where the data comes from: a
+    public publisher page, never a local or private path."""
     for spec in LAYER_SPECS.values():
-        assert spec.lake_subpath == spec.geoparquet_relative
+        assert spec.lineage_uri.startswith("https://")
 
 
 def test_pilot_specs_target_distinct_cities():
@@ -78,13 +77,13 @@ def test_specs_are_immutable():
 
 def test_dataclass_signature_supports_minimal_construction():
     """The required positional+keyword args are ``key``, ``geoparquet_relative``,
-    ``lake_subpath``, ``display_name``, ``provider``, ``license``, ``version``,
+    ``lineage_uri``, ``display_name``, ``provider``, ``license``, ``version``,
     ``notes`` — anything beyond those should have defaults so adding a new
     spec stays a one-liner."""
     spec = PointsLayerSpec(
         key="x",
         geoparquet_relative="x.geoparquet",
-        lake_subpath="x.geoparquet",
+        lineage_uri="https://example.org/x",
         display_name="X",
         provider="P",
         license="L",

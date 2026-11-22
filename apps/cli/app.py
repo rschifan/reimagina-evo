@@ -1275,7 +1275,7 @@ def network_bootstrap(
 # ── inegi-marco ──────────────────────────────────────────────────────────
 inegi_marco_app = typer.Typer(
     name="inegi-marco",
-    help="INEGI Marco Geoestadístico 2024 ingest from the data-lake mirror",
+    help="INEGI Marco Geoestadístico 2024 ingest from a local parquet copy",
 )
 app.add_typer(inegi_marco_app, name="inegi-marco")
 
@@ -1303,12 +1303,12 @@ def inegi_marco_bootstrap(
             "Repeatable. If omitted, ingests ALL of Mexico — usually not what you want."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
         help=(
-            "Override the source directory (defaults to "
-            "data/sources/lake/inegi/marco_geostadistico/2024)."
+            "Directory holding the layer directories, e.g. the Mexicali "
+            "source bundle's inegi/marco_geoestadistico_2024."
         ),
     ),
     code_version: str = typer.Option("dev", "--code-version"),
@@ -1358,12 +1358,12 @@ def inegi_censo_bootstrap(
             "(pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot)."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
         help=(
-            "Override the source directory (defaults to "
-            "data/sources/lake/inegi/censo/manzanas_2020.parquet)."
+            "The census parquet directory, e.g. the Mexicali source "
+            "bundle's inegi/censo_2020/manzanas_2020.parquet."
         ),
     ),
     code_version: str = typer.Option("dev", "--code-version"),
@@ -1465,7 +1465,7 @@ def aoi_compute_features(
 # ── points ───────────────────────────────────────────────────────────────
 points_app = typer.Typer(
     name="points",
-    help="Per-pilot-city amenity / POI ingest from the data-lake mirror",
+    help="Per-pilot-city amenity / POI ingest from local GeoParquet layers",
 )
 app.add_typer(points_app, name="points")
 
@@ -1484,10 +1484,11 @@ def points_bootstrap(
             "(tlalpan_amenities,mexicali_amenities)."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
-        help="Override the source directory (defaults to data/sources/lake).",
+        help="Directory the layers' paths are relative to, e.g. the Mexicali "
+        "source bundle.",
     ),
     code_version: str = typer.Option("dev", "--code-version"),
 ) -> int:

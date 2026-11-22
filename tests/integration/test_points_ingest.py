@@ -1,6 +1,6 @@
 """Integration tests for reimagina.pipeline.points.bootstrap.
 
-Builds tiny synthetic GeoParquet files that mirror the on-the-data-lake
+Builds tiny synthetic GeoParquet files that mirror the on-disk
 amenity schema (``id, category, capacity, geometry, fuente, fecha,
 entidad``), runs ``bootstrap()`` against the migrated test DB, and
 asserts features land with the right type, attributes, and geometry.
@@ -64,7 +64,7 @@ def isolated_silver_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 def fake_amenity_root(tmp_path: Path) -> Path:
     """Lay down both pilot-city geoparquets at the locations the specs
     expect (relative to ``source_root``)."""
-    root = tmp_path / "lake"
+    root = tmp_path / "amenities"
     _write_amenity_geoparquet(
         root / "sigcdmx" / "amenities" / "exe_amenities_tlalpan_complete.geoparquet",
         rows=[
@@ -89,7 +89,7 @@ def fake_amenity_root(tmp_path: Path) -> Path:
         ],
     )
     _write_amenity_geoparquet(
-        root / "exe" / "002_mexicali" / "equipamientos.geoparquet",
+        root / points.MEXICALI_AMENITIES.geoparquet_relative,
         rows=[
             {
                 "id": "M1",
@@ -227,7 +227,7 @@ def test_bootstrap_preserves_point_geometry(
     assert rows[0]["lat"] == pytest.approx(32.65, rel=1e-6)
 
 
-def test_bootstrap_carries_lake_lineage_in_storage_uri(
+def test_bootstrap_carries_lineage_in_storage_uri(
     conn,
     fake_amenity_root: Path,
     isolated_silver_dir: Path,
@@ -245,9 +245,7 @@ def test_bootstrap_carries_lake_lineage_in_storage_uri(
             (source_id,),
         )
         (storage_uri,) = cur.fetchone()
-    assert storage_uri == (
-        f"{points.LAKE_RAW_PREFIX}/exe/002_mexicali/equipamientos.geoparquet"
-    )
+    assert storage_uri == points.MEXICALI_AMENITIES.lineage_uri
 
 
 def test_bootstrap_is_idempotent_on_source_registration(

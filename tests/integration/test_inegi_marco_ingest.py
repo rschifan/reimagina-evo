@@ -4,10 +4,10 @@ Exercises the full Tier 1.2 pipeline against a migrated Postgres+PostGIS
 test DB:
 
 - Creates a synthetic hive-partitioned parquet on disk that mirrors the
-  on-the-data-lake shape (CVE_ENT partition + WKB BLOB geometry column).
+  on-disk INEGI parquet shape (CVE_ENT partition + WKB BLOB geometry column).
 - Runs ``bootstrap()`` filtered by CVE_ENT.
 - Asserts a ``data_source_catalog`` row was registered with the
-  lake:// storage_uri for lineage, an ``ingestion_run`` reached
+  INEGI product-page storage_uri for lineage, an ``ingestion_run`` reached
   'succeeded', and ``curated_geo.feature`` rows landed with the
   right type_slug, geometry, and attributes.
 
@@ -68,7 +68,7 @@ def isolated_silver_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 def fake_marco_root(tmp_path: Path) -> Path:
     """Lay down a tiny INEGI marco mirror with three CVE_ENT partitions.
 
-    Layout matches the real data lake:
+    Layout matches the real INEGI parquet copy:
 
         <root>/
           areas_estatales.parquet/CVE_ENT=02/part-0.parquet
@@ -118,7 +118,7 @@ def fake_marco_root(tmp_path: Path) -> Path:
     )
 
     # --- areas_municipales: BC has 1 muni, CDMX has 2 munis. Real
-    # data lake stores CVE_MUN as a partition directory, NOT as an
+    # the INEGI copy stores CVE_MUN as a partition directory, NOT as an
     # in-file column — so each muni gets its own CVE_ENT/CVE_MUN/ path
     # and the parquet inside is just CVEGEO + NOMGEO + geometry.
     _write_two_level_partition(
@@ -195,7 +195,7 @@ def _write_two_level_partition(
     """Write a CVE_ENT/CVE_MUN/ nested partition. Used for the three
     fine-grain layers (``areas_municipales``, ``agebs_urbanas``,
     ``manzanas_urbanas``) so the ingest sees CVE_MUN as a partition
-    column rather than an in-file column — matches the real data lake."""
+    column rather than an in-file column — matches the real INEGI copy."""
     part = parquet_dir / f"CVE_ENT={cve_ent}" / f"CVE_MUN={cve_mun}"
     part.mkdir(parents=True, exist_ok=True)
     table = pa.table(
@@ -329,14 +329,14 @@ def test_bootstrap_geometry_lands_with_real_area(
     assert rows[0]["geom_area"] == pytest.approx(0.25, rel=1e-6)
 
 
-def test_bootstrap_registers_source_with_lake_lineage(
+def test_bootstrap_registers_source_with_inegi_lineage(
     conn,
     fake_marco_root: Path,
     isolated_silver_dir: Path,
 ):
-    """data_source_catalog.storage_uri keeps the upstream private URL even
-    though we read the locally-mirrored copy. This is the lineage signal
-    the read surface uses to credit the source correctly."""
+    """data_source_catalog.storage_uri names INEGI's product page even
+    though we read a local copy. This is the lineage signal the read
+    surface uses to credit the source correctly."""
     result = inegi_marco.bootstrap(
         conn,
         layers=["areas_estatales"],
@@ -357,7 +357,7 @@ def test_bootstrap_registers_source_with_lake_lineage(
         row = cur.fetchone()
     assert row is not None
     storage_uri, provider, version = row
-    assert storage_uri.startswith(inegi_marco.INEGI_MARCO_LAKE_PREFIX)
+    assert storage_uri == f"{inegi_marco.INEGI_MARCO_URL}#areas_estatales"
     assert provider == inegi_marco.INEGI_MARCO_PROVIDER
     assert version == inegi_marco.INEGI_MARCO_VERSION
 
