@@ -66,20 +66,28 @@ CLIPPED_FOOTPRINT = (
 #: Its area, geodesic like every block area here: the storeys' weight.
 CLIPPED_AREA = f"ST_Area(({CLIPPED_FOOTPRINT})::geography)"
 
+#: Per block, from each (block, building) pair's clipped area, storeys and
+#: tag, computed once per pair in the lateral (``OFFSET 0`` keeps the planner
+#: from inlining it and repeating the intersection in every aggregate).
 _MEANS = f"""
-    SELECT min(b.source_id::text) FILTER (WHERE jsonb_typeof(b.attributes->'num_floors') = 'number'),
+    SELECT min(b.source_id::text) FILTER (WHERE p.tagged),
            blk.id::text,
-           ROUND((sum({CLIPPED_AREA} * {_FLOORS}) / NULLIF(sum({CLIPPED_AREA}), 0))::numeric, 2),
-           count(*) FILTER (WHERE jsonb_typeof(b.attributes->'num_floors') = 'number')
+           ROUND((sum(p.area * p.floors) / NULLIF(sum(p.area), 0))::numeric, 2),
+           count(*) FILTER (WHERE p.tagged)
     FROM curated_geo.feature blk
     JOIN curated_geo.feature b
       ON b.type_slug = 'building'
      AND ST_Intersects(blk.geometry, b.geometry)
+    CROSS JOIN LATERAL (
+        SELECT {CLIPPED_AREA} AS area,
+               {_FLOORS} AS floors,
+               jsonb_typeof(b.attributes->'num_floors') = 'number' AS tagged
+        OFFSET 0
+    ) p
     WHERE blk.type_slug = 'block'
       {{scope}}
     GROUP BY blk.id
-    HAVING bool_or(jsonb_typeof(b.attributes->'num_floors') = 'number')
-       AND sum({CLIPPED_AREA}) > 0
+    HAVING bool_or(p.tagged) AND sum(p.area) > 0
 """
 
 
