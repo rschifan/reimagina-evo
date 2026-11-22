@@ -87,7 +87,7 @@ commands and shell substitutions are not supported. Keep it out of Git.
 | `DATABASE_URL` | Application database, direct PostgreSQL connection for migrations/loaders/CLI |
 | `REIMAGINA_APP_DSN` | Same application database; PgBouncer for Docker, direct for host PostgreSQL |
 | `DATABASE_URL_DIRECT` | Same application database, direct connection for DBOS checkpoints and LISTEN/NOTIFY |
-| `TEST_DATABASE_URL` | Separate disposable database whose name contains `test` |
+| `TEST_DATABASE_URL` | Separate disposable database with `test` as a word in its name (`reimagina_test`) |
 | `DATABASE_URL_ADMIN` | Existing maintenance database (usually `postgres`) on the same direct server; role able to create databases and extensions |
 
 The bootstrap role needs PostgreSQL superuser privileges to create the

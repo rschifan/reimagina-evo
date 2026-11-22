@@ -94,7 +94,8 @@ CI also runs `make lint`'s three steps (job `lint-py`) and the web app's
 `alembic downgrade base`, which drops every
 managed schema in `TEST_DATABASE_URL` (default
 `postgresql://localhost/reimagina_test`). It refuses to run against a database
-whose name does not contain `test`, unless the name equals
+whose name does not have `test` as a word (`reimagina_test`, not
+`reimagina_latest`), unless the name equals
 `REIMAGINA_TEST_DB_ALLOW_NAME`; that guard is the only thing between the suite
 and real data. When the database is unreachable it skips, unless
 `REIMAGINA_REQUIRE_DB=1` (set by CI's `test-py-integration` job), which turns
@@ -118,7 +119,7 @@ psql -d reimagina_test_<yourthing> -c 'CREATE EXTENSION postgis; CREATE EXTENSIO
 TEST_DATABASE_URL=postgresql:///reimagina_test_<yourthing> pytest tests/integration
 ```
 
-The name must contain `test` for the fixture guard. Anything left in the shared
+The name must have `test` as a `_`-separated word for the fixture guard. Anything left in the shared
 database survives between runs only by luck, since each run ends by dropping
 every managed schema.
 

@@ -11,13 +11,14 @@ re-running migrations for every test.
 
 SAFETY: the teardown step (downgrade-to-base) is destructive — it drops every
 table the migrations manage. We therefore refuse to run against a DB whose
-name does not clearly look like a test DB (contains `test`). If someone
+name does not clearly look like a test DB (has `test` as a word). If someone
 points TEST_DATABASE_URL at a dev or prod DB, the fixture raises at setup
 instead of silently wiping the data at teardown.
 """
 
 from __future__ import annotations
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -57,11 +58,13 @@ def _assert_db_name_is_test_safe(db_url: str) -> None:
     """
     db_name = database_name_from_dsn(db_url)
     allowed = os.environ.get("REIMAGINA_TEST_DB_ALLOW_NAME", "")
-    if "test" in db_name.lower() or db_name == allowed:
+    # A word, not a substring: "reimagina_latest" is a plausible name for a
+    # copy of current data, and it contains "test".
+    if "test" in re.split(r"[\W_]+", db_name.lower()) or db_name == allowed:
         return
     raise RuntimeError(
         "Refusing to run the migrated_db fixture against "
-        f"{db_name!r}: the database name must contain 'test' so the "
+        f"{db_name!r}: the database name must have 'test' as a word (e.g. reimagina_test) so the "
         "teardown (downgrade-to-base) can't wipe real data. If this is "
         "intentional, set REIMAGINA_TEST_DB_ALLOW_NAME to the exact DB "
         "name to opt in."
