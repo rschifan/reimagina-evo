@@ -8,10 +8,12 @@
 That gap is worth stating plainly, because it is not obvious: INEGI's marco
 geoestadístico carries only identifiers (`CVE_ENT`, `CVE_MUN`, `CVE_AGEB`, …),
 Overture's `num_floors` lands on `global:building` rather than on blocks, and
-`infra/db/seeds/` is empty. The one attribute any shipped indicator reads —
-`floors`, for `urban_form_block_planned_floors` — is written by *tests* and
-nothing else, so that indicator returns zero rows against a freshly
-bootstrapped database. These indicators would inherit the same emptiness.
+`infra/db/seeds/` is empty. Two real sources cover part of it —
+`overture block-storeys` writes a block's median `num_floors` as a `floors`
+observation (83 Mexicali blocks are tagged) and `inegi-censo bootstrap
+--columns prom_ocup` writes household size — and nothing writes `num_levels`
+or `unit_size`, so the edificability family returns zero rows against a
+freshly bootstrapped database without this script.
 
 Writes six keys onto `curated_geo.feature.attributes` for `MEX:block` features:
 

@@ -78,10 +78,10 @@ database a person is working in:
 ```bash
 # In a separate scratch checkout, configure/review all five DSNs.
 # See docs/INSTALLATION.md: acceptance drops and recreates its target.
-export DATABASE_URL=postgresql://localhost/reimagina_e2e_scratch
+export DATABASE_URL=postgresql://localhost:5432/reimagina_e2e_scratch
 export REIMAGINA_APP_DSN=$DATABASE_URL DATABASE_URL_DIRECT=$DATABASE_URL
-export TEST_DATABASE_URL=postgresql://localhost/reimagina_e2e_scratch_test
-export DATABASE_URL_ADMIN=postgresql://localhost/postgres
+export TEST_DATABASE_URL=postgresql://localhost:5432/reimagina_e2e_scratch_test
+export DATABASE_URL_ADMIN=postgresql://localhost:5432/postgres
 scripts/acceptance_run.sh
 
 # Its own API, worker and web server, on ports nothing else uses.

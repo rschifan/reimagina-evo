@@ -36,7 +36,7 @@ headers and a C++ build toolchain for `exactextract`.
 After configuration and database readiness, `make install` installs locked
 Python and web dependencies, `make migrate` bootstraps both databases, and
 `make dev` starts the API (:8001), web (:5173) and worker. Without data the map
-is empty; without the worker submitted runs stay queued.
+is empty (see [Data](#data)); without the worker submitted runs stay queued.
 
 For a generated territory, use the guide's
 [scratch verification procedure](docs/INSTALLATION.md#7-verify-with-synthetic-data).
@@ -45,39 +45,19 @@ configure a separate scratch checkout before running it.
 
 ## Data
 
-The real territory is built from the **Mexicali source bundle**, one
-directory (~77 MB) holding every input the load reads:
-
-- INEGI Marco Geoestadístico 2024 (state, municipalities, urban AGEBs and
-  blocks) and the INEGI 2020 census by block, both for Baja California;
-- a selection of INEGI DENUE establishments in Mexicali;
-- the Overture buildings and places extracts for the Mexicali box;
-- a snapshot of the OpenStreetMap pedestrian network.
-
-Its `ATTRIBUTION.md` carries the credits and licence terms (INEGI's free-use
-terms, ODbL, CDLA-Permissive-2.0), `MANIFEST.json` lists every file with its
-rows, checksum, source and vintage, and `SHA256SUMS` lets the load check it.
-The bundle is published as a GitHub Release asset (tag
-`mexicali-bundle-2026.11`), and its SHA-256 is pinned in
-`scripts/build_mexicali_bundle.py`:
-
-```bash
-scripts/mexicali_run.sh                    # downloads, checks and loads it
-scripts/mexicali_run.sh --bundle DIR       # offline, from a local copy
-```
-
-The first form downloads the archive into `data/bundles/`, refuses it unless
-its checksum matches the pin, extracts it and loads Mexicali end to end; later
-runs reuse it with no network access. Without network access, download
-<https://github.com/rschifan/reimagina-evo/releases/download/mexicali-bundle-2026.11/reimagina-mexicali-bundle-2026.11.tar.gz> by hand, extract it and pass the `reimagina-mexicali-bundle`
-directory with `--bundle`. A published archive is never replaced: new data
-gets a new release tag and a new pin. The bundle can also be rebuilt from
-INEGI's public downloads (inegi.org.mx: Marco Geoestadístico, Censo de
-Población y Vivienda 2020, DENUE) plus an Overture extract and an OSM fetch,
-with `scripts/build_mexicali_bundle.py build`.
-[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) is the step-by-step runbook. Without
-the bundle everything else works — install, migrate, run, test, build, and the
-generated territory above.
+The real territory is Mexicali, built from the **Mexicali source bundle**:
+INEGI Marco Geoestadístico 2024, Censo 2020 and DENUE for Baja California,
+the Overture buildings and places extracts for the Mexicali box and an
+OpenStreetMap pedestrian network, with `ATTRIBUTION.md` (credits and licence
+terms), `MANIFEST.json` and `SHA256SUMS`. It is published as a GitHub Release
+asset (tag `mexicali-bundle-2026.11`), checksum-pinned in
+`scripts/build_mexicali_bundle.py`. `scripts/mexicali_run.sh` downloads it,
+verifies it and loads Mexicali into the `DATABASE_URL` database, which it
+drops and recreates; see
+[installation step 9](docs/INSTALLATION.md#9-load-the-real-mexicali-territory).
+[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) covers the bundle itself, the
+offline route and the load step by step. Without the bundle everything else
+works — install, migrate, run, test, build, and the generated territory above.
 
 ## Tests
 

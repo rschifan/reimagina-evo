@@ -131,8 +131,7 @@ invoked as `python -m apps.cli.app raster ingest --raw-path … --source-name �
 (`--aggregation-kind` defaults to `intensive`).
 
 **CDMX:** WorldPop 2020 Mexico (100 m) was clipped to the CDMX
-municipality union (`source_record_ref LIKE '09%'`) by
-[`scripts/clip_worldpop_to_cdmx.py`](../scripts/clip_worldpop_to_cdmx.py)
+municipality union (`source_record_ref LIKE '09%'`) by a one-off script
 and registered as `layer_slug = worldpop_cdmx_2020_100m`. The CLI now
 does the same fetch and clip itself: `raster fetch-worldpop --country MEX
 --year 2020 --aoi-id <AOI>` writes a local GeoTIFF ready for `raster
@@ -700,8 +699,8 @@ $CLI raster derivation run \
 For the CDMX rollups to cover the whole city rather than one
 alcaldía, run `python -m apps.cli.app overlap compute-all` once without
 `--aoi-id` so `feature_overlap` holds rows for every block of each
-declared pair (block→AGEB and block→municipality in
-[`BOOTSTRAP.md`](BOOTSTRAP.md)).
+declared pair (block→AGEB in [`BOOTSTRAP.md`](BOOTSTRAP.md) step 9;
+declare block→municipality the same way for municipal rollups).
 
 ---
 

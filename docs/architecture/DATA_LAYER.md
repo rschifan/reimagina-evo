@@ -305,8 +305,8 @@ The loaders are CLI families of `uv run python -m apps.cli.app` (`apps/cli/app.p
   Colonias download may need manual fallback when the CDMX portal is
   rate-limited (`--from-path LAYER=PATH` accepts a local archive).
 - **INEGI Marco Geoestadístico 2024** — `inegi-marco bootstrap` (`pipeline/inegi_marco.py`); states, municipalities, urban AGEBs and urban blocks for the entidades given with `--cve-ent`, read from a local parquet copy of the INEGI product (`--source-root`; the Mexicali source bundle holds Baja California).
-- **INEGI census 2020** — `inegi-censo bootstrap` (`pipeline/inegi_censo.py`); block-level values as `censo_2020_<column>` observations, joined to blocks by CVEGEO.
-- **Amenity points** — `points bootstrap` (`pipeline/points.py`); per-pilot-city GeoParquet layers as `global:establishment`.
+- **INEGI census 2020** — `inegi-censo bootstrap` (`pipeline/inegi_censo.py`); block-level values as `censo_2020_<column>` observations, joined to blocks by CVEGEO, read from a local parquet copy (`--source-root`; the source bundle's `inegi/censo_2020/manzanas_2020.parquet/`).
+- **Amenity points** — `points bootstrap` (`pipeline/points.py`); per-pilot-city GeoParquet layers as `global:establishment`, at fixed paths under `--source-root` (Mexicali: the source bundle's INEGI DENUE selection, `inegi/denue/equipamientos_mexicali.parquet`).
 - **Rasters** — `raster ingest`, `raster fetch-worldpop`, `raster zonal-stats` (`pipeline/raster.py`, `jobs/raster_zonal_stats.py`), plus `raster derivation` for aggregation recipes.
 - **Routing network** — `network bootstrap` (`pipeline/osm_network.py`); see `road_node` / `road_edge` above.
 
