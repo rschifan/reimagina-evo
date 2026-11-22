@@ -276,3 +276,25 @@ def test_a_floors_breach_names_the_floors_bound():
     message = str(caught.value)
     assert f"floors ceiling allows {math.floor(max_floors()):d} storeys" in message
     assert "m² per dwelling" not in message
+
+
+def test_polygon_wkt_repairs_a_self_intersecting_stroke_before_the_union():
+    """A bowtie plus a second stroke used to raise GEOS TopologyException in
+    the union, which no surface maps to a refusal: HTTP 500."""
+    bowtie = {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]],
+    }
+    square = {
+        "type": "Polygon",
+        "coordinates": [[[0.2, 0.2], [2, 0.2], [2, 2], [0.2, 2], [0.2, 0.2]]],
+    }
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": g, "properties": {}}
+            for g in (bowtie, square)
+        ],
+    }
+
+    assert polygon_wkt(collection).startswith("POLYGON")

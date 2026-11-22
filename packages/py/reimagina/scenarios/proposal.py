@@ -251,8 +251,10 @@ def polygon_wkt(geojson: Any) -> str:
 
     Accepts a FeatureCollection, a Feature or a bare geometry, and unions
     several parts into one area: a selection made with two strokes is one
-    rule, not two. Validity is left to ``add_edit``, which repairs with
-    ``ST_MakeValid`` on write — the one thing refused here is input with no
+    rule, not two. Each part is repaired before the union, because GEOS
+    overlay raises ``TopologyException`` on a self-intersecting stroke (a
+    bowtie plus a second stroke was an HTTP 500); ``add_edit`` still runs
+    ``ST_MakeValid`` on write. The one thing refused here is input with no
     polygonal part at all, because the error PostGIS gives for it arrives
     after a connection and a savepoint.
 
@@ -273,6 +275,7 @@ def polygon_wkt(geojson: Any) -> str:
     PostGIS is the one to notice it. The original error is chained, because
     "a linearring requires at least 4 coordinates" is the useful half.
     """
+    from shapely import make_valid
     from shapely.errors import ShapelyError
     from shapely.geometry import shape
     from shapely.ops import unary_union
@@ -297,7 +300,17 @@ def polygon_wkt(geojson: Any) -> str:
             "the drawn area carries no polygon: a scenario edit is an area, "
             "and a point or a line selects nothing"
         )
-    return str(unary_union(polygons).wkt)
+    # Only invalid parts: "structure" rewrites ring order even on valid
+    # input. With keep_collapsed=False it keeps only polygonal output, so a
+    # spike or a zero-area stroke cannot turn the union into a collection.
+    repaired = [
+        p if p.is_valid else make_valid(p, method="structure", keep_collapsed=False)
+        for p in polygons
+    ]
+    kept = [p for p in repaired if not p.is_empty]
+    if not kept:
+        raise InvalidGeometry("the drawn area encloses no area once repaired")
+    return str(unary_union(kept).wkt)
 
 
 #: Units whose block values add up to something a planner reads as a total —
