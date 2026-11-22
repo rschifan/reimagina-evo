@@ -86,6 +86,7 @@ from reimagina.db import (  # noqa: E402
     connect,
     verify_required_relations,
 )
+from reimagina.orchestration.port import RUN_TERMINAL_STATES  # noqa: E402
 from reimagina.storage import UnsupportedDSN, mask_dsn  # noqa: E402
 
 from apps.cli import UserError  # noqa: E402
@@ -256,7 +257,7 @@ def _print(data: dict[str, Any], *, failed: bool = False) -> int:
 
 # Terminal run statuses that mean the recompute did not do its job. `noop`,
 # `queued` (--detach) and `succeeded` are fine.
-_FAILED_RUN_STATUSES = frozenset({"failed", "partial", "cancelled"})
+_FAILED_RUN_STATUSES = RUN_TERMINAL_STATES - {"succeeded"}
 
 
 def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
