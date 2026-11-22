@@ -25,7 +25,7 @@ PERF_AOI_NAMES = {
 }
 
 
-AOI_EXTENT_SQL = """
+_AOI_EXTENT_SQL = """
 SELECT ST_XMin(geometry), ST_YMin(geometry), ST_XMax(geometry), ST_YMax(geometry)
 FROM curated_geo.area_of_interest
 WHERE id = %s
@@ -47,7 +47,7 @@ def _feature_extent(
     inside one city."""
     with conn.cursor() as cur:
         if aoi_id is not None:
-            cur.execute(AOI_EXTENT_SQL, (aoi_id,))
+            cur.execute(_AOI_EXTENT_SQL, (aoi_id,))
             row = cur.fetchone()
             if row is None:
                 raise ValueError(f"No AOI with id {aoi_id!r}.")
