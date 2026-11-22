@@ -455,3 +455,22 @@ def test_without_an_origin_the_source_records_the_file_it_was_given(
     recorded = _source_storage_uri(conn, result.source_id)
     assert recorded == raw.resolve().as_uri()
     assert "/silver/" not in recorded
+
+
+def test_a_published_raster_is_credited_on_the_map(conn, isolated_data_dir, tmp_path):
+    """A raster source has no rows in ``curated_geo.feature``; its tiles are
+    still on the map (WorldPop is CC BY 4.0), so it must still be credited."""
+    from reimagina.data.attribution import attributions
+
+    raw = _write_tiny_utm_raster(tmp_path / "credited.tif")
+    ingest_raster_source(
+        conn,
+        raw_path=raw,
+        source_name="credited-raster",
+        provider="pytest-raster-credit",
+        version="v1",
+        layer_slug="credited_raster",
+        license="CC-BY-4.0",
+    )
+    providers = {a.provider for a in attributions(conn)}
+    assert "pytest-raster-credit" in providers

@@ -59,11 +59,12 @@ def attribution_text(provider: str, license: str | None) -> str:
 
 
 def attributions(conn) -> list[Attribution]:
-    """Credit lines for every source with features in the database.
+    """Credit lines for every source with data on the map.
 
-    "With features" rather than "registered": a source row that was created
+    "With data" rather than "registered": a source row that was created
     and never loaded has nothing on the map, and crediting it would claim
-    the map shows data it does not.
+    the map shows data it does not. Data is features, or a published raster
+    layer — a raster (WorldPop, CC BY 4.0) has no feature rows at all.
 
     Sorted, so the rendered string is stable between requests — an
     attribution line that reshuffles on refresh looks like a bug.
@@ -75,6 +76,9 @@ def attributions(conn) -> list[Attribution]:
             FROM curated_geo.data_source_catalog s
             WHERE EXISTS (
                 SELECT 1 FROM curated_geo.feature f WHERE f.source_id = s.id
+            ) OR EXISTS (
+                SELECT 1 FROM curated_geo.raster_layer r
+                WHERE r.source_id = s.id AND r.published
             )
             ORDER BY s.provider, s.license
             """

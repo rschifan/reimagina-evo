@@ -191,7 +191,8 @@ the remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
 docstring.
 
 **Attribution is derived, not declared.** `GET /tile-sources/attribution`
-returns a credit line per source that actually has features, built from
+returns a credit line per source that actually has features or a published
+raster layer, built from
 `data_source_catalog.license`. OpenStreetMap gets the wording ODbL
 prescribes; a synthetic territory credits the synthetic source and makes no
 OSM claim. Hardcoding the credit in the frontend would be a false provenance
