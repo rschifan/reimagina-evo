@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import math
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -223,6 +224,10 @@ def decode_cursor(cursor: str) -> tuple[str, str]:
     try:
         payload = base64.urlsafe_b64decode(cursor.encode()).decode()
         ts, fid = payload.split("|", 1)
+        # Validate here: both halves are cast in SQL (timestamptz, uuid),
+        # where a bad value is a DataError 500 instead of this ValueError.
+        datetime.fromisoformat(ts)
+        UUID(fid)
         return ts, fid
     except Exception as exc:
         raise ValueError(f"Invalid pagination cursor: {cursor!r}") from exc
