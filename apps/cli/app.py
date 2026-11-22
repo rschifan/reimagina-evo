@@ -37,6 +37,16 @@ except ImportError:  # pragma: no cover
 # guarantees `str(member) == member.value` on 3.12.
 
 
+#: The perf commands' shared ``--aoi-id``.
+_PERF_AOI_OPTION = typer.Option(
+    None,
+    "--aoi-id",
+    help="Cut the benchmark boxes from this AOI instead of the extent of "
+    "every feature, whose centre falls between cities when more than one "
+    "is loaded. Pass the same AOI to seed-observations and run.",
+)
+
+
 class _DatasetTier(StrEnum):
     smoke = "smoke"
     representative = "representative"
@@ -806,13 +816,7 @@ def perf_seed_observations(
         "--dataset-tier",
     ),
     feature_limit: Optional[int] = typer.Option(None, "--feature-limit"),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Cut the benchmark boxes from this AOI instead of the extent of "
-        "every feature, whose centre falls between cities when more than one "
-        "is loaded. Pass the same AOI to seed-observations and run.",
-    ),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
     return _print(
         seed_observations(
@@ -857,13 +861,7 @@ def perf_run(
     benchmark: Optional[list[str]] = typer.Option(None, "--benchmark"),
     iterations: Optional[int] = typer.Option(None, "--iterations"),
     output_path: Optional[str] = typer.Option(None, "--output-path"),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Cut the benchmark boxes from this AOI instead of the extent of "
-        "every feature, whose centre falls between cities when more than one "
-        "is loaded. Pass the same AOI to seed-observations and run.",
-    ),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
     payload = run_perf_benchmarks(
         dsn=dsn,
@@ -886,13 +884,7 @@ def perf_explain(
         _DatasetTier.smoke,
         "--dataset-tier",
     ),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Cut the benchmark boxes from this AOI instead of the extent of "
-        "every feature, whose centre falls between cities when more than one "
-        "is loaded. Pass the same AOI to seed-observations and run.",
-    ),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
     return _print(
         explain_query(
