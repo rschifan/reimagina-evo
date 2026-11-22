@@ -41,10 +41,6 @@ class _DatasetTier(StrEnum):
     stress = "stress"
 
 
-class _PerfReportFormat(StrEnum):
-    json = "json"
-
-
 class _CdmxLayer(StrEnum):
     municipalities = "municipalities"
     agebs = "agebs"
@@ -848,7 +844,6 @@ def perf_explain(
 def perf_report(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     limit: int = typer.Option(10, "--limit"),
-    format: _PerfReportFormat = typer.Option(_PerfReportFormat.json, "--format"),
 ) -> int:
     return _print(
         performance_report(

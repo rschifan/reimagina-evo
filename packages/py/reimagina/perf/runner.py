@@ -538,6 +538,11 @@ def run_benchmarks(
     }
 
 
+# A p95 rise below this share of the baseline is run-to-run noise (3 to 7
+# iterations per tier), not a regression.
+REGRESSION_THRESHOLD_PCT = 10.0
+
+
 def compare_reports(
     *, baseline_path: str | Path, candidate_path: str | Path
 ) -> dict[str, object]:
@@ -574,7 +579,11 @@ def compare_reports(
                 "candidate_p95_ms": cand_p95,
                 "delta_p95_ms": delta_ms,
                 "delta_p95_pct": delta_pct,
-                "regressed": delta_ms > 0,
+                "regressed": (
+                    delta_pct > REGRESSION_THRESHOLD_PCT
+                    if delta_pct is not None
+                    else delta_ms > 0
+                ),
             }
         )
 

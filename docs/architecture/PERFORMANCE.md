@@ -430,6 +430,10 @@ python -m apps.cli.app perf report
 python -m apps.cli.app perf compare baseline.json candidate.json
 ```
 
+`perf run` exits 1 when any benchmark fails a check. `perf compare` marks a
+benchmark `regressed` when its p95 rose more than 10% over the baseline, and
+exits 1 on a regression or a failed candidate.
+
 ## Test and release policy
 
 What runs today: `tests/performance` holds three files, run by
