@@ -137,7 +137,7 @@ def load_mexico_city_buildings(
         # ⚠ Nothing written, nothing invalidated. A load whose rows all hit the
         # ON CONFLICT DO NOTHING path changed no geometry, and recomputing a
         # city because a re-run was a no-op is the expensive way to learn that.
-        if result.get("records_written"):
+        if result.get("records_written") or result.get("records_superseded"):
             result["recompute"] = submit_after_ingest(
                 dsn=dsn,
                 changed_attributes=list(recompute_attributes),

@@ -387,8 +387,10 @@ uv run python -c "from reimagina.pipeline.overture import \
 available_overture_releases as r; print(r())"
 ```
 
-Then `make verify-sources` will probe the new release. The previously
-loaded buildings keep their old `dataset_version` tag, and the new ingest
-goes in alongside them whatever `--source-name` you pass: features are
-unique on `(source_id, dataset_version, source_record_ref)`, and nothing in
-step 5 deletes an earlier release's rows.
+Then `make verify-sources` will probe the new release. Loading it under the
+same `--source-name` replaces the earlier release: the load deletes that
+source's previous-release buildings (or places) inside the extent it just
+loaded, in the same transaction, so a block never counts a building twice.
+It refuses, and loads nothing, if a scenario edit references one of those
+features. A different `--source-name` is a different layer and is left
+alone.

@@ -51,6 +51,7 @@ def load_vector_source(
     name_col: str | None = None,
     attributes_cols: list[str] | None = None,
     after_insert: Callable[[str, int], int] | None = None,
+    supersede: bool = False,
 ) -> dict[str, Any]:
     """Load a Silver GeoJSON/shapefile into curated_geo.feature.
 
@@ -61,8 +62,11 @@ def load_vector_source(
     before the run is completed and a version published, and returns how many
     of the inserted rows it kept — the AOI clip, which must be able to roll
     the whole load back and must not publish rows it is about to delete.
+    ``supersede`` retires other releases of this source; see
+    :func:`supersede_other_versions`.
 
-    Returns {"ingestion_run_id": str, "records_written": int}.
+    Returns {"ingestion_run_id": str, "records_written": int,
+    "records_superseded": int}; the version is published when either moved.
     """
     run_id = cat.start_ingestion_run(
         conn,
@@ -113,12 +117,19 @@ def load_vector_source(
             )
         if after_insert is not None:
             count = after_insert(run_id, count)
+        superseded = (
+            supersede_other_versions(
+                conn, source_id=source_id, type_id=type_id, ingestion_run_id=run_id
+            )
+            if supersede
+            else 0
+        )
         cat.complete_ingestion_run(
             conn,
             run_id,
             status="succeeded",
-            details={"records_written": count},
-            rows_written=count,
+            details={"records_written": count, "records_superseded": superseded},
+            rows_written=count + superseded,
             dataset_version=dataset_version,
             # Derived, not threaded through every caller: this function already
             # holds the type_id, and an asset carries feature_type_id as an FK.
@@ -127,7 +138,11 @@ def load_vector_source(
             asset_key=asset_key_for_feature_type(conn, type_id),
         )
         conn.commit()
-        return {"ingestion_run_id": run_id, "records_written": count}
+        return {
+            "ingestion_run_id": run_id,
+            "records_written": count,
+            "records_superseded": superseded,
+        }
     except Exception as exc:
         _rollback_if_possible(conn)
         cat.complete_ingestion_run(
@@ -138,6 +153,72 @@ def load_vector_source(
         )
         conn.commit()
         raise
+
+
+class SupersededFeaturesInUse(RuntimeError):
+    """A superseded feature carries a scenario edit, so it cannot be deleted."""
+
+
+def supersede_other_versions(
+    conn, *, source_id: str, type_id: str, ingestion_run_id: str
+) -> int:
+    """Delete this layer's features from other releases of the same source.
+
+    A source row is keyed on ``(provider, name, version)`` and Overture's
+    version is its release, so a release bump mints a new source and
+    ``ON CONFLICT (source_id, dataset_version, source_record_ref)`` cannot see
+    the previous release's rows: every GERS id lands twice, and a block counts
+    each of its buildings twice. Overture deletes old releases within weeks,
+    so the bump is not optional.
+
+    Scoped to the same provider + name (a source name is one extent — "…
+    Mexicali BBox") and to the envelope of what this run wrote, so another
+    city's rows under a shared name (places) are untouched. This run, not the
+    whole source: two cities loaded at the new release would otherwise span
+    an envelope over every city between them. Deleting a feature
+    cascades to its derived rows (AOI membership, overlaps, observations,
+    results), which the next membership/overlap/indicator run rebuilds — but
+    also to scenario edits, which are user data: the load refuses rather than
+    drop one.
+    """
+    superseded = """
+        WITH extent AS (
+            SELECT ST_SetSRID(ST_Extent(geometry)::geometry, 4326) AS g
+            FROM curated_geo.feature
+            WHERE ingestion_run_id = %(run_id)s::uuid
+        )
+        SELECT f.id
+        FROM curated_geo.feature f, extent
+        WHERE f.type_id = %(type_id)s::uuid
+          AND f.source_id IN (
+              SELECT other.id
+              FROM curated_geo.data_source_catalog this
+              JOIN curated_geo.data_source_catalog other
+                ON other.provider = this.provider
+               AND other.name = this.name
+               AND other.id <> this.id
+              WHERE this.id = %(source_id)s::uuid
+          )
+          AND ST_Intersects(f.geometry, extent.g)
+    """
+    params = {"source_id": source_id, "type_id": type_id, "run_id": ingestion_run_id}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) FROM curated_geo.scenario_override "
+            f"WHERE feature_id IN ({superseded})",
+            params,
+        )
+        edited = int(cur.fetchone()[0])
+        if edited:
+            raise SupersededFeaturesInUse(
+                f"{edited} scenario edit(s) reference features of an earlier "
+                f"release of this source; deleting those features would delete "
+                f"the edits. Move or delete the edits, then reload."
+            )
+        cur.execute(
+            f"DELETE FROM curated_geo.feature WHERE id IN ({superseded})", params
+        )
+        return cur.rowcount or 0
 
 
 def load_tabular_source(

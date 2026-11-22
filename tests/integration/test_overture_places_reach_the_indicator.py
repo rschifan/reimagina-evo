@@ -165,3 +165,58 @@ def test_places_land_as_the_shared_establishment_type(conn, tmp_path):
             (source_id,),
         )
         assert [r[0] for r in cur.fetchall()] == ["establishment"]
+
+
+def _places_under(conn, name: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.feature f "
+            "JOIN curated_geo.data_source_catalog s ON s.id = f.source_id "
+            "WHERE s.name = %s",
+            (name,),
+        )
+        return int(cur.fetchone()[0])
+
+
+def test_a_new_release_replaces_the_places_in_its_extent(conn, tmp_path):
+    """A release bump registers a new source row under the same name, so the
+    unique key cannot see the previous release: every place landed twice.
+    Places elsewhere under the shared name (another city) stay."""
+    from reimagina.pipeline.overture_places import ensure_places_source
+
+    feat.seed_feature_types(conn)
+    name = f"overture places release test {uuid4().hex[:8]}"
+    old = ensure_places_source(conn, version="2026-10-21.0", source_name=name)
+    load_places_subset(
+        conn,
+        source_id=old,
+        silver_path=_silver_parquet(tmp_path),
+        orchestrator_run_id=str(uuid4()),
+        dataset_version="2026-10-21.0",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    gpd.GeoDataFrame(
+        {"id": ["far"], "name": ["Far park"], "category": ["park"], "confidence": [1]},
+        geometry=[shapely.Point(-99.1, 19.4)],
+        crs="EPSG:4326",
+    ).to_parquet(elsewhere / "far.parquet")
+    load_places_subset(
+        conn,
+        source_id=old,
+        silver_path=elsewhere / "far.parquet",
+        orchestrator_run_id=str(uuid4()),
+        dataset_version="2026-10-21.0",
+    )
+
+    new = ensure_places_source(conn, version="2026-11-18.0", source_name=name)
+    result = load_places_subset(
+        conn,
+        source_id=new,
+        silver_path=_silver_parquet(tmp_path),
+        orchestrator_run_id=str(uuid4()),
+        dataset_version="2026-11-18.0",
+    )
+
+    assert result["records_superseded"] == len(_PLACES)
+    assert _places_under(conn, name) == len(_PLACES) + 1

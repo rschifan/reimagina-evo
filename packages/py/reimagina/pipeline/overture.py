@@ -567,7 +567,8 @@ def load_overture_buildings_subset(
     code_version: str = "dev",
     after_insert: Callable[[str, int], int] | None = None,
 ) -> dict[str, str | int]:
-    """Load a cleaned Overture buildings subset into curated_geo.feature."""
+    """Load a cleaned Overture buildings subset into curated_geo.feature,
+    retiring the same source's earlier releases (``supersede``)."""
     type_id = feat.get_type_id(
         conn,
         OVERTURE_BUILDINGS_MEXICO_CITY.feature_type_context,
@@ -585,6 +586,7 @@ def load_overture_buildings_subset(
         name_col=None,
         attributes_cols=OVERTURE_BUILDINGS_ATTRIBUTES,
         after_insert=after_insert,
+        supersede=True,
     )
 
 

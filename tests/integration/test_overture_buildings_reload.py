@@ -1,8 +1,10 @@
-"""Reloading Overture buildings: a re-run is a no-op, and a wrong-city
-extract leaves nothing behind.
+"""Reloading Overture buildings: a new release replaces, a re-run is a no-op,
+and a wrong-city extract leaves nothing behind.
 
 Each case is a load that used to *commit* the wrong state:
 
+- a release bump inserted every GERS id again under a new source row, so each
+  block counted every building twice;
 - re-running the same load re-inserted the rows the first clip had deleted,
   committed and published them, then deleted them again — a new layer version
   and a city-wide recompute for identical data;
@@ -20,6 +22,7 @@ import pytest
 from shapely.geometry import box
 
 from reimagina.assets.registry import seed_assets
+from reimagina.pipeline.loader import SupersededFeaturesInUse
 from reimagina.pipeline.overture import (
     ExtractAoiMismatch,
     bootstrap_overture_buildings_subset,
@@ -101,6 +104,26 @@ def _building_version(conn):
         return row[0] if row else None
 
 
+def test_a_new_release_replaces_the_previous_one(conn, tmp_path) -> None:
+    name = f"Overture Buildings - reload {uuid4().hex[:6]}"
+    aoi = _aoi(conn)
+    conn.commit()
+    _load(conn, _extract(tmp_path), name=name, release="2026-10-21.0", aoi_id=aoi)
+    _load(conn, _extract(tmp_path), name=name, release="2026-11-18.0", aoi_id=aoi)
+    assert _buildings(conn, name) == 2, "both releases' buildings are live"
+
+
+def test_a_release_under_another_name_is_left_alone(conn, tmp_path) -> None:
+    """The supersede is scoped to one source's lineage, not to the layer."""
+    aoi = _aoi(conn)
+    conn.commit()
+    other = f"Overture Buildings - other {uuid4().hex[:6]}"
+    _load(conn, _extract(tmp_path), name=other, release="2026-10-21.0", aoi_id=aoi)
+    name = f"Overture Buildings - reload {uuid4().hex[:6]}"
+    _load(conn, _extract(tmp_path), name=name, release="2026-11-18.0", aoi_id=aoi)
+    assert _buildings(conn, other) == 2
+
+
 def test_rerunning_the_same_load_publishes_nothing(conn, tmp_path) -> None:
     seed_assets(conn)
     aoi = _aoi(conn)
@@ -138,3 +161,33 @@ def test_a_wrong_city_extract_is_rolled_back(conn, tmp_path, monkeypatch) -> Non
             (name,),
         )
         assert [row[0] for row in cur.fetchall()] == ["failed"]
+
+
+def test_superseding_refuses_to_drop_a_scenario_edit(conn, tmp_path) -> None:
+    """Deleting a superseded building cascades to its scenario overrides —
+    user data. The load refuses instead."""
+    aoi = _aoi(conn)
+    conn.commit()
+    name = f"Overture Buildings - edited {uuid4().hex[:6]}"
+    _load(conn, _extract(tmp_path), name=name, release="2026-10-21.0", aoi_id=aoi)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_core.scenario (project_id, name, aoi_id) "
+            "SELECT project_id, 'edit', id FROM curated_geo.area_of_interest "
+            "WHERE id = %s RETURNING id",
+            (aoi,),
+        )
+        scenario_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO curated_geo.scenario_override "
+            "(scenario_id, feature_id, attribute_key, value_numeric) "
+            "SELECT %s, f.id, 'floors', 3 FROM curated_geo.feature f "
+            "JOIN curated_geo.data_source_catalog s ON s.id = f.source_id "
+            "WHERE s.name = %s LIMIT 1",
+            (scenario_id, name),
+        )
+    conn.commit()
+
+    with pytest.raises(SupersededFeaturesInUse):
+        _load(conn, _extract(tmp_path), name=name, release="2026-11-18.0", aoi_id=aoi)
+    assert _buildings(conn, name) == 2

@@ -355,6 +355,10 @@ def load_places_subset(
         code_version=code_version,
         name_col="name",
         attributes_cols=["category", "confidence"],
+        # A release bump mints a new source row; without this every place in
+        # the extent lands twice. Scoped to the extent just loaded, since
+        # every bbox shares this source name.
+        supersede=True,
     )
 
 
