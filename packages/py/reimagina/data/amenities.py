@@ -203,10 +203,6 @@ def fold_name(name: str | None) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
 
 
-#: One compiled alternation over :data:`PLACE_NAME_EXCLUSIONS`.
-_EXCLUSION_RE = re.compile("|".join(PLACE_NAME_EXCLUSIONS), re.IGNORECASE)
-
-
 def excluded_by_name(name: str | None) -> str | None:
     """The reason ``name`` is disqualified, or ``None`` if it is fine.
 
