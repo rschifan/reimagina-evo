@@ -166,9 +166,7 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     # edit invalidates it. One dataset, one attribute — which is what makes it
     # the control case against building density in every dirty-set test.
     inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
-    # Indicator is produced directly at the block grain and rolled up to AGEB
-    # via feature_overlap. Both grains appear in applies_to so indicator_result
-    # rows land cleanly at either level.
+    # Block grain only: r016's trigger rejects a row of any type not listed.
     applies_to=("block",),
 )
 
@@ -362,46 +360,18 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 
 # ── Accessibility ───────────────────────────────────────────────────────────
 #
-# The collaborators' brief splits accessibility in two: distance to POIs, then
-# "similar to the previous point, but with an added step: updating the road
-# network first affects accessibility downstream". Two indicator families, not
-# one, with genuinely different costs.
+# The collaborators' brief: distance to POIs, "but with an added step: updating
+# the road network first affects accessibility downstream". One family,
+# `*_network_m`: pedestrian-network metres, one multi-source Dijkstra per
+# category over the pgRouting tables, invalidated by `poi_version` OR
+# `network_version`. The straight-line `*_euclid_m` family was removed (see
+# `_accessibility_spec`).
 #
-#   *_euclid_m   straight-line metres, PostGIS KNN per block.
-#                Invalidated by `poi_version` alone.
-#   *_network_m  pedestrian-network metres, one multi-source Dijkstra per
-#                category over the pgRouting tables.
-#                Invalidated by `poi_version` OR `network_version`.
-#
-# ⚠ **The straight-line family is the expensive one.** This is the reverse of
-# what the code asserted until it was measured, and the reverse of what the
-# names suggest. Measured with `scripts/bench_real_data.py` on real Tlalpan
-# data, median of 3, per indicator:
-#
-#             1,500 blocks          5,273 blocks (group wall-clock)
-#   euclid    1455 / 868 / 662 ms   ~11.2 s
-#   network    943 / 656 / 523 ms    ~4.7 s
-#
-# The cause is the algorithm, not the geometry. The multi-source Dijkstra runs
-# **once per category** and amortizes across every block; the KNN runs **once
-# per block** and does not. So euclid is linear in block count while network is
-# flat, and the gap widens with scale — 1.5x at 1,500 blocks, 2.4x at 5,273.
-# Euclid cost also tracks amenity count (health 1,164 > school 408 > park 203),
-# the same effect seen from the other side.
-#
-# These numbers are kept because the *algorithmic* fact is durable and
-# counter-intuitive. A `resource_class` label encoding it used to live on
-# `IndicatorSpec`; it was removed because nothing ever consumed it, and because
-# a hand-written cost label is exactly the kind of constant that goes stale —
-# this one was assigned backwards from intuition until measured. If cost-aware
-# scheduling is ever built, derive it from recorded `job_unit` durations rather
-# than reintroducing a label. Re-measure with `scripts/bench_real_data.py`.
-#
-# ⚠ `poi_version` appears in BOTH groups, `network_version` in only one. So a
-# POI edit fires both families (six slugs, two dispatched units of different
-# cost) while a road edit fires only the cheaper one. That asymmetry is the
-# attribute→run mapping made observable, and it falls out of the declarations
-# rather than being staged for a demo.
+# The multi-source Dijkstra runs **once per category** and amortizes across
+# every block, so its cost is roughly flat in block count (~4.7 s group
+# wall-clock on 5,273 Tlalpan blocks, `scripts/bench_real_data.py`). If
+# cost-aware scheduling is ever built, derive it from recorded `job_unit`
+# durations rather than a hand-written label.
 
 #: Distance reported when nothing of a category is reachable. Also the search
 #: cutoff, so "not found" and "exactly at the limit" are the same number —
@@ -608,9 +578,8 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # score is a catalog entry — which is the extensibility claim this repo makes,
 # stated as a working example rather than as prose.
 #
-# **Network accessibility, not straight-line.** Both families exist and either
-# would compose, but only the network one responds to a road-network edit. Using
-# it makes the chain end to end: bump `network_version` -> three
+# **Network accessibility.** It responds to a road-network edit, which makes
+# the chain end to end: bump `network_version` -> three
 # `*_network_m` indicators recompute -> this score recomputes behind them. That
 # is the attribute -> run -> indicator mapping the collaborators asked to see,
 # demonstrated on the expensive path rather than the cheap one.
