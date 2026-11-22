@@ -309,3 +309,21 @@ def test_slow_queries_skips_pg_stat_statements_that_is_not_preloaded(monkeypatch
         "available": False,
         "queries": [],
     }
+
+
+def test_pertask_simulation_never_beats_the_slot_bound():
+    """Slot occupancy was reset per ready-batch, so a batch-2 node started on
+    a slot still busy with batch 1: 9 equal tasks on 4 slots came out at 2
+    units of time instead of 3."""
+    from reimagina.perf.workloads import Node, Workload, simulate
+
+    roots = tuple(Node(slug=f"r{i}", cost=1.0) for i in range(8))
+    workload = Workload(
+        id="t",
+        description="t",
+        nodes=(*roots, Node(slug="c", cost=1.0, deps=("r0",))),
+    )
+    unit = workload.nominal_seconds["c"]
+
+    assert simulate(workload, slots=4, strategy="pertask") == 3 * unit
+    assert simulate(workload, slots=4, strategy="wave") == 3 * unit
