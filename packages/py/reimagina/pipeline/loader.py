@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 
 import geopandas as gpd
 import pandas as pd
+import pyarrow.parquet as pq
 
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
@@ -122,16 +124,11 @@ def load_vector_source(
             count = after_insert(run_id, count)
         superseded = 0
         if supersede:
-            if gdf is None:
-                gdf = gpd.read_parquet(silver_path, columns=["geometry"])
-            geoms = gdf.geometry  # in 4326, as load_features stores it
-            if geoms.crs is not None and geoms.crs.to_epsg() != 4326:
-                geoms = geoms.to_crs(epsg=4326)
             superseded = supersede_other_versions(
                 conn,
                 source_id=source_id,
                 type_id=type_id,
-                bounds=tuple(geoms.total_bounds),
+                bounds=_input_bounds_4326(silver_path, gdf),
             )
         cat.complete_ingestion_run(
             conn,
@@ -162,6 +159,49 @@ def load_vector_source(
         )
         conn.commit()
         raise
+
+
+_LONLAT_CRS_IDS = (
+    {"authority": "EPSG", "code": 4326},
+    {"authority": "OGC", "code": "CRS84"},
+)
+
+
+Bounds = tuple[float, float, float, float]
+
+
+def _input_bounds_4326(path, gdf: gpd.GeoDataFrame | None) -> Bounds:
+    """The input's envelope in 4326, as load_features stores it."""
+    if gdf is None:
+        bounds = _geoparquet_bounds_4326(path)
+        if bounds is not None:
+            return bounds
+        gdf = gpd.read_parquet(path, columns=["geometry"])
+    geoms = gdf.geometry
+    if geoms.crs is not None and geoms.crs.to_epsg() != 4326:
+        geoms = geoms.to_crs(epsg=4326)
+    x0, y0, x1, y1 = geoms.total_bounds
+    return (x0, y0, x1, y1)
+
+
+def _geoparquet_bounds_4326(path) -> Bounds | None:
+    """The file's bbox from its GeoParquet metadata, or None when the file
+    does not record one in lon/lat — then the caller reads the geometries.
+    Saves decoding every geometry of a city-sized file for four numbers."""
+    try:
+        geo = json.loads((pq.read_schema(path).metadata or {})[b"geo"])
+        column = geo["columns"][geo["primary_column"]]
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+    # No "crs" key means OGC:CRS84 by the spec; null means unknown.
+    crs = column.get("crs", {"id": _LONLAT_CRS_IDS[1]})
+    bbox = column.get("bbox")
+    if not crs or crs.get("id") not in _LONLAT_CRS_IDS:
+        return None
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    x0, y0, x1, y1 = (float(b) for b in bbox)
+    return (x0, y0, x1, y1)
 
 
 class SupersededFeaturesInUse(RuntimeError):
