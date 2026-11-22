@@ -131,7 +131,9 @@ def create_app(
         # the same reason: `PATCH /scenarios/{id}/rules` edits a rule in place.
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
-        expose_headers=["X-Request-Id"],
+        # X-Truncated / X-Row-Limit: the capped indicator reads say whether
+        # the cap dropped rows; a cross-origin client must be able to see it.
+        expose_headers=["X-Request-Id", "X-Truncated", "X-Row-Limit"],
         allow_credentials=False,
     )
 

@@ -127,6 +127,7 @@ class IndicatorResultRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
         limit: int | None = None,
+        after_feature_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
     def list_current_with_geometry(

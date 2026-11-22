@@ -33,7 +33,7 @@ All 44 operations the project defines are below; the in-process titiler routes u
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/dependencies` | What the indicator is computed from (`upstream`) and what is computed from it (`downstream`), indicator to indicator: `{slug, upstream, downstream}`, each edge with names, the input's unit and `weight`. Both empty is the common case. 404 on unknown slug. |
 | GET | `/indicators/{slug}/lineage` | The asset closure around `indicator.{slug}` in both directions, down to the datasets it ultimately reads; each node with `kind`, `depth` and freshness `state`. Empty lists when the asset graph is not seeded. 404 on unknown slug. |
-| GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). 404 on unknown slug. |
+| GET | `/indicators/{slug}/values` | Current `indicator_result` rows ordered by `feature_id`, optional `scenario_id`, `limit=1..10000` (default 1000), keyset `after_feature_id` (last `feature_id` of the previous page). `X-Truncated: true` means more rows follow. 404 on unknown slug. |
 | GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`scenario_id`, `feature_type`, `aoi_id`, all optional; `sum` is `null` with no rows — no values is no total). `bins=1..200` (default 0, none) adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. `count_at_cap` is the number of those rows with `value >= cap_value`, `null` when the indicator has no cap. |
 | GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
 | GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. |
@@ -98,7 +98,9 @@ Download filters (`/values.csv`, `/values.geojson`, `/values.parquet`):
 - `aoi_id` (uuid, optional) — only features in that AOI, the same scope as
   `/indicators/{slug}/stats?aoi_id=`
 - `limit` (int, 1..500_000; default 100_000) — hard cap so a single
-  request can't monopolise memory
+  request can't monopolise memory. Rows are ordered by `feature_id`; the
+  response carries `X-Row-Limit` and `X-Truncated: true|false`, so a file
+  the cap cut short is never mistaken for the whole set
 
 ---
 

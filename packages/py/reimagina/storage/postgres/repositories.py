@@ -2726,9 +2726,16 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
         limit: int | None = None,
+        after_feature_id: str | None = None,
     ) -> list[dict]:
+        """Current rows for one indicator. With ``limit`` they come ordered by
+        ``feature_id``, so a capped read is deterministic and
+        ``after_feature_id`` (the last id of the previous page) pages through
+        the rest."""
         scenario_clause, scenario_params = _scenario_overlay("civ", scenario_id)
-        limit_sql = "" if limit is None else "LIMIT %s"
+        after_sql = "" if after_feature_id is None else "AND civ.feature_id > %s::uuid"
+        after_params: list = [] if after_feature_id is None else [after_feature_id]
+        limit_sql = "" if limit is None else "ORDER BY civ.feature_id LIMIT %s"
         limit_params: list = [] if limit is None else [limit]
         with self.connection.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
@@ -2737,9 +2744,10 @@ class PostgresIndicatorResultRepository:
                 f"""
                 SELECT civ.* FROM serving_geo.current_indicator_v civ
                 WHERE civ.indicator_slug = %s AND {scenario_clause}
+                {after_sql}
                 {limit_sql}
                 """,
-                [indicator_slug, *scenario_params, *limit_params],
+                [indicator_slug, *scenario_params, *after_params, *limit_params],
             )
             return [dict(row) for row in cur.fetchall()]
 
