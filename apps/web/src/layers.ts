@@ -848,6 +848,18 @@ export function wireRasterToggles(
   for (const el of Array.from(container.querySelectorAll(".raster-group, .layer-group-heading"))) {
     el.remove();
   }
+  // The new rows start unchecked, so the layers start hidden to match. Every
+  // source, not only this AOI's: one the new AOI no longer lists would stay
+  // painted with no checkbox left to turn it off.
+  for (const s of sources) {
+    for (const id of [
+      `${rasterSourceName(s.layer_id)}__raster`,
+      `${aggSourceName(s.layer_id)}__fill`,
+      `${aggSourceName(s.layer_id)}__line`,
+    ]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none");
+    }
+  }
   // Filter the source list by AOI affinity. An overlay carrying
   // ``source_config.aois = [aoi_id, ...]`` is shown only for those
   // AOIs; missing or empty list ⇒ "always visible" (matches the
