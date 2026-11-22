@@ -77,8 +77,8 @@ def run_dbos_worker() -> None:
     """Launch DBOS and block. Recovery of this executor's own work is automatic.
 
     ``REIMAGINA_EXECUTOR_ID`` must be distinct per process: recovery is scoped
-    by executor id and DBOS defaults every process to ``local``, so sharing it
-    would make each process claim the others' in-flight work.
+    by executor id, and the default ``<hostname>:worker`` is shared by every
+    worker on one host, so two there would claim each other's in-flight work.
     """
     import logging
     import os
