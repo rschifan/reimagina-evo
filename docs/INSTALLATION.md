@@ -93,8 +93,10 @@ commands and shell substitutions are not supported. Keep it out of Git.
 The bootstrap role needs PostgreSQL superuser privileges to create the
 untrusted PostGIS/pgRouting extensions. These settings are for local evaluation.
 Keep the API on loopback: its routes are unauthenticated, and the current RLS
-policies do not provide tenant isolation. This guide does not establish a
-production deployment procedure. See the [API security scope](architecture/API.md)
+policies do not provide tenant isolation. The API answers only the `Host`
+names in `REIMAGINA_API_ALLOWED_HOSTS` (default `localhost,127.0.0.1,[::1]`);
+serving it under another hostname means adding that name, or every request
+gets 400. This guide does not establish a production deployment procedure. See the [API security scope](architecture/API.md)
 and [open architecture issues](architecture/TODO.md).
 
 Passwords in URLs must be **percent-encoded**, for example `@` becomes `%40`

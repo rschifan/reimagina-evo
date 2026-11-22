@@ -206,9 +206,11 @@ jobs:
       # and never pooled: LISTEN/NOTIFY backs the progress streams and cannot
       # cross PgBouncer in transaction mode.
       #
-      # Same DSN as the pooled one: there is no pgbouncer in CI, so the pooled
-      # and direct DSNs coincide here. They must NOT be collapsed in
-      # deployments, where this one has to bypass the pooler for LISTEN/NOTIFY.
+      # Same DSN as DATABASE_URL: the app's own DSNs point straight at
+      # Postgres here. The pgbouncer service above exists only for the
+      # pooler-guard test (REIMAGINA_POOLED_TEST_DSN). They must NOT be
+      # collapsed in deployments, where this one has to bypass the pooler for
+      # LISTEN/NOTIFY.
       DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
       # This job attaches a Postgres service precisely so the DB-backed suites
       # run, so a run in which they skip has not passed — it has reported
