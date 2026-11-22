@@ -10,12 +10,12 @@ dependency sets and two failure modes behind one import.
 from __future__ import annotations
 
 import logging
-import re
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
+from psycopg2.extensions import make_dsn, parse_dsn
 
 from reimagina.db import connect
 from reimagina.storage import backend_for_connection, backend_name_for_dsn
@@ -31,40 +31,18 @@ def default_pmtiles_output_dir() -> Path:
     return REPO_ROOT / "data" / "tiles" / "pmtiles"
 
 
-def _postgres_ogr_connection_string(dsn: str) -> str:
-    parsed = urlparse(dsn)
-    if parsed.scheme not in {"postgres", "postgresql"}:
-        raise ValueError("PMTiles export requires a PostgreSQL/PostGIS DSN.")
-    if not parsed.hostname or not parsed.path:
-        raise ValueError(f"Unsupported PostgreSQL DSN for ogr2ogr: {dsn!r}")
-    parts = [
-        f"host='{parsed.hostname}'",
-        f"dbname='{parsed.path.lstrip('/')}'",
-    ]
-    if parsed.port:
-        parts.append(f"port='{parsed.port}'")
-    if parsed.username:
-        parts.append(f"user='{parsed.username}'")
-    if parsed.password:
-        parts.append(f"password='{parsed.password}'")
-    return "PG:" + " ".join(parts)
+def _postgres_ogr_connection(dsn: str) -> tuple[str, dict[str, str]]:
+    """Return ogr2ogr's ``PG:`` datasource and the environment carrying the password.
 
-
-def _redact_ogr_command(command: list[str]) -> list[str]:
-    """Replace password secrets in a PG: connection-string argument.
-
-    ogr2ogr takes the full PG connection string as an argv entry, which
-    includes the database password. Returning or logging the raw command
-    leaks that secret to terminals, CI logs, and pasted bug reports —
-    this helper produces a redacted copy safe to surface to callers.
+    ``parse_dsn`` decodes percent-encoded credentials (``.env.example`` asks
+    for them) and keeps every parameter, ``sslmode`` included; ``make_dsn``
+    quotes the values the way libpq parses them. The password travels as
+    ``PGPASSWORD`` because argv is readable by every local user via ``ps``
+    for as long as the export runs.
     """
-    redacted: list[str] = []
-    for arg in command:
-        if arg.startswith("PG:") and "password='" in arg:
-            redacted.append(re.sub(r"password='[^']*'", "password='***'", arg))
-        else:
-            redacted.append(arg)
-    return redacted
+    params = parse_dsn(dsn)
+    password = params.pop("password", None)
+    return "PG:" + make_dsn(**params), ({"PGPASSWORD": password} if password else {})
 
 
 def _layer_query(layer: TileLayerDefinition) -> str:
@@ -100,7 +78,7 @@ class _BenignGdalQuirk:
 _OGR_EXPORT_TIMEOUT_SECONDS = 30 * 60  # 30 min — large CDMX layers are ~minutes
 
 
-def _run_export_command(command: list[str]) -> None:
+def _run_export_command(command: list[str], env: dict[str, str] | None = None) -> None:
     """Run ogr2ogr and tolerate known-benign post-write quirks.
 
     If ogr2ogr exits non-zero but the artifact file exists with a non-trivial
@@ -116,6 +94,7 @@ def _run_export_command(command: list[str]) -> None:
             capture_output=True,
             text=True,
             timeout=_OGR_EXPORT_TIMEOUT_SECONDS,
+            env={**os.environ, **(env or {})},
         )
         return
     except subprocess.CalledProcessError as exc:
@@ -135,14 +114,7 @@ def _run_export_command(command: list[str]) -> None:
         )
         if benign and has_artifact:
             return
-        # Re-raise with a redacted cmd so the traceback / str(exc) does not
-        # leak the Postgres password embedded in the PG: connection string.
-        raise subprocess.CalledProcessError(
-            exc.returncode,
-            _redact_ogr_command(exc.cmd),
-            output=exc.output,
-            stderr=exc.stderr,
-        ) from None
+        raise
 
 
 def _latest_lineage_marker(conn) -> dict[str, str | None]:
@@ -193,12 +165,13 @@ def export_pmtiles_snapshot(
     version = snapshot_version or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_path = target_dir / f"{layer.layer_id}-{version}.pmtiles"
 
+    datasource, ogr_env = _postgres_ogr_connection(dsn)
     command = [
         "ogr2ogr",
         "-f",
         "PMTiles",
         str(output_path),
-        _postgres_ogr_connection_string(dsn),
+        datasource,
         "-sql",
         _layer_query(layer),
         "-nln",
@@ -221,7 +194,7 @@ def export_pmtiles_snapshot(
     if layer.maxzoom is not None:
         command.extend(["-lco", f"MAXZOOM={layer.maxzoom}"])
 
-    _run_export_command(command)
+    _run_export_command(command, ogr_env)
 
     artifact_uri = (
         f"{snapshot_base_url.rstrip('/')}/{output_path.name}"
@@ -256,5 +229,5 @@ def export_pmtiles_snapshot(
         "artifact_uri": artifact_uri,
         "source_mode": layer.source_mode,
         "source_relation": layer.source_relation,
-        "command": _redact_ogr_command(command),
+        "command": command,
     }

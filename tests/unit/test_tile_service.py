@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from psycopg2.extensions import parse_dsn
+
 from reimagina.tiles.manifest import get_tile_layer, load_tile_layers
 from reimagina.tiles.export import (
-    _postgres_ogr_connection_string,
+    _postgres_ogr_connection,
+    _run_export_command,
     default_pmtiles_output_dir,
 )
 from reimagina.tiles.sources import _strip_aoi_token
@@ -25,15 +28,52 @@ def test_tile_manifest_keeps_scenarios_and_indicators_live_only():
         assert layer.source_mode != "pmtiles_snapshot"
 
 
-def test_postgres_ogr_connection_string_supports_basic_uri():
-    value = _postgres_ogr_connection_string(
+def test_postgres_ogr_connection_keeps_the_password_out_of_argv():
+    """ogr2ogr runs for up to 30 min; its argv is readable by every local user."""
+    datasource, env = _postgres_ogr_connection(
         "postgresql://user:pass@localhost:5432/reimagina"
     )
 
-    assert "host='localhost'" in value
-    assert "dbname='reimagina'" in value
-    assert "user='user'" in value
-    assert "password='pass'" in value
+    assert datasource.startswith("PG:")
+    assert "pass" not in datasource.replace("PG:", "")
+    assert "host=localhost" in datasource
+    assert "dbname=reimagina" in datasource
+    assert "user=user" in datasource
+    assert env == {"PGPASSWORD": "pass"}
+
+
+def test_postgres_ogr_connection_decodes_and_quotes_per_libpq():
+    """A percent-encoded password reaches libpq decoded; sslmode survives."""
+    datasource, env = _postgres_ogr_connection(
+        "postgresql://us%27er:p%40ss%27w@localhost:5433/reimagina?sslmode=require"
+    )
+
+    assert env == {"PGPASSWORD": "p@ss'w"}
+    assert parse_dsn(datasource.removeprefix("PG:")) == {
+        "host": "localhost",
+        "port": "5433",
+        "dbname": "reimagina",
+        "user": "us'er",
+        "sslmode": "require",
+    }
+
+
+def test_postgres_ogr_connection_without_password_sets_no_env():
+    _, env = _postgres_ogr_connection("postgresql://localhost/reimagina")
+    assert env == {}
+
+
+def test_export_command_hands_ogr2ogr_the_password_in_its_environment(monkeypatch):
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr("reimagina.tiles.export.subprocess.run", fake_run)
+    _run_export_command(["ogr2ogr"], env={"PGPASSWORD": "s3cret"})
+
+    assert seen["env"]["PGPASSWORD"] == "s3cret"
+    assert "PATH" in seen["env"], "the child must still inherit the environment"
 
 
 def test_default_pmtiles_output_dir_points_inside_repo():

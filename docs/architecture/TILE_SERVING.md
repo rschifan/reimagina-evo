@@ -406,7 +406,7 @@ Runtime note:
 
 - `tiles export` requires `ogr2ogr` with PostgreSQL and PMTiles driver support (GDAL ≥ 3.8)
 - local sandboxed environments may block the export subprocess from connecting to Postgres over TCP even when the CLI code is correct
-- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes. Any other non-zero exit re-raises (with the Postgres password redacted from the command), and the subprocess has a 30-minute timeout.
+- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes. Any other non-zero exit re-raises, and the subprocess has a 30-minute timeout. The Postgres password reaches `ogr2ogr` as `PGPASSWORD`, never in its argv.
 - the integration test that runs a real `ogr2ogr` skips when `ogr2ogr` is not on `PATH`. `.github/workflows/ci.yml` installs `libgdal-dev` (best-effort), not `gdal-bin`, which is the package that ships `ogr2ogr`; another test in the same file covers the export with `_run_export_command` stubbed
 
 ## Metadata surface

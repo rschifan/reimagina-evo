@@ -202,7 +202,7 @@ def test_tile_snapshot_registry_and_source_resolution(conn):
 def test_pmtiles_export_registers_snapshot_metadata(conn, monkeypatch, tmp_path):
     output_dir = tmp_path / "pmtiles"
 
-    def fake_run_export(command: list[str]) -> None:
+    def fake_run_export(command: list[str], env=None) -> None:
         Path(command[3]).write_text("pmtiles-placeholder")
 
     @contextmanager
