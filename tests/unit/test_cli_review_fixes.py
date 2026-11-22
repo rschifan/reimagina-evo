@@ -220,3 +220,67 @@ def test_overture_validate_fails_on_an_empty_layer(monkeypatch, capsys):
 
     _patch(monkeypatch, "validate_mexico_city_buildings", {"count": 0})
     assert main(["overture", "validate"]) == 1
+
+
+# ── CP-09 / CP-10: user-input mistakes print `error: …`, not a traceback ──
+
+
+def test_malformed_from_path_prints_why(capsys):
+    """`main` swallowed the SystemExit message and exited 1 with no output."""
+    from apps.cli.app import main
+
+    code = main(["cdmx", "bootstrap", "--from-path", "/data/09.zip"])
+
+    assert code == 2
+    assert "LAYER=PATH" in capsys.readouterr().err
+
+
+def test_a_malformed_bbox_is_an_error_line_not_a_traceback(capsys):
+    from apps.cli.app import main
+
+    code = main(["overture", "divisions", "--bbox", "1,2,3"])
+
+    assert code == 2
+    assert capsys.readouterr().err.startswith("error: bbox must be")
+
+
+def test_a_non_uuid_id_is_an_error_line(monkeypatch, capsys):
+    import psycopg2.errors
+
+    from apps.cli.app import main
+
+    def bad_uuid(**kwargs):
+        raise psycopg2.errors.InvalidTextRepresentation(
+            'invalid input syntax for type uuid: "x"'
+        )
+
+    monkeypatch.setattr("apps.cli.app.delete_aoi", bad_uuid)
+
+    assert main(["aoi", "delete", "--aoi-id", "x"]) == 2
+    assert "invalid input syntax for type uuid" in capsys.readouterr().err
+
+
+def test_a_concurrent_zonal_stats_run_is_a_refusal(monkeypatch, capsys):
+    """The wrapper built a friendly message, then let it escape as a traceback."""
+    from apps.cli.app import main
+    from reimagina.jobs.raster_zonal_stats import ConcurrentRasterRun
+
+    def held(**kwargs):
+        raise ConcurrentRasterRun("Another zonal-stats run holds the lock.")
+
+    monkeypatch.setattr("apps.cli.app.run_zonal_stats", held)
+
+    code = main(
+        [
+            "raster",
+            "zonal-stats",
+            "--source-id",
+            "s",
+            "--feature-type",
+            "block",
+            "--attribute-key-prefix",
+            "lst",
+        ]
+    )
+    assert code == 2
+    assert "holds the lock" in capsys.readouterr().err

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 import click
+import psycopg2
 import typer
 
 try:
@@ -185,6 +186,8 @@ from .tiles import (  # noqa: E402
     list_tile_sources,
     tile_manifest,
 )
+from reimagina.jobs.raster_zonal_stats import ConcurrentRasterRun  # noqa: E402
+
 from .raster import (  # noqa: E402
     PrefixCollisionError,
     add_derivation,
@@ -256,7 +259,8 @@ def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
     pairs: dict[str, str] = {}
     for entry in raw:
         if "=" not in entry:
-            raise SystemExit(f"--from-path expects LAYER=PATH, got {entry!r}")
+            # BadParameter, not SystemExit: `main` drops a SystemExit's message.
+            raise typer.BadParameter(f"--from-path expects LAYER=PATH, got {entry!r}")
         key, path = entry.split("=", 1)
         pairs[key.strip()] = path.strip()
     return pairs
@@ -2044,9 +2048,10 @@ def raster_zonal_stats(
                 direct_dsn=direct_dsn,
             )
         )
-    except PrefixCollisionError as exc:
+    except (PrefixCollisionError, ConcurrentRasterRun) as exc:
         # Exit 2 (not 1) so operator scripts can distinguish "refused
-        # by safety check" from "runtime/DB error". stderr so the
+        # by safety check" (or "another run holds the prefix, retry")
+        # from "runtime/DB error". stderr so the
         # message doesn't pollute pipe-parsable stdout.
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -2268,6 +2273,14 @@ def main(argv: list[str] | None = None) -> int:
         return int(getattr(exc, "exit_code", 1))
     except (typer.Abort, click.exceptions.Abort):
         return 1
+    except (ValueError, TimeoutError, psycopg2.DataError) as exc:
+        # Bad input the commands refuse (a malformed --bbox, an unknown slug,
+        # a non-UUID the database rejects, a run that outlived --timeout): one
+        # line on stderr and exit 2, not a 40-line traceback. Not LookupError:
+        # a KeyError is a defect, and must keep its traceback (see
+        # test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal).
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except SystemExit as exc:  # pragma: no cover - defensive
         code = exc.code
         return code if isinstance(code, int) else (0 if code is None else 1)

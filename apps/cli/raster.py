@@ -250,7 +250,7 @@ def run_zonal_stats(
         # small-feature warning check before spending time in the worker.
         layer = backend.raster_layer_repo().get_by_source(source_id)
         if layer is None:
-            raise RuntimeError(f"No raster_layer for source_id={source_id!r}")
+            raise ValueError(f"No raster_layer for source_id={source_id!r}")
 
         # Prefix-collision check (CLI-only; the worker itself doesn't
         # enforce this because internal callers may legitimately share
@@ -295,9 +295,10 @@ def run_zonal_stats(
                 direct_dsn=direct_dsn,
             )
         except ConcurrentRasterRun as exc:
-            # Re-raise with a CLI-friendly message. The caller
-            # typically retries after a short delay.
-            raise RuntimeError(
+            # Re-raise with a CLI-friendly message (same type, so the
+            # command reports it as a refusal). The caller typically
+            # retries after a short delay.
+            raise ConcurrentRasterRun(
                 f"Another zonal-stats run holds the lock for prefix "
                 f"{exc.args[0]!r}. Wait for it to finish and re-run."
             ) from exc
