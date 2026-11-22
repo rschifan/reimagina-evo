@@ -212,23 +212,34 @@ def supersede_other_versions(
     x0, y0, x1, y1 = (float(b) for b in bounds)
     params = {"source_id": source_id, "type_id": type_id, "x0": x0, "y0": y0}
     params |= {"x1": x1, "y1": y1}
+    # One statement finds the superseded features once, counts the scenario
+    # edits on them, and deletes them only when there are none.
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT count(*) FROM curated_geo.scenario_override "
-            f"WHERE feature_id IN ({superseded})",
+            f"""
+            WITH doomed AS MATERIALIZED ({superseded}),
+            edited AS (
+                SELECT count(*) AS n FROM curated_geo.scenario_override
+                WHERE feature_id IN (SELECT id FROM doomed)
+            ),
+            deleted AS (
+                DELETE FROM curated_geo.feature
+                WHERE id IN (SELECT id FROM doomed)
+                  AND (SELECT n FROM edited) = 0
+                RETURNING 1
+            )
+            SELECT (SELECT n FROM edited), (SELECT count(*) FROM deleted)
+            """,
             params,
         )
-        edited = int(cur.fetchone()[0])
-        if edited:
-            raise SupersededFeaturesInUse(
-                f"{edited} scenario edit(s) reference features of an earlier "
-                f"release of this source; deleting those features would delete "
-                f"the edits. Move or delete the edits, then reload."
-            )
-        cur.execute(
-            f"DELETE FROM curated_geo.feature WHERE id IN ({superseded})", params
+        edited, deleted = (int(v) for v in cur.fetchone())
+    if edited:
+        raise SupersededFeaturesInUse(
+            f"{edited} scenario edit(s) reference features of an earlier "
+            f"release of this source; deleting those features would delete "
+            f"the edits. Move or delete the edits, then reload."
         )
-        return cur.rowcount or 0
+    return deleted
 
 
 def load_tabular_source(
