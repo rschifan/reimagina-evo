@@ -693,8 +693,8 @@ def overture_aoi_from_division(
 
 @overture_app.command(
     "block-storeys",
-    help="Write each block's baseline storeys (floors) from the median "
-    "num_floors of the Overture buildings in it",
+    help="Write each block's baseline storeys (floors): the footprint-weighted "
+    "mean num_floors of the Overture buildings on it, untagged ones counting one",
 )
 def overture_block_storeys(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),

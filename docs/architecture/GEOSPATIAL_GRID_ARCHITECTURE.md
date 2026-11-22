@@ -280,7 +280,7 @@ Rollup observations are written under a synthetic source per recipe (`name = 'ob
 Two producers relate a child grain to a parent without `feature_overlap`:
 
 - `building_density` counts buildings per block with `ST_Within(ST_Centroid(child.geometry), parent.geometry)` (`centroid_in_parent_counts`, `repositories.py:466`).
-- `block_storeys` writes a block's `floors` observation as the median `num_floors` of the Overture buildings whose `geometry_centroid` the block contains (`packages/py/reimagina/pipeline/block_storeys.py`).
+- `block_storeys` writes a block's `floors` observation as the footprint-weighted mean storeys of the Overture buildings on it (footprints clipped to the block; untagged buildings count one storey), on blocks with at least one tagged building (`packages/py/reimagina/pipeline/block_storeys.py`).
 
 Both assign a straddling child to one parent only.
 

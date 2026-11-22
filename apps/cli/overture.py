@@ -161,7 +161,7 @@ def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
 def derive_block_storeys(
     *, dsn: str, aoi_id: str | None, code_version: str = "dev"
 ) -> dict[str, Any]:
-    """Each block's baseline storeys: median num_floors of its Overture buildings."""
+    """Each block's baseline storeys: footprint-weighted mean of its Overture buildings."""
     with connect(dsn) as conn:
         return block_storeys.bootstrap(conn, aoi_id=aoi_id, code_version=code_version)
 

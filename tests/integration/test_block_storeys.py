@@ -1,12 +1,11 @@
 """Storeys per block, from the Overture buildings that sit in it.
 
-A block's baseline storey count is the median ``num_floors`` of the buildings
-whose point-on-surface falls inside it, written as a ``floors`` observation
-(planned floors). ``num_levels``, the dwelling formula's storeys, is left to the
-fallback layer: there it is fitted so a block's dwellings equal the census, and
-a real height there would build homes on blocks the census found empty. A
-block with no tagged building gets nothing here and keeps its fallback, which
-``effective_numeric`` resolves after the observation.
+A block's baseline storey count is the footprint-weighted mean storeys of the
+buildings on it (untagged ones count as one storey), written as a ``floors``
+observation on blocks with at least one tagged building. ``num_levels`` is the
+fit's copy of it, written to the fallback layer. A block with no tagged
+building gets nothing here and keeps its fallback, which ``effective_numeric``
+resolves after the observation.
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ def _feature(conn, src, run, type_id, wkt, attributes=None) -> str:
     )
 
 
-def test_a_block_takes_the_median_storeys_of_its_buildings(conn):
+def test_a_block_takes_the_footprint_weighted_mean_storeys_of_its_buildings(conn):
     src = _register_source(
         conn,
         name=f"storeys_src_{uuid4().hex[:8]}",
@@ -81,7 +80,8 @@ def test_a_block_takes_the_median_storeys_of_its_buildings(conn):
             _square(x, 32.6201, 0.0001),
             {"num_floors": floors},
         )
-    # Inside but untagged, and tagged but outside: neither counts.
+    # Inside but untagged counts as one storey: (1 + 2 + 4 + 1) / 4 = 2.
+    # Tagged but outside does not count.
     _feature(conn, src, run, building_type, _square(-115.4693, 32.6201, 0.0001))
     _feature(
         conn,
@@ -110,7 +110,7 @@ def test_a_block_takes_the_median_storeys_of_its_buildings(conn):
     assert levels == {tagged: 5.0, untagged: 5.0}
 
 
-def test_storeys_round_to_a_whole_storey_and_never_below_one(conn):
+def test_storeys_keep_the_fraction_and_never_go_below_one(conn):
     src = _register_source(
         conn,
         name=f"storeys_src_{uuid4().hex[:8]}",
@@ -123,7 +123,8 @@ def test_storeys_round_to_a_whole_storey_and_never_below_one(conn):
 
     halves = _feature(conn, src, run, block_type, _square(-115.47, 32.63, 0.001))
     zero = _feature(conn, src, run, block_type, _square(-115.46, 32.63, 0.001))
-    # Median of 2 and 3 is 2.5: a storey count is whole, and half rounds up.
+    # Equal footprints at 2 and 3 storeys: the mean, 2.5, is the floor area
+    # per m² of footprint, so it is kept rather than rounded to a storey.
     for x, floors in ((-115.4699, 2), (-115.4697, 3)):
         _feature(
             conn,
@@ -147,7 +148,7 @@ def test_storeys_round_to_a_whole_storey_and_never_below_one(conn):
     values = effective_numeric(
         conn, type_id=block_type, attribute_key="floors", feature_ids=[halves, zero]
     )
-    assert values == {halves: 3.0, zero: 1.0}
+    assert values == {halves: 2.5, zero: 1.0}
 
 
 def _block_version(conn):
