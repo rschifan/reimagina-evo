@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from reimagina.db import connect
+from reimagina.storage import mask_dsn
 from reimagina.perf import (
     build_observability_report,
     compare_reports,
@@ -45,8 +46,11 @@ def run_perf_benchmarks(
         )
     payload = {"dsn": dsn, **result}
     if output_path:
+        # The file is kept and passed around; only stdout goes through `_print`'s mask.
         Path(output_path).write_text(
-            json.dumps(payload, indent=2, sort_keys=True, default=str)
+            json.dumps(
+                {**payload, "dsn": mask_dsn(dsn)}, indent=2, sort_keys=True, default=str
+            )
         )
         payload["output_path"] = output_path
     return payload
