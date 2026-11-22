@@ -1673,31 +1673,27 @@ def scenario_show(
     )
 
 
-def _rule_options():
-    """The four numbers a rule can set, each optional: left out, not set."""
-    return {
-        "levels": typer.Option(
-            None,
-            "--levels",
-            help="Storeys. Written to both `floors` and `num_levels` — the same "
-            "quantity under the two names the indicators read.",
-        ),
-        "unit_size": typer.Option(
-            None, "--unit-size", help="Square metres per dwelling (more than 15)."
-        ),
-        "people_per_household": typer.Option(
-            None, "--people-per-household", help="Between 0 and 15."
-        ),
-        "lot_coverage": typer.Option(
-            None,
-            "--lot-coverage",
-            help="Share of the block built on (COS), 0 < c ≤ 1. Left out, each "
-            "block keeps its own (1.0, the whole block, when it has none).",
-        ),
-    }
-
-
-_RULE = _rule_options()
+#: The four numbers a rule can set, each optional: left out, not set.
+_RULE = {
+    "levels": typer.Option(
+        None,
+        "--levels",
+        help="Storeys. Written to both `floors` and `num_levels` — the same "
+        "quantity under the two names the indicators read.",
+    ),
+    "unit_size": typer.Option(
+        None, "--unit-size", help="Square metres per dwelling (more than 15)."
+    ),
+    "people_per_household": typer.Option(
+        None, "--people-per-household", help="Between 0 and 15."
+    ),
+    "lot_coverage": typer.Option(
+        None,
+        "--lot-coverage",
+        help="Share of the block built on (COS), 0 < c ≤ 1. Left out, each "
+        "block keeps its own (1.0, the whole block, when it has none).",
+    ),
+}
 
 
 @scenario_app.command(
