@@ -195,9 +195,8 @@ def edits_for(**values: float | None) -> list[dict[str, Any]]:
     still skipped by ``edificability.py`` unless the rule sets it; the
     census-fitted baseline gives every Mexicali block all three.
     """
-    unknown = sorted(set(values) - set(RULE_INPUTS))
-    if unknown:
-        raise TypeError(f"not a rule input: {', '.join(unknown)}")
+    # Names are not checked here: ``check_inputs`` refused unknown ones before
+    # the rule was stored, and this only reads the registry's names.
     edits = [
         {"attribute_key": attribute, "value_numeric": float(value)}
         for name, spec in RULE_INPUTS.items()
@@ -389,23 +388,19 @@ def reachable_indicators(
 ) -> list[str]:
     """The indicators a proposal can change, inputs before their dependents.
 
-    **Derived, not listed.** The attributes come from :func:`edits_for` and the
-    reach from ``impact.compute_dirty_set`` — the same function that decides
-    what a recompute runs — so the scenario workspace offers exactly what a
-    rule moves. A list typed here would agree with the catalog until the day
-    an indicator started reading ``num_levels``, and from then on hide it.
-
-    ``edits_for`` with every number set is only a way to ask which keys a rule
-    can write: the values never reach anything.
+    **Derived, not listed.** The attributes come from ``RULE_INPUTS`` (what
+    :func:`edits_for` writes) and the reach from ``impact.compute_dirty_set``
+    — the same function that decides what a recompute runs — so the scenario
+    workspace offers exactly what a rule moves. A list typed here would agree
+    with the catalog until the day an indicator started reading
+    ``num_levels``, and from then on hide it.
     """
     # Local imports: orchestration and the catalog import the scenario layer's
     # neighbours, and this is the one function here that needs either.
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
     from reimagina.orchestration.impact import compute_dirty_set
 
-    changed = {
-        edit["attribute_key"] for edit in edits_for(**dict.fromkeys(RULE_INPUTS, 1.0))
-    }
+    changed = {a for spec in RULE_INPUTS.values() for a in spec.attributes}
     units = compute_dirty_set(
         changed, (), SHIPPED_INDICATORS if registry is None else registry
     )
