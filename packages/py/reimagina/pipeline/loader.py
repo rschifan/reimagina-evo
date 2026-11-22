@@ -1,6 +1,8 @@
 """Silver → curated_geo loader. Routes by storage_type."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -48,11 +50,17 @@ def load_vector_source(
     code_version: str = "dev",
     name_col: str | None = None,
     attributes_cols: list[str] | None = None,
+    after_insert: Callable[[str, int], int] | None = None,
 ) -> dict[str, Any]:
     """Load a Silver GeoJSON/shapefile into curated_geo.feature.
 
     Creates and completes an ingestion_run for lineage.
     Commits on success; rolls back and marks run failed on error.
+
+    ``after_insert(run_id, inserted)`` runs inside the load's transaction,
+    before the run is completed and a version published, and returns how many
+    of the inserted rows it kept — the AOI clip, which must be able to roll
+    the whole load back and must not publish rows it is about to delete.
 
     Returns {"ingestion_run_id": str, "records_written": int}.
     """
@@ -103,6 +111,8 @@ def load_vector_source(
                 name_col=name_col,
                 attributes_cols=attributes_cols,
             )
+        if after_insert is not None:
+            count = after_insert(run_id, count)
         cat.complete_ingestion_run(
             conn,
             run_id,

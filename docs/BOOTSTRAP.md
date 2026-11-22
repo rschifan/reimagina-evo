@@ -157,11 +157,13 @@ uv run python -m apps.cli.app overture load \
   --aoi-id <MEXICALI_AOI_UUID>
 ```
 
-`--aoi-id` triggers a post-load `ST_Intersects` clip — buildings inside
-the bbox but outside the AOI polygon are dropped before any further
-pipeline work touches them. A load that leaves the source with nothing
-inside the AOI is refused (`ExtractAoiMismatch`): that is an extract of the
-wrong bbox, the default one being Mexico City's.
+`--aoi-id` triggers an `ST_Intersects` clip inside the load's transaction —
+buildings inside the bbox but outside the AOI polygon are dropped before the
+load commits, so the published row count is net of the clip and re-running
+the same load publishes nothing. A load that leaves the source with nothing
+inside the AOI is refused (`ExtractAoiMismatch`) and rolled back whole, its
+run marked failed: that is an extract of the wrong bbox, the default one
+being Mexico City's.
 
 **The Mexicali half as one command.** `scripts/mexicali_run.sh` builds
 Mexicali alone, and more of it than this runbook: schema and catalogs, INEGI

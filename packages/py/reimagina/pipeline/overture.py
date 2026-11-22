@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ MEXICO_CITY_BBOX = (-99.597, 18.992, -98.606, 19.921)
 #: El Centro (California) fall inside it, so a share of the buildings it
 #: returns are American. That is not a bug to fix by shrinking the box: the
 #: extract is deliberately a superset of the AOI, and
-#: :func:`_clip_buildings_to_aoi` deletes post-load whatever falls outside the
+#: :func:`_clip_buildings_to_aoi` deletes, inside the load, whatever falls outside the
 #: Mexican municipal polygon, so "bbox-but-not-polygon orphans never persist".
 #: Shrinking it to hug the border would instead risk clipping Mexicali itself.
 #:
@@ -519,6 +520,24 @@ def bootstrap_overture_buildings_subset(
         raw_path, source_id=source_id
     )
 
+    # The clip runs inside the load's transaction, before the run completes:
+    # committed first, a wrong-city extract stayed loaded under a succeeded run
+    # and a published version when the mismatch raised, and a re-run published
+    # the rows the first clip had deleted only to delete them again.
+    clip_result: dict[str, int | str | float | None] = {}
+
+    def _clip(run_id: str, inserted: int) -> int:
+        clip_result.update(
+            _clip_buildings_to_aoi(
+                conn,
+                ingestion_run_id=run_id,
+                aoi_id=str(aoi_id),
+                loaded=inserted,
+                source_id=source_id,
+            )
+        )
+        return inserted - int(clip_result["clipped_outside_aoi"] or 0)
+
     load_result = load_overture_buildings_subset(
         conn,
         source_id=source_id,
@@ -526,18 +545,8 @@ def bootstrap_overture_buildings_subset(
         dataset_version=dataset_version,
         orchestrator_run_id=orchestrator_run_id,
         code_version=code_version,
+        after_insert=_clip if aoi_id is not None else None,
     )
-
-    clip_result: dict[str, int | str | float | None] = {}
-    if aoi_id is not None:
-        clip_result = _clip_buildings_to_aoi(
-            conn,
-            ingestion_run_id=str(load_result["ingestion_run_id"]),
-            aoi_id=aoi_id,
-            loaded=int(load_result.get("records_written") or 0),
-            source_id=source_id,
-        )
-        conn.commit()
 
     return {
         "source_id": source_id,
@@ -556,6 +565,7 @@ def load_overture_buildings_subset(
     dataset_version: str = OVERTURE_DEFAULT_RELEASE,
     orchestrator_run_id: str,
     code_version: str = "dev",
+    after_insert: Callable[[str, int], int] | None = None,
 ) -> dict[str, str | int]:
     """Load a cleaned Overture buildings subset into curated_geo.feature."""
     type_id = feat.get_type_id(
@@ -574,6 +584,7 @@ def load_overture_buildings_subset(
         code_version=code_version,
         name_col=None,
         attributes_cols=OVERTURE_BUILDINGS_ATTRIBUTES,
+        after_insert=after_insert,
     )
 
 
