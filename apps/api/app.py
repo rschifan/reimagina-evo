@@ -126,7 +126,8 @@ def create_app(
         # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/edits`.
         # It is invisible in dev — vite proxies :5173 to :8001, so the browser
         # sees one origin and sends no preflight — and a non-proxied
-        # deployment cannot call either route without it.
+        # deployment cannot call either route without it. PATCH is here for
+        # the same reason: `PATCH /scenarios/{id}/rules` edits a rule in place.
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["X-Request-Id"],

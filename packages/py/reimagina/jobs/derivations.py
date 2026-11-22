@@ -107,14 +107,24 @@ def run_all_for_raster(
 # ─── Arm wrappers ─────────────────────────────────────────────────────
 
 
-def raster_statistics(method: str, params: dict | None) -> tuple[str, ...]:
+def raster_statistics(method: str, params: object) -> tuple[str, ...]:
     """The zonal statistics a raster recipe asks the worker for.
 
     ``params.stats`` wins; otherwise the method implies one statistic. A method
     with no single-pixel analogue (``weighted_mean``) must name its stats.
     """
-    stats = (params or {}).get("stats")
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        raise ValueError('params must be a JSON object, e.g. \'{"stats": ["mean"]}\'')
+    stats = params.get("stats")
     if stats is not None:
+        if (
+            not isinstance(stats, list)
+            or not stats
+            or not all(isinstance(s, str) for s in stats)
+        ):
+            raise ValueError("params.stats must be a non-empty list of statistic names")
         return tuple(stats)
     if method not in _METHOD_TO_RASTERSTAT:
         raise ValueError(
