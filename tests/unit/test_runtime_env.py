@@ -1,6 +1,7 @@
 """Safety boundaries for shell harnesses; never connect to a database."""
 
 from __future__ import annotations
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,28 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+#: mexicali_run.sh reads everything from a verified source bundle.
+ARGS = {"acceptance_run.sh": [], "mexicali_run.sh": ["--bundle", "bundle"]}
+
+
+def _bundle(root):
+    """The smallest bundle that passes step 0: one file of each kind, summed."""
+    files = [
+        "overture/buildings_2026-10-21.0.parquet",
+        "overture/places_2026-10-21.0.parquet",
+        "osm/walk_network_2026-11-10/edges.parquet",
+    ]
+    lines = []
+    for rel in files:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(rel.encode())
+        lines.append(f"{hashlib.sha256(rel.encode()).hexdigest()}  {rel}\n")
+    (root / "SHA256SUMS").write_text("".join(lines))
+
+
 def fixture_repo(tmp_path):
     shutil.copytree(ROOT / "scripts", tmp_path / "scripts")
-    (tmp_path / "data/sources/lake/inegi/marco_geostadistico/2024").mkdir(parents=True)
+    _bundle(tmp_path / "bundle")
     (tmp_path / "apps/cli").mkdir(parents=True)
     (tmp_path / "apps/__init__.py").touch()
     (tmp_path / "apps/cli/__init__.py").touch()
@@ -45,7 +65,7 @@ def test_harness_preserves_exports_and_does_not_execute_dotenv(tmp_path, script)
         DATABASE_URL_ADMIN="postgresql://localhost/postgres",
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}", "--keep"],
+        ["bash", f"scripts/{script}", *ARGS[script], "--keep"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -83,7 +103,7 @@ def test_harness_rejects_inconsistent_targets_before_connect(
         'import psycopg2\ndef refuse(*a, **kw):\n print("UNSAFE_CONNECT", flush=True)\n raise RuntimeError("must validate before connecting")\npsycopg2.connect = refuse\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -109,7 +129,7 @@ def test_harness_preflights_cli_before_drop_and_migrates_only_app(tmp_path, scri
         'import psycopg2\ndef refuse(*a, **kw):\n print("UNSAFE_CONNECT", flush=True)\n raise RuntimeError("preflight must fail before connecting")\npsycopg2.connect = refuse\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -118,7 +138,7 @@ def test_harness_preflights_cli_before_drop_and_migrates_only_app(tmp_path, scri
     assert done.returncode != 0
     assert "UNSAFE_CONNECT" not in done.stdout + done.stderr
     kept = subprocess.run(
-        ["bash", f"scripts/{script}", "--keep"],
+        ["bash", f"scripts/{script}", *ARGS[script], "--keep"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -182,7 +202,7 @@ def test_harness_rejects_different_cluster_port_before_drop(tmp_path, script):
         'import sys\nsys.exit(0 if "status" in sys.argv or "verify-sources" in sys.argv else 77)\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,

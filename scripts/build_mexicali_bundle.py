@@ -238,7 +238,7 @@ above, or any result computed from them.
   (https://opendatacommons.org/licenses/odbl/1-0/). © Overture Maps
   Foundation; includes © OpenStreetMap contributors and the other sources
   listed at https://docs.overturemaps.org/attribution/.
-  Extract of the Mexicali box -115.70,32.40,-115.20,32.80, unchanged.
+  Extract of the Mexicali box {bbox}, unchanged.
 - Places, release {release}: licence CDLA-Permissive-2.0
   (https://cdla.dev/permissive-2-0/); individual records may carry Apache-2.0
   or CC0-1.0 per source. © Overture Maps Foundation. Park, recreation and
@@ -279,6 +279,9 @@ def manifest_entries(out: Path, datasets: list[dict]) -> list[dict]:
 
 def build(args: argparse.Namespace) -> dict:
     from reimagina.pipeline.osm_network import read_graph
+    from reimagina.pipeline.overture import MEXICALI_BBOX
+
+    bbox = ",".join(f"{v:.2f}" for v in MEXICALI_BBOX)
 
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -324,8 +327,7 @@ def build(args: argparse.Namespace) -> dict:
             "source": "Overture Maps Foundation, buildings",
             "vintage": release,
             "licence": "ODbL-1.0",
-            "produced": "`overture extract --bbox -115.70,32.40,-115.20,32.80`, "
-            "copied unchanged",
+            "produced": f"`overture extract --bbox {bbox}`, copied unchanged",
         },
         {
             "path": f"overture/places_{release}.parquet",
@@ -340,8 +342,8 @@ def build(args: argparse.Namespace) -> dict:
             "source": "OpenStreetMap via Overpass (osmnx walk network)",
             "vintage": osm_fetched,
             "licence": "ODbL-1.0",
-            "produced": "`network bootstrap --clip-bbox -115.70,32.40,-115.20,"
-            "32.80 --save-graph`, copied unchanged",
+            "produced": f"`network bootstrap --clip-bbox {bbox} --save-graph`, "
+            "copied unchanged",
         },
     ]
     manifest = {
@@ -364,6 +366,7 @@ def build(args: argparse.Namespace) -> dict:
             release=release,
             osm_fetched=osm_fetched,
             denue_rows=_rows(out / DENUE_FILE),
+            bbox=bbox,
         )
     )
     write_sums(out)
