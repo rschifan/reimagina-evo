@@ -222,7 +222,8 @@ def evaluate_scenario_cli(
         # work recorded against its id — so a second concurrent
         # `evaluate-scenario` re-ran the first one's in-flight units. This
         # process is short-lived: what it abandons by dying is what the
-        # reclaim sweep picks up. An explicit REIMAGINA_EXECUTOR_ID still wins.
+        # reclaim sweep picks up — a worker's, or `_await_run`'s, so no worker
+        # is needed. An explicit REIMAGINA_EXECUTOR_ID still wins.
         os.environ.setdefault(
             "REIMAGINA_EXECUTOR_ID", f"{os.uname().nodename}:cli:{os.getpid()}"
         )
@@ -296,11 +297,30 @@ def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):
     The port has no ``wait``: an ops-plane that required a separate worker could
     not honour one, so blocking belongs to the caller that wants it. This
     process launched the engine, so the run makes progress while we poll.
+
+    It also sweeps, because it may be waiting on a dead process's run: an
+    embedded CLI's executor id is per-pid, so a killed one's PENDING run is
+    recovered by no launch, and dedup hands the next identical submit that
+    very run. Without a worker only this sweep reclaims it, once the dead
+    executor's heartbeat is stale (``REIMAGINA_EXECUTOR_STALE_S``).
     """
+    import logging
+
+    from reimagina.orchestration import reclaim
     from reimagina.orchestration.port import RUN_TERMINAL_STATES
 
+    sweeping = os.environ.get("REIMAGINA_RECLAIM_ENABLED", "1") != "0"
+    next_sweep = 0.0
     deadline = time.monotonic() + timeout_s
     while True:
+        if sweeping and time.monotonic() >= next_sweep:
+            next_sweep = time.monotonic() + 30.0
+            try:
+                reclaim.sweep()
+            except Exception:  # noqa: BLE001 — the wait must outlive a failed sweep
+                logging.getLogger(__name__).warning(
+                    "reclaim sweep failed; will retry", exc_info=True
+                )
         conn.rollback()  # end the read txn so the next poll sees fresh rows
         status = orchestrator.get_run(conn, run_id)
         if status is not None and status.status in RUN_TERMINAL_STATES:

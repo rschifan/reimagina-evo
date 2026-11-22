@@ -163,3 +163,28 @@ def test_an_embedded_timeout_retires_its_executor(monkeypatch):
     with pytest.raises(TimeoutError):
         cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
     assert retired == [True]
+
+
+def test_an_embedded_wait_reclaims_a_dead_cli_run(monkeypatch):
+    """A killed embedded run is PENDING under a pid id no process will reuse,
+    and dedup hands the next identical submit that same run. With no worker,
+    only the waiting CLI can recover it, so the wait sweeps."""
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    swept: list[bool] = []
+    monkeypatch.setattr(
+        "reimagina.orchestration.reclaim.sweep", lambda: swept.append(True)
+    )
+    monkeypatch.delenv("REIMAGINA_RECLAIM_ENABLED", raising=False)
+    states = iter(["running", "succeeded"])
+
+    class _Orchestrator:
+        def get_run(self, conn, run_id):
+            return SimpleNamespace(status=next(states))
+
+    conn = SimpleNamespace(rollback=lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    cli._await_run(_Orchestrator(), conn, "r1", timeout_s=60)
+    assert swept

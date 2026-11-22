@@ -174,7 +174,10 @@ def _executor_id() -> str:
     - Not stable → a restarted process has a new identity and reclaims
       *nothing*. Its predecessor's in-flight runs are orphaned with no error,
       and durable execution quietly stops being durable. A pid-derived id does
-      exactly this, which is what this used to be.
+      exactly this, which is what this used to be. (The embedded CLI takes a
+      pid id on purpose — it is never "restarted", and concurrent CLIs must
+      not share one — so its dead runs are recovered by the liveness-gated
+      ``reclaim.sweep``, which a worker and the CLI's own wait both run.)
     - Not unique → a starting process reclaims work a live peer is still
       running. On dbos 2.28.0 recovery is not idempotent, so that is a double
       execution — worse than the failure it was trying to repair.

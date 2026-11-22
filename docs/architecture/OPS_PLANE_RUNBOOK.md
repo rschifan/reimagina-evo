@@ -168,7 +168,7 @@ is reclaimed without intervention.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `REIMAGINA_RECLAIM_ENABLED` | `1` | `0` turns the sweep off. A worker then logs a warning saying a dead executor's runs will stay in progress forever |
+| `REIMAGINA_RECLAIM_ENABLED` | `1` | `0` turns the sweep off (the worker's, and the one an embedded `evaluate-scenario` runs while it waits). A worker then logs a warning saying a dead executor's runs will stay in progress forever |
 | `REIMAGINA_EXECUTOR_STALE_S` | `300` | How stale a heartbeat must be before its executor is presumed dead. Refused if it is under 4x `REIMAGINA_EXECUTOR_HEARTBEAT_S` |
 | `REIMAGINA_RECLAIM_SWEEP_S` | `max(stale/2, 60)` | How often to sweep. Refused if not positive and finite |
 
