@@ -195,3 +195,28 @@ def test_assets_observe_exits_1_when_a_probe_failed(monkeypatch, capsys):
     assert main(["assets", "observe"]) == 1
     _patch(monkeypatch, "assets_observe_cmd", {"failed": {}})
     assert main(["assets", "observe"]) == 0
+
+
+def test_overture_validate_fails_on_an_empty_layer(monkeypatch, capsys):
+    """`count >= 0` held for every count, so validation could not fail."""
+    from apps.cli.app import main
+    from reimagina.pipeline import overture
+
+    class Reader:
+        def count_features(self, type_slug):
+            return 0
+
+        def get_features(self, type_slug, limit):
+            return {"features": []}
+
+    class Backend:
+        def serving_reader(self):
+            return Reader()
+
+    monkeypatch.setattr(overture, "backend_for_connection", lambda conn: Backend())
+    assert overture.validate_overture_buildings_layer(object())[
+        "queryable_through_serving"
+    ] is False
+
+    _patch(monkeypatch, "validate_mexico_city_buildings", {"count": 0})
+    assert main(["overture", "validate"]) == 1

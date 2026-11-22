@@ -689,7 +689,8 @@ def overture_block_storeys(
 def overture_validate(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
-    return _print(validate_mexico_city_buildings(dsn=dsn))
+    payload = validate_mexico_city_buildings(dsn=dsn)
+    return _print(payload, failed=payload["count"] == 0)
 
 
 @explore_app.command(

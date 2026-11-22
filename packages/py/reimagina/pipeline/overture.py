@@ -717,6 +717,6 @@ def validate_overture_buildings_layer(conn) -> dict[str, Any]:
     return {
         "count": count,
         "sample_features": samples,
-        "queryable_through_serving": count >= 0,
+        "queryable_through_serving": count > 0,
         "type_slug": type_slug,
     }
