@@ -71,5 +71,8 @@ def test_mask_dsn_hides_the_password_in_every_libpq_spelling(dsn):
 def test_mask_dsn_leaves_a_passwordless_dsn_alone():
     from reimagina.storage.manager import mask_dsn
 
-    assert mask_dsn("postgresql://localhost/reimagina") == "postgresql://localhost/reimagina"
+    assert (
+        mask_dsn("postgresql://localhost/reimagina")
+        == "postgresql://localhost/reimagina"
+    )
     assert mask_dsn("") == ""

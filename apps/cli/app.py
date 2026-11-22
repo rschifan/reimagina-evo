@@ -243,10 +243,17 @@ def _mask_dsns(value: Any) -> Any:
     return value
 
 
-def _print(data: dict[str, Any]) -> int:
+def _print(data: dict[str, Any], *, failed: bool = False) -> int:
+    """Print ``data`` and return the exit code: 1 when the command says the
+    thing it checked or ran ``failed``, so scripts and CI gates can trust it."""
     # Never echo a DSN password into stdout/logs, at any depth.
     print(as_json(_mask_dsns(data)))
-    return 0
+    return 1 if failed else 0
+
+
+# Terminal run statuses that mean the recompute did not do its job. `noop`,
+# `queued` (--detach) and `succeeded` are fine.
+_FAILED_RUN_STATUSES = frozenset({"failed", "partial", "cancelled"})
 
 
 def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
@@ -372,7 +379,11 @@ def verify_schema(
 ) -> int:
     with connect(dsn) as conn:
         checks = verify_required_relations(conn)
-    return _print({"dsn": dsn, "checks": checks, "all_present": all(checks.values())})
+    all_present = all(checks.values())
+    return _print(
+        {"dsn": dsn, "checks": checks, "all_present": all_present},
+        failed=not all_present,
+    )
 
 
 # ── explore ──────────────────────────────────────────────────────────────
@@ -745,18 +756,17 @@ def evaluate_scenario(
     if detach and sync:
         raise typer.BadParameter("--detach and --sync are mutually exclusive")
     mode = "detach" if detach else "sync" if sync else "embedded"
-    return _print(
-        evaluate_scenario_cli(
-            dsn=dsn,
-            changed_attributes=changed_attribute,
-            edited_features=feature,
-            scenario_id=scenario_id,
-            aoi_id=aoi_id,
-            code_version=code_version,
-            mode=mode,
-            timeout_s=timeout,
-        )
+    payload = evaluate_scenario_cli(
+        dsn=dsn,
+        changed_attributes=changed_attribute,
+        edited_features=feature,
+        scenario_id=scenario_id,
+        aoi_id=aoi_id,
+        code_version=code_version,
+        mode=mode,
+        timeout_s=timeout,
     )
+    return _print(payload, failed=payload.get("status") in _FAILED_RUN_STATUSES)
 
 
 # ── perf ─────────────────────────────────────────────────────────────────
@@ -801,15 +811,14 @@ def perf_run(
     iterations: Optional[int] = typer.Option(None, "--iterations"),
     output_path: Optional[str] = typer.Option(None, "--output-path"),
 ) -> int:
-    return _print(
-        run_perf_benchmarks(
-            dsn=dsn,
-            dataset_tier=dataset_tier,
-            benchmark_names=benchmark,
-            iterations=iterations,
-            output_path=output_path,
-        )
+    payload = run_perf_benchmarks(
+        dsn=dsn,
+        dataset_tier=dataset_tier,
+        benchmark_names=benchmark,
+        iterations=iterations,
+        output_path=output_path,
     )
+    return _print(payload, failed=not payload["passed"])
 
 
 @perf_app.command(
@@ -854,12 +863,11 @@ def perf_compare(
     baseline_path: str = typer.Argument(...),
     candidate_path: str = typer.Argument(...),
 ) -> int:
-    return _print(
-        compare_perf_reports(
-            baseline_path=baseline_path,
-            candidate_path=candidate_path,
-        )
+    payload = compare_perf_reports(
+        baseline_path=baseline_path, candidate_path=candidate_path
     )
+    regressed = any(row.get("regressed") for row in payload["comparisons"])
+    return _print(payload, failed=regressed or not payload["candidate_passed"])
 
 
 # ── tiles ────────────────────────────────────────────────────────────────
@@ -971,7 +979,8 @@ def assets_observe(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     asset_key: Optional[str] = typer.Option(None, "--asset-key"),
 ) -> int:
-    return _print(assets_observe_cmd(dsn=dsn, asset_key=asset_key))
+    payload = assets_observe_cmd(dsn=dsn, asset_key=asset_key)
+    return _print(payload, failed=bool(payload["failed"]))
 
 
 @assets_app.command("stale", help="What is out of date right now")
@@ -1360,7 +1369,10 @@ def aoi_delete(
     aoi_id: str = typer.Option(..., "--aoi-id"),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
-    return _print(delete_aoi(dsn=dsn, aoi_id=aoi_id))
+    payload = delete_aoi(dsn=dsn, aoi_id=aoi_id)
+    _print(payload)
+    # A lookup miss, like the aoi-from-* commands: exit 2.
+    return 2 if payload["status"] == "not_found" else 0
 
 
 @aoi_app.command(
@@ -1375,7 +1387,9 @@ def aoi_compute_features(
         help="Optional. Limit to a single AOI uuid; default runs every AOI.",
     ),
 ) -> int:
-    return _print(compute_aoi_features_cli(dsn=dsn, aoi_id=aoi_id))
+    payload = compute_aoi_features_cli(dsn=dsn, aoi_id=aoi_id)
+    _print(payload)
+    return 2 if payload["status"] == "not_found" else 0
 
 
 # ── points ───────────────────────────────────────────────────────────────
@@ -1514,10 +1528,17 @@ _SCENARIO_USER_ERRORS = (
 )
 
 
-def _scenario_command(call: Callable[[], dict[str, Any]]) -> int:
-    """Print what the call returned, or report its refusal and exit 2."""
+def _scenario_command(
+    call: Callable[[], dict[str, Any]],
+    failed: Callable[[dict[str, Any]], bool] = lambda payload: False,
+) -> int:
+    """Print what the call returned, or report its refusal and exit 2.
+
+    ``failed`` reads the payload and makes the exit code 1 when it says the
+    command did not do its job."""
     try:
-        return _print(call())
+        payload = call()
+        return _print(payload, failed=failed(payload))
     except _SCENARIO_USER_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -1671,7 +1692,10 @@ def scenario_recompute(
             mode=mode,
             code_version=code_version,
             timeout_s=timeout,
-        )
+        ),
+        failed=lambda payload: (
+            payload["evaluation"].get("status") in _FAILED_RUN_STATUSES
+        ),
     )
 
 
@@ -2226,8 +2250,9 @@ def main(argv: list[str] | None = None) -> int:
 
     typer/click is invoked with ``standalone_mode=False`` so command bodies'
     return values propagate as the result instead of being thrown away. Each
-    command returns its int exit code (``_print`` returns 0; error paths
-    return 1/2), so on the happy path the function returns that int directly.
+    command returns its int exit code (``_print`` returns 0, or 1 when the
+    payload says the command failed; error paths return 1/2), so on the happy
+    path the function returns that int directly.
     Control-flow exceptions raised by typer's vendored click fork are mapped
     back to ints to preserve the argparse contract:
       * ``typer.Exit`` (also raised by ``--help``)      → its ``exit_code``

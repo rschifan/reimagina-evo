@@ -93,3 +93,105 @@ def test_perf_run_naming_a_tile_benchmark_says_why_it_cannot_run(monkeypatch):
         runner.run_benchmarks(
             object(), dataset_tier="smoke", benchmark_names=["tile_z14_small"]
         )
+
+
+# ── CP-03: a command whose payload says it failed exits non-zero ─────────
+
+
+def _patch(monkeypatch, name, payload):
+    monkeypatch.setattr(f"apps.cli.app.{name}", lambda **kwargs: payload)
+
+
+def test_verify_schema_exits_1_when_a_relation_is_missing(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    @contextmanager
+    def fake_connect(dsn):
+        yield object()
+
+    monkeypatch.setattr("apps.cli.app.connect", fake_connect)
+    monkeypatch.setattr(
+        "apps.cli.app.verify_required_relations",
+        lambda conn: {"curated_geo.feature": True, "serving_geo.feature_v": False},
+    )
+    assert main(["verify-schema"]) == 1
+    assert json.loads(capsys.readouterr().out)["all_present"] is False
+
+    monkeypatch.setattr(
+        "apps.cli.app.verify_required_relations", lambda conn: {"x": True}
+    )
+    assert main(["verify-schema"]) == 0
+
+
+def test_evaluate_scenario_exits_1_when_the_run_failed(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    for status, code in [("failed", 1), ("partial", 1), ("succeeded", 0), ("noop", 0)]:
+        _patch(monkeypatch, "evaluate_scenario_cli", {"status": status})
+        assert main(["evaluate-scenario", "--sync"]) == code, status
+
+
+def test_scenario_recompute_exits_1_when_the_evaluation_failed(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    sid = "00000000-0000-0000-0000-000000000001"
+    for status, code in [("failed", 1), ("cancelled", 1), ("succeeded", 0)]:
+        _patch(
+            monkeypatch, "recompute_scenario_cli", {"evaluation": {"status": status}}
+        )
+        assert main(["scenario", "recompute", "--scenario-id", sid]) == code, status
+
+
+def test_perf_run_exits_1_when_a_benchmark_fails(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    _patch(monkeypatch, "run_perf_benchmarks", {"passed": False, "benchmarks": []})
+    assert main(["perf", "run"]) == 1
+    _patch(monkeypatch, "run_perf_benchmarks", {"passed": True, "benchmarks": []})
+    assert main(["perf", "run"]) == 0
+
+
+def test_perf_compare_exits_1_on_a_failed_or_regressed_candidate(
+    monkeypatch, capsys, tmp_path
+):
+    from apps.cli.app import main
+
+    args = ["perf", "compare", str(tmp_path / "a"), str(tmp_path / "b")]
+    _patch(
+        monkeypatch,
+        "compare_perf_reports",
+        {"candidate_passed": False, "comparisons": []},
+    )
+    assert main(args) == 1
+    _patch(
+        monkeypatch,
+        "compare_perf_reports",
+        {"candidate_passed": True, "comparisons": [{"regressed": True}]},
+    )
+    assert main(args) == 1
+    _patch(
+        monkeypatch,
+        "compare_perf_reports",
+        {"candidate_passed": True, "comparisons": [{"regressed": False}]},
+    )
+    assert main(args) == 0
+
+
+def test_aoi_commands_exit_2_for_an_unknown_aoi(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    _patch(monkeypatch, "delete_aoi", {"status": "not_found"})
+    assert main(["aoi", "delete", "--aoi-id", "x"]) == 2
+    _patch(monkeypatch, "compute_aoi_features_cli", {"status": "not_found"})
+    assert main(["aoi", "compute-features", "--aoi-id", "x"]) == 2
+    _patch(monkeypatch, "delete_aoi", {"status": "deleted"})
+    assert main(["aoi", "delete", "--aoi-id", "x"]) == 0
+
+
+def test_assets_observe_exits_1_when_a_probe_failed(monkeypatch, capsys):
+    from apps.cli.app import main
+
+    _patch(monkeypatch, "assets_observe_cmd", {"failed": {"roads": "boom"}})
+    assert main(["assets", "observe"]) == 1
+    _patch(monkeypatch, "assets_observe_cmd", {"failed": {}})
+    assert main(["assets", "observe"]) == 0

@@ -214,7 +214,7 @@ def test_cli_perf_compare_delegates(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(
         "apps.cli.app.compare_perf_reports",
-        lambda **kwargs: {"comparisons": [], **kwargs},
+        lambda **kwargs: {"comparisons": [], "candidate_passed": True, **kwargs},
     )
 
     exit_code = main(["perf", "compare", str(baseline), str(candidate)])
@@ -772,7 +772,7 @@ def test_cli_assets_consumers_delegates(monkeypatch, capsys):
 def test_cli_assets_observe_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.assets_observe_cmd",
-        lambda **kwargs: {"changed": ["global.road_network"], **kwargs},
+        lambda **kwargs: {"changed": ["global.road_network"], "failed": {}, **kwargs},
     )
 
     exit_code = main(["assets", "observe"])
