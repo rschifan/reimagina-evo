@@ -51,7 +51,7 @@ def test_fetch_downloads_checks_and_extracts(served):
     bundle = bb.fetch(cache, url)
     assert bundle == cache / bb.BUNDLE_VERSION / bb.BUNDLE_TOP
     assert bb.verify(bundle) == []
-    assert not list(bundle.parent.glob("*.part"))
+    assert not list(bundle.parent.glob("*.part*"))
 
 
 def test_checksum_mismatch_is_refused_and_nothing_extracted(served, monkeypatch):

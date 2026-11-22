@@ -17,8 +17,9 @@ access to wherever the inputs first came from.
 
 ``fetch`` downloads the published bundle (a GitHub Release asset, pinned
 below by URL and SHA-256), checks the archive's SHA-256 before extracting
-anything, extracts it under ``--cache`` (default ``data/bundles/``), runs
-``verify`` on the result and prints the bundle directory. A cached archive or
+anything, extracts it under ``--cache`` (default ``bundles/`` in the data
+directory: ``REIMAGINA_DATA_DIR``, else ``data/``), runs ``verify`` on the
+result and prints the bundle directory. A cached archive or
 an already-extracted bundle that verifies is reused. ``--url`` (or
 ``MEXICALI_BUNDLE_URL``) points at a mirror; the checksum cannot be
 overridden, so a mirror can only serve the same bytes.
@@ -49,6 +50,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from reimagina.paths import data_dir
+
 #: Bundle layout. scripts/mexicali_run.sh reads the same paths.
 MARCO_DIR = "inegi/marco_geoestadistico_2024"
 CENSO_DIR = "inegi/censo_2020/manzanas_2020.parquet"
@@ -64,7 +67,7 @@ BUNDLE_URL = (
 )
 BUNDLE_SHA256 = "58e03f78f683065f3e5154eb3fde0d8b336b2df814796ad736b887e8eada4d3b"
 BUNDLE_TOP = "reimagina-mexicali-bundle"  # the archive's one top-level directory
-DEFAULT_CACHE = Path(__file__).resolve().parents[1] / "data" / "bundles"
+DEFAULT_CACHE = data_dir() / "bundles"
 #: Seconds without data before a download is abandoned for the manual route.
 DOWNLOAD_TIMEOUT_S = 60.0
 
@@ -156,22 +159,17 @@ def fetch(cache: Path, url: str) -> Path:
             return bundle
     home.mkdir(parents=True, exist_ok=True)
     if not archive_ok:
+        from reimagina.pipeline.download import save_response
+
         print(f"downloading {url}", file=sys.stderr)
-        fd, tmp_name = tempfile.mkstemp(dir=home, suffix=".part")
-        tmp = Path(tmp_name)
         try:
-            with (
-                os.fdopen(fd, "wb") as out,
-                urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp,
-            ):
-                shutil.copyfileobj(resp, out, 1 << 20)
-            if sha256(tmp) != BUNDLE_SHA256:
-                raise _manual(f"{url}: SHA-256 does not match the pinned checksum")
-            tmp.replace(archive)
-        except OSError as exc:  # URLError and HTTPError are OSErrors
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp:
+                save_response(resp, archive)
+        except OSError as exc:  # URLError, HTTPError and a cut-off body
             raise _manual(f"cannot download {url}: {exc}") from exc
-        finally:
-            tmp.unlink(missing_ok=True)
+        if sha256(archive) != BUNDLE_SHA256:
+            archive.unlink()
+            raise _manual(f"{url}: SHA-256 does not match the pinned checksum")
     # Extract next to the target and move into place, so a failed or refused
     # extraction never leaves a half bundle where the next call would look.
     with tempfile.TemporaryDirectory(dir=home) as staging:
@@ -505,7 +503,8 @@ def main(argv: list[str] | None = None) -> int:
         "--cache",
         type=Path,
         default=DEFAULT_CACHE,
-        help="where to download and extract it (default: data/bundles/)",
+        help="where to download and extract it "
+        "(default: $REIMAGINA_DATA_DIR/bundles, else data/bundles/)",
     )
     f.add_argument(
         "--url",

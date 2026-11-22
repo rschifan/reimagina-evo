@@ -51,6 +51,7 @@ def fixture_repo(tmp_path):
     }
     env["PYTHON"] = sys.executable
     env["PYTHONPATH"] = str(tmp_path)
+    env["REIMAGINA_DATA_DIR"] = str(tmp_path / "data")  # the fetch cache
     return env
 
 
