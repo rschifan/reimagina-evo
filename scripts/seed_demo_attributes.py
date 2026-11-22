@@ -125,6 +125,7 @@ import hashlib
 import json
 import os
 import sys
+from typing import NamedTuple
 
 import psycopg2
 import psycopg2.extras  # execute_batch lives on the extras module, not the root
@@ -199,42 +200,67 @@ def _fitted_payloads(cur, feature_ids: list[str]) -> list[dict[str, object]]:
     return fit_payloads(cur.fetchall())
 
 
+class _Block(NamedTuple):
+    """One block's inputs to the fit, each derived once."""
+
+    fid: str
+    area: float
+    dwellings: float | None
+    population: float | None
+    levels: float
+    coverage: float
+    #: Has dwellings and an area: the fit sets its unit size.
+    housed: bool
+    #: Why a housed block's coverage must be estimated, or None.
+    gap: str | None
+
+
 def fit_payloads(
     blocks: list[tuple[str, float, float, float | None, float | None, float | None]],
 ) -> list[dict[str, object]]:
     """Fitted values for ``(id, area, footprint, dwellings, population, storeys)``."""
-    housed = [b for b in blocks if b[3] and b[3] > 0 and b[1] > 0]
-    gaps = {b[0]: _gap(b) for b in housed}
-    covered = sorted(_coverage(b[1], b[2]) for b in housed if gaps[b[0]] is None)
+    fits = []
+    for fid, area, footprint, dwellings, population, storeys in blocks:
+        levels = float(storeys) if storeys else 1.0
+        coverage = _coverage(area, footprint) if area > 0 else 0.0
+        housed = bool(dwellings and dwellings > 0 and area > 0)
+        gap = _gap(area, coverage, levels, dwellings) if housed and dwellings else None
+        fits.append(
+            _Block(fid, area, dwellings, population, levels, coverage, housed, gap)
+        )
+    covered = sorted(b.coverage for b in fits if b.housed and b.gap is None)
     fallback_coverage = covered[len(covered) // 2] if covered else 1.0
-    counted = [(b[3] or 0.0, b[4]) for b in housed if b[4] is not None]
+    counted = [
+        (b.dwellings or 0.0, b.population)
+        for b in fits
+        if b.housed and b.population is not None
+    ]
     city_dwellings = sum(d for d, _ in counted)
     city_ratio = (
-        round(sum(p for _, p in counted) / city_dwellings, 4)
+        round(sum(p for _, p in counted if p is not None) / city_dwellings, 4)
         if city_dwellings
         else CONSTANT_ATTRIBUTES["people_per_household"]
     )
 
     payloads = []
-    for fid, area, footprint, dwellings, population, storeys in blocks:
-        levels = float(storeys) if storeys else 1.0
-        coverage = _coverage(area, footprint) if area > 0 else 0.0
+    for b in fits:
+        coverage = b.coverage
         payload: dict[str, object] = {
-            "feature_id": fid,
+            "feature_id": b.fid,
             "poi_version": CONSTANT_ATTRIBUTES["poi_version"],
             "network_version": CONSTANT_ATTRIBUTES["network_version"],
             # Same value, two keys -- see the module docstring.
-            "floors": levels,
-            "num_levels": levels,
+            "floors": b.levels,
+            "num_levels": b.levels,
             "people_per_household": city_ratio,
         }
-        if dwellings and dwellings > 0 and area > 0:
-            if gaps[fid] is not None:
+        if b.housed and b.dwellings:
+            if b.gap is not None:
                 coverage = fallback_coverage
-                payload["estimated"] = gaps[fid]
-            payload["unit_size"] = area * coverage * levels / dwellings
-            if population is not None:
-                payload["people_per_household"] = population / dwellings
+                payload["estimated"] = b.gap
+            payload["unit_size"] = b.area * coverage * b.levels / b.dwellings
+            if b.population is not None:
+                payload["people_per_household"] = b.population / b.dwellings
         payload["lot_coverage"] = coverage
         payloads.append(payload)
     return payloads
@@ -244,13 +270,10 @@ def _coverage(area: float, footprint: float) -> float:
     return round(min(1.0, float(footprint) / float(area)), 4)
 
 
-def _gap(block: tuple) -> str | None:
+def _gap(area: float, coverage: float, levels: float, dwellings: float) -> str | None:
     """Why a housed block's coverage must be estimated, or None if it need not."""
-    _fid, area, footprint, dwellings, _pop, storeys = block
-    coverage = _coverage(area, footprint)
     if coverage == 0:
         return "no_footprint"
-    levels = float(storeys) if storeys else 1.0
     if area * coverage * levels / dwellings < MIN_UNIT_SIZE_M2:
         return "thin_footprint"
     return None
