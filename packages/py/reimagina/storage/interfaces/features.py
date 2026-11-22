@@ -295,9 +295,9 @@ class OverlapRepository(Protocol):
         source_feature_type: str,
         target_feature_type: str,
         aoi_id: str | None = None,
-    ) -> list[tuple[str, str, float, float]]:
-        """Return ``(target_id, source_attribute_key, value, overlap_measure)``
-        per (source observation, target feature) overlap pair.
+    ) -> list[tuple[str, str, float, float, str]]:
+        """Return ``(target_id, source_attribute_key, value, overlap_measure,
+        overlap_basis)`` per (source observation, target feature) overlap pair.
 
         Reads current observations at ``source_feature_type`` whose
         ``attribute_key`` starts with ``:prefix`` or equals it exactly

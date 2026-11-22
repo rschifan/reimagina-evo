@@ -100,9 +100,9 @@ def run_observation_rollup(
 
     ``method`` must be one of the values accepted by
     :func:`reimagina.jobs.aggregation.aggregate`. ``weight_basis`` is
-    only meaningful for ``weighted_mean``; for other methods the
-    overlap measure is still threaded through as the weight but
-    ignored by :func:`aggregate`.
+    only meaningful for ``weighted_mean``: ``presence`` weights every
+    source 1, ``area``/``length`` weight by the overlap measure and must
+    match how the overlaps were measured. Other methods ignore weights.
     """
     if method == "weighted_mean" and weight_basis is None:
         raise ValueError(
@@ -144,6 +144,7 @@ def run_observation_rollup(
             target_feature_type=target_feature_type_slug,
             output_prefix=output_attribute_key_prefix,
             method=method,
+            weight_basis=weight_basis,
             aoi_id=aoi_id,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
@@ -231,6 +232,7 @@ def _compute_rollup_records(
     target_feature_type: str,
     output_prefix: str,
     method: str,
+    weight_basis: str | None,
     aoi_id: str | None,
     source_id: str,
     ingestion_run_id: str,
@@ -250,7 +252,22 @@ def _compute_rollup_records(
 
     # groups: {(target_id, source_attribute_key): [(value, weight), ...]}
     groups: dict[tuple[str, str], list[tuple[float, float]]] = {}
-    for target_id, source_attr_key, value, weight in flat:
+    for target_id, source_attr_key, value, measure, basis in flat:
+        # ⚠ The recipe's weight_basis decides the weight. It used to be
+        # validated and then dropped, so `presence` over polygon sources
+        # silently weighted by area. An area or length basis can only be the
+        # one the overlap was measured in; anything else is refused, not
+        # quietly substituted.
+        if (
+            method == "weighted_mean"
+            and weight_basis != "presence"
+            and basis != weight_basis
+        ):
+            raise ValueError(
+                f"weight_basis {weight_basis!r}, but {input_feature_type} → "
+                f"{target_feature_type} overlaps are measured by {basis!r}"
+            )
+        weight = 1.0 if weight_basis == "presence" else measure
         groups.setdefault((target_id, source_attr_key), []).append((value, weight))
 
     records: list[dict[str, Any]] = []

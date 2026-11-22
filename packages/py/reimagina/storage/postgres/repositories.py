@@ -1592,7 +1592,7 @@ class PostgresOverlapRepository:
         source_feature_type: str,
         target_feature_type: str,
         aoi_id: str | None = None,
-    ) -> list[tuple[str, str, float, float]]:
+    ) -> list[tuple[str, str, float, float, str]]:
         if not input_attribute_key_prefix:
             raise ValueError("input_attribute_key_prefix is required")
         aoi_clause = ""
@@ -1606,7 +1606,8 @@ class PostgresOverlapRepository:
                 SELECT fo.target_feature_id::text,
                        obs.attribute_key,
                        obs.value_numeric,
-                       fo.overlap_measure
+                       fo.overlap_measure,
+                       fo.overlap_basis
                 FROM curated_geo.feature_overlap fo
                 JOIN curated_geo.feature src ON src.id = fo.source_feature_id
                      AND src.type_slug = %s
@@ -1629,8 +1630,8 @@ class PostgresOverlapRepository:
                 ),
             )
             return [
-                (str(target_id), str(attr_key), float(value), float(weight))
-                for target_id, attr_key, value, weight in cur.fetchall()
+                (str(target_id), str(attr_key), float(value), float(weight), basis)
+                for target_id, attr_key, value, weight, basis in cur.fetchall()
                 if value is not None
             ]
 
