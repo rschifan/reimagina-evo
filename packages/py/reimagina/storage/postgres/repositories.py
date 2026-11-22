@@ -1617,15 +1617,17 @@ class PostgresOverlapRepository:
                      ON obs.feature_id = fo.source_feature_id
                     AND obs.is_current
                     AND obs.value_numeric IS NOT NULL
+                    -- starts_with, not LIKE: the prefix's own `_` would be a
+                    -- wildcard and read another family (see retire_current_by_prefix).
                     AND (obs.attribute_key = %s
-                         OR obs.attribute_key LIKE %s ESCAPE '\\')
+                         OR starts_with(obs.attribute_key, %s || '_'))
                 WHERE TRUE{aoi_clause}
                 """,
                 (
                     source_feature_type,
                     target_feature_type,
                     input_attribute_key_prefix,
-                    input_attribute_key_prefix + "\\_%",
+                    input_attribute_key_prefix,
                     *aoi_params,
                 ),
             )

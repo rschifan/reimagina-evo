@@ -317,7 +317,7 @@ def _rewrite_prefix(attribute_key: str, input_prefix: str, output_prefix: str) -
     """
     if attribute_key == input_prefix:
         return output_prefix
-    # Separator-safe: the repo's LIKE matches ``:prefix_<suffix>`` only.
+    # Separator-safe: the repo matches ``prefix_<suffix>`` with starts_with.
     assert attribute_key.startswith(input_prefix + "_")
     suffix = attribute_key[len(input_prefix) + 1 :]
     return f"{output_prefix}_{suffix}"
