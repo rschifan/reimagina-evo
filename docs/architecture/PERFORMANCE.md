@@ -108,11 +108,21 @@ The benchmark framework uses deterministic tiers:
 The same command creates the four benchmark AOIs (`perf_bbox_small`,
 `perf_bbox_dense`, `perf_polygon_small`, `perf_polygon_dense`).
 
-⚠ These are permanent writes into whatever database it targets: synthetic
-`is_current` observations on real features, which then surface through
-`serving_geo.feature_v`, and the AOIs through `aoi list`. There is no cleanup
-command, so `perf seed-observations` takes no `DATABASE_URL` fallback: `--dsn`
-is required. Seed a benchmark copy, not a database people read.
+⚠ These writes stay in whatever database it targets until `perf cleanup`
+removes them: synthetic `is_current` observations on real features, which
+surface through `serving_geo.feature_v`, and the AOIs through `aoi list`. So
+`perf seed-observations` takes no `DATABASE_URL` fallback: `--dsn` is
+required. Seed a benchmark copy, not a database people read.
+
+`perf cleanup --dsn ...` deletes, in one transaction, every row the seed wrote
+and nothing else: observations and ingestion runs of the `reimagina-perf`
+source, the source itself, the four `perf_*` AOIs of the 'Performance Benchmark
+Project' (with their `aoi_feature` and `aoi_indicator_summary` rows), and the
+project once it holds nothing else. It finds them by the marks the seed has
+always written, so older seeds are cleaned too. It prints the JSON count per
+table, `--dry-run` prints the same counts and deletes nothing, and a second run
+removes 0. It refuses while a scenario, aggregation recipe or orchestration run
+points at a perf AOI, because deleting the AOI would change that row.
 
 ## Baseline numbers (Cuauhtémoc, Apr 2026)
 
@@ -430,6 +440,7 @@ by total time):
 
 ```bash
 python -m apps.cli.app perf seed-observations --dsn postgresql://localhost/reimagina_perf
+python -m apps.cli.app perf cleanup --dsn postgresql://localhost/reimagina_perf --dry-run
 python -m apps.cli.app perf run --dataset-tier smoke --benchmark bbox_features_small
 python -m apps.cli.app perf explain bbox_features_dense
 python -m apps.cli.app perf report

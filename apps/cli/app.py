@@ -133,6 +133,7 @@ from reimagina.pipeline.overture import (  # noqa: E402
     OVERTURE_DEFAULT_RELEASE,
 )
 from .perf import (  # noqa: E402
+    cleanup_perf,
     compare_perf_reports,
     explain_query,
     performance_report,
@@ -789,8 +790,8 @@ app.add_typer(perf_app, name="perf")
     "benchmark copy, never at a database people read.",
 )
 def perf_seed_observations(
-    # Required, with no DATABASE_URL fallback: the writes are permanent and
-    # there is no cleanup command, so the target must be named on purpose.
+    # Required, with no DATABASE_URL fallback: the writes are permanent until
+    # `perf cleanup`, so the target must be named on purpose.
     dsn: str = typer.Option(..., "--dsn", help="Database to seed (required)."),
     dataset_tier: _DatasetTier = typer.Option(
         _DatasetTier.smoke,
@@ -813,6 +814,22 @@ def perf_seed_observations(
             aoi_id=aoi_id,
         )
     )
+
+
+@perf_app.command(
+    "cleanup",
+    help="Delete everything seed-observations wrote (perf observations, source, "
+    "ingestion runs, the benchmark project and its perf_* AOIs) in one "
+    "transaction, and print the counts per table.",
+)
+def perf_cleanup(
+    # Required for the same reason as seed-observations: it deletes.
+    dsn: str = typer.Option(..., "--dsn", help="Database to clean (required)."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the counts without deleting."
+    ),
+) -> int:
+    return _print(cleanup_perf(dsn=dsn, dry_run=dry_run))
 
 
 @perf_app.command(

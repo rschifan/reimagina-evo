@@ -553,3 +553,20 @@ def test_perf_seed_needs_an_explicit_dsn(monkeypatch, capsys):
 
     assert main(["perf", "seed-observations", "--dsn", "postgresql://h/perf"]) == 0
     assert called[0]["dsn"] == "postgresql://h/perf"
+
+
+def test_perf_cleanup_needs_an_explicit_dsn_and_passes_dry_run(monkeypatch):
+    """It deletes; like the seed it undoes, the target must be named."""
+    from apps.cli.app import main
+
+    called = []
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/reimagina")
+    monkeypatch.setattr(
+        "apps.cli.app.cleanup_perf", lambda **kw: called.append(kw) or {}
+    )
+
+    assert main(["perf", "cleanup"]) == 2
+    assert called == []
+
+    assert main(["perf", "cleanup", "--dsn", "postgresql://h/perf", "--dry-run"]) == 0
+    assert called == [{"dsn": "postgresql://h/perf", "dry_run": True}]

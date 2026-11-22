@@ -10,6 +10,7 @@ from reimagina.db import connect
 from reimagina.storage import mask_dsn
 from reimagina.perf import (
     build_observability_report,
+    cleanup_perf_data,
     compare_reports,
     explain_benchmark,
     prepare_benchmark_dataset,
@@ -32,6 +33,11 @@ def seed_observations(
             aoi_id=aoi_id,
         )
         return {"dsn": dsn, **result}
+
+
+def cleanup_perf(*, dsn: str, dry_run: bool = False) -> dict[str, Any]:
+    with connect(dsn) as conn:
+        return {"dsn": dsn, **cleanup_perf_data(conn, dry_run=dry_run)}
 
 
 def run_perf_benchmarks(

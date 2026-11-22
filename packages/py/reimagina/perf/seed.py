@@ -353,3 +353,82 @@ def prepare_benchmark_dataset(
         "observation_seed": observation_seed,
         "aoi_ids": aoi_ids,
     }
+
+
+# Every row the seed writes is found by a mark it already carries, so rows
+# seeded before this command existed are found the same way: the perf source
+# by its provider, its observations and runs through that source, the AOIs by
+# name inside the perf project. A same-named AOI in another project is not one.
+# Child tables are deleted explicitly, before their cascades would, so each
+# count is reported.
+_PERF_SOURCES = (
+    "SELECT id FROM curated_geo.data_source_catalog WHERE provider = %(provider)s"
+)
+_PERF_PROJECTS = "SELECT id FROM app_core.project WHERE name = %(project)s"
+_PERF_AOIS = (
+    "SELECT id FROM curated_geo.area_of_interest "
+    f"WHERE project_id IN ({_PERF_PROJECTS}) AND name = ANY(%(aoi_names)s)"
+)
+_CLEANUP_STEPS = (
+    ("curated_geo.aoi_indicator_summary", f"aoi_id IN ({_PERF_AOIS})"),
+    ("curated_geo.aoi_feature", f"aoi_id IN ({_PERF_AOIS})"),
+    ("curated_geo.area_of_interest", f"id IN ({_PERF_AOIS})"),
+    # Only once empty: a scenario someone made in it is not perf data, and
+    # deleting the project would cascade it away.
+    (
+        "app_core.project",
+        f"id IN ({_PERF_PROJECTS}) AND NOT EXISTS (SELECT 1 FROM "
+        "curated_geo.area_of_interest a WHERE a.project_id = app_core.project.id) "
+        "AND NOT EXISTS (SELECT 1 FROM app_core.scenario s "
+        "WHERE s.project_id = app_core.project.id)",
+    ),
+    ("curated_geo.observation", f"source_id IN ({_PERF_SOURCES})"),
+    ("curated_geo.ingestion_run", f"source_id IN ({_PERF_SOURCES})"),
+    ("curated_geo.data_source_catalog", f"id IN ({_PERF_SOURCES})"),
+)
+# Deleting a perf AOI would null or orphan these columns on rows that are not
+# perf data, so their presence stops the cleanup instead. Compared as text:
+# `orchestration_run.aoi_id` is a text column.
+_AOI_REFERENCES = (
+    ("app_core.scenario", "aoi_id"),
+    ("curated_geo.aggregation_recipe", "aoi_id"),
+    ("jobs_runtime.orchestration_run", "aoi_id"),
+)
+
+
+def cleanup_perf_data(conn, *, dry_run: bool = False) -> dict[str, object]:
+    """Delete every row `seed_observations`/`ensure_perf_aois` wrote, in the
+    caller's transaction. ``dry_run`` runs the same deletes and rolls them
+    back, so the counts it reports are exactly what a real run removes."""
+    _require_postgres(conn)
+    params = {
+        "provider": PERF_SOURCE_PROVIDER,
+        "project": PERF_PROJECT_NAME,
+        "aoi_names": list(PERF_AOI_NAMES.values()),
+    }
+    removed: dict[str, int] = {}
+    with conn.cursor() as cur:
+        for table, column in _AOI_REFERENCES:
+            cur.execute(
+                f"SELECT count(*) FROM {table} WHERE {column}::text IN "
+                f"(SELECT id::text FROM ({_PERF_AOIS}) perf_aoi)",
+                params,
+            )
+            if cur.fetchone()[0]:
+                raise ValueError(
+                    f"{table} rows reference a perf AOI; repoint or delete them "
+                    "before running perf cleanup."
+                )
+        cur.execute("SAVEPOINT perf_cleanup")
+        for table, where in _CLEANUP_STEPS:
+            cur.execute(f"DELETE FROM {table} WHERE {where}", params)
+            removed[table] = cur.rowcount
+        if dry_run:
+            cur.execute("ROLLBACK TO SAVEPOINT perf_cleanup")
+        elif removed["curated_geo.observation"]:
+            # The seed refreshed it to publish the rows; refresh it to unpublish.
+            cur.execute(
+                "REFRESH MATERIALIZED VIEW serving_geo.feature_current_attributes_mv"
+            )
+        cur.execute("RELEASE SAVEPOINT perf_cleanup")
+    return {"dry_run": dry_run, "removed": removed}
