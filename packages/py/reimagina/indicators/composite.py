@@ -140,7 +140,7 @@ def compute_composite(
         common &= {
             fid
             for grain in spec.applies_to
-            for fid, _area, _perim in feature_repo.geodesic_metrics_by_type(
+            for fid in feature_repo.feature_ids_in_aoi(
                 type_id=get_type_id(conn, "MEX", grain),
                 aoi_id=aoi_id,
                 feature_ids=feature_ids,

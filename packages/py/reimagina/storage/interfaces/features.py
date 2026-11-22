@@ -71,6 +71,18 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def feature_ids_in_aoi(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str,
+        feature_ids: list[str] | None = None,
+    ) -> set[str]:
+        """Return the ids of the features of a type that intersect an AOI —
+        the same AOI test ``geodesic_metrics_by_type`` applies. ``feature_ids``
+        narrows further (AND)."""
+        ...
+
     def find_by_attributes(
         self,
         *,

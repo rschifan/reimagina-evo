@@ -411,6 +411,32 @@ class PostgresFeatureRepository:
                 for fid, area, perim in cur.fetchall()
             ]
 
+    def feature_ids_in_aoi(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str,
+        feature_ids: list[str] | None = None,
+    ) -> set[str]:
+        # Same AOI test as geodesic_metrics_by_type, without measuring areas
+        # nobody reads.
+        id_filter = " AND f.id = ANY(%s::uuid[])" if feature_ids else ""
+        params: list = [aoi_id, type_id]
+        if feature_ids:
+            params.append(list(feature_ids))
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT f.id::text
+                FROM curated_geo.feature f
+                JOIN curated_geo.area_of_interest aoi
+                  ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
+                WHERE f.type_id = %s{id_filter}
+                """,
+                params,
+            )
+            return {str(fid) for (fid,) in cur.fetchall()}
+
     def iter_geometries_by_type(
         self,
         *,

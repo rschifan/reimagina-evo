@@ -36,12 +36,9 @@ class _Features:
         self.in_aoi = in_aoi
         self.calls: list[dict] = []
 
-    def geodesic_metrics_by_type(self, *, type_id, aoi_id=None, feature_ids=None):
+    def feature_ids_in_aoi(self, *, type_id, aoi_id, feature_ids=None):
         self.calls.append({"aoi_id": aoi_id, "feature_ids": feature_ids})
-        ids = self.in_aoi if aoi_id else ["a", "b", "outside"]
-        if feature_ids:
-            ids = [i for i in ids if i in feature_ids]
-        return [(i, 1.0, 1.0) for i in ids]
+        return {i for i in self.in_aoi if not feature_ids or i in feature_ids}
 
 
 class _Backend:
