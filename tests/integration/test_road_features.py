@@ -33,6 +33,7 @@ from reimagina.data import feature as feat
 from reimagina.data.attribution import attribution_text, attributions
 from reimagina.data.roads import (
     OSM_ATTRIBUTION,
+    OSM_SOURCE_NAME,
     OSM_LICENCE,
     publish_from_network,
     publish_road_features,
@@ -400,6 +401,35 @@ class TestProvenanceAndAttribution:
         second = publish_from_network(conn, version="walk-test")
         assert first.ingestion_run_id != second.ingestion_run_id
         assert second.features_written == first.features_written
+
+    def test_a_reload_on_another_day_replaces_the_previous_layer(
+        self, conn, graph
+    ) -> None:
+        """The OSM version carries the load date, so Tuesday's reload gets a
+        new source row. Scoping the delete to that row alone left Monday's
+        edges in place and the street layer doubled."""
+        monday = publish_from_network(conn, version="walk-2026-11-16")
+        tuesday = publish_from_network(conn, version="walk-2026-11-17")
+        assert monday.source_id != tuesday.source_id
+        assert tuesday.features_removed == monday.features_written
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM curated_geo.feature f "
+                "JOIN curated_geo.data_source_catalog s ON s.id = f.source_id "
+                "WHERE f.type_slug = 'road' AND s.name = %s",
+                (OSM_SOURCE_NAME,),
+            )
+            assert cur.fetchone()[0] == graph
+
+    def test_the_publish_run_is_completed(self, conn, graph) -> None:
+        """A run left `running` forever reads as an ingest still in flight."""
+        result = publish_from_network(conn, version="walk-test")
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM curated_geo.ingestion_run WHERE id = %s",
+                (result.ingestion_run_id,),
+            )
+            assert cur.fetchone()[0] == "succeeded"
 
 
 def test_the_feature_type_already_existed(conn) -> None:

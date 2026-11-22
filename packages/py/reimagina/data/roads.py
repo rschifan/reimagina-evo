@@ -116,8 +116,12 @@ def publish_road_features(
     road features first also matches what the loader already documents about
     itself — "loading replaces the whole network".
 
-    The delete is scoped to `source_id` and `type_slug`, so a second
-    network loaded under a different source is untouched.
+    The delete covers every version of this source — the same `provider` and
+    `name` — not just `source_id`. The OSM version is stamped with the load
+    date, so a reload on another day registers a new source row; deleting
+    only that row's features removed nothing and kept the previous day's
+    edges, whose `road_edge` rows the truncate had already discarded. A
+    network registered under a different name is untouched.
 
     `name` is left NULL. `road_edge` carries `osm_id`, endpoints and cost;
     it does not carry the way's name or its highway class, and deriving a
@@ -128,7 +132,14 @@ def publish_road_features(
         cur.execute(
             """
             DELETE FROM curated_geo.feature
-            WHERE source_id = %s AND type_slug = 'road'
+            WHERE type_slug = 'road'
+              AND source_id IN (
+                  SELECT other.id
+                  FROM curated_geo.data_source_catalog this
+                  JOIN curated_geo.data_source_catalog other
+                    ON other.provider = this.provider AND other.name = this.name
+                  WHERE this.id = %s
+              )
             """,
             (source_id,),
         )
@@ -202,9 +213,20 @@ def publish_from_network(
         transformation_step="publish_road_features",
         code_version=code_version,
     )
-    return publish_road_features(
+    result = publish_road_features(
         conn,
         source_id=resolved,
         ingestion_run_id=run_id,
         dataset_version=version,
     )
+    cat.complete_ingestion_run(
+        conn,
+        run_id,
+        status="succeeded",
+        rows_written=result.features_written,
+        details={
+            "features_written": result.features_written,
+            "features_removed": result.features_removed,
+        },
+    )
+    return result
