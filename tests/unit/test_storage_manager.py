@@ -76,3 +76,34 @@ def test_mask_dsn_leaves_a_passwordless_dsn_alone():
         == "postgresql://localhost/reimagina"
     )
     assert mask_dsn("") == ""
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        # A SQLAlchemy URL: parse_dsn rejects it, and it carries a password.
+        "postgresql+psycopg2://app:s3cret@db/reimagina",
+        "host=db password=s3cret dbname=reimagina garbage",
+    ],
+)
+def test_a_rejected_dsn_does_not_echo_its_password(dsn):
+    """The CLI prints this message as its one-line `error:`, into CI logs."""
+    with pytest.raises(ValueError) as exc:
+        backend_name_for_dsn(dsn)
+    assert "s3cret" not in str(exc.value)
+
+
+def test_an_unmigrated_database_refusal_does_not_echo_a_password(monkeypatch):
+    """`rsplit('@')` left a keyword-form DSN whole, password included."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from reimagina.orchestration import dbos_app
+
+    cursor = SimpleNamespace(execute=lambda _sql: None, fetchone=lambda: (None,))
+    conn = SimpleNamespace(cursor=lambda: nullcontext(cursor), close=lambda: None)
+    monkeypatch.setattr(dbos_app.psycopg2, "connect", lambda _dsn: conn)
+    with pytest.raises(RuntimeError) as exc:
+        dbos_app._assert_domain_database("host=db password=s3cret dbname=wrong")
+    assert "s3cret" not in str(exc.value)
+    assert "dbname=wrong" in str(exc.value)

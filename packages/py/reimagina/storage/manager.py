@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import psycopg2
 import psycopg2.extensions
@@ -46,12 +47,24 @@ def backend_name_for_dsn(dsn: str | None = None) -> str:
     try:
         parsed = psycopg2.extensions.parse_dsn(resolved)
     except psycopg2.ProgrammingError as exc:
-        raise ValueError(f"Unsupported storage DSN: {resolved!r}") from exc
+        raise ValueError(_unsupported(resolved)) from exc
     # An empty string parses to {} rather than raising, and would otherwise be
     # accepted as "connect to whatever libpq's defaults resolve to".
     if not parsed:
-        raise ValueError(f"Unsupported storage DSN: {resolved!r}")
+        raise ValueError(_unsupported(resolved))
     return "postgres"
+
+
+def _unsupported(dsn: str) -> str:
+    """The refusal message, naming at most the scheme: the DSN is unparseable,
+    so `mask_dsn` cannot find its password, and the CLI prints this line."""
+    scheme, sep, _ = dsn.partition("://")
+    shown = (
+        f"scheme {scheme!r}"
+        if sep and re.fullmatch(r"[A-Za-z][\w+.-]*", scheme)
+        else "not a URL or key=value DSN"
+    )
+    return f"Unsupported storage DSN ({shown}); expected postgresql://… or key=value"
 
 
 def connect(dsn: str | None = None):

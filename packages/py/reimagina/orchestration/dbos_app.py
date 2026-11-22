@@ -49,7 +49,7 @@ from reimagina.orchestration.port import (
 )
 from reimagina.orchestration.runners import default_runners
 from reimagina.orchestration.wave import plan_wave
-from reimagina.storage import backend_for_connection
+from reimagina.storage import backend_for_connection, mask_dsn
 from reimagina.storage.postgres.repositories import run_application_name
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,7 @@ def _assert_domain_database(dsn: str) -> None:
         cur.execute("SELECT to_regclass('jobs_runtime.job_run')")
         if cur.fetchone()[0] is None:
             raise RuntimeError(
-                f"{dsn.rsplit('@', 1)[-1]} is not a migrated reimagina database "
+                f"{mask_dsn(dsn)} is not a migrated reimagina database "
                 "(jobs_runtime.job_run is missing). DBOS creates a database "
                 "rather than failing when one is absent, so a typo here would "
                 "otherwise start cleanly and write checkpoints nowhere useful. "
