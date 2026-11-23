@@ -118,3 +118,24 @@ def test_a_change_rule_in_storeys_is_told_the_largest_change_not_the_total():
 def test_a_set_storeys_number_in_a_mixed_rule_is_told_storeys_not_a_change():
     message = str(_change_refusal({"levels": "set"}, 22.0))
     assert "at most 10 storeys fit" in message
+
+
+def test_a_change_with_nothing_to_change_points_at_the_equals_choice():
+    # The rule box has a per-number "=", not a "Set to" switch.
+    message = str(authoring.ChangeHasNoBaseline("rule-1", ["unit_size"]))
+    assert "m² per home" in message and "choose =" in message.lower()
+    assert "Set to" not in message
+
+
+def test_several_rules_in_the_fallback_are_plural():
+    from reimagina.scenarios.ceilings import CeilingBreach
+
+    breach = CeilingBreach("b", "edificability_block_density", 2000.0, 2500.0)
+    message = str(
+        authoring.CeilingExceeded(
+            [breach],
+            rules={"b": (("r1", 1), ("r3", 3))},
+            allowed_levels={("b", "edificability_block_density"): 5},
+        )
+    )
+    assert message.startswith("Rules 1, 3 are too much for this block")

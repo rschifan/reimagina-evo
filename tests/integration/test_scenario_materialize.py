@@ -1064,3 +1064,26 @@ def test_a_rule_whose_set_number_writes_is_not_refused_for_a_missing_baseline(co
     )
 
     assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.5
+
+
+def test_units_sent_without_a_mode_make_a_set_rule_a_change_rule(conn):
+    # Units only mean something in a change rule; dropping them silently
+    # turned "+20 %" into "20 storeys".
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2})
+    sid = t.scenario()
+    rule_id = t.rule(sid, _AREA_0_3, levels=5, lot_coverage=0.4)
+
+    updated, _ = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rule_id,
+        geometry_wkt=None,
+        inputs={"levels": 50, "lot_coverage": 0.4},
+        units={"levels": "pct"},
+    )
+
+    # The numbers given no unit stay what they were in the set rule: values.
+    assert updated["mode"] == "change"
+    assert updated["units"] == {"levels": "pct", "lot_coverage": "set"}
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 3
+    assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.4

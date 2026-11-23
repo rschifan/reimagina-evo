@@ -123,13 +123,18 @@ class CeilingExceeded(Exception):
             # No rule-aware advice: the first breach's rules and the storeys
             # that fit it, as a set rule would be told.
             worst = breaches[0]
-            named = ", ".join(str(n) for _, n in self.rules_of(worst))
+            numbers = [str(n) for _, n in self.rules_of(worst)]
+            named = (
+                f"Rule {numbers[0]} is"
+                if len(numbers) == 1
+                else f"Rules {', '.join(numbers)} are"
+            )
             most = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
             n = len({b.feature_id for b in breaches})
             where = "this block" if n == 1 else f"{n} blocks"
             advice = (
-                f"Rule {named} is too much for {where}: at most {most} storeys fit."
-                if named and most is not None
+                f"{named} too much for {where}: at most {most} storeys fit."
+                if numbers and most is not None
                 else "Lower the storeys or raise the m² per home in this area."
             )
         super().__init__(advice)
@@ -473,7 +478,7 @@ class ChangeHasNoBaseline(Exception):
         what = ", ".join(_LABELS.get(n, n) for n in names)
         super().__init__(
             f"No block in this area has a value for {what} to change, so nothing was "
-            "saved. Use Set to for these blocks."
+            "saved. Choose = to set it instead."
         )
 
 
@@ -638,6 +643,12 @@ def update_rule(
             current, rule_mode, rule_units = found
             if not merge:
                 current = {}
+            # Units only mean something in a change rule: sent without a mode,
+            # they make one rather than being dropped ("+20 %" is not "20").
+            # The set rule's other numbers stay values ("set").
+            if mode is None and units and rule_mode == "set":
+                rule_mode = "change"
+                rule_units = dict.fromkeys({**current, **inputs}, "set")
             checked = (
                 _checked(current, rule_mode, {**rule_units, **(units or {})})
                 if mode is None

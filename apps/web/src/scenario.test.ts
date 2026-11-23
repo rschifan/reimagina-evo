@@ -155,8 +155,8 @@ describe("lot coverage", () => {
   const ok = { levels: 6, unit_size: 60, people_per_household: 3.6 };
 
   it("must be a share of the block", () => {
-    for (const bad of [0, -0.1, 1.2, Number.NaN]) {
-      expect(refusalOf({ ...ok, lot_coverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
+    for (const bad of [0, 0.005, -0.1, 1.2, Number.NaN]) {
+      expect(refusalOf({ ...ok, lot_coverage: bad })).toMatch(/lot_coverage.*between 0.01 and 1/);
     }
     expect(refusalOf({ ...ok, lot_coverage: 0.6 })).toBeNull();
   });

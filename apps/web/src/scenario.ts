@@ -188,10 +188,10 @@ export function validateEdit(values: ProposalValues): EditRefusal | null {
     }
   }
   const coverage = values.lot_coverage ?? 1;
-  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
+  if (!Number.isFinite(coverage) || coverage < 0.01 || coverage > 1) {
     return {
       field: "lot_coverage",
-      text: `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`,
+      text: `Lot coverage (lot_coverage) must be a share between 0.01 and 1, got ${coverage}.`,
     };
   }
   // The rest needs storeys: without them each block keeps its own, which
@@ -508,7 +508,9 @@ export interface Rule {
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
   inputs: RuleInputs;
-  /** Set to (default) or change by, with each changed number's unit. */
+  /** "set" (default): every number is a value. "change": each number's
+   *  choice is in `units` — an amount, a % or "set" — so one rule can set
+   *  one number and change another. */
   mode?: RuleMode;
   units?: RuleUnits;
 }

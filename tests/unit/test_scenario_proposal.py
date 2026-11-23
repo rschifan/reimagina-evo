@@ -431,3 +431,11 @@ def test_a_set_number_in_a_mixed_rule_keeps_the_set_range(bad):
             mode="change",
             units={"lot_coverage": "set", "levels": "abs"},
         )
+
+
+def test_a_set_coverage_has_the_same_floor_a_change_reaches():
+    # A change stops at 1 %; a set value below it would be one no change can
+    # reach and the two would disagree on the smallest coverage.
+    with pytest.raises(ProposalValueError):
+        check_inputs({"lot_coverage": 0.005})
+    assert check_inputs({"lot_coverage": 0.01}) == {"lot_coverage": 0.01}

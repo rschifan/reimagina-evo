@@ -155,6 +155,8 @@ class RuleInput:
     #: Where a "change by" result is held, ``(lowest, highest or None)``: a
     #: change is checked per block, so it is clamped there, not refused.
     clamp: tuple[float, float | None] = (0.0, None)
+    #: Inclusive lower bound on a set value, when ``above`` is not enough.
+    at_least: float | None = None
 
 
 #: **The one registry of what a rule can set.** Its order is the order edits
@@ -182,13 +184,14 @@ RULE_INPUTS: dict[str, RuleInput] = {
         ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
     ),
     "lot_coverage": RuleInput(
-        # A change floors at 1 %: a set rule refuses 0 (no building at all),
-        # and a change must not reach what a set rule refuses.
+        # 1 % is the floor for both: a set value below it is refused and a
+        # change stops there, so the two agree on the smallest coverage.
         ("lot_coverage",),
         0.0,
         1.0,
-        "be a share between 0 and 1",
+        "be a share between 0.01 and 1",
         (0.01, 1.0),
+        0.01,
     ),
 }
 
@@ -312,6 +315,7 @@ def check_inputs(
         if (
             not math.isfinite(number)
             or number <= spec.above
+            or (spec.at_least is not None and number < spec.at_least)
             or (spec.at_most is not None and number > spec.at_most)
         ):
             raise ProposalValueError(name, number, must=spec.must)

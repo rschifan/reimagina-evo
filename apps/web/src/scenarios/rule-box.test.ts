@@ -64,13 +64,13 @@ describe("the rule box", () => {
     type("Lot coverage", "45");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
-    for (const bad of ["0", "120"]) {
+    for (const bad of ["0", "0.5", "120"]) {
       handlers.onapply.mockClear();
       type("Lot coverage", bad);
       button("Apply").click();
       flushSync();
       expect(handlers.onapply).not.toHaveBeenCalled();
-      expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
+      expect(target.textContent).toMatch(/Lot coverage must be at least 1 % and at most 100 %/);
     }
   });
 
@@ -260,6 +260,36 @@ describe("a choice per number", () => {
     expect(document.activeElement).toBe(input("Storeys"));
   });
 
+  it("an empty number of a saved set rule starts at =, like its other numbers", () => {
+    // In a rule that is all "=", a new number on "+ %" would silently make
+    // "4 storeys" into "+4 %".
+    const { type, button, handlers, target } = open({ mode: "rule", values: { lot_coverage: 0.4 } });
+    expect(pressed(target, "Storeys unit", "=").getAttribute("aria-pressed")).toBe("true");
+    type("Storeys", "4");
+    button("Save").click();
+    expect(handlers.onsave).toHaveBeenCalledWith({ levels: 4, lot_coverage: 0.4 });
+  });
+
+  it("a zero change is not read back and is refused before sending", () => {
+    const { type, button, handlers, target } = open({ values: {} });
+    type("Storeys", "0");
+    expect(target.querySelector('[aria-label="This rule"]')).toBeNull();
+    button("Apply").click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/Storeys change cannot be 0/);
+  });
+
+  it("a coverage change in points beyond 100 is refused in points", () => {
+    const { type, button, handlers, target } = open({ values: {} });
+    type("Lot coverage", "150");
+    choose(target, "Lot coverage unit", "+ points");
+    button("Apply").click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/Lot coverage change must be between −100 and \+100 points/);
+  });
+
   it("an empty number starts at + %", () => {
     // "+30" read as 30 storeys when a planner meant 30 % was the bug.
     const { target } = open({ values: {} });
@@ -289,7 +319,7 @@ describe("a choice per number", () => {
     button("Apply").click();
     flushSync();
     expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
+    expect(target.textContent).toMatch(/Lot coverage must be at least 1 % and at most 100 %/);
   });
 });
 

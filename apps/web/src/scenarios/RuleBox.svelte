@@ -91,7 +91,10 @@
   let units = $state<RuleUnits>(
     Object.fromEntries(Object.keys(initial).map((k) => [k, savedUnit(k as keyof RuleInputs)])),
   );
-  const unitOf = (key: keyof RuleInputs): RuleUnit => units[key] ?? "pct";
+  // An empty number starts at "+ %" in a new box, and at "=" in a saved set
+  // rule, where every other number is "=" too.
+  const emptyUnit: RuleUnit = (() => (mode === "rule" && startMode === "set" ? "set" : "pct"))();
+  const unitOf = (key: keyof RuleInputs): RuleUnit => units[key] ?? emptyUnit;
   /** Each number's amount unit. */
   const AMOUNT: Record<keyof RuleInputs, string> = {
     levels: "storeys", unit_size: "m²", people_per_household: "people", lot_coverage: "points",
@@ -124,6 +127,7 @@
       if (v === null) return [];
       const unit = unitOf(key);
       if (unit === "set") return [`${label} = ${v}${key === "lot_coverage" ? " %" : ""}`];
+      if (v === 0) return [];
       const sign = v < 0 ? "−" : "+";
       return [`${label} ${sign}${Math.abs(v)} ${unit === "pct" ? "%" : AMOUNT[key]}`];
     }),
@@ -145,9 +149,19 @@
       const v = set(numbers[key]);
       if (v === null) continue;
       const unit = unitOf(key);
-      if (key === "lot_coverage" && unit === "set" && (v <= 0 || v > 100)) {
+      if (key === "lot_coverage" && unit === "set" && (v < 1 || v > 100)) {
         localField = key;
-        localError = "Lot coverage must be more than 0 and at most 100 %.";
+        localError = "Lot coverage must be at least 1 % and at most 100 %.";
+        return null;
+      }
+      if (unit !== "set" && v === 0) {
+        localField = key;
+        localError = `${LABELS[key]} change cannot be 0: leave it empty to keep each block's own value.`;
+        return null;
+      }
+      if (key === "lot_coverage" && unit === "abs" && Math.abs(v) > 100) {
+        localField = key;
+        localError = "Lot coverage change must be between −100 and +100 points.";
         return null;
       }
       // Coverage set or changed by points is a share; a % change is as typed.

@@ -45,7 +45,7 @@ def test_coverage_must_be_a_share(bad: float) -> None:
     with pytest.raises(ProposalValueError) as exc:
         check_inputs({"lot_coverage": bad})
     assert exc.value.field == "lot_coverage"
-    assert "between 0 and 1" in str(exc.value)
+    assert "between 0.01 and 1" in str(exc.value)
 
 
 @pytest.mark.parametrize("good", [0.01, 0.6, 1.0])
@@ -82,7 +82,7 @@ def test_the_cli_names_a_refused_coverage_by_its_flag() -> None:
     from reimagina.scenarios.proposal import check_inputs
 
     with pytest.raises(
-        ValueError, match="--lot-coverage must be a share between 0 and 1"
+        ValueError, match="--lot-coverage must be a share between 0.01 and 1"
     ):
         with _flags():
             check_inputs({"levels": 3, "unit_size": 66, "lot_coverage": 1.5})
