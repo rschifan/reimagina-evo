@@ -293,6 +293,8 @@ ATTEMPTED=(
 # finds no row count. Printing it unconditionally would bury a green run in
 # progress chatter.
 INDICATOR_ERR="$(mktemp "${TMPDIR:-/tmp}/reimagina-indicator-err.XXXXXX")"
+cleanup() { rm -f "$INDICATOR_ERR"; }
+trap cleanup EXIT
 rows_for() {
   : >"$INDICATOR_ERR"
   $CLI indicators compute --slug "$1" --aoi-id "$AOI_ID" 2>"$INDICATOR_ERR" \

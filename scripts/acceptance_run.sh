@@ -49,10 +49,19 @@ unset ENV_EXPORTS
 
 step() { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 
+# Every temp file the run makes lives here; the EXIT trap removes it. Kept
+# only when the run failed after the worker started, since its log is then
+# the evidence (and the failure message prints its path).
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reimagina-acceptance.XXXXXX")"
 WORKER_PID=""
 cleanup() {
+  local status=$?
   [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
-  rm -f "${AREA_GEOJSON:-}"
+  if [[ $status -ne 0 && -s "$WORK_DIR/worker.log" ]]; then
+    echo "  kept $WORK_DIR for the worker log" >&2
+  else
+    rm -rf "$WORK_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -74,7 +83,7 @@ $CLI feat seed-types
 $CLI indicators seed-catalog
 
 step "4. Generating a territory (AGEBs, blocks, buildings, streets, POIs, AOI)"
-RASTER="${TMPDIR:-/tmp}/reimagina-acceptance-population.tif"
+RASTER="$WORK_DIR/population.tif"
 SEED_OUT="$($PY scripts/synthetic_territory.py --raster-out "$RASTER")"
 echo "$SEED_OUT"
 AOI_ID="$(sed -n 's/^ *AOI_ID=//p' <<<"$SEED_OUT")"
@@ -171,7 +180,7 @@ step "10. A scenario, authored through the CLI, and the selective recompute it t
 # four blocks, grown a few metres so four collinear centroids still enclose
 # something. `add-rule` selects by centroid, so the polygon may catch more
 # than those four; the table in step 11 reports exactly how many it did.
-AREA_GEOJSON="${TMPDIR:-/tmp}/reimagina-acceptance-area.geojson"
+AREA_GEOJSON="$WORK_DIR/area.geojson"
 export AREA_GEOJSON
 $PY - <<'PYEOF'
 import json
@@ -324,7 +333,7 @@ step "12. The ops plane: a worker drains a queued run"
 # the platform *without* exercising the orchestration module Schedule A names.
 # This step is the other half: submit through the durable queue and let a
 # separate worker process drain it.
-WORKER_LOG="${TMPDIR:-/tmp}/reimagina-acceptance-worker.log"
+WORKER_LOG="$WORK_DIR/worker.log"
 REIMAGINA_EXECUTOR_ID=acceptance-worker $PY -m apps.worker > "$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
 
@@ -484,8 +493,6 @@ echo "  worker stopped"
 step "13. Live vector tiles, decoded from the bytes the client would get"
 $PY - <<'PYEOF'
 import os
-import pathlib
-import subprocess
 import sys
 
 sys.path.insert(0, "packages/py")
@@ -493,8 +500,6 @@ sys.path.insert(0, ".")
 from reimagina.storage import connect  # noqa: E402
 from scripts.mvt_inspect import decode, summarise  # noqa: E402
 
-out = pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "r-evo-acceptance-tiles"
-out.mkdir(parents=True, exist_ok=True)
 with connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
     # Tile indices for the territory's centroid, at each zoom.
     cur.execute(

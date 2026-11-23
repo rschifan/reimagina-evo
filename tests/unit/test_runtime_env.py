@@ -434,3 +434,16 @@ def test_a_mirror_named_in_dotenv_is_used(tmp_path):
         done.stderr
     )
     assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_harness_temp_files_live_in_one_mktemp_that_exit_removes(script):
+    """Every temp path is made by one ``mktemp`` and removed by the EXIT trap.
+
+    Both scripts left files in $TMPDIR on every run (an indicator stderr file,
+    a raster, a worker log, a tiles folder) that nothing removed.
+    """
+    text = (ROOT / "scripts" / script).read_text()
+    tmp_uses = [line for line in text.splitlines() if "TMPDIR" in line]
+    assert len(tmp_uses) == 1 and "mktemp" in tmp_uses[0], tmp_uses
+    assert "trap cleanup EXIT" in text
