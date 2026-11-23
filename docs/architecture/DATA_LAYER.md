@@ -281,7 +281,7 @@ Read Diagram 1 as:
 - `file_asset` stores batch/manifest-level asset metadata, not per-feature values.
 - `area_of_interest` and `aoi_feature` are project-scoped support tables for AOI filtering and overlap-based prorating.
 - `feature_overlap` stores pre-computed spatial intersections between arbitrary feature type pairs (e.g. blocks vs. AGEBs, lots vs. road segments), generalising `aoi_feature` to feature-to-feature; `UNIQUE (source_feature_id, target_feature_id)`. Populated by `reimagina.jobs.overlap` (CLI: `overlap declare-pair` + `overlap compute-all --aoi-id …`; `overlap list-pairs` lists the declarations) for declared type-pair combinations (`feature_overlap_type_pair`, `UNIQUE (source_type_id, target_type_id)`). Its one reader is the observation rollup (`reimagina.jobs.observation_rollup`), which aggregates current observations from a finer grain to a coarser one, driven by `aggregation_recipe` (r020); it works for hierarchical and non-hierarchical relationships alike because it never reads `feature.parent_id`. Indicators are block-grain only and do not read it.
-- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) landed in Layer 1 (r015) so API code could target them; the worker that populates rows from `indicator_result` shipped with Layer 2 as `reimagina.jobs.aoi_summary.summarise_aoi` (`jobs/aoi_summary.py:29`), weighting by `aoi_feature`. Uniqueness is two partial unique indexes, `aoi_indicator_summary_base_uk (aoi_id, indicator_id) WHERE scenario_id IS NULL` and `aoi_indicator_summary_scenario_uk (aoi_id, scenario_id, indicator_id) WHERE scenario_id IS NOT NULL`; `status` is `current` | `stale` | `missing`, and `aoi_summary_v` shows `current` rows only. `indicator_id` has no FK to `indicator_catalog`: r015 deferred it and no later revision added it.
+- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) landed in Layer 1 (r015) so API code could target them; the worker that populates rows from `indicator_result` shipped with Layer 2 as `reimagina.jobs.aoi_summary.summarise_aoi`, weighting by `aoi_feature`. Uniqueness is two partial unique indexes, `aoi_indicator_summary_base_uk (aoi_id, indicator_id) WHERE scenario_id IS NULL` and `aoi_indicator_summary_scenario_uk (aoi_id, scenario_id, indicator_id) WHERE scenario_id IS NOT NULL`; `status` is `current` | `stale` | `missing`, and `aoi_summary_v` shows `current` rows only. `indicator_id` has no FK to `indicator_catalog`: r015 deferred it and no later revision added it.
 - In the actual schema, `aoi_feature` uses the pair `(aoi_id, feature_id)` as its composite primary key.
 
 Other `curated_geo` tables the data layer owns but the diagram leaves out:
@@ -296,7 +296,7 @@ Other `curated_geo` tables the data layer owns but the diagram leaves out:
 
 The loaders are CLI families of `uv run python -m apps.cli.app` (`apps/cli/app.py`); `docs/BOOTSTRAP.md` is the full runbook.
 
-- **Overture** — `overture` family. Buildings (`extract`, `load`; `pipeline/overture.py`) as `global:building`; parks, recreation and cultural places (`places`; `pipeline/overture_places.py`) as `global:establishment`; `divisions` lists Overture administrative divisions and `aoi-from-division` creates an AOI from one (`pipeline/overture_divisions.py`); and `block-storeys`, which writes each block's median Overture `num_floors` as a `floors` observation (`pipeline/block_storeys.py`).
+- **Overture** — `overture` family. Buildings (`extract`, `load`; `pipeline/overture.py`) as `global:building`; parks, recreation and cultural places (`places`; `pipeline/overture_places.py`) as `global:establishment`; `divisions` lists Overture administrative divisions and `aoi-from-division` creates an AOI from one (`pipeline/overture_divisions.py`); and `block-storeys`, which writes each block's footprint-weighted mean storeys (Overture `num_floors` where tagged, 1 where not; only on blocks with at least one tagged building) as a `floors` observation (`pipeline/block_storeys.py`).
 - **CDMX canonical geometry (INEGI + datos.cdmx.gob.mx)** — `cdmx` CLI family
   (`pipeline/cdmx.py`); fetches the Marco Geoestadístico 2020 per-state archive
   (state 09 = CDMX) and the CDMX colonias layer, lands them through
@@ -644,7 +644,7 @@ This is separate from `feature.attributes` because observations come from differ
 **Use this when:** a dataset enriches existing objects instead of defining new ones.  
 **Do not use this for:** the immutable identity of a feature, scenario overrides, or pairwise flow matrices that are not naturally "about one feature".  
 **Relationships:** child of `feature`, `data_source_catalog`, and `ingestion_run`; merged into `serving_geo.feature_v` through `feature_current_attributes_mv`.  
-**Examples:** census population for a block, WorldPop population summed per block, a block's median storeys from Overture, NDVI mean for a lot, sidewalk width from GSV, cellphone footfall by AGEB and hour.
+**Examples:** census population for a block, WorldPop population summed per block, a block's footprint-weighted mean storeys from Overture, NDVI mean for a lot, sidewalk width from GSV, cellphone footfall by AGEB and hour.
 
 ```sql
 CREATE TABLE curated_geo.observation (
@@ -1404,7 +1404,7 @@ Applied as Alembic migrations — `make migrate` runs the whole chain.
 27. `area_of_interest.membership_key` + `area_of_interest_membership_key_nonempty` — r040
 28. Asset graph (`asset`, `asset_version`, `asset_dependency`, `asset_materialization`, `serving_geo.asset_*_v`) — r041; see `ASSET_LAYER.md`
 
-The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r054.
+The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r056.
 
 ---
 
