@@ -43,6 +43,7 @@ from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
+    ChangeHasNoBaseline,
     RuleCatchesNothing,
     RuleNotFound,
     ScenarioHasNoAOI,
@@ -1014,6 +1015,25 @@ def test_a_rule_catching_no_block_is_named_as_such(client, events, monkeypatch):
     assert detail["field"] == "area"
 
 
+def test_a_change_rule_changing_no_block_is_refused_and_rolled_back(
+    client, events, monkeypatch
+):
+    def _raise(conn, **kwargs):
+        raise ChangeHasNoBaseline(RULE_ID, ["unit_size"])
+
+    _patch(monkeypatch, add_rule=_raise)
+    _type_id(monkeypatch)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
+    detail = response.json()["detail"]
+
+    assert response.status_code == 422, response.text
+    assert detail["error"] == "change_has_no_baseline"
+    assert detail["field"] == "unit_size"
+    assert "m² per home" in detail["message"]
+    assert "rollback" in events and "commit" not in events
+
+
 def test_a_rule_whose_enqueue_fails_stands_and_says_so(client, events, monkeypatch):
     """The rule and its overrides are committed before the enqueue; a failed
     enqueue is a 500 naming that phase, never a refusal of the rule."""
@@ -1060,17 +1080,34 @@ def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
             "rule_id": RULE_ID,
             "geometry_wkt": None,
             "inputs": {"levels": 4},
-            "mode": "set",
+            # No mode sent: the rule keeps its own (the domain reads None).
+            "mode": None,
             "units": {},
         }
     ]
 
 
-def test_a_change_rule_reaches_the_domain_with_its_mode_and_units(
-    client, events, monkeypatch
-):
+def test_a_refused_number_carries_the_planners_sentence(client, events, monkeypatch):
+    _type_id(monkeypatch)
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={**PROPOSAL, "inputs": {"lot_coverage": 1.2}},
+    )
+    detail = response.json()["detail"]
+
+    assert response.status_code == 400, response.text
+    assert detail["field"] == "lot_coverage"
+    assert (
+        detail["plain"]
+        == "Lot coverage must be more than 0 and at most 100 %, got 120 %."
+    )
+
+
+def test_a_change_rule_reaches_the_domain_with_its_units(client, events, monkeypatch):
+    """A deprecated ``mode`` still reaches the domain, which reads it; the rule
+    that comes back carries only its units."""
     calls: list[dict] = []
-    row = {**RULE_ROW, "mode": "change", "units": {"levels": "pct"}}
+    row = {**RULE_ROW, "units": {"levels": "pct"}}
     _patch(
         monkeypatch,
         add_rule=lambda c, **kw: (calls.append(kw), (dict(row), MATERIALIZED))[1],
@@ -1090,8 +1127,33 @@ def test_a_change_rule_reaches_the_domain_with_its_mode_and_units(
 
     assert response.status_code == 201, response.text
     assert (calls[0]["mode"], calls[0]["units"]) == ("change", {"levels": "pct"})
-    assert response.json()["rule"]["mode"] == "change"
+    assert "mode" not in response.json()["rule"]
     assert response.json()["rule"]["units"] == {"levels": "pct"}
+
+
+def test_one_rule_can_set_one_number_and_change_another(client, events, monkeypatch):
+    calls: list[dict] = []
+    units = {"levels": "pct", "lot_coverage": "set"}
+    row = {**RULE_ROW, "mode": "change", "units": units}
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (calls.append(kw), (dict(row), MATERIALIZED))[1],
+    )
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
+
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={
+            **PROPOSAL,
+            "inputs": {"levels": 20, "lot_coverage": 0.4},
+            "mode": "change",
+            "units": units,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert calls[0]["units"] == units
 
 
 def test_an_unknown_rule_mode_is_a_422(client, events, monkeypatch):

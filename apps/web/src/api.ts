@@ -357,19 +357,21 @@ export interface RuleInputs {
   levels?: number;
   unit_size?: number;
   people_per_household?: number;
-  /** Share of the block built on, `0 < c ≤ 1`. */
+  /** Share of the block built on, `0 < c ≤ 1`, when set; with `abs` a signed
+   *  share change (0.05 = +5 points), with `pct` a percent of the block's own. */
   lot_coverage?: number;
 }
 
 
-/** A rule sets its numbers as the blocks' values, or changes each block's
- *  baseline value by them. */
-export type RuleMode = "set" | "change";
-/** For a change rule, per number: an amount (`abs`; coverage as a share) or
- *  a percentage (`pct`). Missing: `abs`. */
-export type RuleUnits = Partial<Record<keyof RuleInputs, "abs" | "pct">>;
-/** What a rule request carries besides its area. A set rule sends no mode. */
-export type RuleChange = { inputs: RuleInputs; mode?: RuleMode; units?: RuleUnits };
+/** Per number, how a rule applies it (r059): `set` (the blocks' new value),
+ *  `abs` (an amount; coverage as a share) or `pct`. Missing: `set`. One rule
+ *  can so set one number and change another. */
+export type RuleUnits = Partial<Record<keyof RuleInputs, RuleUnit>>;
+/** How one number of a rule applies: an amount, a percentage, or "set" (the
+ *  block's new value). */
+export type RuleUnit = "abs" | "pct" | "set";
+/** What a rule request carries besides its area. */
+export type RuleChange = { inputs: RuleInputs; units?: RuleUnits };
 
 /** One rule as the server stores it: a row with its own id. */
 export interface RuleRow {
@@ -378,8 +380,7 @@ export interface RuleRow {
   ordinal: number;
   type_id: string;
   inputs: RuleInputs;
-  /** Absent on rows from servers before r058: a set rule. */
-  mode?: RuleMode;
+  /** Absent on rows from servers before r058: every number set. */
   units?: RuleUnits;
   geometry_wkt: string;
   created_at: string;

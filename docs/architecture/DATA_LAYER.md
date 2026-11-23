@@ -1404,7 +1404,7 @@ Applied as Alembic migrations — `make migrate` runs the whole chain.
 27. `area_of_interest.membership_key` + `area_of_interest_membership_key_nonempty` — r040
 28. Asset graph (`asset`, `asset_version`, `asset_dependency`, `asset_materialization`, `serving_geo.asset_*_v`) — r041; see `ASSET_LAYER.md`
 
-The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r057.
+The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r059.
 
 ---
 

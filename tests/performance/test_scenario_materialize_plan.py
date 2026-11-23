@@ -154,11 +154,20 @@ class _RecordingConn:
 
 
 def materialize_select(conn, scenario_id: str, aoi_id: str) -> tuple[str, dict]:
-    """The exact ``(sql, params)`` that step 2 of materialisation executes."""
+    """The exact ``(sql, params)`` of step 2's selection.
+
+    Step 2 runs two statements: the selection this file pins, then one read
+    of the caught blocks' baseline (``_baseline_values``), which the ceiling
+    check reuses instead of reading it again.
+    """
     sink: list = []
     authoring._resolve_rules(_RecordingConn(conn, sink), scenario_id, aoi_id)
-    assert len(sink) == 1, f"step 2 is expected to be one statement, saw {len(sink)}"
-    return sink[0]
+    selections = [(sql, p) for sql, p in sink if "ST_Covers" in sql]
+    assert len(selections) == 1, f"one selection expected, saw {len(selections)}"
+    assert len(sink) <= 2, (
+        f"step 2 is the selection and one baseline read, saw {len(sink)}"
+    )
+    return selections[0]
 
 
 def explain(conn, sql: str, params: dict) -> str:

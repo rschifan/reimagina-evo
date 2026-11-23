@@ -28,7 +28,6 @@ import {
   type RuleChangeResponse,
   type RuleChange,
   type RuleInputs,
-  type RuleMode,
   type RuleUnits,
   type RuleRow,
   type ScenarioListRow,
@@ -501,17 +500,21 @@ const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<v
   };
 };
 
-/** A rule request's numbers: a set rule sends only them (the server's
- *  default mode), a change rule its mode and units too. */
-function ruleChange(inputs: RuleInputs, mode: RuleMode, units: RuleUnits): RuleChange {
-  return mode === "change" ? { inputs, mode, units } : { inputs };
+/** Every number with its unit ("set" when none): an edit names each, since
+ *  the server keeps a number's own unit when none is sent, and "set" is what
+ *  turns a change back into a value. */
+function fullUnits(inputs: RuleInputs, units: RuleUnits): RuleUnits {
+  return Object.fromEntries(
+    Object.keys(inputs).map((k) => [k, units[k as keyof RuleInputs] ?? "set"]),
+  );
 }
 
-/** The local refusals a set rule's numbers get before any request. A change
- *  rule's numbers are signed amounts: only the server, per block, can judge
- *  them. */
-function precheck(inputs: RuleInputs, mode: RuleMode = "set"): boolean {
-  if (mode === "change") {
+/** The local refusals a rule of "=" numbers gets before any request
+ *  (`validateEdit`: the density and storey ceilings, a saved round trip). A
+ *  number that changes each block's baseline can only be judged by the
+ *  server, per block. */
+function precheck(inputs: RuleInputs, units: RuleUnits): boolean {
+  if (Object.keys(inputs).some((k) => (units[k as keyof RuleInputs] ?? "set") !== "set")) {
     ws.boxError = null;
     return true;
   }
@@ -589,12 +592,11 @@ export async function applyNewRule(
   area: Feature<Polygon>,
   inputs: RuleInputs,
   scenarioName?: string,
-  mode: RuleMode = "set",
   units: RuleUnits = {},
 ): Promise<boolean> {
   ws.boxError = null;
-  if (!precheck(inputs, mode)) return false;
-  const change = ruleChange(inputs, mode, units);
+  if (!precheck(inputs, units)) return false;
+  const change: RuleChange = { inputs, units: fullUnits(inputs, units) };
   const scenarioId = ws.selectedId;
   if (scenarioId !== null) {
     return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, ...change }), "Rule added.");
@@ -635,14 +637,13 @@ export async function saveRule(
   rule: Rule,
   area: Feature<Polygon> | null,
   inputs: RuleInputs,
-  mode: RuleMode = "set",
   units: RuleUnits = {},
 ): Promise<boolean> {
   const scenarioId = ws.selectedId;
   if (scenarioId === null) return false;
   ws.boxError = null;
-  if (!precheck(inputs, mode)) return false;
-  const body = { ...(area ? { area } : {}), ...ruleChange(inputs, mode, units) };
+  if (!precheck(inputs, units)) return false;
+  const body = { ...(area ? { area } : {}), inputs, units: fullUnits(inputs, units) };
   return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 

@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError } from "./http";
 import {
-  CLIENT_PRECHECK_NOTE,
   describeRule,
   maxLevelsFor,
   percentOf,
@@ -154,11 +153,12 @@ describe("maxLevelsFor", () => {
 describe("lot coverage", () => {
   const ok = { levels: 6, unit_size: 60, people_per_household: 3.6 };
 
-  it("must be a share of the block", () => {
+  it("leaves a coverage outside the block to the server, which words it in percent", () => {
     for (const bad of [0, -0.1, 1.2, Number.NaN]) {
-      expect(refusalOf({ ...ok, lot_coverage: bad })).toMatch(/lot_coverage.*between 0 and 1/);
+      expect(refusalOf({ ...ok, lot_coverage: bad })).toBeNull();
     }
     expect(refusalOf({ ...ok, lot_coverage: 0.6 })).toBeNull();
+    expect(refusalOf({ ...ok, lot_coverage: 0.005 })).toBeNull();
   });
 
   // density = coverage × levels × 10000 / unit_size: 20 storeys at 60 m² is
@@ -275,16 +275,16 @@ describe("validateEdit", () => {
   // The expectations are the API's own field names — the ones the 400 carries
   // in `field` — so a value refused here and the same value refused by the
   // server name the same thing.
+  // Ranges are the server's: its refusal is worded in the rule box's units
+  // (`plain`), which a local copy in API names and shares was not.
   it.each([
-    [{ levels: 0 }, /levels/],
-    [{ levels: -3 }, /levels/],
-    [{ unit_size: 0 }, /unit_size/],
-    [{ people_per_household: Number.NaN }, /people_per_household/],
-    [{ levels: Number.POSITIVE_INFINITY }, /levels/],
-  ])("refuses a degenerate %o, naming the field", (patch, expected) => {
-    expect(
-      refusalOf({ ...ok, ...patch, densityValidMax: CATALOG_DENSITY_MAX }),
-    ).toMatch(expected);
+    [{ levels: 0 }],
+    [{ levels: -3 }],
+    [{ unit_size: 0 }],
+    [{ people_per_household: Number.NaN }],
+    [{ levels: Number.POSITIVE_INFINITY }],
+  ])("leaves a degenerate %o to the server", (patch) => {
+    expect(refusalOf({ ...ok, ...patch, densityValidMax: CATALOG_DENSITY_MAX })).toBeNull();
   });
 
   // ⚠ The bound is unknown when `/indicators/edificability_block_density`
@@ -296,19 +296,6 @@ describe("validateEdit", () => {
     expect(
       refusalOf({ ...ok, levels: 400, densityValidMax: null }),
     ).toBeNull();
-  });
-});
-
-
-describe("CLIENT_PRECHECK_NOTE", () => {
-  // The per-block housing-unit and population bounds need each block's area, so a passing precheck is a
-  // saved round trip and not a promise. The note is what the form says so,
-  // and it is asserted because the wording is the whole of the guarantee.
-  it("says the per-block bounds are the server's to check", () => {
-    expect(CLIENT_PRECHECK_NOTE).toMatch(/block/i);
-    expect(CLIENT_PRECHECK_NOTE).toMatch(/storey/i);
-    expect(CLIENT_PRECHECK_NOTE).toMatch(/whatever the unit size/i);
-    expect(CLIENT_PRECHECK_NOTE).toMatch(/server|checks again|recompute/i);
   });
 });
 
@@ -385,16 +372,40 @@ describe("refusalText", () => {
     expect(text).toMatch(/12 storeys/);
   });
 
-  it("reports how many blocks breached a per-block ceiling", async () => {
+  it("says a per-block ceiling refusal saved nothing, then the server's advice", async () => {
     const err = apiError(422, {
       detail: {
         error: "ceiling_exceeded",
-        message: "4 blocks would compute …",
-        breach_count: 4,
+        message: "Rule 1 is too much for 4 blocks: at most +24 % storeys fits.",
+        breach_count: 7,
         breaches: [],
       },
     });
-    await expect(refusalText(err, "recompute")).resolves.toMatch(/4 block/);
+    const text = await refusalText(err, "recompute");
+    expect(text).toMatch(/^Not saved: too dense/);
+    expect(text).toMatch(/Rule 1 is too much for 4 blocks: at most \+24 % storeys fits\./);
+    expect(text).not.toMatch(/7 block/);
+  });
+
+  it("passes on why a change rule changed nothing", async () => {
+    const message = "This change moves no block's m² per home: the blocks have no value for it, or are already past its limit. Nothing was saved; set it as a value instead.";
+    const err = apiError(422, {
+      detail: { error: "change_has_no_baseline", field: "unit_size", message },
+    });
+    await expect(refusalText(err, "rule")).resolves.toBe(message);
+  });
+
+  it("shows a refused number in the planner's own words when the server gives them", async () => {
+    const plain = "Lot coverage must be more than 0 and at most 100 %, got 120 %.";
+    const err = apiError(400, {
+      detail: { error: "invalid_value", field: "lot_coverage", message: "lot_coverage must be …", plain },
+    });
+    await expect(refusalText(err, "rule")).resolves.toBe(plain);
+  });
+
+  it("asks for a number when a rule has none", async () => {
+    const err = apiError(400, { detail: { error: "empty_proposal", field: null, message: "…" } });
+    await expect(refusalText(err, "rule")).resolves.toMatch(/^Set at least one number/);
   });
 
   it("names the field a 400 was about", async () => {
@@ -583,10 +594,18 @@ describe("describeRule", () => {
   });
 
   it("labels a change rule by its signed changes and their units", () => {
-    const change = { ...rule({ levels: 1, unit_size: -10, lot_coverage: 0.05 }), mode: "change" as const, units: { unit_size: "pct" as const } };
+    const change = { ...rule({ levels: 1, unit_size: -10, lot_coverage: 0.05 }), units: { levels: "abs" as const, unit_size: "pct" as const, lot_coverage: "abs" as const } };
     expect(describeRule(change, 2)).toBe("Rule 2 · +1 st · −10 % m² · +5 pts cover");
-    const pct = { ...rule({ lot_coverage: 5, people_per_household: 0.5 }), mode: "change" as const, units: { lot_coverage: "pct" as const } };
+    const pct = { ...rule({ lot_coverage: 5, people_per_household: 0.5 }), units: { lot_coverage: "pct" as const, people_per_household: "abs" as const } };
     expect(describeRule(pct, 1)).toBe("Rule 1 · +0.5 people · +5 % cover");
+  });
+
+  it("labels a mixed rule's set numbers as values and its changes as signed", () => {
+    const mixed = {
+      ...rule({ levels: 20, lot_coverage: 0.4 }),
+      units: { levels: "pct" as const, lot_coverage: "set" as const },
+    };
+    expect(describeRule(mixed, 1)).toBe("Rule 1 · +20 % st · 40 %");
   });
 
   it("is a whole rule with one number, and its label shows only that number", () => {
@@ -613,11 +632,8 @@ describe("describeRule", () => {
 
 describe("the field a local refusal is about", () => {
   it("is the API's name, and storeys for the ceilings", () => {
-    expect(validateEdit({ unit_size: -1 })?.field).toBe("unit_size");
-    expect(validateEdit({ lot_coverage: 2 })?.field).toBe("lot_coverage");
     expect(validateEdit({ levels: 40, unit_size: 60, densityValidMax: 2000 })?.field).toBe("levels");
     expect(validateEdit({ levels: 250, floorsValidMax: 200 })?.field).toBe("levels");
-    expect(validateEdit({})?.field).toBeNull();
   });
 });
 
@@ -625,14 +641,10 @@ describe("the field a local refusal is about", () => {
 describe("a rule that sets only some numbers", () => {
   // Writing all four flattened the area; a number left out keeps each
   // block's own value.
-  it("validates only the numbers it sets, and needs one", () => {
+  it("checks only the ceilings, leaving a bad or missing number to the server", () => {
     expect(refusalOf({ levels: null, unit_size: null, people_per_household: 5 })).toBeNull();
-    expect(refusalOf({ levels: null, unit_size: null, people_per_household: -1 })).toMatch(
-      /people_per_household/,
-    );
-    expect(refusalOf({ levels: null, unit_size: null, people_per_household: null })).toMatch(
-      /at least one/,
-    );
+    expect(refusalOf({ levels: null, unit_size: null, people_per_household: -1 })).toBeNull();
+    expect(refusalOf({ levels: null, unit_size: null, people_per_household: null })).toBeNull();
   });
 
   it("checks density only when storeys and unit size are both set", () => {

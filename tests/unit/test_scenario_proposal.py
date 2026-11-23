@@ -21,7 +21,7 @@ from reimagina.scenarios.proposal import (
     ProposalValueError,
     changed_value,
     check_inputs,
-    check_units,
+    rule_units,
     edits_for,
     polygon_wkt,
     precheck_ceilings,
@@ -375,27 +375,109 @@ def test_change_is_clamped_to_the_range():
     assert changed_value(20.0, -50, "pct", RULE_INPUTS["unit_size"]) == 15.0
 
 
+def test_a_coverage_change_never_leaves_a_block_unbuilt():
+    # A set rule refuses 0 % coverage; a change must not reach it either.
+    cov = RULE_INPUTS["lot_coverage"]
+    assert changed_value(0.40, -0.5, "abs", cov) == 0.0001
+    assert changed_value(0.40, -99.99, "pct", cov) == 0.0001
+
+
 def test_change_inputs_refusals():
     with pytest.raises(ProposalValueError):
-        check_inputs({"levels": 0}, mode="change", units={})
+        check_inputs({"levels": 0}, units={"levels": "abs"})
     with pytest.raises(ProposalValueError):
-        check_inputs({"levels": -100}, mode="change", units={"levels": "pct"})
+        check_inputs({"levels": -100}, units={"levels": "pct"})
     with pytest.raises(ProposalValueError):
-        check_units("change", {"levels": "floors"}, ["levels"])
+        rule_units({"levels": "floors"}, ["levels"])
     with pytest.raises(ProposalValueError):
-        check_units("change", {"storeys": "abs"}, ["levels"])
-    assert check_inputs({"levels": -2}, mode="change", units={}) == {"levels": -2.0}
-    assert check_units("change", {}, ["levels"]) == {"levels": "abs"}
-    assert check_units("set", {"levels": "pct"}, ["levels"]) == {}
+        rule_units({"storeys": "abs"}, ["levels"])
+    with pytest.raises(ProposalValueError):
+        rule_units({}, ["levels"], mode="other")
+    assert check_inputs({"levels": -2}, units={"levels": "abs"}) == {"levels": -2.0}
+
+
+def test_each_number_without_a_unit_is_set_unless_an_old_client_says_change():
+    # One description of a rule: a unit per number, "set" when none is given.
+    assert rule_units({}, ["levels"]) == {"levels": "set"}
+    # Clients that still send r058's mode: "change" made bare numbers amounts,
+    # "set" made every number a value.
+    assert rule_units({}, ["levels"], mode="change") == {"levels": "abs"}
+    assert rule_units({"levels": "pct"}, ["levels"], mode="set") == {"levels": "set"}
 
 
 def test_a_coverage_amount_is_a_share_change_not_points():
     """+5 meant as points would clamp every block to 100 %: refused."""
     with pytest.raises(ProposalValueError):
-        check_inputs({"lot_coverage": 5}, mode="change", units={})
-    assert check_inputs({"lot_coverage": 0.05}, mode="change", units={}) == {
+        check_inputs({"lot_coverage": 5}, units={"lot_coverage": "abs"})
+    assert check_inputs({"lot_coverage": 0.05}, units={"lot_coverage": "abs"}) == {
         "lot_coverage": 0.05
     }
-    assert check_inputs(
-        {"lot_coverage": 5}, mode="change", units={"lot_coverage": "pct"}
-    ) == {"lot_coverage": 5.0}
+    assert check_inputs({"lot_coverage": 5}, units={"lot_coverage": "pct"}) == {
+        "lot_coverage": 5.0
+    }
+
+
+# ── One rule, a choice per number ("=", "+ amount", "+ %") ──────────────────
+
+
+def test_a_rule_can_set_one_number_and_change_another():
+    checked = check_inputs(
+        {"lot_coverage": 0.4, "levels": 20},
+        units={"lot_coverage": "set", "levels": "pct"},
+    )
+    assert checked == {"levels": 20.0, "lot_coverage": 0.4}
+
+
+@pytest.mark.parametrize("bad", [0.0, 1.5])
+def test_a_set_number_in_a_mixed_rule_keeps_the_set_range(bad):
+    with pytest.raises(ProposalValueError):
+        check_inputs(
+            {"lot_coverage": bad, "levels": 1},
+            units={"lot_coverage": "set", "levels": "abs"},
+        )
+
+
+def test_a_set_coverage_may_be_as_low_as_real_blocks_are():
+    # 2,662 Mexicali blocks are under 1 % today; a planner may set one.
+    assert check_inputs({"lot_coverage": 0.005}) == {"lot_coverage": 0.005}
+
+
+def test_a_change_never_moves_a_block_the_wrong_way():
+    # A floor or ceiling the baseline is already past must not drag the block
+    # back across it: a decrease never raises, an increase never lowers.
+    cov = RULE_INPUTS["lot_coverage"]
+    assert changed_value(0.00005, -20, "pct", cov) == 0.00005
+    assert changed_value(0.005, -20, "pct", cov) == 0.004
+    assert changed_value(0.005, 10, "pct", cov) == 0.0055
+    assert changed_value(12.0, -10, "pct", RULE_INPUTS["unit_size"]) == 12.0
+    assert changed_value(16.0, 10, "pct", RULE_INPUTS["people_per_household"]) == 16.0
+
+
+@pytest.mark.parametrize(
+    ("inputs", "units", "plain"),
+    [
+        (
+            {"lot_coverage": 1.2},
+            {},
+            "Lot coverage must be more than 0 and at most 100 %, got 120 %.",
+        ),
+        (
+            {"levels": 0},
+            {"levels": "pct"},
+            "Storeys change cannot be 0: leave it empty to keep each block's own "
+            "value.",
+        ),
+        (
+            {"lot_coverage": 1.5},
+            {"lot_coverage": "abs"},
+            "Lot coverage change must be between −100 and +100 points.",
+        ),
+        ({"levels": -100}, {"levels": "pct"}, "Storeys change must be above −100 %."),
+        ({"unit_size": 10}, {}, "m² per home must be more than 15 m², got 10."),
+    ],
+)
+def test_a_refused_number_is_also_said_in_the_planners_units(inputs, units, plain):
+    # The page shows this sentence instead of repeating each check itself.
+    with pytest.raises(ProposalValueError) as caught:
+        check_inputs(inputs, units=units)
+    assert caught.value.plain == plain

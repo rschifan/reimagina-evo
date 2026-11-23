@@ -297,7 +297,7 @@ describe("editing on the map", () => {
   const ceiling = () =>
     refusal(422, {
       error: "ceiling_exceeded", breach_count: 2,
-      message: "Rule 3 would make block b compute 2500 for density; at most 5 storeys there.",
+      message: "Rule 3 is too much for 2 blocks: at most 5 storeys fit.",
     });
   const RULE = {
     id: "r1", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
@@ -317,12 +317,19 @@ describe("editing on the map", () => {
     return p;
   };
 
-  it("apply refuses locally with validateEdit's text before any request", async () => {
+  it("apply refuses a density-ceiling breach locally, with validateEdit's text, before any request", async () => {
     store.select("A");
-    const ok = await store.applyNewRule(AREA, { ...VALUES, levels: -1 });
+    store.ws.densityValidMax = 2000;
+    const ok = await store.applyNewRule(AREA, { ...VALUES, levels: 40, lot_coverage: 1 });
     expect(ok).toBe(false);
     expect(api.addRule).not.toHaveBeenCalled();
-    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
+    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/density ceiling/) });
+  });
+
+  it("apply leaves an out-of-range number to the server, whose refusal is worded for planners", async () => {
+    store.select("A");
+    await settleRun(store.applyNewRule(AREA, { ...VALUES, levels: -1 }));
+    expect(api.addRule).toHaveBeenCalledTimes(1);
   });
 
   it("apply on the baseline creates the scenario with its rule in one request, then follows its run", async () => {
@@ -342,6 +349,7 @@ describe("editing on the map", () => {
         rule: {
           area: AREA,
           inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+          units: { levels: "set", unit_size: "set", people_per_household: "set", lot_coverage: "set" },
         },
       }),
     );
@@ -361,7 +369,7 @@ describe("editing on the map", () => {
     expect(ok).toBe(false);
     expect(api.deleteRule).not.toHaveBeenCalled();
     expect(api.recomputeScenario).not.toHaveBeenCalled();
-    expect(store.ws.boxError?.text).toMatch(/2 blocks.*at most 5 storeys/);
+    expect(store.ws.boxError?.text).toMatch(/Not saved.*Rule 3 is too much for 2 blocks: at most 5 storeys/);
   });
 
   it("the field a refusal names is the one the box marks", async () => {
@@ -431,16 +439,15 @@ describe("editing on the map", () => {
     expect(api.listScenarios).toHaveBeenCalledTimes(3);
   });
 
-  it("a change rule is sent with its mode and units, and its negative numbers are not refused locally", async () => {
+  it("a change rule is sent with each number's unit, and its negative numbers are not refused locally", async () => {
     store.select("A");
     await settleRun(
-      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, "change", { unit_size: "pct" }),
+      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, { levels: "abs", unit_size: "pct" }),
     );
     expect(api.addRule.mock.calls[0][1]).toEqual({
       area: AREA,
       inputs: { levels: -1, unit_size: -10 },
-      mode: "change",
-      units: { unit_size: "pct" },
+      units: { levels: "abs", unit_size: "pct" },
     });
   });
 
@@ -448,9 +455,11 @@ describe("editing on the map", () => {
     store.select("A");
     const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
     expect(ok).toBe(true);
+    // Every number's unit travels with an edit: "set" turns a change back.
     expect(api.updateRule).toHaveBeenCalledWith("A", "r1", {
       area: AREA,
       inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+      units: { levels: "set", unit_size: "set", people_per_household: "set", lot_coverage: "set" },
     });
   });
 
@@ -475,7 +484,7 @@ describe("editing on the map", () => {
     api.deleteRule.mockRejectedValue(ceiling());
     const ok = await settleRun(store.deleteRule(RULE));
     expect(ok).toBe(false);
-    expect(store.ws.boxError?.text).toMatch(/would compute/);
+    expect(store.ws.boxError?.text).toMatch(/too dense/);
   });
 
   // B6: the table's row was read once, while the run was still queued, and
@@ -561,6 +570,7 @@ describe("editing on the map", () => {
     expect(api.addRule.mock.calls[0][1]).toEqual({
       area: AREA,
       inputs: { people_per_household: 5 },
+      units: { people_per_household: "set" },
     });
   });
 });

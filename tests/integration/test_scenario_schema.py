@@ -225,18 +225,30 @@ def test_scenario_rule_rejects_an_empty_set_of_numbers(conn):
         _insert_rule(conn, sid, type_id, inputs="{}")
 
 
-def test_scenario_rule_has_mode_and_units(conn):
-    """r058: a rule sets values or changes them; an old row is a "set" rule."""
+def test_scenario_rule_says_per_number_how_it_applies(conn):
+    """r059: ``units`` alone says how each number applies (set, abs, pct; a
+    number without one is set); the rule-wide ``mode`` is gone."""
     sid = _insert_scenario(conn, insert_project(conn))
     rule = _insert_rule(conn, sid, _block_type_id(conn))
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT mode, units FROM curated_geo.scenario_rule WHERE id = %s", (rule,)
+            "SELECT units FROM curated_geo.scenario_rule WHERE id = %s", (rule,)
         )
-        assert cur.fetchone() == ("set", {})
+        assert cur.fetchone() == ({},)
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = "
+            "'curated_geo' AND table_name = 'scenario_rule' AND column_name = 'mode'"
+        )
+        assert cur.fetchone() == (0,)
+        cur.execute(
+            'UPDATE curated_geo.scenario_rule SET units = \'{"levels": "pct"}\' '
+            "WHERE id = %s",
+            (rule,),
+        )
         with pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
-                "UPDATE curated_geo.scenario_rule SET mode = 'other' WHERE id = %s",
+                "UPDATE curated_geo.scenario_rule SET units = "
+                '\'{"levels": "other"}\' WHERE id = %s',
                 (rule,),
             )
 

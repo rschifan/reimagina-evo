@@ -58,11 +58,19 @@ class ProposalValueError(ValueError):
     """
 
     def __init__(
-        self, field: str, value: Any, *, must: str = "be a positive number"
+        self,
+        field: str,
+        value: Any,
+        *,
+        must: str = "be a positive number",
+        plain: str | None = None,
     ) -> None:
         self.field = field
         self.value = value
         self.must = must
+        #: The same refusal in the rule box's words and units (percent,
+        #: points), which the page shows instead of repeating the check.
+        self.plain = plain or f"{field} must {must}, got {value!r}."
         super().__init__(f"{field} must {must}, got {value!r}")
 
 
@@ -155,6 +163,13 @@ class RuleInput:
     #: Where a "change by" result is held, ``(lowest, highest or None)``: a
     #: change is checked per block, so it is clamped there, not refused.
     clamp: tuple[float, float | None] = (0.0, None)
+    #: How a refusal names it: the words on the rule box.
+    label: str = ""
+    #: Its set range in the rule box's units, for ``ProposalValueError.plain``.
+    says: str = ""
+    #: What a block with no value for it is computed with (coverage: the whole
+    #: block); None when such a block is skipped.
+    absent: float | None = None
 
 
 #: **The one registry of what a rule can set.** Its order is the order edits
@@ -173,57 +188,111 @@ class RuleInput:
 #: as per-block ceiling breaches with a block id, not a field, in the message.
 RULE_INPUTS: dict[str, RuleInput] = {
     "levels": RuleInput(
-        ("floors", "num_levels"), 0.0, None, "be a positive number", (1.0, None)
+        ("floors", "num_levels"),
+        0.0,
+        None,
+        "be a positive number",
+        (1.0, None),
+        label="Storeys",
+        says="be a positive number",
     ),
     "unit_size": RuleInput(
-        ("unit_size",), 15.0, None, "be more than 15 m² per dwelling", (15.0, None)
+        ("unit_size",),
+        15.0,
+        None,
+        "be more than 15 m² per dwelling",
+        (15.0, None),
+        label="m² per home",
+        says="be more than 15 m²",
     ),
     "people_per_household": RuleInput(
-        ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
+        ("people_per_household",),
+        0.0,
+        15.0,
+        "be between 0 and 15",
+        (0.5, 15.0),
+        label="People per home",
+        says="be more than 0 and at most 15",
     ),
     "lot_coverage": RuleInput(
-        ("lot_coverage",), 0.0, 1.0, "be a share between 0 and 1", (0.0, 1.0)
+        # A change stops just above 0, which a set value refuses (no building
+        # at all); real blocks go well under 1 %, so the floor stays tiny.
+        ("lot_coverage",),
+        0.0,
+        1.0,
+        "be a share between 0 and 1",
+        (0.0001, 1.0),
+        label="Lot coverage",
+        says="be more than 0 and at most 100 %",
+        absent=1.0,
     ),
 }
 
-#: A rule sets its numbers as the blocks' values, or changes each block's
-#: baseline value by them.
+#: Per override attribute, what a block with no value for it is computed with.
+ABSENT: dict[str, float] = {
+    attribute: spec.absent
+    for spec in RULE_INPUTS.values()
+    if spec.absent is not None
+    for attribute in spec.attributes
+}
+
+#: How one number of a rule applies (r059): ``set`` — the block's new value;
+#: ``abs`` — an amount in the number's own unit added to the block's
+#: baseline; ``pct`` — a percentage of it. A number without one is ``set``.
+#: One rule can so set coverage and raise storeys over the same area.
+RULE_UNITS = ("set", "abs", "pct")
+#: r058's rule-wide mode, still accepted from clients that send it: it says
+#: only how numbers given no unit apply.
 RULE_MODES = ("set", "change")
-#: A change is an amount in the number's own unit, or a percentage.
-CHANGE_UNITS = ("abs", "pct")
 
 
-def check_units(
-    mode: str, units: Mapping[str, Any] | None, names: Iterable[str]
+def rule_units(
+    units: Mapping[str, Any] | None,
+    names: Iterable[str],
+    *,
+    mode: str | None = None,
 ) -> dict[str, str]:
-    """A rule's units: none for a set rule; for a change rule one per number.
+    """A rule's unit for each of its numbers: given, or ``set``.
 
-    A number without a unit is an amount (``abs``). Unknown names and units
-    are a ``ProposalValueError`` naming the field.
+    ``mode`` is r058's, from a client that still sends it: ``"change"`` makes
+    a number given no unit an amount (``abs``), and ``"set"`` makes every
+    number a value whatever its unit said. Unknown names and units are a
+    ``ProposalValueError`` naming the field.
     """
-    if mode not in RULE_MODES:
+    if mode is not None and mode not in RULE_MODES:
         raise ProposalValueError(
             "mode", mode, must=f"be one of {', '.join(RULE_MODES)}"
         )
-    if mode == "set":
-        return {}
     given = dict(units or {})
     names = list(names)
     for name, unit in given.items():
         if name not in names:
-            raise ProposalValueError(name, unit, must="be a number the rule changes")
-        if unit not in CHANGE_UNITS:
-            raise ProposalValueError(name, unit, must="be abs or pct")
-    return {name: given.get(name, "abs") for name in names}
+            raise ProposalValueError(name, unit, must="be a number the rule has")
+        if unit not in RULE_UNITS:
+            raise ProposalValueError(
+                name, unit, must=f"be one of {', '.join(RULE_UNITS)}"
+            )
+    if mode == "set":
+        return dict.fromkeys(names, "set")
+    default = "abs" if mode == "change" else "set"
+    return {name: given.get(name, default) for name in names}
 
 
 def changed_value(base: float, by: float, unit: str, spec: RuleInput) -> float:
     """A block's value after a change: ``base + by`` or ``base × (1 + by/100)``,
-    held in ``spec.clamp`` and rounded to 4 decimals."""
+    held in ``spec.clamp`` and rounded to 6 significant digits — not to
+    decimals, which would round a real 0.005 % coverage up to 0.01 %.
+
+    A bound the baseline is already past moves with it: a block under the
+    floor (coverage 0.005 %, 12 m² per dwelling) or over the ceiling is held
+    at its own value, never dragged across the bound. A decrease so never
+    raises a block, and an increase never lowers one."""
     value = base * (1 + by / 100) if unit == "pct" else base + by
     low, high = spec.clamp
+    low = min(low, base)
+    high = None if high is None else max(high, base)
     value = max(low, value if high is None else min(high, value))
-    return round(value, 4)
+    return float(f"{value:.6g}")
 
 
 def edits_for(**values: float | None) -> list[dict[str, Any]]:
@@ -255,7 +324,6 @@ def edits_for(**values: float | None) -> list[dict[str, Any]]:
 def check_inputs(
     inputs: Mapping[str, Any],
     *,
-    mode: str = "set",
     units: Mapping[str, Any] | None = None,
 ) -> dict[str, float]:
     """A rule's numbers, refused or returned as floats in registry order.
@@ -266,9 +334,11 @@ def check_inputs(
     ceilings (``precheck_ceilings``). Every surface that writes a rule goes
     through this, so they refuse the same things for the same reasons.
 
-    A change rule (``mode="change"``) takes signed, non-zero amounts; a
-    percentage must be above −100. Its range and ceilings are checked per
-    block when the scenario is materialised, so neither is checked here.
+    Each number is checked as its unit says (``units``; none is ``set``). A
+    changed number (``abs``, ``pct``) is signed and non-zero, a percentage
+    above −100, a coverage amount a share within ±1 (±100 points); its range and ceilings are checked per block when the
+    scenario is materialised, so neither is checked here, and the
+    area-independent ceilings run only when every number is set.
     """
     for name, value in inputs.items():
         if name not in RULE_INPUTS:
@@ -281,21 +351,36 @@ def check_inputs(
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ProposalValueError(name, value, must="be a number")
+            raise ProposalValueError(
+                name, value, must="be a number", plain=f"{spec.label} must be a number."
+            )
         number = float(value)
-        if mode == "change":
-            pct = (units or {}).get(name) == "pct"
-            if not math.isfinite(number) or number == 0 or (pct and number <= -100):
+        unit = (units or {}).get(name, "set")
+        if unit != "set":
+            pct = unit == "pct"
+            if not math.isfinite(number) or number == 0:
                 raise ProposalValueError(
                     name,
                     number,
-                    must="be a change above -100 %" if pct else "be a non-zero change",
+                    must="be a non-zero change",
+                    plain=f"{spec.label} change cannot be 0: leave it empty to "
+                    "keep each block's own value.",
+                )
+            if pct and number <= -100:
+                raise ProposalValueError(
+                    name,
+                    number,
+                    must="be a change above -100 %",
+                    plain=f"{spec.label} change must be above −100 %.",
                 )
             # Coverage as an amount is a share: +5 meant as points would
             # push every block to the clamp at 100 % without a word.
             if name == "lot_coverage" and not pct and abs(number) > 1:
                 raise ProposalValueError(
-                    name, number, must="be a share change between -1 and 1"
+                    name,
+                    number,
+                    must="be a share change between -1 and 1",
+                    plain=f"{spec.label} change must be between −100 and +100 points.",
                 )
             checked[name] = number
             continue
@@ -304,11 +389,18 @@ def check_inputs(
             or number <= spec.above
             or (spec.at_most is not None and number > spec.at_most)
         ):
-            raise ProposalValueError(name, number, must=spec.must)
+            # In the box's units: coverage is typed in percent.
+            shown = f"{number * 100:g} %" if name == "lot_coverage" else f"{number:g}"
+            raise ProposalValueError(
+                name,
+                number,
+                must=spec.must,
+                plain=f"{spec.label} must {spec.says}, got {shown}.",
+            )
         checked[name] = number
     if not checked:
         raise EmptyProposal()
-    if mode == "change":
+    if any((units or {}).get(name, "set") != "set" for name in checked):
         return checked
     precheck_ceilings(
         checked.get("levels"),

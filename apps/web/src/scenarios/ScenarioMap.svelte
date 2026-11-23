@@ -11,7 +11,6 @@
     listTileSources,
     type IndicatorValueStats,
     type RuleInputs,
-    type RuleMode,
     type RuleUnits,
   } from "../api";
   import {
@@ -321,7 +320,7 @@
       const [[c0, d0], [c1, d1]] = other;
       if (!(a0 <= c1 && c0 <= a1 && b0 <= d1 && d0 <= b1)) continue;
       const shared = sharedNumbers(ordered[index - 1], ordered[i]);
-      if (shared.length) notes.push(`Rule ${i + 1} also sets ${shared.join(", ")}`);
+      if (shared.length) notes.push(`Rule ${i + 1} also gives ${shared.join(", ")}`);
     }
     return notes.length ? `${notes.join("; ")}: where they overlap, the later rule wins.` : null;
   }
@@ -337,22 +336,22 @@
   }
 
   async function apply(
-    values: RuleInputs, scenarioName?: string, mode: RuleMode = "set", units: RuleUnits = {},
+    values: RuleInputs, scenarioName?: string, units: RuleUnits = {},
   ): Promise<void> {
     const area = ws.drawn;
     if (!area) return;
     const pilotAtStart = ws.aoiId;
     // A pilot switch mid-gesture clears the selection while busy, when the
     // effect above stands down; close here or the box outlives its city.
-    if ((await applyNewRule(area, values, scenarioName, mode, units)) || ws.aoiId !== pilotAtStart) closeBox(true);
+    if ((await applyNewRule(area, values, scenarioName, units)) || ws.aoiId !== pilotAtStart) closeBox(true);
   }
 
-  async function save(values: RuleInputs, mode: RuleMode = "set", units: RuleUnits = {}): Promise<void> {
+  async function save(values: RuleInputs, units: RuleUnits = {}): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
     const scenarioAtStart = ws.selectedId;
-    if ((await saveRule(current.rule, area, values, mode, units)) || ws.selectedId !== scenarioAtStart) closeBox(true);
+    if ((await saveRule(current.rule, area, values, units)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   async function remove(): Promise<void> {
@@ -506,7 +505,7 @@
   ];
 </script>
 
-<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+<section class="flex min-w-0 flex-1 flex-col gap-2">
   <div
     class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
   >
@@ -561,8 +560,9 @@
     {/if}
   </div>
 
-  <div class="flex min-h-0 flex-1 gap-2">
-  <div class="relative min-h-[240px] min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
+  <!-- The row, not the map, holds the 240 px floor: the map fills the row. -->
+  <div class="flex min-h-[240px] flex-1 gap-2">
+  <div class="relative min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
     <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
          relative }` to the element it mounts on, and that unlayered rule beats
          Tailwind's layered `absolute`, so a container that was itself
@@ -652,10 +652,9 @@
             busy={ws.busy}
             error={ws.boxError}
             draggable={current.kind === "rule" ? current.draggable : true}
-            ruleMode={current.kind === "rule" ? (current.rule.mode ?? "set") : "set"}
             ruleUnits={current.kind === "rule" ? (current.rule.units ?? {}) : {}}
-            onapply={(values, name, mode, units) => void apply(values, name, mode, units)}
-            onsave={(values, mode, units) => void save(values, mode, units)}
+            onapply={(values, name, units) => void apply(values, name, units)}
+            onsave={(values, units) => void save(values, units)}
             ondelete={() => void remove()}
             oncancel={() => closeBox(true)}
           />
@@ -663,10 +662,15 @@
       </div>
     {/if}
   </div>
-  {#if ws.selectedId !== null}
-    <!-- The rules, reachable without a pointer (a rule is otherwise opened
-         only by clicking its outline), and how to add one. -->
-    <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+  <!-- The rules, reachable without a pointer (a rule is otherwise opened
+       only by clicking its outline), and how to add one. Always there, on
+       the baseline too: a panel that appeared with the first scenario
+       narrowed the map and moved every block sideways under the pointer. -->
+  <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+    {#if ws.selectedId === null}
+      <h3 class="font-medium text-foreground">Rules · Baseline city</h3>
+      <p class="text-muted-foreground">The city as it is: no rules. Draw an area on the map to start a scenario.</p>
+    {:else}
       <h3 class="font-medium text-foreground">
         Rules · {ws.scenarios.find((s) => s.id === ws.selectedId)?.name ?? ""}
       </h3>
@@ -685,7 +689,7 @@
           </li>
         {/each}
       </ol>
-    </aside>
-  {/if}
+    {/if}
+  </aside>
   </div>
 </section>

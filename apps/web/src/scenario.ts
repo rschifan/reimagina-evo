@@ -20,7 +20,7 @@
  * and floors (`max_floors`). It is **a saved round trip, not a guarantee**:
  * the housing-unit and population bounds scale with each block's own area, so
  * a proposal that passes here can still be refused per block at
- * materialisation. {@link CLIENT_PRECHECK_NOTE} is what the form says so, and
+ * materialisation, and that refusal reaches the form as the server words it;
  * the 422 path is wired and exercised rather than assumed unreachable.
  *
  * ⚠ **The bound is never compiled in.** It is read from the catalog the API
@@ -33,7 +33,7 @@
  * refuses, with the numbers.
  */
 
-import type { IndicatorSummary, RuleInputs, RuleMode, RuleRow, RuleUnits } from "./api";
+import type { IndicatorSummary, RuleInputs, RuleRow, RuleUnit, RuleUnits } from "./api";
 import { ApiError } from "./http";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
@@ -45,19 +45,6 @@ export const FLOORS_INDICATOR_SLUG = "urban_form_block_planned_floors";
 
 /** `ceilings._M2_PER_HECTARE`, and the reason the bound is per hectare. */
 const M2_PER_HECTARE = 10_000;
-
-/**
- * What the form says about its own check, printed next to the inputs.
- *
- * The wording is the whole of the guarantee, so it is asserted in the tests:
- * a planner who gets past this must not read it as "this proposal is safe".
- */
-export const CLIENT_PRECHECK_NOTE =
-  "Checked here: the density ceiling, which does not depend on block area, " +
-  "and the storey ceiling, which holds whatever the unit size. " +
-  "The housing-unit and population ceilings do, so the server checks those " +
-  "block by block when the scenario is recomputed.";
-
 
 // ── the tile URL ────────────────────────────────────────────────────────
 
@@ -152,54 +139,29 @@ export interface EditRefusal {
 /**
  * Why this proposal cannot be stored, or null when nothing here can tell.
  *
- * Two refusals, both `reimagina.scenarios.proposal`'s:
+ * Only the two ceilings independent of block area, against the catalog
+ * bounds — `precheck_ceilings` in `reimagina.scenarios.proposal`: storeys
+ * over the planned-floors ceiling, and density (coverage × storeys × 10 000 ÷
+ * m² per dwelling) over the density ceiling. An empty rule, a degenerate or
+ * out-of-range number is the server's to refuse, worded in the rule box's
+ * units (`plain`); a copy here spoke API names and shares instead. A number
+ * that is not a positive, finite value is therefore left to the server, not
+ * fed to the arithmetic.
  *
- * * `require_positive` — zero, negative and non-finite. Nothing downstream
- *   would refuse them (`value_numeric` is a bare `double precision`), so they
- *   reach the compute as `NaN` and the indicators silently skip the block.
- * * `precheck_ceilings` — the density ceiling, against the catalog bound.
- *
- * The text names the **field**, never the control, so the panel can
- * highlight an input and the CLI could print the same sentence; and it never
- * says a proposal is safe, only that this check found nothing. `field` is
- * the API's name for it — the name the server's 400 carries — and the
- * storey and density ceilings are about `levels`.
+ * It never says a proposal is safe, only that this check found nothing.
+ * `field` is the API's name, `levels` for both ceilings.
  */
 export function validateEdit(values: ProposalValues): EditRefusal | null {
   const set = (value: number | null | undefined): value is number =>
-    value !== null && value !== undefined;
-  const fields: Array<[string, keyof RuleInputs]> = [
-    ["Storeys", "levels"],
-    ["m² per dwelling", "unit_size"],
-    ["People per household", "people_per_household"],
-  ];
-  if (RULE_NUMBERS.every(([key]) => !set(values[key]))) {
-    return {
-      field: null,
-      text:
-        "Set at least one number (levels, unit_size, people_per_household or " +
-        "lot_coverage): a rule with none changes nothing.",
-    };
-  }
-  for (const [label, field] of fields) {
-    const value = values[field];
-    if (set(value) && (!Number.isFinite(value) || value <= 0)) {
-      return { field, text: `${label} (${field}) must be a positive number, got ${value}.` };
-    }
-  }
+    value !== null && value !== undefined && Number.isFinite(value) && value > 0;
   const coverage = values.lot_coverage ?? 1;
-  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
-    return {
-      field: "lot_coverage",
-      text: `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`,
-    };
-  }
+  if (!set(coverage) || coverage > 1) return null;
   // The rest needs storeys: without them each block keeps its own, which
   // only the server can see.
   const levels = values.levels;
   if (!set(levels)) return null;
   const floorsBound = values.floorsValidMax;
-  if (set(floorsBound) && Number.isFinite(floorsBound) && floorsBound > 0 && levels > floorsBound) {
+  if (set(floorsBound) && levels > floorsBound) {
     return {
       field: "levels",
       text:
@@ -211,7 +173,7 @@ export function validateEdit(values: ProposalValues): EditRefusal | null {
   // ⚠ Unknown bound = no opinion. Guessing the catalog's value would make
   // this frontend the second place a ceiling lives, which is the failure the
   // module docstring describes; the server refuses with 422 either way.
-  if (!set(bound) || !Number.isFinite(bound) || bound <= 0) return null;
+  if (!set(bound)) return null;
   const unitSize = values.unit_size;
   if (!set(unitSize)) return null;
   const density = (M2_PER_HECTARE * levels * coverage) / unitSize;
@@ -341,6 +303,12 @@ export async function refusalText(
     if (code === "invalid_geometry") {
       return `The drawn area is not a polygon in longitude and latitude.${suffix(served)}`;
     }
+    // The server words a refused number in the rule box's units (percent,
+    // points), so the box does not repeat its checks.
+    if (typeof d?.plain === "string") return d.plain;
+    if (code === "empty_proposal") {
+      return "Set at least one number: a rule changes only what you type.";
+    }
     const field = typeof d?.field === "string" ? d.field : null;
     return field
       ? `${field} was refused.${suffix(served)}`
@@ -356,13 +324,13 @@ export async function refusalText(
       return `${head}${suffix(served)}`;
     }
     if (code === "ceiling_exceeded") {
-      const count = typeof d?.breach_count === "number" ? d.breach_count : null;
-      const head =
-        count === null
-          ? "Some blocks would compute a value the indicators cannot store."
-          : `${count} block${count === 1 ? "" : "s"} would compute a value the ` +
-            "indicators cannot store, so nothing was stored.";
-      return `${head}${suffix(served)}`;
+      // The server names the rule, the blocks and what fits; `breach_count`
+      // counts (block, indicator) pairs, not blocks, so it is not echoed.
+      return `Not saved: too dense for the indicators to store.${suffix(served)}`;
+    }
+    if (code === "change_has_no_baseline" && served) {
+      // The server's sentence names the number and what to do instead.
+      return served;
     }
     if (code === "rule_catches_nothing") {
       return "No block of this pilot falls inside this area, so the rule was not stored. Draw it over the city's blocks.";
@@ -508,20 +476,44 @@ export interface Rule {
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
   inputs: RuleInputs;
-  /** Set to (default) or change by, with each changed number's unit. */
-  mode?: RuleMode;
+  /** Per number: "set" (a value, and what a number without one is), an
+   *  amount or a %; one rule can set one number and change another. */
   units?: RuleUnits;
 }
 
 
 /** Every number a rule can set (`proposal.RULE_INPUTS`): its API name, what
- *  the page calls it, and its unit in a rule's one-line summary. */
-export const RULE_NUMBERS: ReadonlyArray<readonly [keyof RuleInputs, string, string]> = [
-  ["levels", "Storeys", "st"],
-  ["unit_size", "m² per home", "m²"],
-  ["people_per_household", "People per home", "people"],
-  ["lot_coverage", "Lot coverage", "%"],
+ *  the page calls it, its unit in a rule's one-line summary, and the unit of
+ *  a change by an amount (coverage: points of the block's area). */
+export const RULE_NUMBERS: ReadonlyArray<readonly [keyof RuleInputs, string, string, string]> = [
+  ["levels", "Storeys", "st", "storeys"],
+  ["unit_size", "m² per home", "m²", "m²"],
+  ["people_per_household", "People per home", "people", "people"],
+  ["lot_coverage", "Lot coverage", "%", "points"],
 ];
+
+/**
+ * One number of a rule in words, as the page shows it (`shown`: coverage in
+ * percent or points, a % change as typed). `short` is the rules list's
+ * ("+20 % st", "40 %"), `long` the rule box's read-back ("+20 %", "= 40 %").
+ * The one formatter both use, so the two cannot word a rule differently.
+ */
+export function numberText(
+  key: keyof RuleInputs,
+  shown: number,
+  unit: RuleUnit,
+  style: "short" | "long",
+): string {
+  const [, , short, amount] = RULE_NUMBERS.find(([k]) => k === key)!;
+  const cover = key === "lot_coverage";
+  if (unit === "set") {
+    return style === "short" ? `${fmt(shown)} ${short}` : `= ${fmt(shown)}${cover ? " %" : ""}`;
+  }
+  const signed = `${shown < 0 ? "−" : "+"}${fmt(Math.abs(shown))}`;
+  if (style === "long") return `${signed} ${unit === "pct" ? "%" : amount}`;
+  if (unit === "pct") return `${signed} % ${cover ? "cover" : short}`;
+  return `${signed} ${cover ? "pts cover" : short}`;
+}
 
 
 /** The server's rules, already in "later wins" order. */
@@ -531,7 +523,6 @@ export function rulesFromRows(rows: RuleRow[]): Rule[] {
     ordinal: row.ordinal,
     areaWkt: row.geometry_wkt,
     inputs: row.inputs,
-    mode: row.mode ?? "set",
     units: row.units ?? {},
   }));
 }
@@ -544,7 +535,8 @@ export function percentOf(share: number): number {
 }
 
 
-/** The numbers both rules set: where they overlap, the later one's win. */
+/** The numbers both rules give (set or change): where they overlap, the
+ *  later one's win. */
 export function sharedNumbers(rule: Rule, later: Rule): string[] {
   return RULE_NUMBERS.filter(
     ([key]) => rule.inputs[key] !== undefined && later.inputs[key] !== undefined,
@@ -555,22 +547,13 @@ export function sharedNumbers(rule: Rule, later: Rule): string[] {
 export function describeRule(rule: Rule, position: number): string {
   // Only what the rule sets; everything else is each block's own value.
   const parts = [`Rule ${position}`];
-  const change = rule.mode === "change";
-  for (const [key, , unit] of RULE_NUMBERS) {
+  for (const [key] of RULE_NUMBERS) {
     const value = rule.inputs[key];
     if (value === undefined) continue;
-    if (!change) {
-      parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
-      continue;
-    }
-    // A change: signed, as a percentage or in the number's own unit;
-    // coverage as an amount is points of the block's area.
-    const pct = rule.units?.[key] === "pct";
-    const cover = key === "lot_coverage";
-    const amount = cover && !pct ? percentOf(value) : value;
-    const sign = amount < 0 ? "−" : "+";
-    const what = pct ? `% ${cover ? "cover" : unit}` : cover ? "pts cover" : unit;
-    parts.push(`${sign}${fmt(Math.abs(amount))} ${what}`);
+    const unit = rule.units?.[key] ?? "set";
+    // Coverage set or changed by points is a share; a % change is as typed.
+    const shown = key === "lot_coverage" && unit !== "pct" ? percentOf(value) : value;
+    parts.push(numberText(key, shown, unit, "short"));
   }
   return parts.join(" · ");
 }
