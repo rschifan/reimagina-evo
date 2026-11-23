@@ -37,7 +37,7 @@ These are the workloads that must be benchmarked before adding any frontend perf
 All thirteen are declared in `reimagina.perf.manifest.BENCHMARKS`. ⚠ The four
 `tile_*` benchmarks are declared but cannot run yet: `perf.runner._build_params`
 has no case for them. `perf run` without `--benchmark` leaves them out, and
-naming one fails with "has no parameter builder yet". A default run on a
+naming one fails (exit 1) with "has no parameter builder yet". A default run on a
 database without the Cuauhtémoc AOI lists
 `overlap_block_to_ageb_cuauhtemoc` under `skipped` instead of failing.
 
@@ -120,7 +120,9 @@ source, the source itself, the four `perf_*` AOIs of the 'Performance Benchmark
 Project' (with their `aoi_feature` and `aoi_indicator_summary` rows), and the
 project once it holds nothing else. It finds them by the marks the seed has
 always written, so older seeds are cleaned too. It prints the JSON count per
-table, `--dry-run` prints the same counts and keeps the rows (it runs the deletes and rolls them back, so it holds the same row locks while it runs), and a second run
+table (`{"dry_run", "dsn", "removed": {"<schema.table>": n}}`: `app_core.project`,
+`curated_geo.aoi_feature`, `aoi_indicator_summary`, `area_of_interest`,
+`data_source_catalog`, `ingestion_run`, `observation`), `--dry-run` prints the same counts and keeps the rows (it runs the deletes and rolls them back, so it holds the same row locks while it runs), and a second run
 removes 0. It refuses while a scenario, aggregation recipe or orchestration run
 points at a perf AOI, because deleting the AOI would change that row.
 
@@ -238,7 +240,7 @@ If a regression pushes any of these numbers into a different ballpark
 instead of <0.5 s), re-run EXPLAIN and check whether the partial unique
 indexes on `indicator_result` are still selected.
 
-## Scenario authoring (r048-r049)
+## Scenario authoring (r048-r049, rules since r055)
 
 Two costs belong to scenarios: what **materialising** a drawn edit costs (which
 is also how long the scenario's row lock is held), and what the **delta tile**
@@ -248,11 +250,11 @@ measurements; the second is recorded as measurements only.
 ### Materialisation: plan contract
 
 `tests/performance/test_scenario_materialize_plan.py` runs `EXPLAIN` on the
-statement `_resolve_edits` executes (captured as it runs, not copied) against a
+statement `scenarios.authoring._resolve_rules` executes (captured as it runs, not copied) against a
 10,000-block fixture with a selective drawn area, and requires:
 
-- the access path is `feature_centroid_gist` with
-  `Index Cond: (geometry_centroid @ e.geometry)`;
+- the access path is `feature_centroid_gist`, with
+  `geometry_centroid @ r.geometry` in the plan;
 - no `Seq Scan on feature`;
 - the predicate is written against the stored `f.geometry_centroid`.
 
@@ -277,6 +279,15 @@ table; the contract is about the selective case, which is what an index is
 for.
 
 ### Materialisation: measured cost
+
+⚠ **Measured on r049's code, before rules (r055) and before `apply_overrides`
+became one set-based statement.** The figures below were taken when
+`apply_overrides` called a per-row `apply_override`, which the phase table
+shows as 81% of the time; it is now a single `INSERT … SELECT FROM unnest(…)
+ON CONFLICT … DO UPDATE … WHERE … IS DISTINCT FROM`, and `apply_override` is
+deleted. The phases are also renamed: `_resolve_edits` is
+`_resolve_rules`. None of this has been re-measured; treat the table as the
+cost of the old write path, not of the current one.
 
 Method: a committed synthetic territory of N x N square blocks (about 210 m
 side) in one AOI covering all of them, one `num_levels` edit drawn over the
@@ -336,10 +347,11 @@ evaluation. The numbers behind it:
   correctness gain; materialisation commits first and evaluation starts after.
 - **Acceptable at district scale, strained at city scale.** About 4 s at 20k
   blocks is a tolerable request; about 20 s at 90k is not a request anyone
-  should wait on. If city-scale authoring becomes real, the remedy is to
-  batch the upsert in `apply_overrides` (81% of the time), not to move
-  materialisation into a job: a job would give up the synchronous refusal
-  (`CeilingExceeded`, `ScenarioHasNoAOI`), which the caller needs to see.
+  should wait on. The remedy recorded at the time was to batch the upsert in
+  `apply_overrides` (81% of the time) rather than to move materialisation into
+  a job — a job would give up the synchronous refusal (`CeilingExceeded`,
+  `ScenarioHasNoAOI`), which the caller needs to see. The batching has since
+  been done; it has not been re-measured.
 
 **Evaluation is scoped to the scenario's footprint.** `POST
 /scenarios/{id}/recompute` passes `MaterializeResult.footprint_features` and
@@ -349,7 +361,7 @@ attributes. Blocks outside it carry no override and read the baseline through
 the overlay. Planned from freshness instead, as it was before, every indicator
 reading a changed attribute recomputed every block of the AOI under the
 scenario — 19,058 blocks in Mexicali for a rule over 2,400, about 20 s a run,
-as recorded in `recompute_route`'s docstring. The footprint-scoped run has not
+as recorded in the docstring of `apps/api/routers/scenarios.py` `_enqueue`. The footprint-scoped run has not
 been measured with this document's method.
 
 Not measured at 90,000 blocks: the removal and the `compute_block_housing_density`
@@ -445,6 +457,21 @@ python -m apps.cli.app perf run --dataset-tier smoke --benchmark bbox_features_s
 python -m apps.cli.app perf explain bbox_features_dense
 python -m apps.cli.app perf report
 python -m apps.cli.app perf compare baseline.json candidate.json
+```
+
+`seed-observations` and `cleanup` require `--dsn`; `run`, `explain` and
+`report` take `--dsn` too and default to `$DATABASE_URL`
+(`postgresql://localhost/reimagina`). `run --output-path` also writes the
+report to a file, with the DSN's password masked. A second
+`seed-observations` writes `records_written: 0`.
+
+```bash
+# Exercised end to end on a Mexicali scratch database (2026-11-23):
+python -m apps.cli.app perf seed-observations --dsn "$D" --aoi-id "$AOI"   # smoke: 1250 rows (250 features x 5 keys)
+python -m apps.cli.app perf run --dsn "$D" --aoi-id "$AOI" --output-path run.json
+#   8 benchmarks passed, the 4 tile_* left out, the overlap benchmark under "skipped"
+python -m apps.cli.app perf cleanup --dsn "$D" --dry-run   # same counts as the real run, rows kept
+python -m apps.cli.app perf cleanup --dsn "$D"             # then a second run removes 0
 ```
 
 The viewport and polygon boxes, and the four `perf_*` AOIs, are cut from the
