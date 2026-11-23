@@ -50,4 +50,4 @@ Run `make help` to see every shortcut. The important ones:
 
 ## Reporting bugs / requesting features
 
-Use the GitHub issue templates. For security-sensitive reports, see [SECURITY.md](SECURITY.md).
+Use the GitHub issue templates. Report security issues privately to the maintainers, not in a public issue.

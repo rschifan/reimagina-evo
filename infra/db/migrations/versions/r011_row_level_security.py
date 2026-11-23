@@ -14,7 +14,7 @@ Policy design:
 ⚠ Placeholders, not isolation. The API routes have since shipped, but no
 code sets app.current_project_id, FORCE was never added, and the app
 connects as the table owner — so these policies admit every row to every
-caller. Project tenancy is not enforced in the database (see SECURITY.md).
+caller. Project tenancy is not enforced in the database (see docs/architecture/API.md).
 
 Revision ID: r011
 Revises: r010
