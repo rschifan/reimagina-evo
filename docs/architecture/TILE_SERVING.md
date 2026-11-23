@@ -175,23 +175,32 @@ already existed:
 **No migration, no new tile function.** The only thing that was missing was
 the step connecting the graph to the feature table.
 
-**Roads appear from z12**, and not by a client setting: they carry
-`role = 'infrastructure'`, which the role gate below serves only from z12.
-Measured on the running database — a z11 road tile is 0 bytes, a z12 one is
-2,714. The frontend's `minzoom: 12` matches, and a unit test pins the pair,
-because a lower client floor only buys requests that come back empty and on
-a map empty is indistinguishable from missing.
+**Roads appear from z13**, and not by a client setting: `get_tile` serves
+`type_slug = 'road'` only from `ROAD_MIN_ZOOM` = 13 (r057), one zoom above
+the role gate that admits `infrastructure` at z12. The frontend's
+`minzoom: 13` matches, and `tests/contract/test_tile_zoom_floors.py` pins the
+pair (the web unit test pins the client side), because a lower client floor
+only buys requests that come back empty and on a map empty is
+indistinguishable from missing.
 
-⚠ **The density risk is open, not closed.** At z12 a tile covers ~10 km, and
-that is the zoom where the *building* layer measured 2.59 MB per tile (which
-is why `r038` floors buildings at z14). A walking network is denser than a
-road centreline network. This shipped on the role gate with 40 synthetic edges
-measured, not a city. On the Mexicali pilot (`scripts/mexicali_run.sh`, 117,858
-road features) a central z12 road tile measured 2.2 MB, 0.96 MB at z13 and
-0.22 MB at z14 — the same order as the building tile `r038` floored, so the
-risk is real for the pilot. The remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
-`get_tile`, chosen from a measurement. The procedure is in `r038`'s
-docstring.
+**Why z13: the density measurement.** At z12 a tile covers ~10 km, the zoom
+where the *building* layer measured 2.59 MB per tile (which is why `r038`
+floors buildings at z14), and a walking network is denser than a road
+centreline network. On the Mexicali pilot (`scripts/mexicali_run.sh`, 117,858
+road features), the central tile at -115.4650, 32.6264, measured before and
+after r057:
+
+| zoom | road tile before | road tile after | whole baseline tile before | after |
+|---|---|---|---|---|
+| 12 | 2.21 MB | **0 (204)** | 2.76 MB | 0.53 MB |
+| 13 | 0.96 MB | 0.96 MB | 1.17 MB | 1.17 MB |
+| 14 | 0.22 MB | 0.22 MB | 0.75 MB | 0.75 MB |
+
+The floor is r038's remedy on the same axis (`type_slug`, not `role`). ⚠ z13
+is still about twice the ~500 KB renderer budget on the densest part of the
+pilot; 13 is the owner's decision (2026-11-23). If
+z13 proves too slow to paint, the next step is z14 (0.22 MB), by the same
+procedure (`r038`'s docstring).
 
 **Attribution is derived, not declared.** `GET /tile-sources/attribution`
 returns a credit line per source that actually has features or a published
@@ -213,8 +222,8 @@ The baseline feature channel. Martin publishes it at
 `name` and `attributes` per feature.
 
 - **The role gate.** Below z8 only `role = 'context'` is served; z8–z11 adds
-  `analysis_unit`; from z12 every role, which is where `infrastructure`
-  (roads) appears.
+  `analysis_unit`; from z12 every role. Two `type_slug` floors sit above it:
+  roads from z13 (r057) and buildings from z14 (r038).
 - **Attributes thin out with zoom.** From z14 `attributes` is the feature's
   own merged with its current observations
   (`serving_geo.feature_current_attributes_mv`); at z12–13 the feature's own

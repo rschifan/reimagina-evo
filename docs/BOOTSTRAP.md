@@ -340,8 +340,9 @@ same way `make dev` does.
 
 `curl -s http://127.0.0.1:8001/aois` should list the Mexicali AOI. Open
 `http://localhost:5173`, pick it under *Area*, and turn on each layer under
-*Layers* at zoom 11–14: the buildings, blocks, roads and municipalities should
-render without empty tiles, and the indicator choropleth should colour the
+*Layers* at zoom 11–14: blocks and municipalities render throughout, roads
+from zoom 13 and buildings from zoom 14 (the server's floors; below them the
+layer is empty by design), and the indicator choropleth should colour the
 blocks.
 
 ## Total wall-clock
