@@ -188,10 +188,10 @@ export function validateEdit(values: ProposalValues): EditRefusal | null {
     }
   }
   const coverage = values.lot_coverage ?? 1;
-  if (!Number.isFinite(coverage) || coverage < 0.01 || coverage > 1) {
+  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
     return {
       field: "lot_coverage",
-      text: `Lot coverage (lot_coverage) must be a share between 0.01 and 1, got ${coverage}.`,
+      text: `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`,
     };
   }
   // The rest needs storeys: without them each block keeps its own, which

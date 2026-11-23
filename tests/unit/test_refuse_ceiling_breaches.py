@@ -139,3 +139,8 @@ def test_several_rules_in_the_fallback_are_plural():
         )
     )
     assert message.startswith("Rules 1, 3 are too much for this block")
+
+
+def test_several_numbers_with_nothing_to_change_are_named_in_the_plural():
+    message = str(authoring.ChangeHasNoBaseline("rule-1", ["levels", "unit_size"]))
+    assert "storeys, m² per home" in message and "set them" in message

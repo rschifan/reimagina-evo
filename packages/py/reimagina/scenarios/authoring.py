@@ -478,7 +478,7 @@ class ChangeHasNoBaseline(Exception):
         what = ", ".join(_LABELS.get(n, n) for n in names)
         super().__init__(
             f"No block in this area has a value for {what} to change, so nothing was "
-            "saved. Choose = to set it instead."
+            f"saved. Choose = to set {'them' if len(self.names) > 1 else 'it'} instead."
         )
 
 
@@ -646,7 +646,11 @@ def update_rule(
             # Units only mean something in a change rule: sent without a mode,
             # they make one rather than being dropped ("+20 %" is not "20").
             # The set rule's other numbers stay values ("set").
-            if mode is None and units and rule_mode == "set":
+            if (
+                mode is None
+                and rule_mode == "set"
+                and any(u != "set" for u in (units or {}).values())
+            ):
                 rule_mode = "change"
                 rule_units = dict.fromkeys({**current, **inputs}, "set")
             checked = (

@@ -378,8 +378,8 @@ def test_change_is_clamped_to_the_range():
 def test_a_coverage_change_never_leaves_a_block_unbuilt():
     # A set rule refuses 0 % coverage; a change must not reach it either.
     cov = RULE_INPUTS["lot_coverage"]
-    assert changed_value(0.40, -0.5, "abs", cov) == 0.01
-    assert changed_value(0.40, -99, "pct", cov) == 0.01
+    assert changed_value(0.40, -0.5, "abs", cov) == 0.0001
+    assert changed_value(0.40, -99.99, "pct", cov) == 0.0001
 
 
 def test_change_inputs_refusals():
@@ -433,9 +433,17 @@ def test_a_set_number_in_a_mixed_rule_keeps_the_set_range(bad):
         )
 
 
-def test_a_set_coverage_has_the_same_floor_a_change_reaches():
-    # A change stops at 1 %; a set value below it would be one no change can
-    # reach and the two would disagree on the smallest coverage.
-    with pytest.raises(ProposalValueError):
-        check_inputs({"lot_coverage": 0.005})
-    assert check_inputs({"lot_coverage": 0.01}) == {"lot_coverage": 0.01}
+def test_a_set_coverage_may_be_as_low_as_real_blocks_are():
+    # 2,662 Mexicali blocks are under 1 % today; a planner may set one.
+    assert check_inputs({"lot_coverage": 0.005}) == {"lot_coverage": 0.005}
+
+
+def test_a_change_never_moves_a_block_the_wrong_way():
+    # A floor or ceiling the baseline is already past must not drag the block
+    # back across it: a decrease never raises, an increase never lowers.
+    cov = RULE_INPUTS["lot_coverage"]
+    assert changed_value(0.00005, -20, "pct", cov) == 0.00005
+    assert changed_value(0.005, -20, "pct", cov) == 0.004
+    assert changed_value(0.005, 10, "pct", cov) == 0.0055
+    assert changed_value(12.0, -10, "pct", RULE_INPUTS["unit_size"]) == 12.0
+    assert changed_value(16.0, 10, "pct", RULE_INPUTS["people_per_household"]) == 16.0

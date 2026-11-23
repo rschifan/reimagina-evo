@@ -64,13 +64,13 @@ describe("the rule box", () => {
     type("Lot coverage", "45");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
-    for (const bad of ["0", "0.5", "120"]) {
+    for (const bad of ["0", "120"]) {
       handlers.onapply.mockClear();
       type("Lot coverage", bad);
       button("Apply").click();
       flushSync();
       expect(handlers.onapply).not.toHaveBeenCalled();
-      expect(target.textContent).toMatch(/Lot coverage must be at least 1 % and at most 100 %/);
+      expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
     }
   });
 
@@ -311,6 +311,14 @@ describe("a choice per number", () => {
     expect(readBack).toMatch(/Lot coverage = 40 %/);
   });
 
+  it("a set coverage under 1 % is accepted, as real blocks have it", () => {
+    const { button, type, handlers, target } = open({ values: {} });
+    type("Lot coverage", "0.5");
+    choose(target, "Lot coverage unit", "=");
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith({ lot_coverage: 0.005 }, undefined);
+  });
+
   it("a set coverage outside 0–100 % is refused in a mixed rule too", () => {
     const { button, type, handlers, target } = open({ values: {} });
     type("Storeys", "10");
@@ -319,7 +327,7 @@ describe("a choice per number", () => {
     button("Apply").click();
     flushSync();
     expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Lot coverage must be at least 1 % and at most 100 %/);
+    expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
   });
 });
 

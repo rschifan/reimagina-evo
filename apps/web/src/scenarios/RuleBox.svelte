@@ -149,9 +149,9 @@
       const v = set(numbers[key]);
       if (v === null) continue;
       const unit = unitOf(key);
-      if (key === "lot_coverage" && unit === "set" && (v < 1 || v > 100)) {
+      if (key === "lot_coverage" && unit === "set" && (v <= 0 || v > 100)) {
         localField = key;
-        localError = "Lot coverage must be at least 1 % and at most 100 %.";
+        localError = "Lot coverage must be more than 0 and at most 100 %.";
         return null;
       }
       if (unit !== "set" && v === 0) {

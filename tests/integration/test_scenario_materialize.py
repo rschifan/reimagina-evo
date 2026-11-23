@@ -1087,3 +1087,20 @@ def test_units_sent_without_a_mode_make_a_set_rule_a_change_rule(conn):
     assert updated["units"] == {"levels": "pct", "lot_coverage": "set"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 3
     assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.4
+
+
+def test_units_that_all_say_set_keep_a_set_rule_a_set_rule(conn):
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2})
+    sid = t.scenario()
+    rule_id = t.rule(sid, _AREA_0_3, levels=5)
+
+    updated, _ = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rule_id,
+        geometry_wkt=None,
+        inputs={"levels": 4},
+        units={"levels": "set"},
+    )
+
+    assert (updated["mode"], updated["units"]) == ("set", {})

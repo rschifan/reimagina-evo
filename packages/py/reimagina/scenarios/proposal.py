@@ -155,8 +155,6 @@ class RuleInput:
     #: Where a "change by" result is held, ``(lowest, highest or None)``: a
     #: change is checked per block, so it is clamped there, not refused.
     clamp: tuple[float, float | None] = (0.0, None)
-    #: Inclusive lower bound on a set value, when ``above`` is not enough.
-    at_least: float | None = None
 
 
 #: **The one registry of what a rule can set.** Its order is the order edits
@@ -184,14 +182,13 @@ RULE_INPUTS: dict[str, RuleInput] = {
         ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
     ),
     "lot_coverage": RuleInput(
-        # 1 % is the floor for both: a set value below it is refused and a
-        # change stops there, so the two agree on the smallest coverage.
+        # A change stops just above 0, which a set rule refuses (no building
+        # at all); real blocks go well under 1 %, so the floor stays tiny.
         ("lot_coverage",),
         0.0,
         1.0,
-        "be a share between 0.01 and 1",
-        (0.01, 1.0),
-        0.01,
+        "be a share between 0 and 1",
+        (0.0001, 1.0),
     ),
 }
 
@@ -230,11 +227,19 @@ def check_units(
 
 def changed_value(base: float, by: float, unit: str, spec: RuleInput) -> float:
     """A block's value after a change: ``base + by`` or ``base × (1 + by/100)``,
-    held in ``spec.clamp`` and rounded to 4 decimals."""
+    held in ``spec.clamp`` and rounded to 6 significant digits — not to
+    decimals, which would round a real 0.005 % coverage up to 0.01 %.
+
+    A bound the baseline is already past moves with it: a block under the
+    floor (coverage 0.005 %, 12 m² per dwelling) or over the ceiling is held
+    at its own value, never dragged across the bound. A decrease so never
+    raises a block, and an increase never lowers one."""
     value = base * (1 + by / 100) if unit == "pct" else base + by
     low, high = spec.clamp
+    low = min(low, base)
+    high = None if high is None else max(high, base)
     value = max(low, value if high is None else min(high, value))
-    return round(value, 4)
+    return float(f"{value:.6g}")
 
 
 def edits_for(**values: float | None) -> list[dict[str, Any]]:
@@ -315,7 +320,6 @@ def check_inputs(
         if (
             not math.isfinite(number)
             or number <= spec.above
-            or (spec.at_least is not None and number < spec.at_least)
             or (spec.at_most is not None and number > spec.at_most)
         ):
             raise ProposalValueError(name, number, must=spec.must)
