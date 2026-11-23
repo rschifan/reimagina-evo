@@ -550,16 +550,4 @@ describe("editing on the map", () => {
       inputs: { people_per_household: 5 },
     });
   });
-
-  it("the headline reads homes and people from the table's cells", () => {
-    store.ws.cells = {
-      baseline: { edificability_block_housing_units: { value: 100, error: null }, edificability_block_population: { value: 300, error: null } },
-      A: { edificability_block_housing_units: { value: 150, error: null } },
-    };
-    expect(store.headline("A")).toEqual({
-      homes: { base: 100, now: 150 },
-      people: { base: 300, now: null },
-    });
-    expect(store.headline(null).homes).toEqual({ base: 100, now: 100 });
-  });
 });

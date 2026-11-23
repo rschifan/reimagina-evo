@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Feature, Polygon } from "geojson";
-  import type { Snippet } from "svelte";
   import * as maplibregl from "maplibre-gl";
   import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
   import { onMount, untrack } from "svelte";
@@ -63,9 +62,6 @@
    * map page — tile URLs included, so the baseline's stays byte-identical
    * and its cached tiles stay valid. This file decides only *what* to draw.
    */
-  /** The scenario bar, rendered first in this toolbar row. */
-  let { lead }: { lead?: Snippet } = $props();
-
   let container: HTMLDivElement;
   let legend: HTMLDivElement;
   let map: MapLibreMap | null = null;
@@ -509,7 +505,6 @@
   <div
     class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
   >
-    {@render lead?.()}
     <label class="flex items-center gap-2 text-muted-foreground">
       <span class="sr-only">Indicator</span>
       <select

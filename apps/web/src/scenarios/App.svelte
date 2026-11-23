@@ -5,7 +5,6 @@
   import TopBar from "../lib/TopBar.svelte";
 
   import { formatHash, parseHash } from "./derive";
-  import ScenarioBar from "./ScenarioBar.svelte";
   import ScenarioMap from "./ScenarioMap.svelte";
   import ScenarioTable from "./ScenarioTable.svelte";
   import { applyRoute, boot, ws } from "./store.svelte";
@@ -69,11 +68,9 @@
 </TopBar>
 
 <main class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
-  <!-- One toolbar: the scenario bar, then the map's own controls. Rules are
-       drawn, edited and deleted on the map itself. -->
-  <ScenarioMap>
-    {#snippet lead()}<ScenarioBar />{/snippet}
-  </ScenarioMap>
+  <!-- Rules are drawn, edited and deleted on the map; scenarios are picked,
+       recomputed and deleted in the table. -->
+  <ScenarioMap />
   <ScenarioTable />
 </main>
 </div>

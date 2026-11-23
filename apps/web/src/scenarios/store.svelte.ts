@@ -375,32 +375,6 @@ export function setMode(mode: "value" | "delta"): void {
   ws.mode = ws.selectedId === null ? "value" : mode;
 }
 
-export async function create(name: string): Promise<void> {
-  const trimmed = name.trim();
-  if (!trimmed) {
-    say("Give the scenario a name.", "bad");
-    return;
-  }
-  if (!ws.projectId) {
-    say("No pilot is active, so there is no project to create a scenario in.", "bad");
-    return;
-  }
-  try {
-    if (!ws.aoiId) return;
-    const created = await createScenario({
-      project_id: ws.projectId,
-      name: trimmed,
-      aoi_id: ws.aoiId,
-    });
-    await loadScenarios();
-    select(created.id);
-    say(`Created ${created.name}. Draw an area on the map and apply the numbers.`);
-    void refreshRow(created.id);
-  } catch (err) {
-    await refused(err, "create");
-  }
-}
-
 /** Delete a scenario for good, with everything it wrote. Asks first. */
 export async function confirmRemoveScenario(scenarioId: string): Promise<void> {
   const question =
@@ -436,9 +410,6 @@ export async function removeScenario(scenarioId = ws.selectedId): Promise<void> 
 // so there is nothing to undo: the box says why and keeps what was typed.
 // Anything else (the recompute not queued, a lost response) may have stored
 // the rule, so the page re-reads the rules and says what happened instead.
-
-const HOUSING_UNITS = "edificability_block_housing_units";
-const POPULATION = "edificability_block_population";
 
 type Landing =
   | { outcome: "landed"; status: string }
@@ -690,15 +661,3 @@ export async function recomputeSelected(): Promise<void> {
   }
 }
 
-/** Total homes and people, baseline and now, for the top bar. */
-export function headline(scenarioId: string | null): {
-  homes: { base: number | null; now: number | null };
-  people: { base: number | null; now: number | null };
-} {
-  const cell = (row: string, slug: string): number | null => ws.cells[row]?.[slug]?.value ?? null;
-  const now = scenarioId ?? BASELINE;
-  return {
-    homes: { base: cell(BASELINE, HOUSING_UNITS), now: cell(now, HOUSING_UNITS) },
-    people: { base: cell(BASELINE, POPULATION), now: cell(now, POPULATION) },
-  };
-}
