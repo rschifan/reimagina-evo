@@ -11,6 +11,8 @@
     listTileSources,
     type IndicatorValueStats,
     type RuleInputs,
+    type RuleMode,
+    type RuleUnits,
   } from "../api";
   import {
     activateIndicator,
@@ -334,21 +336,23 @@
     if (clearShape) selection?.clear();
   }
 
-  async function apply(values: RuleInputs, scenarioName?: string): Promise<void> {
+  async function apply(
+    values: RuleInputs, scenarioName?: string, mode: RuleMode = "set", units: RuleUnits = {},
+  ): Promise<void> {
     const area = ws.drawn;
     if (!area) return;
     const pilotAtStart = ws.aoiId;
     // A pilot switch mid-gesture clears the selection while busy, when the
     // effect above stands down; close here or the box outlives its city.
-    if ((await applyNewRule(area, values, scenarioName)) || ws.aoiId !== pilotAtStart) closeBox(true);
+    if ((await applyNewRule(area, values, scenarioName, mode, units)) || ws.aoiId !== pilotAtStart) closeBox(true);
   }
 
-  async function save(values: RuleInputs): Promise<void> {
+  async function save(values: RuleInputs, mode: RuleMode = "set", units: RuleUnits = {}): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
     const scenarioAtStart = ws.selectedId;
-    if ((await saveRule(current.rule, area, values)) || ws.selectedId !== scenarioAtStart) closeBox(true);
+    if ((await saveRule(current.rule, area, values, mode, units)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   async function remove(): Promise<void> {
@@ -647,8 +651,10 @@
             busy={ws.busy}
             error={ws.boxError}
             draggable={current.kind === "rule" ? current.draggable : true}
-            onapply={(values, name) => void apply(values, name)}
-            onsave={(values) => void save(values)}
+            ruleMode={current.kind === "rule" ? (current.rule.mode ?? "set") : "set"}
+            ruleUnits={current.kind === "rule" ? (current.rule.units ?? {}) : {}}
+            onapply={(values, name, mode, units) => void apply(values, name, mode, units)}
+            onsave={(values, mode, units) => void save(values, mode, units)}
             ondelete={() => void remove()}
             oncancel={() => closeBox(true)}
           />

@@ -186,3 +186,61 @@ describe("numbers left empty", () => {
     expect(target.textContent).toMatch(/Set at least one number/);
   });
 });
+
+describe("set to or change by", () => {
+  const pressed = (target: Element, group: string, text: string) =>
+    [...target.querySelectorAll(`[aria-label="${group}"] button`)].find(
+      (b) => b.textContent?.trim() === text,
+    )!;
+
+  it("switching to change by clears what was typed", () => {
+    const { button, input } = open();
+    button("Change by").click();
+    flushSync();
+    expect(input("Storeys change").value).toBe("");
+    expect(input("Lot coverage change").value).toBe("");
+  });
+
+  it("a change rule is applied with signed numbers, its mode and each number's unit", () => {
+    const { button, type, handlers, target } = open({ values: {} });
+    button("Change by").click();
+    flushSync();
+    type("Storeys change", "1");
+    type("m² per home change", "-10");
+    (pressed(target, "m² per home unit", "%") as HTMLButtonElement).click();
+    type("Lot coverage change", "5");
+    flushSync();
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith(
+      { levels: 1, unit_size: -10, lot_coverage: 0.05 },
+      undefined,
+      "change",
+      { levels: "abs", unit_size: "pct", lot_coverage: "abs" },
+    );
+  });
+
+  it("coverage as a percentage change is sent as typed, not as a share", () => {
+    const { button, type, handlers, target } = open({ values: {} });
+    button("Change by").click();
+    flushSync();
+    type("Lot coverage change", "5");
+    (pressed(target, "Lot coverage unit", "%") as HTMLButtonElement).click();
+    flushSync();
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith(
+      { lot_coverage: 5 }, undefined, "change", { lot_coverage: "pct" },
+    );
+  });
+
+  it("an existing change rule opens in change by with its units", () => {
+    const { input, target } = open({
+      mode: "rule",
+      values: { unit_size: -10, lot_coverage: 0.05 },
+      ruleMode: "change",
+      ruleUnits: { unit_size: "pct" },
+    });
+    expect(input("m² per home change").value).toBe("-10");
+    expect(input("Lot coverage change").value).toBe("5");
+    expect(pressed(target, "m² per home unit", "%").getAttribute("aria-pressed")).toBe("true");
+  });
+});
