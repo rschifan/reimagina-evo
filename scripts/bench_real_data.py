@@ -14,9 +14,9 @@ that decides whether more worker slots buy anything. This script measures that,
 by running the **real** ``SHIPPED_INDICATORS`` runners over **real** features.
 
 Every synthetic node is one unit costing its declared sleep, so cost spread is
-invisible there *by construction*. The real catalog is 13 indicators whose
-straight-line KNN and multi-source Dijkstra differ by more than a factor of two,
-and only this script can see that. It is also what disproved the catalog's
+invisible there *by construction*. The real catalog is 12 indicators whose
+geometry metrics and multi-source network Dijkstra differ widely in cost, and
+only this script can see that. It is also what disproved the catalog's
 hand-written cost labels, which had been assigned the wrong way round from
 intuition about what each computation sounds like; they were deleted rather than
 corrected, because nothing consumed them.
@@ -35,10 +35,9 @@ Usage::
     DATABASE_URL_DIRECT=postgresql://localhost/reimagina_real_b \\
       python scripts/bench_real_data.py --reps 3
 
-The engine mode is taken from ``factory.DEFAULT_MODE``, so this script is
-byte-identical on both worktrees. The engine mode needs whatever that engine
-needs — a registered worker against the same database, and for Hatchet a
-``HATCHET_CLIENT_TOKEN``; neither branch has an in-process durable mode.
+The engine mode is taken from ``factory.DEFAULT_MODE`` (``dbos``). It needs a
+registered worker (``python -m apps.worker``) against the same database; there
+is no in-process durable mode.
 """
 
 from __future__ import annotations
