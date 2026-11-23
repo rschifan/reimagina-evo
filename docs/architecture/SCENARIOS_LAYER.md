@@ -16,7 +16,7 @@ The workflow is:
 project  →  scenario  →  scenario_rule (drawn areas)  →  scenario_override rows  →  submit_run  →  indicator_result
 ```
 
-- **Project** — `app_core.project`, the workspace an area of interest and its scenarios belong to (`r001_schemas_and_extensions.py:26-34`).
+- **Project** — `app_core.project`, the workspace an area of interest and its scenarios belong to (r001).
 - **Scenario** — a named row in `app_core.scenario` (r048), unique by name within its project and bound to an AOI. It is the addressed resource: created, listed, shown, recomputed, compared and deleted by id. The `scenario_id` columns on `scenario_override`, `indicator_result`, `job_run` and `aoi_indicator_summary` reference it `ON DELETE CASCADE` (r055) — see *The scenario id* below.
 - **Rule** — one drawn area and the numbers a planner set over it, a row of `curated_geo.scenario_rule` (r055) with its own id and its own place in "later wins". This is what a person authors.
 - **Override** — one per-feature attribute value, in `curated_geo.scenario_override` (r030). Materialising a scenario expands its rules into override rows, and those rows are what the indicators read.
@@ -147,7 +147,7 @@ both rows — the state a join would duplicate.
 Top-level workspace. Groups areas of interest.
 
 ```sql
--- r001_schemas_and_extensions.py:27-33
+-- r001_schemas_and_extensions.py
 CREATE TABLE IF NOT EXISTS app_core.project (
   id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   name        text        NOT NULL,
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS app_core.project (
 );
 ```
 
-It exists because `curated_geo.area_of_interest.project_id` references it (`r004_aoi_tables.py:21`), and since r048 `app_core.scenario.project_id` does too.
+It exists because `curated_geo.area_of_interest.project_id` references it (r004), and since r048 `app_core.scenario.project_id` does too.
 
 ---
 
@@ -197,7 +197,7 @@ r055 converted r048's `scenario_edit` rows into rules, grouped as the workspace 
 One attribute value for one feature under one scenario, the resolution of its rules. Keyed like `observation`'s one-current-per-`(feature, attribute)` shape. Since r055 `scenario_id` is an FK to `app_core.scenario`, `ON DELETE CASCADE`.
 
 ```sql
--- r030_scenario_override.py:27-46
+-- r030_scenario_override.py
 CREATE TABLE curated_geo.scenario_override (
   id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   scenario_id   uuid        NOT NULL,   -- FK to app_core.scenario since r055
@@ -223,7 +223,7 @@ There is no `parameters` / model-configuration table. A scenario expresses itsel
 
 ### jobs_runtime.job_run
 
-Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by this layer — the runner opens it when the compute starts (`jobs/_lifecycle.py:54`).
+Defined in `JOB_LAYER.md`. Note that it is **not** created at submit time by this layer — the runner opens it when the compute starts (the `job_run` context manager in `jobs/_lifecycle.py`).
 
 ---
 
@@ -268,7 +268,7 @@ Step 3 is why an override edits `attribute_key` rather than some scenario-specif
 
 **Attribute scoping depends on the path, and so does feature scoping.** A scenario submit that names nothing goes through the asset graph, where there is one override asset per overridable attribute (`assets/registry.py`, `scenario_override_assets`). Editing `floors` publishes a version for `scenario.override.floors` alone, so only the indicators declaring an edge to `floors` — and whatever is downstream of them — are recomputed. Editing an attribute no indicator reads recomputes nothing. That path is whole-indicator in *features*: every unit it plans covers every feature the indicator applies to (`plan._units_from_freshness`).
 
-An explicit change-set — `POST /jobs` with `changed_attributes` / `edited_features`, and `POST /scenarios/{id}/recompute`, which passes the materialisation's footprint — goes through `impact.compute_dirty_set` (`impact.py:97`). Its attribute half is a flat union: every indicator reading *any* named attribute is recomputed over *every* named feature. Its feature half is scoped: a seed indicator gets the named features and a dependent the union of its inputs' features, which the runner passes on as `feature_ids` (`runners._scoped`). With no asset graph the scenario-only submit takes this path too, with `resolve_change_set`'s union of the override rows. Widening or remapping a feature set per indicator (`impact.FeatureExpander`) is a hook with only the identity implementation. With a `scenario_id` the graph still has a say: an indicator already computed for that scenario and AOI at its current version is dropped, and a run over the whole footprint is recorded as covering the AOI (`runners._recording`), so recomputing an unchanged scenario is a noop.
+An explicit change-set — `POST /jobs` with `changed_attributes` / `edited_features`, and `POST /scenarios/{id}/recompute`, which passes the materialisation's footprint — goes through `impact.compute_dirty_set`. Its attribute half is a flat union: every indicator reading *any* named attribute is recomputed over *every* named feature. Its feature half is scoped: a seed indicator gets the named features and a dependent the union of its inputs' features, which the runner passes on as `feature_ids` (`runners._scoped`). With no asset graph the scenario-only submit takes this path too, with `resolve_change_set`'s union of the override rows. Widening or remapping a feature set per indicator (`impact.FeatureExpander`) is a hook with only the identity implementation. With a `scenario_id` the graph still has a say: an indicator already computed for that scenario and AOI at its current version is dropped, and a run over the whole footprint is recorded as covering the AOI (`runners._recording`), so recomputing an unchanged scenario is a noop.
 
 ---
 
@@ -297,7 +297,7 @@ With `scenario_id = NULL` the override join matches nothing and the expression c
 
 Only features whose effective value is non-null are returned (`overrides.effective_numeric`). Postgres only — the function rejects any other backend (`overrides._require_postgres`).
 
-`compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function (`indicators/planned_floors.py:39-45`) and writes the result inside a `job_run` context (`:47-58`).
+`compute_planned_floors` is the worked example: it reads the effective `floors` per block through this function and writes the result inside a `job_run` context (`indicators/planned_floors.py`).
 
 ---
 
@@ -331,16 +331,16 @@ Examples:
 | Method | Path | Body / query | Success | Refusals |
 |---|---|---|---|---|
 | GET | `/scenarios` | `project_id`, `aoi_id` (both optional) | 200: rows newest first, each with `rule_count` and `latest_run` (`{id, status}` or `null`) | — |
-| POST | `/scenarios` | `project_id`, `aoi_id`, `name` (non-empty), `description`? | 201: the scenario as `GET` returns it | 422 no `aoi_id`; 404 an AOI of another project, or (`unknown_reference`) a project or AOI that does not exist; 409 a duplicate name in the project |
+| POST | `/scenarios` | `project_id`, `aoi_id`, `name` (non-empty), `description`?, `rule`? (`area`, `inputs`, `type_context`, `type_slug`, as `POST …/rules`) | 201: the scenario as `GET` returns it, plus `first_rule` (as `POST …/rules` answers, or `null` without a `rule`) | 422 no `aoi_id` or an empty `name`; 404 `unknown_reference` (`field: aoi_id`) for an AOI that does not exist; 404 (a sentence) for an AOI not in the named project, which is also the answer when the project does not exist; 409 a duplicate name in the project; with a `rule`, the refusals of `POST …/rules`, and a refused rule leaves no scenario |
 | GET | `/scenarios/indicators` | — | 200: the indicators a rule can change, inputs first, each with `statistic` (`sum` for `units` and `people`, else `median`) | — |
 | GET | `/scenarios/{scenario_id}` | — | 200: the scenario, `override_count`, and `rules` (`id`, `ordinal`, `type_id`, `inputs`, `geometry_wkt`, `created_at`, `updated_at`) in ordinal order | 404 |
 | GET | `/scenarios/{scenario_id}/rules` | — | 200: the rules, as above | 404 |
-| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_deleted, results_deleted, job_runs_deleted, materializations}`; the scenario's unfinished runs are then cancelled | 404, also on a second delete |
-| POST | `/scenarios/{scenario_id}/rules` | `area` (GeoJSON FeatureCollection, Feature or geometry; polygons unioned), `inputs` (any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`; omitted or null is not set), `type_context` (`MEX`), `type_slug` (`block`) | 201: the recompute shape below plus `rule`; the rule is written and the scenario materialised in one transaction, then the recompute is enqueued | 400 `empty_proposal`, `invalid_value` (`field` names the number: unknown, non-finite, or out of range), `invalid_geometry` (no polygon; not lon/lat degrees); 422 `ceiling_precheck_failed` with `levels`, `unit_size`, `allowed_levels`; 422 `ceiling_exceeded` (as recompute); 422 `rule_catches_nothing` (`field: area`); 404 unknown scenario or feature type; nothing is stored on any refusal; 500 `recompute_not_enqueued` (the rule stands) |
+| DELETE | `/scenarios/{scenario_id}` | — | 200: `{scenario_id, overrides, versions_deleted, results_deleted, job_runs_deleted, materializations}`; the scenario's unfinished runs are then cancelled | 404, also on a second delete; a run cancelled after some of its units finished ends `partial` |
+| POST | `/scenarios/{scenario_id}/rules` | `area` (GeoJSON FeatureCollection, Feature or geometry; polygons unioned), `inputs` (any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`; omitted or null is not set), `type_context` (`MEX`), `type_slug` (`block`) | 201: the recompute shape below plus `rule`; the rule is written and the scenario materialised in one transaction, then the recompute is enqueued | 400 `empty_proposal` (`field: null`; also when every number is null), `invalid_value` (`field` names the number: unknown name, not a number, non-finite, or out of range), `invalid_geometry` (`field: area`; no polygon, or not lon/lat degrees); 422 `ceiling_precheck_failed` with `levels`, `unit_size` (0 when the rule sets none) and `allowed_levels`; 422 `ceiling_exceeded` (as recompute); 422 `rule_catches_nothing` (`field: area`); 404 unknown scenario or feature type; 409 the scenario has no AOI; nothing is stored on any refusal; 500 `recompute_not_enqueued` (the rule stands) |
 | PATCH | `/scenarios/{scenario_id}/rules/{rule_id}` | `inputs` (the rule's whole set: a number left out is no longer set), `area`? (omitted keeps it) | 200: as `POST …/rules`; the rule keeps its id and its ordinal | as `POST …/rules`, plus 404 a rule not of this scenario; a refused change leaves the rule as it was |
-| DELETE | `/scenarios/{scenario_id}/rules/{rule_id}` | — | 200: as `POST …/rules` with `rule: null`; no run is enqueued when no override is left | 404 a rule not of this scenario; 422 `ceiling_exceeded` when what is left breaches (an earlier rule now wins) |
-| POST | `/scenarios/{scenario_id}/recompute` | — | 202: `{scenario_id, matched_per_rule, overrides_written, overrides_removed, results_superseded, run_id, run_status, deduplicated}`; `run_id` is `null` on a noop, unless a run of the scenario is still going, which is then answered with `deduplicated: true` | 404; 409 the scenario has no AOI (it was deleted); 422 `ceiling_exceeded` with `breach_count` and up to 20 `breaches`, each with `rule_ids`, `rule_numbers` (the "Rule N" a planner sees) and `allowed_levels`; 500 `recompute_not_enqueued` (materialised and committed, enqueue refused — retry is safe); 503 `ops_plane_not_provisioned` or `database_unavailable` |
-| GET | `/scenarios/{scenario_id}/comparison` | `indicator_slug`, `aoi_id`?, `limit`? (≥ 1; omitted returns every row) | 200: `{scenario_id, indicator_slug, aoi_id, summary: {changed, unchanged, new, mean_delta, higher_is_better}, row_count, rows: [{feature_id, baseline, scenario, delta, state}], rows_truncated}` | 404 unknown scenario, indicator or AOI |
+| DELETE | `/scenarios/{scenario_id}/rules/{rule_id}` | — | 200: as `POST …/rules` with `rule: null`; no run is enqueued when no override is left | 404 a rule not of this scenario; 409 the scenario has no AOI; 422 `ceiling_exceeded` when what is left breaches (an earlier rule now wins) |
+| POST | `/scenarios/{scenario_id}/recompute` | — | 202: `{scenario_id, matched_per_rule, overrides_written, overrides_removed, results_superseded, run_id, run_status, deduplicated}`; `run_id` is `null` on a noop, unless a run of the scenario is still going, which is then answered with `deduplicated: true` | 404; 409 the scenario has no AOI (it was deleted); 422 `ceiling_exceeded` with `message`, `breach_count` and up to 20 `breaches`, each with `feature_id`, `indicator_slug`, `bound`, `would_be`, `rule_ids`, `rule_numbers` (the "Rule N" a planner sees: the rule's rank in ordinal order) and `allowed_levels`; 500 `recompute_not_enqueued` (materialised and committed, enqueue refused — retry is safe); 503 `ops_plane_not_provisioned` or `database_unavailable` |
+| GET | `/scenarios/{scenario_id}/comparison` | `indicator_slug`, `aoi_id`?, `limit`? (≥ 1; omitted returns every row) | 200: `{scenario_id, indicator_slug, aoi_id, summary: {changed, unchanged, new, mean_delta, higher_is_better}, row_count, rows: [{feature_id, baseline, scenario, delta, state}], rows_truncated}` | 404 unknown scenario, indicator or AOI; 422 `limit` < 1 or a malformed `aoi_id` |
 
 Writing a rule is two transactions, like `recompute`: the rule and the materialisation commit together, and the run is enqueued after, so the scenario's row lock is not held through the compute. The run covers the **footprint** — the blocks that carry an override, with the attributes involved — and an empty footprint enqueues nothing (an empty feature list would mean "every block" to the planner).
 
@@ -437,7 +437,7 @@ POST /jobs
 
 Omitting `changed_attributes` and `edited_features` is the supported shape when a `scenario_id` is given — the plan is derived from the scenario's overrides (`apps/api/routers/jobs.py` `SubmitRunBody`, `plan.plan_run`).
 
-A run whose dirty-set is empty comes back as `{"run_id": null, "status": "noop"}`: nothing was invalidated, no run row exists, and an id would 404 (`jobs.SubmitRunResponse`, `jobs._submit_response`).
+A run whose dirty-set is empty comes back as `{"run_id": null, "status": "noop", "deduplicated": false}` (still 202): nothing was invalidated, no run row exists, and an id would 404 (`jobs.SubmitRunResponse`, `jobs._submit_response`).
 
 See `JOB_LAYER.md` for run modes, run state, and cancellation.
 
@@ -491,7 +491,7 @@ WHERE af.aoi_id    = :aoi_id
 ORDER BY ci.indicator_slug, f.id;
 ```
 
-`current_indicator_v` filters to `status = 'current'` (`r016:327-350`), so this returns the live result set for that scenario and nothing superseded. It returns only the rows the scenario itself wrote — what it recomputed. The effective values (its row where it has one, the baseline's otherwise) come through the overlay: `GET /indicators/{slug}/values?scenario_id=`, the downloads, or `storage._utils.scenario_overlay` in your own query.
+`current_indicator_v` filters to `status = 'current'` (r016), so this returns the live result set for that scenario and nothing superseded. It returns only the rows the scenario itself wrote — what it recomputed. The effective values (its row where it has one, the baseline's otherwise) come through the overlay: `GET /indicators/{slug}/values?scenario_id=`, the downloads, or `storage._utils.scenario_overlay` in your own query.
 
 ---
 
@@ -532,7 +532,7 @@ ON CONFLICT (scenario_id, feature_id, attribute_key)
 DO UPDATE SET value_numeric = EXCLUDED.value_numeric;
 ```
 
-A raw `INSERT` publishes no override version, so a submit naming only the `scenario_id` plans from freshness and does not see this edit. Either write through `apply_overrides` (which publishes) or name the change-set: `{"scenario_id": …, "changed_attributes": ["floors"]}`. There is no separate "mark stale" step to perform: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts, and the partial unique index `ir_one_current_scenario` enforces one current row per triple (`r016:198-200`).
+A raw `INSERT` publishes no override version, so a submit naming only the `scenario_id` plans from freshness and does not see this edit. Either write through `apply_overrides` (which publishes) or name the change-set: `{"scenario_id": …, "changed_attributes": ["floors"]}`. There is no separate "mark stale" step to perform: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts, and the partial unique index `ir_one_current_scenario` enforces one current row per triple (r016).
 
 ---
 
@@ -590,4 +590,4 @@ curated_geo.observation ─────┼──► scenario_override ──► 
 
 `feature` is the shared anchor. Scenarios contribute only override rows. A run resolves the three-way overlay in SQL at read time and writes its effects to `indicator_result`. The baseline is never modified.
 
-Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (`r027_feature_centroid_index.py:82-101`) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`overrides.effective_numeric`).
+Note the two distinct read paths: the API and tiles read features through `serving_geo.feature_v`, which merges base attributes with current observations (r027) but knows nothing about scenarios. Indicator computation does not go through that view — it resolves `override ⊕ observation ⊕ base` itself (`overrides.effective_numeric`).
