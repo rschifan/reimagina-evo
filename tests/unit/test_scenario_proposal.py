@@ -16,10 +16,12 @@ import pytest
 from reimagina.scenarios.authoring import InvalidGeometry
 from reimagina.scenarios.ceilings import DENSITY, max_levels_for
 from reimagina.scenarios.proposal import (
+    RULE_INPUTS,
     CeilingPrecheckFailed,
     ProposalValueError,
-    RULE_INPUTS,
+    changed_value,
     check_inputs,
+    check_units,
     edits_for,
     polygon_wkt,
     precheck_ceilings,
@@ -353,3 +355,35 @@ def test_polygon_wkt_repairs_a_self_intersecting_stroke_before_the_union():
     }
 
     assert polygon_wkt(collection).startswith("POLYGON")
+
+
+# ── "Change by" rules ───────────────────────────────────────────────────────
+
+
+def test_change_abs_and_pct():
+    lv, cov = RULE_INPUTS["levels"], RULE_INPUTS["lot_coverage"]
+    assert changed_value(2.0, 1, "abs", lv) == 3.0
+    assert changed_value(2.0, 50, "pct", lv) == 3.0
+    assert changed_value(0.40, 0.05, "abs", cov) == 0.45
+    assert changed_value(0.40, 5, "pct", cov) == 0.42
+
+
+def test_change_is_clamped_to_the_range():
+    assert changed_value(2.0, -3, "abs", RULE_INPUTS["levels"]) == 1.0
+    assert changed_value(0.9, 0.5, "abs", RULE_INPUTS["lot_coverage"]) == 1.0
+    assert changed_value(14.0, 50, "pct", RULE_INPUTS["people_per_household"]) == 15.0
+    assert changed_value(20.0, -50, "pct", RULE_INPUTS["unit_size"]) == 15.0
+
+
+def test_change_inputs_refusals():
+    with pytest.raises(ProposalValueError):
+        check_inputs({"levels": 0}, mode="change", units={})
+    with pytest.raises(ProposalValueError):
+        check_inputs({"levels": -100}, mode="change", units={"levels": "pct"})
+    with pytest.raises(ProposalValueError):
+        check_units("change", {"levels": "floors"}, ["levels"])
+    with pytest.raises(ProposalValueError):
+        check_units("change", {"storeys": "abs"}, ["levels"])
+    assert check_inputs({"levels": -2}, mode="change", units={}) == {"levels": -2.0}
+    assert check_units("change", {}, ["levels"]) == {"levels": "abs"}
+    assert check_units("set", {"levels": "pct"}, ["levels"]) == {}
