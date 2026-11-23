@@ -225,6 +225,22 @@ def test_scenario_rule_rejects_an_empty_set_of_numbers(conn):
         _insert_rule(conn, sid, type_id, inputs="{}")
 
 
+def test_scenario_rule_has_mode_and_units(conn):
+    """r058: a rule sets values or changes them; an old row is a "set" rule."""
+    sid = _insert_scenario(conn, insert_project(conn))
+    rule = _insert_rule(conn, sid, _block_type_id(conn))
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT mode, units FROM curated_geo.scenario_rule WHERE id = %s", (rule,)
+        )
+        assert cur.fetchone() == ("set", {})
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "UPDATE curated_geo.scenario_rule SET mode = 'other' WHERE id = %s",
+                (rule,),
+            )
+
+
 def test_scenario_rule_ordinal_is_unique_per_scenario(conn):
     sid = _insert_scenario(conn, insert_project(conn))
     type_id = _block_type_id(conn)
