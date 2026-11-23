@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from apps.cli import UserError
 from reimagina.db import connect
 from reimagina.storage import mask_dsn
 from reimagina.perf import (
+    BENCHMARKS,
     build_observability_report,
     cleanup_perf_data,
     compare_reports,
@@ -16,6 +18,22 @@ from reimagina.perf import (
     prepare_benchmark_dataset,
     run_benchmarks,
 )
+from reimagina.perf.runner import NO_PARAMETER_BUILDER
+
+
+def _require_runnable(names: list[str]) -> None:
+    """Refuse a name the runner cannot run, before connecting.
+
+    Left to the runner it raised a bare ValueError, which `main` keeps as a
+    traceback because a ValueError may be a defect; a typo is not.
+    """
+    for name in names:
+        if name not in BENCHMARKS:
+            raise UserError(f"unknown benchmark {name!r}; see perf.manifest")
+        if name in NO_PARAMETER_BUILDER:
+            raise UserError(
+                f"benchmark {name!r} is declared but has no parameter builder yet"
+            )
 
 
 def seed_observations(
@@ -49,6 +67,7 @@ def run_perf_benchmarks(
     output_path: str | None = None,
     aoi_id: str | None = None,
 ) -> dict[str, Any]:
+    _require_runnable(benchmark_names or [])
     with connect(dsn) as conn:
         result = run_benchmarks(
             conn,
@@ -72,6 +91,7 @@ def run_perf_benchmarks(
 def explain_query(
     *, dsn: str, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
 ) -> dict[str, Any]:
+    _require_runnable([benchmark_name])
     with connect(dsn) as conn:
         return {
             "dsn": dsn,

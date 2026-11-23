@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from apps.cli.app import main
 
 
@@ -1096,3 +1098,27 @@ def test_cli_evaluate_scenario_refuses_a_malformed_feature_before_connecting(
     )
     assert exit_code == 2
     assert "b1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["run --benchmark", "explain"])
+@pytest.mark.parametrize("name", ["tile_z14_small", "no_such_benchmark"])
+def test_cli_perf_refuses_a_benchmark_it_cannot_run_in_one_line(
+    command, name, monkeypatch, capsys
+):
+    """A declared-but-unbuildable or unknown name is the caller's to fix.
+
+    It used to reach `_build_params` and end in a ValueError traceback (exit 1).
+    Refused before connecting, so no database is needed to see it.
+    """
+
+    def no_db(*args, **kwargs):
+        raise AssertionError("connected before refusing the name")
+
+    monkeypatch.setattr("apps.cli.perf.connect", no_db)
+
+    exit_code = main(["perf", *command.split(), name])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and name in err
+    assert "Traceback" not in err

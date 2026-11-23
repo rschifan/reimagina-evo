@@ -124,7 +124,7 @@ def _get_aoi_id(conn, *, logical_name: str) -> str:
 # Declared in the manifest (budgets and all) but with no parameter builder
 # below yet. A default `perf run` leaves them out, because selecting them made
 # every run raise and lose the results it had already measured.
-_NO_PARAMETER_BUILDER = frozenset(
+NO_PARAMETER_BUILDER = frozenset(
     {"tile_z14_small", "tile_z12_dense", "tile_z8_overview", "tile_z14_filtered_type"}
 )
 
@@ -133,7 +133,7 @@ def _build_params(
     conn, *, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
 ) -> list[object]:
     tier = DATASET_TIERS[dataset_tier]
-    if benchmark_name in _NO_PARAMETER_BUILDER:
+    if benchmark_name in NO_PARAMETER_BUILDER:
         raise ValueError(
             f"Benchmark {benchmark_name!r} is declared but has no parameter builder yet."
         )
@@ -445,7 +445,7 @@ def run_benchmarks(
 
     tier = DATASET_TIERS[dataset_tier]
     selected_names = benchmark_names or [
-        name for name in BENCHMARKS if name not in _NO_PARAMETER_BUILDER
+        name for name in BENCHMARKS if name not in NO_PARAMETER_BUILDER
     ]
     dataset_summary = _dataset_summary(conn)
 
