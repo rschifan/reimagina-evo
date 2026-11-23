@@ -1,6 +1,6 @@
 """Resolving a scenario's drawn rules into per-block overrides.
 
-An edit is an area, an attribute and a value. Materialisation is what turns
+A rule is an area and the numbers set over it. Materialisation is what turns
 that into the override rows the asset graph already partitions by scenario, so
 the ordinary ``evaluate-scenario`` path recomputes exactly the affected
 indicators.
@@ -15,6 +15,7 @@ longer written at all. The second ghost is the one a user sees, because
 
 from __future__ import annotations
 
+import json
 import threading
 import warnings
 
@@ -30,12 +31,14 @@ from reimagina.assets.registry import seed_assets
 from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import (
     CeilingExceeded,
+    RuleCatchesNothing,
     ScenarioHasNoAOI,
-    add_edit,
+    add_rule,
     create_scenario,
+    delete_rule,
     delete_scenario,
     materialize_scenario,
-    remove_edit,
+    update_rule,
 )
 from tests.integration._helpers import (
     discard,
@@ -154,15 +157,34 @@ class _Territory:
             aoi_id=self.aoi_wide if aoi_id is None else aoi_id,
         )
 
-    def edit(self, sid: str, wkt: str, key: str, value: float) -> str:
-        return add_edit(
+    def rule(self, sid: str, wkt: str, **inputs: float) -> str:
+        """Draw a rule the way every surface does: written and materialised."""
+        rule, _ = add_rule(
             self.conn,
             scenario_id=sid,
             geometry_wkt=wkt,
             type_id=self.type_id,
-            attribute_key=key,
-            value_numeric=value,
+            inputs=inputs,
         )
+        return rule["id"]
+
+    def raw_rule(self, sid: str, wkt: str, **inputs: float) -> str:
+        """A rule row and nothing else: a state ``add_rule`` refuses to leave
+        (an area catching nothing, a breach), for the tests of what
+        ``materialize_scenario`` makes of it."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO curated_geo.scenario_rule
+                  (scenario_id, ordinal, type_id, geometry, inputs)
+                SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
+                       ST_GeomFromText(%(g)s, 4326), %(i)s::jsonb
+                FROM curated_geo.scenario_rule WHERE scenario_id = %(s)s
+                RETURNING id::text
+                """,
+                {"s": sid, "t": self.type_id, "g": wkt, "i": json.dumps(inputs)},
+            )
+            return cur.fetchone()[0]
 
 
 def _override_value(conn, scenario_id, feature_id, attribute_key):
@@ -237,32 +259,64 @@ def _compute_density(conn, scenario_id) -> None:
 # ── Selection ───────────────────────────────────────────────────────────────
 
 
-def test_an_edit_overrides_the_blocks_its_area_covers(conn):
+def test_a_rule_overrides_the_blocks_its_area_covers(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    eid = t.edit(sid, _AREA_0_3, "num_levels", 6)
+    rid = t.rule(sid, _AREA_0_3, levels=6)
 
     result = materialize_scenario(conn, scenario_id=sid)
 
-    assert result.matched_per_edit[eid] == 4
-    assert result.overrides_written == 4
+    assert result.matched_per_rule[rid] == 4
+    # Storeys are one number and two attributes: floors and num_levels.
+    assert result.overrides_written == 8
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 6
     assert _override_value(conn, sid, t.blocks[0], "num_levels") == 6
     assert _override_value(conn, sid, t.blocks[4], "num_levels") is None
     assert _materialized_at(conn, sid) is not None
 
 
-def test_a_later_ordinal_wins_over_an_earlier_one(conn):
+def test_a_later_rule_wins_over_an_earlier_one(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
-    t.edit(sid, _AREA_ALL, "num_levels", 8)
+    t.rule(sid, _AREA_0_3, levels=6)
+    t.rule(sid, _AREA_ALL, levels=8)
 
     materialize_scenario(conn, scenario_id=sid)
 
     # b0 is in both areas; b4 only in the later one.
     assert _override_value(conn, sid, t.blocks[0], "num_levels") == 8
     assert _override_value(conn, sid, t.blocks[4], "num_levels") == 8
-    assert _override_count(conn, sid) == 6
+    assert _override_count(conn, sid) == 12
+
+
+def test_a_later_rule_wins_only_for_the_numbers_it_sets(conn):
+    """Per attribute: a later household-size rule leaves storeys standing."""
+    t = _Territory(conn)
+    sid = t.scenario()
+    t.rule(sid, _AREA_0_3, levels=6)
+    t.rule(sid, _AREA_ALL, people_per_household=2.5)
+
+    materialize_scenario(conn, scenario_id=sid)
+
+    assert _override_value(conn, sid, t.blocks[0], "num_levels") == 6
+    assert _override_value(conn, sid, t.blocks[0], "people_per_household") == 2.5
+
+
+def test_editing_an_earlier_rule_keeps_it_losing_where_they_overlap(conn):
+    """B5: dropping a number and typing it again used to give that attribute
+    alone a new ordinal, so the earlier rule beat every later one for it."""
+    t = _Territory(conn)
+    sid = t.scenario()
+    first = t.rule(sid, _AREA_0_3, levels=4, unit_size=90)
+    t.rule(sid, _AREA_ALL, unit_size=60)
+    for inputs in ({"levels": 4}, {"levels": 4, "unit_size": 90}):
+        update_rule(
+            conn, scenario_id=sid, rule_id=first, geometry_wkt=None, inputs=inputs
+        )
+
+    materialize_scenario(conn, scenario_id=sid)
+
+    assert _override_value(conn, sid, t.blocks[0], "unit_size") == 60
 
 
 def test_a_half_covered_block_is_caught_by_its_centroid(conn):
@@ -284,7 +338,7 @@ def test_a_half_covered_block_is_caught_by_its_centroid(conn):
         "-99.1840 19.4015,-99.1880 19.4015,-99.1880 19.4005))",
     )
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
+    t.rule(sid, _AREA_0_3, levels=6)
 
     materialize_scenario(conn, scenario_id=sid)
 
@@ -294,30 +348,47 @@ def test_a_half_covered_block_is_caught_by_its_centroid(conn):
 def test_an_area_catching_no_blocks_reports_zero_and_writes_nothing(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    eid = t.edit(sid, _AREA_EMPTY, "num_levels", 6)
+    rid = t.raw_rule(sid, _AREA_EMPTY, levels=6)
 
     result = materialize_scenario(conn, scenario_id=sid)
 
-    assert result.matched_per_edit[eid] == 0
+    assert result.matched_per_rule[rid] == 0
     assert result.overrides_written == 0
     assert _override_count(conn, sid) == 0
+
+
+def test_a_rule_catching_no_block_is_refused_when_it_is_written(conn):
+    """The write path: an area over the sea, outside the AOI, or with
+    longitude and latitude swapped is refused, not stored (B8)."""
+    t = _Territory(conn)
+    sid = t.scenario()
+
+    with pytest.raises(RuleCatchesNothing):
+        t.rule(sid, _AREA_EMPTY, levels=6)
+
+
+def test_a_rule_outside_the_aoi_catches_nothing(conn):
+    t = _Territory(conn)
+    sid = t.scenario(aoi_id=t.aoi_narrow)
+    with pytest.raises(RuleCatchesNothing):
+        t.rule(sid, _rect(-99.1850, -99.1770), levels=6)  # blocks 4-5 only
 
 
 def test_blocks_outside_the_aoi_are_excluded_and_the_count_says_so(conn):
     t = _Territory(conn)
     sid = t.scenario(aoi_id=t.aoi_narrow)
-    eid = t.edit(sid, _AREA_ALL, "num_levels", 6)
+    rid = t.rule(sid, _AREA_ALL, levels=6)
 
     result = materialize_scenario(conn, scenario_id=sid)
 
-    assert result.matched_per_edit[eid] == 4
+    assert result.matched_per_rule[rid] == 4
     assert _override_value(conn, sid, t.blocks[4], "num_levels") is None
 
 
 def test_it_refuses_when_the_scenario_has_no_aoi(conn):
     t = _Territory(conn)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
+    t.raw_rule(sid, _AREA_0_3, levels=6)
     _set_aoi_null(conn, sid)
 
     with pytest.raises(ScenarioHasNoAOI):
@@ -333,7 +404,7 @@ def test_materialising_twice_changes_nothing_and_publishes_nothing(conn):
     seed_assets(conn)
     t = _Territory(conn)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
+    t.rule(sid, _AREA_0_3, levels=6)
 
     first = materialize_scenario(conn, scenario_id=sid)
     version_before = _current_version(conn, sid, "num_levels")
@@ -346,30 +417,79 @@ def test_materialising_twice_changes_nothing_and_publishes_nothing(conn):
     assert _current_version(conn, sid, "num_levels") == version_before
 
 
-def test_removing_an_edit_removes_its_overrides_and_supersedes_its_results(conn):
+def test_removing_a_number_supersedes_the_results_it_was_behind(conn):
     # ⚠ All three policy attributes, over the same four blocks.
     # ``edificability.py`` skips a feature missing any one of them, so a
-    # one-edit fixture computes zero rows and this test would pass or fail for
-    # a reason that has nothing to do with supersession.
+    # one-number fixture computes zero rows and this test would pass or fail
+    # for a reason that has nothing to do with supersession.
     feat.seed_feature_types(conn)
     seed_assets(conn)
     seed_catalog(conn)
     t = _Territory(conn)
     sid = t.scenario()
-    levels_eid = t.edit(sid, _AREA_0_3, "num_levels", 6)
-    t.edit(sid, _AREA_0_3, "unit_size", 60)
-    t.edit(sid, _AREA_0_3, "people_per_household", 3.6)
+    rid = t.rule(sid, _AREA_0_3, levels=6, unit_size=60, people_per_household=3.6)
 
     materialize_scenario(conn, scenario_id=sid)
     _compute_density(conn, sid)
     assert _current_results(conn, sid, _DENSITY) != []
 
-    remove_edit(conn, edit_id=levels_eid)
-    result = materialize_scenario(conn, scenario_id=sid)
+    _, result = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rid,
+        geometry_wkt=None,
+        inputs={"unit_size": 60, "people_per_household": 3.6},
+    )
 
-    assert result.overrides_removed == 4  # 4 blocks x 1 attribute
+    assert result.overrides_removed == 8  # 4 blocks x floors and num_levels
     assert result.results_superseded == 4
     assert _current_results(conn, sid, _DENSITY) == []
+
+
+def test_a_block_a_rule_left_keeps_no_scenario_row(conn):
+    """B7: the blocks a rule leaves read the baseline, so their scenario rows
+    are deleted, not kept as copies of the baseline that would shadow it."""
+    feat.seed_feature_types(conn)
+    seed_assets(conn)
+    seed_catalog(conn)
+    t = _Territory(conn)
+    sid = t.scenario()
+    rid = t.rule(sid, _AREA_0_3, levels=6, unit_size=60, people_per_household=3.6)
+    materialize_scenario(conn, scenario_id=sid)
+    _compute_density(conn, sid)
+    assert len(_current_results(conn, sid, _DENSITY)) == 4
+
+    # Moved onto blocks 4-5: blocks 0-3 no longer carry any override.
+    update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rid,
+        geometry_wkt=_rect(-99.1850, -99.1770),
+        inputs={"levels": 6, "unit_size": 60, "people_per_household": 3.6},
+    )
+    result = materialize_scenario(conn, scenario_id=sid)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM curated_geo.indicator_result "
+            "WHERE scenario_id = %s AND feature_id = ANY(%s::uuid[])",
+            (sid, t.blocks[:4]),
+        )
+        assert cur.fetchone()[0] == 0
+    # The recompute covers the blocks the rule is on, not the ones it left.
+    assert set(result.footprint_features) == set(t.blocks[4:])
+
+
+def test_deleting_the_last_rule_leaves_nothing_to_compute(conn):
+    t = _Territory(conn)
+    sid = t.scenario()
+    rid = t.rule(sid, _AREA_0_3, levels=6)
+    materialize_scenario(conn, scenario_id=sid)
+
+    _, result = delete_rule(conn, scenario_id=sid, rule_id=rid)
+
+    assert result.footprint_features == ()
+    assert _override_count(conn, sid) == 0
 
 
 def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
@@ -377,15 +497,113 @@ def test_removing_the_last_edit_for_an_attribute_retires_its_version(conn):
     seed_assets(conn)
     t = _Territory(conn)
     sid = t.scenario()
-    eid = t.edit(sid, _AREA_0_3, "num_levels", 6)
+    rid = t.rule(sid, _AREA_0_3, levels=6)
 
     materialize_scenario(conn, scenario_id=sid)
     assert _current_version(conn, sid, "num_levels") is not None
 
-    remove_edit(conn, edit_id=eid)
+    delete_rule(conn, scenario_id=sid, rule_id=rid)
     materialize_scenario(conn, scenario_id=sid)
 
     assert _current_version(conn, sid, "num_levels") is None
+
+
+_PLANNED_FLOORS = "urban_form_block_planned_floors"
+
+
+def _recompute(conn, sid: str):
+    """What the API does: materialise, then submit the footprint."""
+    from reimagina.orchestration.synchronous import SynchronousOrchestrator
+
+    result = materialize_scenario(conn, scenario_id=sid)
+    return SynchronousOrchestrator().submit_run(
+        conn,
+        changed_attributes=list(result.footprint_attributes),
+        edited_features=list(result.footprint_features),
+        scenario_id=sid,
+        aoi_id=result.aoi_id,
+        code_version="test",
+    )
+
+
+def _planned(conn, sid: str) -> list[str]:
+    from reimagina.orchestration.plan import plan_run
+
+    result = materialize_scenario(conn, scenario_id=sid)
+    plan = plan_run(
+        conn,
+        changed_attributes=list(result.footprint_attributes),
+        edited_features=list(result.footprint_features),
+        scenario_id=sid,
+        aoi_id=result.aoi_id,
+    )
+    return [unit.indicator for unit in plan.units]
+
+
+def _seed(conn) -> _Territory:
+    feat.seed_feature_types(conn)
+    seed_catalog(conn)
+    seed_assets(conn)
+    return _Territory(conn, attributes={"floors": 2})
+
+
+def test_re_adding_a_removed_rule_before_any_recompute_is_not_fresh(conn):
+    """A removal retires rows; a version that comes back must not vouch for them.
+
+    Re-adding the identical rule returns the override version to the digest
+    the first recompute recorded. Materialisation drops the partition's
+    records of the indicators the removed numbers fed, so freshness cannot
+    call that old run current over rows retired in between (B1).
+    """
+    t = _seed(conn)
+    sid = t.scenario()
+    rid = t.rule(sid, _AREA_0_3, levels=9)
+    _recompute(conn, sid)
+    assert _current_results(conn, sid, _PLANNED_FLOORS) != []
+
+    delete_rule(conn, scenario_id=sid, rule_id=rid)
+    materialize_scenario(conn, scenario_id=sid)  # its recompute never completes
+    assert _current_results(conn, sid, _PLANNED_FLOORS) == []
+
+    t.rule(sid, _AREA_0_3, levels=9)
+    assert _PLANNED_FLOORS in _planned(conn, sid)
+
+
+def test_moving_a_rule_back_before_any_recompute_is_not_fresh(conn):
+    t = _seed(conn)
+    sid = t.scenario()
+    rid = t.rule(sid, _AREA_0_3, levels=9)
+    _recompute(conn, sid)
+
+    update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rid,
+        geometry_wkt=_rect(-99.1850, -99.1770),
+        inputs={"levels": 9},
+    )
+    materialize_scenario(conn, scenario_id=sid)
+    update_rule(
+        conn, scenario_id=sid, rule_id=rid, geometry_wkt=_AREA_0_3, inputs={"levels": 9}
+    )
+
+    assert _PLANNED_FLOORS in _planned(conn, sid)
+
+
+def test_a_recompute_after_the_undo_converges(conn):
+    """Freshness is not made unreachable: one run clears it."""
+    t = _seed(conn)
+    sid = t.scenario()
+    rid = t.rule(sid, _AREA_0_3, levels=9)
+    _recompute(conn, sid)
+    delete_rule(conn, scenario_id=sid, rule_id=rid)
+    materialize_scenario(conn, scenario_id=sid)
+    t.rule(sid, _AREA_0_3, levels=9)
+
+    _recompute(conn, sid)
+
+    assert len(_current_results(conn, sid, _PLANNED_FLOORS)) == 4
+    assert _planned(conn, sid) == []
 
 
 def test_an_uppercase_id_materialises_under_the_canonical_partition(conn):
@@ -401,7 +619,7 @@ def test_an_uppercase_id_materialises_under_the_canonical_partition(conn):
     seed_assets(conn)
     t = _Territory(conn)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
+    t.rule(sid, _AREA_0_3, levels=6)
 
     materialize_scenario(conn, scenario_id=sid.upper())
 
@@ -414,20 +632,25 @@ def test_an_uppercase_id_materialises_under_the_canonical_partition(conn):
 
 # ── Ceilings ────────────────────────────────────────────────────────────────
 
-#: Base attributes completing the edificability triple, so an edit that sets
-#: only ``num_levels`` still resolves to a checkable block.
+#: Base attributes completing the edificability triple, so a rule that sets
+#: only storeys still resolves to a checkable block.
 _BASE = {"unit_size": 60, "people_per_household": 3.6}
 
 
 def test_a_ceiling_breach_refuses_the_whole_run(conn):
     t = _Territory(conn, attributes=_BASE)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 13)  # 10000 * 13 / 60 = 2166 > 2000
+    rid = t.raw_rule(sid, _AREA_0_3, levels=13)  # 10000 * 13 / 60 = 2166 > 2000
 
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid)
 
     assert exc.value.breaches[0].indicator_slug == _DENSITY
+    # B20: the refusal names the rule and the storeys a block would allow.
+    breach = exc.value.breaches[0]
+    assert exc.value.rules_of(breach) == ((rid, 1),)
+    assert exc.value.allowed_levels[(breach.feature_id, _DENSITY)] == 12
+    assert "Rule 1" in str(exc.value) and "at most 12 storeys" in str(exc.value)
     assert {b.feature_id for b in exc.value.breaches} == set(t.blocks[:4])
     assert _override_count(conn, sid) == 0
     assert _materialized_at(conn, sid) is None
@@ -438,26 +661,20 @@ def test_lot_coverage_counts_towards_the_ceiling(conn):
     at half coverage the same rule is 1083 units/ha and materialises."""
     t = _Territory(conn, attributes=_BASE)
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 13)
-    t.edit(sid, _AREA_0_3, "lot_coverage", 0.5)
+    t.rule(sid, _AREA_0_3, levels=13, lot_coverage=0.5)
 
     materialize_scenario(conn, scenario_id=sid)
 
     assert _override_count(conn, sid) > 0
 
 
-def test_a_floors_edit_is_judged_on_floors_not_on_num_levels(conn):
-    """``floors=201`` over ``num_levels=6`` is refused.
-
-    The two are separate authorable attributes. The planned-floors indicator
-    reads ``floors``, and its ``valid_max`` is 200, so this run would abort
-    the compute; checking ``num_levels`` in its place saw six storeys and let
-    it through.
-    """
-    t = _Territory(conn, attributes=_BASE)
+def test_a_baseline_floors_above_the_bound_is_judged_on_floors(conn):
+    """The planned-floors bound is checked against the ``floors`` the block
+    will be computed with, here its own baseline value, which a rule that sets
+    only household size leaves in place."""
+    t = _Territory(conn, attributes={**_BASE, "num_levels": 6, "floors": 201})
     sid = t.scenario()
-    t.edit(sid, _AREA_0_3, "num_levels", 6)
-    t.edit(sid, _AREA_0_3, "floors", 201)
+    t.raw_rule(sid, _AREA_0_3, people_per_household=3)
 
     with pytest.raises(CeilingExceeded) as exc:
         materialize_scenario(conn, scenario_id=sid)
@@ -521,50 +738,48 @@ def test_one_district_breaching_does_not_refuse_on_a_blend(conn):
     )
     short_area = _rect(-99.2010, -99.1930)
     tall_area = _rect(-99.3100, -99.2600, 19.4900, 19.5300)
-    add_edit(
+    add_rule(
         conn,
         scenario_id=sid,
         geometry_wkt=short_area,
         type_id=type_id,
-        attribute_key="num_levels",
-        value_numeric=6,
-    )
-    add_edit(
-        conn,
-        scenario_id=sid,
-        geometry_wkt=tall_area,
-        type_id=type_id,
-        attribute_key="num_levels",
-        value_numeric=13,
+        inputs={"levels": 6},
     )
 
     with pytest.raises(CeilingExceeded) as exc:
-        materialize_scenario(conn, scenario_id=sid)
+        add_rule(
+            conn,
+            scenario_id=sid,
+            geometry_wkt=tall_area,
+            type_id=type_id,
+            inputs={"levels": 13},
+        )
 
     assert {b.feature_id for b in exc.value.breaches} == set(tall)
     assert set(small).isdisjoint({b.feature_id for b in exc.value.breaches})
-    assert _override_count(conn, sid) == 0
+    # Nothing written on top of the first rule's two blocks x two attributes.
+    assert _override_count(conn, sid) == 4
 
 
 # ── Concurrency ─────────────────────────────────────────────────────────────
 
 
-def _edit_count(conn, scenario_id) -> int:
+def _rule_count(conn, scenario_id) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT count(*) FROM curated_geo.scenario_edit WHERE scenario_id = %s",
+            "SELECT count(*) FROM curated_geo.scenario_rule WHERE scenario_id = %s",
             (scenario_id,),
         )
         return int(cur.fetchone()[0])
 
 
-def test_concurrent_materialisation_does_not_revive_a_removed_edit(
+def test_concurrent_materialisation_does_not_revive_a_removed_rule(
     migrated_db, monkeypatch
 ):
     """Two materialisations of one scenario must not interleave into a third state.
 
-    The run being held open (``c1``) resolves the scenario's edits, then pauses
-    between resolution and writing. ``c2`` meanwhile removes the only edit and
+    The run being held open (``c1``) resolves the scenario's rules, then pauses
+    between resolution and writing. ``c2`` meanwhile removes the only rule and
     materialises that — correctly, to nothing. Without a row lock, ``c1``
     resumes with a resolution that is now historical and writes override rows
     back for an edit that no longer exists; worse, ``c2``'s digest query could
@@ -588,7 +803,7 @@ def test_concurrent_materialisation_does_not_revive_a_removed_edit(
     try:
         territory = _Territory(setup, suffix="_concurrency")
         sid = territory.scenario()
-        eid = territory.edit(sid, _AREA_0_3, "num_levels", 6)
+        rid = territory.rule(sid, _AREA_0_3, levels=6)
         setup.commit()
 
         resolved = threading.Event()
@@ -596,8 +811,8 @@ def test_concurrent_materialisation_does_not_revive_a_removed_edit(
         errors: list[BaseException] = []
         unpaused = authoring._refuse_ceiling_breaches
 
-        def pause_after_resolution(conn, **kwargs):
-            unpaused(conn, **kwargs)
+        def pause_after_resolution(conn, *args, **kwargs):
+            unpaused(conn, *args, **kwargs)
             if conn is c1:  # only the run this test holds open
                 resolved.set()
                 # Bounded: with the lock, c2 is blocked and never arrives.
@@ -619,7 +834,7 @@ def test_concurrent_materialisation_does_not_revive_a_removed_edit(
         try:
             assert resolved.wait(timeout=30), "the held run never reached the pause"
             try:
-                remove_edit(c2, edit_id=eid)
+                delete_rule(c2, scenario_id=sid, rule_id=rid)
                 materialize_scenario(c2, scenario_id=sid)
                 c2.commit()
             finally:
@@ -629,8 +844,8 @@ def test_concurrent_materialisation_does_not_revive_a_removed_edit(
 
         assert not held.is_alive()
         assert not errors, errors
-        # The committed scenario has no edits, so it must have no overrides.
-        assert _edit_count(setup, sid) == 0
+        # The committed scenario has no rules, so it must have no overrides.
+        assert _rule_count(setup, sid) == 0
         assert _override_count(setup, sid) == 0
     finally:
         for c in (c1, c2):
@@ -646,7 +861,7 @@ def test_concurrent_materialisation_does_not_revive_a_removed_edit(
                 "(SELECT id FROM app_core.scenario WHERE project_id = %s)",
                 territory.project_id,
             )
-            # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
+            # Cascades scenario, scenario_rule, area_of_interest, aoi_feature.
             discard(
                 setup,
                 "DELETE FROM app_core.project WHERE id = %s",

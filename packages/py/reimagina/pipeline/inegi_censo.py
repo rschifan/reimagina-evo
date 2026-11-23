@@ -1,7 +1,9 @@
 """Ingest INEGI 2020 census per-block attributes into curated_geo.observation.
 
-Targets ``data/sources/lake/inegi/censo/manzanas_2020.parquet/``,
-hive-partitioned by ``entidad=N/`` only (the 2020 release dropped the
+Reads a local parquet copy of INEGI's 2020 census results by block
+(the Mexicali source bundle's ``inegi/censo_2020/manzanas_2020.parquet/``;
+the caller names it, there is no default location), hive-partitioned by
+``entidad=N/`` only (the 2020 release dropped the
 nested ``mun`` partition that the 2010 release used). Municipality
 identification lives inside each row as the human-readable ``nom_mun``
 string, not a numeric ``CVE_MUN`` — see :func:`_build_muni_lookup` for
@@ -36,19 +38,21 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as pads
 
+from reimagina.assets.publish import asset_key_for_feature_type, publish_version
 from reimagina.data import catalog as cat
+from reimagina.data import feature as feat
 from reimagina.data import observation as obs
 
 
 CENSO_PROVIDER = "INEGI"
 CENSO_LICENSE = "Libre uso — Términos de Uso de la Información del INEGI"
 CENSO_VERSION = "2020-censo"
+# INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+CENSO_CREDIT = "Fuente: INEGI, Censo de Población y Vivienda 2020"
 CENSO_DATASET_NAME = "México · Censo de Población 2020 — manzanas (INEGI)"
 
-# Default location relative to repo root; overridable for tests.
-DEFAULT_SOURCE_ROOT = Path("data/sources/lake/inegi/censo/manzanas_2020.parquet")
-
-LAKE_PREFIX = "lake://private-lake/inegi/censo/manzanas_2020.parquet"
+# INEGI's public page for the census: the lineage in storage_uri.
+CENSO_URL = "https://www.inegi.org.mx/programas/ccpv/2020/"
 
 
 # Headline subset of the ~225-column census schema. Names match the
@@ -74,21 +78,6 @@ HEADLINE_COLUMNS: tuple[str, ...] = (
 )
 
 ATTRIBUTE_KEY_PREFIX = "censo_2020"
-
-#: Census columns that are the baseline of a scenario input, and land under
-#: that input's key instead of ``censo_2020_<column>``. ``prom_ocup`` is INEGI's
-#: average occupants per occupied private dwelling: the quantity a scenario
-#: rule's "people per household" overrides, and what the edificability family
-#: reads through ``effective_numeric`` (override, then observation, then the
-#: demo jsonb of ``scripts/seed_demo_attributes.py``).
-#:
-#: ⚠ Not a headline column, so the default load leaves it out; ask for it with
-#: ``--columns prom_ocup``.
-#:
-#: ⚠ 0 is skipped, not written. INEGI writes 0 for a block with no occupied
-#: dwelling, which is an absence and not a household of nobody: written, it
-#: would zero that block's potential population under every scenario.
-SCENARIO_INPUT_COLUMNS: dict[str, str] = {"prom_ocup": "people_per_household"}
 
 
 @dataclass(frozen=True)
@@ -261,13 +250,14 @@ def ensure_censo_source(conn) -> str:
         provider=CENSO_PROVIDER,
         storage_type="tabular",
         integration_role="enrichment",
-        storage_uri=LAKE_PREFIX,
+        storage_uri=CENSO_URL,
         version=CENSO_VERSION,
         license=CENSO_LICENSE,
         notes=(
             "INEGI Censo 2020 manzana-level demographics + housing. "
-            "Read from the private-lake private data lake mirror."
+            "Read from a local parquet copy of the INEGI product."
         ),
+        credit=CENSO_CREDIT,
     )
 
 
@@ -297,9 +287,9 @@ def _fetch_feature_ids_by_cvegeo(conn, cvegeos: list[str]) -> dict[str, str]:
 def bootstrap(
     conn,
     *,
+    source_root: Path,
     cve_ent_filter: list[str] | None = None,
     columns: tuple[str, ...] = HEADLINE_COLUMNS,
-    source_root: Path | None = None,
     code_version: str = "dev",
     orchestrator_run_id: str | None = None,
 ) -> CensoBootstrapResult:
@@ -316,18 +306,15 @@ def bootstrap(
     every 2020 manzana, or when ``nom_mun`` resolves to a CVE_MUN we
     haven't loaded. The count is reported in the return value.
     """
-    if source_root is not None:
-        root = Path(source_root)
-    else:
-        root = DEFAULT_SOURCE_ROOT
+    root = Path(source_root)
     if not root.is_absolute():
         root = REPO_ROOT / root
 
     if not root.exists():
         raise FileNotFoundError(
             f"INEGI 2020 census parquet not found: {root}. "
-            "Verify the data lake mirror at "
-            "data/sources/lake/inegi/censo/manzanas_2020.parquet/ exists."
+            "--source-root must be the census parquet directory, e.g. the "
+            "source bundle's inegi/censo_2020/manzanas_2020.parquet/."
         )
 
     df = read_layer_to_dataframe(
@@ -388,13 +375,10 @@ def bootstrap(
             ):
                 if pd.isna(raw):
                     continue
-                input_key = SCENARIO_INPUT_COLUMNS.get(col)
-                if input_key is not None and float(raw) <= 0:
-                    continue
                 records.append(
                     {
                         "feature_id": feature_id,
-                        "attribute_key": input_key or f"{ATTRIBUTE_KEY_PREFIX}_{col}",
+                        "attribute_key": f"{ATTRIBUTE_KEY_PREFIX}_{col}",
                         "value_type": "numeric",
                         "value": float(raw),
                     }
@@ -407,6 +391,28 @@ def bootstrap(
             ingestion_run_id=run_id,
         )
 
+        # The observations sit on blocks, and their readers declare block
+        # inputs as ``mex.block`` attributes (the census fit in
+        # ``scripts/seed_demo_attributes.py`` turns ``censo_2020_vivtot`` and
+        # ``_pobtot`` into edificability inputs) — nothing has an edge to
+        # ``censo.2020``.
+        # Publishing only that would leave every reader "fresh" on old values.
+        # Before complete_ingestion_run, which takes an exclusive MV lock;
+        # that call publishes censo.2020, so the block layer is published here.
+        block_key = (
+            asset_key_for_feature_type(conn, feat.get_type_id(conn, "MEX", "block"))
+            if observations_written
+            else None
+        )
+        if block_key:
+            publish_version(
+                conn,
+                asset_key=block_key,
+                version=str(run_id),
+                ingestion_run_id=run_id,
+                dataset_version=CENSO_VERSION,
+                row_count=observations_written,
+            )
         cat.complete_ingestion_run(
             conn,
             run_id,

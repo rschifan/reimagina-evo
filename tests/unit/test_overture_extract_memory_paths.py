@@ -95,3 +95,42 @@ def test_the_measurement_is_recorded_where_the_choice_is_made():
     attribution = overture._write_subset_per_file.__doc__ or ""
     assert "metadata, not data" in attribution
     assert "4,170 MB" in attribution, "the line that locates the cost"
+
+
+def _bbox_rows(n: int):
+    import pyarrow as pa
+
+    box = {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 1.0}
+    return pa.table({"id": list(range(n)), "bbox": [box] * n})
+
+
+def test_an_interrupted_low_memory_extract_leaves_no_file(tmp_path, monkeypatch):
+    """The writer's footer is valid even when the scan raised, so a partial
+    extract used to look complete to every later "reuse it" check."""
+    import pyarrow.dataset as pads
+    import pyarrow.parquet as pq
+    import pytest
+    from pyarrow import fs as pafs
+
+    src = tmp_path / "release"
+    src.mkdir()
+    for name in ("a.parquet", "b.parquet"):
+        pq.write_table(_bbox_rows(3), src / name)
+
+    real_dataset = pads.dataset
+
+    def flaky_dataset(path, **kwargs):
+        if str(path).endswith("b.parquet"):
+            raise OSError("S3 read timed out")
+        return real_dataset(path, filesystem=pafs.LocalFileSystem(), format="parquet")
+
+    monkeypatch.setattr(overture.pafs, "S3FileSystem", lambda **_k: None)
+    monkeypatch.setattr(overture, "_s3_prefix_from_glob", lambda _g: str(src))
+    monkeypatch.setattr(overture.pads, "dataset", flaky_dataset)
+
+    out = tmp_path / "subset.parquet"
+    with pytest.raises(OSError):
+        overture._extract_remote_overture_subset(
+            "s3://x/*.parquet", out, (-1, -1, 2, 2), low_memory=True
+        )
+    assert list(tmp_path.glob("subset.parquet*")) == []

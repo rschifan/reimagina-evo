@@ -1023,7 +1023,10 @@ def test_submit_run_default_is_fire_and_forget_202(client, monkeypatch):
 
     response = client.post(
         "/jobs",
-        json={"changed_attributes": ["geometry"], "edited_features": ["f1"]},
+        json={
+            "changed_attributes": ["geometry"],
+            "edited_features": ["4f0c1a8e-2b7d-4c1e-9f3a-0d6b5e7c8a91"],
+        },
     )
 
     assert response.status_code == 202
@@ -1056,7 +1059,7 @@ def test_submit_run_wait_drains_and_returns_200(client, monkeypatch):
         json={
             "wait": True,
             "changed_attributes": ["geometry"],
-            "edited_features": ["f1"],
+            "edited_features": ["4f0c1a8e-2b7d-4c1e-9f3a-0d6b5e7c8a91"],
         },
     )
 
@@ -1182,3 +1185,21 @@ def test_runstore_answers_a_malformed_run_id_instead_of_raising(conn):
 def test_jobs_route_404s_a_malformed_run_id_end_to_end(client):
     """The same thing through the live app, with the real orchestrator."""
     assert client.get("/jobs/not-a-uuid").status_code == 404
+
+
+def test_stats_count_estimated_counts_blocks_with_estimated_inputs(
+    client, conn, two_aois_one_block_each
+):
+    """The fit marks a block whose coverage it had to guess; the stats say how
+    many of the counted rows are such blocks, scoped like ``count``."""
+    fixture = two_aois_one_block_each
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes || "
+            """'{"estimated": "no_footprint"}'::jsonb WHERE id = %s""",
+            (fixture["block_a"],),
+        )
+    url = f"/indicators/{fixture['slug']}/stats"
+    assert client.get(url).json()["count_estimated"] == 1
+    assert client.get(f"{url}?aoi_id={fixture['aoi_a']}").json()["count_estimated"] == 1
+    assert client.get(f"{url}?aoi_id={fixture['aoi_b']}").json()["count_estimated"] == 0

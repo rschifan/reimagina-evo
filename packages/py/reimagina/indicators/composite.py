@@ -57,14 +57,46 @@ contribution points the same way.
 
 Clamp first, then orient: a value stored above its declared bound would
 otherwise orient to a negative contribution.
+
+**A target band replaces both for one input.** Some inputs are good in a range,
+not at an end: livability's housing density is best between 50 and 150
+dwellings/ha, and normalising it against its 2,000 safety cap made the densest
+block the most livable. An edge with ``target_band=(low, high)`` scores 1
+inside the band and falls linearly to 0 at the input's ``valid_min`` below and
+at ``2 × high`` above (``component_score``). Still 0–1, so the weights keep
+their meaning.
 """
 
 from __future__ import annotations
 
+from reimagina.data.feature import get_type_id
 from reimagina.indicators._compute import ComputeResult as ComputeResult
 from reimagina.indicators.catalog import SHIPPED_INDICATORS, IndicatorSpec
 from reimagina.jobs._lifecycle import job_run
 from reimagina.storage import backend_for_connection
+
+
+def component_score(
+    dep: IndicatorSpec, value: float, band: tuple[float, float] | None
+) -> float:
+    """One input's 0–1 contribution before weighting; see the module docstring."""
+    assert dep.valid_min is not None and dep.valid_max is not None
+    if band is not None:
+        low, high = band
+        if value < low:
+            score = (value - dep.valid_min) / (low - dep.valid_min)
+        else:
+            score = (2 * high - value) / high if value > high else 1.0
+        return min(1.0, max(0.0, score))
+    # Clamped, because r016's trigger bounds what is *written* but a bound can
+    # be widened later while old rows persist, and a value outside 0–1 would
+    # let one input exceed its weight. Clamp before orienting, or a value above
+    # the bound would orient negative.
+    x = min(1.0, max(0.0, (value - dep.valid_min) / (dep.valid_max - dep.valid_min)))
+    # Orient before weighting, so every contribution points the same way.
+    # `weight >= 0` is enforced by r016, so this cannot be expressed as a
+    # negative weight; without it a distance input would score "far" as good.
+    return x if dep.higher_is_better else 1.0 - x
 
 
 def compute_composite(
@@ -85,6 +117,7 @@ def compute_composite(
 
     catalog = {s.slug: s for s in SHIPPED_INDICATORS}
 
+    bands = {e.indicator_slug: e.target_band for e in spec.inputs if e.target_band}
     weighted_inputs: list[tuple[float, dict[str, float]]] = []
     for dep_slug, weight in spec.depends_on:
         dep = catalog.get(dep_slug)
@@ -101,22 +134,12 @@ def compute_composite(
                 f"{dep_slug!r} declares valid_min >= valid_max "
                 f"({dep.valid_min} >= {dep.valid_max}); cannot normalise."
             )
-        lo = dep.valid_min
         rows = result_repo.list_current_for_indicator(
             indicator_slug=dep_slug, scenario_id=scenario_id
         )
-        # Orient before weighting, so every contribution points the same way.
-        # `weight >= 0` is enforced by r016, so this cannot be expressed as a
-        # negative weight; without it a distance input would score "far" as good.
-        orient = (lambda x: x) if dep.higher_is_better else (lambda x: 1.0 - x)
+        band = bands.get(dep_slug)
         values = {
-            # Clamped, because r016's trigger bounds what is *written* but a
-            # bound can be widened later while old rows persist, and a value
-            # outside 0–1 would let one input exceed its weight. Clamp before
-            # orienting, or a value above the bound would orient negative.
-            str(r["feature_id"]): orient(
-                min(1.0, max(0.0, (r["value_numeric"] - lo) / span))
-            )
+            str(r["feature_id"]): component_score(dep, r["value_numeric"], band)
             for r in rows
             if r.get("value_numeric") is not None
             # Only this composite's own grain. An input rolled up to a coarser
@@ -132,6 +155,19 @@ def compute_composite(
     common = set.intersection(*(set(v) for _, v in weighted_inputs))
     if feature_ids is not None:
         common &= {str(f) for f in feature_ids}
+    if aoi_id is not None:
+        # The input rows are unscoped; without this an AOI-scoped run writes
+        # every block in the database. Same AOI test the direct indicators use.
+        feature_repo = backend.feature_repo()
+        common &= {
+            fid
+            for grain in spec.applies_to
+            for fid in feature_repo.feature_ids_in_aoi(
+                type_id=get_type_id(conn, "MEX", grain),
+                aoi_id=aoi_id,
+                feature_ids=feature_ids,
+            )
+        }
 
     numeric_rows = [
         (fid, sum(weight * values[fid] for weight, values in weighted_inputs))

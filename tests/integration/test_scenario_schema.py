@@ -8,6 +8,8 @@ reject *something*.
 
 from __future__ import annotations
 
+import uuid
+
 import psycopg2.errors
 import pytest
 
@@ -131,25 +133,24 @@ def _block_type_id(conn) -> str:
         return str(cur.fetchone()[0])
 
 
-def _insert_edit(
+def _insert_rule(
     conn,
     scenario_id: str,
     type_id: str,
     *,
     ordinal: int = 1,
     geometry_wkt: str = _SQUARE,
+    inputs: str = '{"levels": 6}',
 ) -> str:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO curated_geo.scenario_edit
-              (scenario_id, ordinal, geometry, type_id, attribute_key,
-               value_numeric)
-            VALUES (%s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326), %s,
-                    'floors', 6)
+            INSERT INTO curated_geo.scenario_rule
+              (scenario_id, ordinal, geometry, type_id, inputs)
+            VALUES (%s, %s, ST_SetSRID(ST_GeomFromText(%s), 4326), %s, %s::jsonb)
             RETURNING id
             """,
-            (scenario_id, ordinal, geometry_wkt, type_id),
+            (scenario_id, ordinal, geometry_wkt, type_id, inputs),
         )
         return str(cur.fetchone()[0])
 
@@ -161,28 +162,75 @@ def test_scenario_tables_exist_with_their_constraints(conn):
     assert _column_exists(conn, "app_core.scenario", "materialized_at")
     assert _rls_enabled(conn, "app_core", "scenario")
     assert _policy_named(conn, "app_core", "scenario", "tenant_isolation")
-    # curated_geo.scenario_edit
-    assert _has_unique(conn, "curated_geo.scenario_edit", ["scenario_id", "ordinal"])
+    # curated_geo.scenario_rule (r055)
+    assert _has_unique(conn, "curated_geo.scenario_rule", ["scenario_id", "ordinal"])
     assert _has_fk(
-        conn, "curated_geo.scenario_edit", "type_id", "curated_geo.feature_type_catalog"
+        conn, "curated_geo.scenario_rule", "type_id", "curated_geo.feature_type_catalog"
     )
-    assert _column_not_null(conn, "curated_geo.scenario_edit", "value_numeric")
-    assert not _column_exists(conn, "curated_geo.scenario_edit", "value_text")
+    assert _has_fk(
+        conn, "curated_geo.scenario_rule", "scenario_id", "app_core.scenario"
+    )
+    assert _column_not_null(conn, "curated_geo.scenario_rule", "inputs")
+    # r048's per-attribute edits are gone: a rule is one row.
+    assert not _column_exists(conn, "curated_geo.scenario_edit", "id")
 
 
-def test_scenario_edit_rejects_a_non_polygon_geometry(conn):
+@pytest.mark.parametrize(
+    "table",
+    [
+        "curated_geo.scenario_override",
+        "curated_geo.indicator_result",
+        "jobs_runtime.job_run",
+        "curated_geo.aoi_indicator_summary",
+    ],
+)
+def test_every_scenario_id_column_references_the_scenario(conn, table):
+    """r016 and r030 left these bare uuids; r055 made them FKs that cascade, so
+    deleting a scenario (or a project) cannot orphan them, and a late write for
+    a deleted scenario fails instead of landing."""
+    assert _has_fk(conn, table, "scenario_id", "app_core.scenario")
+    schema, name = _split(table)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.confdeltype, c.convalidated, c.condeferrable,
+                   c.condeferred
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE c.contype = 'f' AND n.nspname = %s AND t.relname = %s
+              AND c.confrelid = 'app_core.scenario'::regclass
+            """,
+            (schema, name),
+        )
+        cascade, validated, deferrable, deferred = cur.fetchone()
+        assert cascade == "c"  # ON DELETE CASCADE
+        # Added NOT VALID, then validated: existing rows were checked too.
+        assert validated
+        # Immediate for every writer; a compute unit defers it (runners._fenced).
+        assert (deferrable, deferred) == (True, False)
+
+
+def test_scenario_rule_rejects_a_non_polygon_geometry(conn):
     sid = _insert_scenario(conn, insert_project(conn))
     type_id = _block_type_id(conn)
     with pytest.raises(psycopg2.errors.CheckViolation):
-        _insert_edit(conn, sid, type_id, geometry_wkt="LINESTRING(0 0, 1 1)")
+        _insert_rule(conn, sid, type_id, geometry_wkt="LINESTRING(0 0, 1 1)")
 
 
-def test_scenario_edit_ordinal_is_unique_per_scenario(conn):
+def test_scenario_rule_rejects_an_empty_set_of_numbers(conn):
     sid = _insert_scenario(conn, insert_project(conn))
     type_id = _block_type_id(conn)
-    _insert_edit(conn, sid, type_id, ordinal=1)
+    with pytest.raises(psycopg2.errors.CheckViolation):
+        _insert_rule(conn, sid, type_id, inputs="{}")
+
+
+def test_scenario_rule_ordinal_is_unique_per_scenario(conn):
+    sid = _insert_scenario(conn, insert_project(conn))
+    type_id = _block_type_id(conn)
+    _insert_rule(conn, sid, type_id, ordinal=1)
     with pytest.raises(psycopg2.errors.UniqueViolation):
-        _insert_edit(conn, sid, type_id, ordinal=1)
+        _insert_rule(conn, sid, type_id, ordinal=1)
 
 
 def test_tenant_policy_mirrors_the_project_scoped_predicate(conn):
@@ -206,17 +254,17 @@ def test_tenant_policy_mirrors_the_project_scoped_predicate(conn):
 def test_explore_exposes_scenarios_with_their_counts(conn):
     sid = _insert_scenario(conn, insert_project(conn))
     type_id = _block_type_id(conn)
-    _insert_edit(conn, sid, type_id, ordinal=1)
-    _insert_edit(conn, sid, type_id, ordinal=2)
+    _insert_rule(conn, sid, type_id, ordinal=1)
+    _insert_rule(conn, sid, type_id, ordinal=2)
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT name, edit_count, override_count, aoi_id, materialized_at "
+            "SELECT name, rule_count, override_count, aoi_id, materialized_at "
             "FROM explore.scenario_v WHERE id = %s",
             (sid,),
         )
-        name, edits, overrides, aoi_id, materialized_at = cur.fetchone()
+        name, rules, overrides, aoi_id, materialized_at = cur.fetchone()
     assert name == "densify"
-    assert edits == 2
+    assert rules == 2
     assert overrides == 0
     assert aoi_id is None and materialized_at is None
 
@@ -255,3 +303,121 @@ def test_explore_override_count_counts_the_scenarios_overrides(conn):
             "SELECT override_count FROM explore.scenario_v WHERE id = %s", (sid,)
         )
         assert cur.fetchone()[0] == 3
+
+
+# ── r055's conversion of r048's edits into rules ─────────────────────────
+
+
+def _r055():
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "infra/db/migrations/versions/r055_scenario_rule.py"
+    )
+    spec = importlib.util.spec_from_file_location("r055", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_r055_groups_edits_into_rules_and_back(conn):
+    """The upgrade's data step, run against a hand-made r048 ``scenario_edit``.
+
+    Edits group by identical geometry, as the workspace grouped them; a rule's
+    ordinal is the rank of its first edit; storeys come from ``num_levels``
+    (``floors`` for a half-written rule); the latest edit of a key wins. The
+    downgrade's re-expansion keeps the rules' order.
+    """
+    r055 = _r055()
+    sid = _insert_scenario(conn, insert_project(conn))
+    type_id = _block_type_id(conn)
+    other = "POLYGON((2 2, 2 3, 3 3, 3 2, 2 2))"
+    with conn.cursor() as cur:
+        cur.execute(r055._SCENARIO_EDIT_DDL)
+        for ordinal, wkt, key, value in [
+            (3, _SQUARE, "floors", 4),
+            (4, _SQUARE, "num_levels", 4),
+            (5, _SQUARE, "unit_size", 90),
+            (6, other, "floors", 2),  # half-written: floors only
+            (7, other, "people_per_household", 3),
+            (9, _SQUARE, "lot_coverage", 0.6),  # re-added later: same rule
+        ]:
+            cur.execute(
+                "INSERT INTO curated_geo.scenario_edit "
+                "(scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric) "
+                "VALUES (%s, %s, ST_GeomFromText(%s, 4326), %s, %s, %s)",
+                (sid, ordinal, wkt, type_id, key, value),
+            )
+        cur.execute(r055.CONVERT_EDITS)
+        cur.execute(
+            "SELECT ordinal, inputs, ST_AsText(geometry) FROM curated_geo.scenario_rule "
+            "WHERE scenario_id = %s ORDER BY ordinal",
+            (sid,),
+        )
+        rules = cur.fetchall()
+        assert [(o, i) for o, i, _ in rules] == [
+            (1, {"levels": 4, "unit_size": 90, "lot_coverage": 0.6}),
+            (2, {"levels": 2, "people_per_household": 3}),
+        ]
+
+        cur.execute("DELETE FROM curated_geo.scenario_edit")
+        cur.execute(r055.EXPAND_RULES)
+        cur.execute(
+            "SELECT attribute_key, value_numeric FROM curated_geo.scenario_edit "
+            "WHERE scenario_id = %s ORDER BY ordinal",
+            (sid,),
+        )
+        assert cur.fetchall() == [
+            ("floors", 4),
+            ("num_levels", 4),
+            ("unit_size", 90),
+            ("lot_coverage", 0.6),
+            ("floors", 2),
+            ("num_levels", 2),
+            ("people_per_household", 3),
+        ]
+
+
+def test_r055_deletes_partitions_of_scenarios_that_no_longer_exist(conn):
+    """Versions and materialisations keyed ``scenario=<id>`` with no scenario.
+
+    No FK can follow the partition string, so a scenario deleted before
+    ``delete_scenario`` removed them left these behind; ``asset_component_v``
+    keeps such a partition a node in the graph, and ``assets stale`` lists it
+    for ever. A live scenario's partition, and the baseline's, stay.
+    """
+    from reimagina.assets.keys import partition_key
+
+    r055 = _r055()
+    live = _insert_scenario(conn, insert_project(conn))
+    gone = str(uuid.uuid4())
+    partitions = [partition_key({"scenario": s}) for s in (live, gone)] + [""]
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO curated_geo.asset (asset_key, kind, backing_kind, "
+            "version_strategy) VALUES ('r055.orphan.test', 'source', 'config', "
+            "'digest') RETURNING id"
+        )
+        asset_id = cur.fetchone()[0]
+        for part in partitions:
+            cur.execute(
+                "INSERT INTO curated_geo.asset_version "
+                "(asset_id, partition_key, version, sequence) VALUES (%s, %s, 'v', 1)",
+                (asset_id, part),
+            )
+            cur.execute(
+                "INSERT INTO curated_geo.asset_materialization "
+                "(asset_id, partition_key, version) VALUES (%s, %s, 'v')",
+                (asset_id, part),
+            )
+        for statement in r055.DELETE_ORPHAN_PARTITIONS:
+            cur.execute(statement)
+        for table in ("asset_version", "asset_materialization"):
+            cur.execute(
+                f"SELECT partition_key FROM curated_geo.{table} "
+                "WHERE asset_id = %s ORDER BY partition_key",
+                (asset_id,),
+            )
+            assert [r[0] for r in cur.fetchall()] == sorted(partitions[::2]), table

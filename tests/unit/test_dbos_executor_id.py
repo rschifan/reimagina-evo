@@ -70,3 +70,121 @@ def test_the_worker_entrypoint_claims_its_own_role(monkeypatch):
 
     assert launched == [True]
     assert os.environ["REIMAGINA_EXECUTOR_ROLE"] == "worker"
+
+
+def test_an_embedded_cli_run_has_an_executor_id_of_its_own(monkeypatch):
+    """Two `evaluate-scenario` processes on one host must not share an id.
+
+    Both used to be `<host>:app`, so the second one's launch recovered the
+    first one's in-flight run and its units executed twice. A CLI executor is
+    short-lived; work it abandons is what the reclaim sweep picks up.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ID", raising=False)
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ROLE", raising=False)
+    seen: list[str] = []
+
+    class _Orchestrator:
+        def __init__(self, **_kw):
+            pass
+
+        def submit_run(self, conn, **_kw):
+            seen.append(_executor_id())
+            return SimpleNamespace(status=None, run_id="r1")
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_orchestrator.DBOSOrchestrator", _Orchestrator
+    )
+    monkeypatch.setattr(cli, "connect", lambda dsn: nullcontext(object()))
+    monkeypatch.setattr(
+        cli,
+        "_await_run",
+        lambda *a, **k: SimpleNamespace(run_id="r1", status="succeeded", units=()),
+    )
+    monkeypatch.setattr(cli, "_retire_executor", lambda: None)
+
+    cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+
+    assert seen and str(os.getpid()) in seen[0]
+
+
+def _embedded_cli(monkeypatch, *, handle_status, await_run):
+    """`evaluate_scenario_cli` in embedded mode with DBOS and the DB faked out;
+    returns the list `_retire_executor` appends to."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    monkeypatch.delenv("REIMAGINA_EXECUTOR_ID", raising=False)
+
+    class _Orchestrator:
+        def __init__(self, **_kw):
+            pass
+
+        def submit_run(self, conn, **_kw):
+            return SimpleNamespace(status=handle_status, run_id="r1")
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.dbos_orchestrator.DBOSOrchestrator", _Orchestrator
+    )
+    monkeypatch.setattr(cli, "connect", lambda dsn: nullcontext(object()))
+    monkeypatch.setattr(cli, "_await_run", await_run)
+    retired: list[bool] = []
+    monkeypatch.setattr(cli, "_retire_executor", lambda: retired.append(True))
+    return cli, retired
+
+
+def test_an_embedded_noop_retires_its_executor(monkeypatch):
+    """A noop returns at submit; its per-process liveness row must not be left
+    behind to read as a dead executor."""
+    from types import SimpleNamespace
+
+    cli, retired = _embedded_cli(
+        monkeypatch,
+        handle_status=SimpleNamespace(status="noop"),
+        await_run=lambda *a, **k: None,
+    )
+    cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+    assert retired == [True]
+
+
+def test_an_embedded_timeout_retires_its_executor(monkeypatch):
+    import pytest
+
+    def _timeout(*_a, **_k):
+        raise TimeoutError("run r1 did not finish")
+
+    cli, retired = _embedded_cli(monkeypatch, handle_status=None, await_run=_timeout)
+    with pytest.raises(TimeoutError):
+        cli.evaluate_scenario_cli(dsn="x", changed_attributes=[], edited_features=[])
+    assert retired == [True]
+
+
+def test_an_embedded_wait_reclaims_a_dead_cli_run(monkeypatch):
+    """A killed embedded run is PENDING under a pid id no process will reuse,
+    and dedup hands the next identical submit that same run. With no worker,
+    only the waiting CLI can recover it, so the wait sweeps."""
+    from types import SimpleNamespace
+
+    import apps.cli.indicators as cli
+
+    swept: list[bool] = []
+    monkeypatch.setattr(
+        "reimagina.orchestration.reclaim.sweep", lambda: swept.append(True)
+    )
+    monkeypatch.delenv("REIMAGINA_RECLAIM_ENABLED", raising=False)
+    states = iter(["running", "succeeded"])
+
+    class _Orchestrator:
+        def get_run(self, conn, run_id):
+            return SimpleNamespace(status=next(states))
+
+    conn = SimpleNamespace(rollback=lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", lambda _s: None)
+    cli._await_run(_Orchestrator(), conn, "r1", timeout_s=60)
+    assert swept

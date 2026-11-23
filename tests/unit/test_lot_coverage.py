@@ -15,14 +15,16 @@ from reimagina.scenarios.ceilings import BlockInputs, check_ceilings
 from reimagina.scenarios.proposal import (
     CeilingPrecheckFailed,
     ProposalValueError,
+    check_inputs,
     edits_for,
     precheck_ceilings,
-    require_coverage,
 )
 
 
 def test_edits_for_writes_coverage_last() -> None:
-    edits = edits_for(3, 66, 3.6, 0.6)
+    edits = edits_for(
+        levels=3, unit_size=66, people_per_household=3.6, lot_coverage=0.6
+    )
     assert [e["attribute_key"] for e in edits] == [
         "floors",
         "num_levels",
@@ -32,22 +34,23 @@ def test_edits_for_writes_coverage_last() -> None:
     ]
     assert edits[-1]["value_numeric"] == 0.6
     # Left out, coverage is not written: each block keeps its own.
-    assert [e["attribute_key"] for e in edits_for(3, 66, 3.6)][
-        -1
-    ] == "people_per_household"
+    assert [
+        e["attribute_key"]
+        for e in edits_for(levels=3, unit_size=66, people_per_household=3.6)
+    ][-1] == "people_per_household"
 
 
 @pytest.mark.parametrize("bad", [0, -0.1, 1.2, math.nan, math.inf])
 def test_coverage_must_be_a_share(bad: float) -> None:
     with pytest.raises(ProposalValueError) as exc:
-        require_coverage(bad)
+        check_inputs({"lot_coverage": bad})
     assert exc.value.field == "lot_coverage"
     assert "between 0 and 1" in str(exc.value)
 
 
 @pytest.mark.parametrize("good", [0.01, 0.6, 1.0])
 def test_a_share_passes(good: float) -> None:
-    require_coverage(good)
+    check_inputs({"lot_coverage": good})
 
 
 def test_ceilings_scale_by_coverage() -> None:
@@ -74,18 +77,12 @@ def test_precheck_uses_coverage() -> None:
     precheck_ceilings(20, 60, 3, 0.5)
 
 
-def test_the_cli_refuses_coverage_by_its_flag_before_connecting() -> None:
-    from apps.cli.scenario import set_attribute
+def test_the_cli_names_a_refused_coverage_by_its_flag() -> None:
+    from apps.cli.scenario import _flags
+    from reimagina.scenarios.proposal import check_inputs
 
     with pytest.raises(
         ValueError, match="--lot-coverage must be a share between 0 and 1"
     ):
-        set_attribute(
-            dsn="postgresql://nowhere.invalid/none",
-            scenario_id="00000000-0000-0000-0000-000000000000",
-            geojson="unused.geojson",
-            levels=3,
-            unit_size=66,
-            people_per_household=3.6,
-            lot_coverage=1.5,
-        )
+        with _flags():
+            check_inputs({"levels": 3, "unit_size": 66, "lot_coverage": 1.5})

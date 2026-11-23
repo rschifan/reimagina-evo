@@ -1,21 +1,43 @@
 """Safety boundaries for shell harnesses; never connect to a database."""
 
 from __future__ import annotations
+import hashlib
+import re
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+#: mexicali_run.sh reads everything from a verified source bundle.
+ARGS = {"acceptance_run.sh": [], "mexicali_run.sh": ["--bundle", "bundle"]}
+
+
+def _bundle(root):
+    """The smallest bundle that passes step 0: one file of each kind, summed."""
+    files = [
+        "overture/buildings_2026-10-21.0.parquet",
+        "overture/places_2026-10-21.0.parquet",
+        "osm/walk_network_2026-11-10/edges.parquet",
+    ]
+    lines = []
+    for rel in files:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(rel.encode())
+        lines.append(f"{hashlib.sha256(rel.encode()).hexdigest()}  {rel}\n")
+    (root / "SHA256SUMS").write_text("".join(lines))
+
+
 def fixture_repo(tmp_path):
     shutil.copytree(ROOT / "scripts", tmp_path / "scripts")
-    (tmp_path / "data/sources/lake/inegi/marco_geostadistico/2024").mkdir(parents=True)
+    _bundle(tmp_path / "bundle")
     (tmp_path / "apps/cli").mkdir(parents=True)
     (tmp_path / "apps/__init__.py").touch()
     (tmp_path / "apps/cli/__init__.py").touch()
@@ -29,6 +51,7 @@ def fixture_repo(tmp_path):
     }
     env["PYTHON"] = sys.executable
     env["PYTHONPATH"] = str(tmp_path)
+    env["REIMAGINA_DATA_DIR"] = str(tmp_path / "data")  # the fetch cache
     return env
 
 
@@ -45,7 +68,7 @@ def test_harness_preserves_exports_and_does_not_execute_dotenv(tmp_path, script)
         DATABASE_URL_ADMIN="postgresql://localhost/postgres",
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}", "--keep"],
+        ["bash", f"scripts/{script}", *ARGS[script], "--keep"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -83,7 +106,7 @@ def test_harness_rejects_inconsistent_targets_before_connect(
         'import psycopg2\ndef refuse(*a, **kw):\n print("UNSAFE_CONNECT", flush=True)\n raise RuntimeError("must validate before connecting")\npsycopg2.connect = refuse\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -109,7 +132,7 @@ def test_harness_preflights_cli_before_drop_and_migrates_only_app(tmp_path, scri
         'import psycopg2\ndef refuse(*a, **kw):\n print("UNSAFE_CONNECT", flush=True)\n raise RuntimeError("preflight must fail before connecting")\npsycopg2.connect = refuse\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -118,7 +141,7 @@ def test_harness_preflights_cli_before_drop_and_migrates_only_app(tmp_path, scri
     assert done.returncode != 0
     assert "UNSAFE_CONNECT" not in done.stdout + done.stderr
     kept = subprocess.run(
-        ["bash", f"scripts/{script}", "--keep"],
+        ["bash", f"scripts/{script}", *ARGS[script], "--keep"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -182,7 +205,7 @@ def test_harness_rejects_different_cluster_port_before_drop(tmp_path, script):
         'import sys\nsys.exit(0 if "status" in sys.argv or "verify-sources" in sys.argv else 77)\n'
     )
     done = subprocess.run(
-        ["bash", f"scripts/{script}"],
+        ["bash", f"scripts/{script}", *ARGS[script]],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -282,3 +305,145 @@ def test_drop_rejects_unsupported_migration_dsns_before_connect(tmp_path, key, d
     assert done.returncode != 0
     assert "UNSAFE_CONNECT" not in done.stdout + done.stderr
     assert key in done.stderr
+
+
+def test_mexicali_without_bundle_fetches_the_pinned_archive(tmp_path):
+    env = fixture_repo(tmp_path)
+    env.update(
+        DATABASE_URL="postgresql://localhost/scratch",
+        DATABASE_URL_DIRECT="postgresql://localhost/scratch",
+        DATABASE_URL_ADMIN="postgresql://localhost/postgres",
+    )
+    archive = tmp_path / "asset.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(tmp_path / "bundle", arcname="reimagina-mexicali-bundle")
+    # Pin the copied script to the synthetic asset; the real pin is untouched.
+    script = tmp_path / "scripts/build_mexicali_bundle.py"
+    script.write_text(
+        re.sub(
+            r'BUNDLE_SHA256 = "[0-9a-f]{64}"',
+            f'BUNDLE_SHA256 = "{hashlib.sha256(archive.read_bytes()).hexdigest()}"',
+            script.read_text(),
+        )
+    )
+    env["MEXICALI_BUNDLE_URL"] = archive.as_uri()
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    fetched = tmp_path / "data/bundles"
+    assert list(fetched.glob("*/reimagina-mexicali-bundle/SHA256SUMS")), done.stderr
+    # fetch verified it; step 0 does not hash it a second time.
+    assert "fetched and verified" in done.stdout, done.stdout + done.stderr
+    assert "all files match" not in done.stdout
+    assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
+
+    # Unreachable and nothing cached: stop before any CLI call, say what to do.
+    shutil.rmtree(fetched)
+    env["MEXICALI_BUNDLE_URL"] = (tmp_path / "missing.tar.gz").as_uri()
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode != 0
+    assert "--bundle DIR" in done.stderr
+    assert "ENV=" not in done.stdout
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_help_prints_usage_and_runs_nothing(tmp_path, script):
+    """`--help` is what a reader tries first. acceptance_run.sh used to ignore
+    any argument but --keep, so `--help` dropped and rebuilt the database."""
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", f"scripts/{script}", "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "Usage:" in done.stdout
+    assert "ENV=" not in done.stdout
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_unknown_flag_is_refused_before_anything_runs(tmp_path, script):
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", f"scripts/{script}", "--kep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2
+    assert "unknown flag" in done.stderr
+    assert "ENV=" not in done.stdout
+
+
+def test_bundle_without_a_value_says_so(tmp_path):
+    env = fixture_repo(tmp_path)
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--bundle"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2
+    assert "--bundle needs a directory" in done.stderr
+    assert "ENV=" not in done.stdout
+
+
+def test_a_mirror_named_in_dotenv_is_used(tmp_path):
+    """Every other setting comes from .env; the mirror URL did not, because
+    the bundle was fetched before .env was read."""
+    env = fixture_repo(tmp_path)
+    archive = tmp_path / "asset.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(tmp_path / "bundle", arcname="reimagina-mexicali-bundle")
+    script = tmp_path / "scripts/build_mexicali_bundle.py"
+    script.write_text(
+        re.sub(
+            r'BUNDLE_SHA256 = "[0-9a-f]{64}"',
+            f'BUNDLE_SHA256 = "{hashlib.sha256(archive.read_bytes()).hexdigest()}"',
+            script.read_text(),
+        )
+    )
+    (tmp_path / ".env").write_text(
+        "DATABASE_URL=postgresql://localhost/scratch\n"
+        "DATABASE_URL_DIRECT=postgresql://localhost/scratch\n"
+        "DATABASE_URL_ADMIN=postgresql://localhost/postgres\n"
+        f"MEXICALI_BUNDLE_URL={archive.as_uri()}\n"
+    )
+    done = subprocess.run(
+        ["bash", "scripts/mexicali_run.sh", "--keep"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert list((tmp_path / "data/bundles").glob("*/reimagina-mexicali-bundle")), (
+        done.stderr
+    )
+    assert any(line.startswith("ENV=") for line in done.stdout.splitlines())
+
+
+@pytest.mark.parametrize("script", ["acceptance_run.sh", "mexicali_run.sh"])
+def test_harness_temp_files_live_in_one_mktemp_that_exit_removes(script):
+    """Every temp path is made by one ``mktemp`` and removed by the EXIT trap.
+
+    Both scripts left files in $TMPDIR on every run (an indicator stderr file,
+    a raster, a worker log, a tiles folder) that nothing removed.
+    """
+    text = (ROOT / "scripts" / script).read_text()
+    tmp_uses = [line for line in text.splitlines() if "TMPDIR" in line]
+    assert len(tmp_uses) == 1 and "mktemp" in tmp_uses[0], tmp_uses
+    assert "trap cleanup EXIT" in text

@@ -40,6 +40,7 @@ def validated_cog_path(
     """Resolve an incoming ``url`` query parameter to a safe host path.
 
     Rejects with HTTP 400/403/404 if the URL violates any of:
+      - path contains a NUL byte (400)
       - scheme is not ``file``
       - authority (``//host``) is non-empty (we only accept
         ``file:///abs/path``)
@@ -65,44 +66,45 @@ def validated_cog_path(
         )
     # urllib leaves percent-encoded segments in ``path`` — decode before
     # resolving so ``%2e%2e`` can't sneak a traversal past the regex in
-    # ``parse_internal_uri``. ``Path.resolve(strict=True)`` both follows
-    # symlinks (so a symlink pointing outside the data root is caught by
-    # the ``relative_to`` check below) and refuses to return a path for
-    # a missing file. Using ``strict=True`` folds the existence check
-    # into the resolution step, shrinking the TOCTOU window between
-    # ``exists()`` and rasterio's open call. A residual race remains —
-    # the file can still be swapped between this return and titiler's
-    # reopen — but exploiting it requires write access under the data
-    # root, at which point the attacker already controls the served
-    # artifact directly.
+    # ``parse_internal_uri``. ``resolve()`` follows symlinks, so one pointing
+    # outside the data root is caught by the ``relative_to`` check below.
+    # Containment is decided BEFORE existence: a path outside the root gets
+    # the same 403 whether or not it exists, so this endpoint cannot be used
+    # to probe the host filesystem. No answer echoes a host path. A residual
+    # race remains — the file can be swapped between this return and
+    # titiler's open — but exploiting it needs write access under the data
+    # root, at which point the attacker already controls the served artifact.
     raw_path = unquote(parsed.path)
     if not raw_path:
         raise HTTPException(status_code=400, detail="URL has no path component.")
+    # A NUL makes every os-level call raise ValueError, not OSError.
+    if "\x00" in raw_path:
+        raise HTTPException(status_code=400, detail="URL path contains a NUL byte.")
+    outside = HTTPException(
+        status_code=403,
+        detail="URL resolves outside the data root (REIMAGINA_DATA_DIR).",
+    )
     try:
-        resolved = Path(raw_path).resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"COG not found on disk: {raw_path}",
-        ) from exc
-    data_root = host_data_root().resolve()
+        resolved = Path(raw_path).resolve()
+    except (OSError, RuntimeError) as exc:  # RuntimeError: symlink loop
+        raise outside from exc
     try:
-        resolved.relative_to(data_root)
+        resolved.relative_to(host_data_root().resolve())
     except ValueError as exc:
+        raise outside from exc
+    try:
+        is_file = resolved.is_file()
+        exists = is_file or resolved.exists()
+    except OSError:
+        is_file = exists = False
+    if not exists:
         raise HTTPException(
-            status_code=403,
-            detail=(
-                f"URL resolves outside the data root "
-                f"({data_root}). Only COGs under that tree are servable."
-            ),
-        ) from exc
+            status_code=404, detail="COG not found under the data root."
+        )
     # Only accept regular files — directories, FIFOs, devices, or sockets
     # under the data root must not be opened by GDAL.
-    if not resolved.is_file():
-        raise HTTPException(
-            status_code=403,
-            detail=f"Not a regular file: {resolved}",
-        )
+    if not is_file:
+        raise HTTPException(status_code=403, detail="Not a regular file.")
     # rasterio accepts both plain paths and file:// URIs — return the
     # resolved path so downstream callers see a canonical form.
     return str(resolved)

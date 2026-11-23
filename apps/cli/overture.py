@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
 import json
 from pathlib import Path
 from typing import Any
@@ -35,10 +37,10 @@ def parse_bbox(value: str) -> tuple[float, float, float, float]:
     contract — the string form is a presentation concern."""
     parts = [p.strip() for p in value.split(",")]
     if len(parts) != 4:
-        raise ValueError(f"bbox must be xmin,ymin,xmax,ymax (got {value!r})")
+        raise UserError(f"bbox must be xmin,ymin,xmax,ymax (got {value!r})")
     xmin, ymin, xmax, ymax = (float(p) for p in parts)
     if xmin >= xmax or ymin >= ymax:
-        raise ValueError(f"bbox must be ordered xmin<xmax, ymin<ymax (got {value!r})")
+        raise UserError(f"bbox must be ordered xmin<xmax, ymin<ymax (got {value!r})")
     return (xmin, ymin, xmax, ymax)
 
 
@@ -137,7 +139,7 @@ def load_mexico_city_buildings(
         # ⚠ Nothing written, nothing invalidated. A load whose rows all hit the
         # ON CONFLICT DO NOTHING path changed no geometry, and recomputing a
         # city because a re-run was a no-op is the expensive way to learn that.
-        if result.get("records_written"):
+        if result.get("records_written") or result.get("records_superseded"):
             result["recompute"] = submit_after_ingest(
                 dsn=dsn,
                 changed_attributes=list(recompute_attributes),
@@ -159,7 +161,7 @@ def validate_mexico_city_buildings(*, dsn: str) -> dict[str, Any]:
 def derive_block_storeys(
     *, dsn: str, aoi_id: str | None, code_version: str = "dev"
 ) -> dict[str, Any]:
-    """Each block's baseline storeys: median num_floors of its Overture buildings."""
+    """Each block's baseline storeys: footprint-weighted mean of its Overture buildings."""
     with connect(dsn) as conn:
         return block_storeys.bootstrap(conn, aoi_id=aoi_id, code_version=code_version)
 
@@ -276,7 +278,7 @@ def aoi_from_overture_division(
 # ─── Places → amenity destinations ─────────────────────────────────────────
 #
 # The ingest that makes the accessibility park and culture indicators
-# measurable. Before it, the Mexicali pilot's only amenity layer was IMIP's,
+# measurable. Before it, the Mexicali pilot's only amenity layer was INEGI DENUE's,
 # which holds no park-like category, so `accessibility_block_park_network_m`
 # reported the 1,500 m cutoff for all 19,058 blocks and the map drew that as a
 # flat choropleth.
@@ -290,6 +292,7 @@ def load_overture_places(
     country: str | None = None,
     aoi_id: str | None = None,
     output_path: str | Path = "data/overture_places.parquet",
+    raw_path: str | None = None,
     orchestrator_run_id: str | None = None,
     code_version: str = "dev",
 ) -> dict[str, Any]:
@@ -312,6 +315,7 @@ def load_overture_places(
             country=country,
             aoi_id=aoi_id,
             output_path=output_path,
+            raw_path=raw_path,
             orchestrator_run_id=orchestrator_run_id or str(uuid4()),
             code_version=code_version,
         )

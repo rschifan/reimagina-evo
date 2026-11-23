@@ -14,6 +14,7 @@ from reimagina.assets.publish import publish_version
 from reimagina.assets.registry import seed_assets
 from reimagina.indicators.catalog import ACCESSIBILITY_NETWORK, SHIPPED_INDICATORS
 from reimagina.orchestration.plan import plan_run
+from tests.integration._helpers import make_scenario
 
 
 def _materialize_everything(conn):
@@ -215,7 +216,7 @@ def test_planning_still_works_without_the_asset_graph(conn):
 # ── scenarios, as the same mechanism ───────────────────────────────────────
 
 
-def _block_id(conn):
+def _block_id(conn, ref="blk-1"):
     from tests.integration._helpers import insert_feature, register_source, start_run
 
     source_id = register_source(
@@ -230,20 +231,25 @@ def _block_id(conn):
         source_id=source_id,
         ingestion_run_id=run_id,
         dataset_version="v1",
-        source_record_ref="blk-1",
+        source_record_ref=ref,
         geometry_wkt="POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))",
     )
 
 
 def _edit(conn, scenario_id, feature_id, *, attribute="floors", value=9.0):
-    from reimagina.scenarios.overrides import apply_override
+    from reimagina.scenarios.overrides import apply_overrides
 
-    apply_override(
+    make_scenario(conn, scenario_id)
+    apply_overrides(
         conn,
         scenario_id=scenario_id,
-        feature_id=feature_id,
-        attribute_key=attribute,
-        value_numeric=value,
+        edits=[
+            {
+                "feature_id": feature_id,
+                "attribute_key": attribute,
+                "value_numeric": value,
+            }
+        ],
     )
 
 
@@ -475,7 +481,10 @@ def test_the_full_loop(one_block, conn):
 
 
 def test_a_scoped_run_reports_partial(one_block, conn):
-    """An AOI- or feature-scoped run did not finish the partition.
+    """An AOI- or feature-scoped run did not finish the whole-database partition.
+
+    The whole-database view stays partial; planning scoped to that AOI is what
+    sees an AOI run as done (see the coverage-per-AOI tests below).
 
     edificability skips features missing an attribute, so a partition holding
     rows from several runs is a normal state — and claiming it is done is the
@@ -484,6 +493,90 @@ def test_a_scoped_run_reports_partial(one_block, conn):
     _run(conn, "urban_form_block_compactness", aoi_id=_an_aoi(conn))
 
     assert _state(conn, "urban_form_block_compactness") == "partial"
+
+
+# ── coverage per AOI ────────────────────────────────────────────────────────
+
+
+def test_an_aoi_run_is_fresh_for_that_aoi_and_only_that_aoi(one_block, conn):
+    """A run over every block of AOI A finished A, not the database.
+
+    Planning scoped to A must see it as done — otherwise a deployment that
+    always runs with its city AOI never converges. Planning for another AOI, or
+    for the whole database, must not.
+    """
+    aoi = _an_aoi(conn)
+    _run(conn, "urban_form_block_compactness", aoi_id=aoi)
+
+    assert _plan(conn, aoi_id=aoi).is_noop
+    assert "urban_form_block_compactness" in _slugs(_plan(conn, aoi_id=_an_aoi(conn)))
+    assert "urban_form_block_compactness" in _slugs(_plan(conn))
+
+
+def test_a_feature_scoped_baseline_run_stays_partial_for_its_aoi(one_block, conn):
+    aoi = _an_aoi(conn)
+    block = _block_id(conn, "blk-2")
+    _run(conn, "urban_form_block_compactness", aoi_id=aoi, features={str(block)})
+
+    assert "urban_form_block_compactness" in _slugs(_plan(conn, aoi_id=aoi))
+
+
+def _recompute_plan(conn, aoi, features):
+    """What the scenario recompute endpoint submits: the footprint, scoped."""
+    return _plan(
+        conn,
+        changed_attributes=("floors",),
+        edited_features=tuple(features),
+        scenario_id=SCENARIO,
+        aoi_id=aoi,
+    )
+
+
+def test_an_identical_scenario_recompute_is_a_noop(graph, conn):
+    """A recompute over the scenario's whole footprint converges.
+
+    Blocks outside the footprint carry no override and read the baseline
+    through the overlay, so covering every overridden block of the AOI is
+    covering the scenario partition there.
+    """
+    aoi = _an_aoi(conn)
+    block = str(_block_id(conn))
+    _edit(conn, SCENARIO, block)
+    plan = _recompute_plan(conn, aoi, [block])
+    assert _slugs(plan) == ["urban_form_block_planned_floors"]
+
+    _run(
+        conn,
+        "urban_form_block_planned_floors",
+        features={block},
+        scenario_id=SCENARIO,
+        aoi_id=aoi,
+    )
+
+    assert _recompute_plan(conn, aoi, [block]).is_noop
+    assert _plan(conn, scenario_id=SCENARIO, aoi_id=aoi).is_noop
+    assert not _recompute_plan(conn, _an_aoi(conn), [block]).is_noop
+    # A new edit is a new version: the next recompute is not a noop.
+    _edit(conn, SCENARIO, block, value=12.0)
+    assert not _recompute_plan(conn, aoi, [block]).is_noop
+
+
+def test_a_scenario_run_over_part_of_its_overrides_stays_partial(graph, conn):
+    aoi = _an_aoi(conn)
+    first, second = str(_block_id(conn)), str(_block_id(conn, "blk-2"))
+    _edit(conn, SCENARIO, first)
+    _edit(conn, SCENARIO, second)
+
+    _run(
+        conn,
+        "urban_form_block_planned_floors",
+        features={first},
+        scenario_id=SCENARIO,
+        aoi_id=aoi,
+    )
+
+    assert not _recompute_plan(conn, aoi, [first, second]).is_noop
+    assert not _plan(conn, scenario_id=SCENARIO, aoi_id=aoi).is_noop
 
 
 def test_a_materialization_records_the_input_versions_it_used(one_block, conn):

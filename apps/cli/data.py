@@ -2,9 +2,11 @@
 
 Why a separate ``data`` group rather than tucking this under each ingest
 subcommand: the operator running it hasn't ingested anything yet. They
-want a single command they can run on a fresh machine that confirms
-*all* upstream sources (private data lake mirror + Overture S3 + WorldPop
-REST API) are reachable before committing to an hour of ingest work.
+want a single command they can run on a fresh machine that confirms the
+remote sources (Overture S3 + WorldPop REST API) are reachable before
+committing to an hour of ingest work. Local inputs are checked where they are
+read: the Mexicali source bundle by its own SHA256SUMS
+(``scripts/build_mexicali_bundle.py verify``).
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 from pyarrow import fs as pafs
@@ -26,45 +27,6 @@ from reimagina.pipeline.worldpop import (
     DEFAULT_DATASET as WORLDPOP_DEFAULT_DATASET,
     WORLDPOP_REST_BASE,
 )
-
-
-# Manifest of expected lake data-lake mirror paths. Keep this short
-# (only the paths the runbook actually consumes) — extending it with
-# every staged file would dilute the smoke-test value.
-LAKE_LAKE_MANIFEST: tuple[tuple[str, str], ...] = (
-    (
-        "INEGI marco geoestadístico 2024 (block / AGEB / municipality)",
-        "data/sources/lake/inegi/marco_geostadistico/2024",
-    ),
-    (
-        "INEGI 2020 census (manzanas)",
-        "data/sources/lake/inegi/censo/manzanas_2020.parquet",
-    ),
-    (
-        "Tlalpan amenities (SIGCDMX)",
-        "data/sources/lake/sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet",
-    ),
-    (
-        "Mexicali amenities (EXE)",
-        "data/sources/lake/exe/002_mexicali/equipamientos.geoparquet",
-    ),
-)
-
-
-def _check_path(label: str, path: str) -> dict[str, Any]:
-    p = Path(path)
-    if not p.exists():
-        return {"label": label, "path": path, "ok": False, "reason": "missing"}
-    # For directories, require at least one parquet file beneath them.
-    # Hive-partitioned parquet shows up as a directory; a single-file
-    # geoparquet shows up as a file ending in ``.parquet`` /
-    # ``.geoparquet``. Both are acceptable.
-    if p.is_dir():
-        children = list(p.rglob("*.parquet"))
-        if not children:
-            return {"label": label, "path": path, "ok": False, "reason": "empty_dir"}
-        return {"label": label, "path": path, "ok": True, "files": len(children)}
-    return {"label": label, "path": path, "ok": True, "files": 1}
 
 
 def _check_overture_release(release: str) -> dict[str, Any]:
@@ -161,10 +123,9 @@ def verify_sources(
     worldpop_country: str = "MEX",
 ) -> dict[str, Any]:
     """Smoke-test every upstream source the bootstrap runbook depends on."""
-    lake_results = [_check_path(label, path) for label, path in LAKE_LAKE_MANIFEST]
     overture_result = _check_overture_release(release)
     worldpop_result = _check_worldpop_rest(country=worldpop_country)
-    all_results = [*lake_results, overture_result, worldpop_result]
+    all_results = [overture_result, worldpop_result]
     return {
         "release": release,
         "worldpop_country": worldpop_country,

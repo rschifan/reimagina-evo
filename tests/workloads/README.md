@@ -25,10 +25,10 @@ uv run python -m reimagina.perf.workload_report artifacts/workloads-dbos.json ar
 | variable | default | what it does |
 |---|---|---|
 | `REIMAGINA_BENCH` | unset | **must be `1`** — otherwise every test skips. `testpaths = ["tests"]` means a bare `pytest` would otherwise spend minutes here. |
-| `REIMAGINA_BENCH_SCALE` | `full` | `smoke` (÷10, ~1 min, a shape check **not** a measurement), `full` (~3–4 min), or a bare float for a longer run |
+| `REIMAGINA_BENCH_SCALE` | `full` | `smoke` (÷10, a shape check **not** a measurement; 15 tests in about 10 s on a laptop), `full` (~3–4 min, not re-measured), or a bare float for a longer run |
 | `REIMAGINA_BENCH_REPS` | 3 at full, 1 at smoke | Repetitions per workload; the first is discarded as warm-up when more than one repetition runs. |
-| `REIMAGINA_UNIT_CONCURRENCY` | 8 | Current DBOS default. Set the same explicit value when comparing tracks. |
-| `TEST_DATABASE_URL` | `reimagina_test_bench_<track>` | see below |
+| `REIMAGINA_UNIT_CONCURRENCY` | 8 | Current DBOS default (`settings.unit_concurrency`). The suite reads it once as its slot count and re-exports it before launching DBOS. Set the same explicit value when comparing tracks. |
+| `TEST_DATABASE_URL` | `postgresql://localhost/reimagina_test_bench_dbos` on this track | see below. The name must contain `test`; the suite migrates it to head itself and never downgrades it |
 
 ### Each track needs its own database
 
@@ -126,7 +126,8 @@ for a ~4 minute suite, not because it is enough for the noisy tail.
 ## What this suite is not
 
 Long-running units. Even at `full` the slowest unit is 3 s, so nothing here
-approaches `UNIT_EXECUTION_TIMEOUT` (120 min) or `schedule_timeout` (6 h).
+approaches the service track's `UNIT_EXECUTION_TIMEOUT` (120 min) or
+`schedule_timeout` (6 h); neither setting exists in this checkout.
 `REIMAGINA_BENCH_SCALE` takes a multiplier when that matters.
 
 Disruption drills. Cancelling mid-run and killing a worker stay manual, per the

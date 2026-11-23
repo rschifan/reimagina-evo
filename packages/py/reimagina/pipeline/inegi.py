@@ -12,14 +12,14 @@ zipped-shapefile source with a similar structure can be plugged in.
 
 from __future__ import annotations
 
-import shutil
-import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from reimagina.paths import data_dir
+
+from .download import save_response
 
 SOURCES_DIR = data_dir() / "sources"
 CDMX_SOURCES_DIR = SOURCES_DIR / "cdmx"
@@ -104,12 +104,12 @@ def cached_download(
                 raise InegiFetchError(
                     _manual_download_hint(url, portal_url, dest, status=response.status)
                 )
-            with open(dest, "wb") as out:
-                shutil.copyfileobj(response, out)
-    except urllib.error.URLError as exc:
-        # Clean up a partial file so a retry starts fresh.
-        if dest.exists():
-            dest.unlink()
+            # Never straight onto ``dest``: a cached file is returned as-is
+            # on the next run, so a partial one would be reused forever.
+            save_response(response, dest)
+    # OSError, not just URLError: a read timeout mid-body raises TimeoutError
+    # and a cut-off body raises IncompleteDownloadError.
+    except OSError as exc:
         raise InegiFetchError(
             _manual_download_hint(url, portal_url, dest, reason=str(exc))
         ) from exc

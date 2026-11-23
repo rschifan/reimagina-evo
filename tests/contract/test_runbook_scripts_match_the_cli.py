@@ -11,9 +11,12 @@ So this reads the scripts, pulls out every `$CLI …` invocation and every
 guardrail of the kind `tests/contract` exists for: it tests the repository, not
 the code.
 
+The runbook documents get the same check for every `apps.cli.app` command
+they show: a reader copies those literally.
+
 ⚠ It cannot check argument *values* — that `--cve-ent 02` names a state whose
-data is in the mirror is not knowable from here. It checks that the command and
-the flag exist, which is the failure mode that costs a re-run.
+data is in the source bundle is not knowable from here. It checks that the
+command and the flag exist, which is the failure mode that costs a re-run.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from apps.cli.app import app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ("scripts/acceptance_run.sh", "scripts/mexicali_run.sh")
+DOCS = ("docs/BOOTSTRAP.md", "docs/INSTALLATION.md")
 
 #: Flags the scripts pass that are not declared on the subcommand, because the
 #: shell supplies them from the environment or they are global. Empty on
@@ -56,15 +60,15 @@ def _command_tree() -> dict[tuple[str, ...], set[str]]:
     return tree
 
 
-#: `$CLI word word --flag …` up to the end of the logical line, following
-#: backslash continuations, which every multi-line invocation in these scripts
-#: uses.
-_INVOCATION = re.compile(r"\$CLI\s+((?:[^\n\\]|\\\n)+)")
+#: `$CLI word word --flag …` (or, in the docs, `… -m apps.cli.app word …`) up to
+#: the end of the logical line or a closing backtick, following backslash
+#: continuations, which every multi-line invocation in these files uses.
+_INVOCATION = re.compile(r"(?:\$CLI|-m apps\.cli\.app)\s+((?:[^\n\\`]|\\\n)+)")
 
 #: Shell tokens that end the command and begin something else. Without this,
 #: `$CLI indicators compute … | tr -d '\n'` contributes `-d` as if the CLI had
 #: been passed it.
-_OPERATORS = {"|", "||", "&&", ";", "&", ">", ">>", "<"}
+_OPERATORS = {"|", "||", "&&", ";", "&", ">", ">>", "<", "#"}
 
 
 def _close_substitution(fragment: str) -> str:
@@ -149,7 +153,7 @@ def test_script_exists_and_invokes_the_cli(script):
     )
 
 
-@pytest.mark.parametrize("script", SCRIPTS)
+@pytest.mark.parametrize("script", SCRIPTS + DOCS)
 def test_every_invoked_command_exists(script, tree):
     text = (REPO_ROOT / script).read_text()
     unknown = []
@@ -162,6 +166,15 @@ def test_every_invoked_command_exists(script, tree):
             if first.startswith("$"):
                 continue
             unknown.append(" ".join(tokens[:3]))
+        # `aoi lst` resolves to the group `aoi`; a group is not a command
+        # (`explore $view` names its subcommand at run time).
+        elif any(
+            len(k) > len(command_path) and k[: len(command_path)] == command_path
+            for k in tree
+        ):
+            following = tokens[len(command_path) : len(command_path) + 1]
+            if not (following and following[0].startswith("$")):
+                unknown.append(" ".join(tokens[:3]))
     assert not unknown, (
         f"{script} invokes commands that do not exist: {unknown}. "
         f"Either the command was renamed or the script was written against a "
@@ -169,7 +182,7 @@ def test_every_invoked_command_exists(script, tree):
     )
 
 
-@pytest.mark.parametrize("script", SCRIPTS)
+@pytest.mark.parametrize("script", SCRIPTS + DOCS)
 def test_every_flag_passed_is_declared(script, tree):
     text = (REPO_ROOT / script).read_text()
     problems = []
@@ -185,7 +198,7 @@ def test_every_flag_passed_is_declared(script, tree):
     assert not problems, (
         f"{script} passes flags the CLI does not declare: {sorted(set(problems))}. "
         f"A renamed flag fails only when someone runs the script — on the "
-        f"Mexicali run, after a 3 GB INEGI filter and a 387k-row load."
+        f"Mexicali run, after the INEGI loads and a 387k-row Overture load."
     )
 
 
@@ -263,57 +276,3 @@ def test_the_network_command_the_accessibility_guard_names_exists(tree):
         "from real OSM data; without it the accessibility family and the "
         "street-context layer are unreachable from the CLI"
     )
-
-
-def test_the_scripts_mexicali_bbox_matches_the_python_constant():
-    """⚠ The same box written twice, in two languages.
-
-    `scripts/mexicali_run.sh` passes `--clip-bbox` to bound the OSM fetch, and
-    `overture extract` defaults to `MEXICALI_BBOX` for the buildings. If the
-    two drift, the street layer and the building layer cover different ground
-    — and nothing fails: you get a city whose streets stop where its buildings
-    do not. Nothing else compares them.
-    """
-    from reimagina.pipeline.overture import MEXICALI_BBOX
-
-    text = (REPO_ROOT / "scripts/mexicali_run.sh").read_text()
-    match = re.search(r'^MEXICALI_BBOX="([^"]+)"', text, re.MULTILINE)
-    assert match, "scripts/mexicali_run.sh no longer defines MEXICALI_BBOX"
-
-    from_script = tuple(float(v) for v in match.group(1).split(","))
-    assert from_script == MEXICALI_BBOX, (
-        f"the runbook's clip box {from_script} differs from "
-        f"reimagina.pipeline.overture.MEXICALI_BBOX {MEXICALI_BBOX}; the OSM "
-        f"fetch and the Overture extract would cover different ground"
-    )
-
-
-def test_the_mexicali_runbook_passes_an_explicit_bbox_to_overture_extract():
-    """⚠ `overture extract`'s own default bbox is MEXICO CITY.
-
-    Omitting `--bbox` does not mean "this script's city". It means Mexico
-    City, 1,600 km away — and the consequence is silent: several million CDMX
-    buildings extracted, loaded, then clipped to nothing against the Mexicali
-    AOI, surfacing four steps later as "the global:building feature layer is
-    empty".
-
-    That happened. This test is the guard that was missing: the sibling test
-    above compares the script's `--clip-bbox` against MEXICALI_BBOX and
-    checked only the OSM step, not the Overture one.
-    """
-    text = (REPO_ROOT / "scripts/mexicali_run.sh").read_text()
-    extracts = [
-        tokens for tokens in _invocations(text) if tokens[:2] == ["overture", "extract"]
-    ]
-    assert extracts, "the Mexicali runbook no longer extracts Overture buildings"
-    for tokens in extracts:
-        assert "--bbox" in tokens, (
-            f"`overture extract` invoked without --bbox ({tokens}); its default "
-            f"is MEXICO_CITY_BBOX, so this would extract the wrong city"
-        )
-        value = tokens[tokens.index("--bbox") + 1]
-        assert value == "$MEXICALI_BBOX", (
-            f"--bbox is {value!r}; it must be the script's MEXICALI_BBOX "
-            f"variable, which another test pins to the Python constant — a "
-            f"literal here could drift from the OSM clip box"
-        )

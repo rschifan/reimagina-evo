@@ -135,19 +135,21 @@ function installMapControls(map: MapLibreMap): void {
           customAttribution: rows.map((row) => row.text),
           // ⚠ `compact: true`, and the text is NOT shortened to achieve it.
           //
-          // Expanded, four real sources render as one 200-character line
-          // spanning the whole viewport:
+          // Expanded, the Mexicali pilot's sources render as one
+          // 250-character line spanning the whole viewport:
           //
-          //   © OpenStreetMap contributors | IMIP Mexicali (Datos abiertos
-          //   del IMIP) | Overture Maps Foundation (ODbL-1.0 / Overture
-          //   terms) | INEGI (Libre uso — Términos de Uso de la Información
-          //   del INEGI)
+          //   © OpenStreetMap contributors | Overture Maps Foundation
+          //   (ODbL-1.0 / Overture terms) | Fuente: INEGI, Marco
+          //   Geoestadístico 2024 | Fuente: INEGI, Censo de Población y
+          //   Vivienda 2020 | Fuente: INEGI, Directorio Estadístico Nacional
+          //   de Unidades Económicas (DENUE), 05/2025
           //
           // The obvious fix is to trim each credit, and that is the wrong
-          // one: the wording comes from `data_source_catalog.license` via
-          // `attribution.py`, whose own comment warns that an entry claiming
-          // "this exact wording is what the licence asks for" is worse than
-          // the honest fallback when it is wrong. Editing four providers'
+          // one: the wording comes from `data_source_catalog` (credit, else
+          // provider + licence) via `attribution.py`, whose comment warns
+          // that an entry claiming "this exact wording is what the licence
+          // asks for" is worse than the honest fallback when it is wrong.
+          // Editing the providers'
           // credit lines for layout is a licence judgement, and not one to
           // make for a line break.
           //

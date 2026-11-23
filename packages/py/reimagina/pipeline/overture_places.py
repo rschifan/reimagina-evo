@@ -2,7 +2,7 @@
 
 **The gap this fills.** ``accessibility_block_park_network_m`` measures metres
 from each block to the nearest park or recreation site. On the Mexicali pilot it
-reported 1,500 m — the cutoff — for all 19,058 blocks, because the IMIP amenity
+reported 1,500 m — the cutoff — for all 19,058 blocks, because the DENUE amenity
 layer holds only ``Consultorio medico``, ``Farmacia``, ``Hospital``,
 ``Guarderia`` and ``Cine``. There was nothing park-like to route to, so the
 multi-source Dijkstra had no start vertices and every block reported the cap.
@@ -16,7 +16,7 @@ disk. Which of its 221 categories count is
 same vocabulary is needed by the indicator catalog, and ``pipeline`` and
 ``indicators`` do not otherwise import each other.
 
-**Places land as ``global:establishment``**, the same feature type as the IMIP
+**Places land as ``global:establishment``**, the same feature type as the DENUE
 amenities, with ``attributes->>'category'`` carrying the Overture
 ``basic_category`` verbatim. That is what
 ``reimagina.indicators.accessibility`` matches on, so a loaded place is
@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 PLACES_THEME = "places"
 PLACES_TYPE = "place"
 
-#: Feature type places land as — the same one the IMIP amenities use, so the
+#: Feature type places land as — the same one the DENUE amenities use, so the
 #: accessibility indicators pick them up without a catalog change.
 PLACES_FEATURE_TYPE_CONTEXT = "global"
 PLACES_FEATURE_TYPE_SLUG = "establishment"
@@ -355,6 +355,10 @@ def load_places_subset(
         code_version=code_version,
         name_col="name",
         attributes_cols=["category", "confidence"],
+        # A release bump mints a new source row; without this every place in
+        # the extent lands twice. Scoped to the extent just loaded, since
+        # every bbox shares this source name.
+        supersede=True,
     )
 
 
@@ -419,21 +423,29 @@ def bootstrap_places(
     aoi_id: str | None = None,
     code_version: str = "dev",
     output_path: str | Path = PLACES_BRONZE_FILENAME,
+    raw_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Extract, stage, load and summarize places for one bbox."""
+    """Extract, stage, load and summarize places for one bbox.
+
+    ``raw_path`` names an extract made earlier (the source bundle ships one):
+    it is loaded as is and nothing is fetched, so ``bbox``, ``categories`` and
+    ``country`` are whatever that extract was cut with. ``release`` must still
+    name the release it came from — it is the source row's version.
+    """
     feat.seed_feature_types(conn)
     conn.commit()
 
     source_id = ensure_places_source(conn, version=release)
     conn.commit()
 
-    raw_path = extract_places_subset(
-        output_path=output_path,
-        bbox=bbox,
-        release=release,
-        categories=categories,
-        country=country,
-    )
+    if raw_path is None:
+        raw_path = extract_places_subset(
+            output_path=output_path,
+            bbox=bbox,
+            release=release,
+            categories=categories,
+            country=country,
+        )
     bronze_path, silver_path = stage_places_subset(raw_path, source_id=source_id)
 
     load_result = load_places_subset(

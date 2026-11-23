@@ -264,3 +264,38 @@ def test_a_places_row_registered_under_the_old_convention_moves_on_reingest(
             "theme=places/type=place/*.parquet",
         )
     ]
+
+
+def test_an_existing_extract_loads_without_touching_s3(tmp_path, monkeypatch):
+    """`raw_path` is the offline route: the source bundle ships the extract.
+
+    Given one, nothing is extracted; the file itself is what gets staged.
+    """
+    staged: list[object] = []
+
+    class FakeConn:
+        def commit(self):
+            pass
+
+    def _no_extract(**kwargs):
+        raise AssertionError("extract_places_subset must not run")
+
+    monkeypatch.setattr(op.feat, "seed_feature_types", lambda conn: None)
+    monkeypatch.setattr(op, "ensure_places_source", lambda conn, **kwargs: "s-1")
+    monkeypatch.setattr(op, "extract_places_subset", _no_extract)
+    monkeypatch.setattr(
+        op,
+        "stage_places_subset",
+        lambda raw_path, **kwargs: (staged.append(raw_path), (raw_path, raw_path))[1],
+    )
+    monkeypatch.setattr(op, "load_places_subset", lambda conn, **kwargs: {})
+    monkeypatch.setattr(op, "summarize_places_layer", lambda conn, **kwargs: {})
+
+    shipped = tmp_path / "places_2026-10-21.0.parquet"
+    op.bootstrap_places(
+        FakeConn(),
+        bbox=(-115.6, 32.5, -115.3, 32.7),
+        orchestrator_run_id="orch-1",
+        raw_path=shipped,
+    )
+    assert staged == [shipped]

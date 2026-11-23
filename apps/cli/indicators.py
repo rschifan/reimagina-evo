@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from apps.cli import UserError
+
+import os
 import time
+
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING
 
@@ -13,6 +17,7 @@ from reimagina.db import connect
 from reimagina.indicators.catalog import seed_catalog
 from reimagina.jobs.aoi_summary import summarise_aoi
 from reimagina.orchestration.intake import evaluate_scenario
+from reimagina.orchestration.plan import canonical_feature_ids
 from reimagina.orchestration.runners import default_runners
 
 
@@ -42,7 +47,7 @@ def compute_indicator(
     runner = runners.get(slug)
     if runner is None:
         known = ", ".join(sorted(runners))
-        raise ValueError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
+        raise UserError(f"Unknown indicator slug: {slug!r}. Known slugs: {known}.")
 
     with connect(dsn) as conn:
         # Empty feature set = AOI-scoped (or whole-grain) compute, which is what
@@ -95,7 +100,7 @@ def submit_after_ingest(
     changed_attributes: list[str] | None = None,
     aoi_id: str | None = None,
     code_version: str = "dev",
-    mode: str = "detach",
+    mode: str = "dbos",
 ) -> dict[str, object]:
     """Recompute the indicators a completed ingestion invalidated.
 
@@ -183,6 +188,14 @@ def evaluate_scenario_cli(
 
     ``embedded`` and ``detach`` need ``DATABASE_URL_DIRECT``.
     """
+    # Checked here, before any run is planned or persisted: the runners
+    # compare feature ids as uuid, so a typo would fail a unit mid-run.
+    try:
+        edited_features = canonical_feature_ids(edited_features)
+    except ValueError as exc:
+        raise UserError(
+            f"--feature must be a feature UUID: {edited_features!r}"
+        ) from exc
     if mode == "sync":
         # Not via the factory: this path returns the coordinator's per-unit
         # RunReport, which is a richer shape than the port's RunStatus and is
@@ -207,7 +220,7 @@ def evaluate_scenario_cli(
         }
 
     if mode not in ("embedded", "detach"):
-        raise ValueError(f"unknown evaluate-scenario mode: {mode!r}")
+        raise UserError(f"unknown evaluate-scenario mode: {mode!r}")
 
     from reimagina.orchestration.factory import get_orchestrator
 
@@ -216,29 +229,46 @@ def evaluate_scenario_cli(
         # processes stay client-only; this is an explicit caller choice.
         from reimagina.orchestration.dbos_orchestrator import DBOSOrchestrator
 
+        # ⚠ An executor id of this process's own. The default `<host>:<role>`
+        # is shared by every CLI on the host, and a launch recovers PENDING
+        # work recorded against its id — so a second concurrent
+        # `evaluate-scenario` re-ran the first one's in-flight units. This
+        # process is short-lived: what it abandons by dying is what the
+        # reclaim sweep picks up — a worker's, or `_await_run`'s, so no worker
+        # is needed. An explicit REIMAGINA_EXECUTOR_ID still wins.
+        os.environ.setdefault(
+            "REIMAGINA_EXECUTOR_ID", f"{os.uname().nodename}:cli:{os.getpid()}"
+        )
         orchestrator: Orchestrator = DBOSOrchestrator(execution_mode="dev")
     else:
         orchestrator = get_orchestrator("dbos")
-    with connect(dsn) as conn:
-        handle = orchestrator.submit_run(
-            conn,
-            changed_attributes=changed_attributes,
-            edited_features=edited_features,
-            scenario_id=scenario_id,
-            aoi_id=aoi_id,
-            code_version=code_version,
-        )
-        # A noop finishes at submit and persists no run, so there is nothing to
-        # wait for and the id would 404 on lookup.
-        if handle.status is not None or mode == "detach":
-            status = handle.status.status if handle.status else "queued"
-            return {
-                "dsn": dsn,
-                "run_id": None if status == "noop" else handle.run_id,
-                "status": status,
-                "mode": mode,
-            }
-        final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
+    try:
+        with connect(dsn) as conn:
+            handle = orchestrator.submit_run(
+                conn,
+                changed_attributes=changed_attributes,
+                edited_features=edited_features,
+                scenario_id=scenario_id,
+                aoi_id=aoi_id,
+                code_version=code_version,
+            )
+            # A noop finishes at submit and persists no run, so there is nothing
+            # to wait for and the id would 404 on lookup.
+            if handle.status is not None or mode == "detach":
+                status = handle.status.status if handle.status else "queued"
+                return {
+                    "dsn": dsn,
+                    "run_id": None if status == "noop" else handle.run_id,
+                    "status": status,
+                    "mode": mode,
+                }
+            final = _await_run(orchestrator, conn, handle.run_id, timeout_s=timeout_s)
+    finally:
+        # Every exit, not just success: a noop or a timeout otherwise left this
+        # pid's liveness row behind, read as a dead executor forever when no
+        # worker sweeps. Detach launched no executor, so has none to retire.
+        if mode == "embedded":
+            _retire_executor()
 
     return {
         "dsn": dsn,
@@ -252,24 +282,74 @@ def evaluate_scenario_cli(
     }
 
 
+def _retire_executor() -> None:
+    """Drop this process's liveness row once its work is done.
+
+    A per-process id would otherwise leave one stale heartbeat row per CLI
+    invocation, each read as a dead executor until a sweep forgets it.
+    ``forget_executor`` keeps the row if anything is still open against it.
+    """
+    from contextlib import closing
+
+    import psycopg2
+
+    from reimagina.orchestration import dbos_app
+    from reimagina.orchestration.reclaim import forget_executor
+
+    if not dbos_app._dbos_launched:  # failed before launch: no row was written
+        return
+    dbos_app.stop_liveness()
+    with closing(psycopg2.connect(dbos_app.dbos_dsn())) as conn, conn:
+        forget_executor(conn, dbos_app._executor_id())
+
+
 def _await_run(orchestrator, conn, run_id: str, *, timeout_s: float):
     """Poll until the run is terminal.
 
     The port has no ``wait``: an ops-plane that required a separate worker could
     not honour one, so blocking belongs to the caller that wants it. This
     process launched the engine, so the run makes progress while we poll.
+
+    It also sweeps, because it may be waiting on a dead process's run: an
+    embedded CLI's executor id is per-pid, so a killed one's PENDING run is
+    recovered by no launch, and dedup hands the next identical submit that
+    very run. Without a worker only this sweep reclaims it, once the dead
+    executor's heartbeat is stale (``REIMAGINA_EXECUTOR_STALE_S``).
     """
+    import logging
+
+    from reimagina.orchestration import reclaim
     from reimagina.orchestration.port import RUN_TERMINAL_STATES
 
+    log = logging.getLogger(__name__)
+    sweep_every = None
+    if os.environ.get("REIMAGINA_RECLAIM_ENABLED", "1") != "0":
+        # The worker's period, so one setting governs every sweeper. A
+        # misconfiguration the worker refuses to boot on is only a warning
+        # here: the wait itself must not fail on it.
+        try:
+            sweep_every = reclaim.sweep_interval(reclaim.stale_after_seconds())
+        except (RuntimeError, ValueError):  # ValueError: a non-numeric value
+            log.warning("reclaim is misconfigured; not sweeping", exc_info=True)
+    next_sweep = 0.0
     deadline = time.monotonic() + timeout_s
     while True:
+        if sweep_every is not None and time.monotonic() >= next_sweep:
+            next_sweep = time.monotonic() + sweep_every
+            try:
+                reclaim.sweep()
+            except Exception:  # noqa: BLE001 — the wait must outlive a failed sweep
+                log.warning("reclaim sweep failed; will retry", exc_info=True)
         conn.rollback()  # end the read txn so the next poll sees fresh rows
         status = orchestrator.get_run(conn, run_id)
         if status is not None and status.status in RUN_TERMINAL_STATES:
             return status
         if time.monotonic() > deadline:
             last = status.status if status else "unknown"
-            raise TimeoutError(
+            # A UserError, not TimeoutError: the remedy is the person's (a
+            # longer --timeout), and a builtin TimeoutError is also what a
+            # socket raises, which is no refusal.
+            raise UserError(
                 f"run {run_id} did not finish within {timeout_s}s (last: {last})"
             )
         time.sleep(0.2)

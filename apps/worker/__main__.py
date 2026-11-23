@@ -26,9 +26,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         epilog=(
             "There are no queue or concurrency flags. Concurrency belongs to "
             "the registered queue (REIMAGINA_UNIT_CONCURRENCY), not to the "
-            "process, and there is only one queue to drain. Give each process a "
-            "distinct REIMAGINA_EXECUTOR_ID: recovery is scoped by it, and DBOS "
-            "defaults every process to 'local'."
+            "process, and there is only one queue to drain. Recovery is scoped "
+            "by REIMAGINA_EXECUTOR_ID, which defaults to '<hostname>:worker': "
+            "give each worker on the same host a distinct one."
         ),
     )
     return parser.parse_args(argv)

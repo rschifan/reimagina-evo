@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from apps.cli.app import main
 
 
@@ -156,7 +158,16 @@ def test_cli_perf_seed_observations_delegates(monkeypatch, capsys):
         lambda **kwargs: {"records_written": 25, **kwargs},
     )
 
-    exit_code = main(["perf", "seed-observations", "--dataset-tier", "smoke"])
+    exit_code = main(
+        [
+            "perf",
+            "seed-observations",
+            "--dataset-tier",
+            "smoke",
+            "--dsn",
+            "postgresql://localhost/reimagina_perf",
+        ]
+    )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -214,7 +225,7 @@ def test_cli_perf_compare_delegates(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(
         "apps.cli.app.compare_perf_reports",
-        lambda **kwargs: {"comparisons": [], **kwargs},
+        lambda **kwargs: {"comparisons": [], "candidate_passed": True, **kwargs},
     )
 
     exit_code = main(["perf", "compare", str(baseline), str(candidate)])
@@ -772,7 +783,7 @@ def test_cli_assets_consumers_delegates(monkeypatch, capsys):
 def test_cli_assets_observe_delegates(monkeypatch, capsys):
     monkeypatch.setattr(
         "apps.cli.app.assets_observe_cmd",
-        lambda **kwargs: {"changed": ["global.road_network"], **kwargs},
+        lambda **kwargs: {"changed": ["global.road_network"], "failed": {}, **kwargs},
     )
 
     exit_code = main(["assets", "observe"])
@@ -943,7 +954,9 @@ def test_print_masks_a_top_level_dsn(capsys):
     assert _print({"dsn": DSN_WITH_PASSWORD}) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["dsn"] == "postgresql://reimagina:***@127.0.0.1:5432/reimagina_app"
+    assert payload["dsn"] == (
+        "user=reimagina password=*** dbname=reimagina_app host=127.0.0.1 port=5432"
+    )
 
 
 def test_print_masks_a_dsn_nested_inside_a_list(capsys):
@@ -973,9 +986,7 @@ def test_print_masks_a_dsn_nested_inside_a_list(capsys):
     assert "hunter2" not in out
     payload = json.loads(out)
     # Two levels of list between the root and the password.
-    assert payload["outcomes"][0]["runs"][0]["dsn"].endswith(
-        "reimagina:***@127.0.0.1:5432/reimagina_app"
-    )
+    assert "password=***" in payload["outcomes"][0]["runs"][0]["dsn"]
     assert out.count("***") == 3
 
 
@@ -1071,3 +1082,43 @@ def test_an_empty_dsn_flag_is_unset_not_a_blank_dsn(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["app_dsn"] == "postgresql://localhost/reimagina"
     assert payload["direct_dsn"] is None
+
+
+def test_cli_evaluate_scenario_refuses_a_malformed_feature_before_connecting(
+    monkeypatch, capsys
+):
+    """A non-UUID --feature is one line and exit 2, before any database work."""
+
+    def _no_connect(*_a, **_kw):
+        raise AssertionError("connected with a malformed feature id")
+
+    monkeypatch.setattr("apps.cli.indicators.connect", _no_connect)
+    exit_code = main(
+        ["evaluate-scenario", "--dsn", "postgresql://localhost/x", "--feature", "b1"]
+    )
+    assert exit_code == 2
+    assert "b1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["run --benchmark", "explain"])
+@pytest.mark.parametrize("name", ["tile_z14_small", "no_such_benchmark"])
+def test_cli_perf_refuses_a_benchmark_it_cannot_run_in_one_line(
+    command, name, monkeypatch, capsys
+):
+    """A declared-but-unbuildable or unknown name is the caller's to fix.
+
+    It used to reach `_build_params` and end in a ValueError traceback (exit 1).
+    Refused before connecting, so no database is needed to see it.
+    """
+
+    def no_db(*args, **kwargs):
+        raise AssertionError("connected before refusing the name")
+
+    monkeypatch.setattr("apps.cli.perf.connect", no_db)
+
+    exit_code = main(["perf", *command.split(), name])
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and name in err
+    assert "Traceback" not in err

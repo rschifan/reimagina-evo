@@ -151,6 +151,15 @@ def _params_digest(spec: Any) -> str:
     import hashlib
 
     rendered = "|".join(f"{name}={getattr(spec, name)!r}" for name in _PARAMS_IN_DIGEST)
+    # A composite's target bands change its scores, so they restage it; only
+    # appended when present, so no other indicator's digest moves.
+    bands = [
+        (e.asset_key, e.target_band)
+        for e in getattr(spec, "inputs", ())
+        if e.target_band is not None
+    ]
+    if bands:
+        rendered += f"|target_bands={bands!r}"
     return hashlib.md5(  # noqa: S324 - identity, not a security primitive
         rendered.encode(), usedforsecurity=False
     ).hexdigest()

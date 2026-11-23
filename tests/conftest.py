@@ -11,13 +11,14 @@ re-running migrations for every test.
 
 SAFETY: the teardown step (downgrade-to-base) is destructive — it drops every
 table the migrations manage. We therefore refuse to run against a DB whose
-name does not clearly look like a test DB (contains `test`). If someone
+name does not clearly look like a test DB (has `test` as a word). If someone
 points TEST_DATABASE_URL at a dev or prod DB, the fixture raises at setup
 instead of silently wiping the data at teardown.
 """
 
 from __future__ import annotations
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -31,6 +32,11 @@ from reimagina.storage.postgres.bootstrap import database_name_from_dsn
 from reimagina.storage.postgres.migrations import postgres_alembic_config
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+
+# TestClient sends `Host: testserver`; the API refuses hosts outside its
+# allow-list (DNS-rebinding guard), so tests add it. Set before any test
+# module imports `apps.api.app`, which builds its app at import time.
+os.environ["REIMAGINA_API_ALLOWED_HOSTS"] = "localhost,127.0.0.1,[::1],testserver"
 
 PY_PACKAGES_DIR = Path(__file__).resolve().parents[1] / "packages" / "py"
 if str(PY_PACKAGES_DIR) not in sys.path:
@@ -57,11 +63,13 @@ def _assert_db_name_is_test_safe(db_url: str) -> None:
     """
     db_name = database_name_from_dsn(db_url)
     allowed = os.environ.get("REIMAGINA_TEST_DB_ALLOW_NAME", "")
-    if "test" in db_name.lower() or db_name == allowed:
+    # A word, not a substring: "reimagina_latest" is a plausible name for a
+    # copy of current data, and it contains "test".
+    if "test" in re.split(r"[\W_]+", db_name.lower()) or db_name == allowed:
         return
     raise RuntimeError(
         "Refusing to run the migrated_db fixture against "
-        f"{db_name!r}: the database name must contain 'test' so the "
+        f"{db_name!r}: the database name must have 'test' as a word (e.g. reimagina_test) so the "
         "teardown (downgrade-to-base) can't wipe real data. If this is "
         "intentional, set REIMAGINA_TEST_DB_ALLOW_NAME to the exact DB "
         "name to opt in."
@@ -131,14 +139,14 @@ def conn(migrated_db: str):
 def perf_db_url() -> str:
     """DSN for benchmarks that expect pre-loaded real data (e.g. INEGI CDMX).
 
-    Defaults to REIMAGINA_PERF_DSN → REIMAGINA_APP_DSN → postgresql://localhost/reimagina_app.
+    Defaults to REIMAGINA_PERF_DSN → REIMAGINA_APP_DSN → postgresql://localhost/reimagina.
     This fixture intentionally does NOT run migrations and does NOT tear down,
     so pointing it at a dev DB with real data is safe by construction.
     """
     return (
         os.environ.get("REIMAGINA_PERF_DSN")
         or os.environ.get("REIMAGINA_APP_DSN")
-        or "postgresql://localhost/reimagina_app"
+        or "postgresql://localhost/reimagina"
     )
 
 
@@ -157,6 +165,17 @@ def perf_conn(perf_db_url: str):
     except psycopg2.OperationalError as exc:
         pytest.skip(f"Perf DB unavailable at {perf_db_url!r}: {exc}")
         return  # type: ignore[return-value]
+    # An unmigrated database is absent data too: without this the first
+    # benchmark query errored with UndefinedTable instead of skipping.
+    with connection.cursor() as cur:
+        cur.execute("SELECT to_regclass('curated_geo.feature')")
+        migrated = cur.fetchone()[0] is not None
+    if not migrated:
+        connection.close()
+        pytest.skip(
+            f"Perf DB {database_name_from_dsn(perf_db_url)!r} has no reimagina "
+            "schema; migrate it and load real data first"
+        )
     connection.autocommit = False
     try:
         yield connection

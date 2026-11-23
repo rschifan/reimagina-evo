@@ -102,12 +102,18 @@
     setFilters(statusesFromHash(hash, RUN_STATUSES));
   });
 
-  $effect(() => {
-    void boot();
-    const poll = startPolling();
-    refresh = poll.refreshNow;
-    return poll.stop;
-  });
+  // Once per mount. `untrack`, because `boot()` reads the store's filters,
+  // limit and open run before its first await: tracked, every detail response
+  // of a running run re-ran this effect, a request storm at network speed that
+  // also aborted its own list read and blanked the table on each pass.
+  $effect(() =>
+    untrack(() => {
+      void boot();
+      const poll = startPolling();
+      refresh = poll.refreshNow;
+      return poll.stop;
+    }),
+  );
 
   $effect(() => {
     const t = setInterval(() => {
@@ -143,7 +149,9 @@
         updated {ops.lastLoadedAt.toLocaleTimeString()}
       {/if}
     </span>
-    {#if ops.stale}
+    <!-- The page clock, so the badge re-checks every second; less the offset,
+         since `lastLoadedAt` is a client time. -->
+    {#if ops.staleAt(now - ops.offsetMs)}
       <span
         class="rounded border border-state-stale/40 px-1.5 py-0.5 font-mono text-[11px] text-state-stale"
       >

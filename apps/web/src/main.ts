@@ -319,7 +319,9 @@ async function main(): Promise<void> {
     // for its values. Declared before the AOI subscription, which fires
     // on registration and closes the card.
     const inspectorEl = document.getElementById("inspector");
-    let pinned: { id: string; grain: string | null; rows: FeatureIndicatorValue[] | string } | null = null;
+    let pinned: {
+      id: string; grain: string | null; estimated: string | null; rows: FeatureIndicatorValue[] | string;
+    } | null = null;
     let pinRequest: AbortController | null = null;
     // What the selection card asks about: the indicator being rendered, at its
     // grain, and once its stats arrive, the legend's AOI-wide median.
@@ -355,9 +357,9 @@ async function main(): Promise<void> {
       }
     }
 
-    async function pin(id: string): Promise<void> {
+    async function pin(id: string, estimated: string | null): Promise<void> {
       closeInspector();
-      const mine: NonNullable<typeof pinned> = { id, grain: state.drawnGrain, rows: "Loading…" };
+      const mine: NonNullable<typeof pinned> = { id, grain: state.drawnGrain, estimated, rows: "Loading…" };
       pinned = mine;
       setOverlayPinned(map, overlayConfig, id, true);
       showInspector();
@@ -385,10 +387,19 @@ async function main(): Promise<void> {
     // neither.
     map.on("click", (e) => {
       if (selectionController.ownsClick(e.point)) return;
-      const id = overlayFeatureAt(map, e.point);
-      if (id === null) closeInspector();
-      else if (id !== pinned?.id) void pin(id);
+      const hit = overlayFeatureAt(map, e.point);
+      if (hit === null) closeInspector();
+      else if (hit.id !== pinned?.id) void pin(hit.id, hit.estimated);
     });
+
+    // Monotonic token bumped on every renderIndicator entry so a slow
+    // stats fetch from request N doesn't overwrite the result of a
+    // newer request N+1. Without this, switching AOI or indicator
+    // rapidly leaves the map showing the older combination's ramp +
+    // tile source — a subtle "stale state" bug. `clearIndicator` bumps it
+    // too, or a render in flight repaints the overlay just cleared.
+    // Declared before the AOI subscription, whose handler can reach it.
+    let renderToken = 0;
 
     // React to any AOI change — picker, localStorage hydration, or a
     // future programmatic setActiveAoiId call. One central handler
@@ -437,12 +448,17 @@ async function main(): Promise<void> {
      * torn down rather than left painting the previous AOI's tiles.
      */
     async function refreshIndicatorList(aoiId: string | null): Promise<void> {
+      let listed: IndicatorSummary[];
       try {
-        indicators = await listIndicators(aoiId);
+        listed = await listIndicators(aoiId);
       } catch (err) {
         console.warn("indicator list refresh failed; keeping previous list", err);
         return;
       }
+      // Responses land in arrival order: after a quick A → B → C, B's list
+      // can answer last and would fill C's picker.
+      if (aoiId !== getActiveAoiId()) return;
+      indicators = listed;
       const el = document.getElementById("indicator-select") as HTMLSelectElement | null;
       if (!el) return;
       const previous = state.activeIndicator?.slug ?? "";
@@ -455,12 +471,15 @@ async function main(): Promise<void> {
     /** Take the overlay and everything describing it off the page. Resolves
      *  its elements by id for the same hoisting reason as above. */
     function clearIndicator(): void {
+      renderToken++;
       closeInspector();
       state.activeIndicator = null;
       state.activeGrain = null;
       cardContext = renderingContext(null, null);
       selectionCard.refresh();
       setBanner("values", null);
+      // The render it cancelled set this and will not land to clear it.
+      setBanner("loading", null);
       removeIndicator(map);
       renderIndicatorInfo(null);
       const grainEl = document.getElementById("grain-toggle");
@@ -475,13 +494,6 @@ async function main(): Promise<void> {
     const grainToggle = document.getElementById("grain-toggle");
     const legend = document.getElementById("map-legend");
     const downloads = document.getElementById("downloads");
-
-    // Monotonic token bumped on every renderIndicator entry so a slow
-    // stats fetch from request N doesn't overwrite the result of a
-    // newer request N+1. Without this, switching AOI or indicator
-    // rapidly leaves the map showing the older combination's ramp +
-    // tile source — a subtle "stale state" bug.
-    let renderToken = 0;
 
     async function renderIndicator(indicator: IndicatorSummary): Promise<void> {
       const myToken = ++renderToken;
@@ -537,7 +549,10 @@ async function main(): Promise<void> {
       }
       const histogram = stats?.histogram ?? null;
       if (legend) {
-        renderLegend(legend, indicator, domain, histogram, stats?.count_at_cap ?? null, stats?.count ?? 0);
+        renderLegend(
+          legend, indicator, domain, histogram, stats?.count_at_cap ?? null, stats?.count ?? 0,
+          stats?.count_estimated ?? 0,
+        );
       }
       // The hovered feature's place in the distribution. Registered after
       // the legend exists, and re-registered per render so it closes over
@@ -729,17 +744,10 @@ async function main(): Promise<void> {
       return list;
     };
 
-    const palette = enablePalette(buildCommands(), SHORTCUTS);
-    // The command list describes current state — which layer is on, which
-    // indicator is drawn — so it is rebuilt on open rather than cached.
-    const refreshCommands = (): void => palette.setCommands(buildCommands());
-    subscribeToAoi(() => refreshCommands());
+    // Rebuilt on every open: see enablePalette.
+    const palette = enablePalette(buildCommands, SHORTCUTS);
 
     wireShortcuts({
-      onPalette: () => {
-        refreshCommands();
-        palette.open();
-      },
       onFit: () => fitToActiveAoi(),
       onPanel: () => sidebar?.toggle(),
       onDraw: (shape) => selectionController?.startDrawing(shape),

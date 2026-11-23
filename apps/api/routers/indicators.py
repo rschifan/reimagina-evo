@@ -249,28 +249,46 @@ def list_values(
         default=None, description="Optional scenario filter; base city if omitted"
     ),
     limit: int = Query(default=1_000, ge=1, le=10_000),
+    after_feature_id: UUID | None = Query(
+        default=None,
+        description="Keyset cursor: the last feature_id of the previous page",
+    ),
+    *,
+    response: Response,
     conn: psycopg2.extensions.connection = Depends(get_db_conn),
 ) -> list[IndicatorValue]:
-    """Current indicator results, one row per feature.
+    """Current indicator results, one row per feature, ordered by feature_id.
 
-    Pagination for prototype is a simple `limit`. The table caps at ~66k
-    rows per indicator in CDMX, so a client fetching the full set does
-    two or three round-trips; cursor pagination is deferred.
+    Pages of at most `limit` rows. `X-Truncated: true` says more rows
+    exist; pass the last row's `feature_id` as `after_feature_id` for the
+    next page.
     """
     repo = get_backend(conn).indicator_catalog_repo()
     if repo.get_indicator(slug) is None:
         raise HTTPException(status_code=404, detail=f"Unknown indicator slug: {slug!r}")
 
-    rows = (
+    rows, headers = _capped(
         get_backend(conn)
         .indicator_result_repo()
         .list_current_for_indicator(
             indicator_slug=slug,
             scenario_id=_as_str(scenario_id),
-            limit=limit,
-        )
+            limit=limit + 1,
+            after_feature_id=_as_str(after_feature_id),
+        ),
+        limit,
     )
+    response.headers.update(headers)
     return [IndicatorValue(**_value_row_to_dict(row)) for row in rows]
+
+
+def _capped(rows: list[dict], limit: int) -> tuple[list[dict], dict[str, str]]:
+    """Cut rows fetched with ``limit + 1`` to ``limit``, and headers saying
+    whether that dropped any — so a capped answer never looks complete."""
+    return rows[:limit], {
+        "X-Truncated": "true" if len(rows) > limit else "false",
+        "X-Row-Limit": str(limit),
+    }
 
 
 class IndicatorValueStats(BaseModel):
@@ -301,6 +319,10 @@ class IndicatorValueStats(BaseModel):
     #: Rows with ``value >= cap_value`` over the same rows as ``count``;
     #: ``None`` when the indicator has no cap.
     count_at_cap: int | None = None
+    #: Rows on a block whose scenario inputs are estimated — Overture maps
+    #: none or too little of its buildings, so its lot coverage is the city
+    #: median (``attributes.estimated``) — over the same rows as ``count``.
+    count_estimated: int = 0
     histogram: ValueHistogram | None = None
 
 
@@ -398,7 +420,7 @@ def download_values_csv(
     downloads.
     """
     ensure_indicator_exists(conn, slug)
-    rows = (
+    rows, cap_headers = _capped(
         get_backend(conn)
         .indicator_result_repo()
         .list_current_with_geometry(
@@ -406,14 +428,18 @@ def download_values_csv(
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             aoi_id=_as_str(aoi_id),
-            limit=limit,
-        )
+            limit=limit + 1,
+        ),
+        limit,
     )
     filename = f"{slug}.csv"
     return StreamingResponse(
         indicator_rows_to_csv(rows),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **cap_headers,
+        },
     )
 
 
@@ -430,7 +456,7 @@ def download_values_geojson(
 ) -> Response:
     """Return a GeoJSON FeatureCollection in one response."""
     ensure_indicator_exists(conn, slug)
-    rows = (
+    rows, cap_headers = _capped(
         get_backend(conn)
         .indicator_result_repo()
         .list_current_with_geometry(
@@ -438,15 +464,19 @@ def download_values_geojson(
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             aoi_id=_as_str(aoi_id),
-            limit=limit,
-        )
+            limit=limit + 1,
+        ),
+        limit,
     )
     payload = indicator_rows_to_geojson(rows)
     filename = f"{slug}.geojson"
     return Response(
         content=json.dumps(payload),
         media_type="application/geo+json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **cap_headers,
+        },
     )
 
 
@@ -463,7 +493,7 @@ def download_values_parquet(
 ) -> Response:
     """Return a GeoParquet byte payload (EPSG:4326)."""
     ensure_indicator_exists(conn, slug)
-    rows = (
+    rows, cap_headers = _capped(
         get_backend(conn)
         .indicator_result_repo()
         .list_current_with_geometry(
@@ -471,15 +501,19 @@ def download_values_parquet(
             scenario_id=_as_str(scenario_id),
             feature_type=feature_type,
             aoi_id=_as_str(aoi_id),
-            limit=limit,
-        )
+            limit=limit + 1,
+        ),
+        limit,
     )
     payload = indicator_rows_to_geoparquet(rows)
     filename = f"{slug}.parquet"
     return Response(
         content=payload,
         media_type="application/vnd.apache.parquet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            **cap_headers,
+        },
     )
 
 

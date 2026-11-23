@@ -6,8 +6,8 @@ does not move.
 """
 
 from __future__ import annotations
+from tests.integration._helpers import make_scenario
 
-from uuid import uuid4
 
 import pytest
 
@@ -22,7 +22,7 @@ from reimagina.indicators.edificability import (
     compute_block_housing_units,
     compute_block_population,
 )
-from reimagina.scenarios.overrides import apply_override
+from reimagina.scenarios.overrides import apply_overrides
 from reimagina.storage import backend_for_connection
 
 from tests.integration.test_edificability_pipeline import _ATTRS, _block
@@ -65,13 +65,17 @@ def test_rule_coverage_scales_units_population_and_density(conn):
     block_id = _block(conn, _ATTRS)
     baseline = _values(conn, block_id)
 
-    scenario = str(uuid4())
-    apply_override(
+    scenario = make_scenario(conn)
+    apply_overrides(
         conn,
         scenario_id=scenario,
-        feature_id=block_id,
-        attribute_key="lot_coverage",
-        value_numeric=0.6,
+        edits=[
+            {
+                "feature_id": block_id,
+                "attribute_key": "lot_coverage",
+                "value_numeric": 0.6,
+            }
+        ],
     )
     scoped = _values(conn, block_id, scenario)
     for slug in _SLUGS:

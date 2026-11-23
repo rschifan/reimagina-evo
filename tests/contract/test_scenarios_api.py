@@ -10,7 +10,7 @@ already use. Two kinds of claim live here and nowhere else:
   nothing. That is a property of the route object, not of any response, and
   it is asserted directly — with a positive control proving the detector can
   see a pooled dependency where one exists.
-* **Which status code each refusal becomes.** The scenario layer raises nine
+* **Which status code each refusal becomes.** The scenario layer raises ten
   different things and two of them are raw driver errors; every one of those
   mappings is a decision this router owns, and a decision is only pinned if
   flattening it to 500 fails a test.
@@ -43,19 +43,21 @@ from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
+    RuleCatchesNothing,
+    RuleNotFound,
     ScenarioHasNoAOI,
     ScenarioNotFound,
 )
 from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from reimagina.scenarios.ceilings import DENSITY, CeilingBreach, max_levels_for
 from reimagina.scenarios.comparison import ComparisonResult
-from reimagina.scenarios.proposal import edits_for
+from reimagina.scenarios.proposal import RULE_INPUTS
 
 PROJECT_ID = "11111111-1111-1111-1111-111111111111"
 AOI_ID = "22222222-2222-2222-2222-222222222222"
 SCENARIO_ID = "33333333-3333-3333-3333-333333333333"
 TYPE_ID = "44444444-4444-4444-4444-444444444444"
-EDIT_ID = "55555555-5555-5555-5555-555555555555"
+RULE_ID = "55555555-5555-5555-5555-555555555555"
 FEATURE_ID = "66666666-6666-6666-6666-666666666666"
 
 SLUG = "edificability_block_density"
@@ -64,12 +66,8 @@ POLYGON = {
     "type": "Polygon",
     "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]],
 }
-PROPOSAL = {
-    "area": POLYGON,
-    "levels": 6,
-    "unit_size": 60,
-    "people_per_household": 3.6,
-}
+INPUTS = {"levels": 6, "unit_size": 60, "people_per_household": 3.6}
+PROPOSAL = {"area": POLYGON, "inputs": INPUTS}
 
 SCENARIO_ROW = {
     "id": SCENARIO_ID,
@@ -81,16 +79,33 @@ SCENARIO_ROW = {
     "updated_at": "2026-11-12T00:00:00+00:00",
     "materialized_at": None,
 }
-SCENARIO_DETAIL = {**SCENARIO_ROW, "override_count": 0, "edits": []}
+SCENARIO_DETAIL = {**SCENARIO_ROW, "override_count": 0, "rules": []}
+
+RULE_ROW = {
+    "id": RULE_ID,
+    "ordinal": 1,
+    "type_id": TYPE_ID,
+    "inputs": {"levels": 6.0, "unit_size": 60.0, "people_per_household": 3.6},
+    "geometry_wkt": "POLYGON((0 0,1 0,1 1,0 1,0 0))",
+    "created_at": "2026-11-12T00:00:00+00:00",
+    "updated_at": "2026-11-12T00:00:00+00:00",
+}
 
 MATERIALIZED = MaterializeResult(
-    matched_per_edit={EDIT_ID: 4},
+    matched_per_rule={RULE_ID: 4},
     overrides_written=16,
     overrides_removed=0,
     results_superseded=0,
+    footprint_features=(FEATURE_ID,),
+    footprint_attributes=("floors", "num_levels"),
+    aoi_id=AOI_ID,
 )
 DELETED = DeleteResult(
-    overrides=16, versions_retired=4, results_superseded=4, materializations=1
+    overrides=16,
+    versions_deleted=4,
+    results_deleted=4,
+    job_runs_deleted=1,
+    materializations=1,
 )
 
 
@@ -139,6 +154,12 @@ def events(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(mod, "connect", _connect)
     return log
+
+
+@pytest.fixture(autouse=True)
+def _rule_reads(monkeypatch):
+    """The read the enqueue makes after a write, answered without SQL."""
+    monkeypatch.setattr(mod, "unfinished_runs", lambda conn, sid: [])
 
 
 @pytest.fixture
@@ -320,7 +341,9 @@ def test_the_pool_detector_descends_into_a_nested_dependency():
 
 
 @pytest.mark.parametrize(
-    "path", ["/scenarios/{id}", "/scenarios/{id}/edits"], ids=["scenario", "edit"]
+    "path",
+    ["/scenarios/{id}", "/scenarios/{id}/rules/" + RULE_ID],
+    ids=["scenario", "rule"],
 )
 def test_a_browser_may_preflight_the_two_deletes(client, path):
     """⚠ CORS has to allow DELETE, and dev cannot tell you that it does not.
@@ -343,19 +366,48 @@ def test_a_browser_may_preflight_the_two_deletes(client, path):
     assert "DELETE" in response.headers["access-control-allow-methods"]
 
 
+def test_a_browser_may_preflight_the_rule_patch(client):
+    """``PATCH /scenarios/{id}/rules/{rule_id}`` needs the same CORS allowance.
+
+    Dev proxies through Vite and never preflights, so only a cross-origin
+    deployment would find out the browser refuses the edit.
+    """
+    response = client.options(
+        f"/scenarios/{SCENARIO_ID}/rules/{RULE_ID}",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "PATCH",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
 def test_the_router_is_mounted_on_the_app(client):
     """Read off the published schema: a router nobody included serves nothing."""
     paths = set(client.get("/openapi.json").json()["paths"])
     assert {
         "/scenarios",
         "/scenarios/{scenario_id}",
-        "/scenarios/{scenario_id}/edits",
+        "/scenarios/{scenario_id}/rules",
+        "/scenarios/{scenario_id}/rules/{rule_id}",
         "/scenarios/{scenario_id}/recompute",
         "/scenarios/{scenario_id}/comparison",
     } <= paths
 
 
-WRITES = ["create", "edits", "recompute", "delete_edit", "delete"]
+WRITES = ["create", "add_rule", "update_rule", "delete_rule", "recompute", "delete"]
+
+#: Every domain write a route makes, succeeding.
+_WRITES_OK = {
+    "create_scenario": lambda c, **kw: SCENARIO_ID,
+    "add_rule": lambda c, **kw: (dict(RULE_ROW), MATERIALIZED),
+    "update_rule": lambda c, **kw: (dict(RULE_ROW), MATERIALIZED),
+    "delete_rule": lambda c, **kw: (None, MATERIALIZED),
+    "materialize_scenario": lambda c, **kw: MATERIALIZED,
+    "delete_scenario": lambda c, **kw: DELETED,
+}
 
 
 @pytest.mark.parametrize("route", WRITES)
@@ -371,12 +423,8 @@ def test_every_write_commits_and_closes_its_own_connection(
     """
     _patch(
         monkeypatch,
-        create_scenario=lambda c, **kw: SCENARIO_ID,
-        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[{**EDIT_ROW}]),
-        add_edit=lambda c, **kw: EDIT_ID,
-        remove_edit=lambda c, **kw: True,
-        materialize_scenario=lambda c, **kw: MATERIALIZED,
-        delete_scenario=lambda c, **kw: DELETED,
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+        **_WRITES_OK,
     )
     _type_id(monkeypatch)
     _orchestrator(monkeypatch)
@@ -384,7 +432,8 @@ def test_every_write_commits_and_closes_its_own_connection(
     response = _call(client, route)
 
     assert response.status_code < 300, response.text
-    # One connection for the write; recompute opens a second for the enqueue.
+    # One connection for the write; a rule write or a recompute opens a second
+    # for the enqueue.
     assert events.count("connect") == events.count("close")
     assert events.count("connect") >= 1
     assert "rollback" not in events
@@ -392,31 +441,29 @@ def test_every_write_commits_and_closes_its_own_connection(
     assert events[events.index("commit") + 1] == "close"
 
 
-EDIT_ROW = {
-    "id": EDIT_ID,
-    "ordinal": 1,
-    "type_id": TYPE_ID,
-    "attribute_key": "floors",
-    "value_numeric": 6.0,
-    "geometry_wkt": "POLYGON((0 0,1 0,1 1,0 1,0 0))",
-    "created_at": "2026-11-12T00:00:00+00:00",
-}
-
-
 def _call(client: TestClient, route: str, scenario_id: str = SCENARIO_ID):
     """One request per named route, with a body that would otherwise succeed."""
     if route == "create":
         return client.post(
-            "/scenarios", json={"project_id": PROJECT_ID, "name": "Centralidad norte"}
+            "/scenarios",
+            json={
+                "project_id": PROJECT_ID,
+                "aoi_id": AOI_ID,
+                "name": "Centralidad norte",
+            },
         )
     if route == "list":
         return client.get("/scenarios")
     if route == "show":
         return client.get(f"/scenarios/{scenario_id}")
-    if route == "edits":
-        return client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
-    if route == "delete_edit":
-        return client.delete(f"/scenarios/{scenario_id}/edits?edit_id={EDIT_ID}")
+    if route == "add_rule":
+        return client.post(f"/scenarios/{scenario_id}/rules", json=PROPOSAL)
+    if route == "update_rule":
+        return client.patch(
+            f"/scenarios/{scenario_id}/rules/{RULE_ID}", json={"inputs": INPUTS}
+        )
+    if route == "delete_rule":
+        return client.delete(f"/scenarios/{scenario_id}/rules/{RULE_ID}")
     if route == "recompute":
         return client.post(f"/scenarios/{scenario_id}/recompute")
     if route == "comparison":
@@ -469,12 +516,11 @@ def test_recompute_materialises_commits_and_closes_before_it_evaluates(
         "close",
     ]
     assert fake.kwargs["scenario_id"] == SCENARIO_ID
+    # The AOI the materialisation scoped itself to, read under its lock.
     assert fake.kwargs["aoi_id"] == AOI_ID
-    # Empty on purpose: materialisation has just published the versions, so
-    # freshness at this scenario's partition resolves the work — including an
-    # attribute whose last edit was removed, which no list of keys could name.
-    assert fake.kwargs["changed_attributes"] == []
-    assert fake.kwargs["edited_features"] == []
+    # The footprint: the blocks a rule overrides, and the attributes involved.
+    assert fake.kwargs["changed_attributes"] == ["floors", "num_levels"]
+    assert fake.kwargs["edited_features"] == [FEATURE_ID]
 
 
 def test_recompute_reports_what_it_matched(client, events, monkeypatch):
@@ -487,7 +533,7 @@ def test_recompute_reports_what_it_matched(client, events, monkeypatch):
 
     body = client.post(f"/scenarios/{SCENARIO_ID}/recompute").json()
 
-    assert body["matched_per_edit"] == {EDIT_ID: 4}
+    assert body["matched_per_rule"] == {RULE_ID: 4}
     assert body["overrides_written"] == 16
     assert body["overrides_removed"] == 0
     assert body["results_superseded"] == 0
@@ -536,30 +582,59 @@ def test_a_recompute_with_nothing_to_recompute_hands_back_no_run_id(
     assert body["overrides_written"] == 16
 
 
-def test_recompute_reads_the_aoi_under_the_lock_materialisation_holds(
+def test_an_empty_footprint_enqueues_nothing(client, events, monkeypatch):
+    """No override left means nothing to compute — and an empty feature list
+    would mean "every feature of the AOI" to the planner, writing a baseline
+    copy under the scenario for each of them."""
+    empty = MaterializeResult(
+        matched_per_rule={},
+        overrides_written=0,
+        overrides_removed=4,
+        results_superseded=4,
+        aoi_id=AOI_ID,
+    )
+    _patch(monkeypatch, materialize_scenario=lambda c, **kw: empty)
+    _orchestrator(monkeypatch, events)
+
+    body = client.post(f"/scenarios/{SCENARIO_ID}/recompute").json()
+
+    assert "submit_run" not in events
+    assert (body["run_id"], body["run_status"]) == (None, "noop")
+
+
+def test_a_noop_while_a_run_is_outstanding_answers_that_run(
     client, events, monkeypatch
 ):
-    """The scope of the evaluation is read *after* the materialisation.
-
-    Reading it first would read it outside ``_lock_scenario``'s ``FOR
-    UPDATE``, so a concurrent write could move the AOI between the read and
-    the lock and the evaluation would be scoped to the one the
-    materialisation did not use.
-    """
-    order: list[str] = []
+    """ "Nothing to do" would read as "done" while the change is being computed."""
     _patch(
         monkeypatch,
-        get_scenario=lambda c, sid: (order.append("read"), dict(SCENARIO_DETAIL))[1],
-        materialize_scenario=lambda c, **kw: (
-            order.append("materialize"),
-            MATERIALIZED,
-        )[1],
+        materialize_scenario=lambda c, **kw: MATERIALIZED,
+        unfinished_runs=lambda c, sid: [("run-9", "running")],
     )
-    _orchestrator(monkeypatch)
 
-    client.post(f"/scenarios/{SCENARIO_ID}/recompute")
+    class _Status:
+        status = "noop"
 
-    assert order == ["materialize", "read"]
+    class _Handle:
+        run_id = "minted"
+        status = _Status()
+        deduplicated = False
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            return _Handle()
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+
+    body = client.post(f"/scenarios/{SCENARIO_ID}/recompute").json()
+
+    assert (body["run_id"], body["run_status"], body["deduplicated"]) == (
+        "run-9",
+        "running",
+        True,
+    )
 
 
 def test_a_failed_enqueue_does_not_describe_the_materialisation_as_refused(
@@ -759,91 +834,297 @@ def test_a_run_that_was_already_doing_this_work_says_so(client, events, monkeypa
     assert body["run_id"] == "run-123"
 
 
-# ── the four edits of one proposal ───────────────────────────────────────
+# ── a rule: one row, written and materialised together ───────────────────
 
 
-def test_the_edits_route_delegates_the_four_edits_to_the_domain(
-    client, events, monkeypatch
-):
-    """⚠ Three numbers make four edits, and that rule has one home.
-
-    ``--levels`` writes both ``floors`` and ``num_levels``; a surface that
-    re-derived the list would re-introduce the failure the four-edit rule exists to prevent — planned
-    floors frozen on the baseline while edificability moves. The assertion is
-    therefore that the router *calls* ``proposal.edits_for``, not that it
-    happens to produce the same four keys today: a local reimplementation
-    passes the second test and fails this one.
-    """
+def test_the_rule_route_leaves_its_numbers_to_the_domain(client, events, monkeypatch):
+    """The refusals of a rule's numbers have one home, inside ``add_rule``
+    (``proposal.check_inputs``): the router hands the body's numbers over as
+    sent, and a local reimplementation of the check would show up here."""
     calls: list[dict] = []
-    sentinel = [{"attribute_key": "num_levels", "value_numeric": 99.0}]
     _patch(
         monkeypatch,
-        edits_for=lambda *a, **kw: sentinel,
-        add_edit=lambda c, **kw: (calls.append(kw), EDIT_ID)[1],
+        add_rule=lambda c, **kw: (calls.append(kw), (dict(RULE_ROW), MATERIALIZED))[1],
     )
     _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
 
-    response = client.post(f"/scenarios/{SCENARIO_ID}/edits", json=PROPOSAL)
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
 
     assert response.status_code == 201, response.text
-    assert [(c["attribute_key"], c["value_numeric"]) for c in calls] == [
-        ("num_levels", 99.0)
-    ]
+    assert [c["inputs"] for c in calls] == [INPUTS]
 
 
-def test_one_proposal_writes_all_four_edits_over_one_area_in_one_transaction(
+def test_a_rule_and_its_materialisation_commit_together_before_the_enqueue(
     client, events, monkeypatch
 ):
-    """The policy outcome, with the expectation derived from the domain.
-
-    One commit, not four: ``add_edit`` raising on the third would otherwise
-    leave ``floors`` and ``num_levels`` written and ``unit_size`` not, which
-    is a block the edificability family skips while planned floors moves.
-    """
-    calls: list[dict] = []
-    _patch(monkeypatch, add_edit=lambda c, **kw: (calls.append(kw), EDIT_ID)[1])
+    """⚠ One transaction for the rule and the materialisation, so a refusal of
+    either stores nothing; a second, after it, for the enqueue."""
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (
+            events.append("add_rule"),
+            (dict(RULE_ROW), MATERIALIZED),
+        )[1],
+    )
     asked = _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
 
-    response = client.post(f"/scenarios/{SCENARIO_ID}/edits", json=PROPOSAL)
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
 
     assert response.status_code == 201, response.text
-    assert [(c["attribute_key"], c["value_numeric"]) for c in calls] == [
-        (e["attribute_key"], e["value_numeric"]) for e in edits_for(6.0, 60.0, 3.6)
+    assert events == [
+        "connect",
+        "add_rule",
+        "commit",
+        "close",
+        "connect",
+        "submit_run",
+        "commit",
+        "close",
     ]
-    assert {c["geometry_wkt"] for c in calls} == {"POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"}
-    assert {c["type_id"] for c in calls} == {TYPE_ID}
-    assert events.count("commit") == 1
-    assert len(response.json()["edits"]) == 4
+    body = response.json()
+    assert body["rule"]["id"] == RULE_ID
+    assert body["run_id"] == "run-123"
+    assert body["matched_per_rule"] == {RULE_ID: 4}
     # Block grain by default, because every shipped indicator is block-grain.
     assert asked == [("MEX", "block")]
-    assert response.json()["feature_type"] == "MEX:block"
+
+
+def test_a_first_rule_is_created_with_its_scenario_in_one_transaction(
+    client, events, monkeypatch
+):
+    """The scenario, its first rule and the materialisation commit together,
+    then the enqueue runs on its own connection."""
+    _patch(
+        monkeypatch,
+        create_scenario=lambda c, **kw: (events.append("create"), SCENARIO_ID)[1],
+        add_rule=lambda c, **kw: (
+            events.append(f"add_rule:{kw['scenario_id']}"),
+            (dict(RULE_ROW), MATERIALIZED),
+        )[1],
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, rules=[dict(RULE_ROW)]),
+    )
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
+
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": PROJECT_ID,
+            "aoi_id": AOI_ID,
+            "name": "N",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert events == [
+        "connect",
+        "create",
+        f"add_rule:{SCENARIO_ID}",
+        "commit",
+        "close",
+        "connect",
+        "submit_run",
+        "commit",
+        "close",
+    ]
+    body = response.json()
+    assert body["first_rule"]["rule"]["id"] == RULE_ID
+    assert body["first_rule"]["run_id"] == "run-123"
+
+
+def test_a_refused_first_rule_rolls_its_scenario_back(client, events, monkeypatch):
+    def _raise(conn, **kwargs):
+        raise RuleCatchesNothing(RULE_ID)
+
+    _patch(monkeypatch, create_scenario=lambda c, **kw: SCENARIO_ID, add_rule=_raise)
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
+
+    response = client.post(
+        "/scenarios",
+        json={
+            "project_id": PROJECT_ID,
+            "aoi_id": AOI_ID,
+            "name": "N",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "rollback" in events and "commit" not in events
+    assert "submit_run" not in events
+
+
+def test_a_scenario_without_a_rule_has_no_first_rule(client, events, monkeypatch):
+    _patch(
+        monkeypatch,
+        create_scenario=lambda c, **kw: SCENARIO_ID,
+        add_rule=lambda c, **kw: pytest.fail("no rule was sent"),
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL),
+    )
+
+    response = _call(client, "create")
+
+    assert response.status_code == 201, response.text
+    assert response.json()["first_rule"] is None
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        CeilingExceeded([CeilingBreach(FEATURE_ID, DENSITY, 2000.0, 2166.0)]),
+        RuleCatchesNothing(RULE_ID),
+    ],
+    ids=["ceiling", "catches-nothing"],
+)
+def test_a_refused_rule_is_rolled_back_with_its_materialisation(
+    client, events, monkeypatch, refusal
+):
+    """The server never keeps a rule it refused, so no client has to undo it."""
+
+    def _raise(conn, **kwargs):
+        raise refusal
+
+    _patch(monkeypatch, add_rule=_raise)
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch, events)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
+
+    assert response.status_code == 422, response.text
+    assert "rollback" in events and "commit" not in events
+    assert "submit_run" not in events
+
+
+def test_a_rule_catching_no_block_is_named_as_such(client, events, monkeypatch):
+    def _raise(conn, **kwargs):
+        raise RuleCatchesNothing(RULE_ID)
+
+    _patch(monkeypatch, add_rule=_raise)
+    _type_id(monkeypatch)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
+    detail = response.json()["detail"]
+
+    assert detail["error"] == "rule_catches_nothing"
+    assert detail["field"] == "area"
+
+
+def test_a_rule_whose_enqueue_fails_stands_and_says_so(client, events, monkeypatch):
+    """The rule and its overrides are committed before the enqueue; a failed
+    enqueue is a 500 naming that phase, never a refusal of the rule."""
+
+    class _Fake:
+        def submit_run(self, conn, **kwargs):
+            raise psycopg2.errors.ForeignKeyViolation("violates foreign key")
+
+    monkeypatch.setattr(
+        "reimagina.orchestration.factory.get_orchestrator", lambda mode=None: _Fake()
+    )
+    _patch(monkeypatch, **_WRITES_OK)
+    _type_id(monkeypatch)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
+
+    assert response.status_code == 500, response.text
+    assert response.json()["detail"]["error"] == "recompute_not_enqueued"
+    # The rule's own transaction committed before the enqueue's was tried.
+    assert events[:3] == ["connect", "commit", "close"]
+
+
+def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
+    client, events, monkeypatch
+):
+    calls: list[dict] = []
+    _patch(
+        monkeypatch,
+        update_rule=lambda c, **kw: (calls.append(kw), (dict(RULE_ROW), MATERIALIZED))[
+            1
+        ],
+    )
+    _orchestrator(monkeypatch)
+
+    response = client.patch(
+        f"/scenarios/{SCENARIO_ID}/rules/{RULE_ID}", json={"inputs": {"levels": 4}}
+    )
+
+    assert response.status_code == 200, response.text
+    # The whole set, not merged: what the form sends is what the rule sets.
+    assert calls == [
+        {
+            "scenario_id": SCENARIO_ID,
+            "rule_id": RULE_ID,
+            "geometry_wkt": None,
+            "inputs": {"levels": 4},
+        }
+    ]
+
+
+def test_deleting_a_rule_materialises_without_a_rule_to_check(
+    client, events, monkeypatch
+):
+    calls: list[dict] = []
+    _patch(
+        monkeypatch,
+        delete_rule=lambda c, **kw: (calls.append(kw), (None, MATERIALIZED))[1],
+    )
+    _orchestrator(monkeypatch)
+
+    response = client.delete(f"/scenarios/{SCENARIO_ID}/rules/{RULE_ID}")
+
+    assert response.status_code == 200, response.text
+    assert calls == [{"scenario_id": SCENARIO_ID, "rule_id": RULE_ID}]
+    assert response.json()["rule"] is None
+
+
+def test_an_unknown_rule_is_404(client, events, monkeypatch):
+    def _raise(conn, **kwargs):
+        raise RuleNotFound(f"scenario {SCENARIO_ID} has no rule {RULE_ID}")
+
+    _patch(monkeypatch, delete_rule=_raise)
+
+    response = client.delete(f"/scenarios/{SCENARIO_ID}/rules/{RULE_ID}")
+
+    assert response.status_code == 404
 
 
 def test_the_feature_type_a_rule_applies_to_comes_from_the_body(
     client, events, monkeypatch
 ):
-    """And is reported back, so a client can see which grain it just drew at."""
     asked = _type_id(monkeypatch)
-    _patch(monkeypatch, add_edit=lambda c, **kw: EDIT_ID)
+    _patch(monkeypatch, **_WRITES_OK)
+    _orchestrator(monkeypatch)
 
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits",
+        f"/scenarios/{SCENARIO_ID}/rules",
         json={**PROPOSAL, "type_context": "MEX", "type_slug": "manzana"},
     )
 
     assert response.status_code == 201, response.text
     assert asked == [("MEX", "manzana")]
-    assert response.json()["feature_type"] == "MEX:manzana"
 
 
 def test_the_drawn_area_may_be_a_feature_collection(client, events, monkeypatch):
     """A drawing tool exports a FeatureCollection; several strokes are one area."""
     calls: list[dict] = []
-    _patch(monkeypatch, add_edit=lambda c, **kw: (calls.append(kw), EDIT_ID)[1])
+    _patch(
+        monkeypatch,
+        **{
+            **_WRITES_OK,
+            "add_rule": lambda c, **kw: (
+                calls.append(kw),
+                (dict(RULE_ROW), MATERIALIZED),
+            )[1],
+        },
+    )
     _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
 
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits",
+        f"/scenarios/{SCENARIO_ID}/rules",
         json={
             **PROPOSAL,
             "area": {
@@ -859,6 +1140,14 @@ def test_the_drawn_area_may_be_a_feature_collection(client, events, monkeypatch)
     assert calls[0]["geometry_wkt"].startswith("POLYGON ((0 0")
 
 
+def test_a_scenario_needs_an_area_of_interest_when_it_is_created(client, no_connection):
+    """Without one it could hold rules and never materialise them, and nothing
+    can set it later: refused at the boundary."""
+    response = client.post("/scenarios", json={"project_id": PROJECT_ID, "name": "N"})
+
+    assert response.status_code == 422
+
+
 # ── refusals: one status each ────────────────────────────────────────────
 
 
@@ -868,7 +1157,9 @@ def test_a_duplicate_name_is_409_not_500(client, events, monkeypatch):
 
     _patch(monkeypatch, create_scenario=_raise)
 
-    response = client.post("/scenarios", json={"project_id": PROJECT_ID, "name": "N"})
+    response = client.post(
+        "/scenarios", json={"project_id": PROJECT_ID, "aoi_id": AOI_ID, "name": "N"}
+    )
 
     assert response.status_code == 409
     assert "already exists" in json.dumps(response.json())
@@ -878,8 +1169,9 @@ def test_a_duplicate_name_is_409_not_500(client, events, monkeypatch):
 
 UNKNOWN_SCENARIO_ROUTES = [
     "show",
-    "edits",
-    "delete_edit",
+    "add_rule",
+    "update_rule",
+    "delete_rule",
     "recompute",
     "comparison",
     "delete",
@@ -901,8 +1193,9 @@ def test_an_unknown_scenario_is_404_on_every_route(client, events, monkeypatch, 
     _patch(
         monkeypatch,
         get_scenario=lambda c, sid: None,
-        add_edit=_raise,
-        remove_edit=_raise,
+        add_rule=_raise,
+        update_rule=_raise,
+        delete_rule=_raise,
         materialize_scenario=_raise,
         delete_scenario=_raise,
         compare=_raise,
@@ -949,8 +1242,8 @@ def test_a_scenario_without_an_aoi_is_409(client, events, monkeypatch):
     """Nothing the client sent is wrong: ``aoi_id`` is ``ON DELETE SET NULL``.
 
     409 rather than 400 or 404 — the scenario exists and the request is well
-    formed; it conflicts with the current state of the resource, and the fix
-    is to set an AOI rather than to re-send anything.
+    formed; it conflicts with the current state of the resource (its AOI was
+    deleted), and re-sending cannot fix it.
     """
 
     def _raise(conn, **kwargs):
@@ -967,7 +1260,7 @@ def test_a_scenario_without_an_aoi_is_409(client, events, monkeypatch):
 def test_an_unparseable_drawn_area_is_400(client, no_connection, monkeypatch):
     """Well-formed JSON, malformed GeoJSON — refused before any connection."""
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits",
+        f"/scenarios/{SCENARIO_ID}/rules",
         json={**PROPOSAL, "area": {"type": "Polygon"}},
     )
 
@@ -979,7 +1272,7 @@ def test_an_unparseable_drawn_area_is_400(client, no_connection, monkeypatch):
 
 def test_an_area_with_no_polygon_is_400(client, no_connection):
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits",
+        f"/scenarios/{SCENARIO_ID}/rules",
         json={**PROPOSAL, "area": {"type": "Point", "coordinates": [0.0, 0.0]}},
     )
 
@@ -988,22 +1281,26 @@ def test_an_area_with_no_polygon_is_400(client, no_connection):
 
 
 def test_a_geometry_postgis_cannot_repair_is_400(client, events, monkeypatch):
-    """The other half of ``InvalidGeometry``: the one ``add_edit`` raises."""
+    """The other half of ``InvalidGeometry``: the one ``add_rule`` raises."""
 
     def _raise(conn, **kwargs):
         raise InvalidGeometry("geometry has no polygonal area after repair")
 
-    _patch(monkeypatch, add_edit=_raise)
+    _patch(monkeypatch, add_rule=_raise)
     _type_id(monkeypatch)
 
-    response = client.post(f"/scenarios/{SCENARIO_ID}/edits", json=PROPOSAL)
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
 
     assert response.status_code == 400
 
 
 def test_a_ceiling_breach_at_materialisation_is_422(client, events, monkeypatch):
     def _raise(conn, **kwargs):
-        raise CeilingExceeded([CeilingBreach(FEATURE_ID, DENSITY, 2000.0, 2166.0)])
+        raise CeilingExceeded(
+            [CeilingBreach(FEATURE_ID, DENSITY, 2000.0, 2166.0)],
+            rules={FEATURE_ID: ((RULE_ID, 2),)},
+            allowed_levels={(FEATURE_ID, DENSITY): 5},
+        )
 
     _patch(
         monkeypatch,
@@ -1020,6 +1317,11 @@ def test_a_ceiling_breach_at_materialisation_is_422(client, events, monkeypatch)
     assert detail["breaches"][0]["feature_id"] == FEATURE_ID
     assert detail["breaches"][0]["indicator_slug"] == DENSITY
     assert detail["breach_count"] == 1
+    # And which rule to change, and to what.
+    assert detail["breaches"][0]["rule_ids"] == [RULE_ID]
+    assert detail["breaches"][0]["rule_numbers"] == [2]
+    assert detail["breaches"][0]["allowed_levels"] == 5
+    assert "Rule 2" in detail["message"] and "at most 5 storeys" in detail["message"]
 
 
 def test_the_ceiling_refusal_does_not_list_every_block_of_the_city(
@@ -1059,7 +1361,7 @@ def test_an_unknown_feature_type_is_404(client, events, monkeypatch):
     _patch(monkeypatch, get_backend=lambda conn: _Backend())
 
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits", json={**PROPOSAL, "type_slug": "nope"}
+        f"/scenarios/{SCENARIO_ID}/rules", json={**PROPOSAL, "type_slug": "nope"}
     )
 
     assert response.status_code == 404
@@ -1086,7 +1388,9 @@ def test_an_unknown_reference_in_the_body_is_404_naming_its_field(
 
     _patch(monkeypatch, create_scenario=_raise)
 
-    response = client.post("/scenarios", json={"project_id": PROJECT_ID, "name": "N"})
+    response = client.post(
+        "/scenarios", json={"project_id": PROJECT_ID, "aoi_id": AOI_ID, "name": "N"}
+    )
 
     assert response.status_code == 404
     assert "violates foreign key" not in json.dumps(response.json())
@@ -1098,7 +1402,7 @@ def test_an_unknown_reference_in_the_body_is_404_naming_its_field(
 @pytest.mark.parametrize("field", ["levels", "unit_size", "people_per_household"])
 @pytest.mark.parametrize("value", [0, -3])
 def test_a_degenerate_value_is_400_naming_the_json_field(
-    client, no_connection, field, value
+    client, events, monkeypatch, field, value
 ):
     """⚠ The HTTP mirror of ``test_the_domain_messages_name_fields_not_flags``.
 
@@ -1107,15 +1411,20 @@ def test_a_degenerate_value_is_400_naming_the_json_field(
     run ``scenario recompute`` describes a command line the client does not
     have. The field it names must be the field the client sent, so it is
     asserted against the request model rather than against a literal.
+
+    The real ``add_rule`` on a connection that refuses SQL: the number is
+    refused before any statement.
     """
+    _type_id(monkeypatch)
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits", json={**PROPOSAL, field: value}
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={**PROPOSAL, "inputs": {**INPUTS, field: value}},
     )
 
     assert response.status_code == 400
     detail = response.json()["detail"]
     assert detail["field"] == field
-    assert field in mod.ProposalBody.model_fields
+    assert field in RULE_INPUTS
     text = json.dumps(response.json())
     assert "--" not in text
     assert "scenario recompute" not in text
@@ -1123,7 +1432,7 @@ def test_a_degenerate_value_is_400_naming_the_json_field(
 
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
 def test_a_non_finite_value_is_refused_before_it_reaches_the_database(
-    client, no_connection, literal
+    client, events, monkeypatch, literal
 ):
     """⚠ ``value_numeric`` is a bare ``double precision``.
 
@@ -1133,13 +1442,14 @@ def test_a_non_finite_value_is_refused_before_it_reaches_the_database(
     uses — parses both literals happily. So nothing between the wire and the
     override row refuses them except this.
     """
+    _type_id(monkeypatch)
     body = (
-        '{"area": %s, "levels": %s, "unit_size": 60, "people_per_household": 3.6}'
-        % (json.dumps(POLYGON), literal)
+        '{"area": %s, "inputs": {"levels": %s, "unit_size": 60, '
+        '"people_per_household": 3.6}}' % (json.dumps(POLYGON), literal)
     )
 
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits",
+        f"/scenarios/{SCENARIO_ID}/rules",
         content=body,
         headers={"content-type": "application/json"},
     )
@@ -1160,19 +1470,21 @@ def test_the_json_parser_really_does_accept_those_literals():
 
 
 def test_a_density_breach_is_422_with_the_allowance_the_form_needs(
-    client, no_connection
+    client, events, monkeypatch
 ):
-    """Refused before a connection, because the bound needs no block.
+    """Refused before any SQL, because the bound needs no block.
 
     422 rather than 400: every number parses and is individually plausible;
     what cannot be processed is the combination, against a bound the catalog
     declares. The response carries ``allowed_levels`` so a form can clamp its
     own slider instead of re-deriving the rule.
     """
+    _type_id(monkeypatch)
     allowed = math.floor(max_levels_for(60.0))
 
     response = client.post(
-        f"/scenarios/{SCENARIO_ID}/edits", json={**PROPOSAL, "levels": allowed + 1}
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={**PROPOSAL, "inputs": {**INPUTS, "levels": allowed + 1}},
     )
 
     assert response.status_code == 422
@@ -1195,18 +1507,30 @@ def test_the_boundary_is_the_catalog_bound_at_every_unit_size(
     honest answer and a constant agree exactly. 30 m² allows 6 storeys and
     120 allows 24.
     """
-    _patch(monkeypatch, add_edit=lambda c, **kw: EDIT_ID)
+    from reimagina.scenarios.proposal import check_inputs
+
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (
+            check_inputs(kw["inputs"]),
+            (dict(RULE_ROW), MATERIALIZED),
+        )[1],
+    )
     _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
 
     for unit_size in (30.0, 60.0, 120.0):
         allowed = math.floor(max_levels_for(unit_size))
         ok = client.post(
-            f"/scenarios/{SCENARIO_ID}/edits",
-            json={**PROPOSAL, "levels": allowed, "unit_size": unit_size},
+            f"/scenarios/{SCENARIO_ID}/rules",
+            json={**PROPOSAL, "inputs": {"levels": allowed, "unit_size": unit_size}},
         )
         over = client.post(
-            f"/scenarios/{SCENARIO_ID}/edits",
-            json={**PROPOSAL, "levels": allowed + 1, "unit_size": unit_size},
+            f"/scenarios/{SCENARIO_ID}/rules",
+            json={
+                **PROPOSAL,
+                "inputs": {"levels": allowed + 1, "unit_size": unit_size},
+            },
         )
         assert ok.status_code == 201, (unit_size, ok.text)
         assert over.status_code == 422, (unit_size, over.text)
@@ -1242,7 +1566,6 @@ FILTERS = [
         "GET",
         f"/scenarios/{SCENARIO_ID}/comparison?indicator_slug={SLUG}&aoi_id={BAD}",
     ),
-    ("DELETE", f"/scenarios/{SCENARIO_ID}/edits?edit_id={BAD}"),
 ]
 
 
@@ -1255,67 +1578,25 @@ def test_a_malformed_id_in_a_filter_is_422(client, no_connection, method, url):
 
 
 def test_a_malformed_body_reference_is_422(client, no_connection):
-    response = client.post("/scenarios", json={"project_id": BAD, "name": "N"})
+    response = client.post(
+        "/scenarios", json={"project_id": BAD, "aoi_id": AOI_ID, "name": "N"}
+    )
 
     assert response.status_code == 422
 
 
-# ── one edit belongs to one scenario ─────────────────────────────────────
-
-
-def test_an_edit_of_another_scenario_cannot_be_removed_through_this_one(
-    client, events, monkeypatch
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+def test_a_malformed_rule_id_is_404_without_touching_the_database(
+    client, events, method
 ):
-    """⚠ ``remove_edit`` is keyed by ``edit_id`` alone.
+    """The rule id names a resource, like the scenario id: 404, not 422.
 
-    Nothing in the data layer ties the edit to the scenario in the path, so
-    without this check ``DELETE /scenarios/<A>/edits?edit_id=<an edit of B>``
-    would delete B's rule and report success — and the scenario id in the URL
-    would be decoration.
-    """
-    _patch(
-        monkeypatch,
-        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[]),
-        remove_edit=lambda c, **kw: pytest.fail("must not delete another's edit"),
+    Refused by the domain before any SQL (the fake connection refuses it)."""
+    response = client.request(
+        method, f"/scenarios/{SCENARIO_ID}/rules/{BAD}", json={"inputs": INPUTS}
     )
 
-    response = client.delete(f"/scenarios/{SCENARIO_ID}/edits?edit_id={EDIT_ID}")
-
-    assert response.status_code == 404
-
-
-def test_removing_an_edit_of_this_scenario_is_204(client, events, monkeypatch):
-    removed: list[dict] = []
-    _patch(
-        monkeypatch,
-        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[dict(EDIT_ROW)]),
-        remove_edit=lambda c, **kw: (removed.append(kw), True)[1],
-    )
-
-    response = client.delete(f"/scenarios/{SCENARIO_ID}/edits?edit_id={EDIT_ID}")
-
-    assert response.status_code == 204
-    assert response.content == b""
-    assert removed == [{"edit_id": EDIT_ID}]
-
-
-def test_losing_the_race_to_remove_an_edit_is_404_not_204(client, events, monkeypatch):
-    """``remove_edit`` reports whether it removed anything, so it is read.
-
-    Two removers, one edit: the second passes the ownership read, deletes no
-    row, and must not answer 204 for a removal it did not perform. The check
-    and the delete are one transaction, so this is narrow — but
-    ``remove_edit`` returns a bool precisely because it can be false.
-    """
-    _patch(
-        monkeypatch,
-        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[dict(EDIT_ROW)]),
-        remove_edit=lambda c, **kw: False,
-    )
-
-    response = client.delete(f"/scenarios/{SCENARIO_ID}/edits?edit_id={EDIT_ID}")
-
-    assert response.status_code == 404
+    assert response.status_code == 404, response.text
 
 
 # ── comparison ───────────────────────────────────────────────────────────
@@ -1480,16 +1761,12 @@ def test_no_response_carries_the_dsn_or_its_password(
     monkeypatch.setattr(mod, "api_dsn", lambda: DSN_WITH_PASSWORD)
     _patch(
         monkeypatch,
-        create_scenario=lambda c, **kw: SCENARIO_ID,
-        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, edits=[dict(EDIT_ROW)]),
+        get_scenario=lambda c, sid: dict(SCENARIO_DETAIL, rules=[dict(RULE_ROW)]),
         list_scenarios=lambda c, **kw: [
-            dict(SCENARIO_ROW, edit_count=0, latest_run=None)
+            dict(SCENARIO_ROW, rule_count=0, latest_run=None)
         ],
-        add_edit=lambda c, **kw: EDIT_ID,
-        remove_edit=lambda c, **kw: True,
-        materialize_scenario=lambda c, **kw: MATERIALIZED,
-        delete_scenario=lambda c, **kw: DELETED,
         compare=lambda c, **kw: _comparison(),
+        **_WRITES_OK,
     )
     _type_id(monkeypatch)
     _orchestrator(monkeypatch)
@@ -1604,7 +1881,7 @@ def test_the_indicator_list_is_not_read_as_a_scenario_id(client, events, monkeyp
     assert events == ["connect", "close"]
 
 
-def test_the_list_carries_each_scenarios_edit_count_and_newest_run(
+def test_the_list_carries_each_scenarios_rule_count_and_newest_run(
     client, events, monkeypatch
 ):
     """The workspace table's status column reads these two fields off the list.
@@ -1615,21 +1892,21 @@ def test_the_list_carries_each_scenarios_edit_count_and_newest_run(
     """
     ran = {
         **SCENARIO_ROW,
-        "edit_count": 4,
+        "rule_count": 4,
         "latest_run": {"id": "run-123", "status": "failed"},
     }
     fresh = {
         **SCENARIO_ROW,
         "id": str(uuid4()),
         "name": "fresh",
-        "edit_count": 0,
+        "rule_count": 0,
         "latest_run": None,
     }
     _patch(monkeypatch, list_scenarios=lambda conn, **_kw: [ran, fresh])
 
     body = client.get(f"/scenarios?aoi_id={AOI_ID}").json()
 
-    assert body[0]["edit_count"] == 4
+    assert body[0]["rule_count"] == 4
     assert body[0]["latest_run"] == {"id": "run-123", "status": "failed"}
-    assert body[1]["edit_count"] == 0
+    assert body[1]["rule_count"] == 0
     assert body[1]["latest_run"] is None

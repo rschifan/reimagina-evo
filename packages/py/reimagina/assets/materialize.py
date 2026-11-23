@@ -13,6 +13,9 @@ Three things get recorded, and each answers a question nothing else could:
   explained a month later;
 * **the coverage** — whether the run covered the whole grain or a subset, which
   is what lets a partition report ``partial`` instead of claiming to be done.
+  A run that covered every feature of one AOI records ``complete: false`` plus
+  that ``aoi_id``: partial for the database, done for that AOI
+  (``freshness.fresh_indicator_slugs``).
 """
 
 from __future__ import annotations
@@ -76,6 +79,7 @@ def record(
     job_run_id: str | None = None,
     row_count: int | None = None,
     complete: bool = True,
+    aoi_id: str | None = None,
     status: str = "succeeded",
 ) -> None:
     """Append one materialization record."""
@@ -100,7 +104,11 @@ def record(
                 partition_key,
                 version,
                 json.dumps(inputs or {}),
-                json.dumps({"complete": complete}),
+                json.dumps(
+                    {"complete": complete, "aoi_id": str(aoi_id)}
+                    if aoi_id
+                    else {"complete": complete}
+                ),
                 job_run_id,
                 row_count,
                 status,
@@ -115,6 +123,7 @@ def materializing(
     slug: str,
     partition_key: str = BASELINE,
     complete: bool = True,
+    aoi_id: str | None = None,
 ):
     """Record what a compute produced, versioned against what it read.
 
@@ -152,4 +161,5 @@ def materializing(
         job_run_id=outcome.get("job_run_id"),
         row_count=outcome.get("row_count"),
         complete=complete,
+        aoi_id=aoi_id,
     )

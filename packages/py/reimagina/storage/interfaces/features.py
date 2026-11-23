@@ -71,6 +71,18 @@ class FeatureRepository(Protocol):
         """
         ...
 
+    def feature_ids_in_aoi(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str,
+        feature_ids: list[str] | None = None,
+    ) -> set[str]:
+        """Return the ids of the features of a type that intersect an AOI —
+        the same AOI test ``geodesic_metrics_by_type`` applies. ``feature_ids``
+        narrows further (AND)."""
+        ...
+
     def find_by_attributes(
         self,
         *,
@@ -295,17 +307,19 @@ class OverlapRepository(Protocol):
         source_feature_type: str,
         target_feature_type: str,
         aoi_id: str | None = None,
-    ) -> list[tuple[str, str, float, float]]:
-        """Return ``(target_id, source_attribute_key, value, overlap_measure)``
-        per (source observation, target feature) overlap pair.
+    ) -> list[tuple[str, str, str, float, float, float, str]]:
+        """Return ``(target_id, source_feature_id, source_attribute_key, value,
+        overlap_measure, overlap_ratio, overlap_basis)`` per (source
+        observation, target feature) overlap pair.
 
         Reads current observations at ``source_feature_type`` whose
         ``attribute_key`` starts with ``:prefix`` or equals it exactly
         (same separator-safe matching as ``retire_current_by_prefix``),
         joins to ``feature_overlap``, restricts to target features of
-        ``target_feature_type``. Weight is ``overlap_measure`` — the
-        absolute area inside the target, not the ratio, so parents of
-        different sizes contribute proportionally. Callers group by
+        ``target_feature_type``. ``overlap_measure`` (absolute area or
+        length inside the target) is the ``weighted_mean`` weight;
+        ``overlap_ratio`` (share of the source inside the target) is the
+        ``sum`` apportioning factor. Callers group by
         ``(target_id, source_attribute_key)`` and aggregate per group
         so a prefix that spans multiple stat suffixes (e.g.
         ``pop_sum`` + ``pop_count``) rolls up each suffix independently.

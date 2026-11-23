@@ -4,7 +4,8 @@ The platform loaded a street network for routing and never turned it into
 features, so nothing could draw it. `curated_geo.feature_type_catalog` has
 held `global:road` since the first seed, `serving_geo.roads` has existed as
 `feature_v WHERE type_slug = 'road'` and returned zero rows, and
-`serving_geo.get_tile` has served `role = 'infrastructure'` from z12 — every
+`serving_geo.get_tile` has served `role = 'infrastructure'` from z12 (roads
+from z13 since r057) — every
 piece in place except the step connecting the two. The visible consequence
 was a map with no spatial reference at all: a block as a rectangle in black,
 with no way to tell which neighbourhood it was in or which way a street runs.
@@ -17,7 +18,7 @@ street layer on every ingest. And it must run after AOI membership is
 computed, or the roads are present, typed and in `serving_geo` yet in no AOI,
 so every tile returns `204` with no error anywhere.
 
-The wider design (no external basemap, derived attribution, the z12 role gate):
+The wider design (no external basemap, derived attribution, the z13 road floor):
 `docs/architecture/TILE_SERVING.md`, "Street context".
 """
 
@@ -33,6 +34,7 @@ from reimagina.data import feature as feat
 from reimagina.data.attribution import attribution_text, attributions
 from reimagina.data.roads import (
     OSM_ATTRIBUTION,
+    OSM_SOURCE_NAME,
     OSM_LICENCE,
     publish_from_network,
     publish_road_features,
@@ -256,14 +258,14 @@ class TestServingAndTiles:
             cur.execute("SELECT count(*) FROM serving_geo.roads")
             assert cur.fetchone()[0] == before + graph
 
-    def test_the_tile_function_serves_them_from_z12(self, conn, graph, source) -> None:
-        """⚠ The zoom floor is the role gate, not a client decision.
+    def test_the_tile_function_serves_them_from_z13(self, conn, graph, source) -> None:
+        """⚠ The zoom floor is the server's, not a client decision.
 
-        `get_tile` serves `role = 'infrastructure'` only from z12
-        (`WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')`). The
-        frontend layer's `minzoom` has to match it: a lower client floor
-        buys requests that can only come back empty, which on a map is
-        indistinguishable from missing data.
+        `get_tile` serves roads only from z13 (r057's `ROAD_MIN_ZOOM`; a
+        central Mexicali z12 road tile was 2.2 MB). The frontend layer's
+        `minzoom` has to match it: a lower client floor buys requests that
+        can only come back empty, which on a map is indistinguishable from
+        missing data.
         """
         publish_road_features(
             conn,
@@ -289,7 +291,8 @@ class TestServingAndTiles:
             by_zoom = dict(cur.fetchall())
         assert by_zoom[10] == 0, "roads leaked below the role gate"
         assert by_zoom[11] == 0, "roads leaked below the role gate"
-        assert by_zoom[12] > 0, "roads are missing at the zoom they should appear"
+        assert by_zoom[12] == 0, "roads leaked below the r057 floor"
+        assert by_zoom[13] > 0, "roads are missing at the zoom they should appear"
 
     def test_a_road_tile_decodes_to_lines(self, conn, graph, source) -> None:
         """End to end: published, served, and decodable as linework."""
@@ -400,6 +403,35 @@ class TestProvenanceAndAttribution:
         second = publish_from_network(conn, version="walk-test")
         assert first.ingestion_run_id != second.ingestion_run_id
         assert second.features_written == first.features_written
+
+    def test_a_reload_on_another_day_replaces_the_previous_layer(
+        self, conn, graph
+    ) -> None:
+        """The OSM version carries the load date, so Tuesday's reload gets a
+        new source row. Scoping the delete to that row alone left Monday's
+        edges in place and the street layer doubled."""
+        monday = publish_from_network(conn, version="walk-2026-11-16")
+        tuesday = publish_from_network(conn, version="walk-2026-11-17")
+        assert monday.source_id != tuesday.source_id
+        assert tuesday.features_removed == monday.features_written
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM curated_geo.feature f "
+                "JOIN curated_geo.data_source_catalog s ON s.id = f.source_id "
+                "WHERE f.type_slug = 'road' AND s.name = %s",
+                (OSM_SOURCE_NAME,),
+            )
+            assert cur.fetchone()[0] == graph
+
+    def test_the_publish_run_is_completed(self, conn, graph) -> None:
+        """A run left `running` forever reads as an ingest still in flight."""
+        result = publish_from_network(conn, version="walk-test")
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM curated_geo.ingestion_run WHERE id = %s",
+                (result.ingestion_run_id,),
+            )
+            assert cur.fetchone()[0] == "succeeded"
 
 
 def test_the_feature_type_already_existed(conn) -> None:

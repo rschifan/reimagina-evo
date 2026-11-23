@@ -166,9 +166,7 @@ URBAN_FORM_BLOCK_COMPACTNESS = IndicatorSpec(
     # edit invalidates it. One dataset, one attribute — which is what makes it
     # the control case against building density in every dirty-set test.
     inputs=(AssetEdge("mex.block", attributes=("geometry",)),),
-    # Indicator is produced directly at the block grain and rolled up to AGEB
-    # via feature_overlap. Both grains appear in applies_to so indicator_result
-    # rows land cleanly at either level.
+    # Block grain only: r016's trigger rejects a row of any type not listed.
     applies_to=("block",),
 )
 
@@ -362,46 +360,18 @@ EDIFICABILITY_BLOCK_DENSITY = IndicatorSpec(
 
 # ── Accessibility ───────────────────────────────────────────────────────────
 #
-# The collaborators' brief splits accessibility in two: distance to POIs, then
-# "similar to the previous point, but with an added step: updating the road
-# network first affects accessibility downstream". Two indicator families, not
-# one, with genuinely different costs.
+# The collaborators' brief: distance to POIs, "but with an added step: updating
+# the road network first affects accessibility downstream". One family,
+# `*_network_m`: pedestrian-network metres, one multi-source Dijkstra per
+# category over the pgRouting tables, invalidated by `poi_version` OR
+# `network_version`. The straight-line `*_euclid_m` family was removed (see
+# `_accessibility_spec`).
 #
-#   *_euclid_m   straight-line metres, PostGIS KNN per block.
-#                Invalidated by `poi_version` alone.
-#   *_network_m  pedestrian-network metres, one multi-source Dijkstra per
-#                category over the pgRouting tables.
-#                Invalidated by `poi_version` OR `network_version`.
-#
-# ⚠ **The straight-line family is the expensive one.** This is the reverse of
-# what the code asserted until it was measured, and the reverse of what the
-# names suggest. Measured with `scripts/bench_real_data.py` on real Tlalpan
-# data, median of 3, per indicator:
-#
-#             1,500 blocks          5,273 blocks (group wall-clock)
-#   euclid    1455 / 868 / 662 ms   ~11.2 s
-#   network    943 / 656 / 523 ms    ~4.7 s
-#
-# The cause is the algorithm, not the geometry. The multi-source Dijkstra runs
-# **once per category** and amortizes across every block; the KNN runs **once
-# per block** and does not. So euclid is linear in block count while network is
-# flat, and the gap widens with scale — 1.5x at 1,500 blocks, 2.4x at 5,273.
-# Euclid cost also tracks amenity count (health 1,164 > school 408 > park 203),
-# the same effect seen from the other side.
-#
-# These numbers are kept because the *algorithmic* fact is durable and
-# counter-intuitive. A `resource_class` label encoding it used to live on
-# `IndicatorSpec`; it was removed because nothing ever consumed it, and because
-# a hand-written cost label is exactly the kind of constant that goes stale —
-# this one was assigned backwards from intuition until measured. If cost-aware
-# scheduling is ever built, derive it from recorded `job_unit` durations rather
-# than reintroducing a label. Re-measure with `scripts/bench_real_data.py`.
-#
-# ⚠ `poi_version` appears in BOTH groups, `network_version` in only one. So a
-# POI edit fires both families (six slugs, two dispatched units of different
-# cost) while a road edit fires only the cheaper one. That asymmetry is the
-# attribute→run mapping made observable, and it falls out of the declarations
-# rather than being staged for a demo.
+# The multi-source Dijkstra runs **once per category** and amortizes across
+# every block, so its cost is roughly flat in block count (~4.7 s group
+# wall-clock on 5,273 Tlalpan blocks, `scripts/bench_real_data.py`). If
+# cost-aware scheduling is ever built, derive it from recorded `job_unit`
+# durations rather than a hand-written label.
 
 #: Distance reported when nothing of a category is reachable. Also the search
 #: cutoff, so "not found" and "exactly at the limit" are the same number —
@@ -469,7 +439,7 @@ ACCESSIBILITY_CATEGORIES: dict[str, tuple[str, ...]] = {
         ),
         amen.OVERTURE_PARK_CATEGORIES,
     ),
-    # ⚠ The IMIP half of this is ``Cine`` alone — 10 cinemas. The category
+    # ⚠ The DENUE half of this is ``Cine`` alone — 10 cinemas. The category
     # exists because those 10 points were being ingested as establishments that
     # no indicator read, and because folding them into ``park`` to make that
     # layer non-flat would have manufactured a finding: a cinema is not open
@@ -608,9 +578,8 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # score is a catalog entry — which is the extensibility claim this repo makes,
 # stated as a working example rather than as prose.
 #
-# **Network accessibility, not straight-line.** Both families exist and either
-# would compose, but only the network one responds to a road-network edit. Using
-# it makes the chain end to end: bump `network_version` -> three
+# **Network accessibility.** It responds to a road-network edit, which makes
+# the chain end to end: bump `network_version` -> three
 # `*_network_m` indicators recompute -> this score recomputes behind them. That
 # is the attribute -> run -> indicator mapping the collaborators asked to see,
 # demonstrated on the expensive path rather than the cheap one.
@@ -618,11 +587,12 @@ ACCESSIBILITY_SPEC_CATEGORY: dict[str, tuple[str, ...]] = {
 # **The weights are a choice, and an arbitrary one.** 0.4 to density, 0.2 to
 # each of three amenity classes. No literature backs that split; it is declared
 # here so it can be argued with, and changing it is a one-line edit that
-# restages the score through `params_digest`. What the platform guarantees is
+# restages the score: each weight is part of the composite's expected version
+# (the edge term of `asset_component_v`). What the platform guarantees is
 # not that these weights are right but that they are *applied* — each input is
-# rescaled to 0-1 against its declared bounds before weighting, so a 0-2000
-# units/ha density cannot drown three 0-1500 m distances the way raw summing
-# would.
+# brought to 0-1 before weighting (density against its target band, the
+# distances against their declared bounds), so a 0-2000 units/ha density cannot
+# drown three 0-1500 m distances the way raw summing would.
 #
 # ⚠ The three distance inputs are `higher_is_better=False`, so `compute_composite`
 # folds them in as `1 - normalised`. Without that a block far from every school,
@@ -651,6 +621,16 @@ LIVABILITY_ACCESSIBILITY_CATEGORIES: tuple[str, ...] = ("school", "health", "par
 # Derived rather than written as 0.2 so the weights sum to 1.0 whatever
 # :data:`LIVABILITY_ACCESSIBILITY_CATEGORIES` holds. The literal is what broke.
 _LIVABILITY_DENSITY_WEIGHT = 0.4
+
+#: Livability's housing-density target band, dwellings per hectare.
+#
+# Density scores 1 inside it and falls linearly to 0 at 0 units/ha below and at
+# twice the upper end (300) above (`composite.component_score`). Normalised
+# against density's 2,000 units/ha safety cap instead, the score rose with
+# density all the way up, so a rule that piled on storeys always read as more
+# livable. 50-150 is the owner's stated target for this pilot, not a finding.
+LIVABILITY_DENSITY_BAND_LOW = 50.0
+LIVABILITY_DENSITY_BAND_HIGH = 150.0
 # Rounded because the bare division yields 0.19999999999999998, and this value
 # is persisted to `indicator_catalog.inputs`. The stored weight should read 0.2
 # where 0.2 is meant; the noise would otherwise show up in every diff of the
@@ -665,10 +645,14 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(
     name="Livability Score",
     description=(
         "Blend of housing density and walking distance to schools, health "
-        "facilities and parks, on a 0-1 scale where 1 is the densest and "
-        "best-served block. Density contributes 40%, each amenity class 20%. "
-        "Each input is first rescaled against its own declared bounds, and the "
-        "three distances are inverted so nearer scores higher. A relative "
+        "facilities and parks, on a 0-1 scale where 1 is a block inside the "
+        "density target band and best served. Density contributes 40%, each "
+        "amenity class 20%. Density scores 1 between "
+        f"{LIVABILITY_DENSITY_BAND_LOW:.0f} and "
+        f"{LIVABILITY_DENSITY_BAND_HIGH:.0f} dwellings/ha, falling linearly to "
+        f"0 at 0 and at {2 * LIVABILITY_DENSITY_BAND_HIGH:.0f}; each distance "
+        "is rescaled against its declared bounds and inverted so nearer scores "
+        "higher. A relative "
         "ranking of blocks against each other, not an absolute measure of "
         "livability — the weights are a stated choice, not a finding."
     ),
@@ -684,6 +668,7 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(
             indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
             relation="derived_from",
             weight=_LIVABILITY_DENSITY_WEIGHT,
+            target_band=(LIVABILITY_DENSITY_BAND_LOW, LIVABILITY_DENSITY_BAND_HIGH),
         ),
         *(
             AssetEdge(

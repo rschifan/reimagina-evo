@@ -11,7 +11,7 @@ from statistics import median
 from reimagina.storage import backend_for_connection
 
 from .manifest import BENCHMARKS, DATASET_TIERS, BenchmarkSpec
-from .seed import PERF_AOI_NAMES
+from .seed import PERF_AOI_NAMES, _bbox_from_extent, _feature_extent
 
 
 def _require_postgres(conn) -> None:
@@ -51,49 +51,6 @@ def _dataset_summary(conn) -> dict[str, object]:
         "observation_rows": int(observation_row[0]),
         "current_observation_rows": int(observation_row[1]),
     }
-
-
-def _extent_bounds(conn) -> tuple[float, float, float, float]:
-    row = _query_one(
-        conn,
-        """
-        SELECT
-          ST_XMin(extent::geometry),
-          ST_YMin(extent::geometry),
-          ST_XMax(extent::geometry),
-          ST_YMax(extent::geometry)
-        FROM (
-          SELECT ST_Extent(geometry) AS extent
-          FROM curated_geo.feature
-        ) bounds
-        """,
-    )
-    if row is None or any(value is None for value in row):
-        raise ValueError(
-            "No canonical features are loaded. Benchmarks require feature data."
-        )
-    return tuple(float(value) for value in row)
-
-
-def _bbox_from_extent(
-    extent: tuple[float, float, float, float],
-    *,
-    width_ratio: float,
-    height_ratio: float,
-) -> tuple[float, float, float, float]:
-    min_x, min_y, max_x, max_y = extent
-    width = max_x - min_x
-    height = max_y - min_y
-    center_x = min_x + width / 2
-    center_y = min_y + height / 2
-    half_width = max(width * width_ratio / 2, 0.0001)
-    half_height = max(height * height_ratio / 2, 0.0001)
-    return (
-        center_x - half_width,
-        center_y - half_height,
-        center_x + half_width,
-        center_y + half_height,
-    )
 
 
 def _polygon_wkt_from_bbox(
@@ -164,16 +121,30 @@ def _get_aoi_id(conn, *, logical_name: str) -> str:
     return str(row[0])
 
 
-def _build_params(conn, *, benchmark_name: str, dataset_tier: str) -> list[object]:
+# Declared in the manifest (budgets and all) but with no parameter builder
+# below yet. A default `perf run` leaves them out, because selecting them made
+# every run raise and lose the results it had already measured.
+NO_PARAMETER_BUILDER = frozenset(
+    {"tile_z14_small", "tile_z12_dense", "tile_z8_overview", "tile_z14_filtered_type"}
+)
+
+
+def _build_params(
+    conn, *, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
+) -> list[object]:
     tier = DATASET_TIERS[dataset_tier]
+    if benchmark_name in NO_PARAMETER_BUILDER:
+        raise ValueError(
+            f"Benchmark {benchmark_name!r} is declared but has no parameter builder yet."
+        )
 
     # Benchmarks that work off the real INEGI geometry resolve their own
     # references (AOI + type ids) and should not require the generic
-    # _extent_bounds probe, which fails when synthetic fixture data is absent.
+    # _feature_extent probe, which fails when synthetic fixture data is absent.
     if benchmark_name == "overlap_block_to_ageb_cuauhtemoc":
         return _build_overlap_block_ageb_cuauhtemoc_params(conn)
 
-    extent = _extent_bounds(conn)
+    extent = _feature_extent(conn, aoi_id)
     if benchmark_name == "bbox_features_small":
         bounds = _bbox_from_extent(extent, width_ratio=0.02, height_ratio=0.02)
         return [*bounds, *bounds]
@@ -213,7 +184,8 @@ def _build_overlap_block_ageb_cuauhtemoc_params(conn) -> list[object]:
 
     Returns a list suitable for the _OVERLAP_DRYRUN_SQL placeholder order. Raises
     OverlapBenchmarkDataMissing with a clear message when the CDMX bootstrap
-    has not been run, so the runner can decide between skip and fail.
+    has not been run: a default `perf run` records the benchmark as skipped,
+    one that names it explicitly fails.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -433,7 +405,7 @@ def _evaluate_result(
 
 
 def explain_benchmark(
-    conn, *, benchmark_name: str, dataset_tier: str
+    conn, *, benchmark_name: str, dataset_tier: str, aoi_id: str | None = None
 ) -> dict[str, object]:
     _require_postgres(conn)
     if benchmark_name not in BENCHMARKS:
@@ -443,7 +415,7 @@ def explain_benchmark(
 
     spec = BENCHMARKS[benchmark_name]
     params = _build_params(
-        conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier
+        conn, benchmark_name=benchmark_name, dataset_tier=dataset_tier, aoi_id=aoi_id
     )
     summary = _run_explain_analyze(
         conn,
@@ -465,21 +437,35 @@ def run_benchmarks(
     dataset_tier: str,
     benchmark_names: list[str] | None = None,
     iterations: int | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, object]:
     _require_postgres(conn)
     if dataset_tier not in DATASET_TIERS:
         raise ValueError(f"Unknown dataset tier: {dataset_tier!r}")
 
     tier = DATASET_TIERS[dataset_tier]
-    selected_names = benchmark_names or list(BENCHMARKS.keys())
+    selected_names = benchmark_names or [
+        name for name in BENCHMARKS if name not in NO_PARAMETER_BUILDER
+    ]
     dataset_summary = _dataset_summary(conn)
 
     results: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
     for name in selected_names:
         if name not in BENCHMARKS:
             raise ValueError(f"Unknown benchmark: {name!r}")
         spec = BENCHMARKS[name]
-        params = _build_params(conn, benchmark_name=name, dataset_tier=dataset_tier)
+        try:
+            params = _build_params(
+                conn, benchmark_name=name, dataset_tier=dataset_tier, aoi_id=aoi_id
+            )
+        except OverlapBenchmarkDataMissing as exc:
+            # Only the CDMX dataset carries it; a default run on any other DB
+            # should still report the rest. Asked for by name, it fails.
+            if benchmark_names:
+                raise
+            skipped.append({"benchmark": name, "reason": str(exc)})
+            continue
         run_summaries = [
             _run_explain_analyze(
                 conn,
@@ -507,8 +493,14 @@ def run_benchmarks(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "dataset_summary": dataset_summary,
         "benchmarks": results,
+        "skipped": skipped,
         "passed": passed,
     }
+
+
+# A p95 rise below this share of the baseline is run-to-run noise (3 to 7
+# iterations per tier), not a regression.
+REGRESSION_THRESHOLD_PCT = 10.0
 
 
 def compare_reports(
@@ -547,7 +539,11 @@ def compare_reports(
                 "candidate_p95_ms": cand_p95,
                 "delta_p95_ms": delta_ms,
                 "delta_p95_pct": delta_pct,
-                "regressed": delta_ms > 0,
+                "regressed": (
+                    delta_pct > REGRESSION_THRESHOLD_PCT
+                    if delta_pct is not None
+                    else delta_ms > 0
+                ),
             }
         )
 

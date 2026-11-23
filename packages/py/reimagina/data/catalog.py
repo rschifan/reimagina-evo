@@ -18,8 +18,13 @@ def register_source(
     version: str,
     license: str | None = None,
     notes: str | None = None,
+    credit: str | None = None,
 ) -> str:
-    """Register a data source before any data is loaded. Returns the new source UUID."""
+    """Register a data source before any data is loaded. Returns the new source UUID.
+
+    ``credit`` is the exact line the map shows for this source, when its
+    licence prescribes one per product (INEGI); leave it ``None`` otherwise.
+    """
     return (
         backend_for_connection(conn)
         .catalog_repo()
@@ -32,6 +37,7 @@ def register_source(
             version=version,
             license=license,
             notes=notes,
+            credit=credit,
         )
     )
 
@@ -53,6 +59,21 @@ def get_source(
             version=version,
         )
     )
+
+
+def source_versions_sql(source_param: str, *, include_self: bool) -> str:
+    """Subquery for the ids of every version of a source: the rows sharing its
+    provider + name (a source name is one extent). ``source_param`` is the
+    placeholder that binds the source id; ``include_self=False`` leaves that
+    source out."""
+    not_self = "" if include_self else " AND other.id <> this.id"
+    return f"""
+        SELECT other.id
+        FROM curated_geo.data_source_catalog this
+        JOIN curated_geo.data_source_catalog other
+          ON other.provider = this.provider AND other.name = this.name{not_self}
+        WHERE this.id = {source_param}
+    """
 
 
 def update_source_storage_uri(conn, source_id: str, storage_uri: str) -> None:

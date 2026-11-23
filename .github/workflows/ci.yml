@@ -173,6 +173,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # A real transaction-mode pooler, for the one test whose claim is that
+      # bootstrap tells pgbouncer from Postgres; no fake can show that. Same
+      # image as infra/docker/docker-compose.yml. Its database is created by
+      # the "Pooled scratch database" step; pgbouncer connects lazily.
+      pgbouncer:
+        image: edoburu/pgbouncer:v1.26.1-p0
+        env:
+          DB_HOST: postgres
+          DB_PORT: 5432
+          DB_NAME: reimagina_pooled_test
+          DB_USER: reimagina
+          DB_PASSWORD: reimagina
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+        ports:
+          - 6432:5432
     env:
       # conftest's migrated_db fixture reads TEST_DATABASE_URL and runs the
       # migrations itself; the integration tests build storage backends from
@@ -190,9 +206,11 @@ jobs:
       # and never pooled: LISTEN/NOTIFY backs the progress streams and cannot
       # cross PgBouncer in transaction mode.
       #
-      # Same DSN as the pooled one: there is no pgbouncer in CI, so the pooled
-      # and direct DSNs coincide here. They must NOT be collapsed in
-      # deployments, where this one has to bypass the pooler for LISTEN/NOTIFY.
+      # Same DSN as DATABASE_URL: the app's own DSNs point straight at
+      # Postgres here. The pgbouncer service above exists only for the
+      # pooler-guard test (REIMAGINA_POOLED_TEST_DSN). They must NOT be
+      # collapsed in deployments, where this one has to bypass the pooler for
+      # LISTEN/NOTIFY.
       DATABASE_URL_DIRECT: "postgresql://reimagina:reimagina@localhost:5432/reimagina_test"
       # This job attaches a Postgres service precisely so the DB-backed suites
       # run, so a run in which they skip has not passed — it has reported
@@ -206,6 +224,10 @@ jobs:
       # DATABASE_URL_DIRECT. The variable above fixed that instance; this one
       # makes the class of it visible.
       REIMAGINA_REQUIRE_DB: "1"
+      # Read by test_ensure_system_database_refuses_a_transaction_mode_pooler,
+      # which skips without it. A database of its own: the test asserts the
+      # dbos schema is absent, which the shared test database does not keep.
+      REIMAGINA_POOLED_TEST_DSN: "postgresql://reimagina:reimagina@localhost:6432/reimagina_pooled_test"
       #
       # ⚠ One blind spot this layout keeps, recorded rather than papered over.
       # All three DSNs above name the same database, and each suite below runs
@@ -228,16 +250,26 @@ jobs:
       # Best-effort for the same reason as the unit job's copy above — see the
       # comment there. `postgresql-client` rides along and is not used either:
       # the suite talks to Postgres through psycopg2, and `psql` appears in
-      # this repository only in a README line a human might type.
+      # this repository only in a README line a human might type. `gdal-bin`
+      # is the exception that is used: it ships `ogr2ogr` (GDAL 3.8, with the
+      # PMTiles driver, on ubuntu-24.04), without which the PMTiles export
+      # end-to-end test skips. On an apt-outage day it still skips — visible
+      # in the skip count — rather than taking the job down.
       - name: System dependencies (optional; wheels bundle their own GDAL)
         continue-on-error: true
         timeout-minutes: 3
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgdal-dev postgresql-client
+          sudo apt-get install -y --no-install-recommends libgdal-dev gdal-bin postgresql-client
 
       - name: Install (locked)
         run: uv sync --locked --extra dev
+
+      - name: Pooled scratch database
+        run: >-
+          uv run python -c "import os, psycopg2;
+          c = psycopg2.connect(os.environ['TEST_DATABASE_URL']); c.autocommit = True;
+          c.cursor().execute('CREATE DATABASE reimagina_pooled_test')"
 
       - name: pytest (integration)
         run: uv run pytest tests/integration

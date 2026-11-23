@@ -36,7 +36,7 @@ headers and a C++ build toolchain for `exactextract`.
 After configuration and database readiness, `make install` installs locked
 Python and web dependencies, `make migrate` bootstraps both databases, and
 `make dev` starts the API (:8001), web (:5173) and worker. Without data the map
-is empty; without the worker submitted runs stay queued.
+is empty (see [Data](#data)); without the worker submitted runs stay queued.
 
 For a generated territory, use the guide's
 [scratch verification procedure](docs/INSTALLATION.md#7-verify-with-synthetic-data).
@@ -45,21 +45,19 @@ configure a separate scratch checkout before running it.
 
 ## Data
 
-The real territory needs two things the repository does not contain:
-
-- **The lake mirror** — INEGI Marco Geoestadístico 2024, the INEGI 2020
-  census and municipal amenities, copied once from a private private data lake
-  (`private-lake`) to `data/sources/lake/` with credentials (contact the
-  maintainer). The loaders read that offline copy; the layout comes with the
-  credentials.
-- **Internet access** at load time — Overture buildings and places (public
-  S3), the OpenStreetMap pedestrian network (Overpass) and, optionally,
-  WorldPop.
-
-`scripts/mexicali_run.sh` loads Mexicali end to end;
-[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) is the step-by-step runbook. Without
-the mirror everything else works — install, migrate, run, test, build, and the
-generated territory above.
+The real territory is Mexicali, built from the **Mexicali source bundle**:
+INEGI Marco Geoestadístico 2024, Censo 2020 and DENUE for Baja California,
+the Overture buildings and places extracts for the Mexicali box and an
+OpenStreetMap pedestrian network, with `ATTRIBUTION.md` (credits and licence
+terms), `MANIFEST.json` and `SHA256SUMS`. It is published as a GitHub Release
+asset (tag `mexicali-bundle-2026.11`), checksum-pinned in
+`scripts/build_mexicali_bundle.py`. `scripts/mexicali_run.sh` downloads it,
+verifies it and loads Mexicali into the `DATABASE_URL` database, which it
+drops and recreates; see
+[installation step 9](docs/INSTALLATION.md#9-load-the-real-mexicali-territory).
+[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md) covers the bundle itself, the
+offline route and the load step by step. Without the bundle everything else
+works — install, migrate, run, test, build, and the generated territory above.
 
 ## Tests
 
@@ -92,7 +90,7 @@ implementation the branch ships; see
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

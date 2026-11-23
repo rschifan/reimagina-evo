@@ -29,17 +29,16 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import psycopg2
 
 DEFAULT_DSN = "postgresql://localhost/reimagina_demo"
-#: Where the real INEGI / SIGCDMX extracts live. Not in this worktree.
-DEFAULT_SOURCE_ROOT = os.environ.get(
-    "REIMAGINA_SOURCE_ROOT",
-    str(Path(__file__).resolve().parents[1] / "data/sources/lake"),
-)
+#: Where local copies of the INEGI Marco Geoestadístico (laid out as in the
+#: Mexicali source bundle, ``inegi/marco_geoestadistico_2024/``, holding
+#: CVE_ENT=09) and the SIG-CDMX amenity layer live. Not in the repository, and
+#: no default: `setup` needs --source-root or REIMAGINA_SOURCE_ROOT.
+DEFAULT_SOURCE_ROOT = os.environ.get("REIMAGINA_SOURCE_ROOT")
 AOI_NAME = "Tlalpan"
 CVE_ENT, CVE_MUN = "09", "012"
 
@@ -78,7 +77,7 @@ def setup(dsn: str, source_root: str) -> None:
         "--cve-ent",
         CVE_ENT,
         "--source-root",
-        f"{source_root}/inegi/marco_geostadistico/2024",
+        f"{source_root}/inegi/marco_geoestadistico_2024",
         dsn=dsn,
     )
 
@@ -341,6 +340,8 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "setup":
+        if not args.source_root:
+            parser.error("setup needs --source-root (or REIMAGINA_SOURCE_ROOT)")
         setup(args.dsn, args.source_root)
     else:
         run(args.dsn)

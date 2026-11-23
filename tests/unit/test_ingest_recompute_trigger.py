@@ -222,3 +222,26 @@ def test_coverage_threshold_defaults_agree_across_entry_points():
         )
         == 0.0
     )
+
+
+def test_the_default_mode_reaches_a_built_orchestrator(monkeypatch):
+    """``overture load --recompute`` passes no mode, so the default must build.
+
+    It used to be ``"detach"``, which ``get_orchestrator`` rejects. It must also
+    not hinge on ``REIMAGINA_ORCHESTRATOR``: an ingest recompute is a detached
+    DBOS submit, like ``evaluate-scenario --detach``.
+    """
+    import inspect
+
+    import reimagina.orchestration.dbos_orchestrator as dbos_orchestrator
+    from reimagina.orchestration.factory import get_orchestrator
+
+    built = []
+    monkeypatch.setattr(
+        dbos_orchestrator, "DBOSOrchestrator", lambda: built.append("dbos") or "dbos"
+    )
+    monkeypatch.setenv("REIMAGINA_ORCHESTRATOR", "sync")
+
+    default = inspect.signature(submit_after_ingest).parameters["mode"].default
+    assert get_orchestrator(default) == "dbos"
+    assert built == ["dbos"]

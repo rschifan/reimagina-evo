@@ -1,40 +1,53 @@
-"""Scenario and edit authoring — the named what-if and the areas drawn over it.
+"""Scenario and rule authoring — the named what-if and the areas drawn over it.
 
 A scenario is ``app_core.scenario``; each rule in it is a row of
-``curated_geo.scenario_edit``: an area, an attribute and a value. The CRUD half
-of this module only records that intent. ``materialize_scenario`` is the other
-half: it resolves the rules into the per-feature rows of
-``curated_geo.scenario_override``, which the asset graph already partitions by
-scenario, so the ordinary ``evaluate-scenario`` path then recomputes exactly
-the affected indicators. It is the only writer of ``materialized_at``.
+``curated_geo.scenario_rule``: an area and the numbers a planner set over it
+(r055). The CRUD half of this module records that intent.
+``materialize_scenario`` is the other half: it resolves the rules into the
+per-feature rows of ``curated_geo.scenario_override``, which the asset graph
+already partitions by scenario, so the ordinary ``evaluate-scenario`` path then
+recomputes exactly the affected indicators. It is the only writer of
+``materialized_at``.
 
-``delete_scenario`` undoes both halves. The row cascades its edits and nothing
-else: overrides, results, versions and materialisations are all reachable only
-by a ``scenario_id`` no FK carries, so each is removed by hand, in an order the
-asset graph cares about.
+A rule's ``ordinal`` is its place in "later wins". It is assigned when the rule
+is created and never changes after: editing a rule's numbers or moving it keeps
+its place. ``add_rule``, ``update_rule`` and ``delete_rule`` each write the
+rule and materialise the scenario in the caller's one transaction
+(``materialize_for_rule``): a rule the materialisation refuses is then never
+stored, so no client has to undo it.
+
+``delete_scenario`` undoes both halves. Overrides, results, job runs and AOI
+summaries cascade from the scenario row (r055); versions and materialisations
+are keyed by the partition string and are deleted by hand.
 
 None of them commits. The caller owns the transaction, as with
 ``overrides.py``; an API route opens its own committed connection. That matters
-most for materialisation and deletion, which are seven and five statements that
-are only correct together: a refusal halfway through must leave no overrides
+most for materialisation and deletion, which are several statements that are
+only correct together: a refusal halfway through must leave no overrides
 behind, and no half-deleted scenario.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import psycopg2.errors
 
 from reimagina.assets.keys import partition_key
-from reimagina.assets.registry import authorable_attributes
-from reimagina.scenarios.ceilings import BlockInputs, CeilingBreach, check_ceilings
+from reimagina.scenarios.ceilings import (
+    FLOORS,
+    BlockInputs,
+    CeilingBreach,
+    check_ceilings,
+)
 from reimagina.scenarios.overrides import (
     _require_postgres,
     apply_overrides,
-    effective_numeric,
     publish_scenario_version,
 )
 
@@ -88,15 +101,35 @@ class CeilingExceeded(Exception):
     could act on.
     """
 
-    def __init__(self, breaches: list[CeilingBreach]) -> None:
+    def __init__(
+        self,
+        breaches: list[CeilingBreach],
+        *,
+        rules: dict[str, tuple[tuple[str, int], ...]] | None = None,
+        allowed_levels: dict[tuple[str, str], int] | None = None,
+    ) -> None:
         self.breaches = breaches
+        #: Per feature, the rules whose numbers the block is computed with, as
+        #: ``(rule id, number)`` in "later wins" order — the number being the
+        #: 1-based "Rule N" a planner sees.
+        self.rules = rules or {}
+        #: Per (feature, indicator), the most storeys that block allows with
+        #: its other numbers as they are — what a planner would type instead.
+        self.allowed_levels = allowed_levels or {}
         worst = breaches[0]
+        named = [number for _, number in self.rules_of(worst)]
+        by = f"Rule {', '.join(str(n) for n in named)} would make " if named else ""
+        allowed = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
+        advice = f"; at most {allowed} storeys there" if allowed is not None else ""
         super().__init__(
-            f"{len(breaches)} ceiling breach(es); "
-            f"feature {worst.feature_id} would compute "
+            f"{len(breaches)} ceiling breach(es). {by}"
+            f"block {worst.feature_id} {'compute' if by else 'would compute'} "
             f"{worst.would_be:.1f} for {worst.indicator_slug}, "
-            f"whose valid_max is {worst.bound:.1f}"
+            f"whose valid_max is {worst.bound:.1f}{advice}."
         )
+
+    def rules_of(self, breach: CeilingBreach) -> tuple[tuple[str, int], ...]:
+        return self.rules.get(breach.feature_id, ())
 
     @property
     def feature_ids(self) -> tuple[str, ...]:
@@ -108,27 +141,32 @@ class CeilingExceeded(Exception):
 class MaterializeResult:
     """What one materialisation did.
 
-    ``matched_per_edit`` is per *edit*, keyed by its id, and counts what that
-    edit's area caught inside the AOI — before any later edit supersedes it.
+    ``matched_per_rule`` is per *rule*, keyed by its id, and counts what that
+    rule's area caught inside the AOI — before any later rule supersedes it.
     That is the number a drawing UI needs ("your shape caught 4 blocks"), and
-    it is deliberately not the number of rows the edit ended up owning: an edit
+    it is deliberately not the number of rows the rule ended up owning: a rule
     fully covered by a later one still caught what it caught, and reporting 0
     for it would read as a mis-drawn area.
 
     ``footprint_features`` and ``footprint_attributes`` are what the recompute
-    has to cover: every block a current rule overrides plus every block whose
-    override this materialisation removed, and the attributes involved. Blocks
-    outside it carry no override and read the baseline through the overlay, so
-    recomputing them under the scenario would only rewrite baseline values —
-    which is what planning from freshness did, for every block of the AOI.
+    has to cover: every block a current rule overrides, and the attributes
+    involved, removed ones included (a block that lost one number reads its
+    own value for it again). A block that lost *every* override is not in it:
+    materialisation deleted its scenario rows, so it reads the baseline
+    through the overlay, and recomputing it under the scenario would only
+    write the baseline back as a scenario row.
+
+    ``aoi_id`` is the AOI the selection was scoped to, read under the
+    scenario's lock — the one an evaluation of this footprint must use.
     """
 
-    matched_per_edit: dict[str, int]
+    matched_per_rule: dict[str, int]
     overrides_written: int
     overrides_removed: int
     results_superseded: int
     footprint_features: tuple[str, ...] = ()
     footprint_attributes: tuple[str, ...] = ()
+    aoi_id: str | None = None
 
 
 def create_scenario(
@@ -239,7 +277,7 @@ def list_scenarios(
 ) -> list[dict]:
     """Scenarios, newest first, optionally narrowed by project and/or AOI.
 
-    Each row also carries ``edit_count`` and ``latest_run`` — ``{id, status}``
+    Each row also carries ``rule_count`` and ``latest_run`` — ``{id, status}``
     of the scenario's newest run, or ``None`` — so a summary of every scenario
     costs one query. ``latest_run`` is what tells a failed recompute apart from
     a good one: both set ``materialized_at``.
@@ -259,8 +297,8 @@ def list_scenarios(
             """
             SELECT s.id, s.project_id, s.aoi_id, s.name, s.description,
                    s.created_at, s.updated_at, s.materialized_at,
-                   (SELECT count(*) FROM curated_geo.scenario_edit e
-                     WHERE e.scenario_id = s.id) AS edit_count,
+                   (SELECT count(*) FROM curated_geo.scenario_rule e
+                     WHERE e.scenario_id = s.id) AS rule_count,
                    r.id AS latest_run_id, r.status AS latest_run_status
             FROM app_core.scenario s
             LEFT JOIN LATERAL (
@@ -281,7 +319,7 @@ def list_scenarios(
             row = dict(zip(cols, values, strict=True))
             run_id = row.pop("latest_run_id")
             run_status = row.pop("latest_run_status")
-            row["edit_count"] = int(row["edit_count"])
+            row["rule_count"] = int(row["rule_count"])
             row["latest_run"] = (
                 None if run_id is None else {"id": str(run_id), "status": run_status}
             )
@@ -289,10 +327,30 @@ def list_scenarios(
         return rows
 
 
-def get_scenario(conn: Any, scenario_id: str) -> dict | None:
-    """One scenario with its ``edits`` (in ordinal order) and ``override_count``.
+def unfinished_runs(conn: Any, scenario_id: str) -> list[tuple[str, str]]:
+    """``(run_id, status)`` of this scenario's runs that have not ended, newest first.
 
-    ``materialized_at`` is read, never written, here. ``None`` means the edits
+    Only runs a worker has opened (``orchestration_run``): one still waiting in
+    the queue has no envelope yet.
+    """
+    from reimagina.orchestration.port import RUN_TERMINAL_STATES
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text, status FROM jobs_runtime.orchestration_run
+             WHERE scenario_id = %s AND status <> ALL(%s)
+             ORDER BY submitted_at DESC, id DESC
+            """,
+            (scenario_id, sorted(RUN_TERMINAL_STATES)),
+        )
+        return [(str(run_id), str(status)) for run_id, status in cur.fetchall()]
+
+
+def get_scenario(conn: Any, scenario_id: str) -> dict | None:
+    """One scenario with its ``rules`` (in ordinal order) and ``override_count``.
+
+    ``materialized_at`` is read, never written, here. ``None`` means the rules
     have not been expanded into overrides yet, which is a different statement
     from "expanded, and there was nothing to do".
     """
@@ -314,55 +372,60 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
             return None
         cols = [d[0] for d in cur.description]
         scenario = _stringify_ids(dict(zip(cols, row, strict=True)))
+    scenario["rules"] = list_rules(conn, scenario_id)
+    return scenario
+
+
+#: A rule as every surface shows it, read straight off ``RETURNING`` or a list.
+_RULE_COLUMNS = (
+    "id, ordinal, type_id, inputs, ST_AsText(geometry) AS geometry_wkt, "
+    "created_at, updated_at"
+)
+
+
+def list_rules(conn: Any, scenario_id: str) -> list[dict]:
+    """A scenario's rules, in "later wins" order (ordinal)."""
+    with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT id, ordinal, type_id, attribute_key, value_numeric,
-                   ST_AsText(geometry) AS geometry_wkt, created_at
-            FROM curated_geo.scenario_edit
-            WHERE scenario_id = %s
-            ORDER BY ordinal
-            """,
+            f"SELECT {_RULE_COLUMNS} FROM curated_geo.scenario_rule "
+            "WHERE scenario_id = %s ORDER BY ordinal",
             (scenario_id,),
         )
         cols = [d[0] for d in cur.description]
-        scenario["edits"] = [
-            _stringify_ids(dict(zip(cols, r, strict=True))) for r in cur.fetchall()
-        ]
-        return scenario
+        return [_stringify_ids(dict(zip(cols, r, strict=True))) for r in cur.fetchall()]
 
 
-def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
+def _lock_scenario(
+    cur: Any, scenario_id: str, *, mode: str = "NO KEY UPDATE"
+) -> str | None:
     """Take the scenario's row lock and return its ``aoi_id`` (possibly null).
 
     The serialisation point for the writers that read a scenario's state and
-    then decide from it. Both of these need it for the same reason — each reads the
-    scenario's current state, decides from it, and writes — and both are reached from an
-    API route, where a double-submit is the ordinary case rather than the
-    exotic one:
+    then decide from it, reached from an API route where a double-submit is
+    the ordinary case rather than the exotic one:
 
-    * ``add_edit`` reads ``max(ordinal)``; two unlocked callers read the same
+    * ``add_rule`` reads ``max(ordinal)``; two unlocked callers read the same
       one and the second hits ``UNIQUE (scenario_id, ordinal)``.
-    * ``materialize_scenario`` reads the edits and resolves them, then deletes,
-      upserts and publishes. Two unlocked runs can interleave so that the
-      *later* resolution is overwritten by the earlier one's writes: an edit
+    * ``materialize_scenario`` reads the rules and resolves them, then
+      deletes, upserts and publishes. Two unlocked runs can interleave so that
+      the *later* resolution is overwritten by the earlier one's writes: a rule
       removed between the two is re-materialised, and because the second run's
       digest query cannot see the first's uncommitted override rows it retires
       the attribute's version over them — override rows with no current
-      ``asset_version``, which is invisible to freshness, so no indicator ever
-      recomputes against them and the scenario quietly shows baseline numbers.
+      ``asset_version``, which is invisible to freshness.
 
-    ``remove_edit`` takes it too, but for lock *order* rather than for a read:
-    ``delete_scenario`` locks the scenario and reaches the edits last, through
-    the cascade, so a remover that locked the edit first and the scenario
-    second would deadlock against it. Every writer here locks the scenario
-    before any of its edits.
+    ``NO KEY UPDATE`` for those writers, ``UPDATE`` for ``delete_scenario``.
+    A compute unit takes ``KEY SHARE`` on this row from the end of its compute
+    until it commits (``runners._fenced``). ``KEY SHARE`` conflicts with ``FOR
+    UPDATE`` and not with ``FOR NO KEY UPDATE``: so a delete waits for a unit
+    that is committing and then cascades what it wrote, while drawing a rule
+    does not wait for a compute.
 
-    Taking it first, before anything is read, is what makes the whole
-    materialisation see one state; it is released when the caller commits, so a
-    caller that holds a transaction open for long serialises writers.
+    Every writer here locks the scenario before any of its rules, which is the
+    order ``delete_scenario`` uses (the rules go last, by cascade).
     """
     cur.execute(
-        "SELECT aoi_id FROM app_core.scenario WHERE id = %s FOR UPDATE",
+        f"SELECT aoi_id FROM app_core.scenario WHERE id = %s FOR {mode}",
         (scenario_id,),
     )
     row = cur.fetchone()
@@ -371,66 +434,204 @@ def _lock_scenario(cur: Any, scenario_id: str) -> str | None:
     return None if row[0] is None else str(row[0])
 
 
-def add_edit(
+class RuleNotFound(ScenarioNotFound):
+    """The rule id names no rule of this scenario.
+
+    A subclass of ``ScenarioNotFound``: on every surface the answer is the
+    same — what you named is not there.
+    """
+
+
+class RuleCatchesNothing(Exception):
+    """The rule's area catches no block of the scenario's area of interest.
+
+    Refused rather than stored: an area drawn over the sea, outside the AOI,
+    or with longitude and latitude swapped would otherwise be a rule that
+    changes nothing and still queues a run.
+    """
+
+    def __init__(self, rule_id: str | None) -> None:
+        self.rule_id = rule_id
+        super().__init__(
+            "the area catches no block of the scenario's area of interest "
+            "(a block is caught when its interior point is inside the area)"
+        )
+
+
+def _rule_row(cur: Any) -> dict:
+    cols = [d[0] for d in cur.description]
+    return _stringify_ids(dict(zip(cols, cur.fetchone(), strict=True)))
+
+
+def _rule_id(rule_id: str) -> str:
+    """A rule id in canonical spelling; a malformed one names no rule."""
+    try:
+        return str(uuid.UUID(str(rule_id)))
+    except ValueError as exc:
+        raise RuleNotFound(f"no rule with id {rule_id!r}") from exc
+
+
+def add_rule(
     conn: Any,
     *,
     scenario_id: str,
     geometry_wkt: str,
     type_id: str,
-    attribute_key: str,
-    value_numeric: float,
-) -> str:
-    """Append one edit to a scenario and return its id.
+    inputs: Mapping[str, Any],
+) -> tuple[dict, MaterializeResult]:
+    """Append one rule, materialise the scenario, and return both.
 
-    * ``attribute_key`` must be in ``authorable_attributes()``; anything else is
-      plumbing, not a policy lever, and raises ``ValueError``.
-    * The geometry is repaired on write with ``ST_MakeValid`` and then reduced
-      to its polygonal part. The column CHECK is a *type* check, so a
-      self-intersecting bowtie, which is still an ``ST_Polygon``, passes it; an
-      invalid polygon reaching ``ST_Covers`` later either raises a GEOS
-      exception mid-run or answers wrongly. If nothing polygonal survives
-      (``POLYGON EMPTY``, a line, unparseable text) the result is
-      ``InvalidGeometry``.
-    * ``ordinal`` is ``max + 1`` under a row lock on the scenario. Without the
-      ``FOR UPDATE``, two concurrent calls read the same max, both insert it,
-      and the second hits ``UNIQUE (scenario_id, ordinal)`` — a 500 on an
-      ordinary double-submit. The lock is released with the caller's
-      transaction, so a caller that holds one open for long serialises writers.
-      ``ordinal`` rather than ``created_at`` orders edits because ``now()`` is
-      transaction-start time: two edits written together share it.
+    * ``inputs`` are the planner's numbers, checked by ``proposal.check_inputs``
+      (the one place every surface's refusals come from); a number left out is
+      not set, and each block keeps its own value for it.
+    * The geometry is repaired on write — see ``_repair_geometry``.
+    * ``ordinal`` is ``max + 1`` under the scenario's row lock, and never
+      changes after. ``ordinal`` rather than ``created_at`` orders rules
+      because ``now()`` is transaction-start time: two rules written together
+      share it.
+    * Materialised in the same transaction (``materialize_for_rule``), so a
+      rule the materialisation refuses is never stored.
+
+    Returns the rule as stored and what the materialisation did.
     """
-    _require_postgres(conn)
-    allowed = authorable_attributes()
-    if attribute_key not in allowed:
-        raise ValueError(
-            f"{attribute_key!r} is not an authorable attribute; "
-            f"choose one of {', '.join(allowed)}"
-        )
+    from reimagina.scenarios.proposal import check_inputs
 
+    # Before any SQL: a refused id or number costs no lock.
+    scenario_id = _canonical_id(scenario_id)
+    checked = check_inputs(inputs)
+    _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
-        edit_id = _insert_edit(
-            cur,
-            scenario_id=scenario_id,
-            geometry_ewkb=repaired,
-            type_id=type_id,
-            attribute_key=attribute_key,
-            value_numeric=value_numeric,
+        cur.execute(
+            f"""
+            INSERT INTO curated_geo.scenario_rule
+              (scenario_id, ordinal, type_id, geometry, inputs)
+            SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
+                   ST_GeomFromEWKB(%(g)s), %(i)s::jsonb
+            FROM curated_geo.scenario_rule
+            WHERE scenario_id = %(s)s
+            RETURNING {_RULE_COLUMNS}
+            """,
+            {"s": scenario_id, "t": type_id, "g": repaired, "i": json.dumps(checked)},
         )
+        rule = _rule_row(cur)
         _touch(cur, scenario_id)
-        return edit_id
+    return rule, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule["id"])
+
+
+def update_rule(
+    conn: Any,
+    *,
+    scenario_id: str,
+    rule_id: str,
+    geometry_wkt: str | None,
+    inputs: Mapping[str, Any],
+    unset: Sequence[str] = (),
+    merge: bool = False,
+) -> tuple[dict, MaterializeResult]:
+    """Change one rule in place, materialise, and return both.
+
+    ``merge=False`` (the API's ``PATCH``, sent from a form holding every
+    number): ``inputs`` is the rule's **whole** set, and a number left out is
+    no longer set. ``merge=True`` (a typed command naming only what changes):
+    the numbers given replace the rule's own, those in ``unset`` are removed,
+    the rest are kept — merged on the rule as it is under the scenario's lock.
+    Its area changes when one is given.
+
+    In place is the point: the rule keeps its id and its ordinal, so it keeps
+    its position in "later wins" — re-adding a number it had dropped does not
+    move it ahead of a later rule.
+    """
+    from reimagina.scenarios.proposal import check_inputs
+
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _rule_id(rule_id)
+    missing = RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
+
+    def _checked(current: dict[str, Any]) -> dict[str, float]:
+        given = {k: v for k, v in inputs.items() if v is not None or not merge}
+        merged = {**current, **given}
+        return check_inputs({k: v for k, v in merged.items() if k not in unset})
+
+    # A whole set is checked before any SQL; a merge needs the rule first.
+    checked = None if merge else _checked({})
+    _require_postgres(conn)
+    with conn.cursor() as cur:
+        repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
+        _lock_scenario(cur, scenario_id)
+        if checked is None:
+            cur.execute(
+                "SELECT inputs FROM curated_geo.scenario_rule "
+                "WHERE id = %s AND scenario_id = %s",
+                (rule_id, scenario_id),
+            )
+            found = cur.fetchone()
+            if found is None:
+                raise missing
+            checked = _checked(found[0])
+        cur.execute(
+            f"""
+            UPDATE curated_geo.scenario_rule
+               SET inputs = %(i)s::jsonb,
+                   geometry = COALESCE(ST_GeomFromEWKB(%(g)s), geometry),
+                   updated_at = now()
+             WHERE id = %(r)s AND scenario_id = %(s)s
+            RETURNING {_RULE_COLUMNS}
+            """,
+            {"i": json.dumps(checked), "g": repaired, "r": rule_id, "s": scenario_id},
+        )
+        if cur.rowcount == 0:
+            raise missing
+        rule = _rule_row(cur)
+        _touch(cur, scenario_id)
+    return rule, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=rule_id)
+
+
+def delete_rule(
+    conn: Any, *, scenario_id: str, rule_id: str
+) -> tuple[None, MaterializeResult]:
+    """Delete one rule and materialise what is left.
+
+    Ordinals are not renumbered: they only have to be ordered, not dense.
+    The scenario is locked first, the order ``delete_scenario`` uses. Returns
+    ``(None, result)``, the shape the other two writers return.
+    """
+    scenario_id = _canonical_id(scenario_id)
+    rule_id = _rule_id(rule_id)
+    _require_postgres(conn)
+    with conn.cursor() as cur:
+        _lock_scenario(cur, scenario_id)
+        cur.execute(
+            "DELETE FROM curated_geo.scenario_rule "
+            "WHERE id = %s AND scenario_id = %s RETURNING 1",
+            (rule_id, scenario_id),
+        )
+        if cur.fetchone() is None:
+            raise RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
+        _touch(cur, scenario_id)
+    return None, materialize_for_rule(conn, scenario_id=scenario_id, rule_id=None)
 
 
 def _repair_geometry(cur: Any, geometry_wkt: str) -> bytes:
-    """``ST_MakeValid`` then the polygonal part, as EWKB; see ``add_edit``."""
-    cur.execute("SAVEPOINT add_edit_geometry")
+    """The drawn area as stored: 2D, valid, polygonal, as EWKB.
+
+    ``ST_Force2D`` because GeoJSON from QGIS or a GPS carries a third
+    coordinate and the column is 2D (an insert raised, as a 500).
+    ``ST_MakeValid`` then the polygonal part, because the column CHECK is a
+    *type* check: a self-intersecting bowtie, still an ``ST_Polygon``, passes
+    it, and an invalid polygon reaching ``ST_Covers`` later raises a GEOS
+    exception mid-run or answers wrongly. If nothing polygonal survives
+    (``POLYGON EMPTY``, a line, unparseable text) the result is
+    ``InvalidGeometry``.
+    """
+    cur.execute("SAVEPOINT repair_geometry")
     try:
         cur.execute(
             """
             SELECT ST_AsEWKB(g)
-            FROM (SELECT ST_CollectionExtract(
-                      ST_MakeValid(ST_SetSRID(ST_GeomFromText(%s), 4326)), 3
+            FROM (SELECT ST_CollectionExtract(ST_MakeValid(
+                      ST_Force2D(ST_SetSRID(ST_GeomFromText(%s), 4326))), 3
                   ) AS g) r
             WHERE NOT ST_IsEmpty(g)
             """,
@@ -440,48 +641,16 @@ def _repair_geometry(cur: Any, geometry_wkt: str) -> bytes:
         psycopg2.errors.InvalidParameterValue,
         psycopg2.errors.InternalError_,
     ) as exc:
-        cur.execute("ROLLBACK TO SAVEPOINT add_edit_geometry")
+        cur.execute("ROLLBACK TO SAVEPOINT repair_geometry")
         raise InvalidGeometry(f"geometry could not be parsed: {exc}") from exc
     repaired = cur.fetchone()
-    cur.execute("RELEASE SAVEPOINT add_edit_geometry")
+    cur.execute("RELEASE SAVEPOINT repair_geometry")
     if repaired is None:
         raise InvalidGeometry(
             "geometry has no polygonal area after repair "
             "(empty, or a point or line rather than a polygon)"
         )
     return bytes(repaired[0])
-
-
-def _insert_edit(
-    cur: Any,
-    *,
-    scenario_id: str,
-    geometry_ewkb: bytes,
-    type_id: str,
-    attribute_key: str,
-    value_numeric: float,
-) -> str:
-    """Append one edit at ``max(ordinal) + 1``. The caller holds the scenario lock."""
-    cur.execute(
-        """
-        INSERT INTO curated_geo.scenario_edit
-          (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
-        SELECT %(s)s,
-               COALESCE(max(ordinal), 0) + 1,
-               ST_GeomFromEWKB(%(g)s), %(t)s, %(k)s, %(v)s
-        FROM curated_geo.scenario_edit
-        WHERE scenario_id = %(s)s
-        RETURNING id
-        """,
-        {
-            "s": scenario_id,
-            "g": geometry_ewkb,
-            "t": type_id,
-            "k": attribute_key,
-            "v": value_numeric,
-        },
-    )
-    return str(cur.fetchone()[0])
 
 
 def _touch(cur: Any, scenario_id: str) -> None:
@@ -491,146 +660,21 @@ def _touch(cur: Any, scenario_id: str) -> None:
     )
 
 
-class RuleNotFound(LookupError):
-    """The edit ids are not one rule of this scenario.
+def materialize_for_rule(
+    conn: Any, *, scenario_id: str, rule_id: str | None
+) -> MaterializeResult:
+    """Materialise after a rule was written, refusing what cannot stand.
 
-    A rule is the edits one proposal wrote: one geometry, one scenario. Ids
-    from another scenario, or from two different areas, are not something to
-    update together — the edit would land on a rule nobody pointed at.
+    Called in the transaction that wrote (or deleted) the rule, so a refusal
+    — a ceiling breach anywhere in the scenario, or the rule catching no block
+    — rolls the write back with it. The server never keeps a rule it refused,
+    and no client has to undo one. ``rule_id`` is None after a delete, which
+    has no area to check.
     """
-
-
-def update_rule(
-    conn: Any,
-    *,
-    scenario_id: str,
-    edit_ids: list[str],
-    geometry_wkt: str | None,
-    values: dict[str, float],
-    type_id: str,
-) -> list[tuple[str, str, float]]:
-    """Change one rule's numbers, and optionally its area, **in place**.
-
-    In place is the point: the edits keep their ids and their ordinals, so
-    the rule keeps its position in "later wins". Deleting and re-adding would
-    renumber it after every other rule, and editing rule 1 would silently make
-    it beat rule 2 where they overlap.
-
-    An attribute in ``values`` that the rule has no edit for — ``lot_coverage``
-    on a rule written before coverage existed — is appended over the rule's
-    area. It takes the next ordinal; it only competes with another rule's
-    edit of the same attribute.
-
-    Returns ``(edit_id, attribute_key, value_numeric)`` for every edit of the
-    rule after the update.
-    """
-    _require_postgres(conn)
-    allowed = authorable_attributes()
-    unknown = sorted(set(values) - set(allowed))
-    if unknown:
-        raise ValueError(
-            f"{', '.join(unknown)} not authorable; choose from {', '.join(allowed)}"
-        )
-    with conn.cursor() as cur:
-        repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
-        _lock_scenario(cur, scenario_id)
-        cur.execute(
-            """
-            SELECT id::text, attribute_key, ST_AsEWKB(geometry)
-            FROM curated_geo.scenario_edit
-            WHERE scenario_id = %s AND id = ANY(%s::uuid[])
-            FOR UPDATE
-            """,
-            (scenario_id, list(edit_ids)),
-        )
-        rows = cur.fetchall()
-        geometries = {bytes(g) for _, _, g in rows}
-        if not rows or len(rows) != len(set(edit_ids)) or len(geometries) != 1:
-            raise RuleNotFound(
-                f"edits {sorted(edit_ids)} are not one rule of scenario {scenario_id}"
-            )
-        ids = [edit_id for edit_id, key, _ in rows if key in values]
-        for edit_id, key, _ in rows:
-            if key in values:
-                cur.execute(
-                    "UPDATE curated_geo.scenario_edit SET value_numeric = %s "
-                    "WHERE id = %s",
-                    (values[key], edit_id),
-                )
-            else:
-                # Not in the rule's new set: the rule no longer sets it, and
-                # each block keeps its own value.
-                cur.execute(
-                    "DELETE FROM curated_geo.scenario_edit WHERE id = %s", (edit_id,)
-                )
-        if repaired is not None and ids:
-            cur.execute(
-                "UPDATE curated_geo.scenario_edit "
-                "SET geometry = ST_GeomFromEWKB(%s) WHERE id = ANY(%s::uuid[])",
-                (repaired, ids),
-            )
-        area = repaired if repaired is not None else geometries.pop()
-        present = {key for _, key, _ in rows}
-        for key in (k for k in values if k not in present):
-            ids.append(
-                _insert_edit(
-                    cur,
-                    scenario_id=scenario_id,
-                    geometry_ewkb=area,
-                    type_id=type_id,
-                    attribute_key=key,
-                    value_numeric=values[key],
-                )
-            )
-        _touch(cur, scenario_id)
-        cur.execute(
-            "SELECT id::text, attribute_key, value_numeric "
-            "FROM curated_geo.scenario_edit WHERE id = ANY(%s::uuid[]) ORDER BY ordinal",
-            (ids,),
-        )
-        return [(str(i), str(k), float(v)) for i, k, v in cur.fetchall()]
-
-
-def remove_edit(conn: Any, *, edit_id: str) -> bool:
-    """Delete one edit; ``True`` if it existed.
-
-    Ordinals are not renumbered: they only have to be ordered, not dense, and
-    renumbering would rewrite rows other readers may hold ids for.
-
-    The scenario is locked *before* the edit is touched, which is the order
-    ``delete_scenario`` uses (scenario first, edits last by cascade). Deleting
-    the edit first and touching ``updated_at`` second — the obvious order —
-    deadlocks against a concurrent delete: each transaction holds the row the
-    other is waiting for. The edit's scenario is read unlocked only to know
-    which row to lock; the delete below re-checks that the edit still belongs
-    to it, and a scenario deleted in the meantime reads as "nothing removed".
-    """
-    _require_postgres(conn)
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT scenario_id FROM curated_geo.scenario_edit WHERE id = %s",
-            (edit_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return False
-        scenario_id = str(row[0])
-        try:
-            _lock_scenario(cur, scenario_id)
-        except ScenarioNotFound:
-            return False
-        cur.execute(
-            "DELETE FROM curated_geo.scenario_edit "
-            "WHERE id = %s AND scenario_id = %s RETURNING 1",
-            (edit_id, scenario_id),
-        )
-        if cur.fetchone() is None:
-            return False
-        cur.execute(
-            "UPDATE app_core.scenario SET updated_at = now() WHERE id = %s",
-            (scenario_id,),
-        )
-        return True
+    result = materialize_scenario(conn, scenario_id=scenario_id)
+    if rule_id is not None and result.matched_per_rule.get(rule_id, 0) == 0:
+        raise RuleCatchesNothing(rule_id)
+    return result
 
 
 # ── Materialisation ─────────────────────────────────────────────────────────
@@ -650,28 +694,29 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
     Seven steps, in this order, in the caller's one transaction:
 
     1. lock the scenario row and refuse without an AOI (``ScenarioHasNoAOI``);
-    2. select the features each edit's area covers, scoped to the AOI;
+    2. select the features each rule's area covers, scoped to the AOI;
     3. refuse the whole run if any resolved block breaches a ceiling;
-    4. delete the overrides no edit implies any more;
-    5. upsert the resolved ones in a single ``apply_overrides``;
-    6. ``publish_scenario_version`` with **no** ``attributes``;
-    7. mark this scenario's now-unbacked ``indicator_result`` rows ``'stale'``.
+    4. delete the overrides no rule implies any more;
+    5. upsert the resolved ones in a single ``apply_overrides``, unpublished;
+    6. ``publish_scenario_version`` with **no** ``attributes``, once;
+    7. retire the scenario results the removed overrides were behind
+       (``_supersede_unbacked_results``).
 
     **Steps 6 and 7 are the two halves of the same ghost**, and both are easy
     to leave out because nothing fails when you do.
 
-    ``apply_overrides`` publishes only the attributes it just touched, so an
-    attribute whose last override row vanished in step 4 would keep a current
-    version forever and the indicators reading it would never go stale. Step 6
-    passes no ``attributes`` precisely so ``publish_scenario_version``
-    reconciles retirements too — see its docstring.
+    Publishing only the attributes step 5 touched would leave an attribute
+    whose last override row vanished in step 4 with a current version forever,
+    and the indicators reading it would never go stale. Step 6 passes no
+    ``attributes`` precisely so ``publish_scenario_version`` reconciles
+    retirements too — see its docstring.
 
     ``bulk_write_numeric_results`` marks stale only the features it is
-    *writing*. A block that lost one of the three edificability inputs is
-    skipped by the compute, never appears in the written rows, and keeps its
-    old ``status='current'`` scenario row — which
-    ``serving_geo.indicator_overlay_tile`` goes on painting. Step 7 is what
-    makes "remove every edit" visibly remove the choropleth.
+    *writing*, and a recompute covers only blocks that still carry an
+    override, so a block a rule left keeps its old ``status='current'``
+    scenario row — which ``serving_geo.indicator_overlay_tile`` goes on
+    painting. Step 7 is what makes "remove every rule" visibly remove the
+    choropleth.
 
     Nothing is written before step 3, so a refusal is total rather than
     partial: a scenario that breaches a ceiling keeps whatever it was
@@ -680,8 +725,9 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
     _require_postgres(conn)
     scenario_id = _canonical_id(scenario_id)
     aoi_id = _scenario_aoi(conn, scenario_id)
-    matched, resolved, feature_type = _resolve_edits(conn, scenario_id, aoi_id)
-    _refuse_ceiling_breaches(conn, resolved=resolved, feature_type=feature_type)
+    resolution = _resolve_rules(conn, scenario_id, aoi_id)
+    _refuse_ceiling_breaches(conn, resolution)
+    resolved = resolution.values
 
     removed = _delete_unimplied_overrides(conn, scenario_id, resolved)
     written = apply_overrides(
@@ -691,9 +737,10 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
             {"feature_id": feature_id, "attribute_key": key, "value_numeric": value}
             for (feature_id, key), value in sorted(resolved.items())
         ],
+        publish=False,
     )
-    # No ``attributes``: this is the call that retires an attribute whose last
-    # override row step 4 deleted.
+    # The one publish, with no ``attributes``: it versions what step 5 wrote
+    # and retires an attribute whose last override row step 4 deleted.
     publish_scenario_version(conn, scenario_id)
     superseded = _supersede_unbacked_results(conn, scenario_id, removed)
 
@@ -702,14 +749,16 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
             "UPDATE app_core.scenario SET materialized_at = now() WHERE id = %s",
             (scenario_id,),
         )
-    touched = set(resolved) | set(removed)
     return MaterializeResult(
-        matched_per_edit=matched,
+        matched_per_rule=resolution.matched,
         overrides_written=written,
         overrides_removed=len(removed),
         results_superseded=superseded,
-        footprint_features=tuple(sorted({feature_id for feature_id, _ in touched})),
-        footprint_attributes=tuple(sorted({key for _, key in touched})),
+        footprint_features=tuple(sorted({feature_id for feature_id, _ in resolved})),
+        footprint_attributes=tuple(
+            sorted({key for _, key in resolved} | {key for _, key in removed})
+        ),
+        aoi_id=aoi_id,
     )
 
 
@@ -734,138 +783,154 @@ def _canonical_id(scenario_id: str) -> str:
 def _scenario_aoi(conn: Any, scenario_id: str) -> str:
     """Step 1: the scenario's AOI, or a refusal. See ``ScenarioHasNoAOI``.
 
-    Reads it under the ``FOR UPDATE`` of ``_lock_scenario``, which is why this
-    is step 1 and not a convenience lookup: the lock has to be held before the
-    edits are read, or the resolution can already be stale by the time it is
-    written. See ``_lock_scenario`` for what interleaves without it.
+    Reads it under ``_lock_scenario``, which is why this is step 1 and not a
+    convenience lookup: the lock has to be held before the rules are read, or
+    the resolution can already be stale by the time it is written.
+
+    Every surface requires an AOI when a scenario is created, so a null here
+    means the AOI was deleted since (``ON DELETE SET NULL``). Nothing can set
+    a new one — the rules were drawn over that AOI's blocks — so the message
+    says what can be done instead.
     """
     with conn.cursor() as cur:
         aoi_id = _lock_scenario(cur, scenario_id)
     if aoi_id is None:
         raise ScenarioHasNoAOI(
-            f"scenario {scenario_id} has no area of interest, so there is no "
-            "bound on what its edits would select. Set one (or re-create the "
-            "AOI it pointed at) before materialising."
+            f"scenario {scenario_id} has no area of interest (the one it was "
+            "created on was deleted), so there is no bound on what its rules "
+            "would select. Create a new scenario on an existing area of "
+            "interest and draw the rules there."
         )
     return aoi_id
 
 
-def _resolve_edits(
-    conn: Any, scenario_id: str, aoi_id: str
-) -> tuple[dict[str, int], dict[tuple[str, str], float], dict[str, str]]:
-    """Step 2: ``(matched_per_edit, {(feature, attribute): value}, feature types)``.
+@dataclass(frozen=True)
+class _Resolution:
+    """Step 2's answer: what each rule caught and what each block resolves to."""
 
-    ``ST_Covers(e.geometry, f.geometry_centroid)`` is the platform's one answer
-    to "did my drawn shape catch this?" — the same predicate
+    #: Rule id -> blocks its area caught (0 included), in "later wins" order.
+    matched: dict[str, int]
+    #: (feature, attribute) -> value, later rules winning.
+    values: dict[tuple[str, str], float]
+    #: (feature, attribute) -> the rule that supplied the value.
+    owner: dict[tuple[str, str], str]
+
+
+def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
+    """Step 2: select the blocks each rule covers and resolve their values.
+
+    ``ST_Covers(r.geometry, f.geometry_centroid)`` is the platform's one
+    answer to "did my drawn shape catch this?" — the same predicate
     ``count_features_within_polygon`` uses (r027), which the map's selection
-    card counts through ``POST /metrics/within-polygon`` and
-    ``/metrics/indicator-within-polygon``, so the count the user saw while
-    drawing is the count they get here. ``ST_Covers`` rather than
-    ``ST_Contains`` because a grid-aligned manzana's ``ST_PointOnSurface`` can
-    land exactly on a shared block edge, which DE-9IM's exclusive boundary
-    would silently drop.
+    card counts through ``POST /metrics/within-polygon``, so the count the
+    user saw while drawing is the count they get here. ``ST_Covers`` rather
+    than ``ST_Contains`` because a grid-aligned manzana's
+    ``ST_PointOnSurface`` can land exactly on a shared block edge, which
+    DE-9IM's exclusive boundary would silently drop.
 
     The AOI test is an ``EXISTS`` against ``aoi_feature`` rather than an
     intersection with the AOI polygon, so materialisation scopes by exactly the
-    membership every other read scopes by — including the identifier-based
-    membership r040 introduced, which no geometry test can reproduce.
+    membership every other read scopes by.
 
-    A ``LEFT JOIN``, so an edit whose area caught nothing still appears in
-    ``matched_per_edit`` with 0. An inner join would make "I drew in the wrong
-    place" indistinguishable from "that edit does not exist".
+    A ``LEFT JOIN``, so a rule whose area caught nothing still appears in
+    ``matched`` with 0.
 
-    Collisions resolve by ``ordinal``, later wins, never by ``created_at``:
-    ``now()`` is transaction-start time, so two edits written together are
-    indistinguishable by timestamp. Iterating in ordinal order and letting a
-    later write overwrite is the whole of that rule.
+    Collisions resolve by the *rule's* ordinal, later wins, per attribute: a
+    later rule that sets only household size leaves an earlier rule's storeys
+    standing on the blocks they share. Iterating in ordinal order and letting
+    a later write overwrite is the whole of that rule.
     """
+    from reimagina.scenarios.proposal import edits_for
+
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT e.id::text, e.attribute_key, e.value_numeric,
-                   f.id::text, f.type_id::text
-            FROM curated_geo.scenario_edit e
+            SELECT r.id::text, r.inputs, f.id::text
+            FROM curated_geo.scenario_rule r
             LEFT JOIN curated_geo.feature f
-                   ON f.type_id = e.type_id
-                  AND ST_Covers(e.geometry, f.geometry_centroid)
+                   ON f.type_id = r.type_id
+                  AND ST_Covers(r.geometry, f.geometry_centroid)
                   AND EXISTS (
                         SELECT 1 FROM curated_geo.aoi_feature af
                          WHERE af.aoi_id = %(aoi)s AND af.feature_id = f.id
                       )
-            WHERE e.scenario_id = %(s)s
-            ORDER BY e.ordinal
+            WHERE r.scenario_id = %(s)s
+            ORDER BY r.ordinal
             """,
             {"s": scenario_id, "aoi": aoi_id},
         )
         rows = cur.fetchall()
 
     matched: dict[str, int] = {}
-    resolved: dict[tuple[str, str], float] = {}
-    feature_type: dict[str, str] = {}
-    for edit_id, attribute_key, value, feature_id, type_id in rows:
-        matched.setdefault(edit_id, 0)
+    values: dict[tuple[str, str], float] = {}
+    owner: dict[tuple[str, str], str] = {}
+    edits: dict[str, list[dict[str, Any]]] = {}
+    for rule_id, inputs, feature_id in rows:
+        if rule_id not in matched:
+            matched[rule_id] = 0
+            edits[rule_id] = edits_for(**inputs)
         if feature_id is None:
             continue
-        matched[edit_id] += 1
-        resolved[(feature_id, attribute_key)] = float(value)
-        feature_type[feature_id] = type_id
-    return matched, resolved, feature_type
+        matched[rule_id] += 1
+        for edit in edits[rule_id]:
+            key = (feature_id, edit["attribute_key"])
+            values[key] = float(edit["value_numeric"])
+            owner[key] = rule_id
+    return _Resolution(matched, values, owner)
 
 
-def _refuse_ceiling_breaches(
-    conn: Any,
-    *,
-    resolved: dict[tuple[str, str], float],
-    feature_type: dict[str, str],
-) -> None:
+def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
     """Step 3: one ``BlockInputs`` per resolved block, each with its own area.
 
-    Per block, not per selection. Two edits can resolve to different values on
+    Per block, not per selection. Two rules can resolve to different values on
     different blocks — six storeys in one district and twelve in another is an
     ordinary proposal — and the two area-scaled bounds then have nothing in
-    common. A single triple paired with the selection's maximum area describes
-    no real block: it clears the breach in the taller district or invents one
-    in the shorter.
+    common.
 
-    The triple is the *post*-materialisation effective value: the resolved
+    The values are the *post*-materialisation effective ones: the resolved
     override where this run writes one, otherwise observation ⊕ base. Reading
-    it at ``scenario_id=None`` is deliberate — an override row this run is
-    about to delete in step 4 must not stand in for a value that will be gone.
+    the baseline at ``scenario_id=None`` is deliberate — an override row this
+    run is about to delete in step 4 must not stand in for a value that will
+    be gone.
 
-    A missing input reads as 0, which ``check_ceilings`` skips. That is not a
-    silent pass: a block missing any of the three is skipped by the compute
-    too, so it writes no result and no bound can be breached.
+    A block missing any of the three edificability inputs is skipped by the
+    compute, so its levels read as 0 here, which ``check_ceilings`` skips for
+    those bounds. Its ``floors`` is still checked, because planned floors
+    computes.
 
-    Deliberately not narrowed to ``MEX:block``. The bounds belong to the
-    edificability indicators, which compute at block grain today, and refusing
-    a value that could not have reached them is a visible, correctable error —
-    missing one is a plpgsql exception that takes down a whole run.
+    A refusal names the rules each breaching block is computed with and the
+    storeys that block would allow, so the planner knows which rule to change
+    and to what. Every bound but the floors one scales linearly with storeys,
+    so the allowed storeys are ``levels × bound / would_be``.
     """
+    resolved = resolution.values
     feature_ids = sorted({feature_id for feature_id, _ in resolved})
     if not feature_ids:
         return
 
-    by_type: dict[str, list[str]] = {}
-    for feature_id in feature_ids:
-        by_type.setdefault(feature_type[feature_id], []).append(feature_id)
-    # `floors` beside the three ceiling inputs: the planned-floors bound is
-    # checked against the attribute that indicator reads, and `floors` is
-    # authorable on its own, so it can differ from `num_levels`.
     checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
     baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
-    for type_id, ids in by_type.items():
-        for key in checked:
-            baseline[key].update(
-                effective_numeric(
-                    conn,
-                    type_id=type_id,
-                    attribute_key=key,
-                    scenario_id=None,
-                    feature_ids=ids,
-                )
-            )
-
     with conn.cursor() as cur:
+        # ``effective_numeric`` at ``scenario_id=None`` (observation ⊕ base),
+        # for every key at once: one statement, not one per key and type.
+        cur.execute(
+            """
+            SELECT f.id::text, k.key,
+                   COALESCE(obs.value_numeric,
+                            NULLIF(f.attributes->>k.key, '')::double precision)
+            FROM curated_geo.feature f
+            CROSS JOIN unnest(%s::text[]) AS k(key)
+            LEFT JOIN curated_geo.observation obs
+                   ON obs.feature_id = f.id
+                  AND obs.attribute_key = k.key
+                  AND obs.is_current
+            WHERE f.id = ANY(%s::uuid[])
+            """,
+            (list(checked), feature_ids),
+        )
+        for feature_id, key, value in cur.fetchall():
+            if value is not None:
+                baseline[key][feature_id] = value
         cur.execute(
             "SELECT id::text, ST_Area(geometry::geography) "
             "FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
@@ -878,10 +943,17 @@ def _refuse_ceiling_breaches(
         absent = 1.0 if key == "lot_coverage" else 0.0
         return resolved.get((feature_id, key), baseline[key].get(feature_id, absent))
 
-    breaches = check_ceilings(
-        BlockInputs(
+    def _computed(feature_id: str) -> bool:
+        return all(
+            (feature_id, key) in resolved or feature_id in baseline[key]
+            for key in _CEILING_ATTRIBUTES
+        )
+
+    blocks = {
+        feature_id: BlockInputs(
             feature_id=feature_id,
-            levels=_value(feature_id, "num_levels"),
+            # 0 skips the three edificability bounds, not the floors one.
+            levels=_value(feature_id, "num_levels") if _computed(feature_id) else 0.0,
             unit_size=_value(feature_id, "unit_size"),
             people_per_household=_value(feature_id, "people_per_household"),
             area_m2=float(areas.get(feature_id, 0.0)),
@@ -889,9 +961,30 @@ def _refuse_ceiling_breaches(
             lot_coverage=_value(feature_id, "lot_coverage"),
         )
         for feature_id in feature_ids
-    )
-    if breaches:
-        raise CeilingExceeded(breaches)
+    }
+    breaches = check_ceilings(blocks.values())
+    if not breaches:
+        return
+    allowed: dict[tuple[str, str], int] = {}
+    for breach in breaches:
+        block = blocks[breach.feature_id]
+        levels = block.floors if breach.indicator_slug == FLOORS else block.levels
+        if levels and breach.would_be > 0:
+            allowed[(breach.feature_id, breach.indicator_slug)] = math.floor(
+                levels * breach.bound / breach.would_be
+            )
+    breaching = {b.feature_id for b in breaches}
+    owners: dict[str, set[str]] = {}
+    for (feature_id, _), rule_id in resolution.owner.items():
+        if feature_id in breaching:
+            owners.setdefault(feature_id, set()).add(rule_id)
+    # A rule's "Rule N" is its place in ordinal order, which ``matched`` keeps.
+    number = {rule_id: n for n, rule_id in enumerate(resolution.matched, 1)}
+    rules = {
+        feature_id: tuple(sorted(((r, number[r]) for r in ids), key=lambda p: p[1]))
+        for feature_id, ids in owners.items()
+    }
+    raise CeilingExceeded(breaches, rules=rules, allowed_levels=allowed)
 
 
 def _delete_unimplied_overrides(
@@ -938,38 +1031,66 @@ def _delete_unimplied_overrides(
 def _supersede_unbacked_results(
     conn: Any, scenario_id: str, removed: list[tuple[str, str]]
 ) -> int:
-    """Step 7: stale the scenario results the removed overrides were behind.
+    """Step 7: retire the scenario results no override stands behind any more.
 
-    The half of a removal a user can see. Without it, removing every edit from
-    a scenario leaves the choropleth untouched: the recompute skips a block
-    that lost one of its inputs, ``bulk_write_numeric_results`` stales only the
-    features it writes, and the old ``status='current'`` row stays current
-    forever.
+    Three statements, each for a different ghost:
 
-    Paired per ``(feature, attribute)`` rather than crossed. Staling every
-    indicator that reads *any* removed attribute on every feature that lost
-    *any* override would be a safe over-approximation, but it would mark a
-    block's results stale over an attribute that block never lost — and a
-    stale row that nothing will rewrite is the same lie in the other
-    direction.
+    * **A block with no override left loses every scenario row** — deleted,
+      any status. It reads the baseline through the overlay, so a scenario row
+      for it is at best a copy of the baseline, and a copy that keeps
+      shadowing the baseline after the baseline moves (a census refit, a new
+      height). This also clears rows a whole-AOI run wrote for blocks no rule
+      ever touched. The recompute that follows covers only blocks that still
+      carry an override, so nothing writes them back.
+    * **A block that lost one number but keeps others** has its results for
+      the indicators reading that number marked ``stale`` per
+      ``(feature, attribute)`` — the recompute rewrites them, and a block the
+      compute now skips (it lost one of the three edificability inputs) stops
+      painting its old value.
+    * **The scenario partition's materialisation records of those indicators
+      are deleted**, so freshness cannot vouch for them. Versions are content
+      digests and come back: re-adding a removed rule, or moving it back,
+      returns the override version to the one an old run recorded, and that
+      old record would call the indicator fresh over rows this step just
+      retired — a noop recompute and a scenario stuck on the baseline.
 
-    ``indicator_slug`` is denormalised onto the row by r016's trigger and
-    indexed with ``feature_id``, so no join to the catalog is needed. The
-    trigger refuses a change to it, not to ``status``.
+    The readers of an attribute are the same closure a recompute runs: the
+    indicators reading it *and* their dependents (a composite reads no
+    attribute directly).
     """
-    if not removed:
-        return 0
+    from reimagina.assets.keys import indicator_asset_key, partition_key
     from reimagina.indicators.catalog import SHIPPED_INDICATORS
+    from reimagina.orchestration.impact import compute_dirty_set
 
-    pairs: set[tuple[str, str]] = set()
-    for feature_id, attribute_key in removed:
-        for spec in SHIPPED_INDICATORS:
-            if attribute_key in spec.reads:
-                pairs.add((spec.slug, feature_id))
-    if not pairs:
-        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM curated_geo.indicator_result r
+             WHERE r.scenario_id = %(s)s
+               AND NOT EXISTS (
+                     SELECT 1 FROM curated_geo.scenario_override o
+                      WHERE o.scenario_id = %(s)s AND o.feature_id = r.feature_id)
+            """,
+            {"s": scenario_id},
+        )
+        retired = cur.rowcount
+    if not removed:
+        return retired
 
-    ordered = sorted(pairs)
+    # One closure per attribute, not per removed pair: a large rule removes
+    # thousands of pairs over a handful of attributes.
+    slugs_for = {
+        key: [u.indicator for u in compute_dirty_set([key], [], SHIPPED_INDICATORS)]
+        for key in {attribute_key for _, attribute_key in removed}
+    }
+    ordered = sorted(
+        {
+            (slug, feature_id)
+            for feature_id, attribute_key in removed
+            for slug in slugs_for[attribute_key]
+        }
+    )
+    slugs = sorted({slug for slug, _ in ordered})
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -988,7 +1109,21 @@ def _supersede_unbacked_results(
                 "fids": [feature_id for _, feature_id in ordered],
             },
         )
-        return cur.rowcount
+        retired += cur.rowcount
+        cur.execute(
+            """
+            DELETE FROM curated_geo.asset_materialization m
+             USING curated_geo.asset a
+             WHERE a.id = m.asset_id
+               AND m.partition_key = %s
+               AND a.asset_key = ANY(%s)
+            """,
+            (
+                partition_key({"scenario": scenario_id}),
+                [indicator_asset_key(slug) for slug in slugs],
+            ),
+        )
+    return retired
 
 
 # ── Deletion ────────────────────────────────────────────────────────────────
@@ -996,137 +1131,89 @@ def _supersede_unbacked_results(
 
 @dataclass(frozen=True)
 class DeleteResult:
-    """What one deletion took away, one number per step that could take some.
+    """What one deletion took away.
 
-    Four counts rather than a bare ``True``: a scenario's traces live in four
-    tables that no constraint connects, so "it is gone" is four separate
-    claims and the only way to see that each was made is to count it. The
-    scenario row itself is not counted — it is always exactly one, or the call
-    raised.
+    Counts rather than a bare ``True``: "it is gone" is several separate
+    claims, and the only way to see that each was made is to count it. The
+    scenario row itself is not counted — it is always exactly one, or the
+    call raised.
     """
 
     overrides: int
-    versions_retired: int
-    results_superseded: int
+    versions_deleted: int
+    results_deleted: int
+    job_runs_deleted: int
     materializations: int
 
 
+#: What ``delete_scenario`` deletes, in order: (DeleteResult field or None for
+#: uncounted, table, key column). A ``partition_key`` column is matched against
+#: the scenario's partition string, any other against its id.
+_DELETE_STEPS: tuple[tuple[str | None, str, str], ...] = (
+    ("overrides", "curated_geo.scenario_override", "scenario_id"),
+    ("versions_deleted", "curated_geo.asset_version", "partition_key"),
+    # The scenario_id tables cascade from the scenario row (r055); the counted
+    # ones are deleted explicitly first so each count is its own table's.
+    ("results_deleted", "curated_geo.indicator_result", "scenario_id"),
+    ("job_runs_deleted", "jobs_runtime.job_run", "scenario_id"),
+    ("materializations", "curated_geo.asset_materialization", "partition_key"),
+    # Last: cascades its rules and its AOI summaries.
+    (None, "app_core.scenario", "id"),
+)
+
+
 def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
-    """Delete a scenario and the four traces that would otherwise outlive it.
+    """Delete a scenario and every row keyed by it (``_DELETE_STEPS``), in the
+    caller's transaction.
 
-    Five steps, in this order, in the caller's one transaction:
+    ``scenario_override``, ``indicator_result``, ``job_run`` and
+    ``aoi_indicator_summary`` reference the scenario ``ON DELETE CASCADE``
+    (r055); versions and materialisations are keyed by the *string*
+    ``scenario=<id>``, which no FK can follow, so those two are deleted here
+    or not at all.
 
-    1. delete the scenario's ``scenario_override`` rows;
-    2. ``publish_scenario_version`` with **no** ``attributes``;
-    3. mark every ``current`` ``indicator_result`` of this scenario ``'stale'``;
-    4. delete the ``asset_materialization`` rows of its partition;
-    5. delete the scenario row, cascading its edits.
+    **Deleted, not staled or retired.** They used to be kept "as history", but
+    nothing can read it: every surface that shows a scenario's numbers starts
+    from the scenario row. Kept, they only grew — 614,880 results for three
+    deleted scenarios on the pilot database.
 
-    Only the fifth is reachable by a constraint. ``scenario_override`` and
-    ``indicator_result`` carry a bare ``scenario_id`` uuid with no FK — r030
-    deferred the entity to r048 and never went back — and versions and
-    materialisations are keyed by the *string* ``scenario=<id>``, which no FK
-    could follow. ``DELETE FROM app_core.scenario`` alone leaves all four.
+    The ``job_run`` delete is safe to scope by ``scenario_id`` alone: r016's
+    trigger forces a result's ``scenario_id`` to equal its ``job_run``'s, so a
+    run carrying this id produced this scenario's results and nothing else. Its
+    other referrers, ``job_unit`` and ``asset_materialization``, are ``ON
+    DELETE SET NULL``; a recompute *run* (``orchestration_run``) is run history
+    and stays until the jobs page clears it.
 
-    Step 2 passes no ``attributes`` for the same reason materialisation's step
-    6 does: with every override row gone in step 1, the reconciling branch is
-    what notices each attribute whose last row has vanished and retires its
-    version, rather than leaving the final digest current for a scenario that
-    no longer exists. Naming the attributes just deleted would work too, and
-    would be a second place to keep in step with ``overrides.py``.
+    The ``asset_materialization`` delete is not cosmetic.
+    ``asset_component_v`` unions ``asset_materialization`` into its node set
+    with no filter, so the partition of a deleted scenario would stay a node in
+    the graph — one whose upstream versions are gone — and ``assets stale``
+    would list it for ever.
 
-    Step 3 is **not** ``_supersede_unbacked_results``. That helper is targeted
-    — it stales the results behind a specific set of removed
-    ``(feature, attribute)`` pairs, which is what a *partial* removal needs.
-    A deleted scenario has no surviving edits to back anything, so every
-    ``current`` row of it is unbacked and the pairing is answered by the
-    scenario id alone. The rows are staled rather than deleted: they are what
-    the what-if actually computed, and ``'stale'`` is the vocabulary r016's
-    CHECK gives for "superseded".
-
-    Step 4 is not cosmetic. ``asset_component_v`` unions
-    ``asset_materialization`` into its node set with no filter, so the
-    partition of a deleted scenario stays a node in the graph — and, with its
-    override versions retired by step 2, one whose upstream components have
-    all fallen to ``'missing'``. It would report ``stale`` for ever, because
-    nothing will ever recompute a scenario that is not there, and ``assets
-    stale`` would grow one permanent line per deleted scenario naming
-    something nobody can look up.
-
-    The scenario's row lock is taken first, before anything is read or
-    deleted, for the reason ``_lock_scenario`` gives: a materialisation
-    resolved against the scenario moments ago would otherwise resume after the
-    delete and write its overrides and versions back, orphaned. Taking the
-    lock is also the existence check — an unknown id raises ``ScenarioNotFound``
-    rather than reporting four zeros for a typo.
+    The scenario's row lock is taken first, ``FOR UPDATE``, before anything is
+    read or deleted. A compute unit takes ``KEY SHARE`` on the row only once
+    its compute is done, until it commits (``runners._fenced``): a delete
+    arriving then waits a moment and removes what the unit wrote; one arriving
+    earlier does not wait, and the unit, finding no scenario, rolls its writes
+    back and ends ``cancelled``. Taking the lock
+    is also the existence check — an unknown id raises ``ScenarioNotFound``
+    rather than reporting zeros for a typo.
 
     Nothing here commits; the caller owns the transaction, so a failure at any
     step leaves the scenario whole.
     """
     _require_postgres(conn)
     scenario_id = _canonical_id(scenario_id)
+    partition = partition_key({"scenario": scenario_id})
+    counts: dict[str, int] = {}
     with conn.cursor() as cur:
-        _lock_scenario(cur, scenario_id)
-        cur.execute(
-            "DELETE FROM curated_geo.scenario_override WHERE scenario_id = %s",
-            (scenario_id,),
-        )
-        overrides = cur.rowcount
-
-    retired = publish_scenario_version(conn, scenario_id)
-    superseded = _supersede_all_results(conn, scenario_id)
-    materializations = _delete_materializations(conn, scenario_id)
-
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM app_core.scenario WHERE id = %s", (scenario_id,))
-
-    return DeleteResult(
-        overrides=overrides,
-        versions_retired=sum(1 for version in retired.values() if version is None),
-        results_superseded=superseded,
-        materializations=materializations,
-    )
-
-
-def _supersede_all_results(conn: Any, scenario_id: str) -> int:
-    """Step 3: stale every ``current`` result this scenario produced.
-
-    Scoped by ``scenario_id`` and nothing else, which is the whole difference
-    from ``_supersede_unbacked_results``: there is no surviving edit for any
-    pair to be measured against, so no pairing to compute.
-
-    r016's before-write trigger refuses a change to ``feature_type`` and
-    ``indicator_slug``, not to ``status``, and re-checks the row against its
-    ``job_run`` — which this does not touch, and which outlives the scenario
-    anyway (``job_run.scenario_id`` is a bare uuid too).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE curated_geo.indicator_result
-               SET status = 'stale', updated_at = now()
-             WHERE scenario_id = %s
-               AND status = 'current'
-            """,
-            (scenario_id,),
-        )
-        return cur.rowcount
-
-
-def _delete_materializations(conn: Any, scenario_id: str) -> int:
-    """Step 4: drop the materialisation records of this scenario's partition.
-
-    By partition key alone, across every asset. The key renders one scenario
-    and one scenario only (``partition_key({"scenario": id})``), so there is
-    nothing a join to ``asset`` would narrow — and anything materialised at
-    this partition is by definition a computation of this scenario.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM curated_geo.asset_materialization WHERE partition_key = %s",
-            (partition_key({"scenario": scenario_id}),),
-        )
-        return cur.rowcount
+        _lock_scenario(cur, scenario_id, mode="UPDATE")
+        for field, table, column in _DELETE_STEPS:
+            param = partition if column == "partition_key" else scenario_id
+            cur.execute(f"DELETE FROM {table} WHERE {column} = %s", (param,))
+            if field is not None:
+                counts[field] = int(cur.rowcount)
+    return DeleteResult(**counts)
 
 
 def _stringify_ids(row: dict) -> dict:

@@ -23,63 +23,61 @@ def _require_postgres(conn: Any) -> None:
         raise RuntimeError("scenario overrides require the Postgres backend")
 
 
-def apply_override(
-    conn: Any,
-    *,
-    scenario_id: str,
-    feature_id: str,
-    attribute_key: str,
-    value_numeric: float | None = None,
-    value_text: str | None = None,
-    publish: bool = True,
-) -> None:
-    """Upsert one scenario attribute edit (the what-if).
+def apply_overrides(
+    conn: Any, *, scenario_id: str, edits: Iterable[dict], publish: bool = True
+) -> int:
+    """Upsert edits to one scenario, publishing each touched attribute once.
 
-    ``publish`` writes a new version for this scenario's partition of
-    ``scenario.override.<attribute_key>``, which is what makes the edit visible
-    to freshness. Pass ``publish=False`` only when batching —
-    ``apply_overrides`` does, and publishes once per attribute at the end,
-    because the version digests every override row for that attribute in the
-    scenario and doing that per edit is quadratic.
+    The one writer of override rows, and set-based for a reason: an
+    attribute's version is a digest over *every* override row it has in the
+    scenario, so publishing per edit is quadratic — upzoning 10,000 blocks one
+    call at a time digests 1 row, then 2, then 10,000, roughly 50 million row
+    reads to record 10,000 upserts.
+
+    **One statement, and unchanged rows are left alone.** A city-wide rule is
+    about 95,000 rows, written while the caller holds the scenario's lock; one
+    round trip per row was most of that time on a remote database. The
+    ``WHERE … IS DISTINCT FROM`` keeps a re-materialisation of an unchanged
+    scenario from rewriting (and WAL-logging) every row it already has.
+
+    Each edit is a dict with ``feature_id``, ``attribute_key`` and
+    ``value_numeric`` and/or ``value_text``. Returns the number applied
+    (changed or not).
+
+    ``publish=False`` leaves the versions to the caller: materialisation
+    publishes every attribute once, retirements included, right after.
     """
     _require_postgres(conn)
+    rows = list(edits)
+    if not rows:
+        return 0
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO curated_geo.scenario_override
+            INSERT INTO curated_geo.scenario_override AS so
               (scenario_id, feature_id, attribute_key, value_numeric, value_text)
-            VALUES (%s, %s, %s, %s, %s)
+            SELECT %(s)s, u.feature_id, u.attribute_key, u.value_numeric,
+                   u.value_text
+            FROM unnest(%(f)s::uuid[], %(k)s::text[], %(n)s::double precision[],
+                        %(t)s::text[])
+                 AS u(feature_id, attribute_key, value_numeric, value_text)
             ON CONFLICT (scenario_id, feature_id, attribute_key)
             DO UPDATE SET value_numeric = EXCLUDED.value_numeric,
                           value_text = EXCLUDED.value_text
+            WHERE (so.value_numeric, so.value_text)
+                  IS DISTINCT FROM (EXCLUDED.value_numeric, EXCLUDED.value_text)
             """,
-            (scenario_id, feature_id, attribute_key, value_numeric, value_text),
+            {
+                "s": scenario_id,
+                "f": [str(r["feature_id"]) for r in rows],
+                "k": [r["attribute_key"] for r in rows],
+                "n": [r.get("value_numeric") for r in rows],
+                "t": [r.get("value_text") for r in rows],
+            },
         )
     if publish:
-        publish_scenario_version(conn, scenario_id, [attribute_key])
-
-
-def apply_overrides(conn: Any, *, scenario_id: str, edits: Iterable[dict]) -> int:
-    """Apply many edits to one scenario, publishing each touched attribute once.
-
-    ⚠ Use this for anything that edits more than one feature. An attribute's
-    version is a digest over *every* override row it has in the scenario, so
-    publishing per edit is quadratic: upzoning 10,000 blocks one call at a time
-    digests 1 row, then 2, then 10,000 — roughly 50 million row reads to record
-    10,000 upserts.
-
-    Each edit is a dict of the keyword arguments ``apply_override`` takes, minus
-    ``scenario_id``. Returns the number applied.
-    """
-    count = 0
-    touched: set[str] = set()
-    for edit in edits:
-        apply_override(conn, scenario_id=scenario_id, publish=False, **edit)
-        touched.add(edit["attribute_key"])
-        count += 1
-    if touched:
-        publish_scenario_version(conn, scenario_id, touched)
-    return count
+        publish_scenario_version(conn, scenario_id, {r["attribute_key"] for r in rows})
+    return len(rows)
 
 
 def publish_scenario_version(
@@ -242,7 +240,7 @@ def resolve_change_set(
     ponytail: flat union of (attributes, features) — a safe over-approximation.
     With several overridden attributes a dependent may recompute a feature whose
     specific attribute didn't change; never wrong, just not minimal. Per-attribute
-    scoping is the upgrade path, moot while only ``floors`` is overridable.
+    scoping is the upgrade path.
     """
     changed = list(changed_attributes or [])
     features = list(edited_features or [])

@@ -183,6 +183,34 @@ def test_python_and_sql_agree_on_every_expected_version(conn, graph):
     assert_parity(conn)
 
 
+def test_reweighting_a_composite_moves_its_expected_version(conn, graph):
+    """A weight edit restages the composite through the edge term.
+
+    Not through `params_digest`: each composite edge's weight is a component
+    of the consumer's expected version, so reweighting moves it and its
+    results go stale. This pins the mechanism the catalog relies on.
+    """
+
+    def composite_version() -> str:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT expected_version FROM serving_geo.asset_expected_version_v "
+                "WHERE asset_key = 't.composite' AND partition_key = ''"
+            )
+            return cur.fetchone()[0]
+
+    before = composite_version()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.asset_dependency SET weight = "
+            "CASE producer_asset_id WHEN %s THEN 0.3 ELSE 0.7 END "
+            "WHERE consumer_asset_id = %s",
+            (graph["compactness"], graph["composite"]),
+        )
+    assert composite_version() != before
+    assert_parity(conn)
+
+
 def test_parity_survives_a_radius_edge(conn, graph):
     """Pins the float-formatting agreement.
 

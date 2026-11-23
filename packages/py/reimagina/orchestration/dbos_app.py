@@ -41,6 +41,7 @@ from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID
 from reimagina import settings
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration import runstore
+from reimagina.orchestration.coordinator import SCENARIO_DELETED
 from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
@@ -49,7 +50,8 @@ from reimagina.orchestration.port import (
 )
 from reimagina.orchestration.runners import default_runners
 from reimagina.orchestration.wave import plan_wave
-from reimagina.storage import backend_for_connection
+from reimagina.storage import backend_for_connection, mask_dsn
+from reimagina.storage.postgres.repositories import run_application_name
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +175,10 @@ def _executor_id() -> str:
     - Not stable → a restarted process has a new identity and reclaims
       *nothing*. Its predecessor's in-flight runs are orphaned with no error,
       and durable execution quietly stops being durable. A pid-derived id does
-      exactly this, which is what this used to be.
+      exactly this, which is what this used to be. (The embedded CLI takes a
+      pid id on purpose — it is never "restarted", and concurrent CLIs must
+      not share one — so its dead runs are recovered by the liveness-gated
+      ``reclaim.sweep``, which a worker and the CLI's own wait both run.)
     - Not unique → a starting process reclaims work a live peer is still
       running. On dbos 2.28.0 recovery is not idempotent, so that is a double
       execution — worse than the failure it was trying to repair.
@@ -208,7 +213,7 @@ def _assert_domain_database(dsn: str) -> None:
         cur.execute("SELECT to_regclass('jobs_runtime.job_run')")
         if cur.fetchone()[0] is None:
             raise RuntimeError(
-                f"{dsn.rsplit('@', 1)[-1]} is not a migrated reimagina database "
+                f"{mask_dsn(dsn)} is not a migrated reimagina database "
                 "(jobs_runtime.job_run is missing). DBOS creates a database "
                 "rather than failing when one is absent, so a typo here would "
                 "otherwise start cleanly and write checkpoints nowhere useful. "
@@ -776,17 +781,28 @@ def s_finalize(run_id: str, status: str) -> bool:
         return runstore.finalize_run(conn, run_id=run_id, status=status)
 
 
+def compute_connection(dsn: str, run_id: str):
+    """The connection a unit computes on, named so a cancel can find it.
+
+    Its ``job_run`` row stays uncommitted until the unit ends, so the name in
+    ``pg_stat_activity`` is the only handle ``cancel_run_backends`` has on it.
+    """
+    return psycopg2.connect(dsn, application_name=run_application_name(run_id))
+
+
 @DBOS.step(retries_allowed=False)
-def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None:
+def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> str | None:
     """Run one indicator's real compute. Minutes of blocking PostGIS.
 
     Not retried: a runner exception is deterministic, so a retry would burn the
     same minutes to reach the same failure. Infrastructure faults surface as a
     failed connect, which is retried by the step that owns it.
 
-    ``current_run`` is what lets a cancel find this work: the runner opens its
-    own job_run row, and the ambient run id plus ``pg_backend_pid()`` are how
-    ``cancel_run`` locates the backend to signal (migration r031).
+    ``compute_connection`` is what lets a cancel find this work: it names the
+    connection after the run, and ``cancel_run`` signals the backend carrying
+    that name. The ``job_run`` row (run id + ``pg_backend_pid()``, migration
+    r031) is provenance; it is uncommitted while the unit runs, so a canceller
+    cannot see it.
 
     **One transaction, committed at the end.** The write path is
     stale-then-insert: it flips the previous values to ``status='stale'`` and
@@ -802,14 +818,17 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     DBOS's own check already fired when this step began. Without this the unit
     would run its full compute and commit results for a run already reported
     terminal. A narrowing, not a closing: a cancel arriving after this check
-    still has only ``pg_cancel_backend``, which is what the row exists for.
+    still has only ``pg_cancel_backend``, aimed by the connection's name.
+
+    Returns ``"cancelled"`` when the unit's scenario was deleted mid-compute
+    (``runners._fenced`` wrote nothing), else None.
     """
     runner = default_runners().get(slug)
     if runner is None:
         raise LookupError(f"no runner registered for {slug!r}")
 
     dsn = dbos_dsn()
-    conn = psycopg2.connect(dsn)  # NOT autocommit — see above
+    conn = compute_connection(dsn, run_id)  # NOT autocommit — see above
     started_at = datetime.now(timezone.utc)
     try:
         row = runstore.get_run(conn, run_id)
@@ -820,7 +839,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 run_id,
                 row["status"],
             )
-            return
+            return None
         # ⚠ Read from `jobs_runtime.run_plan`, not from the workflow input. The
         # ids used to travel inside that input, one per feature per indicator,
         # which made the payload scale with the size of the city; `plan_id` is a
@@ -836,7 +855,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
             else features
         )
         with current_run(run_id):
-            runner(
+            result = runner(
                 conn,
                 features=frozenset(resolved),
                 scenario_id=params.get("scenario_id"),
@@ -844,6 +863,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 aoi_id=params.get("aoi_id"),
             )
         conn.commit()
+        return "cancelled" if result == SCENARIO_DELETED else None
     except BaseException as exc:
         conn.rollback()
         # That rollback just erased the `failed` job_run the runner opened — it
@@ -887,12 +907,13 @@ def unit_workflow(run_id: str, slug: str, features: list[str], params: dict) -> 
     """
     s_set_status(run_id, slug, "running")
     try:
-        s_compute(run_id, slug, features, params)
+        outcome = s_compute(run_id, slug, features, params) or "succeeded"
     except Exception as exc:
         s_set_status(run_id, slug, "failed", _safe_detail(exc))
         raise
-    s_set_status(run_id, slug, "succeeded")
-    return "succeeded"
+    detail = "scenario deleted" if outcome == "cancelled" else None
+    s_set_status(run_id, slug, outcome, detail)
+    return outcome
 
 
 def _safe_detail(exc: BaseException) -> str:
@@ -1021,8 +1042,9 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         winner = DBOS.wait_first(handles, polling_interval_sec=POLL_INTERVAL_SEC)
         slug = outstanding.pop(winner.workflow_id)
         try:
-            winner.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
-            outcome = "succeeded"
+            # A child returns its own terminal status: `succeeded`, or
+            # `cancelled` when its scenario was deleted mid-compute.
+            outcome = winner.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
         except Exception:  # noqa: BLE001 — fault isolation is the point
             outcome = "failed"
         statuses[slug] = s_settle_unit(run_id, slug, outcome)

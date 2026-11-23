@@ -98,13 +98,13 @@ export const INPUT_LAYERS: InputLayerSpec[] = [
     ],
     // Off like every spatial layer; the opening view is the indicator alone.
     visible: false,
-    // ⚠ 12 matches `serving_geo.get_tile`'s role gate exactly: roads carry
-    // `role = 'infrastructure'`, which the function serves only from z12
-    // (`WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')`). Measured
-    // against the running database — a z11 road tile is 0 bytes and a z12
-    // one is 2,714. A lower floor here buys requests that can only come
-    // back empty, which on a map is indistinguishable from missing data.
-    minzoom: 12,
+    // ⚠ 13 matches `serving_geo.get_tile`'s road floor exactly (r057,
+    // `ROAD_MIN_ZOOM`): on the Mexicali pilot a central z12 road tile was
+    // 2.2 MB, the order of the building tile r038 floored. A lower floor
+    // here buys requests that can only come back empty, which on a map is
+    // indistinguishable from missing data. Pinned against the migration by
+    // tests/contract/test_tile_zoom_floors.py.
+    minzoom: 13,
   },
   {
     layerId: "baseline_live:building",
@@ -847,6 +847,18 @@ export function wireRasterToggles(
   // re-invoked on AOI change, so leftover groups would stack.
   for (const el of Array.from(container.querySelectorAll(".raster-group, .layer-group-heading"))) {
     el.remove();
+  }
+  // The new rows start unchecked, so the layers start hidden to match. Every
+  // source, not only this AOI's: one the new AOI no longer lists would stay
+  // painted with no checkbox left to turn it off.
+  for (const s of sources) {
+    for (const id of [
+      `${rasterSourceName(s.layer_id)}__raster`,
+      `${aggSourceName(s.layer_id)}__fill`,
+      `${aggSourceName(s.layer_id)}__line`,
+    ]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none");
+    }
   }
   // Filter the source list by AOI affinity. An overlay carrying
   // ``source_config.aois = [aoi_id, ...]`` is shown only for those

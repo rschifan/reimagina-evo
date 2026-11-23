@@ -17,8 +17,10 @@ import os
 from collections.abc import AsyncIterator, Iterable
 
 import psycopg2
+import psycopg2.errors
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from reimagina.orchestration.port import OpsPlaneNotProvisioned
 from rio_tiler.errors import PointOutsideBounds
@@ -41,12 +43,12 @@ from .routers import (
 )
 
 
-def _cors_origins_from_env() -> list[str]:
-    """Parse REIMAGINA_API_CORS_ORIGINS (comma-separated) or fall back to dev."""
-    raw = os.environ.get("REIMAGINA_API_CORS_ORIGINS")
+def _csv_env(name: str, default: list[str]) -> list[str]:
+    """A comma-separated env var as a list, or ``default`` when unset."""
+    raw = os.environ.get(name)
     if raw is None:
-        return ["http://localhost:5173", "http://localhost:8001"]
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+        return default
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def _log_resolved_dsn() -> None:
@@ -90,7 +92,13 @@ def create_app(
     app factory without a live database.
     """
     resolved_origins = (
-        list(allow_origins) if allow_origins is not None else _cors_origins_from_env()
+        list(allow_origins)
+        if allow_origins is not None
+        # Dev fallback: the vite dev server and the API itself.
+        else _csv_env(
+            "REIMAGINA_API_CORS_ORIGINS",
+            ["http://localhost:5173", "http://localhost:8001"],
+        )
     )
 
     @contextlib.asynccontextmanager
@@ -123,20 +131,42 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_origins,
-        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/edits`.
+        # DELETE is here for `/scenarios/{id}` and `/scenarios/{id}/rules/{rule_id}`.
         # It is invisible in dev — vite proxies :5173 to :8001, so the browser
         # sees one origin and sends no preflight — and a non-proxied
-        # deployment cannot call either route without it.
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        # deployment cannot call either route without it. PATCH is here for
+        # the same reason: `PATCH /scenarios/{id}/rules/{rule_id}` edits a rule in place.
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
-        expose_headers=["X-Request-Id"],
+        # X-Truncated / X-Row-Limit: the capped indicator reads say whether
+        # the cap dropped rows; a cross-origin client must be able to see it.
+        expose_headers=["X-Request-Id", "X-Truncated", "X-Row-Limit"],
         allow_credentials=False,
+    )
+    # Outermost: refuse a Host this API does not serve before anything runs.
+    # Loopback binding is what stands in for authentication here, and DNS
+    # rebinding defeats it — a page on evil.example re-pointed at 127.0.0.1
+    # is same-origin with the API, but its requests still carry
+    # `Host: evil.example`.
+    # Starlette matches the Host header without its port, so the loopback
+    # names cover the vite proxy (it forwards localhost:5173) and direct calls
+    # on :8001 alike.
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=_csv_env(
+            "REIMAGINA_API_ALLOWED_HOSTS", ["localhost", "127.0.0.1", "[::1]"]
+        ),
     )
 
     # Order matters: FastAPI walks handlers most-specific → least-specific,
     # so the OperationalError/InterfaceError pair must register *before*
     # the generic psycopg2.Error handler. Otherwise a connectivity outage
     # would wrongly surface as 500 instead of 503.
+    # `QueryCanceled` (a statement timeout) subclasses OperationalError but
+    # is not an outage; Starlette picks the handler by MRO, so this wins.
+    app.add_exception_handler(
+        psycopg2.errors.QueryCanceled, errors.query_timeout_handler
+    )
     app.add_exception_handler(
         psycopg2.OperationalError, errors.database_unavailable_handler
     )

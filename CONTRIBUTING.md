@@ -38,7 +38,7 @@ Run `make help` to see every shortcut. The important ones:
 
 1. Open a PR against `main`.
 2. CI must be green (`lint-py`, `test-py-unit`, `test-py-integration`, `build-web`); the integration job also runs conformance.
-3. One approval required before merge.
+3. Get one approving review before merging (a convention: `main` has no branch protection).
 4. `main` uses **squash merge only** — the PR title becomes the commit message.
 
 ## Code quality
@@ -50,4 +50,4 @@ Run `make help` to see every shortcut. The important ones:
 
 ## Reporting bugs / requesting features
 
-Use the GitHub issue templates. For security-sensitive reports, see [SECURITY.md](SECURITY.md).
+Use the GitHub issue templates. Report security issues privately to the maintainers, not in a public issue.

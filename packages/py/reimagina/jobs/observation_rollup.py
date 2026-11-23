@@ -100,9 +100,11 @@ def run_observation_rollup(
 
     ``method`` must be one of the values accepted by
     :func:`reimagina.jobs.aggregation.aggregate`. ``weight_basis`` is
-    only meaningful for ``weighted_mean``; for other methods the
-    overlap measure is still threaded through as the weight but
-    ignored by :func:`aggregate`.
+    only meaningful for ``weighted_mean``: ``presence`` weights every
+    source 1, ``area``/``length`` weight by the overlap measure and must
+    match how the overlaps were measured. ``sum`` apportions each source
+    by its share inside each target; ``mean``/``min``/``max`` refuse a
+    source that overlaps more than one target.
     """
     if method == "weighted_mean" and weight_basis is None:
         raise ValueError(
@@ -144,9 +146,11 @@ def run_observation_rollup(
             target_feature_type=target_feature_type_slug,
             output_prefix=output_attribute_key_prefix,
             method=method,
+            weight_basis=weight_basis,
             aoi_id=aoi_id,
             source_id=source_id,
             ingestion_run_id=ingestion_run_id,
+            recipe_id=recipe_id,
         )
     except Exception as exc:
         _finalise_run_safely(
@@ -231,9 +235,11 @@ def _compute_rollup_records(
     target_feature_type: str,
     output_prefix: str,
     method: str,
+    weight_basis: str | None,
     aoi_id: str | None,
     source_id: str,
     ingestion_run_id: str,
+    recipe_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Group overlap × observation rows by (target, source_attribute_key),
     aggregate each group, return observation records ready for bulk upsert.
@@ -248,9 +254,56 @@ def _compute_rollup_records(
         aoi_id=aoi_id,
     )
 
+    # ⚠ A point on the shared boundary of two targets is covered by both.
+    # It belongs to exactly one: the lowest target id, so reruns agree.
+    point_target: dict[str, str] = {}
+    for target_id, source_feature_id, *_rest, basis in flat:
+        if basis == "presence":
+            current = point_target.get(source_feature_id)
+            if current is None or target_id < current:
+                point_target[source_feature_id] = target_id
+    flat = [
+        row for row in flat if row[-1] != "presence" or point_target[row[1]] == row[0]
+    ]
+
+    # ⚠ A source overlapping several targets used to give its full value to
+    # each, so a `sum` rolled up more than its input. `sum` now takes the
+    # source's share inside each target (overlap_ratio: area or length);
+    # `mean`/`min`/`max` cannot split a value, so they refuse such sources.
+    if method in ("mean", "min", "max"):
+        targets_of: dict[str, set[str]] = {}
+        for target_id, source_feature_id, *_rest in flat:
+            targets_of.setdefault(source_feature_id, set()).add(target_id)
+        straddling = sum(1 for t in targets_of.values() if len(t) > 1)
+        if straddling:
+            raise ValueError(
+                f"rollup recipe {recipe_id or output_prefix!r}: method {method!r} "
+                f"cannot split a value across targets, and {straddling} "
+                f"{input_feature_type} source(s) overlap more than one "
+                f"{target_feature_type}; use sum (apportioned by overlap share) "
+                "or weighted_mean"
+            )
+
     # groups: {(target_id, source_attribute_key): [(value, weight), ...]}
     groups: dict[tuple[str, str], list[tuple[float, float]]] = {}
-    for target_id, source_attr_key, value, weight in flat:
+    for target_id, _source, source_attr_key, value, measure, ratio, basis in flat:
+        # ⚠ The recipe's weight_basis decides the weight. It used to be
+        # validated and then dropped, so `presence` over polygon sources
+        # silently weighted by area. An area or length basis can only be the
+        # one the overlap was measured in; anything else is refused, not
+        # quietly substituted.
+        if (
+            method == "weighted_mean"
+            and weight_basis != "presence"
+            and basis != weight_basis
+        ):
+            raise ValueError(
+                f"weight_basis {weight_basis!r}, but {input_feature_type} → "
+                f"{target_feature_type} overlaps are measured by {basis!r}"
+            )
+        if method == "sum":
+            value *= ratio
+        weight = 1.0 if weight_basis == "presence" else measure
         groups.setdefault((target_id, source_attr_key), []).append((value, weight))
 
     records: list[dict[str, Any]] = []
@@ -300,7 +353,7 @@ def _rewrite_prefix(attribute_key: str, input_prefix: str, output_prefix: str) -
     """
     if attribute_key == input_prefix:
         return output_prefix
-    # Separator-safe: the repo's LIKE matches ``:prefix_<suffix>`` only.
+    # Separator-safe: the repo matches ``prefix_<suffix>`` with starts_with.
     assert attribute_key.startswith(input_prefix + "_")
     suffix = attribute_key[len(input_prefix) + 1 :]
     return f"{output_prefix}_{suffix}"

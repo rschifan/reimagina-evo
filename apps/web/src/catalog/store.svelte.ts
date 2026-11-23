@@ -186,8 +186,9 @@ export function startPolling(): () => void {
 }
 
 /** Per-indicator stats, fetched on demand by the detail view and cached for
- *  the life of the page — the numbers move only when a recompute runs, and
- *  the poll loop above already reloads the list when that happens. */
+ *  the life of the page: the numbers move only when a recompute runs, so a
+ *  recompute shows on the next page load. A failure is evicted, or one 502
+ *  would stand until that reload. */
 const statsCache = new Map<string, Promise<IndicatorStats>>();
 
 export function statsFor(slug: string, grain: string | undefined): Promise<IndicatorStats> {
@@ -196,5 +197,6 @@ export function statsFor(slug: string, grain: string | undefined): Promise<Indic
   if (hit) return hit;
   const p = getStats(slug, { feature_type: grain, aoi_id: activeAoiId });
   statsCache.set(key, p);
+  p.catch(() => statsCache.delete(key));
   return p;
 }

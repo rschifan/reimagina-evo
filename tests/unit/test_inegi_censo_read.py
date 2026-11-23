@@ -25,7 +25,7 @@ from reimagina.pipeline.inegi_censo import (
 
 
 def _write_partition(parquet_dir: Path, *, entidad: str, rows: list[dict]) -> None:
-    """Mirror the data lake's lowercase, unpadded ``entidad=N/`` partition.
+    """Mirror the INEGI copy's lowercase, unpadded ``entidad=N/`` partition.
 
     2020 (unlike 2010) does not nest ``mun=N/`` underneath — the muni
     information lives inside each row as ``nom_mun``.
@@ -52,7 +52,7 @@ def _write_partition(parquet_dir: Path, *, entidad: str, rows: list[dict]) -> No
 @pytest.fixture
 def fake_censo_root(tmp_path: Path) -> Path:
     """Two states (9, 2), three munis. Partitions are entidad-only —
-    matches the real 2020 data lake layout."""
+    matches the real 2020 INEGI copy layout."""
     root = tmp_path / "manzanas_2020.parquet"
     _write_partition(
         root,

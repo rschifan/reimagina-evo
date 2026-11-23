@@ -598,6 +598,7 @@ body {
 }
 
 .inspector__rank,
+.inspector__estimated,
 .inspector__status {
   color: var(--muted);
   margin: 0;

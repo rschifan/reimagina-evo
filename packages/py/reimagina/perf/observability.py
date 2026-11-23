@@ -122,7 +122,12 @@ def index_inventory(conn, *, limit: int = 20) -> list[dict]:
 def slow_queries(conn, *, limit: int = 10) -> dict[str, object]:
     _require_postgres(conn)
     status = pg_extension_status(conn)
-    if not status["pg_stat_statements_available"]:
+    # Installed but not preloaded (CREATE EXTENSION without a restart), the
+    # view raises instead of returning rows, and that aborted the whole report.
+    if not (
+        status["pg_stat_statements_available"]
+        and status["pg_stat_statements_preloaded"]
+    ):
         return {"available": False, "queries": []}
 
     queries = _query_dicts(
@@ -139,6 +144,8 @@ def slow_queries(conn, *, limit: int = 10) -> dict[str, object]:
           temp_blks_read,
           temp_blks_written
         FROM pg_stat_statements
+        -- The view is cluster-wide; report this database's statements only.
+        WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
         ORDER BY total_exec_time DESC
         LIMIT %s
         """,

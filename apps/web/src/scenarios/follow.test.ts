@@ -11,7 +11,6 @@ import {
   MAX_RUN_READ_FAILURES,
   RUN_POLL_MS,
   followRun,
-  removeRule,
   type FollowEvents,
 } from "./follow";
 
@@ -107,28 +106,6 @@ describe("followRun", () => {
     expect(api.getRun).toHaveBeenCalledTimes(MAX_RUN_POLLS);
   });
 });
-
-describe("removeRule", () => {
-  it("sends every DELETE to the scenario it was given", async () => {
-    api.removeScenarioEdit.mockResolvedValue(undefined);
-    const result = await removeRule("A", ["e1", "e2", "e3"]);
-    expect(api.removeScenarioEdit.mock.calls).toEqual([
-      ["A", "e1"],
-      ["A", "e2"],
-      ["A", "e3"],
-    ]);
-    expect(result).toEqual({ removed: 3, error: null });
-  });
-
-  it("stops at the first failed DELETE and reports how many went", async () => {
-    const boom = new Error("409");
-    api.removeScenarioEdit.mockResolvedValueOnce(undefined).mockRejectedValueOnce(boom);
-    const result = await removeRule("A", ["e1", "e2", "e3"]);
-    expect(api.removeScenarioEdit).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ removed: 1, error: boom });
-  });
-});
-
 
 describe("how often a run is checked", () => {
   // A two-second poll added up to two seconds after every run had already

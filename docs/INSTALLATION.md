@@ -1,8 +1,10 @@
 # Installation on macOS and Linux
 
 This is the canonical local installation guide. It covers software setup,
-synthetic verification and restart procedures. Real territory ingestion is a
-separate operation requiring the private mirror described in [BOOTSTRAP.md](BOOTSTRAP.md).
+synthetic verification, loading the real Mexicali territory from its published
+source bundle ([step 9](#9-load-the-real-mexicali-territory)) and restart
+procedures. [BOOTSTRAP.md](BOOTSTRAP.md) is the reference for the bundle and
+for running the load step by step.
 
 ## 1. Prerequisites
 
@@ -46,8 +48,11 @@ optional PMTiles export workflow.
 For the database, choose Docker Engine/Desktop with Compose v2, or PostgreSQL
 16+ with PostGIS 3.4+ and pgRouting 3.6+. Reserve ports 8001 (API) and 5173 (web).
 The Docker stack also uses 5433 (direct PostgreSQL), 5432 (PgBouncer), 3000
-(Martin) and 3001 (PMTiles host). Allow several GB for environments and Docker
-images, plus separate capacity for data; real mirror storage is workload dependent.
+(Martin) and 3001 (PMTiles host), bound to 127.0.0.1 unless
+`REIMAGINA_BIND_ADDRESS` in `.env` says otherwise. Allow several GB for environments and Docker
+images. The real Mexicali territory (step 9) adds a 65 MB download, kept
+under `data/bundles/` beside its 77 MB extraction, and about 1.1 GB of
+database.
 
 ## 2. Clone and select Python
 
@@ -86,14 +91,16 @@ commands and shell substitutions are not supported. Keep it out of Git.
 | `DATABASE_URL` | Application database, direct PostgreSQL connection for migrations/loaders/CLI |
 | `REIMAGINA_APP_DSN` | Same application database; PgBouncer for Docker, direct for host PostgreSQL |
 | `DATABASE_URL_DIRECT` | Same application database, direct connection for DBOS checkpoints and LISTEN/NOTIFY |
-| `TEST_DATABASE_URL` | Separate disposable database whose name contains `test` |
+| `TEST_DATABASE_URL` | Separate disposable database with `test` as a word in its name (`reimagina_test`) |
 | `DATABASE_URL_ADMIN` | Existing maintenance database (usually `postgres`) on the same direct server; role able to create databases and extensions |
 
 The bootstrap role needs PostgreSQL superuser privileges to create the
 untrusted PostGIS/pgRouting extensions. These settings are for local evaluation.
 Keep the API on loopback: its routes are unauthenticated, and the current RLS
-policies do not provide tenant isolation. This guide does not establish a
-production deployment procedure. See the [API security scope](architecture/API.md)
+policies do not provide tenant isolation. The API answers only the `Host`
+names in `REIMAGINA_API_ALLOWED_HOSTS` (default `localhost,127.0.0.1,[::1]`);
+serving it under another hostname means adding that name, or every request
+gets 400. This guide does not establish a production deployment procedure. See the [API security scope](architecture/API.md)
 and [open architecture issues](architecture/TODO.md).
 
 Passwords in URLs must be **percent-encoded**, for example `@` becomes `%40`
@@ -112,7 +119,9 @@ exposes only the application database and cannot substitute for the direct
 migration/admin connection.
 
 For a host database, comment out Path A DSNs and uncomment all five Path B
-DSNs. Those examples assume your OS username is a PostgreSQL role with
+DSNs. Both paths name the application database `reimagina` and the test
+database `reimagina_test`; any names work if all five URLs agree. The Path B
+examples assume your OS username is a PostgreSQL role with
 passwordless local TCP access and database/extension privileges. Otherwise,
 put an explicit role, encoded password, host and port in **each** URL.
 
@@ -171,7 +180,8 @@ existing roles before changing an existing installation. Other distributions
 use different package names and service managers.
 
 For either native path, connect to the maintenance database using your
-configured administrator credentials (psql prompts for the password):
+configured administrator credentials (`-W` prompts for the password; leave
+`-U … -W` out for a passwordless OS-user role such as Postgres.app's):
 
 ```bash
 pg_isready -h localhost -p 5432
@@ -190,7 +200,7 @@ Both rows must appear with supported versions before proceeding. If one is
 missing, install its matching server extension package or choose the Docker
 path. Database readiness alone does not prove extension availability.
 `make migrate` creates both databases; if creating them manually, run separate
-commands (`createdb reimagina_app` and `createdb reimagina_test`). A second
+commands (`createdb reimagina` and `createdb reimagina_test`). A second
 positional argument to `createdb` is a description, not another database.
 
 ## 5. Install dependencies and migrate
@@ -265,17 +275,19 @@ separate scratch checkout with its own `.env`, a distinct application database
 and a distinct test database. Stop its API and worker before resetting it.
 Do not copy a real-data `.env` and run acceptance unchanged.
 
-For example, clone a second checkout and repeat the prerequisites/install
-steps there. If reusing an already-running host/Docker PostgreSQL, configure
-its scratch `.env` with all five URLs, using the actual role, credentials and
-direct port. The following example assumes the host Path B passwordless role:
+For example, clone a second checkout and repeat steps 2, 3 and 5 there
+(`make install` reuses the uv and npm caches). If reusing an already-running
+host/Docker PostgreSQL, create its scratch `.env` with `cp .env.example .env`,
+comment out the Path A DSNs and set all five URLs to scratch databases, using
+the actual role, credentials and direct port. The following example assumes
+the host Path B passwordless role:
 
 ```dotenv
-DATABASE_URL=postgresql://localhost/reimagina_acceptance_scratch
-REIMAGINA_APP_DSN=postgresql://localhost/reimagina_acceptance_scratch
-DATABASE_URL_DIRECT=postgresql://localhost/reimagina_acceptance_scratch
-TEST_DATABASE_URL=postgresql://localhost/reimagina_acceptance_test
-DATABASE_URL_ADMIN=postgresql://localhost/postgres
+DATABASE_URL=postgresql://localhost:5432/reimagina_acceptance_scratch
+REIMAGINA_APP_DSN=postgresql://localhost:5432/reimagina_acceptance_scratch
+DATABASE_URL_DIRECT=postgresql://localhost:5432/reimagina_acceptance_scratch
+TEST_DATABASE_URL=postgresql://localhost:5432/reimagina_acceptance_test
+DATABASE_URL_ADMIN=postgresql://localhost:5432/postgres
 ```
 
 For an existing Docker server use its direct port **5433 for all five scratch
@@ -297,9 +309,12 @@ inherited `PGSERVICE` or `PGHOSTADDR` overrides; an omitted URL port follows
 
 The script generates geometry near Mexicali, computes all twelve indicators,
 loads a raster, exercises zonal statistics and rollups, authors a scenario,
-runs a separate worker and decodes live tiles. It needs no private mirror or
-external data downloads after installation. Every stage must exit
-successfully. Then repeat the API/browser checks against this populated stack.
+runs a separate worker and decodes live tiles, in about 90 seconds. It needs
+no source data and no network access. Every stage must exit successfully; the
+run ends with `=== Acceptance run complete` followed by the `AOI_ID`,
+`SCENARIO_ID` and `RASTER_SOURCE_ID` it created. Then repeat the step 6
+checks against this populated stack; if the first checkout's `make dev` is
+still running, give this one other ports (`make dev API_PORT=8123 WEB_PORT=5199`).
 
 For additional checks:
 
@@ -338,12 +353,54 @@ code updates, then `make stack-up`. Do not remove the volume unless you intend
 to erase its databases. Stop a native PostgreSQL server through its own
 service manager only when no other application needs it.
 
-## 9. Load real territory separately
+## 9. Load the real Mexicali territory
 
-Synthetic verification does not require private credentials. Real INEGI data
-requires an authorized local mirror under `data/sources/lake/`; Overture,
-OpenStreetMap and optional WorldPop loads require network access. Obtain the
-mirror layout and credentials from the maintainer and follow
-[BOOTSTRAP.md](BOOTSTRAP.md). `scripts/mexicali_run.sh` is a destructive data
-load, not an installation or health check. Preserve real-data databases and
-never point synthetic acceptance at them.
+The real territory is Mexicali, loaded from the Mexicali source bundle:
+INEGI Marco Geoestadístico 2024, Censo 2020 and DENUE for Baja California,
+Overture buildings and places, and an OpenStreetMap pedestrian network. It is
+published as a GitHub Release asset (tag `mexicali-bundle-2026.11`) with its
+SHA-256 pinned in `scripts/build_mexicali_bundle.py`;
+[BOOTSTRAP.md](BOOTSTRAP.md#the-mexicali-source-bundle) describes its contents
+and licences.
+
+**`scripts/mexicali_run.sh` drops and recreates the database `DATABASE_URL`
+names** (`reimagina` in both `.env.example` paths) and loads Mexicali into it.
+`DATABASE_URL_DIRECT` must name the same database, and `DATABASE_URL_ADMIN`
+(default `postgres` on the same server) is where the drop connects. Run it in
+the checkout configured in steps 3–5, never against a database whose contents
+you need, and stop that checkout's `make dev` first. From the repository root:
+
+```bash
+scripts/mexicali_run.sh
+```
+
+It downloads the 65 MB archive from github.com into `data/bundles/2026.11/`,
+refuses it unless its SHA-256 matches the pin, extracts it, checks every file
+against the bundle's `SHA256SUMS`, and only then drops the database. It loads
+the INEGI geometry, the census, the amenities, the Overture places and
+buildings and the walking network, computes AOI membership, overlaps and the
+scenario-input baseline, and computes all 12 indicators. It takes about
+8–9 minutes on a recent laptop and ends with `=== Done` and the `AOI_ID`.
+Eight indicators report `rows_written=19058`, one row per block; the three
+edificability indicators and `livability_block_score` report
+`rows_written=14540`, because the 4,518 blocks where the census counts no
+dwellings have no m² per dwelling and are skipped. Later runs reuse the downloaded
+bundle with no network access. Without network access, follow the offline
+route in [BOOTSTRAP.md](BOOTSTRAP.md#the-mexicali-source-bundle) and run
+`scripts/mexicali_run.sh --bundle DIR`. `--keep` loads into the existing
+database instead of recreating it; `--help` prints the usage.
+
+Then start the application as in step 6 and check that the territory is
+served:
+
+```bash
+make dev
+curl --fail --max-time 30 http://127.0.0.1:8001/aois
+curl --fail --max-time 30 http://127.0.0.1:8001/tile-sources
+```
+
+`/aois` lists one AOI, `Mexicali`. In the browser, pick it under *Area*: the
+blocks, buildings and roads draw, and the indicator choropleth colours the
+blocks. [BOOTSTRAP.md](BOOTSTRAP.md) runs the same load step by step and lists
+integrity checks. Preserve real-data databases and never point synthetic
+acceptance at them.

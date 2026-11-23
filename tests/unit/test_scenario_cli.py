@@ -110,85 +110,90 @@ def _floors_valid_max() -> float:
     return float(spec.valid_max)
 
 
+MATERIALIZED = MaterializeResult(
+    matched_per_rule={"rule-1": 4},
+    overrides_written=16,
+    overrides_removed=0,
+    results_superseded=0,
+    footprint_features=("f1", "f2"),
+    footprint_attributes=("floors", "num_levels"),
+    aoi_id=AOI_ID,
+)
+
+
+def _writes(monkeypatch, calls: list[dict] | None = None, conn=None):
+    """Install a fake connection and record the rule writes the CLI makes.
+
+    The fake ``add_rule`` keeps the one part of the real one these tests are
+    about — its numbers go through ``check_inputs`` — and stands in for the
+    write and the materialisation it does in the same transaction.
+    """
+    from reimagina.scenarios.proposal import check_inputs
+
+    conn = conn or _FakeConn([])
+    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
+    monkeypatch.setattr(scenario_cli, "get_type_id", lambda c, ctx, slug: TYPE_ID)
+
+    def _add_rule(c, **kw):
+        checked = check_inputs(kw["inputs"])
+        if calls is not None:
+            calls.append(kw)
+        conn.events.append("add_rule")
+        return {"id": "rule-1", "inputs": checked}, MATERIALIZED
+
+    monkeypatch.setattr(scenario_cli, "add_rule_row", _add_rule)
+    return conn
+
+
 def _geojson_file(tmp_path, payload=None):
     path = tmp_path / "area.geojson"
     path.write_text(json.dumps(payload if payload is not None else POLYGON))
     return str(path)
 
 
-# ── the four edits ───────────────────────────────────────────────────────
+# ── a rule ───────────────────────────────────────────────────────────────
 #
-# That three numbers make four edits is `reimagina.scenarios.proposal`'s rule
-# and is tested there. What is tested here is that the CLI uses it: a command
-# that assembled its own list would pass every test in that file.
+# That a rule's numbers are checked and expanded into edits is
+# `reimagina.scenarios.proposal`'s rule and is tested there. What is tested
+# here is that the CLI uses it, and sets only what was typed.
 
 
-def test_set_attribute_writes_one_edit_per_attribute(monkeypatch, tmp_path, capsys):
+def test_add_rule_sets_only_the_numbers_given(monkeypatch, tmp_path, capsys):
+    """No default coverage: a CLI rule used to write 1.0 whatever was typed,
+    and so overrode a web rule's coverage wherever the two overlapped."""
     calls: list[dict] = []
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
-    monkeypatch.setattr(
-        scenario_cli,
-        "add_edit",
-        lambda conn, **kw: (calls.append(kw), f"edit-{len(calls)}")[1],
-    )
+    _writes(monkeypatch, calls)
 
     code = main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
             _geojson_file(tmp_path),
             "--levels",
             "6",
-            "--unit-size",
-            "60",
             "--people-per-household",
             "3.6",
         ]
     )
 
     assert code == 0
-    assert [c["attribute_key"] for c in calls] == [
-        "floors",
-        "num_levels",
-        "unit_size",
-        "people_per_household",
-        "lot_coverage",
-    ]
-    assert [c["value_numeric"] for c in calls] == [6.0, 6.0, 60.0, 3.6, 1.0]
-    # One drawn area, five rules over it — not five areas.
-    assert {c["geometry_wkt"] for c in calls} == {"POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"}
-    assert {c["type_id"] for c in calls} == {TYPE_ID}
-    assert len(_out(capsys)["edits"]) == 5
+    out = _out(capsys)
+    assert out["inputs"] == {"levels": 6.0, "people_per_household": 3.6}
+    assert calls[0]["geometry_wkt"] == "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"
+    assert calls[0]["type_id"] == TYPE_ID
+    assert out["rule_id"] == "rule-1"
 
 
-def test_set_attribute_writes_all_four_edits_in_one_transaction(monkeypatch, tmp_path):
-    """One proposal, one commit — not a commit per edit, and not none.
+def test_add_rule_and_its_materialisation_are_one_transaction(monkeypatch, tmp_path):
+    """One commit, after the materialisation: a refused rule is never stored."""
+    conn = _writes(monkeypatch)
 
-    Four edits of a proposal that half-lands is the failure `_edits_for`
-    exists to prevent, and a commit between them is how it would happen
-    anyway: `add_edit` raising on the third would leave `floors` and
-    `num_levels` written and `unit_size` not, which is a block the
-    edificability family skips while planned floors moves. The round trip in
-    `tests/integration/test_scenario_cli.py` notices a *missing* commit; only
-    a count notices an extra one.
-    """
-    conn = _FakeConn([])
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn_, ctx, slug: TYPE_ID)
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        scenario_cli, "add_edit", lambda conn_, **kw: (calls.append(kw), "e")[1]
-    )
+    assert _add_rule(tmp_path, levels=6) == 0
 
-    assert _set_attribute(tmp_path, levels=6) == 0
-
-    assert len(calls) == 5
-    assert conn.events.count("commit") == 1
-    assert conn.events[-1] == "close"
+    assert conn.events == ["add_rule", "commit", "close"]
 
 
 def test_a_geojson_path_that_is_not_there_is_a_message_not_a_traceback(
@@ -208,7 +213,7 @@ def test_a_geojson_path_that_is_not_there_is_a_message_not_a_traceback(
     code = main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
@@ -229,16 +234,12 @@ def test_a_geojson_path_that_is_not_there_is_a_message_not_a_traceback(
     assert "Traceback" not in err
 
 
-def test_set_attribute_reads_the_area_from_a_feature_collection(
+def test_add_rule_reads_the_area_from_a_feature_collection(
     monkeypatch, tmp_path, capsys
 ):
     """A drawing tool exports a FeatureCollection, not a bare geometry."""
     calls: list[dict] = []
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
-    monkeypatch.setattr(
-        scenario_cli, "add_edit", lambda conn, **kw: (calls.append(kw), "e")[1]
-    )
+    _writes(monkeypatch, calls)
     path = _geojson_file(
         tmp_path,
         {
@@ -250,7 +251,7 @@ def test_set_attribute_reads_the_area_from_a_feature_collection(
     code = main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
@@ -271,19 +272,18 @@ def test_set_attribute_reads_the_area_from_a_feature_collection(
 def test_a_geojson_with_no_polygon_is_refused_before_any_write(
     monkeypatch, tmp_path, capsys
 ):
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
+    _writes(monkeypatch)
     monkeypatch.setattr(
         scenario_cli,
-        "add_edit",
-        lambda conn, **kw: pytest.fail("add_edit must not run"),
+        "add_rule_row",
+        lambda conn, **kw: pytest.fail("add_rule must not run"),
     )
     path = _geojson_file(tmp_path, {"type": "Point", "coordinates": [0.0, 0.0]})
 
     code = main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
@@ -319,7 +319,7 @@ def test_a_geojson_that_is_not_geojson_is_a_message_not_a_traceback(
     code = main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
@@ -345,11 +345,11 @@ def test_a_geojson_that_is_not_geojson_is_a_message_not_a_traceback(
 # ── the authoring-time ceiling precheck ──────────────────────────────────
 
 
-def _set_attribute(tmp_path, *, levels, unit_size=60, people_per_household=3.6):
+def _add_rule(tmp_path, *, levels, unit_size=60, people_per_household=3.6):
     return main(
         [
             "scenario",
-            "set-attribute",
+            "add-rule",
             "--scenario-id",
             SCENARIO_ID,
             "--geojson",
@@ -364,22 +364,14 @@ def _set_attribute(tmp_path, *, levels, unit_size=60, people_per_household=3.6):
     )
 
 
-def test_set_attribute_prechecks_the_density_ceiling(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(
-        scenario_cli,
-        "connect",
-        lambda dsn: pytest.fail("the refusal must precede the connection"),
-    )
-    monkeypatch.setattr(
-        scenario_cli,
-        "add_edit",
-        lambda conn, **kw: pytest.fail("nothing may be written"),
-    )
+def test_add_rule_prechecks_the_density_ceiling(monkeypatch, tmp_path, capsys):
+    conn = _writes(monkeypatch)
 
-    code = _set_attribute(tmp_path, levels=13, unit_size=60)
+    code = _add_rule(tmp_path, levels=13, unit_size=60)
 
     assert code != 0
     assert DENSITY in capsys.readouterr().err
+    assert "commit" not in conn.events
 
 
 @pytest.mark.parametrize("unit_size", [30, 60, 120])
@@ -395,13 +387,11 @@ def test_the_precheck_boundary_is_the_catalog_bound(monkeypatch, tmp_path, unit_
     hardcode passes. 30 m² allows 6 storeys and 120 m² allows 24 — a constant
     accepts a breach at the first and refuses a legal proposal at the second.
     """
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
-    monkeypatch.setattr(scenario_cli, "add_edit", lambda conn, **kw: "e")
+    _writes(monkeypatch)
     allowed = math.floor(max_levels_for(unit_size))
 
-    assert _set_attribute(tmp_path, levels=allowed, unit_size=unit_size) == 0
-    assert _set_attribute(tmp_path, levels=allowed + 1, unit_size=unit_size) == 2
+    assert _add_rule(tmp_path, levels=allowed, unit_size=unit_size) == 0
+    assert _add_rule(tmp_path, levels=allowed + 1, unit_size=unit_size) == 2
 
 
 def test_the_cli_says_flags_where_the_domain_says_fields(monkeypatch, tmp_path, capsys):
@@ -410,19 +400,16 @@ def test_the_cli_says_flags_where_the_domain_says_fields(monkeypatch, tmp_path, 
     `reimagina.scenarios.proposal` states the breach in field names and says
     nothing about how to act, because an HTTP 400 must not describe a command
     line (`test_scenario_proposal.py` pins that). The person who typed
-    `--levels 13` still has to be told which flag to lower and which command
-    checks the rest, so the CLI adds it — and if it stopped, the refusal
-    would send them looking for a `levels` they never typed.
+    `--levels 13` still has to be told which flag to lower, so the CLI adds
+    it — and if it stopped, the refusal would send them looking for a
+    `levels` they never typed.
     """
-    monkeypatch.setattr(
-        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be opened")
-    )
+    _writes(monkeypatch)
 
-    assert _set_attribute(tmp_path, levels=13, unit_size=60) == 2
+    assert _add_rule(tmp_path, levels=13, unit_size=60) == 2
 
     err = capsys.readouterr().err
     assert "--levels" in err and "--unit-size" in err
-    assert "`scenario recompute`" in err
     # and the domain's own sentence survives intact underneath
     assert DENSITY in err
 
@@ -456,13 +443,12 @@ def test_a_degenerate_value_is_refused(monkeypatch, tmp_path, capsys, levels):
     Nothing downstream would stop them: the kernels return 0 for a
     non-positive input and NaN propagates into the override row.
     """
-    monkeypatch.setattr(
-        scenario_cli, "connect", lambda dsn: pytest.fail("nothing may be written")
-    )
+    conn = _writes(monkeypatch)
 
-    code = _set_attribute(tmp_path, levels=levels)
+    code = _add_rule(tmp_path, levels=levels)
 
     assert code == 2
+    assert "commit" not in conn.events
     assert "--levels" in capsys.readouterr().err
 
 
@@ -485,9 +471,7 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
     hardcoded storey limit, or a precheck that ignored `--unit-size`, would
     both exit 2 for this proposal while `floors` stayed unbounded.
     """
-    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
-    monkeypatch.setattr(scenario_cli, "get_type_id", lambda conn, ctx, slug: TYPE_ID)
-    monkeypatch.setattr(scenario_cli, "add_edit", lambda conn, **kw: "e")
+    _writes(monkeypatch)
 
     levels = math.floor(_floors_valid_max()) + 1
     # `max_levels_for` is linear in unit size, so this is the unit size at
@@ -496,7 +480,7 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
     unit_size = 1.1 * levels / max_levels_for(1.0)
     assert max_levels_for(unit_size) > levels
 
-    assert _set_attribute(tmp_path, levels=levels, unit_size=unit_size) == 2
+    assert _add_rule(tmp_path, levels=levels, unit_size=unit_size) == 2
     assert PLANNED_FLOORS in capsys.readouterr().err
 
 
@@ -505,7 +489,7 @@ def test_the_precheck_covers_floors(monkeypatch, tmp_path, capsys):
 
 def test_list_reads_explore_scenario_v(fake_conn, capsys):
     conn = fake_conn(
-        [(("id", "name", "edit_count"), [(SCENARIO_ID, "Centralidad norte", 4)])]
+        [(("id", "name", "rule_count"), [(SCENARIO_ID, "Centralidad norte", 4)])]
     )
 
     code = main(["scenario", "list"])
@@ -515,7 +499,7 @@ def test_list_reads_explore_scenario_v(fake_conn, capsys):
     assert "explore.scenario_v" in conn.statements[0][0]
     payload = _out(capsys)
     assert payload["scenarios"] == [
-        {"id": SCENARIO_ID, "name": "Centralidad norte", "edit_count": 4}
+        {"id": SCENARIO_ID, "name": "Centralidad norte", "rule_count": 4}
     ]
 
 
@@ -532,7 +516,7 @@ def test_show_reads_explore_scenario_v(fake_conn, capsys):
     conn = fake_conn(
         [
             (
-                ("id", "edit_count", "override_count", "materialized_at"),
+                ("id", "rule_count", "override_count", "materialized_at"),
                 [(SCENARIO_ID, 4, 12, None)],
             )
         ]
@@ -580,7 +564,8 @@ def test_create_derives_the_project_from_the_aoi(monkeypatch, fake_conn, capsys)
     assert _out(capsys)["scenario_id"] == SCENARIO_ID
 
 
-def test_create_without_a_project_or_an_aoi_is_refused(monkeypatch, capsys):
+def test_create_without_an_aoi_is_refused(monkeypatch, capsys):
+    """A scenario without an AOI could hold rules and never materialise them."""
     monkeypatch.setattr(
         scenario_cli,
         "connect",
@@ -590,7 +575,7 @@ def test_create_without_a_project_or_an_aoi_is_refused(monkeypatch, capsys):
     code = main(["scenario", "create", "--name", "Nowhere"])
 
     assert code == 2
-    assert "--project-id" in capsys.readouterr().err
+    assert "--aoi-id" in capsys.readouterr().err
 
 
 def test_create_reports_a_duplicate_name_rather_than_a_traceback(
@@ -603,7 +588,18 @@ def test_create_reports_a_duplicate_name_rather_than_a_traceback(
 
     monkeypatch.setattr(scenario_cli, "create_scenario", _raise)
 
-    code = main(["scenario", "create", "--name", "N", "--project-id", PROJECT_ID])
+    code = main(
+        [
+            "scenario",
+            "create",
+            "--name",
+            "N",
+            "--project-id",
+            PROJECT_ID,
+            "--aoi-id",
+            AOI_ID,
+        ]
+    )
 
     assert code == 2
     assert "already exists" in capsys.readouterr().err
@@ -668,18 +664,13 @@ def test_an_aoi_of_another_project_reads_as_a_refusal_not_a_traceback(
 def recompute_spy(monkeypatch):
     """Record the order of materialisation, commit and evaluation."""
     order: list[str] = []
-    conn = _FakeConn([(("aoi_id",), [(AOI_ID,)])])
+    conn = _FakeConn([])
     conn.commit = lambda: order.append("commit")  # type: ignore[method-assign]
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
 
     def _materialize(c, *, scenario_id):
         order.append("materialize")
-        return MaterializeResult(
-            matched_per_edit={"edit-1": 4},
-            overrides_written=16,
-            overrides_removed=0,
-            results_superseded=0,
-        )
+        return MATERIALIZED
 
     def _evaluate(**kwargs):
         order.append("evaluate")
@@ -699,25 +690,47 @@ def test_recompute_materialises_before_it_evaluates(recompute_spy, capsys):
     assert order == ["materialize", "commit", "evaluate"]
     payload = _out(capsys)
     assert payload["materialized"]["overrides_written"] == 16
-    assert payload["materialized"]["matched_per_edit"] == {"edit-1": 4}
+    assert payload["materialized"]["matched_per_rule"] == {"rule-1": 4}
     assert payload["evaluation"]["status"] == "succeeded"
 
 
 def test_recompute_evaluates_the_scenario_in_its_own_aoi(recompute_spy, capsys):
-    _order, conn = recompute_spy
-
     main(["scenario", "recompute", "--scenario-id", SCENARIO_ID, "--sync"])
 
-    # The AOI comes from the explore view, not from a flag the caller forgot.
-    assert "explore.scenario_v" in conn.statements[0][0]
     evaluation = _out(capsys)["evaluation"]
     assert evaluation["scenario_id"] == SCENARIO_ID
+    # The AOI the materialisation read under its lock, not a flag.
     assert evaluation["aoi_id"] == AOI_ID
     assert evaluation["mode"] == "sync"
-    # Empty: the dirty set comes from the versions materialisation just
-    # published, which also covers the attributes it retired.
-    assert evaluation["changed_attributes"] == []
-    assert evaluation["edited_features"] == []
+    # The footprint, exactly as the API sends it: the blocks a rule
+    # overrides, not every block of the AOI.
+    assert evaluation["changed_attributes"] == ["floors", "num_levels"]
+    assert evaluation["edited_features"] == ["f1", "f2"]
+
+
+def test_recompute_with_no_override_left_evaluates_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(scenario_cli, "connect", lambda dsn: _FakeConn([]))
+    monkeypatch.setattr(
+        scenario_cli,
+        "materialize_scenario",
+        lambda c, *, scenario_id: MaterializeResult(
+            matched_per_rule={},
+            overrides_written=0,
+            overrides_removed=3,
+            results_superseded=3,
+            aoi_id=AOI_ID,
+        ),
+    )
+    monkeypatch.setattr(
+        scenario_cli,
+        "evaluate_scenario_cli",
+        lambda **kw: pytest.fail("an empty footprint would mean every block"),
+    )
+
+    code = main(["scenario", "recompute", "--scenario-id", SCENARIO_ID, "--sync"])
+
+    assert code == 0
+    assert _out(capsys)["evaluation"]["status"] == "noop"
 
 
 def test_recompute_does_not_print_a_second_unmasked_dsn(recompute_spy, capsys):
@@ -751,7 +764,7 @@ def test_recompute_without_materialising_is_not_an_option(monkeypatch, capsys):
     """If materialisation raises, nothing is evaluated and nothing commits."""
     from reimagina.scenarios.authoring import ScenarioHasNoAOI
 
-    conn = _FakeConn([(("aoi_id",), [(None,)])])
+    conn = _FakeConn([])
     monkeypatch.setattr(scenario_cli, "connect", lambda dsn: conn)
 
     def _raise(c, *, scenario_id):

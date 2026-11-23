@@ -21,7 +21,7 @@ call of an allowlisted `serving_geo` tile function.
 
 ## Endpoints
 
-All 44 operations the project defines are below; the in-process titiler routes under `/cog` are titiler's own. The OpenAPI document (`/openapi.json`, rendered at `/docs`) carries every parameter and response model, the titiler routes included.
+All 45 operations the project defines are below; the in-process titiler routes under `/cog` are titiler's own. The OpenAPI document (`/openapi.json`, rendered at `/docs`) carries every parameter and response model, the titiler routes included.
 
 | Method | Path | Returns |
 |---|---|---|
@@ -33,11 +33,11 @@ All 44 operations the project defines are below; the in-process titiler routes u
 | GET | `/indicators/{slug}` | One indicator's full metadata. 404 on unknown slug. |
 | GET | `/indicators/{slug}/dependencies` | What the indicator is computed from (`upstream`) and what is computed from it (`downstream`), indicator to indicator: `{slug, upstream, downstream}`, each edge with names, the input's unit and `weight`. Both empty is the common case. 404 on unknown slug. |
 | GET | `/indicators/{slug}/lineage` | The asset closure around `indicator.{slug}` in both directions, down to the datasets it ultimately reads; each node with `kind`, `depth` and freshness `state`. Empty lists when the asset graph is not seeded. 404 on unknown slug. |
-| GET | `/indicators/{slug}/values` | Current `indicator_result` rows, optional `scenario_id`, `limit=1..10000` (default 1000). 404 on unknown slug. |
-| GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`scenario_id`, `feature_type`, `aoi_id`, all optional; `sum` is `null` with no rows — no values is no total). `bins=1..200` (default 0, none) adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. `count_at_cap` is the number of those rows with `value >= cap_value`, `null` when the indicator has no cap. |
-| GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. |
-| GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. |
-| GET | `/indicators/{slug}/values.parquet` | GeoParquet byte payload (CRS=4326). |
+| GET | `/indicators/{slug}/values` | Current `indicator_result` rows ordered by `feature_id`, optional `scenario_id`, `limit=1..10000` (default 1000), keyset `after_feature_id` (last `feature_id` of the previous page). `X-Truncated: true` means more rows follow; `X-Row-Limit` echoes `limit`. 404 on unknown slug. |
+| GET | `/indicators/{slug}/stats` | Count, percentiles and `sum` over the scoped population (`scenario_id`, `feature_type`, `aoi_id`, all optional; `sum` is `null` with no rows — no values is no total). `bins=1..200` (default 0, none) adds a `histogram` of equal-width counts over the **full** observed range — the ramp clips to p05–p95 so one outlier cannot flatten the colour scale, and a histogram that clipped the same way would hide what it exists to show. `null` when there is nothing to bin. `count_at_cap` is the number of those rows with `value >= cap_value`, `null` when the indicator has no cap. `count_estimated` is the number of those rows on a feature marked `attributes.estimated` — a block whose scenario inputs the fit had to guess because Overture maps none or too little of its buildings (`SCENARIOS_LAYER.md`). 404 on unknown slug. |
+| GET | `/indicators/{slug}/values.csv` | Streaming CSV with pinned columns. 404 on unknown slug. |
+| GET | `/indicators/{slug}/values.geojson` | EPSG:4326 FeatureCollection. 404 on unknown slug. |
+| GET | `/indicators/{slug}/values.parquet` | GeoParquet byte payload (CRS=4326). 404 on unknown slug. |
 | GET | `/aois` | All AOIs: `aoi_id`, `project_id`, `name`, `description`, `bbox`, `centroid`, `features_bbox`. Cached in-process for 30 s. |
 | GET | `/aois/{aoi_id}/summaries` | Cached `aoi_indicator_summary` rows; optional `scenario_id`, `only_current` (default `true`). 422 on malformed UUID, 404 on unknown AOI. |
 | GET | `/features` | Paginated spatial-feature inventory via `ServingReader.get_features` (no geometry). Optional `type_slug`, `role`, `aoi_id`, `limit=1..5000` (default 500), `after_cursor`; 422 on a malformed cursor. |
@@ -45,20 +45,21 @@ All 44 operations the project defines are below; the in-process titiler routes u
 | POST | `/metrics/within-polygon` | Per-type counts of the AOI's features whose centroid falls inside a GeoJSON Polygon. Body: `aoi_id`, `polygon` (EPSG:4326), `type_slugs`. Returns `{results: [{type_slug, count}]}`, one row per requested slug. 422 on a non-Polygon or non-finite polygon. |
 | POST | `/metrics/indicator-within-polygon` | `/indicators/{slug}/stats` for the features whose centroid falls inside a GeoJSON Polygon (baseline values). Body: `aoi_id`, `polygon` (EPSG:4326), `indicator_slug`, optional `feature_type`. Same response shape as `/stats`, including `count_at_cap`. 422 on a non-Polygon or non-finite polygon, 404 on an unknown indicator. |
 | GET | `/tile-sources` | Resolved `infra/tiles/layers.json` joined with the snapshot registry and the published raster layers; frontend-ready. Optional `live_tilejson_base_url`, `snapshot_base_url`, `raster_base_url` override the environment defaults. Cached in-process for 30 s. |
-| GET | `/tile-sources/attribution` | Credit lines for every source that actually has features, from `data_source_catalog.license`. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
-| GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist. See `docs/architecture/TILE_SERVING.md`. |
-| GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. |
-| GET | `/scenarios` | Scenarios, newest first, by `project_id` and/or `aoi_id`. Each row carries `edit_count` and `latest_run` (`{id, status}` of its newest run envelope in `orchestration_run` — the id `GET /jobs/{run_id}` takes — or `null`) — a failed recompute still sets `materialized_at`, so only the run tells it from a good one. A run still queued has no envelope yet. `SCENARIOS_LAYER.md` describes the scenario routes in depth. |
+| GET | `/tile-sources/attribution` | Credit lines for every source that actually has features or a published raster layer (or current observations, for a source that declares a credit), from `data_source_catalog.credit` when set (one line per INEGI product) else provider and `license`; identical lines appear once. Derived rather than declared: the street layer is OpenStreetMap in a pilot and a generated grid in a demo, so a hardcoded credit would be a false provenance claim. Registered-but-unloaded sources are excluded. |
+| GET | `/tiles/{function}/{z}/{x}/{y}` | Live MVT from a `serving_geo` tile function, behind the same URL contract Martin serves. `200` with features, `204` empty, `304` on a matching `If-None-Match`, `422` on an unaddressable coordinate, `404` outside the allowlist, `504` (`query_timeout` envelope) when the tile function outlives `REIMAGINA_TILE_TIMEOUT_MS`. See `docs/architecture/TILE_SERVING.md`. |
+| GET | `/tiles/{function}` | TileJSON 3.0.0 for that function, so the route is drop-in for `tilejson_url` as well as `tiles_url_template`. 404 outside the allowlist. |
+| GET | `/scenarios` | Scenarios, newest first, by `project_id` and/or `aoi_id`. Each row carries `rule_count` and `latest_run` (`{id, status}` of its newest run envelope in `orchestration_run` — the id `GET /jobs/{run_id}` takes — or `null`) — a failed recompute still sets `materialized_at`, so only the run tells it from a good one. A run still queued has no envelope yet. `SCENARIOS_LAYER.md` describes the scenario routes in depth. |
 | GET | `/scenarios/indicators` | The indicators a scenario rule can change, inputs before dependents, each with `statistic` (`sum` or `median`). Derived from the catalog, not listed. Declared before `/scenarios/{scenario_id}`, which would otherwise read `indicators` as an id. |
-| POST | `/scenarios` | Create a named what-if. Body: `project_id`, `name`, optional `aoi_id`, `description`. `201` with the scenario as `GET` returns it; 409 on a duplicate name in the project. |
-| GET | `/scenarios/{scenario_id}` | One scenario with its `edits` in ordinal order and its `override_count`. 404 for an unknown id. |
-| DELETE | `/scenarios/{scenario_id}` | Delete a scenario and everything it wrote; answers the four counts removed (`overrides`, `versions_retired`, `results_superseded`, `materializations`). 404 for an unknown id. |
-| POST | `/scenarios/{scenario_id}/edits` | Draw one area and write one rule over it, in one transaction: one edit per number set (`levels` writes both `floors` and `num_levels`, so up to five edits for `levels`, `unit_size`, `people_per_household`, `lot_coverage`). `201` with the edits written; 400 on no number, a non-positive value or an invalid area; 422 on a value past the density ceiling. |
-| PATCH | `/scenarios/{scenario_id}/rules` | Change one rule's numbers (`edit_ids`, `levels`, `unit_size`, `people_per_household`, `lot_coverage`), and optionally move or resize it (`area`), in place. Same refusals, in the same order, as `POST …/edits`; does not recompute. |
-| DELETE | `/scenarios/{scenario_id}/edits` | Remove one edit (`?edit_id=`) from this scenario; 404 if it is not one of its edits. Its overrides are withdrawn on the next recompute. `204`. |
-| POST | `/scenarios/{scenario_id}/recompute` | Materialise the scenario's edits into overrides, then enqueue the recompute of what they changed. `202` with the run id, `null` when nothing needs recomputing. |
-| GET | `/scenarios/{scenario_id}/comparison` | One indicator under the scenario against the baseline (`?indicator_slug=`, optional `aoi_id`, `limit`): `{feature_id, baseline, scenario, delta, state}` per feature, `state` one of `changed`, `unchanged`, `new`. |
-| POST | `/jobs` | Submit a run. Body: `scenario_id`, `aoi_id`, and a scope — `changed_attributes` and/or `edited_features`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with `{run_id, status, deduplicated}`, or `status:"noop"` and a **null** run id when the dirty set was empty. `wait: true` blocks until the run is terminal and answers 200, or 504 after 300 s. 422 on an unknown indicator slug. |
+| POST | `/scenarios` | Create a named what-if. Body: `project_id`, `aoi_id`, `name`, optional `description`, optional `rule` (`area`, `inputs`, as `POST …/rules`). `201` with the scenario as `GET` returns it, plus `first_rule` (the rule change and its run, as `POST …/rules` answers) or `null`. With a `rule`, the scenario and the rule are one transaction: a refused rule (the refusals of `POST …/rules`) leaves no scenario. 409 on a duplicate name in the project; 404 for an AOI that does not exist or is not in the project; 422 without `aoi_id`. |
+| GET | `/scenarios/{scenario_id}` | One scenario with its `rules` in ordinal order and its `override_count`. 404 for an unknown id. |
+| DELETE | `/scenarios/{scenario_id}` | Delete a scenario and everything it wrote, then cancel its unfinished runs; answers the counts deleted (`overrides`, `versions_deleted`, `results_deleted`, `job_runs_deleted`, `materializations`). 404 for an unknown id. |
+| GET | `/scenarios/{scenario_id}/rules` | The scenario's rules (`id`, `ordinal`, `type_id`, `inputs`, `geometry_wkt`, `created_at`, `updated_at`), "later wins" order. 404 for an unknown id. |
+| POST | `/scenarios/{scenario_id}/rules` | Draw one rule: `area` and `inputs` (any of `levels`, `unit_size`, `people_per_household`, `lot_coverage`). The rule is written and the scenario materialised in one transaction, then the recompute is enqueued. `201` with the recompute counts, the run id and the `rule`; 400 on no number, an unknown, non-numeric or out-of-range number, or an invalid area; 422 on a ceiling (precheck or per block) or an area that catches no block; 404 on an unknown scenario or feature type; 409 when the scenario has no AOI — nothing is stored on any refusal. |
+| PATCH | `/scenarios/{scenario_id}/rules/{rule_id}` | Replace one rule's numbers (its whole set) and optionally its `area`, in place: the rule keeps its id and its place in "later wins". `200`, as `POST …/rules` answers. Same refusals, same transaction, as `POST …/rules`, plus 404 for a rule not of this scenario. |
+| DELETE | `/scenarios/{scenario_id}/rules/{rule_id}` | Delete one rule — one row — then materialise and recompute what is left; `200`, as `POST …/rules` with `rule: null`. 404 for a rule not of this scenario. |
+| POST | `/scenarios/{scenario_id}/recompute` | Materialise the scenario's rules into overrides, then enqueue the recompute of their footprint. `202` with the materialisation counts and the run id, `null` when nothing needs recomputing (`run_status: "noop"`), or the run still going (`deduplicated: true`). 404 unknown, 409 no AOI, 422 `ceiling_exceeded`. |
+| GET | `/scenarios/{scenario_id}/comparison` | One indicator under the scenario against the baseline (`?indicator_slug=`, optional `aoi_id`, `limit`): `{scenario_id, indicator_slug, aoi_id, summary, row_count, rows, rows_truncated}`, a row `{feature_id, baseline, scenario, delta, state}` per feature, `state` one of `changed`, `unchanged`, `new`. 404 on an unknown scenario, indicator or AOI. |
+| POST | `/jobs` | Submit a run. Body: `scenario_id`, `aoi_id`, and a scope — `changed_attributes` and/or `edited_features`, `changed_datasets`, `indicators`, or nothing at all (recompute what is stale). `202` with `{run_id, status, deduplicated}`, or `status:"noop"` and a **null** run id when the dirty set was empty. `wait: true` blocks until the run is terminal and answers 200, or 504 after 300 s. 422 on an unknown indicator slug, or a `scenario_id`, `aoi_id` or `edited_features` entry that is not a UUID. |
 | GET | `/jobs` | Run list for the dashboard: rows with unit counts, `total`, unfiltered `status_counts`, executor health and `server_now`, in one response. Repeatable `status=`, `limit=1..200` (default 50), `offset`. |
 | GET | `/jobs/{run_id}` | Run status and per-unit status through the orchestrator port. 404 on an unknown run. |
 | GET | `/jobs/{run_id}/detail` | Run plus per-unit timings and in-run prerequisites. Falls back to the port during the pre-envelope window. 404 on an unknown run. |
@@ -98,13 +99,15 @@ Download filters (`/values.csv`, `/values.geojson`, `/values.parquet`):
 - `aoi_id` (uuid, optional) — only features in that AOI, the same scope as
   `/indicators/{slug}/stats?aoi_id=`
 - `limit` (int, 1..500_000; default 100_000) — hard cap so a single
-  request can't monopolise memory
+  request can't monopolise memory. Rows are ordered by `feature_id`; the
+  response carries `X-Row-Limit` and `X-Truncated: true|false`, so a file
+  the cap cut short is never mistaken for the whole set
 
 ---
 
 ## Response envelopes
 
-### Error responses (503 / 500)
+### Error responses (503 / 504 / 500)
 
 ```json
 {
@@ -116,10 +119,12 @@ Download filters (`/values.csv`, `/values.geojson`, `/values.parquet`):
 }
 ```
 
-Four codes use it (`apps/api/errors.py`): `database_unavailable` (503,
-`psycopg2.OperationalError` / `InterfaceError`), `database_error` (500, any
-other `psycopg2.Error`), `internal_error` (500, anything unhandled) and
-`ops_plane_not_provisioned` (503, below).
+Five codes use it (`apps/api/errors.py`): `query_timeout` (504,
+`psycopg2.errors.QueryCanceled` — a statement that hit its own timeout, such as
+an API-served tile past `REIMAGINA_TILE_TIMEOUT_MS`), `database_unavailable`
+(503, any other `psycopg2.OperationalError` / `InterfaceError`),
+`database_error` (500, any other `psycopg2.Error`), `internal_error` (500,
+anything unhandled) and `ops_plane_not_provisioned` (503, below).
 
 Every envelope echoes `X-Request-Id` in both the header and the
 body so server logs + user-visible incidents can be correlated without
@@ -189,11 +194,12 @@ All via environment variable; sensible defaults for local dev.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `REIMAGINA_APP_DSN` | `postgresql://localhost/reimagina_app` | DSN the API connects to. |
+| `REIMAGINA_APP_DSN` | `postgresql://localhost/reimagina` | DSN the API connects to. |
 | `REIMAGINA_API_POOL_MIN` | `1` | Min connections in the `psycopg2.pool.ThreadedConnectionPool`. |
 | `REIMAGINA_API_POOL_MAX` | `16` | Max connections. |
 | `REIMAGINA_API_POOL_WAIT_S` | `30` | How long a request waits for a free connection when all `REIMAGINA_API_POOL_MAX` are busy, before answering 503 with `Retry-After`. psycopg2's pool never waits on its own; without this a burst wider than the pool (a map loading at a new zoom) failed with `connection pool exhausted`. |
-| `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed through CORS. The methods allowed cross-origin are `GET`, `POST`, `DELETE` and `OPTIONS` — not `PATCH`. |
+| `REIMAGINA_API_CORS_ORIGINS` | `http://localhost:5173,http://localhost:8001` | Comma-separated origins allowed through CORS. The methods allowed cross-origin are `GET`, `POST`, `PATCH`, `DELETE` and `OPTIONS`. |
+| `REIMAGINA_API_ALLOWED_HOSTS` | `localhost,127.0.0.1,[::1]` | Comma-separated `Host` header values the API answers (port ignored); any other gets 400. Guards the unauthenticated, loopback-bound API against DNS rebinding. Add the hostname clients use when serving it behind a proxy or on another interface. |
 | `REIMAGINA_API_HOST` | `127.0.0.1` | uvicorn bind host (`python -m apps.api`). |
 | `REIMAGINA_API_PORT` | `8001` | uvicorn bind port for `python -m apps.api`. The `make` targets pass `--port $(API_PORT)` (default `8001`) instead. |
 | `REIMAGINA_API_LOG_LEVEL` | `info` | uvicorn log level (`python -m apps.api`). |
@@ -255,7 +261,7 @@ Use it to grep server logs when a user reports a failed call.
   `test_jobs_api.py`, `test_scenarios_api.py`, `test_malformed_ids.py` and
   `test_feature_not_found.py` pin the jobs and scenario routes, malformed ids
   and the feature 404 with no database.
-- **Integration — override path (57)**:
+- **Integration — override path (60)**:
   `tests/integration/test_api_routes.py` — FastAPI `TestClient` with
   `dependency_overrides[get_db_conn]` so routes reuse the per-test
   Postgres transaction. Seed, call, assert, rollback.

@@ -88,7 +88,7 @@ Run-time geometry tests remain where the geometry exists only at request time, a
 | Where | Predicate |
 |---|---|
 | `POST /metrics/within-polygon`, `POST /metrics/indicator-within-polygon` | `ST_Covers(polygon, geometry_centroid)` (`POLYGON_COVERS_CENTROID`, `packages/py/reimagina/storage/_utils.py`) |
-| Scenario materialisation | `ST_Covers(scenario_edit.geometry, feature.geometry_centroid)`, plus `EXISTS` on `aoi_feature` |
+| Scenario materialisation | `ST_Covers(scenario_rule.geometry, feature.geometry_centroid)`, plus `EXISTS` on `aoi_feature` |
 | `raster zonal-stats --aoi-id` (feature selection) | `ST_Intersects(feature.geometry, aoi.geometry)` (`iter_geometries_by_type`) |
 | `overlap compute-all --aoi-id` | `ST_Intersects(source.geometry, aoi.geometry)` |
 | Indicator computes run with an AOI | `ST_Intersects(feature.geometry, aoi.geometry)` (`geodesic_metrics_by_type`, `centroid_in_parent_counts`, `_AOI_JOIN` in `packages/py/reimagina/indicators/accessibility.py`) |
@@ -155,7 +155,7 @@ Seeded types are `FEATURE_TYPE_ROWS` in `packages/py/reimagina/data/feature.py`,
 - **Identity.** `id` is a UUID. A feature's identity within its source is `UNIQUE (source_id, dataset_version, source_record_ref)`, and `load_vector_source` inserts with `ON CONFLICT (source_id, dataset_version, source_record_ref) DO NOTHING`, so reloading the same version adds nothing. Re-ingesting a dataset can mint new ids, which is why identifier-based AOI membership matches on `attributes`, not on feature ids (r040).
 - **Geometry.** `geometry geometry(Geometry, 4326) NOT NULL`. The stored generated column `geometry_centroid geometry(Point, 4326)` is `ST_PointOnSurface(geometry)`, a point guaranteed inside the polygon.
 - **Trigger `feature_before_write`.** Sets `type_slug` and `role` from `type_id`; rejects geometry outside the type's `geometry_family` (`geometry` accepts anything); rejects a row whose `source_id` differs from its `ingestion_run`'s; enforces the `parent_id` hierarchy (no parent on a non-hierarchical type, parent `admin_level` strictly lower, no cycles).
-- **Deletion.** There is no soft delete. Two code paths delete features: the Overture buildings loader removes the rows of its own run that fall outside the AOI (`packages/py/reimagina/pipeline/overture.py:651`), and the road publisher replaces its source's `road` features on every load (`packages/py/reimagina/data/roads.py:130`). Deleting a feature cascades to its `observation`, `aoi_feature`, `feature_overlap`, `indicator_result` and `scenario_override` rows.
+- **Deletion.** There is no soft delete. Two code paths delete features: the Overture buildings loader removes the rows of its own run that fall outside the AOI (`_clip_buildings_to_aoi` in `packages/py/reimagina/pipeline/overture.py`), and the road publisher replaces its source's `road` features on every load (`publish_road_features` in `packages/py/reimagina/data/roads.py`). Deleting a feature cascades to its `observation`, `aoi_feature`, `feature_overlap`, `indicator_result` and `scenario_override` rows.
 
 ### 4.3 Spatial reference
 
@@ -163,11 +163,11 @@ There is no grid or CRS registry. The spatial reference is fixed by column types
 
 | Data | CRS / measure | Fixed by |
 |---|---|---|
-| Vector geometry: `feature.geometry`, `area_of_interest.geometry`, `scenario_edit.geometry` | EPSG:4326 | Column type `geometry(Geometry, 4326)` (r003, r004, r048) |
+| Vector geometry: `feature.geometry`, `area_of_interest.geometry`, `scenario_rule.geometry` | EPSG:4326 | Column type `geometry(Geometry, 4326)` (r003, r004, r055) |
 | Vector input | Reprojected to EPSG:4326, invalid geometry repaired with `make_valid`, null and empty dropped | `clean_vector` in `packages/py/reimagina/pipeline/silver.py` |
 | Areas and lengths in `aoi_feature`, `feature_overlap` | Geodesic, through `::geography` (m², m) | `PostgresAOIRepository.compute_overlaps`, `PostgresOverlapRepository.compute_feature_overlaps` |
 | Raster pixels | The input's native CRS, recorded in `file_asset.crs` | `ingest_raster_source` |
-| Zonal statistics | Feature geometry reprojected EPSG:4326 → raster CRS | `transform_geom` at `packages/py/reimagina/jobs/raster_zonal_stats.py:386` |
+| Zonal statistics | Feature geometry reprojected EPSG:4326 → raster CRS | `transform_geom` in `_compute_zonal_stats_records` (`packages/py/reimagina/jobs/raster_zonal_stats.py`) |
 | Tiles | EPSG:3857 (`ST_Transform(..., 3857)` in the tile functions); titiler `WebMercatorQuad` | `TILE_SERVING.md` |
 
 ---
@@ -176,7 +176,7 @@ There is no grid or CRS registry. The spatial reference is fixed by column types
 
 ### 5.1 Vector features
 
-Vector loaders generally follow this route: register the source, land the raw file in bronze, clean it to silver (`clean_vector`), then `load_vector_source` (`packages/py/reimagina/pipeline/loader.py`) opens an `ingestion_run` (`transformation_step = 'silver_to_curated'`), inserts the features and completes the run. The INEGI marco and amenity-point loaders skip the Bronze copy when reading the immutable local lake mirror; that mirror is already the retained raw source. Loaders that use it: INEGI marco (`inegi_marco.py`), the CDMX bootstrap (`cdmx.py`), Overture buildings (`overture.py`), Overture places (`overture_places.py`) and amenity points (`points.py`), all under `packages/py/reimagina/pipeline/`.
+Vector loaders generally follow this route: register the source, land the raw file in bronze, clean it to silver (`clean_vector`), then `load_vector_source` (`packages/py/reimagina/pipeline/loader.py`) opens an `ingestion_run` (`transformation_step = 'silver_to_curated'`), inserts the features and completes the run. The INEGI marco and amenity-point loaders skip the Bronze copy when reading an immutable local copy (the source bundle, checked by its SHA256SUMS); that copy is already the retained raw source. Loaders that use it: INEGI marco (`inegi_marco.py`), the CDMX bootstrap (`cdmx.py`), Overture buildings (`overture.py`), Overture places (`overture_places.py`) and amenity points (`points.py`), all under `packages/py/reimagina/pipeline/`.
 
 Two writers do not go through `load_vector_source`: the road publisher projects `curated_geo.road_edge` (the pgRouting graph loaded by `osm_network.py`) into `global:road` features (`packages/py/reimagina/data/roads.py`), and Overture divisions only read boundaries to build an AOI (`overture aoi-from-division`).
 
@@ -188,16 +188,16 @@ Every `ingestion_run` that completes as `succeeded` refreshes `serving_geo.featu
 
 ### 5.3 Rasters
 
-`raster ingest` (`ingest_raster_source`, `packages/py/reimagina/pipeline/raster.py:62`):
+`raster ingest` (`ingest_raster_source`, `packages/py/reimagina/pipeline/raster.py`):
 
-1. Opens the input and rejects anything but a single band with `UnsupportedRasterError` (`raster.py:116`), before any database write.
+1. Opens the input and rejects anything but a single band with `UnsupportedRasterError`, before any database write.
 2. Registers the source (`storage_type = 'raster'`, `integration_role = 'enrichment'`; `storage_uri` is `--origin-uri`, or the input file).
 3. Starts and commits an `ingestion_run` with `transformation_step = 'raster_landing'`.
 4. Copies the input unchanged to `data/bronze/<source_id>/<filename>`.
-5. Re-encodes it as a COG at `data/silver/<source_id>/<stem>.cog.tif`, in the input's native CRS (`raster.py:173`).
+5. Re-encodes it as a COG at `data/silver/<source_id>/<stem>.cog.tif`, in the input's native CRS (`rasterio.shutil.copy(..., driver="COG")`).
 6. Writes `file_asset` (`format = 'COG'`, `storage_uri = 'file://data/silver/...'`, `crs`, `resolution_m`, `band_description`) and `raster_layer` (`layer_slug`, `aggregation_kind`, `minzoom`/`maxzoom` default 5/14, `published` unless `--unpublished`).
 
-`resolution_m` is set only when the CRS is projected in metres and the pixels are square and north-up (`_resolution_in_metres`, `raster.py:278`); otherwise it is NULL. `asset_extent_geometry` is never populated. `file_asset.source_id` and `raster_layer.source_id` are both UNIQUE: one COG per source. Files live on the local filesystem, not in object storage, and the catalog is not STAC (`TODO.md` T3-11).
+`resolution_m` is set only when the CRS is projected in metres and the pixels are square and north-up (`_resolution_in_metres`); otherwise it is NULL. `asset_extent_geometry` is never populated. `file_asset.source_id` and `raster_layer.source_id` are both UNIQUE: one COG per source. Files live on the local filesystem, not in object storage, and the catalog is not STAC (`TODO.md` T3-11).
 
 **WorldPop** is the one raster with a fetch command, `raster fetch-worldpop` (`packages/py/reimagina/pipeline/worldpop.py`):
 
@@ -227,9 +227,9 @@ Six mechanisms move or relate values across grains. All are explicit commands or
 
 ### 6.1 AOI membership — `aoi_feature`
 
-`aoi compute-features [--aoi-id <aoi>]` (`PostgresAOIRepository.compute_overlaps`, `packages/py/reimagina/storage/postgres/repositories.py:1045`) deletes the AOI's rows and re-inserts them in three passes:
+`aoi compute-features [--aoi-id <aoi>]` (`PostgresAOIRepository.compute_overlaps`, `packages/py/reimagina/storage/postgres/repositories.py`) deletes the AOI's rows and re-inserts them in three passes:
 
-- **Polygons by area, lines by length** (geodesic). The AOI polygon is first cut with `ST_Subdivide` into chunks of at most `AOI_SUBDIVIDE_VERTICES` = 64 vertices (`repositories.py:52`), so the GiST index prunes candidates; per-chunk measures are summed. A feature is a member when `overlap_measure / feature_measure >= MEMBERSHIP_MIN_OVERLAP_RATIO` = 1e-9 (`repositories.py:44`), which drops shared-border slivers but keeps any feature that genuinely straddles the boundary.
+- **Polygons by area, lines by length** (geodesic). The AOI polygon is first cut with `ST_Subdivide` into chunks of at most `AOI_SUBDIVIDE_VERTICES` = 64 vertices, so the GiST index prunes candidates; per-chunk measures are summed. A feature is a member when `overlap_measure / feature_measure >= MEMBERSHIP_MIN_OVERLAP_RATIO` = 1e-9, which drops shared-border slivers but keeps any feature that genuinely straddles the boundary.
 - **Points by presence**: `ST_Within(feature.geometry, aoi.geometry)`, stored with `overlap_measure = feature_measure = overlap_ratio = 1`.
 - **Identifier rule** (r040), applied in all three passes: when the AOI has a `membership_key` such as `{"CVE_ENT": "09", "CVE_MUN": "012"}`, a feature that carries every key must match the values exactly (`attributes @> membership_key`) and still pass the geometric test; a feature missing any key (Overture buildings, establishments) is decided by geometry alone. `cdmx aoi-from-state` and `cdmx aoi-from-alcaldia` set a key; `overture aoi-from-division` does not.
 
@@ -241,9 +241,9 @@ Creating an AOI does not populate `aoi_feature`, and loading features does not u
 
 ### 6.2 Feature-to-feature overlap — `feature_overlap`
 
-`overlap declare-pair --source-context --source-slug --target-context --target-slug` registers a pair in `feature_overlap_type_pair`. `overlap compute-all [--aoi-id <aoi>]` (`compute_all_pairs` → `PostgresOverlapRepository.compute_feature_overlaps`, `repositories.py:1454`) computes every declared pair:
+`overlap declare-pair --source-context --source-slug --target-context --target-slug` registers a pair in `feature_overlap_type_pair`. `overlap compute-all [--aoi-id <aoi>]` (`compute_all_pairs` → `PostgresOverlapRepository.compute_feature_overlaps`) computes every declared pair:
 
-- the basis comes from the **source** type's `geometry_family`: `polygon` → area, `line` → length, `point` or `geometry` → presence (`ST_Within(source, target)`);
+- the basis comes from the **source** type's `geometry_family`: `polygon` → area, `line` → length, `point` or `geometry` → presence (`ST_Covers(target, source)`, so a point on a shared boundary has a row for each target);
 - area and length are geodesic; a row is written for any intersection with positive measure — there is no minimum ratio;
 - `overlap_measure` is the intersection (m² or m), `feature_measure` the source feature's area or length, `overlap_ratio = overlap_measure / feature_measure`, the share of the **source** inside the target;
 - rows are upserted on `(source_feature_id, target_feature_id)`. A recompute does not delete pairs that no longer intersect; only deleting a feature removes its rows.
@@ -254,13 +254,13 @@ The one reader of `feature_overlap` is the observation rollup (§6.4). Neither i
 
 `raster zonal-stats --source-id <uuid> --feature-type <slug> --attribute-key-prefix <prefix> [--aoi-id] [--statistics] [--coverage-threshold] [--force] [--direct-dsn]` runs `run_raster_zonal_stats` (`packages/py/reimagina/jobs/raster_zonal_stats.py`). A raster recipe (§6.4) runs the same function.
 
-1. Resolves the feature type as `get_type_id("MEX", <slug>)` (`raster_zonal_stats.py:208`), so only `MEX` types can be targeted.
+1. Resolves the feature type as `get_type_id("MEX", <slug>)` (`run_raster_zonal_stats`), so only `MEX` types can be targeted.
 2. Commits a new `ingestion_run` on the raster's source (`orchestrator = 'worker'`, `transformation_step = 'raster_zonal_stats'`).
 3. Reads every feature of the type (optionally intersecting the AOI), reprojects each geometry to the raster CRS, and runs exactextract once over all of them. exactextract weights each pixel by the fraction of it inside the polygon, so blocks smaller than a pixel get a correct share and the per-block sums of an extensive raster add up to the raster total.
-4. Skips a feature whose fractional valid-pixel `count` is 0 or below `coverage_threshold` (default 0.0, `raster_zonal_stats.py:419`).
+4. Skips a feature whose fractional valid-pixel `count` is 0 or below `coverage_threshold` (default 0.0; `_compute_zonal_stats_records`).
 5. On a dedicated connection (`--direct-dsn` or `DATABASE_URL_DIRECT`, required), takes `pg_try_advisory_xact_lock` on a hash of the prefix — `ConcurrentRasterRun` if it is held — retires the prefix's current rows for that feature type (and AOI members, through `aoi_feature`, when `--aoi-id` is set), and inserts one observation per (feature, statistic) as `<prefix>_<stat>`.
 
-Default statistics (`_DEFAULT_STATS_BY_KIND`, `raster_zonal_stats.py:120`): `mean, median, p05, p95, std` for an `intensive` raster, `sum, count` for an `extensive` one. Each row carries `lineage_ref = {"kind": "raster_zonal_stats", "asset_id", "stat_name", "fractional_pixel_count"}` and the raster's `source_id`.
+Default statistics (`_DEFAULT_STATS_BY_KIND`): `mean, median, p05, p95, std` for an `intensive` raster, `sum, count` for an `extensive` one. Each row carries `lineage_ref = {"kind": "raster_zonal_stats", "asset_id", "stat_name", "fractional_pixel_count"}` and the raster's `source_id`.
 
 The CLI adds two checks the worker does not make: it refuses a prefix that another source already owns at the same feature type unless `--force` (`has_active_prefix`), and it warns when the median feature's equivalent-circle diameter is below three times `resolution_m` for an extensive raster.
 
@@ -268,10 +268,10 @@ The CLI adds two checks the worker does not make: it refuses a prefix that anoth
 
 `curated_geo.aggregation_recipe` (r020) declares a derivation per target grain; `raster derivation add | list | enable | remove | run` manages them, and `raster derivation run --recipe-id <uuid>` or `--raster-layer-slug <slug>` executes them (`run_recipe` / `run_all_for_raster`, `packages/py/reimagina/jobs/derivations.py`). Disable a recipe with `uv run python -m apps.cli.app raster derivation enable --recipe-id <uuid> --disable`. Recipes are never run automatically.
 
-- **Raster recipe** (`input_kind = 'raster'`): zonal statistics of `input_raster_layer_id` onto `target_feature_type_slug` (§6.3). Statistics come from `params.stats`, or else from the method (`mean`, `sum`, `min`, `max` map to the same statistic; `_METHOD_TO_RASTERSTAT`, `derivations.py:194`).
-- **Observation recipe** (`input_kind = 'observation'`): `run_observation_rollup` (`packages/py/reimagina/jobs/observation_rollup.py`) reads current observations of `input_feature_type_slug` whose key is `input_attribute_key_prefix` or starts with `<prefix>_`, joins them to the target grain through `feature_overlap` (`rollup_observation_child_rows`, `repositories.py:1588`; §11 Q2), groups by (target feature, source key) and reduces each group with `reimagina.jobs.aggregation.aggregate`. The suffix is kept: `pop_2020_sum` at block grain becomes `<output_prefix>_sum` at the target grain.
+- **Raster recipe** (`input_kind = 'raster'`): zonal statistics of `input_raster_layer_id` onto `target_feature_type_slug` (§6.3). Statistics come from `params.stats`, or else from the method (`mean`, `sum`, `min`, `max` map to the same statistic; `_METHOD_TO_RASTERSTAT`).
+- **Observation recipe** (`input_kind = 'observation'`): `run_observation_rollup` (`packages/py/reimagina/jobs/observation_rollup.py`) reads current observations of `input_feature_type_slug` whose key is `input_attribute_key_prefix` or starts with `<prefix>_`, joins them to the target grain through `feature_overlap` (`rollup_observation_child_rows`; §11 Q2), groups by (target feature, source key) and reduces each group with `reimagina.jobs.aggregation.aggregate`. The suffix is kept: `pop_2020_sum` at block grain becomes `<output_prefix>_sum` at the target grain.
 
-Aggregation methods: `weighted_mean` weights by `feature_overlap.overlap_measure` (m² or m); `mean`, `sum`, `min`, `max` ignore the weight. A `sum` therefore adds a source feature's full value to every target it touches — correct for nesting grains such as block → AGEB, double-counting for grains that do not nest. `weight_basis` is required for `weighted_mean` but only checked for presence; the weight is always `overlap_measure`.
+Aggregation methods: `weighted_mean` weights by the recipe's `weight_basis` — `area` or `length` by `feature_overlap.overlap_measure` (m² or m), refused unless it is the basis the overlaps were measured in; `presence` weights each source 1. `sum` apportions: each source adds `value × overlap_ratio` to each target, its share inside that target by area or length, so a source wholly inside one target adds its full value and one split 75/25 between two targets adds 75 % and 25 %; the rolled-up total never exceeds the input total. `mean`, `min` and `max` cannot split a value: a recipe whose sources include any that overlap more than one target fails, naming the recipe and how many such sources there are; when every source nests in one target they behave as plain mean, min and max. A point (presence basis) belongs to exactly one target: one on a shared boundary is covered by both, and the rollup keeps the target with the lowest id. `weight_basis` is required for `weighted_mean`.
 
 Rollup observations are written under a synthetic source per recipe (`name = 'observation_rollup::<recipe_id>'`, `provider = 'reimagina-rollup'`), with `transformation_step = 'observation_rollup'`, `lineage_ref = {"source_attribute_key", "input_feature_type", "target_feature_type", "method", "children"}`, and the same prefix lock and grain-scoped retire as zonal statistics. With `aoi_id`, source features are limited to AOI members (`aoi_feature`). `aggregation_recipe_prefix_uk` makes `(target_feature_type_slug, attribute_key_prefix)` unique, so one prefix has one producer per grain.
 
@@ -279,14 +279,14 @@ Rollup observations are written under a synthetic source per recipe (`name = 'ob
 
 Two producers relate a child grain to a parent without `feature_overlap`:
 
-- `building_density` counts buildings per block with `ST_Within(ST_Centroid(child.geometry), parent.geometry)` (`centroid_in_parent_counts`, `repositories.py:466`).
-- `block_storeys` writes a block's `floors` observation as the median `num_floors` of the Overture buildings whose `geometry_centroid` the block contains (`packages/py/reimagina/pipeline/block_storeys.py`).
+- `building_density` counts buildings per block with `ST_Within(ST_Centroid(child.geometry), parent.geometry)` (`centroid_in_parent_counts`).
+- `block_storeys` writes a block's `floors` observation as the footprint-weighted mean storeys of the Overture buildings on it (footprints clipped to the block; untagged buildings count one storey), on blocks with at least one tagged building (`packages/py/reimagina/pipeline/block_storeys.py`).
 
 Both assign a straddling child to one parent only.
 
 ### 6.6 Block indicator → AOI: `aoi_indicator_summary`
 
-`indicators aoi-summary --aoi-id --slug [--scenario-id]` runs `summarise_aoi` (`packages/py/reimagina/jobs/aoi_summary.py`). It reads every `aoi_feature` row of the AOI, left-joined to the indicator's current values (through `scenario_overlay` for a scenario; `fetch_aoi_children`, `repositories.py:2081`), weights each by `aoi_feature.overlap_measure`, applies the shared missing-data policy (`aggregate_children`: missing if more than half of the weight is missing, `prorated` note if some is) and the indicator's `aggregation_method`, and upserts one row per (AOI, scenario, indicator). `GET /aois/{aoi_id}/summaries` reads them.
+`indicators aoi-summary --aoi-id --slug [--scenario-id]` runs `summarise_aoi` (`packages/py/reimagina/jobs/aoi_summary.py`). It reads the AOI's `aoi_feature` rows of the types the indicator `applies_to` (the AOI's other members — AGEBs, the municipality, roads — are not its children), left-joined to the indicator's current values (through `scenario_overlay` for a scenario; `fetch_aoi_children`), weights each by `aoi_feature.overlap_measure`, applies the shared missing-data policy (`aggregate_children`: missing if more than half of the weight is missing, `prorated` note if some is) and the indicator's `aggregation_method`, and upserts one row per (AOI, scenario, indicator). `GET /aois/{aoi_id}/summaries` reads them.
 
 ---
 
@@ -299,7 +299,7 @@ Both assign a straddling child to one parent only.
 | Indicator choropleth | `serving_geo.indicator_overlay_tile` | `feature_type` and `aoi_id` parameters; empty below z8 (r025) |
 | Observation choropleth (recipes and raw observations) | `serving_geo.aggregation_overlay_tile` | `attribute_key` + `feature_type_slug`; `aoi_id` through `aoi_feature`; empty below z8 (r025) |
 | Indicator values and downloads | `GET /indicators/{slug}/values`, `/stats`, `/values.csv`, `/values.geojson`, `/values.parquet` | AOI scope by `EXISTS` on `aoi_feature` |
-| Raster pixels | titiler mounted at `/cog` (`apps/api/app.py:203`) | `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<file URL>` |
+| Raster pixels | titiler mounted at `/cog` (`create_app` in `apps/api/app.py`) | `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<file URL>` |
 
 The vector tile functions are served by Martin and by the API's `/tiles/{function}/{z}/{x}/{y}` route; `GET /tile-sources` lists them with every published raster layer and every enabled recipe (`packages/py/reimagina/tiles/sources.py`). `TILE_SERVING.md` has the details.
 
@@ -311,7 +311,7 @@ titiler only opens `file://` URLs that resolve, after symlinks, to an existing f
 
 Scenarios touch only the feature path, and in practice only blocks:
 
-- A scenario edit is a drawn polygon over one feature type (the API default is `MEX:block`). Materialisation catches a feature when `ST_Covers(edit.geometry, feature.geometry_centroid)` holds and the feature is a member of the scenario's AOI in `aoi_feature`, and writes `scenario_override` rows.
+- A scenario rule is a drawn polygon over one feature type (the API default is `MEX:block`); its vertices must be longitude/latitude degrees, and a third coordinate is dropped. Materialisation catches a feature when `ST_Covers(rule.geometry, feature.geometry_centroid)` holds and the feature is a member of the scenario's AOI in `aoi_feature`, and writes `scenario_override` rows.
 - Indicators read `override ⊕ current observation ⊕ feature.attributes` (`effective_numeric`) and write `indicator_result` rows under the scenario's `scenario_id`. The baseline is `scenario_id IS NULL`.
 - Rasters, zonal statistics, rollup observations, `aoi_feature` and `feature_overlap` have no scenario dimension. A scenario never edits geometry.
 - `aoi_indicator_summary` has a `scenario_id` and reads indicator values through `scenario_overlay`.
@@ -468,7 +468,7 @@ Related tables documented elsewhere:
 | `curated_geo.area_of_interest` | `geometry geometry(Geometry, 4326) NOT NULL` with a Polygon/MultiPolygon CHECK; `membership_key jsonb` (r040) | `DATA_LAYER.md` |
 | `curated_geo.aoi_indicator_summary` | One row per (AOI, scenario, indicator); partial unique indexes `aoi_indicator_summary_base_uk`, `aoi_indicator_summary_scenario_uk` (r015) | `DATA_LAYER.md` |
 | `curated_geo.indicator_result` | Per feature; trigger rejects a feature type outside `indicator_catalog.applies_to` unless `quality_flag = 'not_applicable'` | `INDICATORS_LAYER.md` |
-| `curated_geo.scenario_edit`, `curated_geo.scenario_override` | Drawn `geometry geometry(Geometry, 4326)` (r048); per-feature overrides (r030) | `SCENARIOS_LAYER.md` |
+| `curated_geo.scenario_rule`, `curated_geo.scenario_override` | Drawn `geometry geometry(Geometry, 4326)` (r055); per-feature overrides (r030) | `SCENARIOS_LAYER.md` |
 
 ---
 
@@ -497,9 +497,12 @@ The rows an observation recipe aggregates (`rollup_observation_child_rows`), one
 
 ```sql
 SELECT fo.target_feature_id::text,
+       fo.source_feature_id::text,
        obs.attribute_key,
        obs.value_numeric,
-       fo.overlap_measure                       -- the weight
+       fo.overlap_measure,                      -- the weighted_mean weight
+       fo.overlap_ratio,                        -- the sum share
+       fo.overlap_basis                         -- presence: one target per point
 FROM curated_geo.feature_overlap fo
 JOIN curated_geo.feature src ON src.id = fo.source_feature_id
      AND src.type_slug = :source_feature_type
@@ -510,7 +513,7 @@ JOIN curated_geo.observation obs
     AND obs.is_current
     AND obs.value_numeric IS NOT NULL
     AND (obs.attribute_key = :input_prefix
-         OR obs.attribute_key LIKE :input_prefix || '\_%' ESCAPE '\')
+         OR starts_with(obs.attribute_key, :input_prefix || '_'))
 WHERE TRUE
   -- with aoi_id:
   -- AND fo.source_feature_id IN (SELECT feature_id FROM curated_geo.aoi_feature
@@ -563,10 +566,11 @@ ORDER BY 1, 2;
 ### Indexes behind the patterns above
 
 ```
--- feature (r003, r007, r027)
+-- feature (r003, r007, r010, r027)
 feature_geometry_gist      GIST (geometry)
 feature_block_geom_idx     GIST (geometry) WHERE type_slug = 'block'
 feature_lot_geom_idx       GIST (geometry) WHERE type_slug = 'lot'
+feature_context_geom_idx   GIST (geometry) WHERE role = 'context'   -- get_tile below z8
 feature_centroid_gist      GIST (geometry_centroid)           -- drawn-polygon selection
 feature_type_slug_idx (type_slug), feature_type_id_idx (type_id), feature_role_idx (role),
 feature_parent_idx (parent_id), feature_source_idx (source_id), feature_ingestion_run_idx (ingestion_run_id)
@@ -619,7 +623,7 @@ GeoParquet is an exchange format, not an analytical store: the Overture loader r
 | Forgetting `aoi compute-features` after creating an AOI or loading features | AOI-scoped reads return nothing, or miss the new features | Run it after every AOI creation and every feature load |
 | Reprojecting raster pixels at ingest | Resampling error | Keep the COG in its native CRS; reproject feature geometry to it |
 | Centroid-in-polygon zonal statistics | Drops blocks smaller than a pixel; block sums no longer add up to the raster total | exactextract coverage fractions (`raster_zonal_stats.py`) |
-| `sum` rollup across grains that do not nest | Each source value is added in full to every target it touches | Nesting grains only; or `weighted_mean` for intensive values |
+| `mean`, `min` or `max` rollup across grains that do not nest | The recipe fails: a source that overlaps several targets has no single value to give each | `sum` for extensive values (apportioned by overlap share, which assumes the value is spread evenly over the source); `weighted_mean` for intensive values |
 | Computing feature-to-feature intersections at query time | Pairwise geometry work on every read | `overlap compute-all` once per declared pair, AOI-scoped |
 | Reading a scenario as `scenario_id = :s OR scenario_id IS NULL` | Two rows for every feature the scenario recomputed | `scenario_overlay` |
 | Deciding administrative membership by geometry when features carry identifiers | Neighbouring units that cross the boundary become members | `area_of_interest.membership_key` (r040) |

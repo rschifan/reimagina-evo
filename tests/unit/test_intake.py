@@ -10,6 +10,9 @@ from reimagina.indicators.catalog import (
 )
 from reimagina.orchestration.intake import evaluate_scenario
 
+#: A feature id: the plan canonicalises edited features as uuids.
+B1 = "00000000-0000-0000-0000-0000000000b1"
+
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct", applies_to=("block",)):
     return IndicatorSpec(
@@ -42,7 +45,7 @@ def test_evaluate_scenario_composes_impact_then_coordinator():
     report = evaluate_scenario(
         None,
         changed_attributes={"land_use"},
-        edited_features={"b1"},
+        edited_features={B1},
         registry=(green, liveability),
         runners={
             "green_coverage": _runner(log, "green_coverage"),
@@ -64,7 +67,7 @@ def test_evaluate_scenario_defaults_to_shipped_registry():
     report = evaluate_scenario(
         None,
         changed_attributes={"geometry"},
-        edited_features={"b1"},
+        edited_features={B1},
         runners={
             URBAN_FORM_BLOCK_COMPACTNESS.slug: _runner(log, "compactness"),
             URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _runner(log, "density"),
@@ -86,7 +89,7 @@ def test_shipped_composite_skips_when_an_input_fails():
     report = evaluate_scenario(
         None,
         changed_attributes={"geometry"},
-        edited_features={"b1"},
+        edited_features={B1},
         runners={
             URBAN_FORM_BLOCK_COMPACTNESS.slug: _runner(log, "compactness"),
             URBAN_FORM_BLOCK_BUILDING_DENSITY.slug: _boom,
@@ -110,7 +113,7 @@ def test_evaluate_scenario_nothing_dirty_is_a_noop():
     report = evaluate_scenario(
         None,
         changed_attributes={"owner_name"},
-        edited_features={"b1"},
+        edited_features={B1},
         runners={},
     )
     assert report.outcomes == ()
@@ -121,7 +124,7 @@ def test_the_sync_and_async_paths_agree_on_a_noop():
     """The whole point of the shared prelude: one answer, both entry points."""
     from reimagina.orchestration.synchronous import SynchronousOrchestrator
 
-    kwargs = dict(changed_attributes={"owner_name"}, edited_features={"b1"})
+    kwargs = dict(changed_attributes={"owner_name"}, edited_features={B1})
     sync_report = evaluate_scenario(None, runners={}, **kwargs)
     handle = SynchronousOrchestrator(runners={}).submit_run(None, **kwargs)
 

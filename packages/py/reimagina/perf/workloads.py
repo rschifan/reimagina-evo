@@ -567,13 +567,16 @@ def simulate(workload: Workload, *, slots: int = 4, strategy: str = "pertask") -
     edges = workload.edges
     done: dict[str, float] = {}
     pending = set(workload.slugs)
+    # Slot occupancy carries across ready-batches: reset per batch, a pertask
+    # node started on a slot still busy with an earlier batch and the
+    # prediction beat work/slots. (Under ``wave`` the gate makes it moot.)
+    free_at = [0.0] * slots
 
     while pending:
         ready = sorted(s for s in pending if all(d in done for d in edges[s]))
         if not ready:  # pragma: no cover - the sanity check rejects cycles
             raise ValueError(f"{workload.id}: cycle or dangling edge")
         gate = max(done.values(), default=0.0) if strategy == "wave" else None
-        free_at = [0.0] * slots
         for slug in ready:
             earliest = max([done[d] for d in edges[slug]] or [0.0])
             if gate is not None:

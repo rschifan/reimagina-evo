@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 
 import psycopg2
+import psycopg2.errors
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -55,6 +56,31 @@ def _error_response(
             }
         },
         headers={REQUEST_ID_HEADER: request_id},
+    )
+
+
+async def query_timeout_handler(
+    request: Request, exc: psycopg2.errors.QueryCanceled
+) -> JSONResponse:
+    """A statement that hit its own timeout → 504, not an outage.
+
+    ``QueryCanceled`` subclasses ``OperationalError``; without this handler it
+    reached the outage handler and one expensive tile read as "database
+    unreachable". The database answered; the query was too costly.
+    """
+    request_id = _request_id(request)
+    log.warning(
+        "statement timeout on %s %s (request_id=%s): %s",
+        request.method,
+        request.url.path,
+        request_id,
+        exc,
+    )
+    return _error_response(
+        status_code=504,
+        error_code="query_timeout",
+        message="The query took longer than its time limit.",
+        request_id=request_id,
     )
 
 

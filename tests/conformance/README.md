@@ -24,8 +24,9 @@ uv run pytest tests/conformance -q --no-header -rA \
   | sort > conformance-$(git branch --show-current).txt
 ```
 
-Run that on each branch and diff the two files. Each line is
-`STATUS path::test_name[mode]` and nothing else.
+Run that on each branch and diff the two files. A `PASSED` or `FAILED` line is
+`STATUS path::test_name[mode]` and nothing else; a `SKIPPED` line is `-rA`'s
+summary form, `SKIPPED [count] path:line: reason`.
 
 ⚠ Not `-v`. Its lines carry a trailing `[ 42%]` progress column, so if the two
 branches have different test or skip counts — which is the whole point — every
@@ -41,6 +42,7 @@ ships:
 |---|---|
 | `mode` | what `get_orchestrator` is asked for |
 | `blocking` | `submit_run` returns only once the run is terminal. `False` means a run can be caught in flight, which is the only way to test a cancel that cancels something |
+| `settles` | the run reaches a terminal state without a second process. Distinct from `blocking`: `dbos` returns at once and still drives the run to completion in the submitting process |
 | `failed_run_status` | what a run with one failed and one succeeded unit reports |
 
 `failed_run_status` is the field to watch. We own run state here, so a
@@ -55,9 +57,11 @@ Assertions in `test_port_contract.py` should stay identical across branches. If
 a branch needs to change one, that change is itself a result worth recording in
 the comparison document.
 
-The other thing a branch must edit is `conftest._teardown`. It deletes from
-`jobs_runtime.job_unit` and `jobs_runtime.orchestration_run`, which this track
-keeps but an engine-owned ops-plane drops. Only `test_port_contract.py` is
+The other thing a branch must edit is `conftest._teardown`. It deletes the
+runs' `dbos.workflow_status` rows (parent and `<run_id>-*` children, when the
+schema exists) and their `jobs_runtime.job_unit` and
+`jobs_runtime.orchestration_run` rows, which this track keeps but an
+engine-owned ops-plane drops. Only `test_port_contract.py` is
 genuinely engine-agnostic; cleaning up after a run means knowing where that
 engine put it. (Adopting DBOS already cost one edit here: the queue table sweep
 came out.)
@@ -65,6 +69,8 @@ came out.)
 ## Preconditions
 
 Postgres (`TEST_DATABASE_URL`, explicitly exported or set in the checkout's `.env`).
+The `impl` fixture points `DATABASE_URL_DIRECT` at that database and sets
+`REIMAGINA_DBOS_EXECUTION_MODE=dev`, so the `dbos` row runs one-process.
 There is no implicit database target. Use `REIMAGINA_REQUIRE_DB=1` to fail,
 rather than skip, when database configuration or connectivity is missing.
 Everything skips cleanly without it. The suite seeds on a committed connection

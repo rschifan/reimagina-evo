@@ -94,7 +94,10 @@ def test_post_jobs_enqueues_and_returns_202(monkeypatch):
     with TestClient(create_app(initialise_pool=False)) as client:
         resp = client.post(
             "/jobs",
-            json={"changed_attributes": ["geometry"], "edited_features": ["b1"]},
+            json={
+                "changed_attributes": ["geometry"],
+                "edited_features": ["4f0c1a8e-2b7d-4c1e-9f3a-0d6b5e7c8a91"],
+            },
         )
     assert resp.status_code == 202
     # Exact body, not a subset: this is the documented wire contract, so a

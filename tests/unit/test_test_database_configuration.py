@@ -70,3 +70,22 @@ def test_database_suites_do_not_silently_select_a_default_database(tmp_path):
     )
     assert result.returncode != 0
     assert "TEST_DATABASE_URL" in result.stderr
+
+
+@pytest.mark.parametrize("name", ["reimagina_latest", "contest", "attestation"])
+def test_test_database_guard_wants_test_as_a_word_not_a_substring(monkeypatch, name):
+    """`downgrade base` wipes the database; "latest" is not a test database."""
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "conftest.py"))
+    guard = module["_assert_db_name_is_test_safe"]
+    monkeypatch.delenv("REIMAGINA_TEST_DB_ALLOW_NAME", raising=False)
+    with pytest.raises(RuntimeError, match=name):
+        guard(f"postgresql://localhost/{name}")
+
+
+@pytest.mark.parametrize(
+    "name", ["reimagina_test", "reimagina_test_bench_dbos", "test_reimagina", "ci-test"]
+)
+def test_test_database_guard_accepts_test_named_databases(monkeypatch, name):
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "conftest.py"))
+    monkeypatch.delenv("REIMAGINA_TEST_DB_ALLOW_NAME", raising=False)
+    module["_assert_db_name_is_test_safe"](f"postgresql://localhost/{name}")

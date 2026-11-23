@@ -187,24 +187,24 @@ class TestSweepInterval:
         self, monkeypatch
     ) -> None:
         monkeypatch.delenv("REIMAGINA_RECLAIM_SWEEP_S", raising=False)
-        assert worker_app._sweep_interval(600.0) == 300.0
-        assert worker_app._sweep_interval(300.0) == 150.0
-        assert worker_app._sweep_interval(60.0) == 60.0  # the floor, not 30
+        assert reclaim.sweep_interval(600.0) == 300.0
+        assert reclaim.sweep_interval(300.0) == 150.0
+        assert reclaim.sweep_interval(60.0) == 60.0  # the floor, not 30
 
     def test_an_explicit_value_wins(self, monkeypatch) -> None:
         monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", "12.5")
-        assert worker_app._sweep_interval(300.0) == 12.5
+        assert reclaim.sweep_interval(300.0) == 12.5
 
     def test_an_empty_value_falls_back_to_the_default(self, monkeypatch) -> None:
         """An unset variable in a `.env` file reads as empty, not absent."""
         monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", "")
-        assert worker_app._sweep_interval(300.0) == 150.0
+        assert reclaim.sweep_interval(300.0) == 150.0
 
     @pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "soon", "30s"])
     def test_an_unusable_value_is_refused_by_name(self, monkeypatch, value) -> None:
         monkeypatch.setenv("REIMAGINA_RECLAIM_SWEEP_S", value)
         with pytest.raises(RuntimeError, match="REIMAGINA_RECLAIM_SWEEP_S"):
-            worker_app._sweep_interval(300.0)
+            reclaim.sweep_interval(300.0)
 
 
 def test_disabling_the_sweep_skips_its_configuration_entirely(monkeypatch, caplog):

@@ -22,6 +22,7 @@ class SourceCatalogRepository(Protocol):
         version: str,
         license: str | None = None,
         notes: str | None = None,
+        credit: str | None = None,
     ) -> str: ...
 
     def get_source(self, *, name: str, provider: str, version: str) -> dict | None: ...

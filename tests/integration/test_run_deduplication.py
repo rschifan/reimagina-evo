@@ -110,6 +110,8 @@ def committed(migrated_db, monkeypatch):
             cur.execute("DELETE FROM jobs_runtime.orchestration_run")
             cur.execute("TRUNCATE jobs_runtime.run_plan")
             cur.execute("DELETE FROM curated_geo.scenario_override")
+            # make_scenario's rows; the override delete above is their cascade.
+            cur.execute("DELETE FROM app_core.project WHERE name = 'scenario test'")
             # The feature and its source too: this fixture commits, so
             # anything it leaves behind is visible to every later test.
             cur.execute(
@@ -182,7 +184,9 @@ def test_an_edited_override_is_not_the_same_work(committed):
     """
     conn, feature_id = committed
     orchestrator = _orchestrator()
-    scenario_id = "11111111-2222-3333-4444-555555555555"
+    from tests.integration._helpers import make_scenario
+
+    scenario_id = make_scenario(conn, "11111111-2222-3333-4444-555555555555")
 
     apply_overrides(
         conn,

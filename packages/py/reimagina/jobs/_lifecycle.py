@@ -65,8 +65,9 @@ def job_run(
     re-raised so the caller still sees the failure.
 
     The row records the ambient ``current_run`` and the backend pid of the
-    connection doing the work, which together are what makes a run cancellable
-    (see migration r031).
+    connection doing the work (migration r031). Under ``s_compute`` the row is
+    uncommitted until the unit ends, so a cancel finds that backend by its
+    ``application_name`` instead (``cancel_run_backends``).
     """
     repo = backend.job_run_repo()
     job_run_id = repo.start_job(

@@ -6,11 +6,12 @@ says, and the difference — plus a summary small enough for a header strip.
 Two things make this more than a subtraction.
 
 The first is the join. ``scripts/acceptance_run.sh`` prints the same
-comparison as a ``LEFT JOIN`` anchored on the baseline, which is correct for
-``urban_form_block_planned_floors`` and wrong for the edificability family:
-those five indicators are computed *only* under a scenario, so a baseline
-anchor returns nothing at all for them. The join here is therefore a ``FULL
-OUTER JOIN``, and a row the scenario alone has is ``new`` rather than missing.
+comparison as a ``LEFT JOIN`` anchored on the baseline, which drops every
+block the baseline has no row for. The edificability family skips a block
+missing one of its inputs, and a scenario rule can supply that input, so the
+scenario can hold rows the baseline does not. The join here is therefore a
+``FULL OUTER JOIN``, and a row the scenario alone has is ``new`` rather than
+missing.
 
 The second is what "the scenario's value" means for a block the scenario never
 touched. A scenario stores only what it changed; everything else it reads

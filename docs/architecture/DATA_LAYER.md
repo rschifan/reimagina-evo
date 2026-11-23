@@ -36,7 +36,7 @@ Bronze and Silver are directories under the data directory (`<repo>/data`, overr
 | **Silver** | Vector: reprojected to EPSG:4326, invalid geometries repaired with `make_valid`, null and empty geometries dropped (`pipeline/silver.py` `clean_vector`), written as GeoParquet. Raster: re-encoded as a COG in its **native** CRS (`pipeline/raster.py`). | Source-agnostic clean data ready to load. |
 | **curated_geo** | Canonical tables with provenance on every row. | What the rest of the platform reads. |
 
-Not every loader uses both file zones. `cdmx`, `overture` (buildings and places) and `raster` land a Bronze copy and write Silver; `inegi-marco` and `points` read the local data-lake mirror under `data/sources/lake/` and write Silver only; `inegi-censo` reads its parquet mirror and writes observations directly; `network bootstrap` loads OSM data straight into `road_node`/`road_edge` with no file zone and no `ingestion_run`.
+Not every loader uses both file zones. `cdmx`, `overture` (buildings and places) and `raster` land a Bronze copy and write Silver; `inegi-marco` and `points` read a local copy named with `--source-root` (the Mexicali source bundle) and write Silver only; `inegi-censo` reads its parquet copy and writes observations directly; `network bootstrap` loads OSM data straight into `road_node`/`road_edge` with no file zone and no `ingestion_run`.
 
 The API never touches Bronze or Silver. Its feature and tile reads go through `serving_geo`, a thin view-and-function layer over `curated_geo`; other endpoints (AOI listing, the indicator catalog, scenario authoring) read and write `curated_geo` tables through the storage repositories (`storage/postgres/repositories.py`).
 
@@ -119,7 +119,7 @@ The API's feature reads and the tile functions go through `serving_geo` (`featur
 
 - Baseline-defining data lives only in the data layer.
 - Baseline evidence stays read-only but can influence scenario recomputation.
-- Scenario rules are drawn into `curated_geo.scenario_edit` (r048) and materialized into per-feature `curated_geo.scenario_override` rows (r030), never back into `feature` or `observation`.
+- Scenario rules are drawn into `curated_geo.scenario_rule` (r055) and materialized into per-feature `curated_geo.scenario_override` rows (r030), never back into `feature` or `observation`.
 - A scenario can only author the attributes the shipped indicators read, minus geometry and the two dirty markers (`assets.registry.authorable_attributes()`): today `floors`, `lot_coverage`, `num_levels`, `people_per_household`, `unit_size`. Everything else in the data layer is read-only to scenarios.
 
 This means a source can be essential to scenario evaluation without ever becoming scenario-owned data.
@@ -281,7 +281,7 @@ Read Diagram 1 as:
 - `file_asset` stores batch/manifest-level asset metadata, not per-feature values.
 - `area_of_interest` and `aoi_feature` are project-scoped support tables for AOI filtering and overlap-based prorating.
 - `feature_overlap` stores pre-computed spatial intersections between arbitrary feature type pairs (e.g. blocks vs. AGEBs, lots vs. road segments), generalising `aoi_feature` to feature-to-feature; `UNIQUE (source_feature_id, target_feature_id)`. Populated by `reimagina.jobs.overlap` (CLI: `overlap declare-pair` + `overlap compute-all --aoi-id …`; `overlap list-pairs` lists the declarations) for declared type-pair combinations (`feature_overlap_type_pair`, `UNIQUE (source_type_id, target_type_id)`). Its one reader is the observation rollup (`reimagina.jobs.observation_rollup`), which aggregates current observations from a finer grain to a coarser one, driven by `aggregation_recipe` (r020); it works for hierarchical and non-hierarchical relationships alike because it never reads `feature.parent_id`. Indicators are block-grain only and do not read it.
-- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) landed in Layer 1 (r015) so API code could target them; the worker that populates rows from `indicator_result` shipped with Layer 2 as `reimagina.jobs.aoi_summary.summarise_aoi` (`jobs/aoi_summary.py:29`), weighting by `aoi_feature`. Uniqueness is two partial unique indexes, `aoi_indicator_summary_base_uk (aoi_id, indicator_id) WHERE scenario_id IS NULL` and `aoi_indicator_summary_scenario_uk (aoi_id, scenario_id, indicator_id) WHERE scenario_id IS NOT NULL`; `status` is `current` | `stale` | `missing`, and `aoi_summary_v` shows `current` rows only. `indicator_id` has no FK to `indicator_catalog`: r015 deferred it and no later revision added it.
+- `aoi_indicator_summary` caches a single aggregated value per `(aoi_id, scenario_id, indicator_id)`. The schema and read contract (`serving_geo.aoi_summary_v`) landed in Layer 1 (r015) so API code could target them; the worker that populates rows from `indicator_result` shipped with Layer 2 as `reimagina.jobs.aoi_summary.summarise_aoi`, weighting by `aoi_feature`. Uniqueness is two partial unique indexes, `aoi_indicator_summary_base_uk (aoi_id, indicator_id) WHERE scenario_id IS NULL` and `aoi_indicator_summary_scenario_uk (aoi_id, scenario_id, indicator_id) WHERE scenario_id IS NOT NULL`; `status` is `current` | `stale` | `missing`, and `aoi_summary_v` shows `current` rows only. `indicator_id` has no FK to `indicator_catalog`: r015 deferred it and no later revision added it.
 - In the actual schema, `aoi_feature` uses the pair `(aoi_id, feature_id)` as its composite primary key.
 
 Other `curated_geo` tables the data layer owns but the diagram leaves out:
@@ -290,13 +290,13 @@ Other `curated_geo` tables the data layer owns but the diagram leaves out:
 - `road_node` / `road_edge` (r037) — the pgRouting walking graph. Node ids are OSM node ids; `road_edge` carries `osm_id`, `source`/`target` (FKs to `road_node`, `ON DELETE CASCADE`), `cost` and `reverse_cost` (both edge length in metres) and a `LineString` geometry. Loaded by `network bootstrap` (`pipeline/osm_network.py`), which replaces the whole graph and opens no `ingestion_run`; by default the same command publishes the edges as `global:road` features (`data/roads.py`, `transformation_step = 'publish_road_features'`).
 - `tile_snapshot_registry` (r013) — PMTiles snapshot registry; see `TILE_SERVING.md`.
 - `asset`, `asset_version`, `asset_dependency`, `asset_materialization` (r041) — the asset graph; see `ASSET_LAYER.md`.
-- `aggregation_recipe` (r020) — the declarative raster→observation and observation→observation bindings; see `docs/SYSTEM_OVERVIEW.md`. The indicator tables (`indicator_catalog`, `indicator_dependency`, `indicator_result`) are in `INDICATORS_LAYER.md`; `scenario_override` and `scenario_edit` are in `SCENARIOS_LAYER.md`.
+- `aggregation_recipe` (r020) — the declarative raster→observation and observation→observation bindings; see `docs/SYSTEM_OVERVIEW.md`. The indicator tables (`indicator_catalog`, `indicator_dependency`, `indicator_result`) are in `INDICATORS_LAYER.md`; `scenario_override` and `scenario_rule` are in `SCENARIOS_LAYER.md`.
 
 ### Shipped loaders and the CDMX bootstrap
 
 The loaders are CLI families of `uv run python -m apps.cli.app` (`apps/cli/app.py`); `docs/BOOTSTRAP.md` is the full runbook.
 
-- **Overture** — `overture` family. Buildings (`extract`, `load`; `pipeline/overture.py`) as `global:building`; parks, recreation and cultural places (`places`; `pipeline/overture_places.py`) as `global:establishment`; `divisions` lists Overture administrative divisions and `aoi-from-division` creates an AOI from one (`pipeline/overture_divisions.py`); and `block-storeys`, which writes each block's median Overture `num_floors` as a `floors` observation (`pipeline/block_storeys.py`).
+- **Overture** — `overture` family. Buildings (`extract`, `load`; `pipeline/overture.py`) as `global:building`; parks, recreation and cultural places (`places`; `pipeline/overture_places.py`) as `global:establishment`; `divisions` lists Overture administrative divisions and `aoi-from-division` creates an AOI from one (`pipeline/overture_divisions.py`); and `block-storeys`, which writes each block's footprint-weighted mean storeys (Overture `num_floors` where tagged, 1 where not; only on blocks with at least one tagged building) as a `floors` observation (`pipeline/block_storeys.py`).
 - **CDMX canonical geometry (INEGI + datos.cdmx.gob.mx)** — `cdmx` CLI family
   (`pipeline/cdmx.py`); fetches the Marco Geoestadístico 2020 per-state archive
   (state 09 = CDMX) and the CDMX colonias layer, lands them through
@@ -304,9 +304,9 @@ The loaders are CLI families of `uv run python -m apps.cli.app` (`apps/cli/app.p
   `MEX:municipality`, `MEX:ageb`, `MEX:block`, and `MEX:neighborhood`.
   Colonias download may need manual fallback when the CDMX portal is
   rate-limited (`--from-path LAYER=PATH` accepts a local archive).
-- **INEGI Marco Geoestadístico 2024** — `inegi-marco bootstrap` (`pipeline/inegi_marco.py`); states, municipalities, urban AGEBs and urban blocks for the entidades given with `--cve-ent`, read from the local data-lake mirror.
-- **INEGI census 2020** — `inegi-censo bootstrap` (`pipeline/inegi_censo.py`); block-level values as `censo_2020_<column>` observations, joined to blocks by CVEGEO.
-- **Amenity points** — `points bootstrap` (`pipeline/points.py`); per-pilot-city GeoParquet layers as `global:establishment`.
+- **INEGI Marco Geoestadístico 2024** — `inegi-marco bootstrap` (`pipeline/inegi_marco.py`); states, municipalities, urban AGEBs and urban blocks for the entidades given with `--cve-ent`, read from a local parquet copy of the INEGI product (`--source-root`; the Mexicali source bundle holds Baja California).
+- **INEGI census 2020** — `inegi-censo bootstrap` (`pipeline/inegi_censo.py`); block-level values as `censo_2020_<column>` observations, joined to blocks by CVEGEO, read from a local parquet copy (`--source-root`; the source bundle's `inegi/censo_2020/manzanas_2020.parquet/`).
+- **Amenity points** — `points bootstrap` (`pipeline/points.py`); per-pilot-city GeoParquet layers as `global:establishment`, at fixed paths under `--source-root` (Mexicali: the source bundle's INEGI DENUE selection, `inegi/denue/equipamientos_mexicali.parquet`).
 - **Rasters** — `raster ingest`, `raster fetch-worldpop`, `raster zonal-stats` (`pipeline/raster.py`, `jobs/raster_zonal_stats.py`), plus `raster derivation` for aggregation recipes.
 - **Routing network** — `network bootstrap` (`pipeline/osm_network.py`); see `road_node` / `road_edge` above.
 
@@ -375,7 +375,7 @@ CREATE TABLE curated_geo.data_source_catalog (
   name              text        NOT NULL,
   provider          text        NOT NULL,
   -- Free text. Values the loaders write include 'INEGI', 'Overture Maps Foundation',
-  -- 'Gobierno de la Ciudad de México', 'SIG-CDMX', 'IMIP Mexicali', 'openstreetmap',
+  -- 'Gobierno de la Ciudad de México', 'SIG-CDMX', 'openstreetmap',
   -- 'reimagina-rollup'; `raster ingest` takes it from --provider.
 
   storage_type      text        NOT NULL
@@ -389,16 +389,16 @@ CREATE TABLE curated_geo.data_source_catalog (
 
   storage_uri       text        NOT NULL,
   -- Lineage: where the data came from — the upstream it was fetched or cut from
-  -- (an private path, a publisher's download URL, an Overture release), or the file
+  -- (a publisher's download or product page, an Overture release), or the file
   -- an operator handed in when nothing upstream is known. NOT the local copy:
   -- the Bronze copy is addressed by this row's id at data/bronze/<source_id>/,
   -- and a processed raster's location is file_asset.storage_uri, which is what
   -- tiles and zonal stats read. Nothing opens a file through this column.
   --
-  -- This line used to read "Bronze file location", while
-  -- the private data inventory said the same column "keeps the original private
-  -- URL for lineage". The pipelines split along that contradiction — three wrote
-  -- an origin, three overwrote it with a local path — until it was settled here.
+  -- This line used to read "Bronze file location", while other notes said the
+  -- same column keeps the upstream URL for lineage. The pipelines split along
+  -- that contradiction — three wrote an origin, three overwrote it with a local
+  -- path — until it was settled here.
 
   schema_definition jsonb,
   -- Intended as the JSON Schema of expected source fields, to validate Silver
@@ -407,6 +407,10 @@ CREATE TABLE curated_geo.data_source_catalog (
 
   version           text        NOT NULL,
   license           text,
+  credit            text,
+  -- r054. The exact map credit the licence prescribes, where it prescribes one
+  -- per product: the INEGI loaders write "Fuente: INEGI, <producto>, <fecha>".
+  -- NULL = the map shows "provider (license)". Read by data/attribution.py.
   update_frequency  text
                                 CHECK (update_frequency IS NULL OR update_frequency IN
                                   ('daily','weekly','monthly','quarterly','annual','on_demand')),
@@ -474,7 +478,7 @@ Defines what spatial types exist. New types are rows here — no table or schema
 **Purpose:** registry of valid feature kinds, their geometry family, and their semantic role.  
 **Use this when:** introducing a canonical object type the catalog does not have yet, such as `grid_cell`.  
 **Do not use this for:** source-specific datasets or ad hoc attributes.  
-**Relationships:** referenced by `feature.type_id`, `feature_overlap_type_pair` (both sides), `scenario_edit.type_id` (r048) and `asset.feature_type_id` (r041); drives `role`-based serving views.  
+**Relationships:** referenced by `feature.type_id`, `feature_overlap_type_pair` (both sides), `scenario_rule.type_id` (r055) and `asset.feature_type_id` (r041); drives `role`-based serving views.  
 **Examples:** `block`, `lot`, `tree`, `road`, `bus_stop`, `building`.
 
 ```sql
@@ -640,7 +644,7 @@ This is separate from `feature.attributes` because observations come from differ
 **Use this when:** a dataset enriches existing objects instead of defining new ones.  
 **Do not use this for:** the immutable identity of a feature, scenario overrides, or pairwise flow matrices that are not naturally "about one feature".  
 **Relationships:** child of `feature`, `data_source_catalog`, and `ingestion_run`; merged into `serving_geo.feature_v` through `feature_current_attributes_mv`.  
-**Examples:** census population for a block, WorldPop population summed per block, a block's median storeys from Overture, NDVI mean for a lot, sidewalk width from GSV, cellphone footfall by AGEB and hour.
+**Examples:** census population for a block, WorldPop population summed per block, a block's footprint-weighted mean storeys from Overture, NDVI mean for a lot, sidewalk width from GSV, cellphone footfall by AGEB and hour.
 
 ```sql
 CREATE TABLE curated_geo.observation (
@@ -648,7 +652,7 @@ CREATE TABLE curated_geo.observation (
   feature_id       uuid             NOT NULL REFERENCES curated_geo.feature(id) ON DELETE CASCADE,
 
   attribute_key    text             NOT NULL CHECK (attribute_key <> ''),
-  -- e.g. 'censo_2020_pobtot' (census), 'people_per_household' (census prom_ocup),
+  -- e.g. 'censo_2020_pobtot' (census),
   -- '<prefix>_mean' / '<prefix>_sum' (raster zonal stats), 'floors' (block-storeys)
 
   value_type       text             NOT NULL
@@ -806,7 +810,7 @@ rule is **per feature, not per AOI**:
 
 Applied uniformly across the polygon, line and point families so the three
 cannot disagree (`PostgresAOIRepository.compute_overlaps`,
-`storage/postgres/repositories.py:1045`). `cdmx aoi-from-alcaldia` and
+`storage/postgres/repositories.py`). `cdmx aoi-from-alcaldia` and
 `cdmx aoi-from-state` populate the key; `overture aoi-from-division` leaves it
 NULL (an Overture boundary carries no INEGI codes), as does any `create_aoi`
 call that passes none, and those AOIs keep the geometric behaviour.
@@ -815,7 +819,7 @@ call that passes none, and those AOIs keep the geometric behaviour.
 intersect to a sliver with nonzero floating-point area, and `overlap_ratio > 0`
 does not reject it — Coyoacán and Xochimilco were members of Tlalpan at ratios
 of 6.2e-12 and 8.1e-12, and their whole polygons rendered on an AOI-scoped map.
-`MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9` (`storage/postgres/repositories.py:44`)
+`MEMBERSHIP_MIN_OVERLAP_RATIO = 1e-9` (`storage/postgres/repositories.py`)
 is the floor for the polygon and line families, measured rather than
 guessed: largest noise ratio 8.1e-12, smallest genuine overlap 2.9e-06, and
 **zero rows** between 1e-9 and 1e-6. Points are members when `ST_Within` the
@@ -932,7 +936,7 @@ FROM serving_geo.feature_v f
 JOIN curated_geo.aoi_feature af ON af.feature_id = f.id;
 ```
 
-The MV is refreshed (non-concurrently, inside the run's transaction) whenever an ingestion run is marked `succeeded` (`PostgresSourceCatalogRepository.complete_ingestion_run`, `storage/postgres/repositories.py:159-180`). Until then a new observation is in `feature_current_attributes_v` but not in `feature_v`. The API's feature endpoints read `feature_v` / `feature_aoi_v` (`PostgresServingReader`); the base tile function `serving_geo.get_tile` reads `curated_geo.feature` and the MV directly (see `TILE_SERVING.md`).
+The MV is refreshed (non-concurrently, inside the run's transaction) whenever an ingestion run is marked `succeeded` (`PostgresSourceCatalogRepository.complete_ingestion_run`, `storage/postgres/repositories.py`). Until then a new observation is in `feature_current_attributes_v` but not in `feature_v`. The API's feature endpoints read `feature_v` / `feature_aoi_v` (`PostgresServingReader`); the base tile function `serving_geo.get_tile` reads `curated_geo.feature` and the MV directly (see `TILE_SERVING.md`).
 
 ### Role-based views
 
@@ -1026,11 +1030,11 @@ serving_geo.feature_v / feature_aoi_v
 The key boundary is simple:
 
 - Canonical writes go to `curated_geo`.
-- Scenario rules live in `curated_geo.scenario_edit` (r048) and are materialized into `curated_geo.scenario_override` (r030), the overlay the compute path reads.
+- Scenario rules live in `curated_geo.scenario_rule` (r055) and are materialized into `curated_geo.scenario_override` (r030), the overlay the compute path reads.
 - Indicator runs resolve `override ⊕ current observation ⊕ base feature.attributes` in SQL and write `indicator_result`.
 - No scenario writes back into `feature` or `observation`.
 
-Note that indicator computation does **not** go through `serving_geo.feature_v`. That view merges base attributes with current observations for the API, but knows nothing about scenarios; the compute path reads `curated_geo` directly and applies the three-way overlay itself (`effective_numeric`, `scenarios/overrides.py:169-212`: `COALESCE(so.value_numeric, obs.value_numeric, f.attributes->>key)`).
+Note that indicator computation does **not** go through `serving_geo.feature_v`. That view merges base attributes with current observations for the API, but knows nothing about scenarios; the compute path reads `curated_geo` directly and applies the three-way overlay itself (`scenarios.overrides.effective_numeric`: `COALESCE(so.value_numeric, obs.value_numeric, f.attributes->>key)`).
 
 ---
 
@@ -1063,12 +1067,12 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, license)
 VALUES
   ('México · Manzanas urbanas (INEGI Marco Geoestadístico 2024)', 'INEGI', 'vector', 'canonical_entity',
-   'lake://private-lake/inegi/marco_geostadistico/2024/manzanas_urbanas.parquet', '2024.01',
+   'https://www.inegi.org.mx/temas/mg/#manzanas_urbanas', '2024.01',
    'Libre uso — Términos de Uso de la Información del INEGI')
 RETURNING id; -- :source_id  (the loader reuses an existing row for the same provider, name, version)
 ```
 
-**2. Land** — copy the raw file to `data/bronze/<source_id>/` unchanged (`pipeline.bronze.land_file`). `inegi-marco` skips this step: it reads the local data-lake mirror under `data/sources/lake/` directly.
+**2. Land** — copy the raw file to `data/bronze/<source_id>/` unchanged (`pipeline.bronze.land_file`). `inegi-marco` skips this step: it reads the local copy given as `--source-root` (the source bundle's `inegi/marco_geoestadistico_2024/`) directly.
 
 **3. Clean (Silver)** — reproject to EPSG:4326, repair invalid geometries, drop null and empty ones (`pipeline.silver.clean_vector`), and write GeoParquet under `data/silver/<source_id>/`.
 
@@ -1117,7 +1121,7 @@ REFRESH MATERIALIZED VIEW serving_geo.feature_current_attributes_mv;
 
 ### Loading a tabular dataset (INEGI census population by block)
 
-Done by `inegi-censo bootstrap` (`pipeline/inegi_censo.py`). It reads the local parquet mirror (`data/sources/lake/inegi/censo/manzanas_2020.parquet/`) directly: no Bronze copy, no Silver file.
+Done by `inegi-censo bootstrap` (`pipeline/inegi_censo.py`). It reads the local parquet copy given as `--source-root` (the source bundle's `inegi/censo_2020/manzanas_2020.parquet/`) directly: no Bronze copy, no Silver file.
 
 **1. Register:**
 ```sql
@@ -1125,14 +1129,14 @@ INSERT INTO curated_geo.data_source_catalog
   (name, provider, storage_type, integration_role, storage_uri, version, license, notes)
 VALUES
   ('México · Censo de Población 2020 — manzanas (INEGI)', 'INEGI', 'tabular', 'enrichment',
-   'lake://private-lake/inegi/censo/manzanas_2020.parquet', '2020-censo',
+   'https://www.inegi.org.mx/programas/ccpv/2020/', '2020-censo',
    'Libre uso — Términos de Uso de la Información del INEGI', '…')
 RETURNING id;
 ```
 
 **2.** Start an ingestion run (`'manual'`, `'silver_to_curated'`, as for vector).
 
-**3. Write observations — close old values, insert new** (`bulk_upsert_observations`; keys are `censo_2020_<column>`, except `prom_ocup`, which lands as `people_per_household`):
+**3. Write observations — close old values, insert new** (`bulk_upsert_observations`; keys are `censo_2020_<column>`):
 ```sql
 -- Close prior current values for these features and keys
 UPDATE curated_geo.observation
@@ -1153,7 +1157,7 @@ JOIN curated_geo.feature f
   ON f.source_record_ref = c.cvegeo AND f.type_slug = 'block';
 ```
 
-**How scenarios use it:** these are baseline evidence rows. A scenario does not edit census observations directly. `people_per_household` (from `prom_ocup`) is the baseline the edificability indicators resolve through `effective_numeric`, and a scenario rule can override it; the `censo_2020_*` keys are read by no shipped indicator.
+**How scenarios use it:** these are baseline evidence rows. A scenario does not edit census observations directly. `scripts/seed_demo_attributes.py --fit-to-census` reads `censo_2020_vivtot` and `censo_2020_pobtot` to fit the edificability baseline (m² per dwelling, people per household), which a scenario rule can override; no shipped indicator reads the `censo_2020_*` keys directly.
 
 ---
 
@@ -1400,7 +1404,7 @@ Applied as Alembic migrations — `make migrate` runs the whole chain.
 27. `area_of_interest.membership_key` + `area_of_interest_membership_key_nonempty` — r040
 28. Asset graph (`asset`, `asset_version`, `asset_dependency`, `asset_materialization`, `serving_geo.asset_*_v`) — r041; see `ASSET_LAYER.md`
 
-The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r052.
+The job-, indicator- and scenario-layer tables interleave with these — see `JOB_LAYER.md` — *Migration order*, `INDICATORS_LAYER.md` and `SCENARIOS_LAYER.md`. The head revision is r057.
 
 ---
 

@@ -656,6 +656,21 @@ describe("what the difference view says in words", () => {
     expect(deltaTooltip({ state: "changed", delta: -3 }, ind)?.detail).toMatch(/^[-−]3.*units\/ha/);
   });
 
+  // Review: the value views read `units / ha` and a bare ratio, the change
+  // views printed the raw unit code.
+  it("prints units as the value views do, not their codes", () => {
+    const density = { name: "Density", unit: "units_per_ha" };
+    const ratio = { name: "Coverage", unit: "ratio_0_1" };
+    expect(deltaTooltip({ state: "changed", delta: 3 }, density)?.detail).toBe("+3 units / ha from the baseline");
+    expect(deltaTooltip({ state: "changed", delta: 0.5 }, ratio)?.detail).toBe("+0.5 from the baseline");
+    const d = { ...deltaDomain, basis: "percentile" as const, limit: 2, changed: 4 };
+    expect(deltaScopeText(d, "units_per_ha")).toContain("±2 units / ha —");
+    expect(deltaScopeText(d, "ratio_0_1")).toContain("±2 —");
+    const host = document.createElement("div");
+    renderDeltaLegend(host, { ...indicator(), unit: "units_per_ha" }, d);
+    expect(host.querySelector(".unit")?.textContent).toBe("units / ha");
+  });
+
   // The point of the whole change: colour says "good", the number says what
   // happened. A distance that fell by 600 m must still read as a decrease.
   it("keeps the sign on a lower-is-better value: -600 stays -600", () => {

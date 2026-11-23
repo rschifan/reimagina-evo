@@ -45,9 +45,10 @@ REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:8001/tiles   # the API, direct
 Unset, the code default is `http://localhost:3000/get_tile` — Martin, which
 resolves to the same URLs as the first line. `make dev` is the exception: it
 starts the API, the web dev server and the worker but not Martin, so it sets
-`/api/tiles` (as does `make dev-api`, which runs the same preamble) unless the invoking shell already sets the variable (a value in
-`.env` does not count; the Makefile restores the shell's value after sourcing
-it).
+`/api/tiles` (as does `make dev-api`, which loads the same environment) unless
+the invoking shell already sets the variable (a value in `.env` does not count:
+`scripts/runtime_env.py` keeps the shell's value, or sets `/api/tiles`, after
+loading `.env`).
 
 ⚠ **Prefer the relative form.** An absolute URL makes every tile request
 cross-origin from the web dev server, so it depends on the API's CORS
@@ -174,25 +175,40 @@ already existed:
 **No migration, no new tile function.** The only thing that was missing was
 the step connecting the graph to the feature table.
 
-**Roads appear from z12**, and not by a client setting: they carry
-`role = 'infrastructure'`, which the role gate below serves only from z12.
-Measured on the running database — a z11 road tile is 0 bytes, a z12 one is
-2,714. The frontend's `minzoom: 12` matches, and a unit test pins the pair,
-because a lower client floor only buys requests that come back empty and on
-a map empty is indistinguishable from missing.
+**Roads appear from z13**, and not by a client setting: `get_tile` serves
+`type_slug = 'road'` only from `ROAD_MIN_ZOOM` = 13 (r057), one zoom above
+the role gate that admits `infrastructure` at z12. The frontend's
+`minzoom: 13` matches, and `tests/contract/test_tile_zoom_floors.py` pins the
+pair (the web unit test pins the client side), because a lower client floor
+only buys requests that come back empty and on a map empty is
+indistinguishable from missing.
 
-⚠ **The density risk is open, not closed.** At z12 a tile covers ~10 km, and
-that is the zoom where the *building* layer measured 2.59 MB per tile (which
-is why `r038` floors buildings at z14). A walking network is denser than a
-road centreline network. This ships on the role gate with 40 synthetic edges
-measured, not a city — if a real deployment finds z12 road tiles too heavy,
-the remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
-`get_tile`, chosen from a measurement. The procedure is in `r038`'s
-docstring.
+**Why z13: the density measurement.** At z12 a tile covers ~10 km, the zoom
+where the *building* layer measured 2.59 MB per tile (which is why `r038`
+floors buildings at z14), and a walking network is denser than a road
+centreline network. On the Mexicali pilot (`scripts/mexicali_run.sh`, 117,858
+road features), the central tile at -115.4650, 32.6264, measured before and
+after r057:
+
+| zoom | road tile before | road tile after | whole baseline tile before | after |
+|---|---|---|---|---|
+| 12 | 2.21 MB | **0 (204)** | 2.76 MB | 0.53 MB |
+| 13 | 0.96 MB | 0.96 MB | 1.17 MB | 1.17 MB |
+| 14 | 0.22 MB | 0.22 MB | 0.75 MB | 0.75 MB |
+
+The floor is r038's remedy on the same axis (`type_slug`, not `role`). ⚠ z13
+is still about twice the ~500 KB renderer budget on the densest part of the
+pilot; 13 is the owner's decision (2026-11-23). If
+z13 proves too slow to paint, the next step is z14 (0.22 MB), by the same
+procedure (`r038`'s docstring).
 
 **Attribution is derived, not declared.** `GET /tile-sources/attribution`
-returns a credit line per source that actually has features, built from
-`data_source_catalog.license`. OpenStreetMap gets the wording ODbL
+returns a credit line per source that actually has features or a published
+raster layer (or, for a source that declares a credit, current observations —
+the INEGI census), deduplicated by text. The line is
+`data_source_catalog.credit` where the loader recorded one — each INEGI product
+gets its own "Fuente: INEGI, <producto>, <fecha>" — otherwise
+`provider (license)`. OpenStreetMap gets the wording ODbL
 prescribes; a synthetic territory credits the synthetic source and makes no
 OSM claim. Hardcoding the credit in the frontend would be a false provenance
 statement on every demo.
@@ -206,8 +222,8 @@ The baseline feature channel. Martin publishes it at
 `name` and `attributes` per feature.
 
 - **The role gate.** Below z8 only `role = 'context'` is served; z8–z11 adds
-  `analysis_unit`; from z12 every role, which is where `infrastructure`
-  (roads) appears.
+  `analysis_unit`; from z12 every role. Two `type_slug` floors sit above it:
+  roads from z13 (r057) and buildings from z14 (r038).
 - **Attributes thin out with zoom.** From z14 `attributes` is the feature's
   own merged with its current observations
   (`serving_geo.feature_current_attributes_mv`); at z12–13 the feature's own
@@ -291,6 +307,10 @@ The baseline feature channel. Martin publishes it at
   `quality_flag`. Frontend's `fill-color` expression reads
   `value_numeric`; `quality_flag` is there for a client that wants to dim
   `estimated` / `missing` rows — the web app does not read it today.
+  Since r056 both views also emit `estimated` (`no_footprint` /
+  `thin_footprint`) on a block whose scenario inputs the fit had to guess
+  (`attributes.estimated`, `SCENARIOS_LAYER.md`); the tooltip and the
+  inspector say so in words. Absent on every other feature.
 - **Two views, one function.** With `delta` set the tile emits
   `feature_id`, `type_slug`, `delta` and `state` — and *not*
   `value_numeric`, so a client that forgot to switch from the sequential
@@ -329,7 +349,7 @@ the API at `GET /tiles/aggregation_overlay_tile/{z}/{x}/{y}?…`. One MVT layer,
   (see "Source classification") and appends `v=<epoch of the key's latest
   current-observation update>` to each URL. The function ignores `v`; it
   changes the URL when the key's observations change, so a cached tile is
-  not reused for new values. The entries advertise `minzoom: 10`. The
+  not reused for new values. The entries advertise `minzoom: 8` (`OVERLAY_MIN_ZOOM`, the functions' floor since r025). The
   explore map (`installAggregationOverlays` in `apps/web/src/layers.ts`)
   appends the active `aoi_id`, replaces that floor with its baseline floor
   for the target grain (`minzoomForGrain`), and colours the layer over the
@@ -406,8 +426,8 @@ Runtime note:
 
 - `tiles export` requires `ogr2ogr` with PostgreSQL and PMTiles driver support (GDAL ≥ 3.8)
 - local sandboxed environments may block the export subprocess from connecting to Postgres over TCP even when the CLI code is correct
-- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes. Any other non-zero exit re-raises (with the Postgres password redacted from the command), and the subprocess has a 30-minute timeout.
-- the integration test that runs a real `ogr2ogr` skips when `ogr2ogr` is not on `PATH`. `.github/workflows/ci.yml` installs `libgdal-dev` (best-effort), not `gdal-bin`, which is the package that ships `ogr2ogr`; another test in the same file covers the export with `_run_export_command` stubbed
+- macOS GDAL builds often lack the SQLite dialect used by the PMTiles driver's post-write step, so `ogr2ogr` exits non-zero (`OGR2SQLITE_Setup() failed`) even when a valid artifact is written. `reimagina.tiles.export._run_export_command` detects this pattern + verifies the artifact exists on disk before swallowing the exit code, so the flow works on macOS dev boxes. Any other non-zero exit re-raises, and the subprocess has a 30-minute timeout. The Postgres password reaches `ogr2ogr` as `PGPASSWORD`, never in its argv.
+- the integration test that runs a real `ogr2ogr` skips when `ogr2ogr` is not on `PATH`. the CI integration job installs `gdal-bin` (which ships `ogr2ogr`), so it runs there; another test in the same file covers the export with `_run_export_command` stubbed
 
 ## Metadata surface
 

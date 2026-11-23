@@ -64,6 +64,10 @@ def _git(*args: str) -> str:
 
 @pytest.fixture(scope="module")
 def tracked() -> set[str]:
+    # A source archive has no git metadata; this is a repo-hygiene check and
+    # means nothing there, so skip rather than error the DB-free gate.
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
     return set(_git("ls-files").splitlines())
 
 

@@ -24,7 +24,7 @@ from reimagina.pipeline.inegi_marco import (
 
 
 def _write_partition(parquet_dir: Path, *, cve_ent: str, rows: list[dict]) -> None:
-    """Mirror the on-disk shape we get from the data lake.
+    """Mirror the on-disk shape of the INEGI parquet copy.
 
     Each row has: CVEGEO (str), NOMGEO (str), CVE_MUN (int32), geometry (WKB blob).
     Files live under <parquet_dir>/CVE_ENT=<value>/part-0.parquet.
@@ -167,7 +167,7 @@ def _write_two_level_partition(
     cve_mun: str,
     rows: list[dict],
 ) -> None:
-    """Mirror the real data lake's nested partition shape:
+    """Mirror the real INEGI copy's nested partition shape:
     ``<root>/CVE_ENT=09/CVE_MUN=015/part-0.parquet`` with no CVE_MUN
     column inside the parquet files (it's a partition value)."""
     part_dir = parquet_dir / f"CVE_ENT={cve_ent}" / f"CVE_MUN={cve_mun}"
@@ -187,11 +187,11 @@ def _write_two_level_partition(
 
 @pytest.fixture
 def fake_two_level_municipalities(tmp_path: Path) -> Path:
-    """Real-shape mirror of the data lake's areas_municipales.parquet.
+    """Real-shape mirror of the INEGI copy's areas_municipales.parquet.
 
     Three munis in two states, each in its own
-    ``CVE_ENT=NN/CVE_MUN=NNN/`` subdirectory — exactly how the upstream
-    private container ships the data.
+    ``CVE_ENT=NN/CVE_MUN=NNN/`` subdirectory — exactly how the
+    source bundle ships the data.
     """
     parquet_dir = tmp_path / "areas_municipales.parquet"
     _write_two_level_partition(

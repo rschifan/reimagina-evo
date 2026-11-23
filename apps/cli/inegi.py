@@ -27,7 +27,7 @@ def bootstrap_inegi_marco(
     dsn: str,
     layers: list[str] | None = None,
     cve_ent_filter: list[str] | None = None,
-    source_root: str | None = None,
+    source_root: str,
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stage + load the requested INEGI marco layers into curated_geo.feature."""
@@ -36,7 +36,7 @@ def bootstrap_inegi_marco(
             conn,
             layers=layers,
             cve_ent_filter=cve_ent_filter,
-            source_root=Path(source_root) if source_root else None,
+            source_root=Path(source_root),
             code_version=code_version,
         )
     return {"dsn": dsn, **result}
@@ -47,7 +47,7 @@ def bootstrap_inegi_censo(
     dsn: str,
     cve_ent_filter: list[str] | None = None,
     columns: list[str] | None = None,
-    source_root: str | None = None,
+    source_root: str,
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stream the INEGI 2020 census subset into curated_geo.observation,
@@ -57,7 +57,7 @@ def bootstrap_inegi_censo(
             conn,
             cve_ent_filter=cve_ent_filter,
             columns=tuple(columns) if columns else inegi_censo.HEADLINE_COLUMNS,
-            source_root=Path(source_root) if source_root else None,
+            source_root=Path(source_root),
             code_version=code_version,
         )
     return {"dsn": dsn, **dataclasses.asdict(result)}

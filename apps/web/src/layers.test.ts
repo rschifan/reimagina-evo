@@ -3,21 +3,12 @@ import { describe, expect, it } from "vitest";
 import { INPUT_LAYERS, aggregationRampStops, groupRastersAndOverlays, minzoomForGrain } from "./layers";
 
 /**
- * The zoom at which `serving_geo.get_tile` starts serving
- * `role = 'infrastructure'` features.
- *
- * From the function's own role gate:
- *
- * ```sql
- * WHEN z < 8  THEN f.role = 'context'
- * WHEN z < 12 THEN f.role IN ('context', 'analysis_unit')
- * ELSE TRUE
- * ```
- *
- * Measured against the running database rather than read off the migration:
- * a z11 road tile is 0 bytes, a z12 one is 2,714.
+ * The zoom at which `serving_geo.get_tile` starts serving roads: r057's
+ * `ROAD_MIN_ZOOM`, a `type_slug` floor above the z12 role gate for
+ * `infrastructure`, because a central Mexicali z12 road tile measured 2.2 MB.
+ * tests/contract/test_tile_zoom_floors.py pins the migration to this layer.
  */
-const INFRASTRUCTURE_FLOOR = 12;
+const ROAD_FLOOR = 13;
 
 describe("INPUT_LAYERS", () => {
   const streets = INPUT_LAYERS.find((l) => l.typeSlug === "road");
@@ -34,7 +25,7 @@ describe("INPUT_LAYERS", () => {
   // different repositories' worth of distance, and nothing else compares
   // them.
   it("floors streets at the zoom the tile function starts serving them", () => {
-    expect(streets?.minzoom).toBe(INFRASTRUCTURE_FLOOR);
+    expect(streets?.minzoom).toBe(ROAD_FLOOR);
   });
 
   it("draws streets beneath every analysis layer", () => {
@@ -82,11 +73,11 @@ describe("INPUT_LAYERS", () => {
 
   it("keeps every layer's client floor at or above the server's", () => {
     // Blocks and AGEBs are `analysis_unit` (served from z8); buildings have
-    // their own r038 floor at z14; roads are `infrastructure` (z12). None
+    // their own r038 floor at z14; roads have r057's floor at z13. None
     // may ask for tiles below what it will receive.
     for (const layer of INPUT_LAYERS) {
       expect(layer.minzoom ?? 0).toBeGreaterThanOrEqual(
-        layer.typeSlug === "road" ? INFRASTRUCTURE_FLOOR : 0,
+        layer.typeSlug === "road" ? ROAD_FLOOR : 0,
       );
     }
   });

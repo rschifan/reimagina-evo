@@ -1,33 +1,109 @@
-# Bootstrap runbook — fresh-machine ingest
+# Bootstrap runbook — the Mexicali territory
 
-This is the operator runbook for rebuilding `reimagina_app` from
-scratch. Follow it top-to-bottom on a clean machine that has Postgres
-+ PostGIS + pgRouting reachable (r037 runs `CREATE EXTENSION
-pgrouting`; `make stack-up`'s image carries both), the repo checked out,
-`make install` already run, the lake mirror under `data/sources/lake/`
-(INEGI geometry, census, amenities) and internet access (Overture,
-OpenStreetMap, WorldPop).
+This is the reference for the Mexicali source bundle and the step-by-step form
+of `scripts/mexicali_run.sh`. To load Mexicali in one command, follow
+[installation step 9](INSTALLATION.md#9-load-the-real-mexicali-territory);
+come here to run a part of the load, to understand what each step does, to
+load the bundle offline, or to rebuild the bundle.
 
-The current target state is:
+What `scripts/mexicali_run.sh` builds, into the database `DATABASE_URL` names:
 
-- **2 AOIs:** CDMX (all), Mexicali
-- **Geometry features:** INEGI 2024 (blocks, AGEBs, municipalities,
-  states for entidad codes 09 + 02) + Overture buildings clipped to
-  each AOI's polygon
-- **Observations:** INEGI 2020 census headline columns at block grain
-  (AGEB/municipality rollups are optional — step 7)
-- **Indicators:** `urban_form_block_compactness`,
-  `urban_form_block_building_density` for both AOIs
+- **1 AOI:** "Mexicali", bounded by the INEGI municipality (entidad 02,
+  municipio 002), in project "Mexicali Pilot"
+- **Features:** INEGI Marco Geoestadístico 2024 (state, municipalities, urban
+  AGEBs and blocks) for the whole state of Baja California; INEGI DENUE
+  amenities; Overture places and buildings; the OSM walking network,
+  published as roads
+- **Observations:** the INEGI 2020 census headline columns at block grain,
+  household size, and the scenario-input baseline
+- **Indicators:** all 12 over the AOI's 19,058 blocks; the edificability
+  family and the livability score skip the 4,518 blocks with no census
+  dwellings (14,540 rows each)
+- No scenarios and no orchestration runs
+
+## The Mexicali source bundle
+
+One directory (77 MB) with every input the Mexicali load reads:
+
+| Path in the bundle | Content |
+|---|---|
+| `inegi/marco_geoestadistico_2024/<layer>.parquet/CVE_ENT=02/CVE_MUN=…/` | INEGI Marco Geoestadístico 2024: state, municipalities, urban AGEBs, urban blocks of Baja California |
+| `inegi/censo_2020/manzanas_2020.parquet/entidad=2/` | INEGI Censo de Población y Vivienda 2020 by block, Baja California, the columns the loader reads |
+| `inegi/denue/equipamientos_mexicali.parquet` | INEGI DENUE selection for Mexicali (health, pharmacy, childcare, cinema), May 2025 |
+| `overture/buildings_<release>.parquet`, `overture/places_<release>.parquet` | Overture extracts of the Mexicali box (places: Mexico only) |
+| `osm/walk_network_<date>/{nodes,edges}.parquet` | the OSM pedestrian graph `network bootstrap` fetched on that date |
+| `ATTRIBUTION.md` | credits and licence terms: INEGI free-use terms with the transformation notice, ODbL, CDLA-Permissive-2.0 |
+| `MANIFEST.json`, `SHA256SUMS` | every file with rows, sha256, source, vintage, licence and how it was produced |
+
+It is published as a GitHub Release asset of `rschifan/reimagina-evo`, tag
+`mexicali-bundle-2026.11`, asset `reimagina-mexicali-bundle-2026.11.tar.gz`
+(65 MB, SHA-256
+`58e03f78f683065f3e5154eb3fde0d8b336b2df814796ad736b887e8eada4d3b`), next to
+its `.sha256` and `ATTRIBUTION.md`:
+<https://github.com/rschifan/reimagina-evo/releases/tag/mexicali-bundle-2026.11>.
+Its version, URL, SHA-256 and top-level directory (`reimagina-mexicali-bundle/`)
+are pinned in `scripts/build_mexicali_bundle.py`.
+
+**Fetching it.** `scripts/mexicali_run.sh` without `--bundle` fetches it
+itself. On its own:
+
+```sh
+export BUNDLE="$(uv run python scripts/build_mexicali_bundle.py fetch)"
+```
+
+`fetch` downloads the archive into `data/bundles/2026.11/` (under
+`REIMAGINA_DATA_DIR` when that is set), refuses it unless
+its SHA-256 matches the pin, extracts it, runs `verify` and prints the bundle
+directory, `data/bundles/2026.11/reimagina-mexicali-bundle`. A cached archive
+or an extracted bundle that still verifies is reused with no network access.
+`fetch --url URL` (or `MEXICALI_BUNDLE_URL`) reads from a mirror; the checksum
+cannot be overridden.
+
+**Offline, or when GitHub is unreachable**, download the asset by hand on
+another machine, then check and extract it:
+
+```sh
+shasum -a 256 reimagina-mexicali-bundle-2026.11.tar.gz   # must print the SHA-256 above
+tar -xzf reimagina-mexicali-bundle-2026.11.tar.gz
+export BUNDLE="$PWD/reimagina-mexicali-bundle"
+uv run python scripts/build_mexicali_bundle.py verify "$BUNDLE"
+scripts/mexicali_run.sh --bundle "$BUNDLE"
+```
+
+(`sha256sum` on Linux.) A published archive is never replaced: new data gets
+a new release tag (`mexicali-bundle-<version>`) and a new pin in the
+repository.
+
+**Rebuilding it.** The INEGI inputs are INEGI's public downloads
+(inegi.org.mx: Marco Geoestadístico, Censo de Población y Vivienda 2020
+results by AGEB and urban block, DENUE), converted to hive-partitioned
+parquet: `<layer>.parquet/CVE_ENT=NN/CVE_MUN=NNN/*.parquet` with a WKB
+`geometry` column for the Marco Geoestadístico, `entidad=N/**/*.parquet` with
+INEGI's lower-case column names for the census. The conversion from INEGI's
+shapefile and CSV downloads is not scripted. The rest is made with the CLI
+(see [Fresh data instead of the bundle](#fresh-data-instead-of-the-bundle)):
+`overture extract --bbox=-115.70,32.40,-115.20,32.80`, `overture places
+--country MX --aoi-id …` (its `--output-path` keeps the extract), and
+`network bootstrap --aoi-id … --clip-bbox=-115.70,32.40,-115.20,32.80
+--save-graph DIR`. Then:
+
+```sh
+uv run python scripts/build_mexicali_bundle.py build --out NEW_DIR \
+  --inegi-marco <marco parquet dir> --inegi-censo <census parquet dir> \
+  --denue-amenities <DENUE amenity GeoParquet> \
+  --overture-buildings <extract> --overture-places <extract> \
+  --overture-release 2026-10-21.0 --osm-network <--save-graph DIR>
+```
+
+It keeps Baja California (`--cve-ent 02`) and the loader columns, copies the
+rest unchanged, and writes `MANIFEST.json`, `ATTRIBUTION.md` and
+`SHA256SUMS`; the same inputs give the same bytes.
 
 ## 0. Pre-flight
 
-Complete the [installation guide](INSTALLATION.md) first, including the
-five DSNs, database readiness, `make install` and `make migrate`. For Docker,
-start PostgreSQL and PgBouncer before migrations, then start Martin. Then:
-
-```sh
-make verify-sources            # uses OVERTURE_DEFAULT_RELEASE; needs network/mirror
-```
+Complete [installation steps 1–5](INSTALLATION.md) first: the five DSNs,
+database readiness, `make install` and `make migrate`. Then fetch the bundle
+as above, so `$BUNDLE` names it.
 
 `.env` is read by every step below: the CLI loads it itself
 (`load_dotenv` in `reimagina/db/connection.py`; a variable already set in the
@@ -36,161 +112,292 @@ shell wins), and `make dev` and `make dev-api` fall back to its
 
 | Key | Read by |
 |---|---|
-| `DATABASE_URL` | the CLI, loaders, migrations; with Path B, `postgresql://localhost/reimagina_app` |
+| `DATABASE_URL` | the CLI, loaders, migrations, and the database `scripts/mexicali_run.sh` drops and rebuilds; `reimagina` in both `.env.example` paths |
 | `REIMAGINA_APP_DSN` | the API (`make dev` and `make dev-api` use `DATABASE_URL` when it is unset) |
-| `DATABASE_URL_DIRECT` | the run worker and the ops-plane schema; required, never through pgbouncer |
+| `DATABASE_URL_DIRECT` | the run worker and the ops-plane schema; required, never through PgBouncer; the same database as `DATABASE_URL` |
 | `TEST_DATABASE_URL` | `make migrate`'s test database and the integration suite |
-| `DATABASE_URL_ADMIN` | the database `make migrate` connects to in order to `CREATE DATABASE` (default `postgresql://localhost/postgres`) |
+| `DATABASE_URL_ADMIN` | the database `make migrate` and the drop in step 1 connect to in order to `CREATE DATABASE` (default `postgres` on the same server) |
 
-`make migrate` creates the app and test databases when they are absent, so
-no `createdb` is needed, then migrates both to head and provisions the
-ops-plane schema.
+Loading from the bundle needs no network access. `make verify-sources` (it
+must print `"all_ok": true`) checks the two remote sources used only when
+fetching fresh data: the Overture S3 release (`OVERTURE_DEFAULT_RELEASE`) and
+the WorldPop REST catalogue (`MEX`).
 
-`make verify-sources` must print `"all_ok": true` before continuing —
-it confirms the private data-lake mirror under `data/sources/`, the
-Overture S3 release, and the WorldPop REST catalogue (`MEX` by
-default) are all reachable. Any red entry blocks ingest: fix the path
-/ network / release version before going further.
+The steps carry the numbers of `scripts/mexicali_run.sh`'s steps, run in the
+same order. Commands that need the AOI read it from `$AOI_ID` (step 3).
 
-To target a different Overture release: `make verify-sources` accepts
-no flags; for a non-default release run the CLI directly:
-`uv run python -m apps.cli.app data verify-sources --release <X>`. If
-the release exists, set `REIMAGINA_OVERTURE_RELEASE=<X>` in `.env` (read
-once, at import, as the default of `OVERTURE_DEFAULT_RELEASE` in
-`packages/py/reimagina/pipeline/overture.py`) so subsequent commands
-default to it.
-
-## 1. Feature-type catalog
+## 1. Schema and catalogs
 
 ```sh
+uv run python -m apps.cli.app bootstrap-db
+uv run python -m apps.cli.app verify-schema
 uv run python -m apps.cli.app feat seed-types
+uv run python -m apps.cli.app indicators seed-catalog
 ```
 
-Idempotent. ~1 s.
+Idempotent; `make migrate` has already done the first. The script first drops
+and recreates the database (step 1a, skipped with `--keep`): a synthetic
+acceptance territory left in it sits at real Mexicali coordinates and would
+join the real AOI.
 
-## 2. Geometry ingest (INEGI 2024)
+## 2. INEGI geometry
 
 ```sh
 uv run python -m apps.cli.app inegi-marco bootstrap \
-  --cve-ent 09 --cve-ent 02 \
+  --source-root "$BUNDLE/inegi/marco_geoestadistico_2024" \
+  --cve-ent 02 \
   --layers areas_estatales,areas_municipales,agebs_urbanas,manzanas_urbanas
 ```
 
-`--cve-ent` is repeated, not comma-separated: `--cve-ent 09,02` is read as
-one code, `09,02`, which matches no partition.
+Loads 70,816 features: 1 state, 7 municipalities, 1,824 urban AGEBs and
+68,984 urban blocks. `--source-root` has no default. `--cve-ent` is repeatable, not
+comma-separated (`--cve-ent 09,02` is read as one code that matches no
+partition); the bundle holds entidad 02 only.
 
-Loads ~143 k features (states + munis + AGEBs + blocks for entidad 09
-and 02). ~5–8 min depending on disk I/O.
-
-## 3. Create AOIs
+## 3. The AOI
 
 ```sh
-uv run python -m apps.cli.app cdmx aoi-from-state --cve-ent 09 --name "CDMX (all)"
-uv run python -m apps.cli.app cdmx aoi-from-state --cve-ent 02 --name "Mexicali"
-uv run python -m apps.cli.app aoi list   # confirm both rows + capture uuids
+uv run python -m apps.cli.app cdmx aoi-from-alcaldia \
+  --cve-ent 02 --cve-mun 002 --name "Mexicali" --project-name "Mexicali Pilot"
+export AOI_ID=<the printed aoi_id>
 ```
 
-Save the two uuids — subsequent steps reference them via `--aoi-id`.
+The AOI is the INEGI municipality polygon, and membership is by INEGI
+identifier: a block belongs to Mexicali because its `CVE_ENT`/`CVE_MUN` say
+so. ⚠ `cdmx aoi-from-state --cve-ent 02` would be the whole state of Baja
+California. The rest of the state's INEGI features belong to no AOI.
 
-⚠ `aoi-from-state --cve-ent 02` is the whole state of Baja California;
-"Mexicali" is only its name. `scripts/mexicali_run.sh` bounds Mexicali by the
-municipality instead (`cdmx aoi-from-alcaldia --cve-ent 02 --cve-mun 002`); with
-that AOI, the rest of the state's INEGI features belong to no AOI and probe
-(a) in step 9 counts them.
-
-## 4. Spatial overlap pairs
+## 4. The 2020 census
 
 ```sh
+uv run python -m apps.cli.app inegi-censo bootstrap \
+  --source-root "$BUNDLE/inegi/censo_2020/manzanas_2020.parquet" --cve-ent 02
+```
+
+Block-grain attributes land in `curated_geo.observation`: by default the
+headline subset `pobtot`, `pobmas`, `pobfem`, `p_15ymas`, `p_18ymas`, `vivtot`;
+`--columns` names others (step 9b).
+
+## 5. Amenities (INEGI DENUE)
+
+```sh
+uv run python -m apps.cli.app points bootstrap \
+  --source-root "$BUNDLE" --layers mexicali_amenities
+```
+
+## 5b. Park and cultural destinations (Overture places)
+
+```sh
+uv run python -m apps.cli.app overture places \
+  --raw-path "$BUNDLE/overture/places_2026-10-21.0.parquet" \
+  --release 2026-10-21.0 --aoi-id "$AOI_ID"
+```
+
+⚠ Without this step the park indicator is not a measurement: DENUE carries no
+park-like category, so every block would report the 1,500 m cutoff. The
+extract was cut with `--country MX`; `--release` names the release it was cut
+from (it is in the file name).
+
+## 6. Overture buildings
+
+```sh
+uv run python -m apps.cli.app overture load \
+  --raw-path "$BUNDLE/overture/buildings_2026-10-21.0.parquet" \
+  --release 2026-10-21.0 \
+  --source-name "Overture Buildings - Mexicali BBox" \
+  --aoi-id "$AOI_ID"
+```
+
+`--aoi-id` clips inside the load's transaction: buildings inside the box but
+outside the AOI polygon are dropped before the load commits, so re-running the
+same load publishes nothing. A load that leaves nothing inside the AOI is
+refused (`ExtractAoiMismatch`) and rolled back whole: that is an extract of
+the wrong box.
+
+## 7. The OSM walking network
+
+```sh
+uv run python -m apps.cli.app network bootstrap --aoi-id "$AOI_ID" \
+  --graph-dir "$BUNDLE/osm/walk_network_2026-11-10"
+```
+
+Loads the bundle's snapshot into `road_node`/`road_edge` and publishes the
+edges as `global:road` features. Without `--graph-dir` it fetches from
+Overpass instead.
+
+## 8. AOI membership — after every load
+
+```sh
+uv run python -m apps.cli.app aoi compute-features --aoi-id "$AOI_ID"
+```
+
+⚠ Order is load-bearing and fails silently: tiles scope by AOI through
+`aoi_feature`, so a feature loaded *after* this pass is present but every tile
+of it returns 204. Re-run it after any later load. Idempotent.
+
+## 9. Overlaps
+
+```sh
+uv run python -m apps.cli.app overlap declare-pair \
+  --source-context global --source-slug building \
+  --target-context MEX --target-slug block
 uv run python -m apps.cli.app overlap declare-pair \
   --source-context MEX --source-slug block \
   --target-context MEX --target-slug ageb
-uv run python -m apps.cli.app overlap declare-pair \
-  --source-context MEX --source-slug block \
-  --target-context MEX --target-slug municipality
-uv run python -m apps.cli.app overlap compute-all
+uv run python -m apps.cli.app overlap compute-all --aoi-id "$AOI_ID"
 ```
 
-~1 min. Required before any block → AGEB / municipality rollup (step 7).
-`aoi_feature` (step 6) does not read overlaps.
+Needed by observation rollups (block → AGEB). For municipal rollups declare
+`MEX:block → MEX:municipality` the same way. Rollups are not a CLI subcommand:
+they run through the aggregation recipes (`raster derivation add`, `list`,
+`enable`, `run`, `remove`).
 
-## 5. Overture buildings — per AOI
-
-The Overture S3 query is rectangular, so each ingest is bbox-driven
-plus a polygon clip on load. Bbox values come from `aoi list` (fields
-`bbox` = `[xmin, ymin, xmax, ymax]`).
+## 9b. The scenario-input baseline
 
 ```sh
-# CDMX (all) — bbox roughly -99.36,19.05,-98.94,19.59
-# The `=` form is no longer required for a negative xmin: the CLI is
-# typer/click since #30, and click parses `--bbox -99.36,…` correctly.
-# The `=` form still works, so existing scripts need no change.
-#
-# --release is omitted deliberately. Overture keeps only its most recent
-# releases and deletes the rest, so any pin written here has a shelf life of
-# weeks — three already rotted (2026-02-18.0 was never published, 2026-04-15.0
-# and 2026-07-22.0 were published then removed). The default lives in one
-# place, OVERTURE_DEFAULT_RELEASE (2026-10-21.0 as of 2026-11-10), and a
-# stale one fails with a message naming what S3 actually has rather than a
-# bare FileNotFoundError.
-uv run python -m apps.cli.app overture extract \
-  --bbox=-99.36,19.05,-98.94,19.59 \
-  --output-path data/overture_buildings_cdmx.parquet
-uv run python -m apps.cli.app overture load \
-  --raw-path data/overture_buildings_cdmx.parquet \
-  --source-name "Overture Buildings - CDMX (all)" \
-  --aoi-id <CDMX_AOI_UUID>
+uv run python -m apps.cli.app overture block-storeys --aoi-id "$AOI_ID"
+uv run python scripts/seed_demo_attributes.py --aoi-id "$AOI_ID" --fit-to-census
+```
 
-# Mexicali — pass MEXICALI_BBOX, the urban core, explicitly. The extract's
-# default --bbox is MEXICO_CITY_BBOX (-99.597,18.992,-98.606,19.921), so
-# leaving it out extracts CDMX under a Mexicali file name.
-#
-# ⚠ Not the whole municipio. Municipio de Mexicali is 9,971 km2 and reaches
-# the Sea of Cortez at San Felipe; MEXICALI_BBOX is the ~0.5x0.4 degree
-# urban box, which is what holds the city. Pass a wider --bbox for the
-# full municipal extent, and expect the extract to cost accordingly.
+Every input is fitted from the buildings (step 6) and the census (step 4), so
+the formula gives each block's census dwellings and population back. Storeys
+are the footprint-weighted mean Overture `num_floors` per block, untagged
+buildings counting one (written as `floors` where a building is tagged, 1
+elsewhere); lot coverage is the Overture footprint ÷ block area; m² per
+dwelling is footprint × storeys ÷ census dwellings; people per household is
+census population ÷ census dwellings (`scripts/seed_demo_attributes.py` says
+why). A block the census counts no dwellings on gets no m² per dwelling and
+the edificability family skips it. Without this step
+`planned_floors`, the edificability family and `livability_block_score` write
+no rows.
+
+## 10. Indicators
+
+```sh
+# Dependency order: a composite reads its inputs' current rows.
+for SLUG in urban_form_block_compactness urban_form_block_building_density \
+    urban_form_block_composite urban_form_block_planned_floors \
+    edificability_block_housing_units edificability_block_population \
+    edificability_block_density accessibility_block_school_network_m \
+    accessibility_block_health_network_m accessibility_block_park_network_m \
+    accessibility_block_culture_network_m livability_block_score; do
+  uv run python -m apps.cli.app indicators compute --slug "$SLUG" --aoi-id "$AOI_ID"
+done
+```
+
+Each prints `rows_written`; on Mexicali eight write 19,058, one per block,
+and the three edificability indicators and `livability_block_score` write
+14,540: a block with no census dwellings has no m² per dwelling (step 9b).
+Over those blocks the edificability totals give the census back: 340,169
+dwellings and 940,381 people. 2,097 of them carry `estimated` inputs.
+
+## 11. Inspection
+
+```sh
+uv run python -m apps.cli.app explore feature-stats
+uv run python -m apps.cli.app explore serving-stats
+uv run python -m apps.cli.app explore sources
+```
+
+The script stops here. Integrity probes, in `psql` against `DATABASE_URL`:
+
+```sql
+-- (a) feature counts by type
+SELECT type_slug, count(*) FROM curated_geo.feature GROUP BY 1 ORDER BY 1;
+-- expect, from the 2026.11 bundle: ageb 1,824 · block 68,984 ·
+-- building 343,707 · establishment 2,612 · municipality 7 · road 117,858 ·
+-- state 1. The blocks outside the municipality (49,926 of them) belong to no
+-- AOI.
+
+-- (b) no duplicate features within (type, source_record_ref, dataset_version)
+SELECT sum(c-1) FROM (
+  SELECT type_slug, source_record_ref, dataset_version, count(*) c
+  FROM curated_geo.feature GROUP BY 1,2,3 HAVING count(*)>1) t;
+-- expect: NULL
+
+-- (c) every indicator has one current row per block of the AOI
+SELECT indicator_slug, count(*) FROM curated_geo.indicator_result
+WHERE status = 'current' AND scenario_id IS NULL GROUP BY 1 ORDER BY 1;
+-- expect: 12 rows; 19,058 each, except edificability_block_* and
+-- livability_block_score at 14,540; and no scenarios or orchestration runs:
+SELECT (SELECT count(*) FROM app_core.scenario),
+       (SELECT count(*) FROM jobs_runtime.orchestration_run);
+-- expect: 0 | 0
+```
+
+## 12. Smoke services
+
+```sh
+make dev            # API on :8001, web on :5173 and the run worker together
+```
+
+`make dev` serves the tiles from the API itself (`/api/tiles`), so Martin is
+not needed. To use Martin from the container stack instead (Path A), start it
+as `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000 make dev`.
+`make dev-api`, `make dev-web` and `make dev-worker` start the three
+processes one at a time; `make dev-api` resolves the DSN and the tile URL the
+same way `make dev` does.
+
+`curl -s http://127.0.0.1:8001/aois` should list the Mexicali AOI. Open
+`http://localhost:5173`, pick it under *Area*, and turn on each layer under
+*Layers* at zoom 11–14: blocks and municipalities render throughout, roads
+from zoom 13 and buildings from zoom 14 (the server's floors; below them the
+layer is empty by design), and the indicator choropleth should colour the
+blocks.
+
+## Total wall-clock
+
+About 8–9 minutes for `scripts/mexicali_run.sh` on an Apple-silicon laptop
+(455 s and, on a loaded machine, 538 s measured, each including the 65 MB
+download), and about 1.1 GB of database (1,057 MB measured).
+Rebuilding the bundle adds the INEGI downloads and conversion, an Overture
+extract (40 s to 8 min) and an Overpass fetch (minutes).
+
+## Fresh data instead of the bundle
+
+The bundle is the supported input. These commands fetch current data instead,
+for rebuilding the bundle or for another area; they need network access, and
+`make verify-sources` should pass first. Another INEGI state (for example CDMX,
+entidad 09) needs its own local copy of the INEGI products in the bundle's
+layout.
+
+**Overture buildings.** The S3 query is rectangular: extract a box, then load
+it clipped to the AOI. Pass `--bbox` explicitly — its default is Mexico City's
+box, and a Mexicali load of that extract is refused as `ExtractAoiMismatch`:
+
+```sh
 uv run python -m apps.cli.app overture extract \
   --bbox=-115.70,32.40,-115.20,32.80 \
   --output-path data/overture_buildings_mexicali.parquet
 uv run python -m apps.cli.app overture load \
   --raw-path data/overture_buildings_mexicali.parquet \
   --source-name "Overture Buildings - Mexicali BBox" \
-  --aoi-id <MEXICALI_AOI_UUID>
+  --aoi-id "$AOI_ID"
 ```
 
-`--aoi-id` triggers a post-load `ST_Intersects` clip — buildings inside
-the bbox but outside the AOI polygon are dropped before any further
-pipeline work touches them. A load that leaves the source with nothing
-inside the AOI is refused (`ExtractAoiMismatch`): that is an extract of the
-wrong bbox, the default one being Mexico City's.
+`--release` is omitted deliberately: Overture keeps only its recent releases,
+so the default lives in one place, `OVERTURE_DEFAULT_RELEASE`, and a stale one
+fails with a message naming what S3 actually has. The box is the urban core,
+not the 9,971 km² municipality that reaches San Felipe.
 
-**The Mexicali half as one command.** `scripts/mexicali_run.sh` builds
-Mexicali alone, and more of it than this runbook: schema and catalogs, INEGI
-geometry for entidad 02, an AOI on the municipality (not the state — see step
-3), the 2020 census, amenities, Overture places and buildings, the OSM
-network, membership, overlaps (`global:building → MEX:block`,
-`MEX:block → MEX:ageb`), the scenario-input baseline (`inegi-censo bootstrap
---columns prom_ocup`, `overture block-storeys`,
-`scripts/seed_demo_attributes.py --fit-to-census`) and every shipped
-indicator. It checks the mirror first and names each missing path, keeps the
-step order that matters (membership *after* every load, or every tile returns
-204), and treats the census, amenity, places and Overpass loads as non-fatal
-so one failure does not discard the INEGI load. Use the steps in this
-document to run a part of it, or to understand what it does.
+Measured on this box against release 2026-10-21.0 (2026-11-10):
 
-```sh
-# ⚠ Without --keep, step 1a DROPS and recreates the DATABASE_URL database.
-# Explicit exports override .env. The script validates that DATABASE_URL and
-# DATABASE_URL_DIRECT identify the same direct host, port and database before
-# dropping anything; DATABASE_URL_ADMIN must use that server and a different
-# maintenance database (default: postgres).
-scripts/mexicali_run.sh                 # --keep, --skip-network, --low-memory
-```
+| step | result |
+|---|---|
+| `overture divisions` | 16 divisions, 2 countries |
+| `overture aoi-from-division` | valid MultiPolygon, 2,109 points, 9,971 km2 |
+| `overture extract` | 387,273 rows, 51.2 MB, 40 s, **peak RSS 4.4 GB** |
+| `overture load` | 387,273 written, **43,577 clipped** outside the Mexican boundary |
+| loaded buildings | **343,696**, extent capped at the border (ymax 32.676, from a bbox ymax of 32.80) |
 
-**Where `<MEXICALI_AOI_UUID>` comes from without the lake mirror.** Every
-other AOI constructor is INEGI-derived (`cdmx aoi-from-alcaldia` needs a
-`MEX:municipality` feature loaded from Marco Geoestadistico). Overture's
-`divisions` theme carries the same boundaries, in the release the buildings
-already come from:
+⚠ The 4.4 GB peak is parquet metadata, read while the box is evaluated against
+row-group statistics across all 512 files of the release, not the rows (those
+cost ~400 MB). `overture extract --low-memory` scans one S3 file at a time:
+663 MB peak and 454 s instead of 40 s on the same box. Use it on a laptop also
+running Postgres, where 4.4 GB swaps and looks hung.
+
+**An AOI without INEGI data.** Overture's `divisions` theme carries the same
+boundaries, in the release the buildings come from:
 
 ```sh
 # What this release actually calls things, so --name is checkable
@@ -201,62 +408,30 @@ uv run python -m apps.cli.app overture aoi-from-division \
   --subtype county --country MX --name "Municipio de Mexicali"
 ```
 
-⚠ **Always pass `--country` for a border-crossing bbox.** The Mexicali box
-holds both `MX Municipio de Mexicali` and `US Imperial County`, and both are
-`subtype=county`. Selecting the wrong one produces a valid polygon, a
-successful load and a map of the wrong country, with no error anywhere.
+⚠ **Always pass `--country` for a border-crossing box.** The Mexicali box
+holds both `MX Municipio de Mexicali` and `US Imperial County`, both
+`subtype=county`. The wrong one gives a valid polygon, a successful load and a
+map of the wrong country, with no error anywhere.
 
-Measured on this bbox against release 2026-10-21.0 (2026-11-10):
-
-| step | result |
-|---|---|
-| `overture divisions` | 16 divisions, 2 countries |
-| `overture aoi-from-division` | valid MultiPolygon, 2,109 points, 9,971 km2 |
-| `overture extract` | 387,273 rows, 51.2 MB, 40 s, **peak RSS 4.4 GB** |
-| `overture load` | 387,273 written, **43,577 clipped** outside the Mexican boundary |
-| loaded buildings | **343,696**, extent capped at the border (ymax 32.676, from a bbox ymax of 32.80) |
-
-⚠ The 4.4 GB peak is the default extract path, and it is not the rows —
-those cost ~400 MB. It is parquet metadata, read while the bbox predicate is
-evaluated against row-group statistics across all 512 files of the release
-(`extract_overture_buildings_subset` in `pipeline/overture.py`). `overture
-extract --low-memory` scans one S3 file at a time and streams batches through
-a `ParquetWriter`: 663 MB peak and 454 s instead of 40 s, measured on the same
-bbox and release, and a flat ceiling rather than a proportional one. Use it on
-a laptop also running Postgres, where 4.4 GB does not fail cleanly but swaps
-and looks hung, and for an AOI materially larger than one city;
-`scripts/mexicali_run.sh --low-memory` passes it through.
-
-## 5b. WorldPop population raster — per AOI (optional)
-
-The WorldPop public REST API publishes per-country population rasters
-(`wpgp` = per-pixel population, 100 m). The CLI fetches the country
-GeoTIFF (cached so re-runs against multiple AOIs only download once)
-and clips it to the AOI polygon before handing the local file to the
-existing `raster ingest` step. No FTP client or manual download
-script needed. `fetch-worldpop` reads the AOI polygon through `--dsn`, which
-defaults to `DATABASE_URL` (from `.env` too) like every other DSN option.
+**Overture places and the OSM network**, fetched live:
 
 ```sh
-# Step 1 — fetch + clip to CDMX. Country raster lands in
-# data/cache/worldpop/wpgp_MEX_2020.tif (~1 GB, cached).
-uv run python -m apps.cli.app raster fetch-worldpop \
-  --country MEX --year 2020 \
-  --aoi-id <CDMX_AOI_UUID> \
-  --output-path data/worldpop_cdmx_2020_100m.tif
+uv run python -m apps.cli.app overture places --country MX --aoi-id "$AOI_ID"
+uv run python -m apps.cli.app network bootstrap --aoi-id "$AOI_ID" \
+  --clip-bbox=-115.70,32.40,-115.20,32.80 --save-graph data/walk_network
+```
 
-# Step 2 — register + COG-encode through the existing pipeline.
-uv run python -m apps.cli.app raster ingest \
-  --raw-path data/worldpop_cdmx_2020_100m.tif \
-  --layer-slug worldpop_cdmx_2020_100m \
-  --aggregation-kind extensive \
-  --source-name "WorldPop · MEX · 2020 (100m, CDMX clip)" \
-  --provider WorldPop --version 2020-100m
+`--clip-bbox` narrows the Overpass fetch to the urban box; `--save-graph`
+keeps the graph for a bundle or a later `--graph-dir` load.
 
-# Repeat both steps for Mexicali — the cached country file is reused.
+**WorldPop population raster (optional).** `raster fetch-worldpop` fetches
+the country GeoTIFF from WorldPop's REST catalogue (cached under
+`data/cache/worldpop/`, ~893 MB for Mexico, 5–10 min the first time) and clips
+it to the AOI; `raster ingest` registers it as a COG:
+
+```sh
 uv run python -m apps.cli.app raster fetch-worldpop \
-  --country MEX --year 2020 \
-  --aoi-id <MEXICALI_AOI_UUID> \
+  --country MEX --year 2020 --aoi-id "$AOI_ID" \
   --output-path data/worldpop_mexicali_2020_100m.tif
 uv run python -m apps.cli.app raster ingest \
   --raw-path data/worldpop_mexicali_2020_100m.tif \
@@ -266,127 +441,33 @@ uv run python -m apps.cli.app raster ingest \
   --provider WorldPop --version 2020-100m
 ```
 
-First fetch: ~5–10 min (downloading the country raster — ~893 MB for
-Mexico — from the GeoTIFF URL WorldPop's REST catalogue lists for it).
-Subsequent fetches against new AOIs reuse the cache and complete in
-seconds. Each `raster ingest` is ~30 s for an AOI-sized raster.
-
-## 6. AOI feature overlap
-
-```sh
-uv run python -m apps.cli.app aoi compute-features
-```
-
-Runs every AOI by default. Pass `--aoi-id <UUID>` to recompute one
-without rebuilding the whole matrix. Idempotent — existing rows for
-each target AOI are deleted first.
-
-This populates `aoi_feature` against the now-loaded buildings + INEGI
-geometries. ~3 min per AOI.
-
-## 7. INEGI 2020 census
-
-```sh
-uv run python -m apps.cli.app inegi-censo bootstrap --cve-ent 09 --cve-ent 02
-```
-
-~5 min. Block-grain census attributes land in `curated_geo.observation`:
-by default the headline subset `pobtot`, `pobmas`, `pobfem`, `p_15ymas`,
-`p_18ymas`, `vivtot`; `--columns` names others (`--columns prom_ocup` lands
-household size as `people_per_household`, the scenario input).
-
-Rollups (block → AGEB / municipality) are intentionally not a CLI
-subcommand — they're operator-driven through the generic aggregation
-recipe machinery (see `apps/cli/inegi.py` and the `raster derivation`
-commands: `add`, `list`, `enable`, `run`, `remove`). Wire the recipes you
-actually need, when you need them.
-
-## 8. Indicators
-
-```sh
-uv run python -m apps.cli.app indicators seed-catalog
-
-for AOI in <CDMX_AOI_UUID> <MEXICALI_AOI_UUID>; do
-  uv run python -m apps.cli.app indicators compute \
-    --slug urban_form_block_compactness --aoi-id $AOI
-  uv run python -m apps.cli.app indicators compute \
-    --slug urban_form_block_building_density --aoi-id $AOI
-done
-```
-
-~5 min per (slug, AOI) pair.
-
-## 9. Integrity probe
-
-Run these three queries — all three must return the expected shape:
-
-```sql
--- (a) every feature reaches at least one AOI (no orphans)
-SELECT count(*) FROM curated_geo.feature f
-WHERE NOT EXISTS (SELECT 1 FROM curated_geo.aoi_feature af WHERE af.feature_id=f.id);
--- expect: 0
-
--- (b) no duplicate features within (type, source_record_ref, dataset_version)
-SELECT sum(c-1) FROM (
-  SELECT type_slug, source_record_ref, dataset_version, count(*) c
-  FROM curated_geo.feature GROUP BY 1,2,3 HAVING count(*)>1) t;
--- expect: NULL or 0
-
--- (c) row counts by type look right
-SELECT type_slug, count(*) FROM curated_geo.feature GROUP BY type_slug;
--- expect: building ~2M, block ~85k, ageb ~2.9k, municipality ~18,
--- state 2 (numbers depend on the exact entidades + Overture release)
-```
-
-## 10. Smoke services
-
-```sh
-make dev            # API on :8001, web on :5173 and the run worker together
-```
-
-`make dev` serves the tiles from the API itself (`/api/tiles`), so Martin
-is not needed. To use Martin from the container stack instead (Path A),
-start it as `REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:3000 make dev`.
-`make dev-api`, `make dev-web` and `make dev-worker` start the three
-processes one at a time; `make dev-api` resolves the DSN and the tile URL
-the same way `make dev` does.
-
-`curl -s http://127.0.0.1:8001/aois` should list both AOIs. Open
-`http://localhost:5173`, pick each area under *Area*, and turn on each
-layer under *Layers* at zoom 11–14 — the buildings, blocks and
-municipalities should all render without empty tiles, and the indicator
-choropleth should colour the blocks.
-
-## Total wall-clock
-
-~1 hour on a modern laptop with a warm `data/sources/` lake mirror.
-Add another 15–30 min if the lake mirror needs to be re-downloaded
-from private.
+Load fresh features before step 8, or re-run step 8 after them.
 
 ## Rolling forward to a new Overture release
 
-When Overture publishes a new release (monthly), set one variable in
-`.env` (the built-in default is `OVERTURE_DEFAULT_RELEASE` in
-`packages/py/reimagina/pipeline/overture.py`):
+When Overture publishes a new release (monthly), set one variable in `.env`
+(the built-in default is `OVERTURE_DEFAULT_RELEASE` in
+`packages/py/reimagina/pipeline/overture.py`, read once, at import):
 
 ```sh
 REIMAGINA_OVERTURE_RELEASE=2026-MM-DD.0
 ```
 
-or, for one shell without a code change, `export
-REIMAGINA_OVERTURE_RELEASE=2026-MM-DD.0`.
-
-To find out what you can pin to, ask S3 rather than guessing — this is
-also what the `FileNotFoundError` message prints for you when a pin has
-rotted:
+or, for one shell, `export REIMAGINA_OVERTURE_RELEASE=2026-MM-DD.0`. To find
+out what you can pin to, ask S3 rather than guessing — this is also what the
+error message prints when a pin has rotted:
 
 ```sh
 uv run python -c "from reimagina.pipeline.overture import \
 available_overture_releases as r; print(r())"
 ```
 
-Then `make verify-sources` will probe the new release. The previously
-loaded buildings keep their old `dataset_version` tag, and the new ingest
-goes in alongside them whatever `--source-name` you pass: features are
-unique on `(source_id, dataset_version, source_record_ref)`, and nothing in
-step 5 deletes an earlier release's rows.
+`uv run python -m apps.cli.app data verify-sources --release <X>` probes a
+release before you set it (`make verify-sources` takes no flags and probes the
+default). Loading it under the same `--source-name` replaces the earlier
+release: the load deletes that source's previous-release buildings (or places)
+inside the extent it just loaded, in the same transaction, so a block never
+counts a building twice. It refuses, and loads nothing, if a scenario edit
+references one of those features. A different `--source-name` is a different
+layer and is left alone. The bundle keeps its own release; a new one is a new
+bundle.

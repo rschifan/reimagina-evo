@@ -1,7 +1,7 @@
 """Which Overture place categories count as which kind of amenity.
 
-**Why this exists.** The Mexicali pilot's amenity layer comes from IMIP and
-carries five categories — ``Consultorio medico``, ``Farmacia``, ``Hospital``,
+**Why this exists.** The Mexicali pilot's amenity layer is a selection of INEGI's
+DENUE and carries five categories — ``Consultorio medico``, ``Farmacia``, ``Hospital``,
 ``Guarderia``, ``Cine``. Three map to ``health``, one to ``school``, and
 **none** is park-like. So ``accessibility_block_park_network_m`` ran over an
 empty destination set: the multi-source Dijkstra had no start vertices, every
@@ -48,7 +48,7 @@ import unicodedata
 #   public open space      178   park 151, plazas, playgrounds, gardens
 #
 # They are all here because the indicator's declared scope has always included
-# private clubs: the IMIP vocabulary it was written against lists
+# private clubs: the CDMX-Tlalpan amenity vocabulary it was written against lists
 # ``Clubs_deportivos_y_acondicionamiento_fisico`` alongside
 # ``Parques_recreativos``, and ACCESSIBILITY_LABELS['park'] says so. But a
 # reader who takes "distance to park" as public green space will be wrong about
@@ -85,7 +85,7 @@ OVERTURE_PARK_CATEGORIES: tuple[str, ...] = (
 
 #: Cultural and entertainment venues.
 #
-# Exists because IMIP's ``Cine`` (10 cinemas in Mexicali) matched no category
+# Exists because the DENUE layer's ``Cine`` (10 cinemas in Mexicali) matched no category
 # at all and was silently ingested as an establishment nothing measured. Folding
 # cinemas into ``park`` to make that layer non-flat would have manufactured a
 # finding out of 10 points; they get their own category instead.
@@ -201,10 +201,6 @@ def fold_name(name: str | None) -> str:
     """
     decomposed = unicodedata.normalize("NFKD", name or "")
     return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
-
-
-#: One compiled alternation over :data:`PLACE_NAME_EXCLUSIONS`.
-_EXCLUSION_RE = re.compile("|".join(PLACE_NAME_EXCLUSIONS), re.IGNORECASE)
 
 
 def excluded_by_name(name: str | None) -> str | None:

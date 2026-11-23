@@ -20,7 +20,7 @@ const row = (o: Partial<ScenarioListRow> = {}): ScenarioListRow => ({
   created_at: "2026-11-18T10:00:00Z",
   updated_at: "2026-11-18T10:00:00Z",
   materialized_at: null,
-  edit_count: 4,
+  rule_count: 2,
   latest_run: null,
   ...o,
 });
@@ -54,7 +54,7 @@ const DONE = "2026-11-18T11:00:00Z";
 
 describe("statusFor", () => {
   it("no rules beats everything", () => {
-    expect(statusFor(row({ edit_count: 0 }), null)).toBe("no-rules");
+    expect(statusFor(row({ rule_count: 0 }), null)).toBe("no-rules");
   });
 
   it("never materialised is not computed", () => {
@@ -160,6 +160,11 @@ describe("the hash", () => {
   it("an empty hash selects nothing", () => {
     expect(parseHash("")).toEqual({ scenarioId: null, slug: null });
     expect(parseHash("#/")).toEqual({ scenarioId: null, slug: null });
+  });
+
+  // A hand-edited or truncated link threw URIError inside the route effect.
+  it("a malformed escape selects nothing", () => {
+    expect(parseHash("#/%E0/%")).toEqual({ scenarioId: null, slug: null });
   });
 
   it("a scenario without an indicator", () => {

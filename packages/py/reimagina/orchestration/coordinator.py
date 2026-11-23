@@ -25,7 +25,7 @@ import enum
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.jobs._lifecycle import current_run
@@ -39,6 +39,13 @@ class UnitStatus(str, enum.Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+#: What a scenario runner returns when its scenario was deleted before the unit
+#: could commit: ``runners._fenced`` rolled its writes back, so nothing was
+#: computed. Reported ``cancelled`` — the delete cancels the run's other units.
+SCENARIO_DELETED = "scenario-deleted"
 
 
 class Runner(Protocol):
@@ -99,8 +106,19 @@ def _dep_map(registry: Sequence[IndicatorSpec]) -> dict[str, set[str]]:
     return {spec.slug: {dep for dep, _weight in spec.depends_on} for spec in registry}
 
 
+def _execute(conn: Any, statement: str) -> None:
+    # No SQL connection (None, or an in-memory stand-in): nothing to protect,
+    # the same way runstore no-ops on a None connection. An autocommit
+    # connection has no shared transaction to poison — each statement commits
+    # itself — and Postgres refuses SAVEPOINT outside a transaction block.
+    if not hasattr(conn, "cursor") or getattr(conn, "autocommit", False):
+        return
+    with conn.cursor() as cur:
+        cur.execute(statement)
+
+
 def run_dirty_set(
-    conn: object,
+    conn: Any,
     dirty_units: Sequence[DirtyUnit],
     registry: Sequence[IndicatorSpec],
     runners: Mapping[str, Runner],
@@ -123,7 +141,8 @@ def run_dirty_set(
       its dependents skip on the next iterations.
 
     Independent units don't block each other — a failure only stops the units
-    that depend on it.
+    that depend on it, and its writes are rolled back to its own savepoint.
+    ``conn`` must be inside a transaction (not autocommit); the caller commits.
     """
     deps = _dep_map(registry)
     dirty = {u.indicator for u in dirty_units}
@@ -152,19 +171,32 @@ def run_dirty_set(
             )
             continue
 
+        # ⚠ One savepoint per unit. Every unit shares the caller's connection
+        # and its one transaction, committed at the end. A unit failing in SQL
+        # aborts that transaction: without this, every later unit failed with
+        # "current transaction is aborted", and the caller's commit silently
+        # became a ROLLBACK of the units already reported `succeeded`.
+        _execute(conn, "SAVEPOINT reimagina_unit")
         try:
             # Ambient, not a runner argument — see jobs._lifecycle.current_run.
             with current_run(run_id):
-                runner(
+                result = runner(
                     conn,
                     features=unit.features,
                     scenario_id=scenario_id,
                     code_version=code_version,
                     aoi_id=aoi_id,
                 )
-            outcomes[slug] = UnitOutcome(slug, UnitStatus.SUCCEEDED)
         except Exception as exc:
             logger.exception("indicator %s failed", slug)
+            _execute(conn, "ROLLBACK TO SAVEPOINT reimagina_unit")
             outcomes[slug] = UnitOutcome(slug, UnitStatus.FAILED, str(exc))
+        else:
+            outcomes[slug] = (
+                UnitOutcome(slug, UnitStatus.CANCELLED, "scenario deleted")
+                if result == SCENARIO_DELETED
+                else UnitOutcome(slug, UnitStatus.SUCCEEDED)
+            )
+        _execute(conn, "RELEASE SAVEPOINT reimagina_unit")
 
     return RunReport(tuple(outcomes[u.indicator] for u in dirty_units))

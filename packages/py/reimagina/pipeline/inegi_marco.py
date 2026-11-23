@@ -1,16 +1,16 @@
-"""Ingest INEGI Marco Geoestadístico 2024 (data lake) into curated_geo.feature.
+"""Ingest INEGI Marco Geoestadístico 2024 into curated_geo.feature.
 
-Targets the data downloaded from the private-lake private data lake at
-``inegi/marco_geostadistico/2024/``. Each layer (areas_estatales,
+Reads a local parquet copy of the INEGI product, laid out as in the Mexicali
+source bundle's ``inegi/marco_geoestadistico_2024/`` (``scripts/
+build_mexicali_bundle.py`` writes it). Each layer (areas_estatales,
 areas_municipales, agebs_urbanas, manzanas_urbanas) is a hive-partitioned
 parquet directory with a WKB BLOB ``geometry`` column.
 
 Design choices vs ``pipeline/cdmx.py``:
 
-- No fetch step. The data lake mirror lives on local disk under
-  ``data/sources/lake/`` (downloaded via a storage client; auth was
-  blocked at the tenant level). ``data_source_catalog.storage_uri``
-  retains the original ``lake://`` URI for lineage.
+- No fetch step. The caller names the local copy (``source_root``); there is
+  no default location. ``data_source_catalog.storage_uri`` records INEGI's
+  public product page for lineage.
 - No bronze landing. The source is already a stable, immutable parquet
   directory; copying it into ``data/bronze/<source_id>/`` would just
   duplicate hundreds of MB. Silver is generated directly from the source.
@@ -46,16 +46,16 @@ from .loader import load_vector_source
 INEGI_MARCO_PROVIDER = "INEGI"
 INEGI_MARCO_LICENSE = "Libre uso — Términos de Uso de la Información del INEGI"
 INEGI_MARCO_VERSION = "2024.01"
+# INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+INEGI_MARCO_CREDIT = "Fuente: INEGI, Marco Geoestadístico 2024"
 
 # Source data is in EPSG:4326 already (verified by sampling MultiPolygon
 # bounds — they were lon/lat values, not projected metres).
 INEGI_MARCO_SOURCE_CRS = "EPSG:4326"
 
-# Default location relative to repo root; overridable for tests.
-DEFAULT_SOURCE_ROOT = Path("data/sources/lake/inegi/marco_geostadistico/2024")
-
-# private container path used for lineage in data_source_catalog.storage_uri.
-INEGI_MARCO_LAKE_PREFIX = "lake://private-lake/inegi/marco_geostadistico/2024"
+# INEGI's public page for the product: the lineage in
+# data_source_catalog.storage_uri, with the layer as the fragment.
+INEGI_MARCO_URL = "https://www.inegi.org.mx/temas/mg/"
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class InegiMarcoLayerSpec:
     stage→load shape is fully driven by data, not branching.
 
     ``partition_cols`` reflects the on-disk hive partitioning, which is
-    different per layer in the data lake:
+    different per layer in the INEGI parquet copy:
     - ``areas_estatales`` is partitioned by ``CVE_ENT`` only.
     - ``areas_municipales`` / ``agebs_urbanas`` / ``manzanas_urbanas``
       are partitioned by ``CVE_ENT`` then ``CVE_MUN``.
@@ -178,7 +178,7 @@ def read_layer_to_geodataframe(
     CVE_ENT for every entidad below 10. We pin the partition schema
     explicitly to ``string`` to keep the leading zeros intact.
 
-    ``partition_cols`` describes the directory nesting: the data lake
+    ``partition_cols`` describes the directory nesting: the copy
     uses ``CVE_ENT/`` for ``areas_estatales`` and ``CVE_ENT/CVE_MUN/``
     for the other three layers. Without naming all the levels, pyarrow
     treats the inner directories as opaque path components and silently
@@ -215,7 +215,7 @@ def read_layer_to_geodataframe(
 def _normalise_cve_ent(value: int | str) -> str:
     """Coerce a CVE_ENT input to the canonical 2-digit zero-padded form.
 
-    ``2`` and ``"2"`` and ``"02"`` all become ``"02"``. The data lake's
+    ``2`` and ``"2"`` and ``"02"`` all become ``"02"``. The copy's
     partition directories use the zero-padded string and that's what the
     in-memory column ends up as after the explicit HivePartitioning above,
     so the filter has to match the same shape.
@@ -230,8 +230,8 @@ def _normalise_cve_ent(value: int | str) -> str:
 def ensure_layer_source(conn, spec: InegiMarcoLayerSpec) -> str:
     """Idempotently register the data_source_catalog row for one INEGI layer.
 
-    ``storage_uri`` keeps the upstream private URL for lineage even though the
-    pipeline reads the locally-mirrored copy.
+    ``storage_uri`` names INEGI's product page for lineage even though the
+    pipeline reads a local copy.
     """
     existing = cat.get_source(
         conn,
@@ -247,14 +247,14 @@ def ensure_layer_source(conn, spec: InegiMarcoLayerSpec) -> str:
         provider=INEGI_MARCO_PROVIDER,
         storage_type="vector",
         integration_role="canonical_entity",
-        storage_uri=f"{INEGI_MARCO_LAKE_PREFIX}/{spec.parquet_subdir}",
+        storage_uri=f"{INEGI_MARCO_URL}#{spec.key}",
         version=INEGI_MARCO_VERSION,
         license=INEGI_MARCO_LICENSE,
         notes=(
             f"INEGI Marco Geoestadístico 2024 — {spec.feature_type_slug}. "
-            "Read from the private-lake private data lake "
-            "(downloaded locally via a storage client for ingest)."
+            "Read from a local parquet copy of the INEGI product."
         ),
+        credit=INEGI_MARCO_CREDIT,
     )
 
 
@@ -273,7 +273,8 @@ def stage_layer(
     if not parquet_dir.exists():
         raise FileNotFoundError(
             f"INEGI marco source not found: {parquet_dir}. "
-            "Verify the data lake mirror at data/sources/lake/inegi/marco_geostadistico/2024/ exists."
+            "--source-root must be the directory holding the layer "
+            "directories, e.g. the source bundle's inegi/marco_geoestadistico_2024/."
         )
     gdf = read_layer_to_geodataframe(
         parquet_dir,
@@ -320,9 +321,9 @@ def load_layer(
 def bootstrap(
     conn,
     *,
+    source_root: Path,
     layers: list[str] | None = None,
     cve_ent_filter: list[str] | None = None,
-    source_root: Path | None = None,
     orchestrator_run_id: str | None = None,
     code_version: str = "dev",
 ) -> dict[str, Any]:
@@ -331,9 +332,9 @@ def bootstrap(
     ``cve_ent_filter`` is the workhorse: keep it small (e.g. ``['02','09']``)
     or you'll ingest all of Mexico.
 
-    ``source_root`` defaults to the repo-relative
-    ``data/sources/lake/inegi/marco_geostadistico/2024`` path; tests can
-    point it at a fixture directory.
+    ``source_root`` is the directory holding the layer directories (the
+    source bundle's ``inegi/marco_geoestadistico_2024/``); a relative path is
+    taken from the repository root.
     """
     requested = list(layers) if layers else list(DEFAULT_LOAD_ORDER)
     unknown = [k for k in requested if k not in LAYER_SPECS]
@@ -341,10 +342,7 @@ def bootstrap(
         raise ValueError(f"Unknown INEGI marco layer key(s): {unknown}")
     ordered = [k for k in DEFAULT_LOAD_ORDER if k in requested]
 
-    if source_root is not None:
-        root = Path(source_root)
-    else:
-        root = DEFAULT_SOURCE_ROOT
+    root = Path(source_root)
     if not root.is_absolute():
         root = REPO_ROOT / root
 

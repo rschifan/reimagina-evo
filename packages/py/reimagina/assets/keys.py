@@ -62,6 +62,11 @@ class AssetEdge:
     #: reads its components under S. Deriving it from the producer's kind means
     #: it cannot be forgotten on one edge out of twenty.
     partition_mapping: str | None = None
+    #: A composite component scored against a target band ``(low, high)``
+    #: rather than normalised against its producer's bounds: 1 inside it,
+    #: linear to 0 at the producer's ``valid_min`` below and at ``2 × high``
+    #: above. ``None`` (every edge but livability's density) normalises.
+    target_band: tuple[float, float] | None = None
 
     @property
     def indicator_slug(self) -> str | None:

@@ -25,6 +25,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from starlette.concurrency import run_in_threadpool
 
 from reimagina.storage import backend_for_connection
+from reimagina.storage.manager import DEFAULT_DEV_DSN
 from reimagina.storage.interfaces import StorageBackend
 from reimagina.tiles.defaults import (
     tile_live_base_url,
@@ -42,10 +43,9 @@ def api_dsn() -> str:
     factory, readiness probe, and any future callers — instead of
     racing a module constant that was captured at import time.
     """
-    return os.environ.get(
-        "REIMAGINA_APP_DSN",
-        "postgresql://localhost/reimagina_app",
-    )
+    # Same default as the CLI, migrations and loaders, so a bare `make dev`
+    # serves the database the load filled.
+    return os.environ.get("REIMAGINA_APP_DSN", DEFAULT_DEV_DSN)
 
 
 def _pool_min() -> int:

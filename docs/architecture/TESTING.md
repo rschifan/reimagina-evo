@@ -4,7 +4,7 @@ SQL-level contract tests for the database schema. These tests verify that the tr
 
 **Framework:** [`pgTAP`](https://pgtap.org/) — a TAP-compliant PostgreSQL testing framework. Tests run against a disposable PostgreSQL + PostGIS database seeded with the schema and minimal reference data.
 
-⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`testpaths`, `pyproject.toml:183`), split into `unit`, `contract`, `integration`, `conformance`, `performance`, `e2e`, `recovery`, and `workloads`, driven by `make test`, `make test-integration`, `make test-conformance`, `make test-e2e`, `make test-recovery`, and `make test-workloads` (`Makefile:57`, `:61`, `:65`, `:69`, `:73`, `:77`); `tests/performance` has no target. See *Running the Python suites* below.
+⚠ **This suite is not in the repository.** No `.sql` test file exists and nothing invokes `pg_prove`; the cases below are a specification of the schema guarantees, not a suite you can run today. What does run is Python under `tests/` (`testpaths` in `pyproject.toml` `[tool.pytest.ini_options]`), split into `unit`, `contract`, `integration`, `conformance`, `performance`, `e2e`, `recovery`, and `workloads`, driven by `make test`, `make test-integration`, `make test-conformance`, `make test-e2e`, `make test-recovery`, and `make test-workloads` (targets of the same names in `Makefile`); `tests/performance` has no target. See *Running the Python suites* below.
 
 **Related documents:** `DATA_LAYER.md`, `INDICATORS_LAYER.md`, `SCENARIOS_LAYER.md`, `JOB_LAYER.md`.
 
@@ -17,7 +17,7 @@ SQL-level contract tests for the database schema. These tests verify that the tr
 CREATE EXTENSION IF NOT EXISTS pgtap;
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- Build the schema by running the Alembic migrations (r001 → r052; there is no r033):
+-- Build the schema by running the Alembic migrations (r001 → r057; there is no r033):
 --   make migrate        # apps.cli.app bootstrap-db --with-test-db
 -- See JOB_LAYER.md — Migration order — for how the job-layer tables interleave.
 -- Then seed minimal reference data:
@@ -59,19 +59,19 @@ VALUES
 
 ```bash
 make lint                                    # ruff check + ruff format --check + mypy
-pytest tests/unit tests/contract             # no database
-TEST_DATABASE_URL=postgresql:///reimagina_test pytest tests/integration
+uv run pytest tests/unit tests/contract      # no database (= make test)
+TEST_DATABASE_URL=postgresql://localhost/reimagina_test uv run pytest tests/integration
 ```
 
 | suite | how to run | CI (`.github/workflows/ci.yml`) | needs |
 |---|---|---|---|
 | `tests/unit`, `tests/contract` | `make test` | job `test-py-unit` | nothing |
-| `tests/integration` | `make test-integration` | job `test-py-integration`, step `pytest (integration)` | Postgres + PostGIS + pgRouting at `TEST_DATABASE_URL`; CI points `REIMAGINA_APP_DSN` and `DATABASE_URL_DIRECT` at the same database |
+| `tests/integration` | `make test-integration` | job `test-py-integration`, step `pytest (integration)` | Postgres + PostGIS + pgRouting at `TEST_DATABASE_URL`; CI points `REIMAGINA_APP_DSN` and `DATABASE_URL_DIRECT` at the same database, and `REIMAGINA_POOLED_TEST_DSN` at a pgbouncer service for the one pooler-guard test (which skips without it) |
 | `tests/conformance` | `make test-conformance` | same job, step `pytest (conformance)` | the same database |
 | `tests/e2e` | `make test-e2e` (sets `REIMAGINA_E2E=1`) | not run | an API (`REIMAGINA_E2E_API`, default `http://127.0.0.1:8001`), the web dev server (`REIMAGINA_E2E_WEB`, default `http://localhost:5173` — Vite listens on `localhost`, which macOS resolves to `::1`), and Node with the `playwright` module and its Chromium installed under `apps/web` (`tests/e2e/conftest.py` puts `apps/web/node_modules` on `NODE_PATH`) |
 | `tests/recovery` | `make test-recovery` (sets `REIMAGINA_RECOVERY_TEST=1`) | not run | ≥20,000 blocks; kills processes (below) |
 | `tests/workloads` | `make test-workloads` (sets `REIMAGINA_BENCH=1`) | not run | its own database, `TEST_DATABASE_URL` or `reimagina_test_bench_dbos`, migrated and never downgraded |
-| `tests/performance` | `pytest tests/performance`; no target | not run | `TEST_DATABASE_URL`, plus seeded data at `REIMAGINA_PERF_DSN` → `REIMAGINA_APP_DSN` → `postgresql://localhost/reimagina_app` for `test_overlap_benchmarks.py` |
+| `tests/performance` | `pytest tests/performance`; no target | not run | `TEST_DATABASE_URL`, plus seeded data at `REIMAGINA_PERF_DSN` → `REIMAGINA_APP_DSN` → `postgresql://localhost/reimagina` for `test_overlap_benchmarks.py` |
 
 `tests/e2e` drives Chromium through two Node scripts rather than a Python
 dependency. `test_web_app_loads.py` runs `_browser_probe.js` once per session
@@ -94,7 +94,8 @@ CI also runs `make lint`'s three steps (job `lint-py`) and the web app's
 `alembic downgrade base`, which drops every
 managed schema in `TEST_DATABASE_URL` (default
 `postgresql://localhost/reimagina_test`). It refuses to run against a database
-whose name does not contain `test`, unless the name equals
+whose name does not have `test` as a word (`reimagina_test`, not
+`reimagina_latest`), unless the name equals
 `REIMAGINA_TEST_DB_ALLOW_NAME`; that guard is the only thing between the suite
 and real data. When the database is unreachable it skips, unless
 `REIMAGINA_REQUIRE_DB=1` (set by CI's `test-py-integration` job), which turns
@@ -102,8 +103,8 @@ the skip into a failure.
 
 ⚠ **Run `make lint`, not a hand-rolled `ruff check <paths>`.** The target
 mirrors CI exactly — `ruff check .`, `ruff format --check .`, and mypy over
-`packages/py/reimagina`, `apps` and `scripts` (`Makefile:47-50`,
-`ci.yml:62-69`). A narrowed invocation skips the format gate and produced
+`packages/py/reimagina`, `apps` and `scripts` (`Makefile` target `lint`,
+`ci.yml` job `lint-py`). A narrowed invocation skips the format gate and produced
 three "lint clean" reports against red CI in one day.
 
 ⚠ **Do not point work-in-progress migrations at the shared `reimagina_test`.**
@@ -115,10 +116,15 @@ whatever is being tested. Use a scratch database instead:
 ```bash
 createdb reimagina_test_<yourthing>
 psql -d reimagina_test_<yourthing> -c 'CREATE EXTENSION postgis; CREATE EXTENSION pgrouting;'
-TEST_DATABASE_URL=postgresql:///reimagina_test_<yourthing> pytest tests/integration
+T=postgresql://localhost/reimagina_test_<yourthing>
+TEST_DATABASE_URL=$T REIMAGINA_APP_DSN=$T DATABASE_URL_DIRECT=$T uv run pytest tests/integration
 ```
 
-The name must contain `test` for the fixture guard. Anything left in the shared
+The name must have `test` as a `_`-separated word for the fixture guard.
+Give the DSN a host (`postgresql://localhost/...`): with the host-less form
+`postgresql:///...` three tests in `test_dbos_system_schema_bootstrap.py`
+fail, because the helper that swaps the database name drops the empty
+authority and builds `postgresql:/postgres`. Anything left in the shared
 database survives between runs only by luck, since each run ends by dropping
 every managed schema.
 
@@ -137,7 +143,7 @@ covers the as-completed dispatch loop in `run_workflow`
 argument rests on every branch input being checkpointed.
 
 ```bash
-REIMAGINA_RECOVERY_TEST=1 TEST_DATABASE_URL=postgresql:///reimagina_test_recovery \
+REIMAGINA_RECOVERY_TEST=1 TEST_DATABASE_URL=postgresql://localhost/reimagina_test_recovery \
     pytest tests/recovery -q        # or: make test-recovery
 ```
 
@@ -933,9 +939,13 @@ ROLLBACK;
 BEGIN;
 SELECT plan(6);
 
--- Setup. scenario_id is a bare uuid with no FK (r016:7-10; app_core.scenario exists
--- since r048, but no migration ties job_run.scenario_id to it), so no scenario
--- row is required here, and a made-up id is accepted.
+-- Setup. job_run.scenario_id and indicator_result.scenario_id reference
+-- app_core.scenario (r055), so the scenario row comes first.
+INSERT INTO app_core.project (id, name)
+VALUES ('44444444-0000-0000-0000-000000000006', 'Test Project 6');
+INSERT INTO app_core.scenario (id, project_id, name)
+VALUES ('88888888-0000-0000-0000-000000000001',
+        '44444444-0000-0000-0000-000000000006', 'Result rules');
 INSERT INTO jobs_runtime.job_run (id, scenario_id, model_family, status, code_version)
 VALUES ('99999999-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000001', 'accessibility', 'succeeded', 'v1');
 INSERT INTO curated_geo.indicator_catalog
@@ -1121,16 +1131,24 @@ ROLLBACK;
 
 ```sql
 BEGIN;
-SELECT plan(3);
+SELECT plan(4);
 
--- No scenario row: jobs_runtime.job_run.scenario_id is a plain uuid with no
--- foreign key (r016:7-10, r016:32), so any uuid is accepted.
+-- jobs_runtime.job_run.scenario_id references app_core.scenario since r055
+-- (ON DELETE CASCADE, DEFERRABLE INITIALLY IMMEDIATE): an unknown id is refused.
+SELECT throws_ok(
+  $$
+    INSERT INTO jobs_runtime.job_run (scenario_id, model_family, status, code_version)
+    VALUES ('88888888-0000-0000-0000-000000000002', 'accessibility', 'queued', 'v1')
+  $$,
+  '23503',
+  'job_run naming no scenario must be rejected'
+);
 
 -- Invalid status must be rejected
 SELECT throws_ok(
   $$
     INSERT INTO jobs_runtime.job_run (scenario_id, model_family, status, code_version)
-    VALUES ('88888888-0000-0000-0000-000000000002', 'accessibility', 'processing', 'v1')
+    VALUES (NULL, 'accessibility', 'processing', 'v1')
   $$,
   '23514',
   'Invalid job_run status must be rejected'
@@ -1142,7 +1160,7 @@ SELECT throws_ok(
     INSERT INTO jobs_runtime.job_run
       (scenario_id, model_family, status, code_version, started_at, completed_at)
     VALUES
-      ('88888888-0000-0000-0000-000000000002', 'accessibility', 'failed', 'v1',
+      (NULL, 'accessibility', 'failed', 'v1',
        now(), now() - interval '5 minutes')
   $$,
   '23514',
@@ -1166,18 +1184,24 @@ ROLLBACK;
 
 ## 8. Scenarios Layer
 
-A scenario is an `app_core.scenario` row, and its drawn rules are
-`curated_geo.scenario_edit` rows, one attribute value each (both r048).
+A scenario is an `app_core.scenario` row (r048), and its drawn rules are
+`curated_geo.scenario_rule` rows, one area and its numbers each (r055).
 `materialize_scenario` (`packages/py/reimagina/scenarios/authoring.py`)
 expands those rules into per-feature `curated_geo.scenario_override` rows
-(r030), whose `scenario_id` is still a bare uuid with no foreign key to
-`app_core.scenario`. So the override cases below need no scenario row.
+(r030), whose `scenario_id` references `app_core.scenario` since r055. So
+the override cases below insert the scenario row first.
 
 ### 8.1 Overrides
 
 ```sql
 BEGIN;
 SELECT plan(4);
+
+INSERT INTO app_core.project (id, name)
+VALUES ('44444444-0000-0000-0000-000000000004', 'Test Project 4');
+INSERT INTO app_core.scenario (id, project_id, name)
+VALUES ('88888888-0000-0000-0000-000000000003',
+        '44444444-0000-0000-0000-000000000004', 'Overrides');
 
 -- One typed value per override: exactly one of value_numeric / value_text.
 SELECT lives_ok(
@@ -1241,11 +1265,11 @@ INSERT INTO app_core.scenario (id, project_id, name)
 VALUES ('88888888-0000-0000-0000-000000000004',
         '44444444-0000-0000-0000-000000000003', 'Taller blocks');
 
-INSERT INTO curated_geo.scenario_edit
-  (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+INSERT INTO curated_geo.scenario_rule
+  (scenario_id, ordinal, geometry, type_id, inputs)
 SELECT '88888888-0000-0000-0000-000000000004', 1,
        ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
-       id, 'floors', 10
+       id, '{"levels": 10}'
 FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX';
 
 -- A scenario is addressed by name inside its project: UNIQUE (project_id, name)
@@ -1261,25 +1285,25 @@ SELECT throws_ok(
 -- A drawn rule is polygonal (type check only; validity is the API's job)
 SELECT throws_ok(
   $$
-    INSERT INTO curated_geo.scenario_edit
-      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    INSERT INTO curated_geo.scenario_rule
+      (scenario_id, ordinal, geometry, type_id, inputs)
     SELECT '88888888-0000-0000-0000-000000000004', 2,
            ST_SetSRID(ST_MakePoint(-99.14, 19.43), 4326),
-           id, 'floors', 10
+           id, '{"levels": 10}'
     FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
   $$,
   '23514',
-  'Non-polygon scenario_edit geometry must be rejected'
+  'Non-polygon scenario_rule geometry must be rejected'
 );
 
 -- ordinal decides which overlapping rule wins, so it is unique per scenario
 SELECT throws_ok(
   $$
-    INSERT INTO curated_geo.scenario_edit
-      (scenario_id, ordinal, geometry, type_id, attribute_key, value_numeric)
+    INSERT INTO curated_geo.scenario_rule
+      (scenario_id, ordinal, geometry, type_id, inputs)
     SELECT '88888888-0000-0000-0000-000000000004', 1,
            ST_SetSRID(ST_MakeEnvelope(-99.15, 19.42, -99.12, 19.45), 4326),
-           id, 'num_levels', 3
+           id, '{"unit_size": 60}'
     FROM curated_geo.feature_type_catalog WHERE type_slug = 'block' AND context = 'MEX'
   $$,
   '23505',
@@ -1417,18 +1441,21 @@ WHERE status = 'stale';
 ## Running the tests
 
 Nothing here runs today — there is no `.sql` test file in the tree and no
-`pg_prove` target. Wiring the suite up would take:
+`pg_prove` target. Every block above was executed on 2026-11-23 against a
+freshly bootstrapped database at r056, with a stand-in for the pgTAP functions
+they use (`plan`, `finish`, `throws_ok`, `lives_ok`, `is`, `isnt`), and every
+assertion passed; the section 10 queries need `psql -v scenario_id=… -v
+feature_id=…`. Wiring the suite up would take:
 
 ```bash
-# Start a disposable test database
-createdb reimagina_test
-psql reimagina_test -c "CREATE EXTENSION IF NOT EXISTS pgtap; CREATE EXTENSION IF NOT EXISTS postgis;"
-
-# Apply the schema — Alembic migrations, not a build script
-DATABASE_URL=postgresql:///reimagina_test make migrate
+# A disposable database, created and migrated by bootstrap (not make migrate,
+# which also creates the separate test database)
+uv run python -m apps.cli.app bootstrap-db --app-dsn postgresql://localhost/reimagina_sql_test \
+    --direct-dsn postgresql://localhost/reimagina_sql_test
+psql reimagina_sql_test -c "CREATE EXTENSION IF NOT EXISTS pgtap;"
 
 # Run all tests (once the cases above are extracted into .sql files)
-pg_prove -d reimagina_test tests/sql/*.sql
+pg_prove -d reimagina_sql_test tests/sql/*.sql
 ```
 
 The Python suite that does run:

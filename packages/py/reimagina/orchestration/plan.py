@@ -24,6 +24,7 @@ to give it to.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +58,7 @@ def _units_from_freshness(
     registry: Sequence[IndicatorSpec],
     *,
     scenario_id: str | None = None,
+    aoi_id: str | None = None,
 ) -> list[DirtyUnit]:
     """Dirty units derived from what is actually out of date.
 
@@ -78,7 +80,7 @@ def _units_from_freshness(
 
     return [
         DirtyUnit(indicator=slug, features=frozenset())
-        for slug in stale_units(conn, registry, scenario_id=scenario_id)
+        for slug in stale_units(conn, registry, scenario_id=scenario_id, aoi_id=aoi_id)
     ]
 
 
@@ -94,6 +96,17 @@ class UnknownIndicators(ValueError):
     def __init__(self, unknown: Sequence[str]) -> None:
         self.unknown = tuple(unknown)
         super().__init__(f"unknown indicator(s): {', '.join(sorted(self.unknown))}")
+
+
+def canonical_feature_ids(values: Iterable[str]) -> list[str]:
+    """Feature ids in canonical uuid spelling; ``ValueError`` for one that is not.
+
+    The runners compare them as ``uuid`` (``runners._covers_overrides``), so a
+    typo is a DataError mid-run. ``plan_run`` applies it to every submit; the
+    API (a 422) and the CLI (a one-line error) call it first to refuse a typo
+    in their own words, before a run is persisted.
+    """
+    return [str(uuid.UUID(str(value))) for value in values]
 
 
 def plan_run(
@@ -136,6 +149,11 @@ def plan_run(
     so editing one block's ``floors`` recomputed every indicator reading
     ``floors`` across every block. The attribute half is now exact; the feature
     half is still whole-indicator, which is ``impact.FeatureExpander``'s axis.
+
+    **Freshness is per AOI.** With ``aoi_id``, an indicator already computed for
+    that AOI (and scenario) at its current version is not planned, even when an
+    explicit scenario change-set names it — so an identical scenario recompute
+    is a noop. Another AOI, or the whole database, still sees it as partial.
     """
     params: dict[str, Any] = {
         "scenario_id": scenario_id,
@@ -178,7 +196,7 @@ def plan_run(
     # would see an exhausted generator as truthy and route to the attribute path
     # with an empty change set, silently skipping freshness.
     requested_attributes = tuple(changed_attributes)
-    requested_features = tuple(edited_features)
+    requested_features = tuple(canonical_feature_ids(edited_features))
     changed, edited = resolve_change_set(
         conn,
         changed_attributes=requested_attributes,
@@ -188,11 +206,28 @@ def plan_run(
     from reimagina.assets.freshness import graph_available
 
     if requested_attributes or requested_features:
-        # An explicit change-set wins: the caller knows something the graph does
-        # not, and says so.
+        # An explicit change-set wins on the baseline: the caller knows
+        # something the graph does not, and says so.
         units = compute_dirty_set(changed, edited, registry)
+        if scenario_id and graph_available(conn):
+            # Except what this scenario has already computed for this AOI at
+            # the current version. Every scenario edit publishes a content
+            # digest, so the graph does know here — and without this the
+            # recompute endpoint, which always names its footprint, would
+            # recompute the same blocks to the same numbers forever.
+            from reimagina.assets.freshness import fresh_indicator_slugs
+            from reimagina.assets.keys import partition_key
+
+            fresh = fresh_indicator_slugs(
+                conn,
+                partition_key=partition_key({"scenario": scenario_id}),
+                aoi_id=aoi_id,
+            )
+            units = [unit for unit in units if unit.indicator not in fresh]
     elif graph_available(conn):
-        units = _units_from_freshness(conn, registry, scenario_id=scenario_id)
+        units = _units_from_freshness(
+            conn, registry, scenario_id=scenario_id, aoi_id=aoi_id
+        )
     else:
         # No asset graph in this database — an r040 deployment. Fall back to the
         # change-set implied by the scenario's override rows, exactly as before.

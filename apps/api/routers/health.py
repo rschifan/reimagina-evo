@@ -81,11 +81,9 @@ def tile_server(response: Response) -> TileServerResponse:
     we can:
 
       1. Probe Martin via HTTP and confirm it's alive.
-      2. Report the API's resolved database name so the operator can
-         eyeball-compare it with `martin --config <path>` output or
-         the env vars used to start Martin.
-      3. Surface ``REIMAGINA_API_DSN`` / ``DATABASE_URL`` env values
-         that Martin should be reading too.
+      2. Report the API's resolved database name (from
+         ``REIMAGINA_APP_DSN``) so the operator can eyeball-compare it
+         with the ``DATABASE_URL`` Martin was started with.
 
     Returns 200 iff Martin is reachable. The DB-equivalence check
     can't fail here — it's surfaced as a ``notes`` line for the

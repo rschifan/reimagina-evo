@@ -6,12 +6,10 @@ shells out to GDAL, lives in ``tiles.export``.
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-import psycopg2
 
 from reimagina.storage import backend_for_connection
 from reimagina.tiles.functions import DEFAULT_TILE_FUNCTION, TILE_FUNCTIONS
@@ -26,14 +24,15 @@ from .defaults import (
 from .manifest import load_tile_layers
 
 
-logger = logging.getLogger(__name__)
-
-
 #: Kept as an alias rather than a second list. The names live in
 #: ``tiles.functions``, which the API's own MVT route reads as its allowlist:
 #: a function this resolver advertises but that route refuses to serve is a
 #: 404 in a map, and two frozensets in two modules is how that happens.
 _KNOWN_MARTIN_FUNCTION_TAILS = TILE_FUNCTIONS
+
+
+#: Lowest zoom the overlay tile functions answer (``z >= 8`` since r025).
+OVERLAY_MIN_ZOOM = 8
 
 
 def _martin_base_and_default_function(live_tilejson_base_url: str) -> tuple[str, str]:
@@ -305,9 +304,9 @@ def _resolve_aggregation_overlays(backend, martin_base: str) -> list[dict[str, o
                     "parent_raster_layer_id": parent_id,
                     "parent_raster_layer_slug": parent_slug,
                     "value_range": value_range,
-                    # z<10 returns empty tiles server-side; surface the floor
-                    # so the frontend can set the layer's minzoom to match.
-                    "minzoom": 10,
+                    # The overlay functions return empty tiles below this
+                    # floor; surface it so the frontend's minzoom matches.
+                    "minzoom": OVERLAY_MIN_ZOOM,
                     "maxzoom": 16,
                 },
             }
@@ -426,7 +425,7 @@ def _resolve_source_observation_overlays(
                     # for any future code path that writes observations
                     # without going through aoi_feature).
                     "aois": aois,
-                    "minzoom": 10,
+                    "minzoom": OVERLAY_MIN_ZOOM,
                     "maxzoom": 16,
                 },
             }
@@ -474,13 +473,6 @@ def _aoi_display_tokens(backend) -> dict[str, tuple[str, ...]]:
                 unique.append(t)
         out[str(aoi_id)] = tuple(unique)
     return out
-
-
-# Conventional stat suffixes the worker writes after the operator's
-# attribute_key_prefix. Used to spot the AOI-shortcode segment in a
-# key like ``pop_worldpop_2020_cdmx_sum`` (segments
-# ``[pop, worldpop, 2020, cdmx, sum]`` — last is a stat → previous is
-# a candidate AOI hint).
 
 
 # Conventional stat suffixes the worker writes after the operator's
@@ -555,27 +547,6 @@ def _list_observation_aoi_affinity(
     for attr_key, type_slug, aoi_id in rows:
         affinity.setdefault((str(attr_key), str(type_slug)), set()).add(str(aoi_id))
     return affinity
-
-
-def _list_source_observation_pairs(backend) -> list[tuple[str, str]]:
-    """Distinct (attribute_key, feature.type_slug) pairs for current obs.
-
-    A single SQL query returns the full pair list; the caller filters
-    out recipe outputs in Python.
-    """
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT DISTINCT o.attribute_key, f.type_slug
-            FROM curated_geo.observation o
-            JOIN curated_geo.feature f ON f.id = o.feature_id
-            WHERE o.is_current
-            ORDER BY o.attribute_key, f.type_slug
-            """
-        )
-        rows = cur.fetchall()
-    return [(str(r[0]), str(r[1])) for r in rows]
 
 
 def _resolve_transitive_raster_parent(
@@ -658,31 +629,20 @@ def _observation_key_exists(backend, attribute_key: str) -> bool:
 
     Used by the resolver to detect the bare-prefix output convention
     that ``observation_rollup`` writes when the input has no method
-    suffix. One indexed point lookup; result is callsite-cached by
-    being invoked once per recipe.
+    suffix. One indexed point lookup per call.
 
-    On a transient psycopg2 error (closed connection mid-request,
-    server restart) we log + fall back to ``False`` so /tile-sources
-    still serves SOMETHING — but we DON'T swallow programmer errors
-    like a missing column. A bare ``except Exception`` would mask
-    genuine bugs as silent fallback to the suffixed convention.
+    A DB error propagates: the probe shares the request's transaction,
+    so after a failure every later resolver query would fail anyway
+    (``InFailedSqlTransaction``). Letting it through keeps the real
+    cause — and the API's 503/504 classification of it.
     """
-    try:
-        with backend.connection.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM curated_geo.observation "
-                "WHERE attribute_key = %s AND is_current LIMIT 1",
-                (attribute_key,),
-            )
-            return cur.fetchone() is not None
-    except psycopg2.Error as exc:
-        logger.warning(
-            "tile resolver: observation-key probe failed for %r — "
-            "falling back to suffixed convention. Error: %s",
-            attribute_key,
-            exc,
+    with backend.connection.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM curated_geo.observation "
+            "WHERE attribute_key = %s AND is_current LIMIT 1",
+            (attribute_key,),
         )
-        return False
+        return cur.fetchone() is not None
 
 
 def _logical_name_for_recipe(
@@ -734,39 +694,11 @@ def _description_for_recipe(recipe: dict[str, object]) -> str:
     )
 
 
-def _latest_observation_version(backend, attribute_key: str) -> str | None:
-    """Return a cache-busting token for the current observation set under
-    ``attribute_key``. Uses ``max(updated_at)`` — a monotonic proxy for
-    "these observations were last rewritten at time X". Safe ignoring of
-    sub-second precision: two re-runs of the same recipe within the same
-    second would yield the same token, but in practice the recipe writes
-    take longer than a second and operators reload the page after.
-
-    The Martin tile function ignores unknown query params, so passing
-    ``?v=<epoch>`` doesn't break the SQL — it just makes the URL unique.
-    """
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXTRACT(EPOCH FROM max(updated_at))::bigint
-            FROM curated_geo.observation
-            WHERE is_current AND attribute_key = %s
-            """,
-            (attribute_key,),
-        )
-        row = cur.fetchone()
-    if not row or row[0] is None:
-        return None
-    return str(row[0])
-
-
 def _aggregation_value_ranges_all(backend) -> dict[str, dict[str, object]]:
     """Compute count/min/p05/p50/p95/max for every current attribute_key
     in one round-trip. ``GROUP BY attribute_key`` lets Postgres do the
-    full-table scan once and bucket per key, instead of the resolver
-    calling :func:`_aggregation_value_range` once per key (each
-    triggering its own scan + percentile sort).
+    full-table scan once and bucket per key, instead of one scan +
+    percentile sort per key.
 
     Cuts /tile-sources from ~2 s to ~150 ms when there are >10 keys
     in the catalog.
@@ -820,46 +752,6 @@ def _latest_observation_versions_all(backend) -> dict[str, str]:
         )
         rows = cur.fetchall()
     return {str(key): str(epoch) for key, epoch in rows if epoch is not None}
-
-
-def _aggregation_value_range(backend, attribute_key: str) -> dict[str, object] | None:
-    """Cheap single-aggregate scan of observations to seed a colour ramp.
-
-    Returns None if the table hasn't received any rows for this key yet
-    (recipe registered but never run) — callers surface that as
-    ``available=false``. The query is bounded by the partial index on
-    ``(feature_id, attribute_key) WHERE is_current`` so cost is roughly
-    O(live observations under this key).
-    """
-    # Raw SQL: the repo interface doesn't expose an aggregate helper and
-    # widening it for one tile-resolver call isn't worth the surface.
-    conn = backend.connection
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-              count(*),
-              min(value_numeric),
-              percentile_cont(0.05) WITHIN GROUP (ORDER BY value_numeric),
-              percentile_cont(0.50) WITHIN GROUP (ORDER BY value_numeric),
-              percentile_cont(0.95) WITHIN GROUP (ORDER BY value_numeric),
-              max(value_numeric)
-            FROM curated_geo.observation
-            WHERE is_current AND attribute_key = %s AND value_numeric IS NOT NULL
-            """,
-            (attribute_key,),
-        )
-        count, vmin, p05, p50, p95, vmax = cur.fetchone()
-    if not count:
-        return None
-    return {
-        "count": int(count),
-        "min": float(vmin) if vmin is not None else None,
-        "p05": float(p05) if p05 is not None else None,
-        "p50": float(p50) if p50 is not None else None,
-        "p95": float(p95) if p95 is not None else None,
-        "max": float(vmax) if vmax is not None else None,
-    }
 
 
 def _raster_tile_entry(

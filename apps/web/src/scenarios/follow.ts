@@ -1,8 +1,8 @@
 /**
- * Follow the run a recompute enqueued; remove a rule's edits. No DOM.
+ * Follow the run a rule change or recompute enqueued. No DOM.
  *
- * Both used to live inside the sidebar panel's closure, where the only way to
- * test them was to click through a rendered panel. Each rule below exists
+ * It used to live inside the sidebar panel's closure, where the only way to
+ * test it was to click through a rendered panel. Each rule below exists
  * because its absence once shipped.
  *
  * Polling rather than the SSE stream `/jobs/{id}/events`: the page needs one
@@ -10,7 +10,7 @@
  * per open tab for something a planner watches for a few seconds. The Runs
  * page is where a run is actually followed, and `handedOver` says so.
  */
-import { getRun, removeScenarioEdit, type RunView } from "../api";
+import { getRun, type RunView } from "../api";
 import { isTerminalRunStatus, runProducedResults } from "../scenario";
 
 /** How often, and for how long, the page follows the run it enqueued. Two
@@ -90,29 +90,4 @@ export function followRun(runId: string, on: FollowEvents): () => void {
     cancelled = true;
     if (timer !== null) clearTimeout(timer);
   };
-}
-
-/**
- * Remove every edit of one rule, in order, from `scenarioId`.
- *
- * `scenarioId` is a parameter, not read from the selection: a selection that
- * changed mid-removal once sent the rest of a rule's edit ids to the next
- * scenario, which refused them, leaving the first with a half-removed rule.
- * Sequential and stopping at the first failure, so the caller can say exactly
- * what state the scenario is left in.
- */
-export async function removeRule(
-  scenarioId: string,
-  editIds: string[],
-): Promise<{ removed: number; error: unknown | null }> {
-  let removed = 0;
-  for (const editId of editIds) {
-    try {
-      await removeScenarioEdit(scenarioId, editId);
-      removed += 1;
-    } catch (error) {
-      return { removed, error };
-    }
-  }
-  return { removed, error: null };
 }

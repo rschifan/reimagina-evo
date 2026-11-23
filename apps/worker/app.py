@@ -34,51 +34,12 @@ def _wait_for_shutdown(stop) -> None:
     stop.wait()
 
 
-def _sweep_interval(stale_after: float) -> float:
-    """How often to sweep, from ``REIMAGINA_RECLAIM_SWEEP_S``.
-
-    Rejected rather than coerced when it is not a positive number, because
-    every unusable value fails in a way that looks like something else.
-
-    ``0`` or a negative value makes ``Event.wait(timeout)`` return
-    immediately, so the loop becomes a busy spin: a full sweep — connect,
-    query the liveness table, ask DBOS to recover — as fast as Postgres will
-    answer, forever, on a thread nobody is watching. The symptom is a worker
-    that looks idle while holding a connection permanently busy.
-
-    A non-numeric value raises ``ValueError`` from ``float()`` at startup with
-    no mention of the variable that caused it.
-
-    The default is half the staleness threshold, floored at 60 s, so an
-    executor is normally declared dead within 1.5 thresholds of its last beat.
-    """
-    import os
-
-    raw = os.environ.get("REIMAGINA_RECLAIM_SWEEP_S")
-    if raw is None or raw.strip() == "":
-        return max(stale_after / 2, 60.0)
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"REIMAGINA_RECLAIM_SWEEP_S={raw!r} is not a number"
-        ) from exc
-    if value <= 0 or value != value or value == float("inf"):
-        raise RuntimeError(
-            f"REIMAGINA_RECLAIM_SWEEP_S={raw!r} must be a positive, finite "
-            "number of seconds. Zero or negative makes the sweep thread spin "
-            "without pausing; set REIMAGINA_RECLAIM_ENABLED=0 to turn the "
-            "sweep off instead."
-        )
-    return value
-
-
 def run_dbos_worker() -> None:
     """Launch DBOS and block. Recovery of this executor's own work is automatic.
 
     ``REIMAGINA_EXECUTOR_ID`` must be distinct per process: recovery is scoped
-    by executor id and DBOS defaults every process to ``local``, so sharing it
-    would make each process claim the others' in-flight work.
+    by executor id, and the default ``<hostname>:worker`` is shared by every
+    worker on one host, so two there would claim each other's in-flight work.
     """
     import logging
     import os
@@ -87,7 +48,11 @@ def run_dbos_worker() -> None:
     from reimagina.logging_setup import configure_logging
     from reimagina.orchestration import dbos_app
     from reimagina.orchestration.executor_health import interval_seconds
-    from reimagina.orchestration.reclaim import stale_after_seconds, sweep
+    from reimagina.orchestration.reclaim import (
+        stale_after_seconds,
+        sweep,
+        sweep_interval,
+    )
 
     # ⚠ Without this the worker emits nothing of its own. DBOS configures its
     # own `dbos` logger with a handler, so a worker log *looks* configured —
@@ -127,7 +92,7 @@ def run_dbos_worker() -> None:
     # has just stopped using.
     beat_interval = interval_seconds()
     stale_after = stale_after_seconds() if enabled else None
-    sweep_every = _sweep_interval(stale_after) if stale_after is not None else None
+    sweep_every = sweep_interval(stale_after) if stale_after is not None else None
 
     # Launching starts the liveness heartbeat for this executor.
     dbos_app.launch()

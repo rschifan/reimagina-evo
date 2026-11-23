@@ -1,10 +1,10 @@
 """Ingest point-geometry POI / amenity GeoParquet files into curated_geo.feature.
 
-Targets the per-pilot-city amenity layers downloaded from the private data
-lake:
+Reads the per-pilot-city amenity layers from a local directory the caller
+names (``source_root``; there is no default location):
 
-  - data/sources/lake/sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet
-  - data/sources/lake/exe/002_mexicali/equipamientos.geoparquet
+  - sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet
+  - inegi/denue/equipamientos_mexicali.parquet (the Mexicali source bundle)
 
 Both share the same column set —
 ``id, category, capacity, geometry, fuente, fecha, entidad`` — and store
@@ -31,18 +31,12 @@ from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
 
 from . import silver
+from .inegi_marco import INEGI_MARCO_LICENSE, INEGI_MARCO_PROVIDER
 from .loader import load_vector_source
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────
 
-
-# Default location relative to repo root; overridable for tests.
-DEFAULT_SOURCE_ROOT = Path("data/sources/lake")
-
-# private container path used as the lineage prefix in
-# data_source_catalog.storage_uri.
-LAKE_RAW_PREFIX = "lake://private-lake"
 
 # Use the existing global:establishment feature type from r003 for now.
 # All amenity geoparquets land here regardless of provider.
@@ -63,10 +57,10 @@ class PointsLayerSpec:
 
     key: str
     geoparquet_relative: str
-    """Path relative to ``source_root`` (default ``data/sources/lake/``)."""
+    """Path relative to ``source_root``."""
 
-    lake_subpath: str
-    """Path under ``private-lake/`` used to build the lineage URI."""
+    lineage_uri: str
+    """Where the data comes from: ``data_source_catalog.storage_uri``."""
 
     display_name: str
     provider: str
@@ -84,12 +78,14 @@ class PointsLayerSpec:
         "fecha",
         "entidad",
     )
+    credit: str | None = None
+    """``data_source_catalog.credit``; only where the licence prescribes it."""
 
 
 TLALPAN_AMENITIES = PointsLayerSpec(
     key="tlalpan_amenities",
     geoparquet_relative="sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet",
-    lake_subpath="sigcdmx/amenities/exe_amenities_tlalpan_complete.geoparquet",
+    lineage_uri="https://sig.cdmx.gob.mx/",
     display_name="CDMX · Tlalpan amenities (SIG-CDMX + DENUE)",
     provider="SIG-CDMX",
     license="Datos abiertos de la CDMX",
@@ -104,14 +100,25 @@ TLALPAN_AMENITIES = PointsLayerSpec(
 
 MEXICALI_AMENITIES = PointsLayerSpec(
     key="mexicali_amenities",
-    geoparquet_relative="exe/002_mexicali/equipamientos.geoparquet",
-    lake_subpath="exe/002_mexicali/equipamientos.geoparquet",
-    display_name="Mexicali · Amenities (IMIP / DENUE)",
-    provider="IMIP Mexicali",
-    license="Datos abiertos del IMIP",
+    geoparquet_relative="inegi/denue/equipamientos_mexicali.parquet",
+    lineage_uri="https://www.inegi.org.mx/app/mapa/denue/",
+    display_name="Mexicali · Amenities (INEGI DENUE)",
+    # Every row's `fuente` is DENUE and `fecha` 2025-05: this is INEGI data.
+    # It used to be labelled "IMIP Mexicali", which put the wrong provider on
+    # the map's credit line. Same provider and licence strings as the INEGI
+    # boundaries and census (`inegi_marco`); the map line is `credit` below.
+    provider=INEGI_MARCO_PROVIDER,
+    license=INEGI_MARCO_LICENSE,
     version="2025-05",
     notes=(
-        "DENUE-derived amenities for Mexicali (Baja California). 1.5k point features."
+        "A selection of INEGI DENUE units for Mexicali (Baja California): "
+        "Consultorio medico, Farmacia, Guarderia, Hospital, Cine. 1,493 point "
+        "features."
+    ),
+    # INEGI's terms ask for one credit per product: "Fuente: INEGI, <producto>, <fecha>".
+    credit=(
+        "Fuente: INEGI, Directorio Estadístico Nacional de Unidades Económicas "
+        "(DENUE), 05/2025"
     ),
 )
 
@@ -142,10 +149,11 @@ def ensure_layer_source(conn, spec: PointsLayerSpec) -> str:
         provider=spec.provider,
         storage_type="vector",
         integration_role="enrichment",
-        storage_uri=f"{LAKE_RAW_PREFIX}/{spec.lake_subpath}",
+        storage_uri=spec.lineage_uri,
         version=spec.version,
         license=spec.license,
         notes=spec.notes,
+        credit=spec.credit,
     )
 
 
@@ -168,7 +176,8 @@ def stage_layer(
     if not source_path.exists():
         raise FileNotFoundError(
             f"Amenity GeoParquet not found: {source_path}. "
-            "Verify the data lake mirror under data/sources/lake/ exists."
+            "--source-root must be the directory the layer's path is relative "
+            "to, e.g. the Mexicali source bundle."
         )
     gdf = silver.read_vector(source_path)
     if gdf.empty:
@@ -214,15 +223,15 @@ def load_layer(
 def bootstrap(
     conn,
     *,
+    source_root: Path,
     layers: list[str] | None = None,
-    source_root: Path | None = None,
     orchestrator_run_id: str | None = None,
     code_version: str = "dev",
 ) -> dict[str, Any]:
     """Stage + load each requested amenity layer.
 
-    ``source_root`` defaults to the repo-relative ``data/sources/lake``
-    path; tests override it to point at fixtures.
+    ``source_root`` is the directory the specs' paths are relative to; a
+    relative path is taken from the repository root.
     """
     requested = list(layers) if layers else list(DEFAULT_LOAD_ORDER)
     unknown = [k for k in requested if k not in LAYER_SPECS]
@@ -230,10 +239,7 @@ def bootstrap(
         raise ValueError(f"Unknown amenity layer key(s): {unknown}")
     ordered = [k for k in DEFAULT_LOAD_ORDER if k in requested]
 
-    if source_root is not None:
-        root = Path(source_root)
-    else:
-        root = DEFAULT_SOURCE_ROOT
+    root = Path(source_root)
     if not root.is_absolute():
         root = REPO_ROOT / root
 

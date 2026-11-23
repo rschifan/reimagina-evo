@@ -137,6 +137,11 @@ describe("hash round trip", () => {
     );
     expect(slugFromHash("#/?q=park")).toBeNull();
   });
+
+  // A hand-edited or truncated link threw URIError inside the route effect.
+  it("a malformed escape reads as no slug", () => {
+    expect(slugFromHash("#/i/%E0")).toBeNull();
+  });
 });
 
 describe("capNotes", () => {

@@ -220,9 +220,10 @@ class Orchestrator(Protocol):
         The first event is a snapshot of the run's current status, so a late
         subscriber is not left waiting on a run that already finished.
 
-        Takes no connection: every engine has its own progress transport
-        (LISTEN/NOTIFY here, workflow streams elsewhere) and none of them is the
-        caller's pooled connection. Async because the service engines expose
+        Takes no connection: every engine has its own progress transport (here
+        the parent workflow's DBOS stream, read through ``DBOSClient``; the
+        in-process orchestrator yields its finished report) and none of them is
+        the caller's pooled connection. Async because the service engines expose
         async iterators; an engine whose stream is a sync generator wraps it.
         """
         ...

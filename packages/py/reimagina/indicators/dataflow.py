@@ -206,10 +206,10 @@ def accessibility_result_frame(
 ) -> pd.DataFrame:
     """Distance-to-nearest per block, clamped into the declared bounds.
 
-    **One node serves all six accessibility indicators.** They differ by
-    category and by whether the distance is straight-line or along the network,
-    but every one of them is metres in ``[0, ACCESSIBILITY_CUTOFF_M]`` — so six
-    nodes would be six copies of one bounds contract, and a divergence between
+    **One node serves every accessibility indicator.** They differ by
+    category, but every one of them is metres in
+    ``[0, ACCESSIBILITY_CUTOFF_M]`` — so one node per category would be copies
+    of one bounds contract, and a divergence between
     them would be a bug rather than a feature. The distinctions live in the SQL
     that produces ``accessibility_rows``, which is where they belong.
 

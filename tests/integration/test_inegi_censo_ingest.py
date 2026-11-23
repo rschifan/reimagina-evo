@@ -1,7 +1,7 @@
 """Integration tests for reimagina.pipeline.inegi_censo.bootstrap.
 
-Builds a tiny synthetic 2020 census parquet that mirrors the data
-lake's lowercase ``entidad=N/`` partition shape (no nested ``mun``),
+Builds a tiny synthetic 2020 census parquet that mirrors the INEGI
+parquet copy's lowercase ``entidad=N/`` partition shape (no nested ``mun``),
 seeds matching municipality + block features so the (nom_mun → CVE_MUN)
 lookup and the CVEGEO join both hit, runs ``bootstrap()`` against the
 migrated test DB, and asserts:
@@ -181,20 +181,17 @@ def test_bootstrap_writes_one_observation_per_feature_and_column(
     assert keys == expected
 
 
-def test_prom_ocup_lands_as_the_household_size_a_rule_overrides(
+def test_prom_ocup_lands_under_its_census_key_and_shadows_no_input(
     conn,
     fake_censo_root: Path,
     cuauhtemoc_features,
 ):
-    """INEGI's average occupants per dwelling is a scenario input's baseline.
-
-    It lands under ``people_per_household``, the key ``effective_numeric``
-    resolves for the edificability family, and not as ``censo_2020_prom_ocup``,
-    which no indicator reads. A block with no occupied dwelling reads 0 in the
-    census; that is an absence, not a household of nobody, so it is not
-    written and the block keeps whatever fallback it has.
-    """
-    feat_a, _ = cuauhtemoc_features
+    """INEGI's average occupants per *occupied* dwelling is not the fitted
+    ``people_per_household``, which is population per dwelling, occupied or
+    not (``scripts/seed_demo_attributes.py``). Written under that key, it
+    shadowed the fit as an observation and multiplied the census dwellings,
+    empty ones included, into 14% more people than the census counted."""
+    feat_a, feat_b = cuauhtemoc_features
     result = inegi_censo.bootstrap(
         conn,
         cve_ent_filter=["9"],
@@ -204,7 +201,7 @@ def test_prom_ocup_lands_as_the_household_size_a_rule_overrides(
     obs_rows = _fetch_obs_for(conn, source_id=result.source_id)
     assert {
         (r["feature_id"], r["attribute_key"]): r["value_numeric"] for r in obs_rows
-    } == {(feat_a, "people_per_household"): 3.2}
+    } == {(feat_a, "censo_2020_prom_ocup"): 3.2, (feat_b, "censo_2020_prom_ocup"): 0.0}
 
 
 def test_bootstrap_round_trips_population_value(
@@ -281,7 +278,7 @@ def test_bootstrap_records_lineage_via_storage_uri(
             (result.source_id,),
         )
         storage_uri, storage_type, integration_role = cur.fetchone()
-    assert storage_uri == inegi_censo.LAKE_PREFIX
+    assert storage_uri == inegi_censo.CENSO_URL
     assert storage_type == "tabular"
     assert integration_role == "enrichment"
 
@@ -363,3 +360,30 @@ def test_bootstrap_raises_when_no_municipalities_loaded(
             cve_ent_filter=["9"],
             source_root=fake_censo_root,
         )
+
+
+def test_bootstrap_publishes_the_block_layer_it_writes_to(
+    conn,
+    fake_censo_root: Path,
+    cuauhtemoc_features,
+):
+    """Census observations land on ``mex.block``, which is what their readers
+    declare; publishing only ``censo.2020`` (which nothing reads) left those
+    readers "fresh" on the old value."""
+    from reimagina.assets.registry import seed_assets
+
+    seed_assets(conn)
+    result = inegi_censo.bootstrap(
+        conn,
+        cve_ent_filter=["9"],
+        columns=("prom_ocup",),
+        source_root=fake_censo_root,
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT av.version FROM curated_geo.asset_version av "
+            "JOIN curated_geo.asset a ON a.id = av.asset_id "
+            "WHERE a.asset_key = 'mex.block' AND av.is_current "
+            "AND av.partition_key = ''"
+        )
+        assert cur.fetchone() == (result.ingestion_run_id,)

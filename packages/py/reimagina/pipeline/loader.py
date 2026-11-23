@@ -1,10 +1,16 @@
 """Silver → curated_geo loader. Routes by storage_type."""
 
 from __future__ import annotations
+
+import json
+import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
 import pandas as pd
+import pyarrow.parquet as pq
 
 from reimagina.data import catalog as cat
 from reimagina.data import feature as feat
@@ -48,13 +54,23 @@ def load_vector_source(
     code_version: str = "dev",
     name_col: str | None = None,
     attributes_cols: list[str] | None = None,
+    after_insert: Callable[[str, int], int] | None = None,
+    supersede: bool = False,
 ) -> dict[str, Any]:
     """Load a Silver GeoJSON/shapefile into curated_geo.feature.
 
     Creates and completes an ingestion_run for lineage.
     Commits on success; rolls back and marks run failed on error.
 
-    Returns {"ingestion_run_id": str, "records_written": int}.
+    ``after_insert(run_id, inserted)`` runs inside the load's transaction,
+    before the run is completed and a version published, and returns how many
+    of the inserted rows it kept — the AOI clip, which must be able to roll
+    the whole load back and must not publish rows it is about to delete.
+    ``supersede`` retires other releases of this source; see
+    :func:`supersede_other_versions`.
+
+    Returns {"ingestion_run_id": str, "records_written": int,
+    "records_superseded": int}; the version is published when either moved.
     """
     run_id = cat.start_ingestion_run(
         conn,
@@ -77,6 +93,7 @@ def load_vector_source(
     try:
         backend = backend_for_connection(conn)
         feature_repo = backend.feature_repo()
+        gdf = None
         if Path(silver_path).suffix.lower() == ".parquet" and hasattr(
             feature_repo, "bulk_insert_features_from_parquet"
         ):
@@ -103,12 +120,22 @@ def load_vector_source(
                 name_col=name_col,
                 attributes_cols=attributes_cols,
             )
+        if after_insert is not None:
+            count = after_insert(run_id, count)
+        superseded = 0
+        if supersede:
+            superseded = supersede_other_versions(
+                conn,
+                source_id=source_id,
+                type_id=type_id,
+                bounds=_input_bounds_4326(silver_path, gdf),
+            )
         cat.complete_ingestion_run(
             conn,
             run_id,
             status="succeeded",
-            details={"records_written": count},
-            rows_written=count,
+            details={"records_written": count, "records_superseded": superseded},
+            rows_written=count + superseded,
             dataset_version=dataset_version,
             # Derived, not threaded through every caller: this function already
             # holds the type_id, and an asset carries feature_type_id as an FK.
@@ -117,7 +144,11 @@ def load_vector_source(
             asset_key=asset_key_for_feature_type(conn, type_id),
         )
         conn.commit()
-        return {"ingestion_run_id": run_id, "records_written": count}
+        return {
+            "ingestion_run_id": run_id,
+            "records_written": count,
+            "records_superseded": superseded,
+        }
     except Exception as exc:
         _rollback_if_possible(conn)
         cat.complete_ingestion_run(
@@ -128,6 +159,127 @@ def load_vector_source(
         )
         conn.commit()
         raise
+
+
+_LONLAT_CRS_IDS = (
+    {"authority": "EPSG", "code": 4326},
+    {"authority": "OGC", "code": "CRS84"},
+)
+
+
+Bounds = tuple[float, float, float, float]
+
+
+def _input_bounds_4326(path, gdf: gpd.GeoDataFrame | None) -> Bounds:
+    """The input's envelope in 4326, as load_features stores it."""
+    if gdf is None:
+        bounds = _geoparquet_bounds_4326(path)
+        if bounds is not None:
+            return bounds
+        gdf = gpd.read_parquet(path, columns=["geometry"])
+    geoms = gdf.geometry
+    if geoms.crs is not None and geoms.crs.to_epsg() != 4326:
+        geoms = geoms.to_crs(epsg=4326)
+    x0, y0, x1, y1 = geoms.total_bounds
+    return (x0, y0, x1, y1)
+
+
+def _geoparquet_bounds_4326(path) -> Bounds | None:
+    """The file's bbox from its GeoParquet metadata, or None when the file
+    does not record one in lon/lat — then the caller reads the geometries.
+    Saves decoding every geometry of a city-sized file for four numbers."""
+    try:
+        geo = json.loads((pq.read_schema(path).metadata or {})[b"geo"])
+        column = geo["columns"][geo["primary_column"]]
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+    # No "crs" key means OGC:CRS84 by the spec; null means unknown.
+    crs = column.get("crs", {"id": _LONLAT_CRS_IDS[1]})
+    bbox = column.get("bbox")
+    if not crs or crs.get("id") not in _LONLAT_CRS_IDS:
+        return None
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    x0, y0, x1, y1 = (float(b) for b in bbox)
+    return (x0, y0, x1, y1)
+
+
+class SupersededFeaturesInUse(RuntimeError):
+    """A superseded feature carries a scenario edit, so it cannot be deleted."""
+
+
+def supersede_other_versions(
+    conn,
+    *,
+    source_id: str,
+    type_id: str,
+    bounds: tuple[float, float, float, float],
+) -> int:
+    """Delete this layer's features from other releases of the same source.
+
+    A source row is keyed on ``(provider, name, version)`` and Overture's
+    version is its release, so a release bump mints a new source and
+    ``ON CONFLICT (source_id, dataset_version, source_record_ref)`` cannot see
+    the previous release's rows: every GERS id lands twice, and a block counts
+    each of its buildings twice. Overture deletes old releases within weeks,
+    so the bump is not optional.
+
+    Scoped to the same provider + name (a source name is one extent — "…
+    Mexicali BBox") and to ``bounds``, the envelope of the input file, so
+    another city's rows under a shared name (places) are untouched. The input,
+    not the whole source: two cities loaded at the new release would otherwise
+    span an envelope over every city between them. And the input, not the rows
+    this run inserted: a re-run of a release already loaded inserts nothing
+    (every row conflicts), and must still clean a database doubled before
+    this supersede existed. Deleting a feature
+    cascades to its derived rows (AOI membership, overlaps, observations,
+    results), which the next membership/overlap/indicator run rebuilds — but
+    also to scenario edits, which are user data: the load refuses rather than
+    drop one.
+    """
+    if any(math.isnan(b) for b in bounds):  # an empty input covers nothing
+        return 0
+    other_versions = cat.source_versions_sql("%(source_id)s::uuid", include_self=False)
+    superseded = f"""
+        SELECT f.id
+        FROM curated_geo.feature f
+        WHERE f.type_id = %(type_id)s::uuid
+          AND f.source_id IN ({other_versions})
+          AND ST_Intersects(
+              f.geometry, ST_MakeEnvelope(%(x0)s, %(y0)s, %(x1)s, %(y1)s, 4326)
+          )
+    """
+    x0, y0, x1, y1 = (float(b) for b in bounds)
+    params = {"source_id": source_id, "type_id": type_id, "x0": x0, "y0": y0}
+    params |= {"x1": x1, "y1": y1}
+    # One statement finds the superseded features once, counts the scenario
+    # edits on them, and deletes them only when there are none.
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            WITH doomed AS MATERIALIZED ({superseded}),
+            edited AS (
+                SELECT count(*) AS n FROM curated_geo.scenario_override
+                WHERE feature_id IN (SELECT id FROM doomed)
+            ),
+            deleted AS (
+                DELETE FROM curated_geo.feature
+                WHERE id IN (SELECT id FROM doomed)
+                  AND (SELECT n FROM edited) = 0
+                RETURNING 1
+            )
+            SELECT (SELECT n FROM edited), (SELECT count(*) FROM deleted)
+            """,
+            params,
+        )
+        edited, deleted = (int(v) for v in cur.fetchone())
+    if edited:
+        raise SupersededFeaturesInUse(
+            f"{edited} scenario edit(s) reference features of an earlier "
+            f"release of this source; deleting those features would delete "
+            f"the edits. Move or delete the edits, then reload."
+        )
+    return deleted
 
 
 def load_tabular_source(

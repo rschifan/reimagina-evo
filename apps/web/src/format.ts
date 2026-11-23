@@ -44,6 +44,13 @@ export function unitLabel(unit: string | null): string {
 }
 
 
+/** What follows a number: ` units / ha`, or nothing for no unit or a 0–1
+ *  score or ratio, whose unit is a scale rather than a suffix. */
+export function unitSuffix(unit: string | null): string {
+  return unit && !unit.endsWith("_0_1") ? ` ${unitLabel(unit)}` : "";
+}
+
+
 /**
  * One indicator value as a reader sees it: `1,234 m`, `12.5 units / ha`,
  * `0.41`, and at or past a declared cap `1,500 m+ (cap)`.
@@ -61,7 +68,7 @@ export function formatValue(
   indicator: { unit: string | null; cap_value?: number | null },
 ): string {
   const cap = indicator.cap_value ?? null;
-  const unit = indicator.unit && !indicator.unit.endsWith("_0_1") ? ` ${unitLabel(indicator.unit)}` : "";
+  const unit = unitSuffix(indicator.unit);
   if (cap !== null && value >= cap) return `${fmtNumber(cap)}${unit}+ (cap)`;
   return `${fmtNumber(value)}${unit}`;
 }

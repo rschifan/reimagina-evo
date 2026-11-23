@@ -13,6 +13,9 @@ from reimagina.indicators.catalog import (
     ACCESSIBILITY_CATEGORIES,
     ACCESSIBILITY_NETWORK,
     LIVABILITY_ACCESSIBILITY_CATEGORIES,
+    LIVABILITY_BLOCK_SCORE,
+    LIVABILITY_DENSITY_BAND_HIGH,
+    LIVABILITY_DENSITY_BAND_LOW,
     SHIPPED_INDICATORS,
     URBAN_FORM_BLOCK_COMPOSITE,
 )
@@ -182,3 +185,60 @@ def test_culture_is_not_in_the_livability_score():
     assert "culture" not in LIVABILITY_ACCESSIBILITY_CATEGORIES
     score = _BY_SLUG["livability_block_score"]
     assert not any("culture" in slug for slug, _ in score.depends_on)
+
+
+# ── density target band ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("density", "score"),
+    [
+        (0.0, 0.0),
+        (25.0, 0.5),
+        (50.0, 1.0),
+        (100.0, 1.0),
+        (150.0, 1.0),
+        (225.0, 0.5),
+        (300.0, 0.0),
+        (2000.0, 0.0),
+    ],
+)
+def test_livability_scores_density_against_its_target_band(density, score):
+    """Inside 50-150 units/ha scores 1; linear to 0 at 0 below and at twice
+    the upper end (300) above. Normalising against the 2,000 safety cap made
+    the densest block the most livable."""
+    from reimagina.indicators.composite import component_score
+
+    band = dict(
+        (e.indicator_slug, e.target_band) for e in LIVABILITY_BLOCK_SCORE.inputs
+    )["edificability_block_density"]
+    assert band == (LIVABILITY_DENSITY_BAND_LOW, LIVABILITY_DENSITY_BAND_HIGH)
+    dep = _BY_SLUG["edificability_block_density"]
+    assert component_score(dep, density, band) == pytest.approx(score)
+
+
+def test_an_unbanded_input_is_normalised_and_oriented_as_before():
+    from reimagina.indicators.composite import component_score
+
+    slug = "accessibility_block_park_network_m"
+    for value in (0.0, 100.0, 1400.0, 5000.0):
+        assert component_score(_BY_SLUG[slug], value, None) == pytest.approx(
+            _orient(slug, value)
+        )
+
+
+def test_the_density_band_reaches_the_livability_digest():
+    """Changing the band changes published scores, so it must restage them."""
+    from dataclasses import replace
+
+    from reimagina.assets.keys import AssetEdge
+    from reimagina.assets.registry import _params_digest
+
+    moved = tuple(
+        replace(e, target_band=(40.0, 150.0)) if e.target_band else e
+        for e in LIVABILITY_BLOCK_SCORE.inputs
+    )
+    assert _params_digest(LIVABILITY_BLOCK_SCORE) != _params_digest(
+        replace(LIVABILITY_BLOCK_SCORE, inputs=moved, depends_on=())
+    )
+    assert AssetEdge("x").target_band is None

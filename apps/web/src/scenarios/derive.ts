@@ -6,6 +6,7 @@
  * status a scenario is in, what a table cell says, where a link points — is
  * tested here without a browser.
  */
+import { decodeOrNull } from "../lib/utils";
 import type { IndicatorValueStats, ReachableIndicator, ScenarioListRow } from "../api";
 import { fmtNumber } from "../format";
 import type { Tone } from "../lib/components/ui/tone";
@@ -75,7 +76,7 @@ export function statusFor(
   row: ScenarioListRow,
   followed: { status: string } | null,
 ): ScenarioStatus {
-  if (row.edit_count === 0) return "no-rules";
+  if (row.rule_count === 0) return "no-rules";
   const live = followed ? fromRun(followed.status) : null;
   if (live) return live;
   if (row.materialized_at === null) return "not-computed";
@@ -122,8 +123,8 @@ export function noValuesNote(indicatorName: string, inScenario: boolean): string
 export function parseHash(hash: string): { scenarioId: string | null; slug: string | null } {
   const [scenario, slug] = hash.replace(/^#\/?/, "").split("/");
   return {
-    scenarioId: scenario ? decodeURIComponent(scenario) : null,
-    slug: slug ? decodeURIComponent(slug) : null,
+    scenarioId: scenario ? decodeOrNull(scenario) : null,
+    slug: slug ? decodeOrNull(slug) : null,
   };
 }
 

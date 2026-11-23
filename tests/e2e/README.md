@@ -78,10 +78,10 @@ database a person is working in:
 ```bash
 # In a separate scratch checkout, configure/review all five DSNs.
 # See docs/INSTALLATION.md: acceptance drops and recreates its target.
-export DATABASE_URL=postgresql://localhost/reimagina_e2e_scratch
+export DATABASE_URL=postgresql://localhost:5432/reimagina_e2e_scratch
 export REIMAGINA_APP_DSN=$DATABASE_URL DATABASE_URL_DIRECT=$DATABASE_URL
-export TEST_DATABASE_URL=postgresql://localhost/reimagina_e2e_scratch_test
-export DATABASE_URL_ADMIN=postgresql://localhost/postgres
+export TEST_DATABASE_URL=postgresql://localhost:5432/reimagina_e2e_scratch_test
+export DATABASE_URL_ADMIN=postgresql://localhost:5432/postgres
 scripts/acceptance_run.sh
 
 # Its own API, worker and web server, on ports nothing else uses.
@@ -100,3 +100,9 @@ for the scratch ports. `load_dotenv()` searches upward and never overrides,
 so anything left unset is read from `.env` — and the worker's queue lives in
 whatever `DATABASE_URL_DIRECT` names, so an unset one would take runs from the
 real stack's queue.
+
+On a real pilot (`scripts/mexicali_run.sh`) the blocks are not a grid, and
+many are MultiPolygons. Set `E2E_FOCUS=lon0,lat0,lon1,lat1` to a small window
+of the city (about a kilometre across) and, optionally, `E2E_GRID` (default
+4): the flow fits the map to that window, addresses it as a grid of cells, and
+snaps each probe to a block painted near a cell's centre.

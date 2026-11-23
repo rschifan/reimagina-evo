@@ -67,19 +67,22 @@ class PostgresSourceCatalogRepository:
         version: str,
         license: str | None = None,
         notes: str | None = None,
+        credit: str | None = None,
     ) -> str:
         with self.connection.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO curated_geo.data_source_catalog
-                  (name, provider, storage_type, integration_role, storage_uri, version, license, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  (name, provider, storage_type, integration_role, storage_uri, version, license, notes,
+                   credit)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (provider, name, version) DO UPDATE
                    SET storage_type = EXCLUDED.storage_type,
                        integration_role = EXCLUDED.integration_role,
                        storage_uri = EXCLUDED.storage_uri,
                        license = COALESCE(EXCLUDED.license, curated_geo.data_source_catalog.license),
-                       notes = COALESCE(EXCLUDED.notes, curated_geo.data_source_catalog.notes)
+                       notes = COALESCE(EXCLUDED.notes, curated_geo.data_source_catalog.notes),
+                       credit = COALESCE(EXCLUDED.credit, curated_geo.data_source_catalog.credit)
                 RETURNING id
                 """,
                 (
@@ -91,6 +94,7 @@ class PostgresSourceCatalogRepository:
                     version,
                     license,
                     notes,
+                    credit,
                 ),
             )
             return str(cur.fetchone()[0])
@@ -407,6 +411,32 @@ class PostgresFeatureRepository:
                 for fid, area, perim in cur.fetchall()
             ]
 
+    def feature_ids_in_aoi(
+        self,
+        *,
+        type_id: str,
+        aoi_id: str,
+        feature_ids: list[str] | None = None,
+    ) -> set[str]:
+        # Same AOI test as geodesic_metrics_by_type, without measuring areas
+        # nobody reads.
+        id_filter = " AND f.id = ANY(%s::uuid[])" if feature_ids else ""
+        params: list = [aoi_id, type_id]
+        if feature_ids:
+            params.append(list(feature_ids))
+        with self.connection.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT f.id::text
+                FROM curated_geo.feature f
+                JOIN curated_geo.area_of_interest aoi
+                  ON aoi.id = %s AND ST_Intersects(f.geometry, aoi.geometry)
+                WHERE f.type_id = %s{id_filter}
+                """,
+                params,
+            )
+            return {str(fid) for (fid,) in cur.fetchall()}
+
     def iter_geometries_by_type(
         self,
         *,
@@ -444,9 +474,10 @@ class PostgresFeatureRepository:
     ) -> dict[str, str] | None:
         if not attributes:
             raise ValueError("find_by_attributes requires at least one attribute")
-        # Build one `attributes->>'key' = %s` predicate per input entry.
-        predicates = [f"attributes->>'{key}' = %s" for key in attributes]
-        params: list = list(attributes.values()) + [type_slug]
+        # One `attributes->>%s = %s` predicate per entry. The key is bound,
+        # never spliced: a `'` in it would otherwise rewrite the WHERE clause.
+        predicates = ["attributes->>%s = %s"] * len(attributes)
+        params: list = [p for item in attributes.items() for p in item] + [type_slug]
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
@@ -1571,7 +1602,10 @@ class PostgresOverlapRepository:
                     FROM curated_geo.feature sf
                     JOIN curated_geo.feature tf
                         ON tf.type_id = %s
-                        AND ST_Within(sf.geometry, tf.geometry){aoi_join}
+                        -- ST_Covers, not ST_Within: a point on a shared
+                        -- boundary is within neither target and was lost.
+                        -- The rollup keeps one of its rows (lowest target id).
+                        AND ST_Covers(tf.geometry, sf.geometry){aoi_join}
                     WHERE sf.type_id = %s
                     ON CONFLICT (source_feature_id, target_feature_id) DO UPDATE
                         SET overlap_basis    = EXCLUDED.overlap_basis,
@@ -1592,7 +1626,7 @@ class PostgresOverlapRepository:
         source_feature_type: str,
         target_feature_type: str,
         aoi_id: str | None = None,
-    ) -> list[tuple[str, str, float, float]]:
+    ) -> list[tuple[str, str, str, float, float, float, str]]:
         if not input_attribute_key_prefix:
             raise ValueError("input_attribute_key_prefix is required")
         aoi_clause = ""
@@ -1604,9 +1638,12 @@ class PostgresOverlapRepository:
             cur.execute(
                 f"""
                 SELECT fo.target_feature_id::text,
+                       fo.source_feature_id::text,
                        obs.attribute_key,
                        obs.value_numeric,
-                       fo.overlap_measure
+                       fo.overlap_measure,
+                       fo.overlap_ratio,
+                       fo.overlap_basis
                 FROM curated_geo.feature_overlap fo
                 JOIN curated_geo.feature src ON src.id = fo.source_feature_id
                      AND src.type_slug = %s
@@ -1616,21 +1653,33 @@ class PostgresOverlapRepository:
                      ON obs.feature_id = fo.source_feature_id
                     AND obs.is_current
                     AND obs.value_numeric IS NOT NULL
+                    -- starts_with, not LIKE: the prefix's own `_` would be a
+                    -- wildcard and read another family (see retire_current_by_prefix).
                     AND (obs.attribute_key = %s
-                         OR obs.attribute_key LIKE %s ESCAPE '\\')
+                         OR starts_with(obs.attribute_key, %s || '_'))
                 WHERE TRUE{aoi_clause}
                 """,
                 (
                     source_feature_type,
                     target_feature_type,
                     input_attribute_key_prefix,
-                    input_attribute_key_prefix + "\\_%",
+                    input_attribute_key_prefix,
                     *aoi_params,
                 ),
             )
             return [
-                (str(target_id), str(attr_key), float(value), float(weight))
-                for target_id, attr_key, value, weight in cur.fetchall()
+                (
+                    str(target_id),
+                    str(source_id),
+                    str(attr_key),
+                    float(value),
+                    float(weight),
+                    float(ratio),
+                    basis,
+                )
+                for target_id, source_id, attr_key, value, weight, ratio, basis in (
+                    cur.fetchall()
+                )
                 if value is not None
             ]
 
@@ -2087,8 +2136,14 @@ class PostgresAOISummaryRepository:
     ) -> list[tuple[float | None, float, str]]:
         # Weight = overlap_measure (absolute area inside the AOI); see
         # Protocol docstring for why overlap_ratio is wrong here.
+        #
+        # ⚠ Only the indicator's own grain (`applies_to`). `aoi_feature` holds
+        # every feature type the AOI intersects — AGEBs, the municipality,
+        # roads, buildings. Unfiltered, each was a `missing` child of a block
+        # indicator, with weights in other units (road metres, a whole
+        # municipality's m²), and a fully-computed AOI summarised as `missing`.
         scenario_clause, scenario_params = _scenario_overlay("ir", scenario_id)
-        params: list = [indicator_slug, *scenario_params, aoi_id]
+        params: list = [indicator_slug, *scenario_params, aoi_id, indicator_slug]
         with self.connection.cursor() as cur:
             cur.execute(
                 f"""
@@ -2096,12 +2151,18 @@ class PostgresAOISummaryRepository:
                        af.overlap_measure,
                        ir.quality_flag
                 FROM curated_geo.aoi_feature af
+                JOIN curated_geo.feature f ON f.id = af.feature_id
                 LEFT JOIN curated_geo.indicator_result ir
                      ON ir.feature_id = af.feature_id
                     AND ir.indicator_slug = %s
                     AND ir.status = 'current'
                     AND {scenario_clause}
                 WHERE af.aoi_id = %s
+                  AND f.type_slug = ANY(
+                      SELECT unnest(applies_to)
+                      FROM curated_geo.indicator_catalog
+                      WHERE slug = %s
+                  )
                 """,
                 params,
             )
@@ -2116,6 +2177,15 @@ class PostgresAOISummaryRepository:
 
 
 # ─── Job run ────────────────────────────────────────────────────────────────
+
+
+def run_application_name(run_id: str) -> str:
+    """The ``application_name`` a unit's compute connection carries.
+
+    How ``cancel_run_backends`` finds a unit's backend while its ``job_run`` row
+    is still uncommitted. A uuid run id keeps it inside the 63-byte limit.
+    """
+    return f"reimagina-run:{run_id}"
 
 
 class PostgresJobRunRepository:
@@ -2193,17 +2263,30 @@ class PostgresJobRunRepository:
         runner's psycopg call raises ``QueryCanceled`` and its own error
         handling takes over. Returns how many backends were signalled; a pid may
         already be gone, which Postgres reports as False rather than an error.
+
+        ⚠ The backend is found by ``application_name`` first, NOT only by the
+        ``job_run`` row. A unit writes that row inside the one transaction that
+        runs its compute (``s_compute``), so under READ COMMITTED it is
+        invisible here until the unit has already finished — a lookup by row
+        alone signalled nothing, ever. ``pg_stat_activity`` shows the compute
+        connection's name from the moment it connects. Committed rows are still
+        consulted, for any worker that does commit its row first.
         """
         with self.connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT count(*) FILTER (WHERE pg_cancel_backend(backend_pid))
-                FROM jobs_runtime.job_run
-                WHERE run_id = %s
-                  AND backend_pid IS NOT NULL
-                  AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                SELECT count(*) FILTER (WHERE pg_cancel_backend(pid))
+                FROM (
+                    SELECT pid FROM pg_stat_activity
+                    WHERE application_name = %s AND pid <> pg_backend_pid()
+                    UNION
+                    SELECT backend_pid FROM jobs_runtime.job_run
+                    WHERE run_id = %s
+                      AND backend_pid IS NOT NULL
+                      AND status NOT IN ('succeeded', 'failed', 'cancelled')
+                ) AS live(pid)
                 """,
-                (run_id,),
+                (run_application_name(run_id), run_id),
             )
             return int(cur.fetchone()[0])
 
@@ -2584,6 +2667,19 @@ class PostgresIndicatorResultRepository:
             [feature_id, *scenario_params, indicator_id],
         )
 
+    @staticmethod
+    def _flag_for(quality_flag: str, scenario_id: str | None) -> str:
+        """A scenario's value is a projection, never a measurement.
+
+        Every compute writes the default ``measured``, which a scenario row
+        carried into downloads and tooltips — a what-if presented as observed.
+        Under a scenario that default becomes ``estimated``; an explicit
+        ``missing`` or ``not_applicable`` is kept.
+        """
+        if scenario_id is not None and quality_flag == "measured":
+            return "estimated"
+        return quality_flag
+
     def write_result(
         self,
         *,
@@ -2638,7 +2734,7 @@ class PostgresIndicatorResultRepository:
                     value_numeric,
                     value_text,
                     value_json_serialised,
-                    quality_flag,
+                    self._flag_for(quality_flag, scenario_id),
                     confidence,
                     missing_reason,
                 ),
@@ -2656,6 +2752,7 @@ class PostgresIndicatorResultRepository:
     ) -> int:
         if not rows:
             return 0
+        quality_flag = self._flag_for(quality_flag, scenario_id)
         with self.connection.cursor() as cur:
             cur.execute(
                 "SELECT id FROM curated_geo.indicator_catalog WHERE slug = %s",
@@ -2726,9 +2823,16 @@ class PostgresIndicatorResultRepository:
         indicator_slug: str,
         scenario_id: str | None = None,
         limit: int | None = None,
+        after_feature_id: str | None = None,
     ) -> list[dict]:
+        """Current rows for one indicator. With ``limit`` they come ordered by
+        ``feature_id``, so a capped read is deterministic and
+        ``after_feature_id`` (the last id of the previous page) pages through
+        the rest."""
         scenario_clause, scenario_params = _scenario_overlay("civ", scenario_id)
-        limit_sql = "" if limit is None else "LIMIT %s"
+        after_sql = "" if after_feature_id is None else "AND civ.feature_id > %s::uuid"
+        after_params: list = [] if after_feature_id is None else [after_feature_id]
+        limit_sql = "" if limit is None else "ORDER BY civ.feature_id LIMIT %s"
         limit_params: list = [] if limit is None else [limit]
         with self.connection.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor
@@ -2737,9 +2841,10 @@ class PostgresIndicatorResultRepository:
                 f"""
                 SELECT civ.* FROM serving_geo.current_indicator_v civ
                 WHERE civ.indicator_slug = %s AND {scenario_clause}
+                {after_sql}
                 {limit_sql}
                 """,
-                [indicator_slug, *scenario_params, *limit_params],
+                [indicator_slug, *scenario_params, *after_params, *limit_params],
             )
             return [dict(row) for row in cur.fetchall()]
 
@@ -2912,15 +3017,21 @@ class PostgresIndicatorResultRepository:
                   (SELECT cap_value FROM cap)                                    AS cap_value,
                   COUNT(*) FILTER (
                     WHERE ir.value_numeric >= (SELECT cap_value FROM cap)
-                  )                                                              AS at_cap
+                  )                                                              AS at_cap,
+                  COUNT(*) FILTER (
+                    WHERE f.attributes ? 'estimated'
+                  )                                                              AS estimated
                 FROM curated_geo.indicator_result ir
+                JOIN curated_geo.feature f ON f.id = ir.feature_id
                 WHERE {where}
                 """,
                 [indicator_slug, *params],
             )
             # No GROUP BY and the cap as a scalar subquery: always one row, so
             # an empty population still knows its cap (count_at_cap 0, not None).
-            count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap = cur.fetchone()
+            (count, vmin, p05, p50, p95, vmax, vsum, cap_value, at_cap, estimated) = (
+                cur.fetchone()
+            )
         stats: dict[str, Any] = {
             "count": int(count),
             "min": float(vmin) if vmin is not None else None,
@@ -2934,6 +3045,9 @@ class PostgresIndicatorResultRepository:
             # Rows at or past the catalog cap, over the same rows as `count`;
             # None when the indicator has no cap.
             "count_at_cap": int(at_cap) if cap_value is not None else None,
+            # Rows on a block whose scenario inputs the fit had to guess
+            # (``attributes.estimated``, scripts/seed_demo_attributes.py).
+            "count_estimated": int(estimated),
         }
         if bins > 0:
             stats["histogram"] = self._value_histogram(

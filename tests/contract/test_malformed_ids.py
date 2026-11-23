@@ -51,6 +51,7 @@ QUERY_AND_BODY = [
     ("GET", f"/indicators?aoi_id={BAD}", None),
     ("GET", f"/indicators?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values?scenario_id={BAD}", None),
+    ("GET", f"/indicators/{SLUG}/values?after_feature_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/stats?scenario_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/stats?aoi_id={BAD}", None),
     ("GET", f"/indicators/{SLUG}/values.csv?scenario_id={BAD}", None),

@@ -5,6 +5,7 @@
  * unit-testing, and they run under the default `node` environment with no
  * DOM. Anything here must stay free of Svelte and of `document`.
  */
+import { decodeOrNull } from "../lib/utils";
 import type { IndicatorSummary, IndicatorStats } from "./api";
 
 /** A catalog row plus whether it holds values in the active AOI. `null` when
@@ -103,7 +104,7 @@ export function filtersFromHash(hash: string): Filters {
 /** `#/i/<slug>` → slug, anything else → null. */
 export function slugFromHash(hash: string): string | null {
   const m = /^#\/i\/([^?]+)/.exec(hash);
-  return m ? decodeURIComponent(m[1]) : null;
+  return m ? decodeOrNull(m[1]) : null;
 }
 
 /**

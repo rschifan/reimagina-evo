@@ -111,13 +111,8 @@ def _as_geojson(lon_min: float, lon_max: float, lat_min: float, lat_max: float) 
 _AREA_GEOJSON = _as_geojson(-99.2010, -99.1930, _LAT0 - 0.001, _LAT1 + 0.001)
 _BIG_BLOCK_GEOJSON = _as_geojson(-99.1910, -99.1690, _LAT0 - 0.001, _LAT0 + 0.011)
 
-PROPOSAL = {
-    "area": _AREA_GEOJSON,
-    "levels": 6,
-    "unit_size": 60,
-    "people_per_household": 3.6,
-    "type_slug": _TYPE_SLUG,
-}
+INPUTS = {"levels": 6, "unit_size": 60, "people_per_household": 3.6}
+PROPOSAL = {"area": _AREA_GEOJSON, "inputs": INPUTS, "type_slug": _TYPE_SLUG}
 
 
 class _Territory:
@@ -238,7 +233,7 @@ def territory(migrated_db: str) -> Iterator[_Territory]:
                     "WHERE partition_key = %s",
                     partition_key({"scenario": scenario_id}),
                 )
-            # Cascades scenario, scenario_edit, area_of_interest, aoi_feature.
+            # Cascades scenario and its rows, area_of_interest, aoi_feature.
             discard(
                 conn, "DELETE FROM app_core.project WHERE id = %s", created.project_id
             )
@@ -351,7 +346,7 @@ def test_creating_a_scenario_persists_it(client, territory, migrated_db):
     # `create_scenario` call survived the whole suite: the field round-trips
     # through the response model from the same read either way.
     assert created.json()["description"] == "six storeys"
-    assert created.json()["edits"] == []
+    assert created.json()["rules"] == []
     assert created.json()["override_count"] == 0
 
     assert client.get(f"/scenarios/{scenario_id}").status_code == 200
@@ -405,7 +400,11 @@ def test_a_write_through_the_pool_would_have_persisted_nothing(
 
 
 def test_a_duplicate_name_is_409_not_500(client, territory):
-    body = {"project_id": territory.project_id, "name": "Twice"}
+    body = {
+        "project_id": territory.project_id,
+        "aoi_id": territory.aoi_id,
+        "name": "Twice",
+    }
 
     assert client.post("/scenarios", json=body).status_code == 201
     assert client.post("/scenarios", json=body).status_code == 409
@@ -417,7 +416,11 @@ def test_a_duplicate_name_leaves_the_next_create_working(client, territory):
     A failed statement aborts the whole Postgres transaction; without the
     savepoint the refusal would poison the connection the handler is holding.
     """
-    body = {"project_id": territory.project_id, "name": "Twice"}
+    body = {
+        "project_id": territory.project_id,
+        "aoi_id": territory.aoi_id,
+        "name": "Twice",
+    }
     client.post("/scenarios", json=body)
     client.post("/scenarios", json=body)
 
@@ -445,20 +448,15 @@ def test_an_unknown_scenario_is_404(client, territory):
     assert client.get(f"/scenarios/{uuid4()}").status_code == 404
 
 
-def test_a_project_that_does_not_exist_is_404_naming_its_field(client, territory):
-    """``ForeignKeyViolation``, mapped — and the field read from the constraint.
-
-    Left raw this was a 500 for a client's typo. The real constraint name is
-    what makes this an integration test: the mapping reads
-    ``diag.constraint_name`` rather than the driver's message, which is
-    internal and never echoed.
-    """
+def test_a_project_that_does_not_exist_is_404(client, territory):
+    """Left raw this was a 500 for a client's typo. With a real AOI in the
+    body the AOI-belongs-to-project check answers first, with the same 404."""
     response = client.post(
-        "/scenarios", json={"project_id": str(uuid4()), "name": "Orphan"}
+        "/scenarios",
+        json={"project_id": str(uuid4()), "aoi_id": territory.aoi_id, "name": "Orphan"},
     )
 
     assert response.status_code == 404, response.text
-    assert response.json()["detail"]["field"] == "project_id"
 
 
 def test_an_aoi_that_does_not_exist_is_404_naming_its_field(client, territory):
@@ -547,7 +545,7 @@ def test_a_malformed_id_really_would_have_reached_postgres(territory, migrated_d
         reader.close()
 
 
-# ── edits and recompute ─────────────────────────────────────────────────
+# ── rules and recompute ─────────────────────────────────────────────────
 
 
 def _scenario(client, territory, name: str = "Centralidad norte") -> str:
@@ -563,38 +561,28 @@ def _scenario(client, territory, name: str = "Centralidad norte") -> str:
     return created.json()["id"]
 
 
-def test_one_proposal_writes_four_edits_that_recompute_materialises(
-    client, territory, orchestrator, migrated_db
-):
-    """The whole authoring path, with the override rows read back separately.
+def _rules(client, scenario_id) -> list[dict]:
+    return client.get(f"/scenarios/{scenario_id}").json()["rules"]
 
-    Four edits over two blocks is eight override rows — and ``floors`` and
-    ``num_levels`` are both there, which is the asymmetry
-    ``proposal.edits_for`` exists to keep: the planned-floors indicator reads
-    one and the edificability family reads the other.
-    """
-    scenario_id = _scenario(client, territory)
 
-    written = client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
-    assert written.status_code == 201, written.text
-    assert [e["attribute_key"] for e in written.json()["edits"]] == [
-        "floors",
-        "num_levels",
-        "unit_size",
-        "people_per_household",
-    ]
+def _post(client, scenario_id, **inputs) -> dict:
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={**PROPOSAL, "inputs": {**INPUTS, **inputs}},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
-    recomputed = client.post(f"/scenarios/{scenario_id}/recompute")
 
-    assert recomputed.status_code == 202, recomputed.text
-    body = recomputed.json()
-    assert body["matched_per_edit"] and set(body["matched_per_edit"].values()) == {2}
-    assert body["overrides_written"] == 8
-    assert body["run_id"] == "run-123"
-    assert orchestrator[0]["scenario_id"] == scenario_id
-    assert orchestrator[0]["aoi_id"] == territory.aoi_id
+def _patch(client, scenario_id, rule_id, area=None, **inputs):
+    body: dict = {"inputs": inputs or dict(INPUTS)}
+    if area is not None:
+        body["area"] = area
+    return client.patch(f"/scenarios/{scenario_id}/rules/{rule_id}", json=body)
 
-    reader = _reader(migrated_db)
+
+def _overrides(dsn, scenario_id) -> list[tuple[str, int]]:
+    reader = _reader(dsn)
     try:
         with reader.cursor() as cur:
             cur.execute(
@@ -602,110 +590,229 @@ def test_one_proposal_writes_four_edits_that_recompute_materialises(
                 "WHERE scenario_id = %s GROUP BY attribute_key ORDER BY attribute_key",
                 (scenario_id,),
             )
-            assert cur.fetchall() == [
-                ("floors", 2),
-                ("num_levels", 2),
-                ("people_per_household", 2),
-                ("unit_size", 2),
-            ]
-        shown = client.get(f"/scenarios/{scenario_id}").json()
-        assert shown["override_count"] == 8
-        assert shown["materialized_at"] is not None
-        assert len(shown["edits"]) == 4
+            return cur.fetchall()
     finally:
         reader.close()
 
 
-def test_a_proposal_the_density_bound_rules_out_never_reaches_the_database(
-    client, territory
+def test_one_rule_is_written_materialised_and_enqueued_in_one_request(
+    client, territory, orchestrator, migrated_db
 ):
-    """Thirteen storeys at 60 m² is 2,166 units/ha against a 2,000 bound.
+    """The whole authoring path, with the override rows read back separately.
 
-    Refused at ``POST /edits``, before a block is chosen, because the density
-    bound is the one that does not depend on block area.
+    Three numbers over two blocks is eight override rows — storeys are one
+    number and two attributes, ``floors`` and ``num_levels``, which is the
+    asymmetry ``proposal.edits_for`` exists to keep.
     """
     scenario_id = _scenario(client, territory)
 
+    body = _post(client, scenario_id)
+
+    assert body["rule"]["inputs"] == {
+        "levels": 6.0,
+        "unit_size": 60.0,
+        "people_per_household": 3.6,
+    }
+    assert body["matched_per_rule"] == {body["rule"]["id"]: 2}
+    assert body["overrides_written"] == 8
+    assert body["run_id"] == "run-123"
+    assert orchestrator[0]["scenario_id"] == scenario_id
+    assert orchestrator[0]["aoi_id"] == territory.aoi_id
+    assert _overrides(migrated_db, scenario_id) == [
+        ("floors", 2),
+        ("num_levels", 2),
+        ("people_per_household", 2),
+        ("unit_size", 2),
+    ]
+    shown = client.get(f"/scenarios/{scenario_id}").json()
+    assert shown["override_count"] == 8
+    assert shown["materialized_at"] is not None
+    assert [r["id"] for r in shown["rules"]] == [body["rule"]["id"]]
+
+
+def test_a_scenario_and_its_first_rule_are_one_request(
+    client, territory, orchestrator, migrated_db
+):
+    """Drawing on the baseline city: the scenario, its rule, the
+    materialisation and the enqueue, from one POST."""
+    created = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "First rule",
+            "rule": PROPOSAL,
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    rule = body["first_rule"]["rule"]
+    assert [r["id"] for r in body["rules"]] == [rule["id"]]
+    assert body["override_count"] == 8
+    assert body["first_rule"]["run_id"] == "run-123"
+    assert orchestrator[0]["scenario_id"] == body["id"]
+    assert _overrides(migrated_db, body["id"])[0] == ("floors", 2)
+
+
+def test_a_refused_first_rule_leaves_no_scenario(
+    client, territory, orchestrator, migrated_db
+):
+    """The scenario rolls back with its refused rule: nothing to delete."""
+    refused = client.post(
+        "/scenarios",
+        json={
+            "project_id": territory.project_id,
+            "aoi_id": territory.aoi_id,
+            "name": "Refused",
+            "rule": {**PROPOSAL, "area": _as_geojson(-140.0, -139.9, 10.0, 10.1)},
+        },
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["error"] == "rule_catches_nothing"
+    reader = _reader(migrated_db)
+    try:
+        assert _scenario_ids(reader, territory.project_id) == []
+    finally:
+        reader.close()
+    assert orchestrator == []
+
+
+def test_a_rule_the_density_bound_rules_out_never_reaches_the_database(
+    client, territory, orchestrator
+):
+    """Thirteen storeys at 60 m² is 2,166 units/ha against a 2,000 bound."""
+    scenario_id = _scenario(client, territory)
+
     written = client.post(
-        f"/scenarios/{scenario_id}/edits", json={**PROPOSAL, "levels": 13}
+        f"/scenarios/{scenario_id}/rules",
+        json={**PROPOSAL, "inputs": {**INPUTS, "levels": 13}},
     )
 
     assert written.status_code == 422, written.text
     assert written.json()["detail"]["allowed_levels"] == 12
-    assert client.get(f"/scenarios/{scenario_id}").json()["edits"] == []
+    assert _rules(client, scenario_id) == []
 
 
-def test_a_breach_only_a_block_can_show_refuses_the_whole_materialisation(
+def test_a_breach_only_a_block_can_show_refuses_the_rule_and_stores_nothing(
     client, territory, orchestrator, migrated_db
 ):
-    """⚠ The bound the form cannot check, reached through HTTP.
+    """⚠ The bound the form cannot check, reached through HTTP — and B4.
 
     Twelve storeys at 60 m² is exactly the density bound, so the precheck
-    passes it — and must, since density is all it can see with no block
-    chosen. The housing-unit bound scales with block area, and over the
-    ~2.3 km² block it is 467,000 against a 200,000 ceiling. Nothing is
-    written: a refusal here is total, so the scenario keeps whatever it was
-    materialised to last time.
+    passes it. The housing-unit bound scales with block area, and over the
+    ~2.3 km² block it is 467,000 against a 200,000 ceiling. The rule and its
+    materialisation are one transaction, so the refusal stores nothing: no
+    rule for a client to undo, and no later recompute refused because of it.
     """
     scenario_id = _scenario(client, territory)
-    drawn = {
-        **PROPOSAL,
-        "area": _BIG_BLOCK_GEOJSON,
-        "levels": 12,
-        "unit_size": 60,
-    }
-    assert client.post(f"/scenarios/{scenario_id}/edits", json=drawn).status_code == 201
 
-    response = client.post(f"/scenarios/{scenario_id}/recompute")
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={
+            **PROPOSAL,
+            "area": _BIG_BLOCK_GEOJSON,
+            "inputs": {**INPUTS, "levels": 12},
+        },
+    )
 
     assert response.status_code == 422, response.text
     detail = response.json()["detail"]
-    assert detail["breach_count"] >= 1
     assert {b["feature_id"] for b in detail["breaches"]} == {territory.big_block}
     assert "edificability_block_housing_units" in {
         b["indicator_slug"] for b in detail["breaches"]
     }
+    assert 5 in {b["allowed_levels"] for b in detail["breaches"]}
+    assert _rules(client, scenario_id) == []
     assert client.get(f"/scenarios/{scenario_id}").json()["override_count"] == 0
-    assert client.get(f"/scenarios/{scenario_id}").json()["materialized_at"] is None
+    assert orchestrator == []
+    # And the scenario still recomputes: nothing refused was left behind.
+    assert client.post(f"/scenarios/{scenario_id}/recompute").status_code == 202
 
 
-def test_an_edit_can_be_removed_and_only_from_its_own_scenario(
-    client, territory, migrated_db
+def test_a_refused_change_leaves_the_rule_as_it_was(client, territory, orchestrator):
+    scenario_id = _scenario(client, territory)
+    rule = _post(client, scenario_id)["rule"]
+
+    refused = _patch(
+        client,
+        scenario_id,
+        rule["id"],
+        area=_BIG_BLOCK_GEOJSON,
+        **{**INPUTS, "levels": 12},
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert _rules(client, scenario_id) == [rule]
+
+
+@pytest.mark.parametrize(
+    "area",
+    [
+        # Over the Pacific: no block of the AOI.
+        _as_geojson(-140.0, -139.9, 10.0, 10.1),
+        # Longitude and latitude swapped stays in range only near the equator;
+        # here it is out of range and refused as a geometry instead.
+        _as_geojson(_LAT0 - 0.001, _LAT1 + 0.001, -99.2010, -99.1930),
+    ],
+    ids=["outside-the-aoi", "swapped"],
+)
+def test_a_rule_that_catches_no_block_is_refused_not_stored(
+    client, territory, orchestrator, area
+):
+    """B8: these were accepted and queued a run that changed nothing."""
+    scenario_id = _scenario(client, territory)
+
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules", json={**PROPOSAL, "area": area}
+    )
+
+    assert response.status_code in (400, 422), response.text
+    assert response.json()["detail"]["field"] == "area"
+    assert _rules(client, scenario_id) == []
+    assert orchestrator == []
+
+
+def test_a_3d_area_is_stored_as_its_footprint(client, territory, orchestrator):
+    """B8: GeoJSON with Z (QGIS, a GPS) was a 500."""
+    scenario_id = _scenario(client, territory)
+    ring = [[*p, 12.0] for p in _AREA_GEOJSON["coordinates"][0]]
+
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={**PROPOSAL, "area": {"type": "Polygon", "coordinates": [ring]}},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["rule"]["geometry_wkt"].startswith("POLYGON((")
+
+
+def test_a_rule_is_deleted_in_one_request_and_only_from_its_own_scenario(
+    client, territory, orchestrator, migrated_db
 ):
     scenario_id = _scenario(client, territory)
     other_id = _scenario(client, territory, name="Other")
-    edits = client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL).json()[
-        "edits"
-    ]
-    edit_id = edits[0]["id"]
+    rule_id = _post(client, scenario_id)["rule"]["id"]
 
-    # Through the wrong scenario: refused, and the edit survives.
-    assert (
-        client.delete(f"/scenarios/{other_id}/edits?edit_id={edit_id}").status_code
-        == 404
-    )
-    assert len(client.get(f"/scenarios/{scenario_id}").json()["edits"]) == 4
+    # Through the wrong scenario: refused, and the rule survives.
+    assert client.delete(f"/scenarios/{other_id}/rules/{rule_id}").status_code == 404
+    assert len(_rules(client, scenario_id)) == 1
 
-    assert (
-        client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
-        == 204
-    )
-    remaining = client.get(f"/scenarios/{scenario_id}").json()["edits"]
-    assert [e["attribute_key"] for e in remaining] == [
-        "num_levels",
-        "unit_size",
-        "people_per_household",
-    ]
-    assert (
-        client.delete(f"/scenarios/{scenario_id}/edits?edit_id={edit_id}").status_code
-        == 404
-    )
+    deleted = client.delete(f"/scenarios/{scenario_id}/rules/{rule_id}")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["overrides_removed"] == 8
+    # Nothing left to compute: no run is enqueued for an empty footprint.
+    assert deleted.json()["run_id"] is None
+    assert _rules(client, scenario_id) == []
+    assert _overrides(migrated_db, scenario_id) == []
+    assert client.delete(f"/scenarios/{scenario_id}/rules/{rule_id}").status_code == 404
 
 
-def test_recompute_without_an_aoi_is_409(client, territory, migrated_db):
+def test_recompute_without_an_aoi_is_409(client, territory, orchestrator, migrated_db):
     """``aoi_id`` is ``ON DELETE SET NULL``: the AOI can leave on its own."""
     scenario_id = _scenario(client, territory)
-    client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
+    _post(client, scenario_id)
     writer = _reader(migrated_db)
     try:
         with writer.cursor() as cur:
@@ -721,6 +828,8 @@ def test_recompute_without_an_aoi_is_409(client, territory, migrated_db):
 
     assert response.status_code == 409, response.text
     assert "area of interest" in response.json()["detail"]
+    # The message names something that can be done.
+    assert "Create a new scenario" in response.json()["detail"]
 
 
 # ── delete ──────────────────────────────────────────────────────────────
@@ -739,18 +848,18 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
     body at all.
     """
     scenario_id = _scenario(client, territory)
-    client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
-    client.post(f"/scenarios/{scenario_id}/recompute")
+    _post(client, scenario_id)
 
     deleted = client.delete(f"/scenarios/{scenario_id}")
 
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["overrides"] == 8
-    assert deleted.json()["versions_retired"] == 4
+    assert deleted.json()["versions_deleted"] == 4
     # Nothing computed this scenario here — the orchestrator is a fake — so
-    # the other two counts are zero *for a reason*, which is a different claim
+    # the other counts are zero *for a reason*, which is a different claim
     # from being unasserted. Pinned non-zero in the test below.
-    assert deleted.json()["results_superseded"] == 0
+    assert deleted.json()["results_deleted"] == 0
+    assert deleted.json()["job_runs_deleted"] == 0
     assert deleted.json()["materializations"] == 0
     assert client.get(f"/scenarios/{scenario_id}").status_code == 404
     assert client.delete(f"/scenarios/{scenario_id}").status_code == 404
@@ -771,7 +880,7 @@ def test_deleting_a_scenario_reports_what_it_removed_and_then_404s(
 def test_the_delete_counts_cover_results_and_materialisations_too(
     client, territory, orchestrator, migrated_db
 ):
-    """⚠ All four counts, each against a trace that is really there.
+    """⚠ Every count, each against a trace that is really there.
 
     These four numbers are the reason ``DELETE`` answers 200 with a body
     instead of 204 — "it is gone" is four separate claims about four tables no
@@ -785,18 +894,18 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
     a permanently stale node.
     """
     scenario_id = _scenario(client, territory)
-    client.post(f"/scenarios/{scenario_id}/edits", json=PROPOSAL)
-    client.post(f"/scenarios/{scenario_id}/recompute")
+    _post(client, scenario_id)
     _seed_result_and_materialization(migrated_db, territory, scenario_id)
 
     deleted = client.delete(f"/scenarios/{scenario_id}").json()
 
     assert deleted["overrides"] == 8
-    assert deleted["versions_retired"] == 4
-    assert deleted["results_superseded"] == 1
+    assert deleted["versions_deleted"] == 4
+    assert deleted["results_deleted"] == 1
+    assert deleted["job_runs_deleted"] == 1
     assert deleted["materializations"] == 1
 
-    # And the traces are actually gone / staled, not merely counted.
+    # And the traces are actually gone, not merely counted.
     reader = _reader(migrated_db)
     try:
         with reader.cursor() as cur:
@@ -805,7 +914,7 @@ def test_the_delete_counts_cover_results_and_materialisations_too(
                 "WHERE scenario_id = %s",
                 (scenario_id,),
             )
-            assert [row[0] for row in cur.fetchall()] == ["stale"]
+            assert cur.fetchall() == []
             cur.execute(
                 "SELECT count(*) FROM curated_geo.asset_materialization "
                 "WHERE partition_key = %s",
@@ -913,128 +1022,99 @@ def test_the_comparison_refuses_an_unknown_indicator_and_an_unknown_aoi(
     )
 
 
-# ── PATCH /scenarios/{id}/rules: a rule changed in place ─────────────────
+# ── PATCH /scenarios/{id}/rules/{rule_id}: a rule changed in place ───────
 #
-# In place means the rule keeps its edit ids and its ordinals, so it keeps its
+# In place means the rule keeps its id and its ordinal, so it keeps its
 # position in "later wins" — editing rule 1 must not make it beat rule 2.
 
-_MOVED = _as_geojson(-99.1930, -99.1850, _LAT0 - 0.001, _LAT1 + 0.001)
+#: Over block 0 only, and over block 1 only.
+_B0 = _as_geojson(-99.2010, -99.1970, _LAT0 - 0.001, _LAT1 + 0.001)
+_MOVED = _as_geojson(-99.1970, -99.1930, _LAT0 - 0.001, _LAT1 + 0.001)
 
 
-def _edits(client, scenario_id) -> list[dict]:
-    return client.get(f"/scenarios/{scenario_id}").json()["edits"]
-
-
-def _post(client, scenario_id, **overrides) -> list[str]:
-    response = client.post(
-        f"/scenarios/{scenario_id}/edits", json={**PROPOSAL, **overrides}
-    )
-    assert response.status_code == 201, response.text
-    return [e["id"] for e in response.json()["edits"]]
-
-
-def _patch(client, scenario_id, ids, **values):
-    body = {
-        "edit_ids": ids,
-        "levels": 4,
-        "unit_size": 70,
-        "people_per_household": 3.0,
-        "lot_coverage": 0.5,
-        **values,
-    }
-    return client.patch(f"/scenarios/{scenario_id}/rules", json=body)
-
-
-def test_post_writes_coverage(client, territory):
+def test_post_writes_coverage_only_when_it_is_set(client, territory, orchestrator):
     sid = _scenario(client, territory)
     _post(client, sid)
     _post(client, sid, lot_coverage=0.6)
-    coverage = [
-        e["value_numeric"]
-        for e in _edits(client, sid)
-        if e["attribute_key"] == "lot_coverage"
-    ]
-    # Omitted, coverage is not written: each block keeps its own.
-    assert coverage == [0.6]
+    assert [r["inputs"].get("lot_coverage") for r in _rules(client, sid)] == [None, 0.6]
 
 
-def test_values_update_in_place(client, territory):
+def test_values_update_in_place(client, territory, orchestrator):
     sid = _scenario(client, territory)
-    ids = _post(client, sid, lot_coverage=0.6)
-    before = {e["id"]: e["ordinal"] for e in _edits(client, sid)}
+    rule = _post(client, sid, lot_coverage=0.6)["rule"]
 
-    response = _patch(client, sid, ids)
+    response = _patch(
+        client,
+        sid,
+        rule["id"],
+        levels=4,
+        unit_size=70,
+        people_per_household=3.0,
+        lot_coverage=0.5,
+    )
 
     assert response.status_code == 200, response.text
-    after = _edits(client, sid)
-    assert {e["id"]: e["ordinal"] for e in after} == before
-    assert {e["attribute_key"]: e["value_numeric"] for e in after} == {
-        "floors": 4.0,
-        "num_levels": 4.0,
+    (after,) = _rules(client, sid)
+    assert (after["id"], after["ordinal"]) == (rule["id"], rule["ordinal"])
+    assert after["inputs"] == {
+        "levels": 4.0,
         "unit_size": 70.0,
         "people_per_household": 3.0,
         "lot_coverage": 0.5,
     }
 
 
-def test_area_moves_every_edit(client, territory):
+def test_moving_a_rule_keeps_its_place(client, territory, orchestrator):
     sid = _scenario(client, territory)
-    ids = _post(client, sid, lot_coverage=0.6)
-    old = {e["geometry_wkt"] for e in _edits(client, sid)}
-    ordinals = sorted(e["ordinal"] for e in _edits(client, sid))
+    rule = _post(client, sid)["rule"]
 
-    assert _patch(client, sid, ids, area=_MOVED).status_code == 200
+    assert _patch(client, sid, rule["id"], area=_MOVED).status_code == 200
 
-    after = _edits(client, sid)
-    moved = {e["geometry_wkt"] for e in after}
-    assert len(moved) == 1 and moved != old
-    assert sorted(e["ordinal"] for e in after) == ordinals
+    (after,) = _rules(client, sid)
+    assert after["geometry_wkt"] != rule["geometry_wkt"]
+    assert after["ordinal"] == rule["ordinal"]
 
 
-def test_an_earlier_rule_stays_earlier_after_an_edit(client, territory):
+def test_re_adding_a_number_does_not_reorder_the_rules(
+    client, territory, orchestrator, migrated_db
+):
+    """B5: rule 1 sets 90 m², rule 2 (later) sets 60 m² over the same blocks.
+
+    Clearing rule 1's unit size and typing it again used to give that one
+    attribute the newest ordinal, so rule 1 beat rule 2 for it and the blocks
+    went from 60 m² to 90 m² (96.22 → 57.73 homes on the pilot). Precedence
+    is now the rule's, and it does not move.
+    """
     sid = _scenario(client, territory)
-    first = _post(client, sid)
-    second = _post(client, sid, levels=2)
-    assert _patch(client, sid, first, levels=5).status_code == 200
-    by_id = {e["id"]: e["ordinal"] for e in _edits(client, sid)}
-    assert max(by_id[i] for i in first) < min(by_id[i] for i in second)
+    first = _post(client, sid, unit_size=90)["rule"]
+    _post(client, sid, unit_size=60)
+    assert _patch(client, sid, first["id"], levels=6).status_code == 200
+    assert _patch(client, sid, first["id"], levels=6, unit_size=90).status_code == 200
+
+    reader = _reader(migrated_db)
+    try:
+        with reader.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT value_numeric FROM curated_geo.scenario_override "
+                "WHERE scenario_id = %s AND attribute_key = 'unit_size'",
+                (sid,),
+            )
+            assert cur.fetchall() == [(60.0,)]
+    finally:
+        reader.close()
+    assert [r["ordinal"] for r in _rules(client, sid)] == [1, 2]
 
 
-def test_foreign_or_mixed_ids_are_422(client, territory):
+def test_refusals_match_post(client, territory, orchestrator):
     sid = _scenario(client, territory)
-    other = _scenario(client, territory, name="Otro")
-    mine = _post(client, sid)
-    theirs = _post(client, other)
-    second_rule = _post(client, sid, area=_MOVED)
-    before = _edits(client, sid)
-
-    assert _patch(client, sid, theirs).status_code == 422
-    assert _patch(client, sid, mine[:2] + second_rule[:2]).status_code == 422
-    assert _edits(client, sid) == before
-
-
-def test_a_number_set_later_is_added_to_the_rule(client, territory):
-    """A rule that did not set coverage gets a coverage edit when a PATCH sets it."""
-    sid = _scenario(client, territory)
-    four = _post(client, sid)
-
-    response = _patch(client, sid, four)
-
-    assert response.status_code == 200, response.text
-    written = response.json()["edits"]
-    assert len(written) == 5
-    assert {e["id"] for e in written} >= set(four)
-    assert {e["attribute_key"] for e in written} >= {"lot_coverage"}
-
-
-def test_refusals_match_post(client, territory):
-    sid = _scenario(client, territory)
-    ids = _post(client, sid)
-    zero = _patch(client, sid, ids, levels=0)
+    rule_id = _post(client, sid)["rule"]["id"]
+    zero = _patch(client, sid, rule_id, levels=0)
     assert zero.status_code == 400 and zero.json()["detail"]["field"] == "levels"
-    over = _patch(client, sid, ids, lot_coverage=1.5)
+    over = _patch(client, sid, rule_id, lot_coverage=1.5)
     assert over.status_code == 400 and over.json()["detail"]["field"] == "lot_coverage"
-    ceiling = _patch(client, sid, ids, levels=40, unit_size=60, lot_coverage=1.0)
+    tiny = _patch(client, sid, rule_id, unit_size=0.5)
+    assert tiny.status_code == 400 and tiny.json()["detail"]["field"] == "unit_size"
+    ceiling = _patch(client, sid, rule_id, levels=40, unit_size=60, lot_coverage=1.0)
     assert ceiling.status_code == 422
     assert ceiling.json()["detail"]["error"] == "ceiling_precheck_failed"
 
@@ -1043,58 +1123,50 @@ def test_patching_a_rule_of_an_unknown_scenario_is_404(client, territory):
     response = _patch(
         client,
         "00000000-0000-0000-0000-000000000000",
-        ["00000000-0000-0000-0000-000000000001"],
+        "00000000-0000-0000-0000-000000000001",
     )
     assert response.status_code == 404
 
 
-def test_a_rule_writes_only_the_numbers_it_sets(client, territory):
+def test_a_rule_writes_only_the_numbers_it_sets(
+    client, territory, orchestrator, migrated_db
+):
     """Changing household size alone must not flatten storeys, unit size and
-    coverage across the area: only that one edit is written."""
+    coverage across the area: only that one attribute is overridden."""
     sid = _scenario(client, territory)
-    body = {
-        "area": PROPOSAL["area"],
-        "people_per_household": 5,
-        "type_slug": PROPOSAL["type_slug"],
-    }
-    response = client.post(f"/scenarios/{sid}/edits", json=body)
+    response = client.post(
+        f"/scenarios/{sid}/rules",
+        json={**PROPOSAL, "inputs": {"people_per_household": 5}},
+    )
     assert response.status_code == 201, response.text
-    assert [(e["attribute_key"], e["value_numeric"]) for e in _edits(client, sid)] == [
-        ("people_per_household", 5.0)
-    ]
+    assert _overrides(migrated_db, sid) == [("people_per_household", 2)]
 
 
-def test_a_rule_that_sets_nothing_is_refused(client, territory):
+def test_a_rule_that_sets_nothing_is_refused(client, territory, orchestrator):
     sid = _scenario(client, territory)
-    body = {"area": PROPOSAL["area"], "type_slug": PROPOSAL["type_slug"]}
-    response = client.post(f"/scenarios/{sid}/edits", json=body)
+    response = client.post(f"/scenarios/{sid}/rules", json={**PROPOSAL, "inputs": {}})
     assert response.status_code == 400
     assert response.json()["detail"]["error"] == "empty_proposal"
-    ids = _post(client, sid)
+    rule_id = _post(client, sid)["rule"]["id"]
     assert (
-        client.patch(f"/scenarios/{sid}/rules", json={"edit_ids": ids}).status_code
+        client.patch(
+            f"/scenarios/{sid}/rules/{rule_id}", json={"inputs": {}}
+        ).status_code
         == 400
     )
 
 
-def test_a_rule_update_sends_the_rules_full_set(client, territory):
+def test_a_rule_update_sends_the_rules_full_set(client, territory, orchestrator):
     """PATCH is the rule's whole set of numbers: a number left out is no
     longer set by the rule, so each block keeps its own value for it."""
     sid = _scenario(client, territory)
-    ids = _post(client, sid, lot_coverage=0.6)
-    response = client.patch(
-        f"/scenarios/{sid}/rules", json={"edit_ids": ids, "people_per_household": 4.0}
-    )
+    rule_id = _post(client, sid, lot_coverage=0.6)["rule"]["id"]
+    response = _patch(client, sid, rule_id, people_per_household=4.0)
     assert response.status_code == 200, response.text
-    assert [(e["attribute_key"], e["value_numeric"]) for e in _edits(client, sid)] == [
-        ("people_per_household", 4.0)
-    ]
-    assert [e["attribute_key"] for e in response.json()["edits"]] == [
-        "people_per_household"
-    ]
+    assert response.json()["rule"]["inputs"] == {"people_per_household": 4.0}
 
 
-# ── what a recompute asks the ops-plane to compute ───────────────────────
+# ── what a rule change asks the ops-plane to compute ─────────────────────
 
 
 def test_a_recompute_names_the_blocks_and_inputs_the_rules_touch(
@@ -1105,8 +1177,7 @@ def test_a_recompute_names_the_blocks_and_inputs_the_rules_touch(
     19,058 in Mexicali for a rule over 2,400 — though blocks without an
     override read the baseline anyway."""
     sid = _scenario(client, territory)
-    _post(client, sid, people_per_household=5.0)
-    caught = client.post(f"/scenarios/{sid}/recompute").json()["matched_per_edit"]
+    caught = _post(client, sid, people_per_household=5.0)["matched_per_rule"]
 
     submitted = orchestrator[-1]
     assert sorted(submitted["changed_attributes"]) == [
@@ -1119,17 +1190,19 @@ def test_a_recompute_names_the_blocks_and_inputs_the_rules_touch(
     assert len(set(submitted["edited_features"])) < len(territory.blocks)
 
 
-def test_a_moved_rule_recomputes_its_old_blocks_too(client, territory, orchestrator):
+def test_a_moved_rule_recomputes_only_where_it_now_is(
+    client, territory, orchestrator, migrated_db
+):
+    """B7: the blocks it left lose their scenario rows instead of being
+    recomputed into copies of the baseline that would shadow it later."""
     sid = _scenario(client, territory)
-    ids = _post(client, sid)
-    client.post(f"/scenarios/{sid}/recompute")
+    posted = client.post(
+        f"/scenarios/{sid}/rules", json={**PROPOSAL, "area": _B0}
+    ).json()
+    rule_id = posted["rule"]["id"]
     before = set(orchestrator[-1]["edited_features"])
 
-    assert _patch(client, sid, ids, area=_MOVED).status_code == 200
-    client.post(f"/scenarios/{sid}/recompute")
+    assert _patch(client, sid, rule_id, area=_MOVED).status_code == 200
     after = set(orchestrator[-1]["edited_features"])
 
-    # Their overrides are gone; recomputing them is what puts the baseline
-    # back under the scenario. (The moved area's own blocks are the first
-    # test's subject.)
-    assert before and before <= after, "the blocks the rule left must be recomputed"
+    assert before and after and before.isdisjoint(after)

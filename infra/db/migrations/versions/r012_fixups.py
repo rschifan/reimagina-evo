@@ -106,7 +106,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS feature_overlap_type_pair_target_idx")
+    op.execute("DROP INDEX IF EXISTS curated_geo.feature_overlap_type_pair_target_idx")
     # Restore the original INNER JOIN version of the tile function.
     op.execute("""
         CREATE OR REPLACE FUNCTION serving_geo.get_tile(

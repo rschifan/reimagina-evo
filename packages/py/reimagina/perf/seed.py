@@ -25,14 +25,33 @@ PERF_AOI_NAMES = {
 }
 
 
+_AOI_EXTENT_SQL = """
+SELECT ST_XMin(geometry), ST_YMin(geometry), ST_XMax(geometry), ST_YMax(geometry)
+FROM curated_geo.area_of_interest
+WHERE id = %s
+"""
+
+
 def _require_postgres(conn) -> None:
     backend = backend_for_connection(conn)
     if backend.name != "postgres":
         raise ValueError("Performance seeding is Postgres/PostGIS-only.")
 
 
-def _feature_extent(conn) -> tuple[float, float, float, float]:
+def _feature_extent(
+    conn, aoi_id: str | None = None
+) -> tuple[float, float, float, float]:
+    """Bounds the benchmark boxes are cut from: every feature's extent, or
+    the AOI ``aoi_id``'s. With two cities loaded the centre of the global
+    extent lies between them and the boxes read nothing; an AOI keeps them
+    inside one city."""
     with conn.cursor() as cur:
+        if aoi_id is not None:
+            cur.execute(_AOI_EXTENT_SQL, (aoi_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(f"No AOI with id {aoi_id!r}.")
+            return tuple(float(value) for value in row)
         cur.execute(
             """
             SELECT
@@ -49,7 +68,7 @@ def _feature_extent(conn) -> tuple[float, float, float, float]:
         row = cur.fetchone()
     if row is None or any(value is None for value in row):
         raise ValueError(
-            "No feature extent available. Load canonical features before seeding performance data."
+            "No canonical features are loaded. Seeding and benchmarks need feature data."
         )
     return tuple(float(value) for value in row)
 
@@ -150,9 +169,9 @@ def _upsert_aoi(conn, *, project_id: str, name: str, geometry_wkt: str) -> str:
     )
 
 
-def ensure_perf_aois(conn) -> dict[str, str]:
+def ensure_perf_aois(conn, aoi_id: str | None = None) -> dict[str, str]:
     _require_postgres(conn)
-    extent = _feature_extent(conn)
+    extent = _feature_extent(conn, aoi_id)
     project_id = _ensure_perf_project(conn)
     geometries = {
         "bbox_small": _bbox_wkt(
@@ -317,6 +336,7 @@ def prepare_benchmark_dataset(
     *,
     dataset_tier: str,
     feature_limit: int | None = None,
+    aoi_id: str | None = None,
 ) -> dict[str, object]:
     if dataset_tier not in DATASET_TIERS:
         raise ValueError(f"Unknown dataset tier: {dataset_tier!r}")
@@ -326,10 +346,93 @@ def prepare_benchmark_dataset(
         dataset_tier=dataset_tier,
         feature_limit=feature_limit,
     )
-    aoi_ids = ensure_perf_aois(conn)
+    aoi_ids = ensure_perf_aois(conn, aoi_id)
     return {
         "dataset_tier": dataset_tier,
         "tier": asdict(DATASET_TIERS[dataset_tier]),
         "observation_seed": observation_seed,
         "aoi_ids": aoi_ids,
     }
+
+
+# Every row the seed writes is found by a mark it already carries, so rows
+# seeded before this command existed are found the same way: the perf source
+# by its provider, its observations and runs through that source, the AOIs by
+# name inside the perf project. A same-named AOI in another project is not one.
+# Child tables are deleted explicitly, before their cascades would, so each
+# count is reported.
+_PERF_SOURCES = (
+    "SELECT id FROM curated_geo.data_source_catalog WHERE provider = %(provider)s"
+)
+_PERF_PROJECTS = "SELECT id FROM app_core.project WHERE name = %(project)s"
+_PERF_AOIS = (
+    "SELECT id FROM curated_geo.area_of_interest "
+    f"WHERE project_id IN ({_PERF_PROJECTS}) AND name = ANY(%(aoi_names)s)"
+)
+_CLEANUP_STEPS = (
+    ("curated_geo.aoi_indicator_summary", f"aoi_id IN ({_PERF_AOIS})"),
+    ("curated_geo.aoi_feature", f"aoi_id IN ({_PERF_AOIS})"),
+    ("curated_geo.area_of_interest", f"id IN ({_PERF_AOIS})"),
+    # Only once empty: a scenario someone made in it is not perf data, and
+    # deleting the project would cascade it away.
+    (
+        "app_core.project",
+        f"id IN ({_PERF_PROJECTS}) AND NOT EXISTS (SELECT 1 FROM "
+        "curated_geo.area_of_interest a WHERE a.project_id = app_core.project.id) "
+        "AND NOT EXISTS (SELECT 1 FROM app_core.scenario s "
+        "WHERE s.project_id = app_core.project.id)",
+    ),
+    ("curated_geo.observation", f"source_id IN ({_PERF_SOURCES})"),
+    ("curated_geo.ingestion_run", f"source_id IN ({_PERF_SOURCES})"),
+    ("curated_geo.data_source_catalog", f"id IN ({_PERF_SOURCES})"),
+)
+# Deleting a perf AOI would null or orphan these columns on rows that are not
+# perf data, so their presence stops the cleanup instead. Compared as text:
+# `orchestration_run.aoi_id` is a text column.
+_AOI_REFERENCES = (
+    ("app_core.scenario", "aoi_id"),
+    ("curated_geo.aggregation_recipe", "aoi_id"),
+    ("jobs_runtime.orchestration_run", "aoi_id"),
+)
+
+
+def cleanup_perf_data(conn, *, dry_run: bool = False) -> dict[str, object]:
+    """Delete every row `seed_observations`/`ensure_perf_aois` wrote, in the
+    caller's transaction. ``dry_run`` runs the same deletes and rolls them
+    back, so the counts it reports are exactly what a real run removes. It
+    therefore takes the same row locks for its duration: on a shared database,
+    writers touching the perf rows wait until it finishes. A count-only preview
+    would be lock-free but could disagree with the real run, whose later steps
+    (the project) depend on the earlier deletes."""
+    _require_postgres(conn)
+    params = {
+        "provider": PERF_SOURCE_PROVIDER,
+        "project": PERF_PROJECT_NAME,
+        "aoi_names": list(PERF_AOI_NAMES.values()),
+    }
+    removed: dict[str, int] = {}
+    with conn.cursor() as cur:
+        for table, column in _AOI_REFERENCES:
+            cur.execute(
+                f"SELECT count(*) FROM {table} WHERE {column}::text IN "
+                f"(SELECT id::text FROM ({_PERF_AOIS}) perf_aoi)",
+                params,
+            )
+            if cur.fetchone()[0]:
+                raise ValueError(
+                    f"{table} rows reference a perf AOI; repoint or delete them "
+                    "before running perf cleanup."
+                )
+        cur.execute("SAVEPOINT perf_cleanup")
+        for table, where in _CLEANUP_STEPS:
+            cur.execute(f"DELETE FROM {table} WHERE {where}", params)
+            removed[table] = cur.rowcount
+        if dry_run:
+            cur.execute("ROLLBACK TO SAVEPOINT perf_cleanup")
+        elif removed["curated_geo.observation"]:
+            # The seed refreshed it to publish the rows; refresh it to unpublish.
+            cur.execute(
+                "REFRESH MATERIALIZED VIEW serving_geo.feature_current_attributes_mv"
+            )
+        cur.execute("RELEASE SAVEPOINT perf_cleanup")
+    return {"dry_run": dry_run, "removed": removed}

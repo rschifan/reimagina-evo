@@ -49,7 +49,7 @@ CREATE TABLE curated_geo.indicator_catalog (
   model_family       text,
   -- Which analytical family this indicator belongs to. A grouping label carried
   -- onto job_run, not a dispatch key — the runner registry binds compute
-  -- functions per slug, not per family (`orchestration/runners.py:43-55`, `:132-146`).
+  -- functions per slug, not per family (`runners._DIRECT_COMPUTE`, `runners.default_runners`).
   -- Shipped direct indicators use 'urban_form' or 'accessibility' (`indicators/catalog.py`).
   -- NULL for composite indicators (derived from other indicators, not from a model run);
   -- their job_run rows carry 'composite'.
@@ -116,14 +116,14 @@ CREATE TABLE curated_geo.indicator_catalog (
 | `accessibility_block_health_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
 | `accessibility_block_park_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
 | `accessibility_block_culture_network_m` | direct | accessibility | m | 0–1,500 | 1,500 | false | same two |
-| `livability_block_score` | composite | NULL | score_0_1 | 0–1 | — | true | `edificability_block_density` 0.4; school, health and park `*_network_m` 0.2 each |
+| `livability_block_score` | composite | NULL | score_0_1 | 0–1 | — | true | `edificability_block_density` 0.4, scored against a 50–150 units/ha target band; school, health and park `*_network_m` 0.2 each |
 
 What each computes:
 
 - **Compactness** — Polsby-Popper, `4π × area / perimeter²` over the block's geodesic area and perimeter, clamped to [0, 1].
 - **Building density** — `global:building` features whose centroid falls inside the block, divided by block area in hectares.
 - **Planned floors** — the block's effective `floors` (scenario override, then observation, then base attributes).
-- **Edificability** — `housing_units = area × lot_coverage × num_levels / unit_size`, `population = housing_units × people_per_household`, `density = housing_units / area_ha`. Block geodesic area stands in for lot area. `lot_coverage` is optional and defaults to 1.0, so `num_levels × lot_coverage` is the CUS term; a block missing `num_levels`, `unit_size` or `people_per_household` is skipped and keeps whatever it already held (`indicators/edificability.py`).
+- **Edificability** — `housing_units = area × lot_coverage × num_levels / unit_size`, `population = housing_units × people_per_household`, `density = housing_units / area_ha`. Block geodesic area stands in for lot area. `lot_coverage` is optional and defaults to 1.0, so `num_levels × lot_coverage` is the CUS term; a block missing `num_levels`, `unit_size` or `people_per_household` is skipped and keeps whatever it already held (`indicators/edificability.py`). On a pilot install the inputs are fitted from the Overture buildings and the census so the baseline gives the census dwellings and population back (`scripts/seed_demo_attributes.py --fit-to-census`; see [SCENARIOS_LAYER.md](SCENARIOS_LAYER.md)); a block with no census dwellings carries no `unit_size` and is skipped.
 - **Accessibility** — metres from the block's point-on-surface centroid to the nearest amenity of the category along the OSM pedestrian network (one multi-source `pgr_drivingDistance` per category), plus the block's and the amenity's walks to the network, clamped to [0, 1,500 m]; nothing reachable reports the 1,500 m cutoff.
 - **Composites** — see *Each input is rescaled before weighting* below.
 
@@ -186,9 +186,11 @@ CREATE TABLE curated_geo.indicator_result (
   -- Copied from feature.type_slug at insert time. Immutable after insert.
 
   -- Which state of the world
-  scenario_id     uuid,
-  -- Plain uuid, NO foreign key (r016:7-10). app_core.scenario exists since r048,
-  -- but no migration has added the FK from this column.
+  scenario_id     uuid             REFERENCES app_core.scenario(id)
+                                   ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+  -- r016 left it a bare uuid; r055 added the FK (indicator_result_scenario_id_fkey).
+  -- Deleting a scenario deletes its results. A compute unit defers the check
+  -- (runners._fenced) so its inserts do not lock the scenario row.
   -- NULL  = base city state (Diagnosis mode — the city as it exists today)
   -- UUID  = a specific scenario (Evaluation mode — a proposed future state)
 
@@ -234,9 +236,9 @@ CREATE TABLE curated_geo.indicator_result (
   -- current: latest result for this (feature, scenario, indicator) triple
   -- stale:   superseded. The write path stales the previous current row as it
   --          inserts the new one; scenario authoring stales a scenario's rows
-  --          when the overrides behind them are removed or the scenario is
-  --          deleted. Nothing re-queues a stale row — what is out of date is
-  --          answered by the asset graph (ASSET_LAYER.md).
+  --          when the overrides behind them are removed (deleting the scenario
+  --          deletes its rows). Nothing re-queues a stale row — what is out of
+  --          date is answered by the asset graph (ASSET_LAYER.md).
   -- failed:  allowed by the CHECK, written by nothing. A failed computation is
   --          recorded on job_run (status 'failed', error_message).
   -- Execution state ('queued', 'running') lives on job_run, not here.
@@ -341,7 +343,7 @@ WHERE ir.status = 'current';
 ### Adding a new direct indicator
 
 Add an `IndicatorSpec` to `SHIPPED_INDICATORS` in `indicators/catalog.py`, bind a
-compute fn for its slug in `_DIRECT_COMPUTE` (`orchestration/runners.py:43-55`) —
+compute fn for its slug in `_DIRECT_COMPUTE` (`orchestration/runners.py`) —
 usually built with `compute_indicator`, see *How a direct indicator is wired* —
 then run `indicators seed-catalog` and `assets seed` (`bootstrap-db` runs both).
 No migration. `default_runners` binds a direct spec only when `_DIRECT_COMPUTE`
@@ -388,7 +390,9 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(        # abridged
     aggregation_method="weighted_mean",
     inputs=(
         AssetEdge(indicator_asset_key(EDIFICABILITY_BLOCK_DENSITY.slug),
-                  relation="derived_from", weight=0.4),
+                  relation="derived_from", weight=0.4,
+                  target_band=(LIVABILITY_DENSITY_BAND_LOW,     # 50
+                               LIVABILITY_DENSITY_BAND_HIGH)),  # 150
         # ...one 0.2 edge per category in LIVABILITY_ACCESSIBILITY_CATEGORIES
         # ("school", "health", "park")
     ),
@@ -398,11 +402,24 @@ LIVABILITY_BLOCK_SCORE = IndicatorSpec(        # abridged
 
 No new model is required. `default_runners` binds every
 `computation_kind="composite"` spec to the generic `compute_composite`
-(`orchestration/runners.py:142-143`), so a new composite needs only a catalog
+(`orchestration/runners.py`), so a new composite needs only a catalog
 entry, not new compute code. `livability_block_score` is the worked example:
 0.4 housing density (`edificability_block_density`) plus 0.2 each for walking
 distance to schools, health facilities and parks, added as a spec and nothing
 else. `culture` is deliberately not an input.
+
+**No dwellings, no livability — by design.** Housing density is a
+component, and a block the census counts no dwellings on has no m² per
+dwelling, so `edificability_block_density` writes no row for it, and the
+composite, which needs every component (step 3 below), writes none either.
+On Mexicali that is 4,518 of 19,058 blocks: livability has 14,540 rows, the
+same as the edificability family (`BOOTSTRAP.md`). Livability is a score
+for where people live; a block nobody lives on — a park, an industrial
+lot, a school — is not scored as a poor one, it is not scored. A scenario
+rule that gives such a block dwellings gives it a livability score. The
+map shows nothing on those blocks, and the inspector says only "No value
+for the indicator on the map."; there is no per-block reason for a missing
+value in the UI.
 
 #### Each input is rescaled before weighting
 
@@ -418,6 +435,17 @@ exceed its weight and the result cannot leave 0–1. An input that declares no
 bounds, or `valid_max <= valid_min`, makes it refuse with `ValueError` rather
 than fall back to the raw value.
 
+**A target band, for an input that is good in a range.** An edge may carry
+`target_band=(low, high)`; that input then scores 1 inside the band and falls
+linearly to 0 at its `valid_min` below and at `2 × high` above, clamped to 0–1,
+instead of being normalised and oriented (`composite.component_score`).
+Livability's density edge uses it with `LIVABILITY_DENSITY_BAND_LOW` /
+`_HIGH` = 50 / 150 units/ha (`indicators/catalog.py`): density scores 0 at 0,
+0.5 at 25, 1 from 50 to 150, 0.5 at 225 and 0 from 300 up. Normalised against
+its 2,000 units/ha safety cap, the score rose with density all the way, so the
+densest block was the most livable. The bands are folded into the indicator's
+`params_digest`, so moving one restages its results.
+
 Against the *declared* bounds, not the observed population, on purpose:
 percentile or AOI min–max would make every value depend on every other value, so
 editing one block would invalidate all of them and the dirty set could no longer
@@ -426,8 +454,8 @@ be a subset of features. That is a different scheduling shape.
 ⚠ **This makes the maths sound; it does not make a score balanced.**
 `valid_max` is now doing two jobs — the validation ceiling r016's trigger
 enforces on writes, and the reference a score divides by. `building_density`
-declares 500 as a safety cap against an observed maximum of 212.1, so its values
-occupy the bottom 42% of their range and the same 0.5/0.5 composite reads 86%
+declares 500 as a safety cap against an observed maximum of 212.1 on CDMX
+(153.8 on the Mexicali pilot), so its CDMX values occupy the bottom 42% of their range and the same 0.5/0.5 composite reads 86%
 compactness. Separating the two roles is the fix when a real score needs a
 defensible balance.
 
@@ -508,8 +536,8 @@ indicator refuses to compute against a missing input*.
 `compute_composite` (`indicators/composite.py`) follows the same stale-then-insert write, but reads component results instead of city data, and combines them in Python rather than SQL. It is an ordinary unit in the same run as its components, ordered after them by the impact engine's topological sort — not a separate worker or a second run (see `JOB_LAYER.md` — *Impact engine*).
 
 1. For each `(input, weight)` in `spec.depends_on`, read the input's current results with `list_current_for_indicator` — under a scenario, an overlay of the scenario's rows on the baseline's. Keep rows with a `value_numeric` at a feature type in the composite's `applies_to`.
-2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False`.
-3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped (`aoi_id` does not narrow it), and sum the weighted values.
+2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False` — or, for an edge with a `target_band`, score it against the band.
+3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped and to the AOI's blocks (`feature_ids_in_aoi`) when it carries an `aoi_id`, and sum the weighted values.
 4. Open a `job_run` (`model_family='composite'`) and write with `bulk_write_numeric_results`.
 
 ```
@@ -517,8 +545,9 @@ composite(f) = Σᵢ wᵢ · orientᵢ( clamp₀₁( (xᵢ(f) − valid_minᵢ) 
 orientᵢ(v)   = v if higher_is_betterᵢ else 1 − v          (a NULL wᵢ counts as 0)
 
 urban_form_block_composite = 0.5·n(compactness) + 0.5·n(building_density)
-livability_block_score     = 0.4·n(edificability_block_density)
+livability_block_score     = 0.4·band(edificability_block_density)
                            + 0.2·(1 − n(school)) + 0.2·(1 − n(health)) + 0.2·(1 − n(park))
+band(d)      = clamp₀₁( d < 50 ? d / 50 : d > 150 ? (300 − d) / 150 : 1 )
 ```
 
 A feature missing any component gets no composite row in that run — not a `missing` row — and keeps whatever composite row it already had. No partial composite is produced.
@@ -599,7 +628,7 @@ ORDER BY f.id, ci.indicator_slug;
 
 When a scenario override changes features, all affected indicator results — including composite indicators that depend on them — can be marked stale before recomputation.
 
-This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed (`_supersede_unbacked_results`), and deleting a scenario stales all of its rows (`_supersede_all_results`).
+This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed, the indicators that read the attribute and their dependents such as the livability composite (`_supersede_unbacked_results`). Deleting a scenario does not stale its rows: `delete_scenario` deletes them (the `ON DELETE CASCADE` foreign key r055 added).
 
 ```sql
 WITH RECURSIVE impacted AS (
@@ -652,8 +681,8 @@ rejects a mis-shaped one with the expected signature named.
 ⚠ **The read happens inside the `job_run` context, not before it.**
 `indicator_result.job_run_id` is a NOT NULL FK (r016), so a read that raises
 outside the context leaves a failure with no provenance row anywhere.
-`compute_indicator` and `building_density` read inside it; `planned_floors`
-calls `effective_numeric` before opening its `job_run`.
+`compute_indicator`, `building_density` and `planned_floors` (its
+`effective_numeric` call) all read inside it.
 
 ⚠ **Two indicators deliberately keep their own body.** `planned_floors` has no
 Hamilton stage, and `building_density` reports an extra statistic
@@ -714,7 +743,7 @@ vocabulary, not a data manifest. `urban_form_block_building_density` has
 accessibility family reads `poi_version` / `network_version`, which are
 hand-maintained sentinels standing in for whole tables. Walk `reads` through
 `depends_on` for `urban_form_block_composite` and the answer is `['geometry']`
-— it needs 365,954 building features. `depends_on` is exact and
+— it needs every `global:building` feature. `depends_on` is exact and
 machine-walkable; the attribute leaves are under-declared by exactly that gap.
 
 The datasets are declared in `inputs`, the field `reads` and `depends_on` are

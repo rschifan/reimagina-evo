@@ -96,7 +96,9 @@ sorted in byte order (`COLLATE "C"`, r044), with floats at a fixed scale of 6.
 
 **Leaves are told; everything else is derived.** A source asset's version is
 recorded by whatever changed it (`assets/publish.py`): an ingest publishes its
-ingestion run id when it finishes having written rows (`data.catalog.finish_run`),
+ingestion run id when it finishes having written rows (`data.catalog.complete_ingestion_run`),
+a loader that writes block observations (the census, `overture block-storeys`)
+publishes `mex.block`, the asset indicators declare those attributes on,
 `assets backfill-versions` covers layers loaded before the graph existed, and
 materialising a scenario publishes a content digest per edited attribute into
 that scenario's partition (`scenarios.overrides.publish_scenario_version`). The
@@ -104,9 +106,11 @@ database can compute every *derived* version from the graph, but it cannot know
 that Overture published a new release. `assets/observe.py` (`assets observe`) is
 for data that arrives through no pipeline at all: it runs each `observed`
 asset's `probe_sql` and publishes the result when it changes. One shipped asset
-is observed — `global.road_network`, because `curated_geo.road_edge` comes
-straight from Overpass with no `ingestion_run`; its probe is the row count and
-the max `osm_id`. The hand-copied private mirrors and
+is observed — `global.road_network`, because `curated_geo.road_edge` is loaded
+by `network bootstrap` (an Overpass fetch, or the source bundle's saved graph
+with `--graph-dir`) with no `ingestion_run`; its probe is the row count and
+the max `osm_id`. A swapped local copy of the INEGI parquet (the source
+bundle's SHA256SUMS guards the bundle itself, not the database) and
 `scripts/seed_demo_attributes.py`'s direct merges into `feature.attributes`
 have no observed asset, so the graph cannot see them.
 
@@ -140,6 +144,7 @@ neither takes the freshness path when the graph is seeded: on the baseline
 partition it returns indicators in state `stale` or `partial`; with a
 `scenario_id` it returns every indicator that has a node in that scenario's
 partition and whose materialised version is missing, different or partial.
+With an `aoi_id`, indicators already done for that AOI are left out (below).
 Freshness units are whole-grain. A database with no seeded graph falls back to
 the attribute path. `POST /jobs` also accepts `changed_datasets`, which
 `impact.indicators_for_datasets` resolves from the `inputs` edges into an
@@ -158,14 +163,28 @@ Materialisations are written by the runner registry, not by each compute:
 input versions **before** the compute runs, records them only if it succeeds,
 and marks coverage complete only when the unit was neither feature- nor
 AOI-scoped, so a scoped run at the current version reports `partial`, not
-`fresh`.
+`fresh`, in `asset_freshness_v` — the whole-database view.
+
+Coverage is also recorded per AOI. A unit scoped to AOI X with no feature list,
+or a scenario unit whose features include every feature the scenario overrides
+(the recompute footprint: a block without an override reads the baseline through
+the overlay), records `coverage_scope = {"complete": false, "aoi_id": X}`.
+`assets.freshness.fresh_indicator_slugs` counts an indicator as done for X when
+a succeeded materialisation at the expected version covered the database or X,
+and no materialisation at another version came after it (override versions are
+content digests and can return to an older value). Planning with an `aoi_id`
+subtracts those: the freshness path on either partition, and an explicit
+scenario change-set too, so an identical scenario recompute is a noop. A
+feature-scoped baseline unit, or a scenario unit missing an overridden feature,
+stays plain partial; another AOI and the whole database still see `partial`.
 
 ## What a params change does
 
 `seed_assets` folds seven fields of each `IndicatorSpec` — `computation_kind`,
 `value_type`, `unit`, `aggregation_method`, `valid_min`, `valid_max`,
-`applies_to` — into the indicator asset's `params_digest`, which feeds the asset
-version; a weight moves it through the edge term instead, since
+`applies_to` — into the indicator asset's `params_digest`, plus a composite's
+`target_band`s when it declares any (livability's density band), which feeds
+the asset version; a weight moves it through the edge term instead, since
 `asset_component_v` hashes every edge's weight. So editing an indicator's bounds
 or weights in `indicators/catalog.py` and re-seeding moves its expected version
 and restages its results and everything downstream of them. That is intended —

@@ -1,8 +1,11 @@
 """Unit tests for the submit prelude — pure, no DB.
 
 ``resolve_change_set`` short-circuits on an explicit change-set without touching
-the connection, so a None conn is enough here. The override-derived path needs
-Postgres and is covered by ``tests/integration/test_scenario_whatif.py``.
+the connection, so a None conn is enough here — with the asset graph reported
+absent, since a scenario change-set also asks the graph what is already fresh.
+The override-derived path needs Postgres and is covered by
+``tests/integration/test_scenario_whatif.py``; the graph-backed paths by
+``tests/integration/test_freshness_driven_recompute.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +16,9 @@ import pytest
 
 from reimagina.indicators.catalog import IndicatorSpec
 from reimagina.orchestration.plan import UnknownIndicators, noop_handle, plan_run
+
+#: A feature id: the plan canonicalises edited features as uuids.
+B1 = "00000000-0000-0000-0000-0000000000b1"
 
 
 def _spec(slug, *, reads=(), depends_on=(), kind="direct"):
@@ -38,9 +44,16 @@ LIVE = _spec(
 REG = (GREEN, WALK, LIVE)
 
 
+@pytest.fixture(autouse=True)
+def _no_asset_graph(monkeypatch):
+    monkeypatch.setattr(
+        "reimagina.assets.freshness.graph_available", lambda conn: False
+    )
+
+
 def _plan(**kw):
     kw.setdefault("changed_attributes", {"land_use"})
-    kw.setdefault("edited_features", {"b1"})
+    kw.setdefault("edited_features", {B1})
     kw.setdefault("registry", REG)
     return plan_run(None, **kw)
 

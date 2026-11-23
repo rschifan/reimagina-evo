@@ -127,6 +127,7 @@ class IndicatorResultRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
         limit: int | None = None,
+        after_feature_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
     def list_current_with_geometry(
@@ -179,7 +180,9 @@ class IndicatorResultRepository(Protocol):
         Returns a dict with `count`, `min`, `p05`, `p50`, `p95`, `max`, `sum`
         (all `None` when there are no rows) and `count_at_cap`: the rows with
         `value >= cap_value` from the catalog, over the same rows as `count`
-        (`None` when the indicator has no cap). Intended to drive the
+        (`None` when the indicator has no cap), and `count_estimated`: the
+        rows on a feature marked `attributes.estimated`, likewise. Intended
+        to drive the
         frontend's choropleth colour ramp from the real distribution
         rather than the catalog's safety bounds.
 
@@ -241,7 +244,8 @@ class AOISummaryRepository(Protocol):
         indicator_slug: str,
         scenario_id: str | None = None,
     ) -> list[tuple[float | None, float, str]]:
-        """Return ``(value, weight, quality_flag)`` for each feature in the AOI.
+        """Return ``(value, weight, quality_flag)`` for each AOI feature of a
+        type the indicator ``applies_to`` (other grains are not its children).
 
         Joins ``aoi_feature`` to ``indicator_result`` on the given slug +
         scenario scope. ``weight`` is ``aoi_feature.overlap_measure``

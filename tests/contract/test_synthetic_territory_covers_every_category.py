@@ -9,7 +9,7 @@ then passes — the right number of rows, no error, a populated choropleth — w
 shipping a layer that measures nothing.
 
 That is not hypothetical. It is what the real Mexicali pilot did for ``park``:
-the IMIP amenity layer has no park-like category, so all 19,058 blocks reported
+the DENUE amenity layer has no park-like category, so all 19,058 blocks reported
 1,500 m and the map drew a uniform surface that reads as a finding about
 Mexicali's park access. It went unnoticed because 1,500 m looks like a
 measurement in a way 0.0 does not.

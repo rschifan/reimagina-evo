@@ -44,6 +44,12 @@ class _Recorder:
         #: child workflow ids whose `get_result` should raise, i.e. units that
         #: failed. Keyed by id because that is what the body holds.
         self.failing_children: set[str] = set()
+        #: what `s_compute` returns: None (computed) or "cancelled" (its
+        #: scenario was deleted, so `runners._fenced` wrote nothing).
+        self.compute_returns: str | None = None
+        #: child workflow ids whose `get_result` reports `cancelled`.
+        self.cancelled_children: set[str] = set()
+        self.settled: dict[str, str] = {}
         self._enqueued: list[str] = []
 
     # ── the pieces run_workflow / unit_workflow reach for ──────────────────
@@ -56,12 +62,14 @@ class _Recorder:
 
     def s_settle_unit(self, run_id, slug, outcome):
         self.calls.append(f"s_settle_unit:{slug}")
+        self.settled[slug] = outcome
         return outcome
 
     def s_compute(self, run_id, slug, features, params):
         self.calls.append(f"s_compute:{slug}")
         if self.fail_on == slug:
             raise RuntimeError("boom")
+        return self.compute_returns
 
     def s_finalize(self, run_id, status):
         self.calls.append("s_finalize")
@@ -117,6 +125,8 @@ class _Handle:
         self._recorder.calls.append("get_result")
         if self.workflow_id in self._recorder.failing_children:
             raise RuntimeError("child failed")
+        if self.workflow_id in self._recorder.cancelled_children:
+            return "cancelled"
         return "succeeded"
 
 
@@ -327,3 +337,23 @@ def test_a_failing_compute_marks_failed_and_reraises(monkeypatch):
 
     assert "s_set_status:m1:failed" in rec.calls
     assert not [c for c in rec.calls if c.endswith(":succeeded")]
+
+
+def test_a_unit_whose_scenario_was_deleted_is_marked_cancelled(recorder):
+    """``s_compute`` says ``cancelled`` when ``runners._fenced`` wrote nothing.
+
+    It used to be marked ``succeeded`` — results claimed that were rolled back.
+    """
+    recorder.compute_returns = "cancelled"
+    assert _body(dbos_app.unit_workflow)("run-5", "gone", [], {}) == "cancelled"
+    assert recorder.calls[-1] == "s_set_status:gone:cancelled"
+    assert not [c for c in recorder.calls if c.endswith(":succeeded")]
+
+
+def test_the_parent_settles_a_child_on_the_status_it_returned(recorder):
+    recorder.cancelled_children.add("run-a")
+    final = _body(dbos_app.run_workflow)(
+        "run", [_unit("a"), _unit("b")], {"code_version": "test"}
+    )
+    assert recorder.settled == {"a": "cancelled", "b": "succeeded"}
+    assert final == "partial"

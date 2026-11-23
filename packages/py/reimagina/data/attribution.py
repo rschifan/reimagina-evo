@@ -16,8 +16,10 @@ from `data_source_catalog`, which already records a licence per source, and
 only for sources that actually have features loaded.
 
 The one judgement call is the wording. A provider's required credit line is
-not derivable from its name, and OSM's is prescribed, so there is a lookup
-with a plain fallback for anyone not in it.
+not derivable from its name. OSM's is prescribed, so there is a lookup; INEGI's
+terms ask for one line per product ("Fuente: INEGI, <producto>, <fecha>"), so
+its loaders record that line in `data_source_catalog.credit`; everyone else
+gets a plain provider-and-licence fallback.
 """
 
 from __future__ import annotations
@@ -42,14 +44,19 @@ class Attribution:
     text: str
 
 
-def attribution_text(provider: str, license: str | None) -> str:
+def attribution_text(
+    provider: str, license: str | None, credit: str | None = None
+) -> str:
     """The credit line for one source.
 
-    Falls back to provider and licence rather than to nothing: an
+    A credit the source declares wins: it is the loader's claim about its
+    own product, which a provider-keyed lookup cannot make. Otherwise falls back to provider and licence rather than to nothing: an
     unrecognised provider still has to be named, and naming it with its
     licence is both honest and the thing a reviewer needs in order to check
     it.
     """
+    if credit:
+        return credit
     prescribed = PRESCRIBED.get(provider.strip().lower())
     if prescribed:
         return prescribed
@@ -59,30 +66,41 @@ def attribution_text(provider: str, license: str | None) -> str:
 
 
 def attributions(conn) -> list[Attribution]:
-    """Credit lines for every source with features in the database.
+    """Credit lines for every source with data on the map.
 
-    "With features" rather than "registered": a source row that was created
+    "With data" rather than "registered": a source row that was created
     and never loaded has nothing on the map, and crediting it would claim
-    the map shows data it does not.
+    the map shows data it does not. Data is features, or a published raster
+    layer — a raster (WorldPop, CC BY 4.0) has no feature rows at all — or,
+    for a source that declares a credit, observations: the INEGI census lands
+    only as observations on blocks. Observation-only sources without a credit
+    are our own derived rows (rollups, synthetic seeds), not anyone to credit.
 
-    Sorted, so the rendered string is stable between requests — an
-    attribution line that reshuffles on refresh looks like a bug.
+    One line per distinct text, so the four Marco Geoestadístico layers credit
+    the product once. Sorted, so the rendered string is stable between
+    requests — an attribution line that reshuffles on refresh looks like a bug.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT s.provider, s.license
+            SELECT DISTINCT s.provider, s.license, s.credit
             FROM curated_geo.data_source_catalog s
             WHERE EXISTS (
                 SELECT 1 FROM curated_geo.feature f WHERE f.source_id = s.id
-            )
-            ORDER BY s.provider, s.license
+            ) OR EXISTS (
+                SELECT 1 FROM curated_geo.raster_layer r
+                WHERE r.source_id = s.id AND r.published
+            ) OR (s.credit IS NOT NULL AND EXISTS (
+                SELECT 1 FROM curated_geo.observation o
+                WHERE o.source_id = s.id AND o.is_current
+            ))
             """
         )
         rows = cur.fetchall()
-    return [
-        Attribution(
-            provider=provider, license=license, text=attribution_text(provider, license)
+    by_text: dict[str, Attribution] = {}
+    for provider, license, credit in sorted(rows, key=lambda r: tuple(map(str, r))):
+        text = attribution_text(provider, license, credit)
+        by_text.setdefault(
+            text, Attribution(provider=provider, license=license, text=text)
         )
-        for provider, license in rows
-    ]
+    return sorted(by_text.values(), key=lambda a: (a.provider, a.text))

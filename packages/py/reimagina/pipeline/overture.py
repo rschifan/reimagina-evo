@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ MEXICO_CITY_BBOX = (-99.597, 18.992, -98.606, 19.921)
 #: El Centro (California) fall inside it, so a share of the buildings it
 #: returns are American. That is not a bug to fix by shrinking the box: the
 #: extract is deliberately a superset of the AOI, and
-#: :func:`_clip_buildings_to_aoi` deletes post-load whatever falls outside the
+#: :func:`_clip_buildings_to_aoi` deletes, inside the load, whatever falls outside the
 #: Mexican municipal polygon, so "bbox-but-not-polygon orphans never persist".
 #: Shrinking it to hug the border would instead risk clipping Mexicali itself.
 #:
@@ -207,14 +208,24 @@ def _extract_remote_overture_subset(
         & (pc.field("bbox", "ymin") <= max_lat)
     )
 
-    if low_memory:
-        _write_subset_per_file(dataset, flt, output_path, s3, source_glob)
-    else:
-        # Materialises the bbox subset in one table. Fast, and the memory cost
-        # is NOT the rows — see `low_memory` in
-        # :func:`extract_overture_buildings_subset` for the measurement that
-        # says where it actually goes.
-        pq.write_table(dataset.to_table(filter=flt), str(output_path))
+    # Written to a sibling and renamed only on success: the per-file writer
+    # closes with a valid footer even when the scan raised, so an interrupted
+    # extract would otherwise sit at `output_path` as a readable, partial file
+    # that a later load or a source bundle would take as complete.
+    partial = output_path.with_name(output_path.name + ".partial")
+    try:
+        if low_memory:
+            _write_subset_per_file(dataset, flt, partial, s3, source_glob)
+        else:
+            # Materialises the bbox subset in one table. Fast, and the memory
+            # cost is NOT the rows — see `low_memory` in
+            # :func:`extract_overture_buildings_subset` for the measurement
+            # that says where it actually goes.
+            pq.write_table(dataset.to_table(filter=flt), str(partial))
+        partial.replace(output_path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
 
 
 def _progress(message: str) -> None:
@@ -356,8 +367,7 @@ def extract_overture_buildings_subset(
     Default stays off: 4.4 GB is affordable on a server and 454 s is not free.
     Turn it on where memory is the binding constraint — a laptop also running
     Postgres, where the failure is not a clean OOM but swapping, which
-    presents as a hung process. ``scripts/mexicali_run.sh`` passes it for
-    exactly that reason.
+    presents as a hung process.
 
     The ceiling is flat rather than proportional (663 MB held across all 512
     files), so ``low_memory`` is also the only path that is known to survive an
@@ -509,6 +519,24 @@ def bootstrap_overture_buildings_subset(
         raw_path, source_id=source_id
     )
 
+    # The clip runs inside the load's transaction, before the run completes:
+    # committed first, a wrong-city extract stayed loaded under a succeeded run
+    # and a published version when the mismatch raised, and a re-run published
+    # the rows the first clip had deleted only to delete them again.
+    clip_result: dict[str, int | str | float | None] = {}
+
+    def _clip(run_id: str, inserted: int) -> int:
+        clip_result.update(
+            _clip_buildings_to_aoi(
+                conn,
+                ingestion_run_id=run_id,
+                aoi_id=str(aoi_id),
+                loaded=inserted,
+                source_id=source_id,
+            )
+        )
+        return inserted - int(clip_result["clipped_outside_aoi"] or 0)
+
     load_result = load_overture_buildings_subset(
         conn,
         source_id=source_id,
@@ -516,18 +544,8 @@ def bootstrap_overture_buildings_subset(
         dataset_version=dataset_version,
         orchestrator_run_id=orchestrator_run_id,
         code_version=code_version,
+        after_insert=_clip if aoi_id is not None else None,
     )
-
-    clip_result: dict[str, int | str | float | None] = {}
-    if aoi_id is not None:
-        clip_result = _clip_buildings_to_aoi(
-            conn,
-            ingestion_run_id=str(load_result["ingestion_run_id"]),
-            aoi_id=aoi_id,
-            loaded=int(load_result.get("records_written") or 0),
-            source_id=source_id,
-        )
-        conn.commit()
 
     return {
         "source_id": source_id,
@@ -546,8 +564,10 @@ def load_overture_buildings_subset(
     dataset_version: str = OVERTURE_DEFAULT_RELEASE,
     orchestrator_run_id: str,
     code_version: str = "dev",
+    after_insert: Callable[[str, int], int] | None = None,
 ) -> dict[str, str | int]:
-    """Load a cleaned Overture buildings subset into curated_geo.feature."""
+    """Load a cleaned Overture buildings subset into curated_geo.feature,
+    retiring the same source's earlier releases (``supersede``)."""
     type_id = feat.get_type_id(
         conn,
         OVERTURE_BUILDINGS_MEXICO_CITY.feature_type_context,
@@ -564,6 +584,8 @@ def load_overture_buildings_subset(
         code_version=code_version,
         name_col=None,
         attributes_cols=OVERTURE_BUILDINGS_ATTRIBUTES,
+        after_insert=after_insert,
+        supersede=True,
     )
 
 
@@ -606,7 +628,8 @@ def _clip_buildings_to_aoi(
     about the run: *after clipping, does this source have anything inside the
     AOI?* A re-run leaves 343,707 there; a Mexico City extract leaves nothing.
 
-    That is not theoretical. `scripts/mexicali_run.sh` omitted `--bbox`, so
+    That is not theoretical. `scripts/mexicali_run.sh`, when it still
+    extracted, omitted `--bbox`, so
     `overture extract` used its own default — MEXICO_CITY_BBOX, 1,600 km
     away. Several million Mexico City buildings were extracted, loaded, and
     clipped to nothing against the Mexicali AOI. No error. The run continued
@@ -717,6 +740,6 @@ def validate_overture_buildings_layer(conn) -> dict[str, Any]:
     return {
         "count": count,
         "sample_features": samples,
-        "queryable_through_serving": count >= 0,
+        "queryable_through_serving": count > 0,
         "type_slug": type_slug,
     }

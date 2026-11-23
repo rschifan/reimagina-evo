@@ -9,6 +9,8 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 import click
+import psycopg2
+import psycopg2.errors
 import typer
 
 try:
@@ -35,14 +37,20 @@ except ImportError:  # pragma: no cover
 # guarantees `str(member) == member.value` on 3.12.
 
 
+#: The perf commands' shared ``--aoi-id``.
+_PERF_AOI_OPTION = typer.Option(
+    None,
+    "--aoi-id",
+    help="Cut the benchmark boxes from this AOI instead of the extent of "
+    "every feature, whose centre falls between cities when more than one "
+    "is loaded. Pass the same AOI to seed-observations and run.",
+)
+
+
 class _DatasetTier(StrEnum):
     smoke = "smoke"
     representative = "representative"
     stress = "stress"
-
-
-class _PerfReportFormat(StrEnum):
-    json = "json"
 
 
 class _CdmxLayer(StrEnum):
@@ -88,7 +96,10 @@ from reimagina.db import (  # noqa: E402
     connect,
     verify_required_relations,
 )
-from reimagina.storage import mask_dsn  # noqa: E402
+from reimagina.orchestration.port import RUN_TERMINAL_STATES  # noqa: E402
+from reimagina.storage import UnsupportedDSN, mask_dsn  # noqa: E402
+
+from apps.cli import UserError  # noqa: E402
 from reimagina.logging_setup import configure_logging  # noqa: E402
 from reimagina.tiles.defaults import (  # noqa: E402
     tile_live_base_url,
@@ -133,6 +144,7 @@ from reimagina.pipeline.overture import (  # noqa: E402
     OVERTURE_DEFAULT_RELEASE,
 )
 from .perf import (  # noqa: E402
+    cleanup_perf,
     compare_perf_reports,
     explain_query,
     performance_report,
@@ -169,17 +181,22 @@ from .overlap import (  # noqa: E402
 from .scenario import (  # noqa: E402
     DEFAULT_TYPE_CONTEXT,
     DEFAULT_TYPE_SLUG,
+    add_rule as add_rule_cli,
     compare_to_baseline as compare_scenario_cli,
     create as create_scenario_cli,
+    delete as delete_scenario_cli,
+    delete_rule as delete_rule_cli,
     list_scenarios as list_scenarios_cli,
     recompute as recompute_scenario_cli,
-    set_attribute as set_scenario_attribute_cli,
+    rules as list_rules_cli,
     show as show_scenario_cli,
+    update_rule as update_rule_cli,
 )
 from reimagina.scenarios.authoring import (  # noqa: E402
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
+    RuleCatchesNothing,
     ScenarioHasNoAOI,
     ScenarioNotFound,
 )
@@ -189,6 +206,8 @@ from .tiles import (  # noqa: E402
     list_tile_sources,
     tile_manifest,
 )
+from reimagina.jobs.raster_zonal_stats import ConcurrentRasterRun  # noqa: E402
+
 from .raster import (  # noqa: E402
     PrefixCollisionError,
     add_derivation,
@@ -243,17 +262,25 @@ def _mask_dsns(value: Any) -> Any:
     return value
 
 
-def _print(data: dict[str, Any]) -> int:
+def _print(data: dict[str, Any], *, failed: bool = False) -> int:
+    """Print ``data`` and return the exit code: 1 when the command says the
+    thing it checked or ran ``failed``, so scripts and CI gates can trust it."""
     # Never echo a DSN password into stdout/logs, at any depth.
     print(as_json(_mask_dsns(data)))
-    return 0
+    return 1 if failed else 0
+
+
+# Terminal run statuses that mean the recompute did not do its job. `noop`,
+# `queued` (--detach) and `succeeded` are fine.
+_FAILED_RUN_STATUSES = RUN_TERMINAL_STATES - {"succeeded"}
 
 
 def _parse_from_path_pairs(raw: list[str]) -> dict[str, str]:
     pairs: dict[str, str] = {}
     for entry in raw:
         if "=" not in entry:
-            raise SystemExit(f"--from-path expects LAYER=PATH, got {entry!r}")
+            # BadParameter, not SystemExit: `main` drops a SystemExit's message.
+            raise typer.BadParameter(f"--from-path expects LAYER=PATH, got {entry!r}")
         key, path = entry.split("=", 1)
         pairs[key.strip()] = path.strip()
     return pairs
@@ -372,7 +399,11 @@ def verify_schema(
 ) -> int:
     with connect(dsn) as conn:
         checks = verify_required_relations(conn)
-    return _print({"dsn": dsn, "checks": checks, "all_present": all(checks.values())})
+    all_present = all(checks.values())
+    return _print(
+        {"dsn": dsn, "checks": checks, "all_present": all_present},
+        failed=not all_present,
+    )
 
 
 # ── explore ──────────────────────────────────────────────────────────────
@@ -571,6 +602,12 @@ def overture_places(
         "park just outside the boundary is one the adjacent blocks walk to",
     ),
     output_path: str = typer.Option("data/overture_places.parquet", "--output-path"),
+    raw_path: Optional[str] = typer.Option(
+        None,
+        "--raw-path",
+        help="Load this existing extract (e.g. the source bundle's) instead of "
+        "extracting from S3. --release must name the release it was cut from",
+    ),
 ) -> int:
     return _print(
         load_overture_places(
@@ -580,6 +617,7 @@ def overture_places(
             country=country,
             aoi_id=aoi_id,
             output_path=output_path,
+            raw_path=raw_path,
         )
     )
 
@@ -660,8 +698,8 @@ def overture_aoi_from_division(
 
 @overture_app.command(
     "block-storeys",
-    help="Write each block's baseline storeys (num_levels, floors) from the "
-    "median num_floors of the Overture buildings in it",
+    help="Write each block's baseline storeys (floors): the footprint-weighted "
+    "mean num_floors of the Overture buildings on it, untagged ones counting one",
 )
 def overture_block_storeys(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
@@ -682,7 +720,8 @@ def overture_block_storeys(
 def overture_validate(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
-    return _print(validate_mexico_city_buildings(dsn=dsn))
+    payload = validate_mexico_city_buildings(dsn=dsn)
+    return _print(payload, failed=payload["count"] == 0)
 
 
 @explore_app.command(
@@ -745,18 +784,17 @@ def evaluate_scenario(
     if detach and sync:
         raise typer.BadParameter("--detach and --sync are mutually exclusive")
     mode = "detach" if detach else "sync" if sync else "embedded"
-    return _print(
-        evaluate_scenario_cli(
-            dsn=dsn,
-            changed_attributes=changed_attribute,
-            edited_features=feature,
-            scenario_id=scenario_id,
-            aoi_id=aoi_id,
-            code_version=code_version,
-            mode=mode,
-            timeout_s=timeout,
-        )
+    payload = evaluate_scenario_cli(
+        dsn=dsn,
+        changed_attributes=changed_attribute,
+        edited_features=feature,
+        scenario_id=scenario_id,
+        aoi_id=aoi_id,
+        code_version=code_version,
+        mode=mode,
+        timeout_s=timeout,
     )
+    return _print(payload, failed=payload.get("status") in _FAILED_RUN_STATUSES)
 
 
 # ── perf ─────────────────────────────────────────────────────────────────
@@ -769,23 +807,51 @@ app.add_typer(perf_app, name="perf")
 
 @perf_app.command(
     "seed-observations",
-    help="Seed deterministic observations and AOIs for benchmark tiers",
+    help="Seed deterministic observations and AOIs for benchmark tiers. "
+    "Writes synthetic current observations onto real features and a "
+    "'Performance Benchmark Project' with four perf_* AOIs: point --dsn at a "
+    "benchmark copy, never at a database people read.",
 )
 def perf_seed_observations(
-    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+    # Required, with no DATABASE_URL fallback: the writes are permanent until
+    # `perf cleanup`, so the target must be named on purpose.
+    dsn: str = typer.Option(..., "--dsn", help="Database to seed (required)."),
     dataset_tier: _DatasetTier = typer.Option(
         _DatasetTier.smoke,
         "--dataset-tier",
     ),
     feature_limit: Optional[int] = typer.Option(None, "--feature-limit"),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
     return _print(
         seed_observations(
             dsn=dsn,
             dataset_tier=dataset_tier,
             feature_limit=feature_limit,
+            aoi_id=aoi_id,
         )
     )
+
+
+@perf_app.command(
+    "cleanup",
+    help="Delete everything seed-observations wrote (perf observations, source, "
+    "ingestion runs, the benchmark project and its perf_* AOIs) in one "
+    "transaction, and print the counts per table.",
+)
+def perf_cleanup(
+    # Required for the same reason as seed-observations: it deletes.
+    dsn: str = typer.Option(..., "--dsn", help="Database to clean (required)."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Print the counts and keep the rows: runs the same deletes and rolls "
+            "them back, so it takes the same row locks as a real run."
+        ),
+    ),
+) -> int:
+    return _print(cleanup_perf(dsn=dsn, dry_run=dry_run))
 
 
 @perf_app.command(
@@ -800,16 +866,17 @@ def perf_run(
     benchmark: Optional[list[str]] = typer.Option(None, "--benchmark"),
     iterations: Optional[int] = typer.Option(None, "--iterations"),
     output_path: Optional[str] = typer.Option(None, "--output-path"),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
-    return _print(
-        run_perf_benchmarks(
-            dsn=dsn,
-            dataset_tier=dataset_tier,
-            benchmark_names=benchmark,
-            iterations=iterations,
-            output_path=output_path,
-        )
+    payload = run_perf_benchmarks(
+        dsn=dsn,
+        dataset_tier=dataset_tier,
+        benchmark_names=benchmark,
+        iterations=iterations,
+        output_path=output_path,
+        aoi_id=aoi_id,
     )
+    return _print(payload, failed=not payload["passed"])
 
 
 @perf_app.command(
@@ -822,12 +889,14 @@ def perf_explain(
         _DatasetTier.smoke,
         "--dataset-tier",
     ),
+    aoi_id: Optional[str] = _PERF_AOI_OPTION,
 ) -> int:
     return _print(
         explain_query(
             dsn=dsn,
             benchmark_name=benchmark_name,
             dataset_tier=dataset_tier,
+            aoi_id=aoi_id,
         )
     )
 
@@ -839,7 +908,6 @@ def perf_explain(
 def perf_report(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     limit: int = typer.Option(10, "--limit"),
-    format: _PerfReportFormat = typer.Option(_PerfReportFormat.json, "--format"),
 ) -> int:
     return _print(
         performance_report(
@@ -854,12 +922,11 @@ def perf_compare(
     baseline_path: str = typer.Argument(...),
     candidate_path: str = typer.Argument(...),
 ) -> int:
-    return _print(
-        compare_perf_reports(
-            baseline_path=baseline_path,
-            candidate_path=candidate_path,
-        )
+    payload = compare_perf_reports(
+        baseline_path=baseline_path, candidate_path=candidate_path
     )
+    regressed = any(row.get("regressed") for row in payload["comparisons"])
+    return _print(payload, failed=regressed or not payload["candidate_passed"])
 
 
 # ── tiles ────────────────────────────────────────────────────────────────
@@ -971,7 +1038,8 @@ def assets_observe(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     asset_key: Optional[str] = typer.Option(None, "--asset-key"),
 ) -> int:
-    return _print(assets_observe_cmd(dsn=dsn, asset_key=asset_key))
+    payload = assets_observe_cmd(dsn=dsn, asset_key=asset_key)
+    return _print(payload, failed=bool(payload["failed"]))
 
 
 @assets_app.command("stale", help="What is out of date right now")
@@ -1178,10 +1246,22 @@ def network_bootstrap(
         "result that is ~99% empty. Membership and indicators still scope to "
         "the full municipal boundary",
     ),
+    graph_dir: Optional[str] = typer.Option(
+        None,
+        "--graph-dir",
+        help="Load a graph saved with --save-graph (nodes.parquet + "
+        "edges.parquet, e.g. the source bundle's osm/ snapshot) instead of "
+        "fetching from Overpass. No network needed",
+    ),
+    save_graph: Optional[str] = typer.Option(
+        None,
+        "--save-graph",
+        help="Also save the fetched graph to this directory, for a source "
+        "bundle or a later offline --graph-dir load",
+    ),
 ) -> int:
-    # Needs network access to Overpass. Where that is blocked, the graph
-    # cannot be fetched at all and the accessibility family stays unavailable;
-    # there is no offline substitute that would not be invented data.
+    # Without --graph-dir this needs Overpass; the offline route is a graph
+    # saved from an earlier fetch, never an invented one.
     return _print(
         bootstrap_osm_network(
             dsn=dsn,
@@ -1189,6 +1269,8 @@ def network_bootstrap(
             network_type=network_type,
             publish_features=publish_features,
             clip_bbox=parse_bbox(clip_bbox) if clip_bbox else None,
+            graph_dir=graph_dir,
+            save_graph_dir=save_graph,
         )
     )
 
@@ -1196,7 +1278,7 @@ def network_bootstrap(
 # ── inegi-marco ──────────────────────────────────────────────────────────
 inegi_marco_app = typer.Typer(
     name="inegi-marco",
-    help="INEGI Marco Geoestadístico 2024 ingest from the data-lake mirror",
+    help="INEGI Marco Geoestadístico 2024 ingest from a local parquet copy",
 )
 app.add_typer(inegi_marco_app, name="inegi-marco")
 
@@ -1224,12 +1306,12 @@ def inegi_marco_bootstrap(
             "Repeatable. If omitted, ingests ALL of Mexico — usually not what you want."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
         help=(
-            "Override the source directory (defaults to "
-            "data/sources/lake/inegi/marco_geostadistico/2024)."
+            "Directory holding the layer directories, e.g. the Mexicali "
+            "source bundle's inegi/marco_geoestadistico_2024."
         ),
     ),
     code_version: str = typer.Option("dev", "--code-version"),
@@ -1279,12 +1361,12 @@ def inegi_censo_bootstrap(
             "(pobtot, pobmas, pobfem, p_15ymas, p_18ymas, vivtot)."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
         help=(
-            "Override the source directory (defaults to "
-            "data/sources/lake/inegi/censo/manzanas_2020.parquet)."
+            "The census parquet directory, e.g. the Mexicali source "
+            "bundle's inegi/censo_2020/manzanas_2020.parquet."
         ),
     ),
     code_version: str = typer.Option("dev", "--code-version"),
@@ -1360,7 +1442,10 @@ def aoi_delete(
     aoi_id: str = typer.Option(..., "--aoi-id"),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
 ) -> int:
-    return _print(delete_aoi(dsn=dsn, aoi_id=aoi_id))
+    payload = delete_aoi(dsn=dsn, aoi_id=aoi_id)
+    _print(payload)
+    # A lookup miss, like the aoi-from-* commands: exit 2.
+    return 2 if payload["status"] == "not_found" else 0
 
 
 @aoi_app.command(
@@ -1375,13 +1460,15 @@ def aoi_compute_features(
         help="Optional. Limit to a single AOI uuid; default runs every AOI.",
     ),
 ) -> int:
-    return _print(compute_aoi_features_cli(dsn=dsn, aoi_id=aoi_id))
+    payload = compute_aoi_features_cli(dsn=dsn, aoi_id=aoi_id)
+    _print(payload)
+    return 2 if payload["status"] == "not_found" else 0
 
 
 # ── points ───────────────────────────────────────────────────────────────
 points_app = typer.Typer(
     name="points",
-    help="Per-pilot-city amenity / POI ingest from the data-lake mirror",
+    help="Per-pilot-city amenity / POI ingest from local GeoParquet layers",
 )
 app.add_typer(points_app, name="points")
 
@@ -1400,10 +1487,11 @@ def points_bootstrap(
             "(tlalpan_amenities,mexicali_amenities)."
         ),
     ),
-    source_root: Optional[str] = typer.Option(
-        None,
+    source_root: str = typer.Option(
+        ...,
         "--source-root",
-        help="Override the source directory (defaults to data/sources/lake).",
+        help="Directory the layers' paths are relative to, e.g. the Mexicali "
+        "source bundle.",
     ),
     code_version: str = typer.Option("dev", "--code-version"),
 ) -> int:
@@ -1501,12 +1589,13 @@ app.add_typer(scenario_app, name="scenario")
 #: `OSError` is here rather than `exists=True` on the option because it also
 #: covers a directory, an unreadable file and a broken symlink, and because
 #: every refusal on this sub-app should read the same way; a mistyped
-#: `--geojson` path is the likeliest mistake on `set-attribute` and it used
+#: `--geojson` path is the likeliest mistake on `add-rule` and it used
 #: to raise a traceback.
 _SCENARIO_USER_ERRORS = (
     CeilingExceeded,
     DuplicateScenarioName,
     InvalidGeometry,
+    RuleCatchesNothing,
     ScenarioHasNoAOI,
     ScenarioNotFound,
     OSError,
@@ -1514,29 +1603,37 @@ _SCENARIO_USER_ERRORS = (
 )
 
 
-def _scenario_command(call: Callable[[], dict[str, Any]]) -> int:
-    """Print what the call returned, or report its refusal and exit 2."""
+def _scenario_command(
+    call: Callable[[], dict[str, Any]],
+    failed: Callable[[dict[str, Any]], bool] = lambda payload: False,
+) -> int:
+    """Print what the call returned, or report its refusal and exit 2.
+
+    ``failed`` reads the payload and makes the exit code 1 when it says the
+    command did not do its job."""
     try:
-        return _print(call())
+        payload = call()
+        return _print(payload, failed=failed(payload))
     except _SCENARIO_USER_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
 
-@scenario_app.command("create", help="Create a named what-if inside a project")
+@scenario_app.command("create", help="Create a named what-if on an area of interest")
 def scenario_create(
     name: str = typer.Option(..., "--name", help="Unique within the project."),
+    aoi_id: str = typer.Option(
+        ...,
+        "--aoi-id",
+        help="Area of interest the scenario's rules are bounded by. Its project "
+        "is the scenario's.",
+    ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     project_id: Optional[str] = typer.Option(
         None,
         "--project-id",
-        help="Project the scenario belongs to. Taken from --aoi-id when omitted.",
-    ),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Area of interest the scenario's rules are bounded by. Optional "
-        "here, required by `scenario recompute`.",
+        help="Project the scenario belongs to; must be the AOI's. Read off "
+        "--aoi-id when omitted.",
     ),
     description: Optional[str] = typer.Option(None, "--description"),
 ) -> int:
@@ -1552,7 +1649,7 @@ def scenario_create(
 
 
 @scenario_app.command(
-    "list", help="List scenarios with their edit and override counts (explore)"
+    "list", help="List scenarios with their rule and override counts (explore)"
 )
 def scenario_list(
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
@@ -1565,7 +1662,7 @@ def scenario_list(
 
 
 @scenario_app.command(
-    "show", help="Show one scenario: edit count, override count, materialised-at"
+    "show", help="Show one scenario: rule count, override count, materialised-at"
 )
 def scenario_show(
     scenario_id: str = typer.Option(..., "--scenario-id"),
@@ -1576,11 +1673,35 @@ def scenario_show(
     )
 
 
+#: The four numbers a rule can set, each optional: left out, not set.
+_RULE = {
+    "levels": typer.Option(
+        None,
+        "--levels",
+        help="Storeys. Written to both `floors` and `num_levels` — the same "
+        "quantity under the two names the indicators read.",
+    ),
+    "unit_size": typer.Option(
+        None, "--unit-size", help="Square metres per dwelling (more than 15)."
+    ),
+    "people_per_household": typer.Option(
+        None, "--people-per-household", help="Between 0 and 15."
+    ),
+    "lot_coverage": typer.Option(
+        None,
+        "--lot-coverage",
+        help="Share of the block built on (COS), 0 < c ≤ 1. Left out, each "
+        "block keeps its own (1.0, the whole block, when it has none).",
+    ),
+}
+
+
 @scenario_app.command(
-    "set-attribute",
-    help="Draw an area and set the four policy inputs over it (five edits)",
+    "add-rule",
+    help="Draw an area and set some of the four policy numbers over it; the "
+    "scenario is materialised in the same transaction",
 )
-def scenario_set_attribute(
+def scenario_add_rule(
     scenario_id: str = typer.Option(..., "--scenario-id"),
     geojson: str = typer.Option(
         ...,
@@ -1588,22 +1709,10 @@ def scenario_set_attribute(
         help="Path to the drawn area: a FeatureCollection, a Feature, or a "
         "bare geometry. Several polygons are unioned into one area.",
     ),
-    levels: float = typer.Option(
-        ...,
-        "--levels",
-        help="Storeys. Writes BOTH `floors` and `num_levels` — the same "
-        "quantity under the two names the indicators read.",
-    ),
-    unit_size: float = typer.Option(
-        ..., "--unit-size", help="Square metres per dwelling."
-    ),
-    people_per_household: float = typer.Option(..., "--people-per-household"),
-    lot_coverage: float = typer.Option(
-        1.0,
-        "--lot-coverage",
-        help="Share of the block built on (COS), 0 < c ≤ 1. 1.0, the whole "
-        "block, is the formula without it.",
-    ),
+    levels: Optional[float] = _RULE["levels"],
+    unit_size: Optional[float] = _RULE["unit_size"],
+    people_per_household: Optional[float] = _RULE["people_per_household"],
+    lot_coverage: Optional[float] = _RULE["lot_coverage"],
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     type_context: str = typer.Option(DEFAULT_TYPE_CONTEXT, "--type-context"),
     type_slug: str = typer.Option(
@@ -1614,14 +1723,16 @@ def scenario_set_attribute(
     ),
 ) -> int:
     return _scenario_command(
-        lambda: set_scenario_attribute_cli(
+        lambda: add_rule_cli(
             dsn=dsn,
             scenario_id=scenario_id,
             geojson=geojson,
-            levels=levels,
-            unit_size=unit_size,
-            people_per_household=people_per_household,
-            lot_coverage=lot_coverage,
+            inputs={
+                "levels": levels,
+                "unit_size": unit_size,
+                "people_per_household": people_per_household,
+                "lot_coverage": lot_coverage,
+            },
             type_context=type_context,
             type_slug=type_slug,
         )
@@ -1629,18 +1740,82 @@ def scenario_set_attribute(
 
 
 @scenario_app.command(
+    "update-rule",
+    help="Change one rule: the numbers given replace its own, --unset removes "
+    "one, the rest are kept; --geojson moves it. It keeps its place in 'later "
+    "wins'. (The API's PATCH, by contrast, takes the rule's whole set.)",
+)
+def scenario_update_rule(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    rule_id: str = typer.Option(..., "--rule-id"),
+    geojson: Optional[str] = typer.Option(
+        None, "--geojson", help="Path to the rule's new area; omitted keeps it."
+    ),
+    unset: list[str] = typer.Option(
+        [],
+        "--unset",
+        help="A number the rule stops setting: levels, unit-size, "
+        "people-per-household or lot-coverage. Repeatable.",
+    ),
+    levels: Optional[float] = _RULE["levels"],
+    unit_size: Optional[float] = _RULE["unit_size"],
+    people_per_household: Optional[float] = _RULE["people_per_household"],
+    lot_coverage: Optional[float] = _RULE["lot_coverage"],
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: update_rule_cli(
+            dsn=dsn,
+            scenario_id=scenario_id,
+            rule_id=rule_id,
+            geojson=geojson,
+            unset=unset,
+            inputs={
+                "levels": levels,
+                "unit_size": unit_size,
+                "people_per_household": people_per_household,
+                "lot_coverage": lot_coverage,
+            },
+        )
+    )
+
+
+@scenario_app.command("delete-rule", help="Delete one rule and materialise the rest")
+def scenario_delete_rule(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    rule_id: str = typer.Option(..., "--rule-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: delete_rule_cli(dsn=dsn, scenario_id=scenario_id, rule_id=rule_id)
+    )
+
+
+@scenario_app.command("rules", help="List one scenario's rules with their ids")
+def scenario_rules(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(lambda: list_rules_cli(dsn=dsn, scenario_id=scenario_id))
+
+
+@scenario_app.command("delete", help="Delete a scenario and every row keyed by it")
+def scenario_delete(
+    scenario_id: str = typer.Option(..., "--scenario-id"),
+    dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
+) -> int:
+    return _scenario_command(
+        lambda: delete_scenario_cli(dsn=dsn, scenario_id=scenario_id)
+    )
+
+
+@scenario_app.command(
     "recompute",
-    help="Materialise the scenario's edits, then recompute what they changed",
+    help="Materialise the scenario's rules, then recompute their footprint",
 )
 def scenario_recompute(
     scenario_id: str = typer.Option(..., "--scenario-id"),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
-    aoi_id: Optional[str] = typer.Option(
-        None,
-        "--aoi-id",
-        help="Scope for the evaluation. Defaults to the scenario's own AOI, "
-        "which is also what bounds the materialisation.",
-    ),
     code_version: str = typer.Option("dev", "--code-version"),
     timeout: float = typer.Option(
         600.0,
@@ -1667,11 +1842,13 @@ def scenario_recompute(
         lambda: recompute_scenario_cli(
             dsn=dsn,
             scenario_id=scenario_id,
-            aoi_id=aoi_id,
             mode=mode,
             code_version=code_version,
             timeout_s=timeout,
-        )
+        ),
+        failed=lambda payload: (
+            payload["evaluation"].get("status") in _FAILED_RUN_STATUSES
+        ),
     )
 
 
@@ -2024,9 +2201,10 @@ def raster_zonal_stats(
                 direct_dsn=direct_dsn,
             )
         )
-    except PrefixCollisionError as exc:
+    except (PrefixCollisionError, ConcurrentRasterRun) as exc:
         # Exit 2 (not 1) so operator scripts can distinguish "refused
-        # by safety check" from "runtime/DB error". stderr so the
+        # by safety check" (or "another run holds the prefix, retry")
+        # from "runtime/DB error". stderr so the
         # message doesn't pollute pipe-parsable stdout.
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -2064,6 +2242,9 @@ def derivation_add(
     method: _AggregationMethod = typer.Option(
         ...,
         "--method",
+        help="For observation inputs: sum splits each source by its share "
+        "inside each target; mean/min/max refuse sources that overlap more "
+        "than one target; weighted_mean weights by --weight-basis",
     ),
     dsn: str = typer.Option(DEFAULT_APP_DSN, "--dsn", envvar="DATABASE_URL"),
     raster_layer_slug: Optional[str] = typer.Option(
@@ -2150,7 +2331,7 @@ def derivation_list(
 
 
 @derivation_app.command(
-    "enable", help="Flip enabled=true on a recipe (opposite: `derivation disable`)"
+    "enable", help="Flip enabled=true on a recipe (`--disable` flips it back)"
 )
 def derivation_enable(
     recipe_id: str = typer.Option(..., "--recipe-id"),
@@ -2226,8 +2407,9 @@ def main(argv: list[str] | None = None) -> int:
 
     typer/click is invoked with ``standalone_mode=False`` so command bodies'
     return values propagate as the result instead of being thrown away. Each
-    command returns its int exit code (``_print`` returns 0; error paths
-    return 1/2), so on the happy path the function returns that int directly.
+    command returns its int exit code (``_print`` returns 0, or 1 when the
+    payload says the command failed; error paths return 1/2), so on the happy
+    path the function returns that int directly.
     Control-flow exceptions raised by typer's vendored click fork are mapped
     back to ints to preserve the argparse contract:
       * ``typer.Exit`` (also raised by ``--help``)      → its ``exit_code``
@@ -2247,6 +2429,20 @@ def main(argv: list[str] | None = None) -> int:
         return int(getattr(exc, "exit_code", 1))
     except (typer.Abort, click.exceptions.Abort):
         return 1
+    except (
+        UserError,
+        UnsupportedDSN,
+        psycopg2.errors.InvalidTextRepresentation,
+    ) as exc:
+        # Bad input the commands refuse (a malformed --bbox, an unknown slug,
+        # an unusable --dsn, a non-UUID the database rejects, a run that
+        # outlived --timeout): one line on stderr and exit 2, not a 40-line
+        # traceback. Named types, not ValueError/DataError/LookupError: those
+        # are also what a defect in compute or pipeline code raises, and a
+        # defect must keep its traceback (see test_a_defect_keeps_its_traceback
+        # and test_a_defect_under_the_scenario_layer_is_not_reported_as_a_refusal).
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except SystemExit as exc:  # pragma: no cover - defensive
         code = exc.code
         return code if isinstance(code, int) else (0 if code is None else 1)

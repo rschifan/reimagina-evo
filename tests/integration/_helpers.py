@@ -103,6 +103,31 @@ def insert_project(conn, name: str = "Test Project") -> str:
         return str(cur.fetchone()[0])
 
 
+def make_scenario(conn, scenario_id: str | None = None) -> str:
+    """A scenario row (in a project of its own) for a test that writes under it.
+
+    Every ``scenario_id`` column references ``app_core.scenario`` since r055,
+    so a made-up uuid is refused. Idempotent: an id that already has a row is
+    returned as it is.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_core.project (name) VALUES ('scenario test') RETURNING id"
+        )
+        project_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO app_core.scenario (id, project_id, name)
+            VALUES (COALESCE(%s::uuid, gen_random_uuid()), %s, 'test scenario')
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+            """,
+            (scenario_id, project_id),
+        )
+        row = cur.fetchone()
+    return str(row[0]) if row else str(scenario_id)
+
+
 def seed_catalog_committed(conn, specs=None) -> None:
     """``seed_catalog`` on an autocommit connection, in one transaction.
 

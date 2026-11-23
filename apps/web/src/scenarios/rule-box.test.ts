@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import RuleBox from "./RuleBox.svelte";
 
-const VALUES = { levels: 3, unitSize: 66, peoplePerHousehold: 3.6, lotCoverage: 0.6 };
+const VALUES = { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 };
 
 let component: ReturnType<typeof mount> | null = null;
 afterEach(() => {
@@ -28,7 +28,7 @@ function open(props: Record<string, unknown> = {}) {
       values: VALUES,
       needsScenarioName: false,
       defaultName: "Scenario 1",
-      overriddenBy: null,
+      overlapNote: null,
       busy: false,
       error: null,
       draggable: true,
@@ -63,15 +63,45 @@ describe("the rule box", () => {
     const { type, button, handlers, target } = open();
     type("Lot coverage (%)", "45");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lotCoverage: 0.45 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
     for (const bad of ["0", "120"]) {
       handlers.onapply.mockClear();
       type("Lot coverage (%)", bad);
       button("Apply").click();
       flushSync();
       expect(handlers.onapply).not.toHaveBeenCalled();
-      expect(target.textContent).toMatch(/Lot coverage must be between 1 and 100 %/);
+      expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
     }
+  });
+
+  // B18: a coverage of 0.625 showed as 63 and Save wrote 0.63 back, though
+  // only the storeys were changed.
+  it("keeps a coverage it did not touch exactly as it was", () => {
+    const { input, type, button, handlers } = open({ mode: "rule", values: { ...VALUES, lot_coverage: 0.625 } });
+    expect(input("Lot coverage (%)").value).toBe("62.5");
+    type("Storeys", "4");
+    button("Save").click();
+    expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lot_coverage: 0.625 });
+  });
+
+  // B19: "3,5" in a dot-decimal browser binds as empty, which read as "not
+  // set" and silently dropped the number from the rule.
+  it("refuses a number the browser could not parse instead of dropping it", () => {
+    const { input, button, handlers, target } = open();
+    Object.defineProperty(input("People per home"), "validity", { value: { badInput: true } });
+    button("Apply").click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/People per home is not a number/);
+    expect(input("People per home").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  // B24: a refusal names its field, and the field says so.
+  it("marks the field a server refusal is about", () => {
+    const { input } = open({ error: { field: "unit_size", text: "unit_size must be more than 15" } });
+    expect(input("m² per home").getAttribute("aria-invalid")).toBe("true");
+    expect(input("m² per home").getAttribute("aria-describedby")).toBe("rule-box-error");
+    expect(input("Storeys").getAttribute("aria-invalid")).toBe("false");
   });
 
   it("asks for a scenario name only on the baseline", () => {
@@ -95,9 +125,10 @@ describe("the rule box", () => {
     expect(handlers.oncancel).toHaveBeenCalled();
   });
 
-  it("says which rule overrides this one", () => {
-    const { target } = open({ mode: "rule", overriddenBy: 3 });
-    expect(target.textContent).toMatch(/Rule 3 overrides this one where they overlap/);
+  it("says which later rules win, and for which numbers", () => {
+    const note = "Rule 3 also sets storeys: where they overlap, the later rule wins.";
+    const { target } = open({ mode: "rule", overlapNote: note });
+    expect(target.textContent).toContain(note);
   });
 
   it("says why a rule in several pieces cannot be dragged", () => {
@@ -116,6 +147,13 @@ describe("the rule box", () => {
     expect(handlers.oncancel).toHaveBeenCalled();
   });
 
+  // B14: closing mid-recompute hid the refusal, which is shown only here.
+  it("Escape does nothing while the recompute runs", () => {
+    const { target, handlers } = open({ busy: true });
+    target.firstElementChild!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(handlers.oncancel).not.toHaveBeenCalled();
+  });
+
   it("buttons are disabled while busy", () => {
     const { button } = open({ busy: true });
     expect(button("Apply").disabled).toBe(true);
@@ -124,7 +162,7 @@ describe("the rule box", () => {
 
 
 describe("numbers left empty", () => {
-  const EMPTY = { levels: null, unitSize: null, peoplePerHousehold: null, lotCoverage: null };
+  const EMPTY = {};
 
   it("opens empty, saying each block keeps its own value", () => {
     const { input, target } = open({ values: EMPTY });
@@ -137,7 +175,7 @@ describe("numbers left empty", () => {
     const { type, button, handlers } = open({ values: EMPTY });
     type("People per home", "5");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ ...EMPTY, peoplePerHousehold: 5 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ people_per_household: 5 }, undefined);
   });
 
   it("refuses a rule with no number", () => {

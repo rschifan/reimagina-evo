@@ -1,10 +1,10 @@
 # reimagina — what we built, and where it lives
 
 A presentation-oriented narrative of the raster integration and the
-aggregation layer — merged to `main` as the squash commit `06a6cc9`
+aggregation layer — merged to `main` as the squash commit `2fc850e`
 ("raster integration + aggregation layer + modular map interactions") —
 and of how runs are scheduled today (§9). Every claim is linked to the
-file + line where the behaviour lives and the migration + DB object that
+file and symbol where the behaviour lives and the migration + DB object that
 records it. Written as a reference to speak from, not a textbook.
 
 The pre-existing scaffolding (baseline features, indicator catalog,
@@ -15,10 +15,6 @@ raster work added on top of it. For the canonical architecture, see
 Source paths are relative to the repo root. CLI commands are run as
 `uv run python -m apps.cli.app <group> <command>`; there is no installed
 `reimagina` executable.
-
-⚠ **Line numbers drift; the symbol names do not.** When a link's line number
-looks wrong, search for the function or DB object named next to it and trust
-that; when you edit this file, prefer naming the symbol over citing a line.
 
 ---
 
@@ -66,9 +62,9 @@ Before this work, the system already had:
 | Capability                                         | Where it lives                                                                                                                                                                                                                            |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Canonical feature + observation + indicator tables | [`curated_geo.feature`](../infra/db/migrations/versions/r003_feature_tables.py), [`.observation`](../infra/db/migrations/versions/r003_feature_tables.py), [`.indicator_result`](../infra/db/migrations/versions/r016_indicator_layer.py) |
-| One formula dispatcher for rollups                 | [`packages/py/reimagina/jobs/aggregation.py::aggregate`](../packages/py/reimagina/jobs/aggregation.py#L27) — supports `mean` / `weighted_mean` / `sum` / `min` / `max`                                                                    |
-| Cross-grain bridge                                 | [`curated_geo.feature_overlap`](../infra/db/migrations/versions/r009_feature_overlap.py) + [`PostgresOverlapRepository.compute_feature_overlaps`](../packages/py/reimagina/storage/postgres/repositories.py#L1454)                        |
-| Observation rollup worker                          | [`packages/py/reimagina/jobs/observation_rollup.py::run_observation_rollup`](../packages/py/reimagina/jobs/observation_rollup.py#L80) — the *indicator* rollup worker this row used to name was deleted in `39ab70a`; every indicator is block-grain now |
+| One formula dispatcher for rollups                 | [`packages/py/reimagina/jobs/aggregation.py::aggregate`](../packages/py/reimagina/jobs/aggregation.py) — supports `mean` / `weighted_mean` / `sum` / `min` / `max`                                                                    |
+| Cross-grain bridge                                 | [`curated_geo.feature_overlap`](../infra/db/migrations/versions/r009_feature_overlap.py) + [`PostgresOverlapRepository.compute_feature_overlaps`](../packages/py/reimagina/storage/postgres/repositories.py)                        |
+| Observation rollup worker                          | [`packages/py/reimagina/jobs/observation_rollup.py::run_observation_rollup`](../packages/py/reimagina/jobs/observation_rollup.py) — the *indicator* rollup worker this row used to name was deleted in `e48ad4e` (#63); every indicator is block-grain now |
 | Live vector tiles                                  | Martin auto-publishes every `serving_geo.*(z,x,y,query_params json) RETURNS bytea` function — [`infra/docker/martin.yaml`](../infra/docker/martin.yaml)                                                                                   |
 | Existing MVT choropleth for indicators             | [`serving_geo.indicator_overlay_tile`](../infra/db/migrations/versions/r017_indicator_overlay_tile.py)                                                                                                                                    |
 
@@ -96,12 +92,12 @@ introduces `curated_geo.raster_layer` with FK references to
 The repository Protocol that every worker reads through:
 [`RasterLayerRepository`](../packages/py/reimagina/storage/interfaces/raster.py) —
 implemented by
-[`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L777).
+[`PostgresRasterLayerRepository`](../packages/py/reimagina/storage/postgres/repositories.py).
 
 ### R2 — Ingest pipeline
 
 Single entry point:
-[`reimagina.pipeline.raster.ingest_raster_source`](../packages/py/reimagina/pipeline/raster.py#L62).
+[`reimagina.pipeline.raster.ingest_raster_source`](../packages/py/reimagina/pipeline/raster.py).
 The ordering matters — each step leaves a recoverable state on
 failure:
 
@@ -125,14 +121,13 @@ failure:
    connection.
 
 CLI wrapper:
-[`apps/cli/raster.py::ingest_raster`](../apps/cli/raster.py#L53)
+[`apps/cli/raster.py::ingest_raster`](../apps/cli/raster.py)
 invoked as `python -m apps.cli.app raster ingest --raw-path … --source-name …
 --provider … --version … --layer-slug … [--aggregation-kind extensive]`
 (`--aggregation-kind` defaults to `intensive`).
 
 **CDMX:** WorldPop 2020 Mexico (100 m) was clipped to the CDMX
-municipality union (`source_record_ref LIKE '09%'`) by
-[`scripts/clip_worldpop_to_cdmx.py`](../scripts/clip_worldpop_to_cdmx.py)
+municipality union (`source_record_ref LIKE '09%'`) by a one-off script
 and registered as `layer_slug = worldpop_cdmx_2020_100m`. The CLI now
 does the same fetch and clip itself: `raster fetch-worldpop --country MEX
 --year 2020 --aoi-id <AOI>` writes a local GeoTIFF ready for `raster
@@ -140,23 +135,23 @@ ingest` (see [`BOOTSTRAP.md`](BOOTSTRAP.md)).
 
 ### R3 — Zonal-stats worker
 
-[`reimagina.jobs.raster_zonal_stats.run_raster_zonal_stats`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L155)
+[`reimagina.jobs.raster_zonal_stats.run_raster_zonal_stats`](../packages/py/reimagina/jobs/raster_zonal_stats.py)
 turns a registered raster into observations at a chosen grain. The
 correctness-critical pieces:
 
 - **Advisory-lock critical section** — the retire + bulk_upsert pair
   must be atomic under a named lock. On Postgres we hash the prefix
   with blake2b into a signed int64 in
-  [`_prefix_lock_key`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L126),
+  [`_prefix_lock_key`](../packages/py/reimagina/jobs/raster_zonal_stats.py),
   then take `pg_try_advisory_xact_lock` on a dedicated connection
   (so the transaction-scoped lock survives pooled callers).
 - **Success finalisation routed through the safe path** —
-  [`_finalise_run_safely`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L54)
+  [`_finalise_run_safely`](../packages/py/reimagina/jobs/raster_zonal_stats.py)
   wraps both failure and success status writes. A flaky MV refresh
   after the observations are durable can log a warning without
   crashing the caller.
 - **Prefix-collision guard** — the `raster zonal-stats` CLI
-  ([`apps/cli/raster.py::run_zonal_stats`](../apps/cli/raster.py#L213))
+  ([`apps/cli/raster.py::run_zonal_stats`](../apps/cli/raster.py))
   refuses to run when the prefix is already owned by a different
   source's current observations *at the same grain*, unless `--force`.
   The SCD invariant is per-`attribute_key`, not per-source, so
@@ -173,8 +168,8 @@ correctness-critical pieces:
   every feature of the grain and re-inserted only the in-AOI ones.
 
 SCD retire + bulk insert:
-[`PostgresObservationRepository.bulk_upsert_current`](../packages/py/reimagina/storage/postgres/repositories.py#L573)
-+ [`retire_current_by_prefix`](../packages/py/reimagina/storage/postgres/repositories.py#L632).
+[`PostgresObservationRepository.bulk_upsert_current`](../packages/py/reimagina/storage/postgres/repositories.py)
++ [`retire_current_by_prefix`](../packages/py/reimagina/storage/postgres/repositories.py).
 
 Test coverage:
 [`tests/integration/test_raster_zonal_stats.py`](../tests/integration/test_raster_zonal_stats.py)
@@ -185,20 +180,25 @@ finalise failure, sub-pixel polygons under exactextract).
 ### R4 — Tile serving + web UI
 
 `titiler.core` mounted **in-process** at `/cog` on the FastAPI app
-([`apps/api/app.py`](../apps/api/app.py#L202)) with a
+([`apps/api/app.py::create_app`](../apps/api/app.py)) with a
 `path_dependency` that gates the `url=` query parameter:
-[`apps/api/cog_security.py::validated_cog_path`](../apps/api/cog_security.py#L27).
-It has five rejection paths: non-`file://` → 400, netloc set → 400,
-missing file → 404, outside data root → 403, non-regular file → 403.
+[`apps/api/cog_security.py::validated_cog_path`](../apps/api/cog_security.py).
+It has seven rejection paths: non-`file://` → 400, netloc set → 400,
+empty path → 400, NUL byte in the path → 400, outside data root → 403
+(decided before existence, so a path outside answers alike whether or not
+it exists), missing file → 404, non-regular file → 403.
 [`tests/integration/test_tile_sources_rasters.py`](../tests/integration/test_tile_sources_rasters.py)
 tests the non-`file://`, outside-data-root, path-traversal and
-missing-file cases; the netloc and non-regular-file paths have no test.
+missing-file cases, and
+[`tests/unit/test_cog_path_validator.py`](../tests/unit/test_cog_path_validator.py)
+the NUL byte, the outside-path answer and the missing file; the netloc,
+empty-path and non-regular-file paths have no test.
 
 `/tile-sources` emits each published raster as a `raster_cog` entry
 with a percent-encoded tile-URL template:
 [`reimagina.tiles.sources._resolve_raster_layers`](../packages/py/reimagina/tiles/sources.py).
 The web-side install:
-[`installRasterLayers`](../apps/web/src/layers.ts#L421).
+[`installRasterLayers`](../apps/web/src/layers.ts).
 
 ---
 
@@ -227,32 +227,32 @@ One row per "source → observations at target grain" mapping:
 
 Repo Protocol + implementation:
 [`AggregationRecipeRepository`](../packages/py/reimagina/storage/interfaces/raster.py),
-[`PostgresAggregationRecipeRepository`](../packages/py/reimagina/storage/postgres/repositories.py#L892).
+[`PostgresAggregationRecipeRepository`](../packages/py/reimagina/storage/postgres/repositories.py).
 
 ### Dispatcher + two worker arms
 
-[`reimagina.jobs.derivations.run_recipe`](../packages/py/reimagina/jobs/derivations.py#L64)
+[`reimagina.jobs.derivations.run_recipe`](../packages/py/reimagina/jobs/derivations.py)
 reads a recipe and routes on `input_kind`:
 
 - **Raster arm** → wraps
-  [`run_raster_zonal_stats`](../packages/py/reimagina/jobs/raster_zonal_stats.py#L155);
+  [`run_raster_zonal_stats`](../packages/py/reimagina/jobs/raster_zonal_stats.py);
   `method='sum'` maps to `stats=('sum',)`; `params.stats` overrides.
 - **Observation arm** — new —
-  [`run_observation_rollup`](../packages/py/reimagina/jobs/observation_rollup.py#L80).
+  [`run_observation_rollup`](../packages/py/reimagina/jobs/observation_rollup.py).
   Reads current observations at the finer grain via
-  [`PostgresOverlapRepository.rollup_observation_child_rows`](../packages/py/reimagina/storage/postgres/repositories.py#L1588),
+  [`PostgresOverlapRepository.rollup_observation_child_rows`](../packages/py/reimagina/storage/postgres/repositories.py),
   aggregates through the existing `aggregate()` function, writes
   output observations under the same SCD + advisory-lock contract.
 
 `run_all_for_raster`
-([derivations.py#L86](../packages/py/reimagina/jobs/derivations.py#L86))
+([`derivations.py`](../packages/py/reimagina/jobs/derivations.py))
 iterates every enabled recipe bound to one raster.
 
 CLI subcommands: `python -m apps.cli.app raster derivation add/list/enable/remove/run`
 (`enable --disable` turns a recipe off) — wired in
-[`apps/cli/app.py#L2035`](../apps/cli/app.py#L2035), delegating to
-[`add_derivation`](../apps/cli/raster.py#L404) /
-[`run_derivation`](../apps/cli/raster.py#L504).
+`derivation_app` in [`apps/cli/app.py`](../apps/cli/app.py), delegating to
+[`add_derivation`](../apps/cli/raster.py) /
+[`run_derivation`](../apps/cli/raster.py).
 
 Test coverage:
 [`tests/integration/test_aggregation_recipes.py`](../tests/integration/test_aggregation_recipes.py)
@@ -285,7 +285,7 @@ WHERE is_current
 ```
 
 ⚠ The AGEB grain has since been withdrawn. The comment that replaced its
-entry in [`INPUT_LAYERS`](../apps/web/src/layers.ts#L166) records that it
+entry in [`INPUT_LAYERS`](../apps/web/src/layers.ts) records that it
 carried no observations, indicator results or aggregation recipes by then
 and that its rows were removed from the dataset, so the AGEB row above
 describes the database as it was, not as it is.
@@ -331,23 +331,23 @@ layer, we built two small modules every install site plugs into.
 ### `TooltipController` and providers
 
 [`apps/web/src/tooltip.ts`](../apps/web/src/tooltip.ts) — the
-[`TooltipController` class](../apps/web/src/tooltip.ts#L75) owns the
+[`TooltipController` class](../apps/web/src/tooltip.ts) owns the
 tooltip DOM, listens to `mousemove` once on the map, and dispatches
 through a registry of providers (later registrations are asked first;
 a provider whose layers are hidden is skipped). A request-id guard in
 the controller drops stale async results. Adding hover content for a
 new layer is one factory call:
 
-- [`mvtProvider`](../apps/web/src/tooltip.ts#L186) —
+- [`mvtProvider`](../apps/web/src/tooltip.ts) —
   `queryRenderedFeatures` on any MVT layer; caller supplies a format
   callback.
-- [`cogPointProvider`](../apps/web/src/tooltip.ts#L215) — debounced
+- [`cogPointProvider`](../apps/web/src/tooltip.ts) — debounced
   (150 ms) + cached caller of titiler's `/cog/point/{lng},{lat}`.
   Snaps to a 5-decimal (~1 m) grid so a stationary cursor stays fast.
 
 ### `enableHoverHighlight`
 
-[`apps/web/src/hover-highlight.ts::enableHoverHighlight`](../apps/web/src/hover-highlight.ts#L122).
+[`apps/web/src/hover-highlight.ts::enableHoverHighlight`](../apps/web/src/hover-highlight.ts).
 MapLibre feature-state idiom encapsulated:
 
 1. The source is created with a `promoteId` so `setFeatureState` can
@@ -368,7 +368,7 @@ MapLibre feature-state idiom encapsulated:
    hover border.
 
 Standard hover stroke:
-[`HOVER_OUTLINE_COLOR`](../apps/web/src/hover-highlight.ts#L36)
+[`HOVER_OUTLINE_COLOR`](../apps/web/src/hover-highlight.ts)
 (`#22d3ee`, cyan) at `HOVER_LINE_WIDTH` 3.5 px. While a selection
 shape is being drawn, `setHoverGloballySuspended` and
 `setTooltipGloballySuspended` turn both helpers off.
@@ -380,23 +380,23 @@ the same two helpers:
 
 | Layer type | Install function | File |
 |---|---|---|
-| Baseline vectors (streets, buildings, blocks, municipalities) | [`installInputLayers`](../apps/web/src/layers.ts#L254) | `apps/web/src/layers.ts` |
-| Aggregation choropleths | [`installAggregationOverlays`](../apps/web/src/layers.ts#L538) | `apps/web/src/layers.ts` |
-| Raster pixel tiles | [`installRasterLayers`](../apps/web/src/layers.ts#L421) | `apps/web/src/layers.ts` |
-| Indicator choropleth | [`activateIndicator`](../apps/web/src/choropleth.ts#L451) | `apps/web/src/choropleth.ts` |
+| Baseline vectors (streets, buildings, blocks, municipalities) | [`installInputLayers`](../apps/web/src/layers.ts) | `apps/web/src/layers.ts` |
+| Aggregation choropleths | [`installAggregationOverlays`](../apps/web/src/layers.ts) | `apps/web/src/layers.ts` |
+| Raster pixel tiles | [`installRasterLayers`](../apps/web/src/layers.ts) | `apps/web/src/layers.ts` |
+| Indicator choropleth | [`activateIndicator`](../apps/web/src/choropleth.ts) | `apps/web/src/choropleth.ts` |
 
 Streets are a line layer and take neither the tooltip nor the highlight.
 The scenario workspace (`scenarios.html`, `ScenarioMap.svelte`) reuses
 two of these: `installInputLayers` with only the street layer visible, and
 `activateIndicator`.
 
-Layer order: [`INPUT_LAYERS`](../apps/web/src/layers.ts#L61) lists
+Layer order: [`INPUT_LAYERS`](../apps/web/src/layers.ts) lists
 streets first (bottom of the map), then finest grain first: building →
 block → municipality. AGEB is withdrawn from the list. Aggregation
 children within each raster group sort by the same grain order. Every
 layer toggle starts off; they sit in the collapsed "Layers" group of the
 side panel, with the raster groups under a "Raster overlays" heading
-([`wireRasterToggles`](../apps/web/src/layers.ts#L840)).
+([`wireRasterToggles`](../apps/web/src/layers.ts)).
 
 ---
 
@@ -433,7 +433,7 @@ introduced are drawn as `raster_layer_tbl` and `aggregation_recipe_tbl`
 (see the note under the diagram); everything else pre-existed and this
 work only added references to it. Tables added to `curated_geo` since —
 `scenario_override` (r030), `road_node` / `road_edge` (r037), the asset
-graph (r041), `scenario_edit` (r048) — are not shown.
+graph (r041), `scenario_rule` (r055) — are not shown.
 
 ```mermaid
 erDiagram
@@ -648,7 +648,7 @@ flowchart TB
 - **Hardening** landed in two review passes: run-row isolation on
   ingest, advisory-lock guard tightening, URL encoding, TOCTOU on
   `validated_cog_path`. They were separate commits on the feature
-  branch and are part of the squash `06a6cc9` on `main`.
+  branch and are part of the squash `2fc850e` on `main`.
 - **Tests.** Raster + recipe tests in
   [`tests/integration/test_raster_ingest.py`](../tests/integration/test_raster_ingest.py),
   [`test_raster_zonal_stats.py`](../tests/integration/test_raster_zonal_stats.py),
@@ -660,7 +660,7 @@ flowchart TB
   child count; for raster zonals, the `asset_id`, `stat_name` and
   fractional pixel count). `data_source_catalog.storage_uri` records
   where the raster came from — `--origin-uri`, else the raw file's URI
-  ([`pipeline/raster.py#L134`](../packages/py/reimagina/pipeline/raster.py#L134));
+  ([`pipeline/raster.py::ingest_raster_source`](../packages/py/reimagina/pipeline/raster.py));
   the silver COG's path is on `file_asset.storage_uri`.
 
 ---
@@ -700,8 +700,8 @@ $CLI raster derivation run \
 For the CDMX rollups to cover the whole city rather than one
 alcaldía, run `python -m apps.cli.app overlap compute-all` once without
 `--aoi-id` so `feature_overlap` holds rows for every block of each
-declared pair (block→AGEB and block→municipality in
-[`BOOTSTRAP.md`](BOOTSTRAP.md)).
+declared pair (block→AGEB in [`BOOTSTRAP.md`](BOOTSTRAP.md) step 9;
+declare block→municipality the same way for municipal rollups).
 
 ---
 
@@ -782,6 +782,6 @@ edge** rather than the CLI-only step it is today.
 - [`architecture/JOB_LAYER.md`](architecture/JOB_LAYER.md) — the
   `Orchestrator` port, run state, the DBOS engine, and what replaced the
   indicator rollup.
-- Commit `06a6cc9` on `main` — the squash of the 25 commits of
+- Commit `2fc850e` on `main` — the squash of the 25 commits of
   `feature/raster-integration`, and its message the list of what was
   delivered; `git log` on `main` for everything since.

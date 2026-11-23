@@ -21,10 +21,8 @@ Usage::
 
     python scripts/benchmark.py --synthetic-only     # no real database needed
 
-⚠ The track is taken from ``factory.DEFAULT_MODE``, never hardcoded — the one
-place each branch names its engine. This file, ``bench_real_data.py`` and
-``perf/workloads.py`` are therefore byte-identical on both worktrees, which is
-what makes the two reports comparable at all.
+⚠ The track is taken from ``factory.DEFAULT_MODE`` (``dbos``), never
+hardcoded: it is the one place the engine is named.
 """
 
 from __future__ import annotations

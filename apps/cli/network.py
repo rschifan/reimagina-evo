@@ -35,6 +35,8 @@ def bootstrap_osm_network(
     network_type: str = WALK,
     publish_features: bool = True,
     clip_bbox: tuple[float, float, float, float] | None = None,
+    graph_dir: str | None = None,
+    save_graph_dir: str | None = None,
 ) -> dict[str, Any]:
     """Fetch, load and publish the AOI's OSM network.
 
@@ -52,5 +54,7 @@ def bootstrap_osm_network(
             network_type=network_type,
             publish_features=publish_features,
             clip_bbox=clip_bbox,
+            graph_dir=graph_dir,
+            save_graph_dir=save_graph_dir,
         )
     return {"dsn": dsn, "status": "ok", **summary}

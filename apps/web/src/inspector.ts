@@ -7,6 +7,7 @@
  * to it. main.ts owns the request, the pinned outline and when it closes.
  */
 import type { FeatureIndicatorValue } from "./api";
+import { ESTIMATED_LABEL } from "./choropleth";
 import { formatValue, grainNoun, shareText } from "./format";
 
 /**
@@ -37,7 +38,7 @@ export function rankText(row: FeatureIndicatorValue, grain: string | null = "blo
  */
 export function renderInspector(
   container: HTMLElement,
-  feature: { id: string; grain: string | null },
+  feature: { id: string; grain: string | null; estimated?: string | null },
   rows: FeatureIndicatorValue[] | string,
   activeSlug: string | null,
   onPick: (slug: string) => void,
@@ -62,6 +63,11 @@ export function renderInspector(
   head.append(el("span", "inspector__kind", kind), id, close);
   container.replaceChildren(head);
   container.hidden = false;
+  // The tile's `estimated`: this block's scenario inputs are a guess.
+  if (feature.estimated) {
+    const label = ESTIMATED_LABEL.charAt(0).toUpperCase() + ESTIMATED_LABEL.slice(1);
+    container.append(el("p", "inspector__estimated", label));
+  }
 
   if (typeof rows === "string") {
     container.append(el("p", "inspector__status", rows));

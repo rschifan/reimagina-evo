@@ -35,21 +35,31 @@ def compute_planned_floors(
     # an unseeded database failed later with a foreign-key error instead of the
     # actionable message. Exactly the drift five copies of one envelope produce.
     require_seeded(backend, spec)
-    block_type_id = get_type_id(conn, "MEX", "block")
-    effective = effective_numeric(
-        conn,
-        type_id=block_type_id,
-        attribute_key="floors",
-        scenario_id=scenario_id,
-        feature_ids=feature_ids,
-    )
-    numeric_rows = list(effective.items())
     with job_run(
         backend,
         model_family=spec.model_family or "urban_form",
         code_version=code_version,
         scenario_id=scenario_id,
     ) as job_run_id:
+        # Read inside the job_run (see _compute.py): the cast of a non-numeric
+        # `floors` raises here, and outside it left no failed provenance row.
+        block_type_id = get_type_id(conn, "MEX", "block")
+        effective = effective_numeric(
+            conn,
+            type_id=block_type_id,
+            attribute_key="floors",
+            scenario_id=scenario_id,
+            feature_ids=feature_ids,
+        )
+        if aoi_id is not None:
+            # effective_numeric scopes by feature id alone; the runner passes
+            # aoi_id with feature_ids=None, which used to write every block in
+            # the database. Same AOI filter edificability applies.
+            in_aoi = backend.feature_repo().feature_ids_in_aoi(
+                type_id=block_type_id, aoi_id=aoi_id, feature_ids=feature_ids
+            )
+            effective = {k: v for k, v in effective.items() if k in in_aoi}
+        numeric_rows = list(effective.items())
         rows_written = backend.indicator_result_repo().bulk_write_numeric_results(
             numeric_rows,
             indicator_slug=spec.slug,

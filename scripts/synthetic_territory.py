@@ -1,9 +1,9 @@
-"""Seed a small synthetic territory so the platform can be run without the lake.
+"""Seed a small synthetic territory so the platform can be run without real data.
 
-The ingestion pipelines read from a private private data lake. Anyone without
-credentials to it — a reviewer, a new contributor, a CI job — can install the
-platform, migrate it and start every process, and then has nothing to look at:
-no features, so no indicators, no tiles and no scenario to evaluate.
+The real territory is loaded from the Mexicali source bundle. Anyone without
+it — a reviewer, a new contributor, a CI job — can install the platform,
+migrate it and start every process, and then has nothing to look at: no
+features, so no indicators, no tiles and no scenario to evaluate.
 
 This closes that gap without pretending to be real data. It generates a nested
 territory on real Mexicali coordinates — AGEBs containing city blocks
@@ -297,7 +297,7 @@ def build_amenities(blocks_per_side: int):
 def write_raster(path: str, blocks_per_side: int, *, pixel_m: float = 5.0) -> dict:
     """Write a single-band population-count GeoTIFF over the grid.
 
-    One more thing the lake holds and a reviewer does not: a raster. Without
+    One more thing real data has and a reviewer may not: a raster. Without
     one, the raster half of the platform — COG staging, zonal statistics,
     aggregation recipes, the raster tile endpoint — cannot be exercised at all.
 

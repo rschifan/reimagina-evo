@@ -12,6 +12,7 @@ backfill). The two compose at the SQL layer.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import partial
 
 from reimagina.indicators.accessibility import ACCESSIBILITY_COMPUTE
 from reimagina.indicators.building_density import compute_block_building_density
@@ -33,7 +34,7 @@ from reimagina.indicators.edificability import (
     compute_block_population,
 )
 from reimagina.indicators.planned_floors import compute_planned_floors
-from reimagina.orchestration.coordinator import Runner
+from reimagina.orchestration.coordinator import SCENARIO_DELETED, Runner
 
 # A compute fn: (conn, *, aoi_id, feature_ids, scenario_id, code_version) -> result.
 IndicatorCompute = Callable[..., object]
@@ -63,16 +64,107 @@ def _recording(conn, slug: str, features, scenario_id, aoi_id):
     recording it as complete is the specific lie `coverage_scope` exists to
     prevent — `indicators/edificability.py` relies on partial writes, so this is
     a normal state rather than an error.
+
+    A run that covered all of one AOI is recorded with that ``aoi_id``: still
+    partial for the database, but done for that AOI, so planning scoped to it
+    converges. Under a scenario, covering every overridden feature counts as
+    covering the AOI — a feature without an override reads the baseline through
+    the overlay, which is why the recompute endpoint sends only the footprint.
+    A feature-scoped baseline run, or one missing an overridden feature, stays
+    plain partial.
     """
     from reimagina.assets.keys import partition_key
     from reimagina.assets.materialize import materializing
 
+    covers_aoi = bool(aoi_id) and (
+        not features
+        or (scenario_id is not None and _covers_overrides(conn, scenario_id, features))
+    )
     return materializing(
         conn,
         slug=slug,
         partition_key=partition_key({"scenario": scenario_id}),
         complete=not features and not aoi_id,
+        aoi_id=aoi_id if covers_aoi else None,
     )
+
+
+def _covers_overrides(conn, scenario_id: str, features) -> bool:
+    """Whether ``features`` includes every feature the scenario overrides.
+
+    An anti-join on ``uuid``, not ``feature_id::text <> ALL(...)``: the array
+    form is linear per row unless the planner sees a constant array, and a
+    city-wide rule is ~95k override rows against a ~19k-id footprint. The ids
+    are validated as UUIDs where they enter (``SubmitRunBody``, the CLI).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT NOT EXISTS (SELECT 1 FROM curated_geo.scenario_override "
+            "WHERE scenario_id = %s "
+            "AND feature_id NOT IN (SELECT unnest(%s::uuid[])))",
+            (scenario_id, [str(f) for f in features]),
+        )
+        return bool(cur.fetchone()[0])
+
+
+#: The FKs a unit's own rows carry to the scenario (r055). Deferred inside a
+#: unit so the inserts take no lock on the scenario row; see ``_fenced``.
+_UNIT_SCENARIO_FKS = (
+    "jobs_runtime.job_run_scenario_id_fkey, "
+    "curated_geo.indicator_result_scenario_id_fkey"
+)
+
+
+def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], object]):
+    """Run one unit's ``compute`` so it neither collides with nor blocks others.
+
+    **Serialised per (scenario, indicator).** Two runs of one scenario can
+    overlap (a second rule saved before the first recompute ends, two tabs,
+    the CLI beside the page), and with nothing between them two units writing
+    the same indicator collided on ``ir_one_current_scenario`` — one failed
+    with a UniqueViolation — or the older one, finishing last, left pre-edit
+    values current. A transaction advisory lock on ``(scenario, indicator)``
+    queues the second behind the first until it commits, and the second then
+    reads the overrides as they are. Per indicator rather than per scenario,
+    so one run's independent units still run side by side.
+
+    **No lock on the scenario row while computing.** The unit's job run and
+    results carry FKs to the scenario, and an FK check holds ``KEY SHARE`` on
+    the row until commit — which held ``DELETE /scenarios/{id}`` (``FOR
+    UPDATE``) for the whole of a city-wide compute. Those two FKs are
+    ``DEFERRABLE`` and deferred here, so nothing locks the row until the end.
+
+    **Re-checked before the unit commits.** After the compute, ``KEY SHARE``
+    is taken explicitly: from there to the caller's commit a delete waits (a
+    moment, not the compute) and then removes what the unit wrote. If the
+    scenario is already gone, everything since the savepoint — job run,
+    results, materialisation, versions — is rolled back and the unit returns
+    ``SCENARIO_DELETED``, which its caller reports ``cancelled``: no orphan rows under an id nothing can read or delete, and
+    no ForeignKeyViolation at commit. The baseline (no scenario) passes.
+    """
+    if scenario_id is None:
+        return compute()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (f"scenario:{scenario_id}", slug),
+        )
+        cur.execute("SELECT 1 FROM app_core.scenario WHERE id = %s", (scenario_id,))
+        if cur.fetchone() is None:
+            return SCENARIO_DELETED
+        cur.execute(f"SET CONSTRAINTS {_UNIT_SCENARIO_FKS} DEFERRED")
+        cur.execute("SAVEPOINT reimagina_scenario_unit")
+    from reimagina.scenarios.authoring import ScenarioNotFound, _lock_scenario
+
+    result = compute()
+    with conn.cursor() as cur:
+        try:
+            _lock_scenario(cur, scenario_id, mode="KEY SHARE")
+        except ScenarioNotFound:
+            cur.execute("ROLLBACK TO SAVEPOINT reimagina_scenario_unit")
+            return SCENARIO_DELETED
+        cur.execute("RELEASE SAVEPOINT reimagina_scenario_unit")
+    return result
 
 
 def _record_outcome(outcome: dict, result: object) -> object:
@@ -94,37 +186,20 @@ def _scoped(slug: str, compute_fn: IndicatorCompute) -> Runner:
     """
 
     def run(conn, *, features, scenario_id, code_version, aoi_id):
-        with _recording(conn, slug, features, scenario_id, aoi_id) as outcome:
-            return _record_outcome(
-                outcome,
-                compute_fn(
-                    conn,
-                    aoi_id=aoi_id,
-                    feature_ids=list(features) or None,
-                    scenario_id=scenario_id,
-                    code_version=code_version,
-                ),
-            )
+        def compute():
+            with _recording(conn, slug, features, scenario_id, aoi_id) as outcome:
+                return _record_outcome(
+                    outcome,
+                    compute_fn(
+                        conn,
+                        aoi_id=aoi_id,
+                        feature_ids=list(features) or None,
+                        scenario_id=scenario_id,
+                        code_version=code_version,
+                    ),
+                )
 
-    return run
-
-
-def _composite(spec: IndicatorSpec) -> Runner:
-    """Adapt the generic composite compute to the Runner protocol, per spec."""
-
-    def run(conn, *, features, scenario_id, code_version, aoi_id):
-        with _recording(conn, spec.slug, features, scenario_id, aoi_id) as outcome:
-            return _record_outcome(
-                outcome,
-                compute_composite(
-                    conn,
-                    spec=spec,
-                    feature_ids=list(features) or None,
-                    scenario_id=scenario_id,
-                    code_version=code_version,
-                    aoi_id=aoi_id,
-                ),
-            )
+        return _fenced(conn, scenario_id, slug, compute)
 
     return run
 
@@ -140,7 +215,9 @@ def default_runners(
     runners: dict[str, Runner] = {}
     for spec in registry:
         if spec.computation_kind == "composite":
-            runners[spec.slug] = _composite(spec)
+            runners[spec.slug] = _scoped(
+                spec.slug, partial(compute_composite, spec=spec)
+            )
         elif spec.slug in _DIRECT_COMPUTE:
             runners[spec.slug] = _scoped(spec.slug, _DIRECT_COMPUTE[spec.slug])
     return runners

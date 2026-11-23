@@ -24,7 +24,13 @@ import psycopg2
 import pytest
 
 from apps.cli.app import main
-from tests.integration._helpers import discard
+from reimagina.data import aoi as aoi_mod
+from tests.integration._helpers import (
+    discard,
+    insert_feature,
+    register_source,
+    start_run,
+)
 
 _SQUARE = "POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))"
 _TYPE_SLUG = "block_cli_test"
@@ -63,8 +69,37 @@ def territory(migrated_db: str):
                 (_TYPE_SLUG,),
             )
             row = cur.fetchone()
-        conn.commit()
+            if row is None:
+                cur.execute(
+                    "SELECT id FROM curated_geo.feature_type_catalog "
+                    "WHERE context = 'MEX' AND type_slug = %s",
+                    (_TYPE_SLUG,),
+                )
+                type_id = str(cur.fetchone()[0])
+            else:
+                type_id = str(row[0])
         created["type_inserted"] = "yes" if row else "no"
+        # One block inside the AOI: a rule is materialised as it is written,
+        # and one that catches no block is refused.
+        created["source"] = f"scenario-cli-src-{uuid4()}"
+        source_id = register_source(
+            conn,
+            name=created["source"],
+            storage_type="vector",
+            integration_role="canonical_entity",
+        )
+        created["block"] = insert_feature(
+            conn,
+            type_id=type_id,
+            source_id=source_id,
+            ingestion_run_id=start_run(conn, source_id),
+            dataset_version="v1",
+            source_record_ref="cli-blk",
+            geometry_wkt="POLYGON((0.2 0.2, 0.2 0.4, 0.4 0.4, 0.4 0.2, 0.2 0.2))",
+            attributes={},
+        )
+        aoi_mod.compute_aoi_features(conn, created["aoi_id"])
+        conn.commit()
         yield created
     finally:
         discard(
@@ -76,6 +111,20 @@ def territory(migrated_db: str):
             conn,
             "DELETE FROM curated_geo.area_of_interest WHERE id = %s",
             created.get("aoi_id"),
+        )
+        discard(
+            conn, "DELETE FROM curated_geo.feature WHERE id = %s", created.get("block")
+        )
+        discard(
+            conn,
+            "DELETE FROM curated_geo.ingestion_run WHERE source_id IN "
+            "(SELECT id FROM curated_geo.data_source_catalog WHERE name = %s)",
+            created.get("source"),
+        )
+        discard(
+            conn,
+            "DELETE FROM curated_geo.data_source_catalog WHERE name = %s",
+            created.get("source"),
         )
         discard(
             conn,
@@ -98,14 +147,15 @@ def _run(capsys, *argv: str) -> dict:
     return json.loads(captured.out)
 
 
-def test_create_set_attribute_list_and_show_round_trip(
+def test_create_add_rule_list_and_show_round_trip(
     territory, migrated_db, tmp_path, capsys
 ):
-    """One pass over every statement the four commands send.
+    """One pass over every statement the commands send.
 
     The assertions are about the *view*: a scenario the CLI created is listed
-    by ``explore.scenario_v`` with the counts that view computes, and
-    ``edit_count`` moves from 0 to 4 because ``--levels`` wrote two of them.
+    by ``explore.scenario_v`` with the counts that view computes. A rule is
+    one row and is materialised as it is written, so its overrides are there
+    at once — only the numbers it was given, no default coverage.
     """
     created = _run(
         capsys,
@@ -123,7 +173,7 @@ def test_create_set_attribute_list_and_show_round_trip(
 
     listed = _run(capsys, "list", "--aoi-id", territory["aoi_id"], "--dsn", migrated_db)
     assert [s["id"] for s in listed["scenarios"]] == [scenario_id]
-    assert listed["scenarios"][0]["edit_count"] == 0
+    assert listed["scenarios"][0]["rule_count"] == 0
     assert listed["scenarios"][0]["override_count"] == 0
     assert listed["scenarios"][0]["materialized_at"] is None
 
@@ -147,15 +197,13 @@ def test_create_set_attribute_list_and_show_round_trip(
     )
     written = _run(
         capsys,
-        "set-attribute",
+        "add-rule",
         "--scenario-id",
         scenario_id,
         "--geojson",
         str(area),
         "--levels",
         "6",
-        "--unit-size",
-        "60",
         "--people-per-household",
         "3.6",
         "--type-slug",
@@ -163,20 +211,66 @@ def test_create_set_attribute_list_and_show_round_trip(
         "--dsn",
         migrated_db,
     )
-    assert [e["attribute_key"] for e in written["edits"]] == [
-        "floors",
-        "num_levels",
-        "unit_size",
-        "people_per_household",
-        "lot_coverage",
-    ]
+    assert written["inputs"] == {"levels": 6.0, "people_per_household": 3.6}
+    assert written["materialized"]["matched_per_rule"] == {written["rule_id"]: 1}
 
     shown = _run(capsys, "show", "--scenario-id", scenario_id, "--dsn", migrated_db)
-    assert shown["scenario"]["edit_count"] == 5
+    assert shown["scenario"]["rule_count"] == 1
     assert shown["scenario"]["name"] == "Centralidad norte"
-    # Drawn, not yet materialised — the state the view exists to make visible.
-    assert shown["scenario"]["materialized_at"] is None
-    assert shown["scenario"]["override_count"] == 0
+    assert shown["scenario"]["materialized_at"] is not None
+    assert shown["scenario"]["override_count"] == 3  # floors, num_levels, people
+
+    rule_id = written["rule_id"]
+    _run(
+        capsys,
+        "update-rule",
+        "--scenario-id",
+        scenario_id,
+        "--rule-id",
+        rule_id,
+        "--levels",
+        "4",
+        "--dsn",
+        migrated_db,
+    )
+    rules = _run(capsys, "rules", "--scenario-id", scenario_id, "--dsn", migrated_db)
+    # Merged: the numbers not given are kept.
+    assert [(r["id"], r["inputs"]) for r in rules["rules"]] == [
+        (rule_id, {"levels": 4.0, "people_per_household": 3.6})
+    ]
+
+    _run(
+        capsys,
+        "delete-rule",
+        "--scenario-id",
+        scenario_id,
+        "--rule-id",
+        rule_id,
+        "--dsn",
+        migrated_db,
+    )
+    shown = _run(capsys, "show", "--scenario-id", scenario_id, "--dsn", migrated_db)
+    assert (shown["scenario"]["rule_count"], shown["scenario"]["override_count"]) == (
+        0,
+        0,
+    )
+
+    deleted = _run(capsys, "delete", "--scenario-id", scenario_id, "--dsn", migrated_db)
+    assert deleted["scenario_id"] == scenario_id
+    assert (
+        main(["scenario", "show", "--scenario-id", scenario_id, "--dsn", migrated_db])
+        == 2
+    )
+
+
+def test_a_malformed_id_is_a_refusal_not_a_traceback(migrated_db, capsys):
+    """SC-10: the id used to reach Postgres as text and raise a DataError."""
+    code = main(
+        ["scenario", "recompute", "--scenario-id", "not-a-uuid", "--dsn", migrated_db]
+    )
+
+    assert code == 2
+    assert "not-a-uuid" in capsys.readouterr().err
 
 
 def test_list_narrows_to_the_project_it_was_given(territory, migrated_db, capsys):
@@ -225,8 +319,8 @@ def test_create_refuses_a_duplicate_name_in_the_same_project(
         "create",
         "--name",
         "Twice",
-        "--project-id",
-        territory["project_id"],
+        "--aoi-id",
+        territory["aoi_id"],
         "--dsn",
         migrated_db,
     ]
@@ -235,3 +329,88 @@ def test_create_refuses_a_duplicate_name_in_the_same_project(
 
     assert main(argv) == 2
     assert "already exists" in capsys.readouterr().err
+
+
+def _polygon_file(path, ring) -> str:
+    path.write_text(json.dumps({"type": "Polygon", "coordinates": [ring]}))
+    return str(path)
+
+
+def test_update_rule_merges_unsets_and_moves(territory, migrated_db, tmp_path, capsys):
+    """``update-rule`` changes what it is given and keeps the rest.
+
+    It used to replace the rule's whole set, so ``--levels 8`` alone silently
+    dropped the rule's other numbers, and ``--geojson`` alone was refused as
+    an empty set. ``--unset`` is now how a number is removed.
+    """
+    scenario_id = _run(
+        capsys,
+        "create",
+        "--name",
+        "Merge",
+        "--aoi-id",
+        territory["aoi_id"],
+        "--dsn",
+        migrated_db,
+    )["scenario_id"]
+    area = _polygon_file(
+        tmp_path / "a.geojson", [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]
+    )
+    rule_id = _run(
+        capsys,
+        "add-rule",
+        "--scenario-id",
+        scenario_id,
+        "--geojson",
+        area,
+        "--levels",
+        "6",
+        "--lot-coverage",
+        "0.6",
+        "--people-per-household",
+        "3.6",
+        "--type-slug",
+        _TYPE_SLUG,
+        "--dsn",
+        migrated_db,
+    )["rule_id"]
+    base = ["--scenario-id", scenario_id, "--rule-id", rule_id, "--dsn", migrated_db]
+
+    def rule() -> dict:
+        rows = _run(capsys, "rules", "--scenario-id", scenario_id, "--dsn", migrated_db)
+        return rows["rules"][0]
+
+    _run(capsys, "update-rule", *base, "--levels", "8")
+    assert rule()["inputs"] == {
+        "levels": 8.0,
+        "lot_coverage": 0.6,
+        "people_per_household": 3.6,
+    }
+
+    _run(
+        capsys,
+        "update-rule",
+        *base,
+        "--unset",
+        "lot-coverage",
+        "--unset",
+        "people_per_household",
+    )
+    assert rule()["inputs"] == {"levels": 8.0}
+
+    moved = _polygon_file(
+        tmp_path / "b.geojson", [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0], [0, 0]]
+    )
+    before = rule()["geometry_wkt"]
+    _run(capsys, "update-rule", *base, "--geojson", moved)
+    after = rule()
+    assert after["inputs"] == {"levels": 8.0}
+    assert after["geometry_wkt"] != before
+
+    # Removing the last number is refused, not stored as an empty rule.
+    assert main(["scenario", "update-rule", *base, "--unset", "levels"]) != 0
+    capsys.readouterr()
+    assert rule()["inputs"] == {"levels": 8.0}
+    # An unknown name is a refusal too.
+    assert main(["scenario", "update-rule", *base, "--unset", "storeys"]) != 0
+    capsys.readouterr()
