@@ -408,6 +408,19 @@ entry, not new compute code. `livability_block_score` is the worked example:
 distance to schools, health facilities and parks, added as a spec and nothing
 else. `culture` is deliberately not an input.
 
+**No dwellings, no livability — by design.** Housing density is a
+component, and a block the census counts no dwellings on has no m² per
+dwelling, so `edificability_block_density` writes no row for it, and the
+composite, which needs every component (step 3 below), writes none either.
+On Mexicali that is 4,518 of 19,058 blocks: livability has 14,540 rows, the
+same as the edificability family (`BOOTSTRAP.md`). Livability is a score
+for where people live; a block nobody lives on — a park, an industrial
+lot, a school — is not scored as a poor one, it is not scored. A scenario
+rule that gives such a block dwellings gives it a livability score. The
+map shows nothing on those blocks, and the inspector says only "No value
+for the indicator on the map."; there is no per-block reason for a missing
+value in the UI.
+
 #### Each input is rescaled before weighting
 
 ⚠ **Raw summing makes the weights decorative.** `urban_form_block_composite`
