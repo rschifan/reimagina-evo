@@ -206,9 +206,10 @@ describe("set to or change by", () => {
     button("Change by").click();
     flushSync();
     type("Storeys change", "1");
+    (pressed(target, "Storeys unit", "storeys") as HTMLButtonElement).click();
     type("m² per home change", "-10");
-    (pressed(target, "m² per home unit", "%") as HTMLButtonElement).click();
     type("Lot coverage change", "5");
+    (pressed(target, "Lot coverage unit", "points") as HTMLButtonElement).click();
     flushSync();
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith(
@@ -242,6 +243,34 @@ describe("set to or change by", () => {
     expect(input("m² per home change").value).toBe("-10");
     expect(input("Lot coverage change").value).toBe("5");
     expect(pressed(target, "m² per home unit", "%").getAttribute("aria-pressed")).toBe("true");
+    // A saved number with no unit is an amount, as the server reads it.
+    expect(pressed(target, "Lot coverage unit", "points").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("a new change starts in percent for every number", () => {
+    // "+30" read as 30 storeys when a planner meant 30 % was the bug.
+    const { button, type, handlers, target } = open({ values: {} });
+    button("Change by").click();
+    flushSync();
+    for (const group of ["Storeys unit", "m² per home unit", "People per home unit", "Lot coverage unit"]) {
+      expect(pressed(target, group, "%").getAttribute("aria-pressed")).toBe("true");
+    }
+    type("Storeys change", "30");
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith({ levels: 30 }, undefined, "change", { levels: "pct" });
+  });
+
+  it("reads each typed change back in words before it is applied", () => {
+    const { button, type, target } = open({ values: {} });
+    button("Change by").click();
+    flushSync();
+    type("Storeys change", "30");
+    type("m² per home change", "10");
+    (pressed(target, "m² per home unit", "m²") as HTMLButtonElement).click();
+    flushSync();
+    const readBack = target.querySelector('[aria-label="This rule"]')!.textContent!;
+    expect(readBack).toMatch(/Storeys \+30 %/);
+    expect(readBack).toMatch(/m² per home \+10 m²/);
   });
 });
 

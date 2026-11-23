@@ -20,7 +20,11 @@
    * A rule either sets its numbers or changes each block's baseline value by
    * them (`ruleMode`); one choice for the whole rule, and switching clears
    * what was typed, since "3" means 3 storeys in one and +3 in the other. A
-   * change has a unit per number: an amount (coverage in points) or a %.
+   * change has a unit per number: an amount (coverage in points) or a %. A
+   * new change starts in %, the way planners first asked for it ("+15 %");
+   * a saved number with no unit is an amount, as the server reads it. The
+   * line under the numbers reads the rule back in words, so "+30" cannot be
+   * applied as 30 storeys by someone who meant 30 %.
    */
   interface Props {
     mode: "new" | "rule";
@@ -89,7 +93,14 @@
     people_per_household: startChange("people_per_household"),
     lot_coverage: startChange("lot_coverage"),
   });
-  let units = $state<RuleUnits>({ ...startUnits });
+  // The saved rule's own numbers keep their units (absent = amount); any
+  // other number starts in %, through `unitOf`.
+  let units = $state<RuleUnits>(
+    startMode === "change"
+      ? Object.fromEntries(Object.keys(initial).map((k) => [k, startUnits[k as keyof RuleInputs] ?? "abs"]))
+      : {},
+  );
+  const unitOf = (key: keyof RuleInputs) => units[key] ?? "pct";
   /** Each number's amount unit, then "%". */
   const AMOUNT: Record<keyof RuleInputs, string> = {
     levels: "storeys", unit_size: "m²", people_per_household: "people", lot_coverage: "points",
@@ -103,6 +114,15 @@
     units = {};
     localError = null;
   }
+  /** What the typed changes will do, in words: "Storeys +30 %". */
+  const readBack = $derived(
+    RULE_NUMBERS.flatMap(([key, label]) => {
+      const v = set(changes[key]);
+      if (v === null || v === 0) return [];
+      const sign = v < 0 ? "−" : "+";
+      return [`${label} ${sign}${Math.abs(v)} ${unitOf(key) === "pct" ? "%" : AMOUNT[key]}`];
+    }),
+  );
   const inputs: Record<string, HTMLInputElement | undefined> = $state({});
   const LABELS = Object.fromEntries(RULE_NUMBERS.map(([key, label]) => [key, label]));
   let localError = $state<string | null>(null);
@@ -134,7 +154,7 @@
     for (const [key] of RULE_NUMBERS) {
       const v = set(changes[key]);
       if (v === null) continue;
-      next[key] = key === "lot_coverage" && units[key] !== "pct" ? v / 100 : v;
+      next[key] = key === "lot_coverage" && unitOf(key) !== "pct" ? v / 100 : v;
     }
     if (Object.keys(next).length === 0) {
       localField = null;
@@ -184,7 +204,7 @@
       const next = readChange();
       if (!next) return;
       const sent: RuleUnits = Object.fromEntries(
-        Object.keys(next).map((k) => [k, units[k as keyof RuleInputs] ?? "abs"]),
+        Object.keys(next).map((k) => [k, unitOf(k as keyof RuleInputs)]),
       );
       if (mode === "new") onapply(next, needsScenarioName ? name : undefined, "change", sent);
       else onsave(next, "change", sent);
@@ -225,7 +245,7 @@
     {#each [["set", "Set to"], ["change", "Change by"]] as const as [m, label] (m)}
       <button
         type="button"
-        class="flex-1 px-2 py-1 {ruleMode === m ? 'bg-accent/10 text-accent' : 'text-muted-foreground'}"
+        class="flex-1 px-2 py-1 {ruleMode === m ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"
         aria-pressed={ruleMode === m}
         disabled={busy}
         onclick={() => switchMode(m)}
@@ -244,8 +264,8 @@
               {#each [["abs", AMOUNT[key]], ["pct", "%"]] as const as [u, text] (u)}
                 <button
                   type="button"
-                  class="px-1 py-0.5 text-[10px] {(units[key] ?? 'abs') === u ? 'bg-accent/10 text-accent' : ''}"
-                  aria-pressed={(units[key] ?? "abs") === u}
+                  class="px-1 py-0.5 text-[10px] {unitOf(key) === u ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"
+                  aria-pressed={unitOf(key) === u}
                   onclick={() => (units = { ...units, [key]: u })}
                 >{text}</button>
               {/each}
@@ -254,6 +274,11 @@
         </div>
       {/each}
     </div>
+    {#if readBack.length}
+      <p class="mt-2 text-foreground" aria-label="This rule" aria-live="polite">
+        Each block: {readBack.join(" · ")}
+      </p>
+    {/if}
   {:else}
   <p class="mb-2 text-muted-foreground">Set what this area changes. A number left empty keeps each block's own value.</p>
   <div class="flex flex-col gap-1.5">

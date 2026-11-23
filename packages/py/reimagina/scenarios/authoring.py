@@ -33,7 +33,7 @@ import json
 import math
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg2.errors
@@ -107,6 +107,7 @@ class CeilingExceeded(Exception):
         *,
         rules: dict[str, tuple[tuple[str, int], ...]] | None = None,
         allowed_levels: dict[tuple[str, str], int] | None = None,
+        advice: str | None = None,
     ) -> None:
         self.breaches = breaches
         #: Per feature, the rules whose numbers the block is computed with, as
@@ -116,17 +117,22 @@ class CeilingExceeded(Exception):
         #: Per (feature, indicator), the most storeys that block allows with
         #: its other numbers as they are — what a planner would type instead.
         self.allowed_levels = allowed_levels or {}
-        worst = breaches[0]
-        named = [number for _, number in self.rules_of(worst)]
-        by = f"Rule {', '.join(str(n) for n in named)} would make " if named else ""
-        allowed = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
-        advice = f"; at most {allowed} storeys there" if allowed is not None else ""
-        super().__init__(
-            f"{len(breaches)} ceiling breach(es). {by}"
-            f"block {worst.feature_id} {'compute' if by else 'would compute'} "
-            f"{worst.would_be:.1f} for {worst.indicator_slug}, "
-            f"whose valid_max is {worst.bound:.1f}{advice}."
-        )
+        # Plain words for the planner: which rule, and what would fit. The
+        # block ids, slugs and bounds travel in the structured fields.
+        if advice is None:
+            # No rule-aware advice: the first breach's rules and the storeys
+            # that fit it, as a set rule would be told.
+            worst = breaches[0]
+            named = ", ".join(str(n) for _, n in self.rules_of(worst))
+            most = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
+            n = len({b.feature_id for b in breaches})
+            where = "this block" if n == 1 else f"{n} blocks"
+            advice = (
+                f"Rule {named} is too much for {where}: at most {most} storeys fit."
+                if named and most is not None
+                else "Lower the storeys or raise the m² per home in this area."
+            )
+        super().__init__(advice)
 
     def rules_of(self, breach: CeilingBreach) -> tuple[tuple[str, int], ...]:
         return self.rules.get(breach.feature_id, ())
@@ -857,6 +863,8 @@ class _Resolution:
     values: dict[tuple[str, str], float]
     #: (feature, attribute) -> the rule that supplied the value.
     owner: dict[tuple[str, str], str]
+    #: Rule id -> (mode, units), for a refusal to speak in the rule's terms.
+    modes: dict[str, tuple[str, dict[str, str]]] = field(default_factory=dict)
 
 
 def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
@@ -930,9 +938,11 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     values: dict[tuple[str, str], float] = {}
     owner: dict[tuple[str, str], str] = {}
     edits: dict[str, list[dict[str, Any]]] = {}
+    modes: dict[str, tuple[str, dict[str, str]]] = {}
     for rule_id, inputs, mode, units, feature_id in rows:
         if rule_id not in matched:
             matched[rule_id] = 0
+            modes[rule_id] = (mode, dict(units or {}))
             edits[rule_id] = edits_for(**inputs)
         if feature_id is None:
             continue
@@ -952,7 +962,7 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
             key = (feature_id, edit["attribute_key"])
             values[key] = float(edit["value_numeric"])
             owner[key] = rule_id
-    return _Resolution(matched, values, owner)
+    return _Resolution(matched, values, owner, modes)
 
 
 def _baseline_values(
@@ -1068,7 +1078,64 @@ def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
         feature_id: tuple(sorted(((r, number[r]) for r in ids), key=lambda p: p[1]))
         for feature_id, ids in owners.items()
     }
-    raise CeilingExceeded(breaches, rules=rules, allowed_levels=allowed)
+    raise CeilingExceeded(
+        breaches,
+        rules=rules,
+        allowed_levels=allowed,
+        advice=_ceiling_advice(resolution, baseline, breaches, allowed, number),
+    )
+
+
+def _ceiling_advice(
+    resolution: _Resolution,
+    baseline: dict[str, dict[str, float]],
+    breaches: list[CeilingBreach],
+    allowed: dict[tuple[str, str], int],
+    number: dict[str, int],
+) -> str | None:
+    """ "Rule 2 is too much for 40 blocks: at most +24 % storeys fits all of
+    them." — per rule that sets the breaching blocks' storeys, the largest
+    value every one of them takes, in the rule's own terms. A change rule is
+    told a change (``+24 %``, ``+8 storeys``), never the total it implies."""
+    fits: dict[str, float] = {}
+    blocks: dict[str, set[str]] = {}
+    for breach in breaches:
+        most = allowed.get((breach.feature_id, breach.indicator_slug))
+        key = "floors" if breach.indicator_slug == FLOORS else "num_levels"
+        rule_id = resolution.owner.get((breach.feature_id, key))
+        if most is None or rule_id is None:
+            continue
+        mode, units = resolution.modes.get(rule_id, ("set", {}))
+        start = baseline.get(key, {}).get(breach.feature_id)
+        if mode != "change":
+            value = float(most)
+        elif start is None or start <= 0:
+            continue
+        elif units.get("levels", "abs") == "pct":
+            value = math.floor((most / start - 1) * 100)
+        else:
+            value = math.floor(most - start)
+        fits[rule_id] = min(value, fits.get(rule_id, value))
+        blocks.setdefault(rule_id, set()).add(breach.feature_id)
+    if not fits:
+        return None
+    parts = []
+    for rule_id in sorted(fits, key=lambda r: number.get(r, 0)):
+        n = len(blocks[rule_id])
+        where = "this block" if n == 1 else f"{n} blocks"
+        value = fits[rule_id]
+        if resolution.modes.get(rule_id, ("set", {}))[0] != "change":
+            what = f"at most {value:g} storeys fit"
+        elif value <= 0:
+            what = "it cannot add storeys to all of them"
+        elif resolution.modes[rule_id][1].get("levels", "abs") == "pct":
+            what = f"at most +{value:g} % storeys fits"
+        else:
+            what = f"at most +{value:g} storeys fits"
+        parts.append(
+            f"Rule {number.get(rule_id, '?')} is too much for {where}: {what}."
+        )
+    return " ".join(parts)
 
 
 def _delete_unimplied_overrides(

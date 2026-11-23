@@ -385,16 +385,19 @@ describe("refusalText", () => {
     expect(text).toMatch(/12 storeys/);
   });
 
-  it("reports how many blocks breached a per-block ceiling", async () => {
+  it("says a per-block ceiling refusal saved nothing, then the server's advice", async () => {
     const err = apiError(422, {
       detail: {
         error: "ceiling_exceeded",
-        message: "4 blocks would compute …",
-        breach_count: 4,
+        message: "Rule 1 is too much for 4 blocks: at most +24 % storeys fits.",
+        breach_count: 7,
         breaches: [],
       },
     });
-    await expect(refusalText(err, "recompute")).resolves.toMatch(/4 block/);
+    const text = await refusalText(err, "recompute");
+    expect(text).toMatch(/^Not saved: too dense/);
+    expect(text).toMatch(/Rule 1 is too much for 4 blocks: at most \+24 % storeys fits\./);
+    expect(text).not.toMatch(/7 block/);
   });
 
   it("names the field a 400 was about", async () => {

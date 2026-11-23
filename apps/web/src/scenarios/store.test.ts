@@ -297,7 +297,7 @@ describe("editing on the map", () => {
   const ceiling = () =>
     refusal(422, {
       error: "ceiling_exceeded", breach_count: 2,
-      message: "Rule 3 would make block b compute 2500 for density; at most 5 storeys there.",
+      message: "Rule 3 is too much for 2 blocks: at most 5 storeys fit.",
     });
   const RULE = {
     id: "r1", ordinal: 1, areaWkt: "POLYGON((0 0,1 0,1 1,0 0))",
@@ -361,7 +361,7 @@ describe("editing on the map", () => {
     expect(ok).toBe(false);
     expect(api.deleteRule).not.toHaveBeenCalled();
     expect(api.recomputeScenario).not.toHaveBeenCalled();
-    expect(store.ws.boxError?.text).toMatch(/2 blocks.*at most 5 storeys/);
+    expect(store.ws.boxError?.text).toMatch(/Not saved.*Rule 3 is too much for 2 blocks: at most 5 storeys/);
   });
 
   it("the field a refusal names is the one the box marks", async () => {
@@ -475,7 +475,7 @@ describe("editing on the map", () => {
     api.deleteRule.mockRejectedValue(ceiling());
     const ok = await settleRun(store.deleteRule(RULE));
     expect(ok).toBe(false);
-    expect(store.ws.boxError?.text).toMatch(/would compute/);
+    expect(store.ws.boxError?.text).toMatch(/too dense/);
   });
 
   // B6: the table's row was read once, while the run was still queued, and

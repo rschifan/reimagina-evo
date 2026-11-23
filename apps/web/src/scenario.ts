@@ -356,13 +356,9 @@ export async function refusalText(
       return `${head}${suffix(served)}`;
     }
     if (code === "ceiling_exceeded") {
-      const count = typeof d?.breach_count === "number" ? d.breach_count : null;
-      const head =
-        count === null
-          ? "Some blocks would compute a value the indicators cannot store."
-          : `${count} block${count === 1 ? "" : "s"} would compute a value the ` +
-            "indicators cannot store, so nothing was stored.";
-      return `${head}${suffix(served)}`;
+      // The server names the rule, the blocks and what fits; `breach_count`
+      // counts (block, indicator) pairs, not blocks, so it is not echoed.
+      return `Not saved: too dense for the indicators to store.${suffix(served)}`;
     }
     if (code === "rule_catches_nothing") {
       return "No block of this pilot falls inside this area, so the rule was not stored. Draw it over the city's blocks.";
