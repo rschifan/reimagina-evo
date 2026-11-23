@@ -1060,8 +1060,46 @@ def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
             "rule_id": RULE_ID,
             "geometry_wkt": None,
             "inputs": {"levels": 4},
+            "mode": "set",
+            "units": {},
         }
     ]
+
+
+def test_a_change_rule_reaches_the_domain_with_its_mode_and_units(
+    client, events, monkeypatch
+):
+    calls: list[dict] = []
+    row = {**RULE_ROW, "mode": "change", "units": {"levels": "pct"}}
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (calls.append(kw), (dict(row), MATERIALIZED))[1],
+    )
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
+
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={
+            **PROPOSAL,
+            "inputs": {"levels": 20},
+            "mode": "change",
+            "units": {"levels": "pct"},
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert (calls[0]["mode"], calls[0]["units"]) == ("change", {"levels": "pct"})
+    assert response.json()["rule"]["mode"] == "change"
+    assert response.json()["rule"]["units"] == {"levels": "pct"}
+
+
+def test_an_unknown_rule_mode_is_a_422(client, events, monkeypatch):
+    _type_id(monkeypatch)
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/rules", json={**PROPOSAL, "mode": "multiply"}
+    )
+    assert response.status_code == 422
 
 
 def test_deleting_a_rule_materialises_without_a_rule_to_check(

@@ -1206,3 +1206,38 @@ def test_a_moved_rule_recomputes_only_where_it_now_is(
     after = set(orchestrator[-1]["edited_features"])
 
     assert before and after and before.isdisjoint(after)
+
+
+def test_a_change_rule_is_stored_with_its_mode_and_units(
+    client, territory, orchestrator
+):
+    scenario_id = _scenario(client, territory)
+
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={**PROPOSAL, "inputs": {"levels": 1}, "mode": "change"},
+    )
+
+    assert response.status_code == 201, response.text
+    [rule] = _rules(client, scenario_id)
+    assert (rule["mode"], rule["units"]) == ("change", {"levels": "abs"})
+
+
+def test_a_change_of_minus_100_percent_is_refused_naming_its_field(
+    client, territory, orchestrator
+):
+    scenario_id = _scenario(client, territory)
+
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={
+            **PROPOSAL,
+            "inputs": {"unit_size": -100},
+            "mode": "change",
+            "units": {"unit_size": "pct"},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "unit_size" in response.text
+    assert _rules(client, scenario_id) == []
