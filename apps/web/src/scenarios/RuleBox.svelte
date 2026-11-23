@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { RuleInputs, RuleMode, RuleUnits } from "../api";
+  import type { RuleInputs, RuleMode, RuleUnit, RuleUnits } from "../api";
   import { percentOf, RULE_NUMBERS } from "../scenario";
 
   /**
@@ -13,18 +13,19 @@
    * way the store recomputes and the map shows the change; this component
    * holds only what is being typed.
    *
-   * Coverage is typed in percent, as planners say it, and handed on as a
-   * share. `novalidate`: the checks below name the field and the range; the
-   * browser's own would pre-empt them with a tooltip that says neither.
-   *
-   * A rule either sets its numbers or changes each block's baseline value by
-   * them (`ruleMode`); one choice for the whole rule, and switching clears
-   * what was typed, since "3" means 3 storeys in one and +3 in the other. A
-   * change has a unit per number: an amount (coverage in points) or a %. A
-   * new change starts in %, the way planners first asked for it ("+15 %");
-   * a saved number with no unit is an amount, as the server reads it. The
-   * line under the numbers reads the rule back in words, so "+30" cannot be
+   * Each number chooses how it applies: "=" (the blocks' new value), "+" an
+   * amount in its own unit (coverage in points), or "+ %" of each block's
+   * baseline. So one rule can set coverage and raise storeys over the same
+   * area. A rule whose numbers are all "=" is sent as a plain set rule; any
+   * other is a change rule whose `units` carry each number's choice. An empty
+   * number starts at "+ %", the way planners first asked ("+15 %"); the line
+   * under the numbers reads the rule back in words, so "+30" cannot be
    * applied as 30 storeys by someone who meant 30 %.
+   *
+   * Coverage is typed in percent (or points), as planners say it, and handed
+   * on as a share. `novalidate`: the checks below name the field and the
+   * range; the browser's own would pre-empt them with a tooltip that says
+   * neither.
    */
   interface Props {
     mode: "new" | "rule";
@@ -40,8 +41,8 @@
     /** How the saved rule applies its numbers; a new rule starts at "set". */
     ruleMode?: RuleMode;
     ruleUnits?: RuleUnits;
-    /** A set rule is applied with two arguments; a change rule adds its
-     *  mode and units. */
+    /** A rule of "=" numbers only is applied with two arguments; any other
+     *  adds "change" and each number's unit. */
     onapply: (values: RuleInputs, scenarioName?: string, ruleMode?: RuleMode, units?: RuleUnits) => void;
     onsave: (values: RuleInputs, ruleMode?: RuleMode, units?: RuleUnits) => void;
     ondelete: () => void;
@@ -57,7 +58,7 @@
     busy,
     error,
     draggable,
-    ruleMode: initialMode = "set",
+    ruleMode: savedMode = "set",
     ruleUnits = {},
     onapply,
     onsave,
@@ -68,61 +69,37 @@
   // Seeded once from the props: the box is remounted for every shape, and
   // a prop change mid-typing must not overwrite what is being typed.
   const initial = (() => values)();
-  const startMode = (() => initialMode)();
+  const startMode = (() => savedMode)();
   const startUnits = (() => ruleUnits)();
-  let ruleMode = $state<RuleMode>(startMode);
-  const seed = (v: number | undefined): number | null => (startMode === "set" ? (v ?? null) : null);
-  // Empty means "not set by this rule": every block keeps its own value.
-  let levels = $state<number | null>(seed(initial.levels));
-  let unitSize = $state<number | null>(seed(initial.unit_size));
-  let people = $state<number | null>(seed(initial.people_per_household));
-  // Unrounded: a coverage of 0.625 shows as 62.5 and is saved as 0.625, not
-  // rounded to 63 by a Save that only changed the storeys.
-  let coveragePct = $state<number | null>(
-    startMode === "set" && initial.lot_coverage !== undefined ? percentOf(initial.lot_coverage) : null,
-  );
-  // A change rule's numbers, as typed: coverage as an amount is in points.
-  const startChange = (key: keyof RuleInputs): number | null => {
-    const v = startMode === "change" ? initial[key] : undefined;
+  /** A saved number's choice: all "=" in a set rule; in a change rule its
+   *  unit, an amount when it has none (as the server reads it). */
+  const savedUnit = (key: keyof RuleInputs): RuleUnit =>
+    startMode === "set" ? "set" : (startUnits[key] ?? "abs");
+  // Coverage is shown in percent (or points); a % change is shown as typed.
+  // Unrounded: 0.625 shows as 62.5 and is saved as 0.625.
+  const shown = (key: keyof RuleInputs): number | null => {
+    const v = initial[key];
     if (v === undefined) return null;
-    return key === "lot_coverage" && startUnits[key] !== "pct" ? percentOf(v) : v;
+    return key === "lot_coverage" && savedUnit(key) !== "pct" ? percentOf(v) : v;
   };
-  let changes = $state<Record<keyof RuleInputs, number | null>>({
-    levels: startChange("levels"),
-    unit_size: startChange("unit_size"),
-    people_per_household: startChange("people_per_household"),
-    lot_coverage: startChange("lot_coverage"),
+  let numbers = $state<Record<keyof RuleInputs, number | null>>({
+    levels: shown("levels"),
+    unit_size: shown("unit_size"),
+    people_per_household: shown("people_per_household"),
+    lot_coverage: shown("lot_coverage"),
   });
-  // The saved rule's own numbers keep their units (absent = amount); any
-  // other number starts in %, through `unitOf`.
   let units = $state<RuleUnits>(
-    startMode === "change"
-      ? Object.fromEntries(Object.keys(initial).map((k) => [k, startUnits[k as keyof RuleInputs] ?? "abs"]))
-      : {},
+    Object.fromEntries(Object.keys(initial).map((k) => [k, savedUnit(k as keyof RuleInputs)])),
   );
-  const unitOf = (key: keyof RuleInputs) => units[key] ?? "pct";
-  /** Each number's amount unit, then "%". */
+  const unitOf = (key: keyof RuleInputs): RuleUnit => units[key] ?? "pct";
+  /** Each number's amount unit. */
   const AMOUNT: Record<keyof RuleInputs, string> = {
     levels: "storeys", unit_size: "m²", people_per_household: "people", lot_coverage: "points",
   };
+  const CHOICES = (key: keyof RuleInputs): ReadonlyArray<readonly [RuleUnit, string]> => [
+    ["set", "="], ["abs", `+ ${AMOUNT[key]}`], ["pct", "+ %"],
+  ];
 
-  function switchMode(next: RuleMode) {
-    if (next === ruleMode) return;
-    ruleMode = next;
-    levels = unitSize = people = coveragePct = null;
-    changes = { levels: null, unit_size: null, people_per_household: null, lot_coverage: null };
-    units = {};
-    localError = null;
-  }
-  /** What the typed changes will do, in words: "Storeys +30 %". */
-  const readBack = $derived(
-    RULE_NUMBERS.flatMap(([key, label]) => {
-      const v = set(changes[key]);
-      if (v === null || v === 0) return [];
-      const sign = v < 0 ? "−" : "+";
-      return [`${label} ${sign}${Math.abs(v)} ${unitOf(key) === "pct" ? "%" : AMOUNT[key]}`];
-    }),
-  );
   const inputs: Record<string, HTMLInputElement | undefined> = $state({});
   const LABELS = Object.fromEntries(RULE_NUMBERS.map(([key, label]) => [key, label]));
   let localError = $state<string | null>(null);
@@ -140,31 +117,19 @@
   const set = (v: number | null | undefined | string): number | null =>
     v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v);
 
-  function readChange(): RuleInputs | null {
-    // As in `read`: an unreadable number ("3,5") binds as empty and would be
-    // dropped silently.
-    for (const [field, el] of Object.entries(inputs)) {
-      if (el?.validity.badInput) {
-        localField = field;
-        localError = `${LABELS[field]} is not a number this browser can read; use a dot for decimals.`;
-        return null;
-      }
-    }
-    const next: RuleInputs = {};
-    for (const [key] of RULE_NUMBERS) {
-      const v = set(changes[key]);
-      if (v === null) continue;
-      next[key] = key === "lot_coverage" && unitOf(key) !== "pct" ? v / 100 : v;
-    }
-    if (Object.keys(next).length === 0) {
-      localField = null;
-      localError = "Set at least one change: a rule changes only what you type.";
-      return null;
-    }
-    localError = null;
-    return next;
-  }
+  /** What the typed numbers will do, in words: "Storeys +30 % · Lot coverage = 40 %". */
+  const readBack = $derived(
+    RULE_NUMBERS.flatMap(([key, label]) => {
+      const v = set(numbers[key]);
+      if (v === null) return [];
+      const unit = unitOf(key);
+      if (unit === "set") return [`${label} = ${v}${key === "lot_coverage" ? " %" : ""}`];
+      const sign = v < 0 ? "−" : "+";
+      return [`${label} ${sign}${Math.abs(v)} ${unit === "pct" ? "%" : AMOUNT[key]}`];
+    }),
+  );
 
+  /** The typed numbers as the API takes them, or null after a refusal. */
   function read(): RuleInputs | null {
     // A number the browser could not parse ("3,5" where it expects "3.5")
     // binds as empty — which would read as "not set" and be dropped silently.
@@ -175,23 +140,22 @@
         return null;
       }
     }
-    const pct = set(coveragePct);
-    const typed: Array<[keyof RuleInputs, number | null]> = [
-      ["levels", set(levels)],
-      ["unit_size", set(unitSize)],
-      ["people_per_household", set(people)],
-      ["lot_coverage", pct === null ? null : pct / 100],
-    ];
-    // Only what was typed: a number left empty is not set.
-    const next: RuleInputs = Object.fromEntries(typed.filter(([, v]) => v !== null));
+    const next: RuleInputs = {};
+    for (const [key] of RULE_NUMBERS) {
+      const v = set(numbers[key]);
+      if (v === null) continue;
+      const unit = unitOf(key);
+      if (key === "lot_coverage" && unit === "set" && (v <= 0 || v > 100)) {
+        localField = key;
+        localError = "Lot coverage must be more than 0 and at most 100 %.";
+        return null;
+      }
+      // Coverage set or changed by points is a share; a % change is as typed.
+      next[key] = key === "lot_coverage" && unit !== "pct" ? v / 100 : v;
+    }
     if (Object.keys(next).length === 0) {
       localField = null;
       localError = "Set at least one number: a rule changes only what you type.";
-      return null;
-    }
-    if (pct !== null && (pct <= 0 || pct > 100)) {
-      localField = "lot_coverage";
-      localError = "Lot coverage must be more than 0 and at most 100 %.";
       return null;
     }
     localError = null;
@@ -200,29 +164,28 @@
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (ruleMode === "change") {
-      const next = readChange();
-      if (!next) return;
-      const sent: RuleUnits = Object.fromEntries(
-        Object.keys(next).map((k) => [k, unitOf(k as keyof RuleInputs)]),
-      );
-      if (mode === "new") onapply(next, needsScenarioName ? name : undefined, "change", sent);
-      else onsave(next, "change", sent);
-      return;
-    }
     const next = read();
     if (!next) return;
-    if (mode === "new") onapply(next, needsScenarioName ? name : undefined);
-    else onsave(next);
+    const sent: RuleUnits = Object.fromEntries(
+      Object.keys(next).map((k) => [k, unitOf(k as keyof RuleInputs)]),
+    );
+    // All "=": a plain set rule, sent as before. Anything else is a change
+    // rule whose units carry each number's choice, "set" included.
+    if (Object.values(sent).every((u) => u === "set")) {
+      if (mode === "new") onapply(next, needsScenarioName ? name : undefined);
+      else onsave(next);
+      return;
+    }
+    if (mode === "new") onapply(next, needsScenarioName ? name : undefined, "change", sent);
+    else onsave(next, "change", sent);
   }
 
-  const input = "w-20 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums";
-  const row = "flex items-center justify-between gap-3 text-xs text-muted-foreground";
+  const row = "flex items-center justify-between gap-2 text-xs text-muted-foreground";
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <form
-  class="w-64 rounded-lg border border-line bg-surface p-3 text-xs shadow-lg"
+  class="w-72 rounded-lg border border-line bg-surface p-3 text-xs shadow-lg"
   novalidate
   aria-label={mode === "new" ? "New rule" : "Edit rule"}
   onsubmit={submit}
@@ -241,52 +204,32 @@
       <input class="rounded border border-line bg-surface px-1.5 py-0.5 text-xs" aria-label="Scenario name" aria-invalid={badField === "name"} aria-describedby={badField === "name" ? "rule-box-error" : undefined} bind:value={name} />
     </label>
   {/if}
-  <div role="group" aria-label="How the rule applies" class="mb-2 flex overflow-hidden rounded border border-line">
-    {#each [["set", "Set to"], ["change", "Change by"]] as const as [m, label] (m)}
-      <button
-        type="button"
-        class="flex-1 px-2 py-1 {ruleMode === m ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"
-        aria-pressed={ruleMode === m}
-        disabled={busy}
-        onclick={() => switchMode(m)}
-      >{label}</button>
+  <p class="mb-2 text-muted-foreground">Per number: = sets it, + changes each block from its baseline. Empty keeps each block's own value.</p>
+  <div class="flex flex-col gap-1.5">
+    {#each RULE_NUMBERS as [key, label] (key)}
+      <div class={row}>
+        <span>{label}</span>
+        <span class="flex items-center gap-1">
+          <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label={label} placeholder="as is" aria-invalid={badField === key} aria-describedby={badField === key ? "rule-box-error" : undefined} bind:this={inputs[key]} bind:value={numbers[key]} />
+          <span role="group" aria-label="{label} unit" class="flex overflow-hidden rounded border border-line">
+            {#each CHOICES(key) as [u, text] (u)}
+              <button
+                type="button"
+                class="px-1 py-0.5 text-[10px] {unitOf(key) === u ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"
+                aria-pressed={unitOf(key) === u}
+                disabled={busy}
+                onclick={() => (units = { ...units, [key]: u })}
+              >{text}</button>
+            {/each}
+          </span>
+        </span>
+      </div>
     {/each}
   </div>
-  {#if ruleMode === "change"}
-    <p class="mb-2 text-muted-foreground">Each block changes from its baseline value. Empty = unchanged.</p>
-    <div class="flex flex-col gap-1.5">
-      {#each RULE_NUMBERS as [key, label] (key)}
-        <div class={row}>
-          <span>{label}</span>
-          <span class="flex items-center gap-1">
-            <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label="{label} change" placeholder="0" aria-invalid={badField === key} aria-describedby={badField === key ? "rule-box-error" : undefined} bind:this={inputs[key]} bind:value={changes[key]} />
-            <span role="group" aria-label="{label} unit" class="flex overflow-hidden rounded border border-line">
-              {#each [["abs", AMOUNT[key]], ["pct", "%"]] as const as [u, text] (u)}
-                <button
-                  type="button"
-                  class="px-1 py-0.5 text-[10px] {unitOf(key) === u ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"
-                  aria-pressed={unitOf(key) === u}
-                  onclick={() => (units = { ...units, [key]: u })}
-                >{text}</button>
-              {/each}
-            </span>
-          </span>
-        </div>
-      {/each}
-    </div>
-    {#if readBack.length}
-      <p class="mt-2 text-foreground" aria-label="This rule" aria-live="polite">
-        Each block: {readBack.join(" · ")}
-      </p>
-    {/if}
-  {:else}
-  <p class="mb-2 text-muted-foreground">Set what this area changes. A number left empty keeps each block's own value.</p>
-  <div class="flex flex-col gap-1.5">
-    <label class={row}>Storeys <input class={input} type="number" min="1" step="1" aria-label="Storeys" placeholder="as is" aria-invalid={badField === "levels"} aria-describedby={badField === "levels" ? "rule-box-error" : undefined} bind:this={inputs.levels} bind:value={levels} /></label>
-    <label class={row}>m² per home <input class={input} type="number" min="1" step="1" aria-label="m² per home" placeholder="as is" aria-invalid={badField === "unit_size"} aria-describedby={badField === "unit_size" ? "rule-box-error" : undefined} bind:this={inputs.unit_size} bind:value={unitSize} /></label>
-    <label class={row}>People per home <input class={input} type="number" min="0.1" step="0.1" aria-label="People per home" placeholder="as is" aria-invalid={badField === "people_per_household"} aria-describedby={badField === "people_per_household" ? "rule-box-error" : undefined} bind:this={inputs.people_per_household} bind:value={people} /></label>
-    <label class={row}>Lot coverage <input class={input} type="number" min="1" max="100" step="any" aria-label="Lot coverage (%)" placeholder="as is" aria-invalid={badField === "lot_coverage"} aria-describedby={badField === "lot_coverage" ? "rule-box-error" : undefined} bind:this={inputs.lot_coverage} bind:value={coveragePct} /></label>
-  </div>
+  {#if readBack.length}
+    <p class="mt-2 text-foreground" aria-label="This rule" aria-live="polite">
+      Each block: {readBack.join(" · ")}
+    </p>
   {/if}
   {#if mode === "rule" && overlapNote !== null}
     <p class="mt-2 text-muted-foreground">{overlapNote}</p>

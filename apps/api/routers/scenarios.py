@@ -206,10 +206,12 @@ class RuleBody(BaseModel):
         "each number moves a block from its own baseline value (never from an "
         "earlier rule's), by an amount or a percentage per ``units``.",
     )
-    units: dict[str, Literal["abs", "pct"]] = Field(
+    units: dict[str, Literal["abs", "pct", "set"]] = Field(
         default_factory=dict,
         description='For a change rule: per number, "abs" (an amount; lot '
-        'coverage as a share, 0.05 = +5 points) or "pct". Missing: "abs".',
+        'coverage as a share, 0.05 = +5 points), "pct", or "set" (the '
+        "block's new value, as in a set rule: one rule can set one number and "
+        'change another). Missing: "abs".',
     )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
@@ -261,11 +263,11 @@ class RuleUpdateBody(BaseModel):
         "client that does not know about modes cannot turn a change into a "
         'set. Send "set" to make a change rule a set rule.',
     )
-    units: dict[str, Literal["abs", "pct"]] = Field(
+    units: dict[str, Literal["abs", "pct", "set"]] = Field(
         default_factory=dict,
         description='For a change rule: per number, "abs" (an amount; lot '
-        'coverage as a share, 0.05 = +5 points) or "pct". Missing: the '
-        'rule\'s own unit, else "abs".',
+        'coverage as a share, 0.05 = +5 points), "pct" or "set". Missing: '
+        'the rule\'s own unit, else "abs".',
     )
 
 

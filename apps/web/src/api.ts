@@ -362,12 +362,16 @@ export interface RuleInputs {
 }
 
 
-/** A rule sets its numbers as the blocks' values, or changes each block's
- *  baseline value by them. */
+/** "set": every number is the blocks' new value. "change": each number says
+ *  how it applies in `units`, so one rule can set one number and change
+ *  another. */
 export type RuleMode = "set" | "change";
-/** For a change rule, per number: an amount (`abs`; coverage as a share) or
- *  a percentage (`pct`). Missing: `abs`. */
-export type RuleUnits = Partial<Record<keyof RuleInputs, "abs" | "pct">>;
+/** For a change rule, per number: an amount (`abs`; coverage as a share), a
+ *  percentage (`pct`) or `set`. Missing: `abs`. */
+export type RuleUnits = Partial<Record<keyof RuleInputs, RuleUnit>>;
+/** How one number of a rule applies: an amount, a percentage, or "set" (the
+ *  block's new value). */
+export type RuleUnit = "abs" | "pct" | "set";
 /** What a rule request carries besides its area. A set rule sends no mode. */
 export type RuleChange = { inputs: RuleInputs; mode?: RuleMode; units?: RuleUnits };
 

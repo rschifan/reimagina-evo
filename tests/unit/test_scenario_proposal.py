@@ -406,3 +406,28 @@ def test_a_coverage_amount_is_a_share_change_not_points():
     assert check_inputs(
         {"lot_coverage": 5}, mode="change", units={"lot_coverage": "pct"}
     ) == {"lot_coverage": 5.0}
+
+
+# ── One rule, a choice per number ("=", "+ amount", "+ %") ──────────────────
+
+
+def test_a_rule_can_set_one_number_and_change_another():
+    checked = check_inputs(
+        {"lot_coverage": 0.4, "levels": 20},
+        mode="change",
+        units={"lot_coverage": "set", "levels": "pct"},
+    )
+    assert checked == {"levels": 20.0, "lot_coverage": 0.4}
+    assert check_units("change", {"lot_coverage": "set"}, ["lot_coverage"]) == {
+        "lot_coverage": "set"
+    }
+
+
+@pytest.mark.parametrize("bad", [0.0, 1.5])
+def test_a_set_number_in_a_mixed_rule_keeps_the_set_range(bad):
+    with pytest.raises(ProposalValueError):
+        check_inputs(
+            {"lot_coverage": bad, "levels": 1},
+            mode="change",
+            units={"lot_coverage": "set", "levels": "abs"},
+        )

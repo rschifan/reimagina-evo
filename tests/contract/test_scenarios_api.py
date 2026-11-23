@@ -1115,6 +1115,31 @@ def test_a_change_rule_reaches_the_domain_with_its_mode_and_units(
     assert response.json()["rule"]["units"] == {"levels": "pct"}
 
 
+def test_one_rule_can_set_one_number_and_change_another(client, events, monkeypatch):
+    calls: list[dict] = []
+    units = {"levels": "pct", "lot_coverage": "set"}
+    row = {**RULE_ROW, "mode": "change", "units": units}
+    _patch(
+        monkeypatch,
+        add_rule=lambda c, **kw: (calls.append(kw), (dict(row), MATERIALIZED))[1],
+    )
+    _type_id(monkeypatch)
+    _orchestrator(monkeypatch)
+
+    response = client.post(
+        f"/scenarios/{SCENARIO_ID}/rules",
+        json={
+            **PROPOSAL,
+            "inputs": {"levels": 20, "lot_coverage": 0.4},
+            "mode": "change",
+            "units": units,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert calls[0]["units"] == units
+
+
 def test_an_unknown_rule_mode_is_a_422(client, events, monkeypatch):
     _type_id(monkeypatch)
     response = client.post(

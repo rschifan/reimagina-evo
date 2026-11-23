@@ -992,6 +992,14 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
         if mode == "change":
             for name, by in inputs.items():
                 spec = RULE_INPUTS[name]
+                if units.get(name) == "set":
+                    # A number this rule sets, as a set rule would.
+                    for edit in edits_for(**{name: by}):
+                        key = (feature_id, edit["attribute_key"])
+                        values[key] = float(edit["value_numeric"])
+                        owner[key] = rule_id
+                    changed[rule_id] = changed.get(rule_id, 0) + 1
+                    continue
                 for attribute in spec.attributes:
                     start = base.get(attribute, {}).get(feature_id)
                     # No coverage is the whole block, as the compute and the
@@ -1159,7 +1167,7 @@ def _ceiling_advice(
             continue
         mode, units = resolution.modes.get(rule_id, ("set", {}))
         start = baseline.get(key, {}).get(breach.feature_id)
-        if mode != "change":
+        if mode != "change" or units.get("levels") == "set":
             value = float(most)
         elif start is None or start <= 0:
             continue
@@ -1176,11 +1184,12 @@ def _ceiling_advice(
         n = len(blocks[rule_id])
         where = "this block" if n == 1 else f"{n} blocks"
         value = fits[rule_id]
-        if resolution.modes.get(rule_id, ("set", {}))[0] != "change":
+        mode, units = resolution.modes.get(rule_id, ("set", {}))
+        if mode != "change" or units.get("levels") == "set":
             what = f"at most {value:g} storeys fit"
         elif value <= 0:
             what = "it cannot add storeys to all of them"
-        elif resolution.modes[rule_id][1].get("levels", "abs") == "pct":
+        elif units.get("levels", "abs") == "pct":
             what = f"at most +{value:g} % storeys fits"
         else:
             what = f"at most +{value:g} storeys fits"

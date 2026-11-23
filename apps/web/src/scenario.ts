@@ -559,7 +559,8 @@ export function describeRule(rule: Rule, position: number): string {
   for (const [key, , unit] of RULE_NUMBERS) {
     const value = rule.inputs[key];
     if (value === undefined) continue;
-    if (!change) {
+    // A set number, in a set rule or in a mixed one, is shown as its value.
+    if (!change || rule.units?.[key] === "set") {
       parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
       continue;
     }

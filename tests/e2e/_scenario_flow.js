@@ -216,12 +216,16 @@ async function run(page) {
   });
 }
 
-/** Type a rule's numbers into its box; anything not given is left empty. */
+/** Type a rule's numbers into its box as values ("="); anything not given
+ *  is left empty. An empty number starts at "+ %", so "=" is chosen. */
 async function fillRule(box, { levels, unitSize, people, coverage }) {
   for (const [label, value] of [
-    ['Storeys', levels], ['m² per home', unitSize], ['People per home', people], ['Lot coverage (%)', coverage],
+    ['Storeys', levels], ['m² per home', unitSize], ['People per home', people], ['Lot coverage', coverage],
   ]) {
     await box.getByLabel(label, { exact: true }).fill(value === undefined ? '' : String(value));
+    if (value !== undefined) {
+      await box.getByRole('group', { name: `${label} unit` }).getByRole('button', { name: '=', exact: true }).click();
+    }
   }
 }
 

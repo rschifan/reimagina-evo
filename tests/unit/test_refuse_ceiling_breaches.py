@@ -113,3 +113,8 @@ def test_a_change_rule_in_storeys_is_told_the_largest_change_not_the_total():
     # +20 storeys = 22; 10 fit, which is +8 storeys over the baseline 2.
     message = str(_change_refusal({"levels": "abs"}, 22.0))
     assert "+8 storeys" in message
+
+
+def test_a_set_storeys_number_in_a_mixed_rule_is_told_storeys_not_a_change():
+    message = str(_change_refusal({"levels": "set"}, 22.0))
+    assert "at most 10 storeys fit" in message

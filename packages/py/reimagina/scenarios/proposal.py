@@ -195,8 +195,10 @@ RULE_INPUTS: dict[str, RuleInput] = {
 #: A rule sets its numbers as the blocks' values, or changes each block's
 #: baseline value by them.
 RULE_MODES = ("set", "change")
-#: A change is an amount in the number's own unit, or a percentage.
-CHANGE_UNITS = ("abs", "pct")
+#: In a ``change`` rule each number says how it applies: an amount in its
+#: own unit, a percentage, or ``set`` — the block's new value, as in a set
+#: rule. One rule can so set coverage and raise storeys over the same area.
+CHANGE_UNITS = ("abs", "pct", "set")
 
 
 def check_units(
@@ -219,7 +221,7 @@ def check_units(
         if name not in names:
             raise ProposalValueError(name, unit, must="be a number the rule changes")
         if unit not in CHANGE_UNITS:
-            raise ProposalValueError(name, unit, must="be abs or pct")
+            raise ProposalValueError(name, unit, must="be abs, pct or set")
     return {name: given.get(name, "abs") for name in names}
 
 
@@ -273,7 +275,8 @@ def check_inputs(
     through this, so they refuse the same things for the same reasons.
 
     A change rule (``mode="change"``) takes signed, non-zero amounts; a
-    percentage must be above −100. Its range and ceilings are checked per
+    percentage must be above −100. Its numbers whose unit is ``set`` are
+    checked as a set rule's. Its range and ceilings are checked per
     block when the scenario is materialised, so neither is checked here.
     """
     for name, value in inputs.items():
@@ -289,8 +292,9 @@ def check_inputs(
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ProposalValueError(name, value, must="be a number")
         number = float(value)
-        if mode == "change":
-            pct = (units or {}).get(name) == "pct"
+        unit = (units or {}).get(name, "abs")
+        if mode == "change" and unit != "set":
+            pct = unit == "pct"
             if not math.isfinite(number) or number == 0 or (pct and number <= -100):
                 raise ProposalValueError(
                     name,

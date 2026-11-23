@@ -56,17 +56,17 @@ describe("the rule box", () => {
     expect(input("Storeys").value).toBe("3");
     expect(input("m² per home").value).toBe("66");
     expect(input("People per home").value).toBe("3.6");
-    expect(input("Lot coverage (%)").value).toBe("60");
+    expect(input("Lot coverage").value).toBe("60");
   });
 
   it("coverage is entered in percent", () => {
     const { type, button, handlers, target } = open();
-    type("Lot coverage (%)", "45");
+    type("Lot coverage", "45");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
     for (const bad of ["0", "120"]) {
       handlers.onapply.mockClear();
-      type("Lot coverage (%)", bad);
+      type("Lot coverage", bad);
       button("Apply").click();
       flushSync();
       expect(handlers.onapply).not.toHaveBeenCalled();
@@ -78,7 +78,7 @@ describe("the rule box", () => {
   // only the storeys were changed.
   it("keeps a coverage it did not touch exactly as it was", () => {
     const { input, type, button, handlers } = open({ mode: "rule", values: { ...VALUES, lot_coverage: 0.625 } });
-    expect(input("Lot coverage (%)").value).toBe("62.5");
+    expect(input("Lot coverage").value).toBe("62.5");
     type("Storeys", "4");
     button("Save").click();
     expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lot_coverage: 0.625 });
@@ -168,12 +168,13 @@ describe("numbers left empty", () => {
     const { input, target } = open({ values: EMPTY });
     expect(input("Storeys").value).toBe("");
     expect(input("Storeys").placeholder).toBe("as is");
-    expect(target.textContent).toMatch(/empty keeps each block's own value/);
+    expect(target.textContent).toMatch(/Empty keeps each block's own value/);
   });
 
   it("sends only the numbers typed", () => {
-    const { type, button, handlers } = open({ values: EMPTY });
+    const { type, button, handlers, target } = open({ values: EMPTY });
     type("People per home", "5");
+    choose(target, "People per home unit", "=");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith({ people_per_household: 5 }, undefined);
   });
@@ -187,30 +188,35 @@ describe("numbers left empty", () => {
   });
 });
 
-describe("set to or change by", () => {
-  const pressed = (target: Element, group: string, text: string) =>
-    [...target.querySelectorAll(`[aria-label="${group}"] button`)].find(
-      (b) => b.textContent?.trim() === text,
-    )!;
-
-  it("switching to change by clears what was typed", () => {
-    const { button, input } = open();
-    button("Change by").click();
-    flushSync();
-    expect(input("Storeys change").value).toBe("");
-    expect(input("Lot coverage change").value).toBe("");
+describe("a choice per number", () => {
+  it("an existing set rule opens with every number on =", () => {
+    const { target } = open({ mode: "rule" });
+    for (const group of ["Storeys unit", "m² per home unit", "People per home unit", "Lot coverage unit"]) {
+      expect(pressed(target, group, "=").getAttribute("aria-pressed")).toBe("true");
+    }
   });
 
-  it("a change rule is applied with signed numbers, its mode and each number's unit", () => {
+  it("one rule sets one number and changes another", () => {
     const { button, type, handlers, target } = open({ values: {} });
-    button("Change by").click();
-    flushSync();
-    type("Storeys change", "1");
-    (pressed(target, "Storeys unit", "storeys") as HTMLButtonElement).click();
-    type("m² per home change", "-10");
-    type("Lot coverage change", "5");
-    (pressed(target, "Lot coverage unit", "points") as HTMLButtonElement).click();
-    flushSync();
+    type("Lot coverage", "40");
+    choose(target, "Lot coverage unit", "=");
+    type("Storeys", "20");
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith(
+      { levels: 20, lot_coverage: 0.4 },
+      undefined,
+      "change",
+      { levels: "pct", lot_coverage: "set" },
+    );
+  });
+
+  it("a change rule is applied with signed numbers and each number's unit", () => {
+    const { button, type, handlers, target } = open({ values: {} });
+    type("Storeys", "1");
+    choose(target, "Storeys unit", "+ storeys");
+    type("m² per home", "-10");
+    type("Lot coverage", "5");
+    choose(target, "Lot coverage unit", "+ points");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith(
       { levels: 1, unit_size: -10, lot_coverage: 0.05 },
@@ -221,30 +227,27 @@ describe("set to or change by", () => {
   });
 
   it("coverage as a percentage change is sent as typed, not as a share", () => {
-    const { button, type, handlers, target } = open({ values: {} });
-    button("Change by").click();
-    flushSync();
-    type("Lot coverage change", "5");
-    (pressed(target, "Lot coverage unit", "%") as HTMLButtonElement).click();
-    flushSync();
+    const { button, type, handlers } = open({ values: {} });
+    type("Lot coverage", "5");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith(
       { lot_coverage: 5 }, undefined, "change", { lot_coverage: "pct" },
     );
   });
 
-  it("an existing change rule opens in change by with its units", () => {
+  it("an existing change rule opens with each number's own choice", () => {
     const { input, target } = open({
       mode: "rule",
-      values: { unit_size: -10, lot_coverage: 0.05 },
+      values: { unit_size: -10, lot_coverage: 0.05, levels: 4 },
       ruleMode: "change",
-      ruleUnits: { unit_size: "pct" },
+      ruleUnits: { unit_size: "pct", levels: "set" },
     });
-    expect(input("m² per home change").value).toBe("-10");
-    expect(input("Lot coverage change").value).toBe("5");
-    expect(pressed(target, "m² per home unit", "%").getAttribute("aria-pressed")).toBe("true");
+    expect(input("m² per home").value).toBe("-10");
+    expect(input("Lot coverage").value).toBe("5");
+    expect(pressed(target, "m² per home unit", "+ %").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed(target, "Storeys unit", "=").getAttribute("aria-pressed")).toBe("true");
     // A saved number with no unit is an amount, as the server reads it.
-    expect(pressed(target, "Lot coverage unit", "points").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed(target, "Lot coverage unit", "+ points").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("an existing change rule opens with the keyboard in its first number", () => {
@@ -254,46 +257,49 @@ describe("set to or change by", () => {
       ruleMode: "change",
       ruleUnits: { levels: "pct" },
     });
-    expect(document.activeElement).toBe(input("Storeys change"));
+    expect(document.activeElement).toBe(input("Storeys"));
   });
 
-  it("a new change starts in percent for every number", () => {
+  it("an empty number starts at + %", () => {
     // "+30" read as 30 storeys when a planner meant 30 % was the bug.
-    const { button, type, handlers, target } = open({ values: {} });
-    button("Change by").click();
-    flushSync();
+    const { target } = open({ values: {} });
     for (const group of ["Storeys unit", "m² per home unit", "People per home unit", "Lot coverage unit"]) {
-      expect(pressed(target, group, "%").getAttribute("aria-pressed")).toBe("true");
+      expect(pressed(target, group, "+ %").getAttribute("aria-pressed")).toBe("true");
     }
-    type("Storeys change", "30");
-    button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ levels: 30 }, undefined, "change", { levels: "pct" });
   });
 
-  it("reads each typed change back in words before it is applied", () => {
-    const { button, type, target } = open({ values: {} });
-    button("Change by").click();
-    flushSync();
-    type("Storeys change", "30");
-    type("m² per home change", "10");
-    (pressed(target, "m² per home unit", "m²") as HTMLButtonElement).click();
-    flushSync();
+  it("reads each typed number back in words before it is applied", () => {
+    const { type, target } = open({ values: {} });
+    type("Storeys", "30");
+    type("m² per home", "10");
+    choose(target, "m² per home unit", "+ m²");
+    type("Lot coverage", "40");
+    choose(target, "Lot coverage unit", "=");
     const readBack = target.querySelector('[aria-label="This rule"]')!.textContent!;
     expect(readBack).toMatch(/Storeys \+30 %/);
     expect(readBack).toMatch(/m² per home \+10 m²/);
+    expect(readBack).toMatch(/Lot coverage = 40 %/);
+  });
+
+  it("a set coverage outside 0–100 % is refused in a mixed rule too", () => {
+    const { button, type, handlers, target } = open({ values: {} });
+    type("Storeys", "10");
+    type("Lot coverage", "120");
+    choose(target, "Lot coverage unit", "=");
+    button("Apply").click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
   });
 });
 
-describe("a change the browser cannot read", () => {
-  it("is refused naming the field, not dropped", () => {
-    const { button, handlers, target, input } = open({ values: {} });
-    button("Change by").click();
-    flushSync();
-    const el = input("m² per home change");
-    Object.defineProperty(el, "validity", { value: { badInput: true } });
-    [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Apply")!.click();
-    flushSync();
-    expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/m² per home is not a number this browser can read/);
-  });
-});
+function pressed(target: Element, group: string, text: string): HTMLButtonElement {
+  return [...target.querySelectorAll<HTMLButtonElement>(`[aria-label="${group}"] button`)].find(
+    (b) => b.textContent?.trim() === text,
+  )!;
+}
+
+function choose(target: Element, group: string, text: string) {
+  pressed(target, group, text).click();
+  flushSync();
+}

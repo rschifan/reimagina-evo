@@ -600,6 +600,15 @@ describe("describeRule", () => {
     expect(describeRule(pct, 1)).toBe("Rule 1 · +0.5 people · +5 % cover");
   });
 
+  it("labels a mixed rule's set numbers as values and its changes as signed", () => {
+    const mixed = {
+      ...rule({ levels: 20, lot_coverage: 0.4 }),
+      mode: "change" as const,
+      units: { levels: "pct" as const, lot_coverage: "set" as const },
+    };
+    expect(describeRule(mixed, 1)).toBe("Rule 1 · +20 % st · 40 %");
+  });
+
   it("is a whole rule with one number, and its label shows only that number", () => {
     const [one] = rulesFromRows([ruleRow("r", 1, { people_per_household: 5 })]);
     expect(describeRule(one, 1)).toBe("Rule 1 · 5 people");

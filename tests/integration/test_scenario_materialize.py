@@ -1030,3 +1030,37 @@ def test_a_merge_keeps_a_change_rule_and_its_units(conn):
     assert updated["units"] == {"levels": "pct", "unit_size": "abs"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 3
     assert _override_value(conn, sid, t.blocks[0], "unit_size") == 90
+
+
+def test_one_rule_sets_one_number_and_changes_another(conn):
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2})
+    sid = t.scenario()
+    rule = _change_rule(
+        t,
+        sid,
+        _AREA_0_3,
+        units={"lot_coverage": "set", "levels": "pct"},
+        lot_coverage=0.4,
+        levels=50,
+    )
+
+    assert rule["units"] == {"levels": "pct", "lot_coverage": "set"}
+    assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.4
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 3
+    assert _override_value(conn, sid, t.blocks[0], "num_levels") == 3
+
+
+def test_a_rule_whose_set_number_writes_is_not_refused_for_a_missing_baseline(conn):
+    # Storeys have no baseline here, but the set coverage still changes blocks.
+    t = _Territory(conn, attributes={"unit_size": 80})
+    sid = t.scenario()
+    _change_rule(
+        t,
+        sid,
+        _AREA_0_3,
+        units={"lot_coverage": "set", "levels": "abs"},
+        lot_coverage=0.5,
+        levels=1,
+    )
+
+    assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.5
