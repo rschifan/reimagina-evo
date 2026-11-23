@@ -38,7 +38,7 @@ A thin view layer over `curated_geo`, plus the tile functions (`get_tile`, `indi
 A record of one curated-load execution — one step of the Bronze → Silver → curated pipeline for a specific dataset. Every canonical row in `feature` and `observation` carries an `ingestion_run_id` that traces it back to the exact script version and run that produced it.
 
 ### Job run
-A record of one indicator computation that reads city data and writes indicator results — `jobs_runtime.job_run`, one row per compute, so one per executed unit of a run (or per standalone `indicators compute` from the CLI). Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id` (`NOT NULL`). The row is opened by the runner at compute time, straight to `running`, not when work is submitted (`jobs/_lifecycle.py:54`, the `job_run` context manager); `job_run.run_id` names the run it belongs to, `NULL` for a standalone compute.
+A record of one indicator computation that reads city data and writes indicator results — `jobs_runtime.job_run`, one row per compute, so one per executed unit of a run (or per standalone `indicators compute` from the CLI). Job runs are distinct from ingestion runs: ingestion brings data in, job runs compute outputs from that data. Every `indicator_result` row carries a `job_run_id` (`NOT NULL`). The row is opened by the runner at compute time, straight to `running`, not when work is submitted (the `job_run` context manager in `jobs/_lifecycle.py`); `job_run.run_id` names the run it belongs to, `NULL` for a standalone compute.
 
 ### Run
 One submitted computation — the unit the `Orchestrator` port deals in, persisted as `jobs_runtime.orchestration_run` (the run id is also its DBOS workflow id) with one `jobs_runtime.job_unit` per indicator it must recompute. A run is not a job run: a run is scheduler state and spans many indicators, a job run is domain provenance for one compute. The port, run state, and status vocabulary are defined in `JOB_LAYER.md`.
@@ -159,19 +159,28 @@ The fraction of a feature's area, length, or presence that falls inside an AOI. 
 ## Scenarios
 
 ### Project
-A workspace row in `app_core.project` (r001:27). It exists because `curated_geo.area_of_interest.project_id` references it (r004:21). It groups scenarios: `app_core.scenario.project_id` (r048) references it.
+A workspace row in `app_core.project` (r001). It exists because `curated_geo.area_of_interest.project_id` references it (r004). It groups scenarios: `app_core.scenario.project_id` (r048) references it.
 
 ### Scenario
 A named proposed state of the city. A scenario is a row in `app_core.scenario` (r048), unique by name within its project, bound to an AOI (`aoi_id`, required at creation; nullable only because deleting the AOI empties it), and is the addressed resource for authoring. Its rules, overrides, results, job runs and AOI summaries reference it `ON DELETE CASCADE` (r055). A scenario never modifies baseline data; it overlays changes through override rows and expresses its effects through recomputed indicator results. `NULL` means the base city.
 
 ### Rule
-A **rule** is one row of `curated_geo.scenario_rule` (r055): one drawn area (polygon or multipolygon), one feature type, and the numbers a planner set over it (`inputs`: storeys, m² per dwelling, people per household, lot coverage — only the ones given). Its `ordinal` is its place in "later wins" where areas overlap, per number; it is assigned when the rule is created and kept when the rule is edited or moved. Materialisation writes storeys as both `floors` and `num_levels` (`scenarios/proposal.py::edits_for`). Before r055 a rule was a set of per-attribute **scenario edits** (`scenario_edit`, r048) grouped by identical geometry.
+A **rule** is one row of `curated_geo.scenario_rule` (r055): one drawn area (polygon or multipolygon), one feature type, and the numbers a planner set over it (`inputs`: storeys, m² per dwelling, people per household, lot coverage — only the ones given). Its `ordinal` is its place in "later wins" where areas overlap, per number; it is assigned when the rule is created and kept when the rule is edited or moved. Materialisation writes storeys as both `floors` and `num_levels` (`scenarios/proposal.py::edits_for`). Before r055 a rule was a set of per-attribute **scenario edits** (`scenario_edit`, r048) grouped by identical geometry; `scenario_edit` no longer exists. In code an **edit** is now one `{attribute_key, value_numeric}` pair a rule's numbers expand to (`proposal.edits_for`: one per attribute, so storeys give two), the unit `apply_overrides` upserts.
+
+### Ordinal
+`scenario_rule.ordinal`, a rule's place in "later wins": `max + 1` of the scenario's current rules, under its row lock, when the rule is created; never renumbered after a delete, and unchanged by `PATCH …/rules/{rule_id}` or `scenario update-rule`. Where rules overlap, each number is taken from the highest-ordinal rule that sets it; a later rule that leaves a number out does not override an earlier rule's value for it. The page shows it as "Rule N", N being the rank in ordinal order (`rule_numbers` in a `ceiling_exceeded` refusal).
 
 ### Materialisation
-Resolving a scenario's edits into per-feature `scenario_override` rows inside its AOI (`scenarios/authoring.py::materialize_scenario`). It refuses the whole scenario if any block would breach an indicator ceiling, deletes overrides no edit implies any more, marks the scenario's now-unbacked results `stale`, and sets `app_core.scenario.materialized_at`. Its **footprint** — every block a current rule overrides plus every block whose override it removed, and the attributes involved — is the change-set `POST /scenarios/{id}/recompute` submits.
+Resolving a scenario's rules into per-feature `scenario_override` rows inside its AOI (`scenarios/authoring.py::materialize_scenario`). It selects each rule's blocks (members of the AOI whose centroid the area covers, `ST_Covers`), resolves overlaps by ordinal (later wins, per number), refuses the whole scenario if any block would breach an indicator ceiling (`CeilingExceeded`), deletes overrides no rule implies any more, publishes the scenario's override versions, marks the scenario's now-unbacked results `stale`, and sets `app_core.scenario.materialized_at`. Writing, editing or deleting a rule materialises in the same transaction (`materialize_for_rule`). Its **footprint** — every block a current rule overrides, with the attributes involved (those whose last override was removed included) — is the change-set the rule routes and `POST /scenarios/{id}/recompute` submit; an empty footprint submits nothing.
 
 ### Attribute override
 One row in `curated_geo.scenario_override` (r030) — a `(scenario_id, feature_id, attribute_key)` triple carrying exactly one of `value_numeric` / `value_text`. It outranks observations and base attributes when the effective value is resolved. The underlying `feature` row is never modified. Override rows are written by materialisation, not drawn directly, and reading them back yields the scenario's change-set (`scenarios.overrides.scenario_change_set`).
+
+### Partition
+The scenario dimension of the asset graph: an asset's versions and materialisations are keyed by `partition_key`, `''` for the baseline and `scenario=<id>` for one scenario (`assets/keys.py::partition_key`). A string, not an FK, so `delete_scenario` deletes the scenario's partition explicitly.
+
+### Estimated block
+A block whose scenario inputs the census fit had to guess: `feature.attributes.estimated` = `no_footprint` (dwellings but no Overture footprint) or `thin_footprint` (footprint leaving under 20 m² per dwelling), set by `scripts/seed_demo_attributes.py --fit-to-census`; such a block takes the median lot coverage. `GET /indicators/{slug}/stats` counts the rows on them (`count_estimated`) and `serving_geo.indicator_overlay_tile` emits the reason as an `estimated` property (r056). Not the same thing as the `estimated` quality flag below.
 
 ### Effective value
 What an indicator actually reads for an attribute: `override ⊕ current observation ⊕ base feature.attributes`, first non-null wins, resolved in SQL by `scenarios.overrides.effective_numeric`. With no scenario it collapses to `observation ⊕ base` — the baseline.
@@ -193,7 +202,7 @@ A computed value for a specific spatial feature in a specific state of the world
 An indicator produced directly by a model worker reading city data — `computation_kind = 'direct'`, with a `model_family` set. Examples: `accessibility_block_school_network_m` (`model_family = 'accessibility'`), `urban_form_block_compactness` and the edificability family (`'urban_form'`).
 
 ### Composite indicator
-An indicator derived from a weighted combination of other indicators — `computation_kind = 'composite'`, with `model_family = NULL` (enforced by a CHECK, r016:77-78). Defined via `indicator_dependency`. Two ship: `urban_form_block_composite` (compactness + building density, 0.5/0.5) and `livability_block_score` (housing density 0.4, scored against a 50–150 units/ha target band, network distance to school, health and park 0.2 each — the distances are lower-is-better and flipped before weighting). Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`composite.compute_composite`, bound in `runners.default_runners`).
+An indicator derived from a weighted combination of other indicators — `computation_kind = 'composite'`, with `model_family = NULL` (enforced by a CHECK, r016). Defined via `indicator_dependency`. Two ship: `urban_form_block_composite` (compactness + building density, 0.5/0.5) and `livability_block_score` (housing density 0.4, scored against a 50–150 dwellings/ha **density band** — 1 inside it, falling linearly to 0 at 0 and at 300 (`catalog.LIVABILITY_DENSITY_BAND_LOW`/`_HIGH`, `composite.component_score`) — network distance to school, health and park 0.2 each — the distances are lower-is-better and flipped before weighting). Composites are ordinary units in the same run as their components, ordered after them by the impact engine, and all share the generic `compute_composite` runner (`composite.compute_composite`, bound in `runners.default_runners`).
 
 ### Quality flag (ISO 19157)
 A classification of how reliable a computed indicator value is.
@@ -201,7 +210,7 @@ A classification of how reliable a computed indicator value is.
 | Flag | Meaning |
 |---|---|
 | `measured` | Directly computed from authoritative source data |
-| `estimated` | Derived at a different resolution or scale |
+| `estimated` | Derived at a different resolution or scale. Every scenario row a compute writes as `measured` is stored as `estimated` (a what-if is a projection, not a measurement; `_flag_for` in the Postgres result repository) |
 | `imputed` | Filled using a spatial or statistical model |
 | `missing` | Input data was unavailable; `missing_reason` must be set |
 | `not_applicable` | This indicator does not apply to this feature type |
