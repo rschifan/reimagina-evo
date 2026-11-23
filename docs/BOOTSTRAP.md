@@ -16,7 +16,9 @@ What `scripts/mexicali_run.sh` builds, into the database `DATABASE_URL` names:
   published as roads
 - **Observations:** the INEGI 2020 census headline columns at block grain,
   household size, and the scenario-input baseline
-- **Indicators:** all 12, over the AOI's 19,058 blocks
+- **Indicators:** all 12 over the AOI's 19,058 blocks; the edificability
+  family and the livability score skip the 4,518 blocks with no census
+  dwellings (14,540 rows each)
 - No scenarios and no orchestration runs
 
 ## The Mexicali source bundle
@@ -283,8 +285,11 @@ for SLUG in urban_form_block_compactness urban_form_block_building_density \
 done
 ```
 
-Each prints `rows_written`; on Mexicali every one writes 19,058, one per
-block.
+Each prints `rows_written`; on Mexicali eight write 19,058, one per block,
+and the three edificability indicators and `livability_block_score` write
+14,540: a block with no census dwellings has no m² per dwelling (step 9b).
+Over those blocks the edificability totals give the census back: 340,169
+dwellings and 940,381 people. 2,097 of them carry `estimated` inputs.
 
 ## 11. Inspection
 
@@ -313,7 +318,8 @@ SELECT sum(c-1) FROM (
 -- (c) every indicator has one current row per block of the AOI
 SELECT indicator_slug, count(*) FROM curated_geo.indicator_result
 WHERE status = 'current' AND scenario_id IS NULL GROUP BY 1 ORDER BY 1;
--- expect: 12 rows, each 19,058; and no scenarios or orchestration runs:
+-- expect: 12 rows; 19,058 each, except edificability_block_* and
+-- livability_block_score at 14,540; and no scenarios or orchestration runs:
 SELECT (SELECT count(*) FROM app_core.scenario),
        (SELECT count(*) FROM jobs_runtime.orchestration_run);
 -- expect: 0 | 0
@@ -340,8 +346,9 @@ blocks.
 
 ## Total wall-clock
 
-About 8 minutes for `scripts/mexicali_run.sh` on an Apple-silicon laptop
-(455 s measured, including the 65 MB download), and about 1.1 GB of database.
+About 8–9 minutes for `scripts/mexicali_run.sh` on an Apple-silicon laptop
+(455 s and, on a loaded machine, 538 s measured, each including the 65 MB
+download), and about 1.1 GB of database (1,057 MB measured).
 Rebuilding the bundle adds the INEGI downloads and conversion, an Overture
 extract (40 s to 8 min) and an Overpass fetch (minutes).
 

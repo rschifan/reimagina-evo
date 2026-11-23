@@ -50,8 +50,9 @@ For the database, choose Docker Engine/Desktop with Compose v2, or PostgreSQL
 The Docker stack also uses 5433 (direct PostgreSQL), 5432 (PgBouncer), 3000
 (Martin) and 3001 (PMTiles host), bound to 127.0.0.1 unless
 `REIMAGINA_BIND_ADDRESS` in `.env` says otherwise. Allow several GB for environments and Docker
-images. The real Mexicali territory (step 9) adds a 35 MB download, 77 MB
-extracted under `data/bundles/`, and about 1.1 GB of database.
+images. The real Mexicali territory (step 9) adds a 65 MB download, kept
+under `data/bundles/` beside its 77 MB extraction, and about 1.1 GB of
+database.
 
 ## 2. Clone and select Python
 
@@ -308,9 +309,10 @@ inherited `PGSERVICE` or `PGHOSTADDR` overrides; an omitted URL port follows
 
 The script generates geometry near Mexicali, computes all twelve indicators,
 loads a raster, exercises zonal statistics and rollups, authors a scenario,
-runs a separate worker and decodes live tiles, in about two minutes. It needs
-no source data and no network access. Every stage must exit successfully and
-the last line reads `=== Acceptance run complete`. Then repeat the step 6
+runs a separate worker and decodes live tiles, in about 90 seconds. It needs
+no source data and no network access. Every stage must exit successfully; the
+run ends with `=== Acceptance run complete` followed by the `AOI_ID`,
+`SCENARIO_ID` and `RASTER_SOURCE_ID` it created. Then repeat the step 6
 checks against this populated stack; if the first checkout's `make dev` is
 still running, give this one other ports (`make dev API_PORT=8123 WEB_PORT=5199`).
 
@@ -378,8 +380,11 @@ against the bundle's `SHA256SUMS`, and only then drops the database. It loads
 the INEGI geometry, the census, the amenities, the Overture places and
 buildings and the walking network, computes AOI membership, overlaps and the
 scenario-input baseline, and computes all 12 indicators. It takes about
-8 minutes on a recent laptop and ends with `=== Done`; each indicator reports
-`rows_written=19058`, one row per block. Later runs reuse the downloaded
+8–9 minutes on a recent laptop and ends with `=== Done` and the `AOI_ID`.
+Eight indicators report `rows_written=19058`, one row per block; the three
+edificability indicators and `livability_block_score` report
+`rows_written=14540`, because the 4,518 blocks where the census counts no
+dwellings have no m² per dwelling and are skipped. Later runs reuse the downloaded
 bundle with no network access. Without network access, follow the offline
 route in [BOOTSTRAP.md](BOOTSTRAP.md#the-mexicali-source-bundle) and run
 `scripts/mexicali_run.sh --bundle DIR`. `--keep` loads into the existing
