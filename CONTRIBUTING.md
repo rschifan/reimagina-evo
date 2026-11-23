@@ -38,7 +38,7 @@ Run `make help` to see every shortcut. The important ones:
 
 1. Open a PR against `main`.
 2. CI must be green (`lint-py`, `test-py-unit`, `test-py-integration`, `build-web`); the integration job also runs conformance.
-3. One approval required before merge.
+3. Get one approving review before merging (a convention: `main` has no branch protection).
 4. `main` uses **squash merge only** — the PR title becomes the commit message.
 
 ## Code quality
