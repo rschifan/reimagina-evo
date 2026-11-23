@@ -431,6 +431,19 @@ describe("editing on the map", () => {
     expect(api.listScenarios).toHaveBeenCalledTimes(3);
   });
 
+  it("a change rule is sent with its mode and units, and its negative numbers are not refused locally", async () => {
+    store.select("A");
+    await settleRun(
+      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, "change", { unit_size: "pct" }),
+    );
+    expect(api.addRule.mock.calls[0][1]).toEqual({
+      area: AREA,
+      inputs: { levels: -1, unit_size: -10 },
+      mode: "change",
+      units: { unit_size: "pct" },
+    });
+  });
+
   it("save sends the rule's id and its whole set of numbers", async () => {
     store.select("A");
     const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));

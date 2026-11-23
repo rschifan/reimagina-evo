@@ -582,6 +582,13 @@ describe("describeRule", () => {
     for (const pct of [7, 14, 29, 55, 57, 58]) expect(percentOf(pct / 100)).toBe(pct);
   });
 
+  it("labels a change rule by its signed changes and their units", () => {
+    const change = { ...rule({ levels: 1, unit_size: -10, lot_coverage: 0.05 }), mode: "change" as const, units: { unit_size: "pct" as const } };
+    expect(describeRule(change, 2)).toBe("Rule 2 · +1 st · −10 % m² · +5 pts cover");
+    const pct = { ...rule({ lot_coverage: 5, people_per_household: 0.5 }), mode: "change" as const, units: { lot_coverage: "pct" as const } };
+    expect(describeRule(pct, 1)).toBe("Rule 1 · +0.5 people · +5 % cover");
+  });
+
   it("is a whole rule with one number, and its label shows only that number", () => {
     const [one] = rulesFromRows([ruleRow("r", 1, { people_per_household: 5 })]);
     expect(describeRule(one, 1)).toBe("Rule 1 · 5 people");

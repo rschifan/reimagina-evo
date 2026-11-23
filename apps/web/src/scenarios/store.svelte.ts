@@ -26,7 +26,10 @@ import {
   type ReachableIndicator,
   type RecomputeResponse,
   type RuleChangeResponse,
+  type RuleChange,
   type RuleInputs,
+  type RuleMode,
+  type RuleUnits,
   type RuleRow,
   type ScenarioListRow,
 } from "../api";
@@ -498,7 +501,20 @@ const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<v
   };
 };
 
-function precheck(inputs: RuleInputs): boolean {
+/** A rule request's numbers: a set rule sends only them (the server's
+ *  default mode), a change rule its mode and units too. */
+function ruleChange(inputs: RuleInputs, mode: RuleMode, units: RuleUnits): RuleChange {
+  return mode === "change" ? { inputs, mode, units } : { inputs };
+}
+
+/** The local refusals a set rule's numbers get before any request. A change
+ *  rule's numbers are signed amounts: only the server, per block, can judge
+ *  them. */
+function precheck(inputs: RuleInputs, mode: RuleMode = "set"): boolean {
+  if (mode === "change") {
+    ws.boxError = null;
+    return true;
+  }
   const refusal = validateEdit({
     ...inputs,
     densityValidMax: ws.densityValidMax,
@@ -573,12 +589,15 @@ export async function applyNewRule(
   area: Feature<Polygon>,
   inputs: RuleInputs,
   scenarioName?: string,
+  mode: RuleMode = "set",
+  units: RuleUnits = {},
 ): Promise<boolean> {
   ws.boxError = null;
-  if (!precheck(inputs)) return false;
+  if (!precheck(inputs, mode)) return false;
+  const change = ruleChange(inputs, mode, units);
   const scenarioId = ws.selectedId;
   if (scenarioId !== null) {
-    return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, inputs }), "Rule added.");
+    return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, ...change }), "Rule added.");
   }
   const name = (scenarioName ?? "").trim();
   if (!name) {
@@ -598,7 +617,7 @@ export async function applyNewRule(
         project_id: projectId,
         name,
         aoi_id: aoiId,
-        rule: { area, inputs },
+        rule: { area, ...change },
       });
       // Sent with a rule, so the change is there.
       return created.first_rule as RuleChangeResponse;
@@ -616,12 +635,14 @@ export async function saveRule(
   rule: Rule,
   area: Feature<Polygon> | null,
   inputs: RuleInputs,
+  mode: RuleMode = "set",
+  units: RuleUnits = {},
 ): Promise<boolean> {
   const scenarioId = ws.selectedId;
   if (scenarioId === null) return false;
   ws.boxError = null;
-  if (!precheck(inputs)) return false;
-  const body = { ...(area ? { area } : {}), inputs };
+  if (!precheck(inputs, mode)) return false;
+  const body = { ...(area ? { area } : {}), ...ruleChange(inputs, mode, units) };
   return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 
