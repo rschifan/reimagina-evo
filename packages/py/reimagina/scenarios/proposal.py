@@ -291,6 +291,12 @@ def check_inputs(
                     number,
                     must="be a change above -100 %" if pct else "be a non-zero change",
                 )
+            # Coverage as an amount is a share: +5 meant as points would
+            # push every block to the clamp at 100 % without a word.
+            if name == "lot_coverage" and not pct and abs(number) > 1:
+                raise ProposalValueError(
+                    name, number, must="be a share change between -1 and 1"
+                )
             checked[name] = number
             continue
         if (

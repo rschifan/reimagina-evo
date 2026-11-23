@@ -121,6 +121,15 @@
     v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v);
 
   function readChange(): RuleInputs | null {
+    // As in `read`: an unreadable number ("3,5") binds as empty and would be
+    // dropped silently.
+    for (const [field, el] of Object.entries(inputs)) {
+      if (el?.validity.badInput) {
+        localField = field;
+        localError = `${LABELS[field]} is not a number this browser can read; use a dot for decimals.`;
+        return null;
+      }
+    }
     const next: RuleInputs = {};
     for (const [key] of RULE_NUMBERS) {
       const v = set(changes[key]);
@@ -230,7 +239,7 @@
         <div class={row}>
           <span>{label}</span>
           <span class="flex items-center gap-1">
-            <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label="{label} change" placeholder="0" aria-invalid={badField === key} bind:value={changes[key]} />
+            <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label="{label} change" placeholder="0" aria-invalid={badField === key} aria-describedby={badField === key ? "rule-box-error" : undefined} bind:this={inputs[key]} bind:value={changes[key]} />
             <span role="group" aria-label="{label} unit" class="flex overflow-hidden rounded border border-line">
               {#each [["abs", AMOUNT[key]], ["pct", "%"]] as const as [u, text] (u)}
                 <button

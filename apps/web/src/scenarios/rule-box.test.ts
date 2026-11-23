@@ -244,3 +244,17 @@ describe("set to or change by", () => {
     expect(pressed(target, "m² per home unit", "%").getAttribute("aria-pressed")).toBe("true");
   });
 });
+
+describe("a change the browser cannot read", () => {
+  it("is refused naming the field, not dropped", () => {
+    const { button, handlers, target, input } = open({ values: {} });
+    button("Change by").click();
+    flushSync();
+    const el = input("m² per home change");
+    Object.defineProperty(el, "validity", { value: { badInput: true } });
+    [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Apply")!.click();
+    flushSync();
+    expect(handlers.onapply).not.toHaveBeenCalled();
+    expect(target.textContent).toMatch(/m² per home is not a number this browser can read/);
+  });
+});

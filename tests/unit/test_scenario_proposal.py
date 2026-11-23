@@ -387,3 +387,15 @@ def test_change_inputs_refusals():
     assert check_inputs({"levels": -2}, mode="change", units={}) == {"levels": -2.0}
     assert check_units("change", {}, ["levels"]) == {"levels": "abs"}
     assert check_units("set", {"levels": "pct"}, ["levels"]) == {}
+
+
+def test_a_coverage_amount_is_a_share_change_not_points():
+    """+5 meant as points would clamp every block to 100 %: refused."""
+    with pytest.raises(ProposalValueError):
+        check_inputs({"lot_coverage": 5}, mode="change", units={})
+    assert check_inputs({"lot_coverage": 0.05}, mode="change", units={}) == {
+        "lot_coverage": 0.05
+    }
+    assert check_inputs(
+        {"lot_coverage": 5}, mode="change", units={"lot_coverage": "pct"}
+    ) == {"lot_coverage": 5.0}
