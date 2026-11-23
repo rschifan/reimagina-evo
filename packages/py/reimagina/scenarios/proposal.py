@@ -155,6 +155,11 @@ class RuleInput:
     #: Where a "change by" result is held, ``(lowest, highest or None)``: a
     #: change is checked per block, so it is clamped there, not refused.
     clamp: tuple[float, float | None] = (0.0, None)
+    #: How a refusal names it: the words on the rule box.
+    label: str = ""
+    #: What a block with no value for it is computed with (coverage: the whole
+    #: block); None when such a block is skipped.
+    absent: float | None = None
 
 
 #: **The one registry of what a rule can set.** Its order is the order edits
@@ -173,13 +178,28 @@ class RuleInput:
 #: as per-block ceiling breaches with a block id, not a field, in the message.
 RULE_INPUTS: dict[str, RuleInput] = {
     "levels": RuleInput(
-        ("floors", "num_levels"), 0.0, None, "be a positive number", (1.0, None)
+        ("floors", "num_levels"),
+        0.0,
+        None,
+        "be a positive number",
+        (1.0, None),
+        label="storeys",
     ),
     "unit_size": RuleInput(
-        ("unit_size",), 15.0, None, "be more than 15 m² per dwelling", (15.0, None)
+        ("unit_size",),
+        15.0,
+        None,
+        "be more than 15 m² per dwelling",
+        (15.0, None),
+        label="m² per home",
     ),
     "people_per_household": RuleInput(
-        ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
+        ("people_per_household",),
+        0.0,
+        15.0,
+        "be between 0 and 15",
+        (0.5, 15.0),
+        label="people per home",
     ),
     "lot_coverage": RuleInput(
         # A change stops just above 0, which a set rule refuses (no building
@@ -189,7 +209,17 @@ RULE_INPUTS: dict[str, RuleInput] = {
         1.0,
         "be a share between 0 and 1",
         (0.0001, 1.0),
+        label="lot coverage",
+        absent=1.0,
     ),
+}
+
+#: Per override attribute, what a block with no value for it is computed with.
+ABSENT: dict[str, float] = {
+    attribute: spec.absent
+    for spec in RULE_INPUTS.values()
+    if spec.absent is not None
+    for attribute in spec.attributes
 }
 
 #: A rule sets its numbers as the blocks' values, or changes each block's

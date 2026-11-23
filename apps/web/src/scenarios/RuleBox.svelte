@@ -99,9 +99,6 @@
   const AMOUNT: Record<keyof RuleInputs, string> = {
     levels: "storeys", unit_size: "m²", people_per_household: "people", lot_coverage: "points",
   };
-  const CHOICES = (key: keyof RuleInputs): ReadonlyArray<readonly [RuleUnit, string]> => [
-    ["set", "="], ["abs", `+ ${AMOUNT[key]}`], ["pct", "+ %"],
-  ];
 
   const inputs: Record<string, HTMLInputElement | undefined> = $state({});
   const LABELS = Object.fromEntries(RULE_NUMBERS.map(([key, label]) => [key, label]));
@@ -226,7 +223,7 @@
         <span class="flex items-center gap-1">
           <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label={label} placeholder="as is" aria-invalid={badField === key} aria-describedby={badField === key ? "rule-box-error" : undefined} bind:this={inputs[key]} bind:value={numbers[key]} />
           <span role="group" aria-label="{label} unit" class="flex overflow-hidden rounded border border-line">
-            {#each CHOICES(key) as [u, text] (u)}
+            {#each [["set", "="], ["abs", `+ ${AMOUNT[key]}`], ["pct", "+ %"]] as const as [u, text] (u)}
               <button
                 type="button"
                 class="px-1 py-0.5 text-[10px] {unitOf(key) === u ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"

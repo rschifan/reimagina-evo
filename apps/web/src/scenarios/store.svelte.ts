@@ -501,12 +501,6 @@ const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<v
   };
 };
 
-/** A rule request's numbers: a set rule sends only them (the server's
- *  default mode), a change rule its mode and units too. */
-function ruleChange(inputs: RuleInputs, mode: RuleMode, units: RuleUnits): RuleChange {
-  return mode === "change" ? { inputs, mode, units } : { inputs };
-}
-
 /** The local refusals a set rule's numbers get before any request. A change
  *  rule's numbers are signed amounts: only the server, per block, can judge
  *  them. */
@@ -594,7 +588,9 @@ export async function applyNewRule(
 ): Promise<boolean> {
   ws.boxError = null;
   if (!precheck(inputs, mode)) return false;
-  const change = ruleChange(inputs, mode, units);
+  // A new set rule sends only its numbers (the server's default mode); a
+  // change rule its mode and units too.
+  const change: RuleChange = mode === "change" ? { inputs, mode, units } : { inputs };
   const scenarioId = ws.selectedId;
   if (scenarioId !== null) {
     return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, ...change }), "Rule added.");
