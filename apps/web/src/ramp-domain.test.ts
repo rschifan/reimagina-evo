@@ -11,6 +11,7 @@ import {
   RAMP_STOPS,
   rampDomainFromStats,
   rampScopeText,
+  sharedRampDomain,
   valueRamp,
 } from "./choropleth";
 
@@ -174,5 +175,33 @@ describe("valueRamp and the cap", () => {
       expect(deltaStops(higherIsBetter)).not.toContain(CAP_COLOR);
     }
     expect([DELTA_NEW, DELTA_NEUTRAL, ...RAMP_STOPS]).not.toContain(CAP_COLOR);
+  });
+});
+
+describe("sharedRampDomain", () => {
+  const floors = indicator({ slug: "urban_form_block_planned_floors", unit: "floors", valid_min: 0, valid_max: 60 });
+
+  it("spans both ranges, so a rule's raised blocks are not all clamped to the baseline's top", () => {
+    const base = rampDomainFromStats(stats({ count: 19058, min: 1, p05: 1, p50: 1, p95: 1.72, max: 8.99 }), floors);
+    const scen = rampDomainFromStats(stats({ count: 19058, min: 1, p05: 1, p50: 1, p95: 3, max: 8.99 }), floors);
+    const shared = sharedRampDomain(base, scen);
+    expect(shared).toMatchObject({ min: 1, max: 3, observedMax: 8.99, basis: "shared", fromStats: true });
+    expect(shared.p50).toBe(1);
+    expect(rampScopeText(shared, floors)).toBe(
+      "Colours span the middle 90% of the baseline city and this scenario together",
+    );
+  });
+
+  it("falls back to the scenario's own domain when the baseline has none", () => {
+    const base = rampDomainFromStats(stats(), floors);
+    const scen = rampDomainFromStats(stats({ count: 10, min: 1, p05: 1, p50: 2, p95: 3, max: 4 }), floors);
+    expect(sharedRampDomain(base, scen)).toEqual(scen);
+  });
+});
+
+describe("observedMax", () => {
+  it("is the stats' max on a percentile domain", () => {
+    const d = rampDomainFromStats(stats({ count: 5, min: 1, p05: 1, p50: 1, p95: 1.72, max: 8.99 }), indicator({ unit: "floors" }));
+    expect(d.observedMax).toBe(8.99);
   });
 });

@@ -19,6 +19,7 @@
     defaultGrain,
     deltaDomainFromComparison,
     rampDomainFromStats,
+    sharedRampDomain,
     removeIndicator,
     renderDeltaLegend,
     renderLegend,
@@ -438,9 +439,10 @@
       setMode("value");
       return;
     }
-    // A scenario is coloured on the baseline city's scale, so a colour means
-    // the same value on every scenario: a dense rule shows as the darkest
-    // colour instead of turning every block it did not touch the palest one.
+    // A scenario is coloured on one scale with the baseline city: the
+    // baseline's range widened to the scenario's, so a block the rule raised
+    // shows how high, not just the darkest colour, and a block it did not
+    // touch is not turned the palest by a rule's outliers.
     const statsFor = async (scenario: string | null): Promise<IndicatorValueStats | null> => {
       try {
         return await getIndicatorStats(current.slug, {
@@ -464,23 +466,22 @@
     // the real pilots), when its "range" would be the catalog's safety
     // bounds and every block would paint in the palest colour.
     const baseUsable = scenarioId !== null && base !== null && base.count > 0;
-    const shown = scenarioId ? (baseUsable ? base : stats) : stats;
-    const domain = rampDomainFromStats(shown, current);
+    const domain = baseUsable
+      ? sharedRampDomain(rampDomainFromStats(base, current), rampDomainFromStats(stats, current))
+      : rampDomainFromStats(stats, current);
     // No `selection`: on the explore page it clips the layer to the drawn
     // area; here the planner edits a rule against the whole city.
     activateIndicator(map, config, current, domain, { tooltips, aoiId, grain, scenarioId });
     renderLegend(
-      legend, current, domain, shown?.histogram ?? null, shown?.count_at_cap ?? null, shown?.count ?? 0,
-      shown?.count_estimated ?? 0,
+      legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
+      stats?.count_estimated ?? 0,
     );
     mapNote =
       stats && stats.count === 0
         ? noValuesNote(current.name, scenarioId !== null)
-        : scenarioId && baseUsable
-          ? "Colours use the baseline city's range; values above it show in the darkest colour."
-          : scenarioId
-            ? "Colours use this scenario's own range: the baseline city has no values here."
-            : "";
+        : scenarioId && !baseUsable
+          ? "Colours use this scenario's own range: the baseline city has no values here."
+          : "";
   }
 
   function draw(next: SelectionShape) {
