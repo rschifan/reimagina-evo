@@ -69,21 +69,11 @@
 </TopBar>
 
 <main class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
-  <!-- Always in the DOM: a live region inserted with its text is not
-       announced by every screen reader; one whose text changes is. -->
-  <!-- min-h: an empty line still holds its height, or every message pushes
-       the map down under the planner's cursor mid-gesture. -->
-  <p
-    role="status"
-    class={ws.message?.tone === "bad"
-      ? "min-h-5 text-sm text-state-error"
-      : "min-h-5 text-sm text-muted-foreground"}
-  >
-    {ws.message?.text ?? ""}
-  </p>
-  <ScenarioBar />
-  <!-- Rules are drawn, edited and deleted on the map itself. -->
-  <ScenarioMap />
+  <!-- One toolbar: the scenario bar, then the map's own controls. Rules are
+       drawn, edited and deleted on the map itself. -->
+  <ScenarioMap>
+    {#snippet lead()}<ScenarioBar />{/snippet}
+  </ScenarioMap>
   <ScenarioTable />
 </main>
 </div>

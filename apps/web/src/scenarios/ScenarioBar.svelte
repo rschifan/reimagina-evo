@@ -38,10 +38,8 @@
   const control = "rounded border border-line bg-surface px-2 py-1 text-xs text-foreground";
 </script>
 
-<section
-  aria-label="Scenario"
-  class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
->
+<!-- `contents`: the items sit in the map's toolbar row, one bar for both. -->
+<section aria-label="Scenario" class="contents">
   <label class="flex items-center gap-2 text-muted-foreground">
     Scenario
     <select
@@ -97,9 +95,9 @@
     </button>
   {/if}
 
-  <form class="ml-auto flex items-center gap-2" onsubmit={submitNew}>
+  <form class="flex items-center gap-2" onsubmit={submitNew}>
     <input
-      class="w-40 {control}"
+      class="w-32 {control}"
       placeholder="New scenario name"
       aria-label="New scenario name"
       bind:value={newName}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Feature, Polygon } from "geojson";
+  import type { Snippet } from "svelte";
   import * as maplibregl from "maplibre-gl";
   import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
   import { onMount, untrack } from "svelte";
@@ -62,6 +63,9 @@
    * map page — tile URLs included, so the baseline's stays byte-identical
    * and its cached tiles stay valid. This file decides only *what* to draw.
    */
+  /** The scenario bar, rendered first in this toolbar row. */
+  let { lead }: { lead?: Snippet } = $props();
+
   let container: HTMLDivElement;
   let legend: HTMLDivElement;
   let map: MapLibreMap | null = null;
@@ -502,9 +506,12 @@
 </script>
 
 <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-  <div class="flex flex-wrap items-center gap-3 text-xs">
+  <div
+    class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
+  >
+    {@render lead?.()}
     <label class="flex items-center gap-2 text-muted-foreground">
-      Indicator
+      <span class="sr-only">Indicator</span>
       <select
         class="rounded border border-line bg-surface px-2 py-1 text-xs text-foreground"
         value={ws.slug ?? ""}
@@ -535,18 +542,22 @@
       {/each}
     </div>
     {#if indicator}
-      <span class="ml-auto flex items-center gap-2 text-muted-foreground">
-        Download
-        {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
-          <a
-            class="rounded border border-line px-2 py-0.5 hover:text-foreground"
-            href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
-            rel="noopener"
-          >
-            {label}
-          </a>
-        {/each}
-      </span>
+      <details class="relative ml-auto">
+        <summary class="cursor-pointer list-none rounded border border-line px-2 py-1 text-muted-foreground hover:text-foreground">
+          Download ▾
+        </summary>
+        <div class="absolute right-0 z-20 mt-1 flex flex-col rounded border border-line bg-surface p-1 shadow">
+          {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
+            <a
+              class="rounded px-3 py-1 whitespace-nowrap hover:bg-accent/10 hover:text-foreground"
+              href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
+              rel="noopener"
+            >
+              {label}
+            </a>
+          {/each}
+        </div>
+      </details>
     {/if}
   </div>
 
@@ -592,6 +603,24 @@
         ×
       </button>
     </div>
+    <!-- The page's messages and the map's own note, over the map: a line above
+         it would push the map down under the planner's cursor. Always in the
+         DOM, so a screen reader announces each new text. -->
+    <div class="pointer-events-none absolute top-3 left-1/2 z-10 flex max-w-[60%] -translate-x-1/2 flex-col items-center gap-1 text-center text-xs">
+      <p
+        role="status"
+        class={cn(
+          "rounded border px-2 py-1",
+          ws.message ? "border-line bg-surface/95" : "border-0 p-0",
+          ws.message?.tone === "bad" ? "text-state-error" : "text-foreground",
+        )}
+      >
+        {ws.message?.text ?? ""}
+      </p>
+      <p role="status" class={cn("rounded text-muted-foreground", mapNote && "border border-line bg-surface/95 px-2 py-1")}>
+        {mapNote}
+      </p>
+    </div>
     <div
       class="map-loading"
       data-loading={ws.busy || tilesLoading ? "true" : "false"}
@@ -631,7 +660,6 @@
       </div>
     {/if}
   </div>
-  <p class="text-xs text-muted-foreground" role="status">{mapNote}</p>
   {#if ws.rules.length > 0}
     <!-- The rules, reachable without a pointer: a rule is otherwise opened
          only by clicking its outline on the canvas. -->
