@@ -96,7 +96,7 @@ sorted in byte order (`COLLATE "C"`, r044), with floats at a fixed scale of 6.
 
 **Leaves are told; everything else is derived.** A source asset's version is
 recorded by whatever changed it (`assets/publish.py`): an ingest publishes its
-ingestion run id when it finishes having written rows (`data.catalog.finish_run`),
+ingestion run id when it finishes having written rows (`data.catalog.complete_ingestion_run`),
 a loader that writes block observations (the census, `overture block-storeys`)
 publishes `mex.block`, the asset indicators declare those attributes on,
 `assets backfill-versions` covers layers loaded before the graph existed, and
@@ -182,8 +182,9 @@ stays plain partial; another AOI and the whole database still see `partial`.
 
 `seed_assets` folds seven fields of each `IndicatorSpec` — `computation_kind`,
 `value_type`, `unit`, `aggregation_method`, `valid_min`, `valid_max`,
-`applies_to` — into the indicator asset's `params_digest`, which feeds the asset
-version; a weight moves it through the edge term instead, since
+`applies_to` — into the indicator asset's `params_digest`, plus a composite's
+`target_band`s when it declares any (livability's density band), which feeds
+the asset version; a weight moves it through the edge term instead, since
 `asset_component_v` hashes every edge's weight. So editing an indicator's bounds
 or weights in `indicators/catalog.py` and re-seeding moves its expected version
 and restages its results and everything downstream of them. That is intended —
