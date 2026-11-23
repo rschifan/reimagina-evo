@@ -561,7 +561,8 @@
     {/if}
   </div>
 
-  <div class="relative min-h-[240px] flex-1 overflow-hidden rounded-lg border border-line">
+  <div class="flex min-h-0 flex-1 gap-2">
+  <div class="relative min-h-[240px] min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
     <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
          relative }` to the element it mounts on, and that unlayered rule beats
          Tailwind's layered `absolute`, so a container that was itself
@@ -662,22 +663,29 @@
       </div>
     {/if}
   </div>
-  {#if ws.rules.length > 0}
-    <!-- The rules, reachable without a pointer: a rule is otherwise opened
-         only by clicking its outline on the canvas. -->
-    <ol aria-label="Rules" class="flex flex-wrap gap-2 text-xs">
-      {#each [...ws.rules].sort((a, b) => a.ordinal - b.ordinal) as rule, i (rule.id)}
-        <li>
-          <button
-            type="button"
-            class="rounded border border-line px-2 py-0.5 hover:text-foreground disabled:opacity-50"
-            disabled={!ready || ws.busy || editing !== null}
-            onclick={() => openRule(i + 1)}
-          >
-            {describeRule(rule, i + 1)}
-          </button>
-        </li>
-      {/each}
-    </ol>
+  {#if ws.selectedId !== null}
+    <!-- The rules, reachable without a pointer (a rule is otherwise opened
+         only by clicking its outline), and how to add one. -->
+    <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+      <h3 class="font-medium text-foreground">
+        Rules · {ws.scenarios.find((s) => s.id === ws.selectedId)?.name ?? ""}
+      </h3>
+      <p class="text-muted-foreground">Draw an area on the map to add a rule. Later rules win where they overlap.</p>
+      <ol class="flex flex-col gap-1.5">
+        {#each [...ws.rules].sort((a, b) => a.ordinal - b.ordinal) as rule, i (rule.id)}
+          <li>
+            <button
+              type="button"
+              class="w-full rounded border border-line px-2 py-1 text-left hover:text-foreground disabled:opacity-50"
+              disabled={!ready || ws.busy || editing !== null}
+              onclick={() => openRule(i + 1)}
+            >
+              {describeRule(rule, i + 1)}
+            </button>
+          </li>
+        {/each}
+      </ol>
+    </aside>
   {/if}
+  </div>
 </section>
