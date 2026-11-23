@@ -664,10 +664,15 @@
       </div>
     {/if}
   </div>
-  {#if ws.selectedId !== null}
-    <!-- The rules, reachable without a pointer (a rule is otherwise opened
-         only by clicking its outline), and how to add one. -->
-    <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+  <!-- The rules, reachable without a pointer (a rule is otherwise opened
+       only by clicking its outline), and how to add one. Always there, on
+       the baseline too: a panel that appeared with the first scenario
+       narrowed the map and moved every block sideways under the pointer. -->
+  <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+    {#if ws.selectedId === null}
+      <h3 class="font-medium text-foreground">Rules · Baseline city</h3>
+      <p class="text-muted-foreground">The city as it is: no rules. Draw an area on the map to start a scenario.</p>
+    {:else}
       <h3 class="font-medium text-foreground">
         Rules · {ws.scenarios.find((s) => s.id === ws.selectedId)?.name ?? ""}
       </h3>
@@ -686,7 +691,7 @@
           </li>
         {/each}
       </ol>
-    </aside>
-  {/if}
+    {/if}
+  </aside>
   </div>
 </section>
