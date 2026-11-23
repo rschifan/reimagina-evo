@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from contextlib import closing
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import psycopg2
@@ -43,7 +43,27 @@ def _regclass(dsn: str, relation: str):
 
 
 def _with_database(dsn: str, name: str) -> str:
-    return urlunparse(urlparse(dsn)._replace(path=f"/{name}"))
+    # Not `urlunparse`: with no host it drops the `//`, and `postgresql:///db`
+    # became `postgresql:/db`, which libpq rejects. Not psycopg2's `make_dsn`
+    # either: it answers in keyword form, and DBOS wants a URL.
+    parts = urlsplit(dsn)
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme}://{parts.netloc}/{name}{query}"
+
+
+@pytest.mark.parametrize(
+    ("dsn", "expected"),
+    [
+        (
+            "postgresql://u:p@localhost:5432/a?sslmode=disable",
+            "postgresql://u:p@localhost:5432/b?sslmode=disable",
+        ),
+        ("postgresql:///a", "postgresql:///b"),
+    ],
+)
+def test_with_database_keeps_the_dsn_a_url(dsn, expected):
+    """A host-less DSN (socket, as `.env.example` allows) must stay a URL."""
+    assert _with_database(dsn, "b") == expected
 
 
 def _run(dsn: str, *statements: str) -> None:
