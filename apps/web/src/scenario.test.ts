@@ -402,7 +402,7 @@ describe("refusalText", () => {
   });
 
   it("passes on why a change rule changed nothing", async () => {
-    const message = "No block in this area has a m² per home to change, so nothing was saved. Use Set to for these blocks.";
+    const message = "This change moves no block's m² per home: the blocks have no value for it, or are already past its limit. Nothing was saved. Choose = to set it instead.";
     const err = apiError(422, {
       detail: { error: "change_has_no_baseline", field: "unit_size", message },
     });

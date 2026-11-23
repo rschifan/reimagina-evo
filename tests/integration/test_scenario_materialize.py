@@ -1104,3 +1104,20 @@ def test_units_that_all_say_set_keep_a_set_rule_a_set_rule(conn):
     )
 
     assert (updated["mode"], updated["units"]) == ("set", {})
+
+
+def test_a_change_that_moves_no_block_is_refused(conn):
+    # Every block is past the 15-people ceiling, which holds it at its own
+    # value: "+10 %" would answer "Rule added" over an unchanged map.
+    t = _Territory(conn, attributes={"people_per_household": 16})
+    sid = t.scenario()
+    with pytest.raises(ChangeHasNoBaseline) as caught:
+        _change_rule(
+            t,
+            sid,
+            _AREA_0_3,
+            units={"people_per_household": "pct"},
+            people_per_household=10,
+        )
+
+    assert "people per home" in str(caught.value)

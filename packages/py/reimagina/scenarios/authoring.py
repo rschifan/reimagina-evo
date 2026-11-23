@@ -466,10 +466,12 @@ _LABELS = {
 
 
 class ChangeHasNoBaseline(Exception):
-    """A change rule caught blocks, but none has a value to change.
+    """A change rule caught blocks, but moves none of them.
 
-    "-10 % m² per home" over blocks with no unit size writes nothing; stored,
-    it would answer "Rule added" over a map that did not move.
+    "-10 % m² per home" over blocks with no unit size writes nothing, and
+    "+10 % people per home" over blocks already past the 15 ceiling holds
+    each at its own value; stored, either would answer "Rule added" over a
+    map that did not move.
     """
 
     def __init__(self, rule_id: str, names: Sequence[str]) -> None:
@@ -477,8 +479,9 @@ class ChangeHasNoBaseline(Exception):
         self.names = tuple(names)
         what = ", ".join(_LABELS.get(n, n) for n in names)
         super().__init__(
-            f"No block in this area has a value for {what} to change, so nothing was "
-            f"saved. Choose = to set {'them' if len(self.names) > 1 else 'it'} instead."
+            f"This change moves no block's {what}: the blocks have no value for "
+            "it, or are already past its limit. Nothing was saved. Choose = to "
+            f"set {'them' if len(self.names) > 1 else 'it'} instead."
         )
 
 
@@ -1023,10 +1026,13 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
                         start = 1.0
                     if start is None:
                         continue
-                    changed[rule_id] = changed.get(rule_id, 0) + 1
                     key = (feature_id, attribute)
                     values[key] = changed_value(start, by, units.get(name, "abs"), spec)
                     owner[key] = rule_id
+                    # Held at a bound it is already past, a block does not move:
+                    # only a real move counts against "changed nothing".
+                    if values[key] != start:
+                        changed[rule_id] = changed.get(rule_id, 0) + 1
             continue
         for edit in edits[rule_id]:
             key = (feature_id, edit["attribute_key"])
