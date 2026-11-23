@@ -45,9 +45,10 @@ REIMAGINA_TILE_LIVE_BASE_URL=http://localhost:8001/tiles   # the API, direct
 Unset, the code default is `http://localhost:3000/get_tile` — Martin, which
 resolves to the same URLs as the first line. `make dev` is the exception: it
 starts the API, the web dev server and the worker but not Martin, so it sets
-`/api/tiles` (as does `make dev-api`, which runs the same preamble) unless the invoking shell already sets the variable (a value in
-`.env` does not count; the Makefile restores the shell's value after sourcing
-it).
+`/api/tiles` (as does `make dev-api`, which loads the same environment) unless
+the invoking shell already sets the variable (a value in `.env` does not count:
+`scripts/runtime_env.py` keeps the shell's value, or sets `/api/tiles`, after
+loading `.env`).
 
 ⚠ **Prefer the relative form.** An absolute URL makes every tile request
 cross-origin from the web dev server, so it depends on the API's CORS
@@ -184,9 +185,11 @@ a map empty is indistinguishable from missing.
 ⚠ **The density risk is open, not closed.** At z12 a tile covers ~10 km, and
 that is the zoom where the *building* layer measured 2.59 MB per tile (which
 is why `r038` floors buildings at z14). A walking network is denser than a
-road centreline network. This ships on the role gate with 40 synthetic edges
-measured, not a city — if a real deployment finds z12 road tiles too heavy,
-the remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
+road centreline network. This shipped on the role gate with 40 synthetic edges
+measured, not a city. On the Mexicali pilot (`scripts/mexicali_run.sh`, 117,858
+road features) a central z12 road tile measured 2.2 MB, 0.96 MB at z13 and
+0.22 MB at z14 — the same order as the building tile `r038` floored, so the
+risk is real for the pilot. The remedy is the one `r038` demonstrates: a `type_slug` zoom floor in
 `get_tile`, chosen from a measurement. The procedure is in `r038`'s
 docstring.
 
