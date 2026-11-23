@@ -184,6 +184,15 @@ abandoned. Hence the deliberately wide threshold — a late heartbeat is cheap,
 a wrongly-declared death is not — and hence the refusal to configure one
 narrower than four beats.
 
+Exercised on a scratch database with `REIMAGINA_EXECUTOR_HEARTBEAT_S=2`,
+`REIMAGINA_EXECUTOR_STALE_S=8`, `REIMAGINA_RECLAIM_SWEEP_S=3`: worker `A`
+killed with `SIGKILL` mid-run left the run `running`/`PENDING` against `A` with
+one unit unfinished; worker `B`, started with its own id, logged `reclaim sweep:
+2 workflow(s) from A` three seconds after launch, the run finished `succeeded`,
+and `A`'s heartbeat row was gone. A worker stopped cleanly keeps its row too
+(shutdown stops the beat, it does not delete the row); a live peer's sweep
+forgets it once it is stale and has nothing open.
+
 An executor with **no** heartbeat row at all is never swept. Absence is not
 evidence of death, and the one process that can be in that state is running
 code old enough not to publish liveness, which is exactly when guessing is
@@ -230,21 +239,45 @@ execution of a unit. Use the sweep, which holds the gate.
 
 ## A unit that will not stop
 
-Cancellation is three mechanisms because none suffices alone. If a unit is
-still burning CPU after a cancel (in `psql`, `\set run_id <uuid>` first; the
-queries below quote it with `:'run_id'`):
+Cancel with `POST /jobs/{id}/cancel` (409 once the run is terminal).
+Cancellation is three mechanisms because none suffices alone: it cancels the
+workflow and its children, signals every compute backend of the run with
+`pg_cancel_backend`, and closes the units as `cancelled`. If a unit is still
+burning CPU after a cancel (in `psql`, `\set run_id <uuid>` first; the query
+below quotes it with `:'run_id'`, so feed it on stdin or interactively, not
+through `psql -c`):
 
 ```sql
-SELECT jr.id, jr.backend_pid, jr.status, a.state, a.query_start
-FROM jobs_runtime.job_run jr
-LEFT JOIN pg_stat_activity a ON a.pid = jr.backend_pid
-WHERE jr.run_id = :'run_id' AND jr.status NOT IN ('succeeded','failed','cancelled');
+SELECT pid, state, query_start, left(query, 60)
+FROM pg_stat_activity
+WHERE application_name = 'reimagina-run:' || :'run_id';
 ```
 
-`pg_cancel_backend(backend_pid)` stops the statement. A unit that has not yet
-opened its `job_run` row has no pid to signal — `s_compute` re-checks the run
-status before starting, so it will skip, but a cancel landing *after* that check
-and *before* the row exists has nothing to grab.
+Every unit computes on a connection named `reimagina-run:<run_id>`, from the
+moment it connects, and `pg_cancel_backend(pid)` stops its statement. ⚠ Do not
+look for it through `jobs_runtime.job_run.backend_pid`: the unit writes that row
+inside the one transaction that runs its compute, so it is invisible to you
+until the unit has finished — on a live run that join returns no rows. A unit
+that has not started its compute yet is skipped by `s_compute`'s own re-check of
+the run status.
+
+Observed on a Mexicali scratch database: 15 active backends named after the
+run, `POST /jobs/{id}/cancel`, and 2 s later none active, all 12 units and the
+run `cancelled`, and one `failed` `job_run` row per interrupted unit
+(re-recorded after the rollback, as provenance).
+
+## Clearing finished runs
+
+`DELETE /jobs` forgets every terminal run; `DELETE /jobs/{id}` one (404 if
+unknown, 409 while it is still live — cancel it first). Both remove the
+`orchestration_run` and `job_unit` rows and the engine's workflows
+(`dbos.workflow_status`, children included), and keep what the runs produced:
+`indicator_result` and the `job_run` provenance stay. The Ops page's "Clear
+history" button (click twice within 4 s to confirm) calls `DELETE /jobs`.
+
+```bash
+curl -X DELETE "$API/jobs"          # {"deleted": <n>}
+```
 
 ## Timing, for the measurement spec
 
@@ -277,18 +310,18 @@ Measured, one process each, idle after launch:
 
 | | connections |
 |---|---|
-| worker, idle | 4 |
+| worker, idle | 6 (DBOS 3.5.0, measured 2026-11-23; one of them the progress `LISTEN`) |
 | DBOS's own pool | an executor (`DBOS()`): `pool_size=20, max_overflow=0`, DBOS's default, not overridden here; a `DBOSClient` (the API, one per DSN): `pool_size=5, max_overflow=0` |
 | each in-flight unit | +1 (its own psycopg2 connection) |
 
-Budget as `processes × (4 + REIMAGINA_UNIT_CONCURRENCY)` against
-`max_connections`. The runners' connections dominate, not DBOS's. The 4 is an
+Budget as `processes × (6 + REIMAGINA_UNIT_CONCURRENCY)` against
+`max_connections`. The runners' connections dominate, not DBOS's. The 6 is an
 idle measurement: an executor's DBOS pool may grow toward its cap of 20 under
 load, and each status step and heartbeat opens a short-lived connection of its
 own.
 
-⚠ That default is now **8**, so a worker peaks at ~12 connections rather than
-~6. Against Postgres's stock `max_connections = 100` this caps you near 8 worker
+⚠ That default is now **8**, so a worker peaks at ~14 connections. Against
+Postgres's stock `max_connections = 100` this caps you near 7 worker
 processes; check it before scaling out, and lower the concurrency rather than
 the process count if throughput matters more than one run's latency.
 
