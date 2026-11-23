@@ -165,6 +165,17 @@ def perf_conn(perf_db_url: str):
     except psycopg2.OperationalError as exc:
         pytest.skip(f"Perf DB unavailable at {perf_db_url!r}: {exc}")
         return  # type: ignore[return-value]
+    # An unmigrated database is absent data too: without this the first
+    # benchmark query errored with UndefinedTable instead of skipping.
+    with connection.cursor() as cur:
+        cur.execute("SELECT to_regclass('curated_geo.feature')")
+        migrated = cur.fetchone()[0] is not None
+    if not migrated:
+        connection.close()
+        pytest.skip(
+            f"Perf DB {database_name_from_dsn(perf_db_url)!r} has no reimagina "
+            "schema; migrate it and load real data first"
+        )
     connection.autocommit = False
     try:
         yield connection
