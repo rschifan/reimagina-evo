@@ -186,9 +186,11 @@ CREATE TABLE curated_geo.indicator_result (
   -- Copied from feature.type_slug at insert time. Immutable after insert.
 
   -- Which state of the world
-  scenario_id     uuid,
-  -- Plain uuid, NO foreign key (r016:7-10). app_core.scenario exists since r048,
-  -- but no migration has added the FK from this column.
+  scenario_id     uuid             REFERENCES app_core.scenario(id)
+                                   ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
+  -- r016 left it a bare uuid; r055 added the FK (indicator_result_scenario_id_fkey).
+  -- Deleting a scenario deletes its results. A compute unit defers the check
+  -- (runners._fenced) so its inserts do not lock the scenario row.
   -- NULL  = base city state (Diagnosis mode — the city as it exists today)
   -- UUID  = a specific scenario (Evaluation mode — a proposed future state)
 
@@ -234,9 +236,9 @@ CREATE TABLE curated_geo.indicator_result (
   -- current: latest result for this (feature, scenario, indicator) triple
   -- stale:   superseded. The write path stales the previous current row as it
   --          inserts the new one; scenario authoring stales a scenario's rows
-  --          when the overrides behind them are removed or the scenario is
-  --          deleted. Nothing re-queues a stale row — what is out of date is
-  --          answered by the asset graph (ASSET_LAYER.md).
+  --          when the overrides behind them are removed (deleting the scenario
+  --          deletes its rows). Nothing re-queues a stale row — what is out of
+  --          date is answered by the asset graph (ASSET_LAYER.md).
   -- failed:  allowed by the CHECK, written by nothing. A failed computation is
   --          recorded on job_run (status 'failed', error_message).
   -- Execution state ('queued', 'running') lives on job_run, not here.
@@ -439,8 +441,8 @@ be a subset of features. That is a different scheduling shape.
 ⚠ **This makes the maths sound; it does not make a score balanced.**
 `valid_max` is now doing two jobs — the validation ceiling r016's trigger
 enforces on writes, and the reference a score divides by. `building_density`
-declares 500 as a safety cap against an observed maximum of 212.1, so its values
-occupy the bottom 42% of their range and the same 0.5/0.5 composite reads 86%
+declares 500 as a safety cap against an observed maximum of 212.1 on CDMX
+(153.8 on the Mexicali pilot), so its CDMX values occupy the bottom 42% of their range and the same 0.5/0.5 composite reads 86%
 compactness. Separating the two roles is the fix when a real score needs a
 defensible balance.
 
@@ -522,7 +524,7 @@ indicator refuses to compute against a missing input*.
 
 1. For each `(input, weight)` in `spec.depends_on`, read the input's current results with `list_current_for_indicator` — under a scenario, an overlay of the scenario's rows on the baseline's. Keep rows with a `value_numeric` at a feature type in the composite's `applies_to`.
 2. Normalise each value against the input's declared bounds, clamp it to 0–1, and flip it when the input is `higher_is_better=False` — or, for an edge with a `target_band`, score it against the band.
-3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped (`aoi_id` does not narrow it), and sum the weighted values.
+3. Keep only features every input has a value for, narrowed to the unit's `feature_ids` when it is feature-scoped and to the AOI's blocks (`feature_ids_in_aoi`) when it carries an `aoi_id`, and sum the weighted values.
 4. Open a `job_run` (`model_family='composite'`) and write with `bulk_write_numeric_results`.
 
 ```
@@ -613,7 +615,7 @@ ORDER BY f.id, ci.indicator_slug;
 
 When a scenario override changes features, all affected indicator results — including composite indicators that depend on them — can be marked stale before recomputation.
 
-This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed, the indicators that read the attribute and their dependents such as the livability composite (`_supersede_unbacked_results`), and deleting a scenario stales all of its rows (`_supersede_all_results`).
+This is a diagnostic/bulk-invalidation query, not a required step in the run path: the write path stales the previous `current` row for the same `(feature, scenario, indicator)` as it inserts the new one, so a recompute needs no separate stale pass. The two places that do stale rows outside a write are in `scenarios/authoring.py`: materialising a scenario stales its rows for each `(indicator, feature)` whose override was removed, the indicators that read the attribute and their dependents such as the livability composite (`_supersede_unbacked_results`). Deleting a scenario does not stale its rows: `delete_scenario` deletes them (the `ON DELETE CASCADE` foreign key r055 added).
 
 ```sql
 WITH RECURSIVE impacted AS (
@@ -666,8 +668,8 @@ rejects a mis-shaped one with the expected signature named.
 ⚠ **The read happens inside the `job_run` context, not before it.**
 `indicator_result.job_run_id` is a NOT NULL FK (r016), so a read that raises
 outside the context leaves a failure with no provenance row anywhere.
-`compute_indicator` and `building_density` read inside it; `planned_floors`
-calls `effective_numeric` before opening its `job_run`.
+`compute_indicator`, `building_density` and `planned_floors` (its
+`effective_numeric` call) all read inside it.
 
 ⚠ **Two indicators deliberately keep their own body.** `planned_floors` has no
 Hamilton stage, and `building_density` reports an extra statistic
@@ -728,7 +730,7 @@ vocabulary, not a data manifest. `urban_form_block_building_density` has
 accessibility family reads `poi_version` / `network_version`, which are
 hand-maintained sentinels standing in for whole tables. Walk `reads` through
 `depends_on` for `urban_form_block_composite` and the answer is `['geometry']`
-— it needs 365,954 building features. `depends_on` is exact and
+— it needs every `global:building` feature. `depends_on` is exact and
 machine-walkable; the attribute leaves are under-declared by exactly that gap.
 
 The datasets are declared in `inputs`, the field `reads` and `depends_on` are
