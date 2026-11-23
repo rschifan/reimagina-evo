@@ -1144,21 +1144,30 @@ class DeleteResult:
     results_deleted: int
     job_runs_deleted: int
     materializations: int
+    runs_deleted: int
 
 
 #: What ``delete_scenario`` deletes, in order: (DeleteResult field or None for
 #: uncounted, table, key column). A ``partition_key`` column is matched against
 #: the scenario's partition string, any other against its id.
 _DELETE_STEPS: tuple[tuple[str | None, str, str], ...] = (
-    ("overrides", "curated_geo.scenario_override", "scenario_id"),
-    ("versions_deleted", "curated_geo.asset_version", "partition_key"),
+    ("overrides", "curated_geo.scenario_override", "scenario_id = %s"),
+    ("versions_deleted", "curated_geo.asset_version", "partition_key = %s"),
     # The scenario_id tables cascade from the scenario row (r055); the counted
     # ones are deleted explicitly first so each count is its own table's.
-    ("results_deleted", "curated_geo.indicator_result", "scenario_id"),
-    ("job_runs_deleted", "jobs_runtime.job_run", "scenario_id"),
-    ("materializations", "curated_geo.asset_materialization", "partition_key"),
+    ("results_deleted", "curated_geo.indicator_result", "scenario_id = %s"),
+    ("job_runs_deleted", "jobs_runtime.job_run", "scenario_id = %s"),
+    ("materializations", "curated_geo.asset_materialization", "partition_key = %s"),
+    # Finished recompute runs; their units cascade. A run still in flight
+    # stays: the coordinator still writes its row, and its units end
+    # `cancelled` when they find the scenario gone.
+    (
+        "runs_deleted",
+        "jobs_runtime.orchestration_run",
+        "scenario_id = %s AND status IN ('succeeded','partial','failed','cancelled')",
+    ),
     # Last: cascades its rules and its AOI summaries.
-    (None, "app_core.scenario", "id"),
+    (None, "app_core.scenario", "id = %s"),
 )
 
 
@@ -1181,8 +1190,9 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     trigger forces a result's ``scenario_id`` to equal its ``job_run``'s, so a
     run carrying this id produced this scenario's results and nothing else. Its
     other referrers, ``job_unit`` and ``asset_materialization``, are ``ON
-    DELETE SET NULL``; a recompute *run* (``orchestration_run``) is run history
-    and stays until the jobs page clears it.
+    DELETE SET NULL``. The scenario's finished recompute runs
+    (``orchestration_run``, cascading their ``job_unit`` rows) are deleted too;
+    one still in flight stays, its units ending ``cancelled``.
 
     The ``asset_materialization`` delete is not cosmetic.
     ``asset_component_v`` unions ``asset_materialization`` into its node set
@@ -1208,9 +1218,9 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     counts: dict[str, int] = {}
     with conn.cursor() as cur:
         _lock_scenario(cur, scenario_id, mode="UPDATE")
-        for field, table, column in _DELETE_STEPS:
-            param = partition if column == "partition_key" else scenario_id
-            cur.execute(f"DELETE FROM {table} WHERE {column} = %s", (param,))
+        for field, table, where in _DELETE_STEPS:
+            param = partition if where.startswith("partition_key") else scenario_id
+            cur.execute(f"DELETE FROM {table} WHERE {where}", (param,))
             if field is not None:
                 counts[field] = int(cur.rowcount)
     return DeleteResult(**counts)

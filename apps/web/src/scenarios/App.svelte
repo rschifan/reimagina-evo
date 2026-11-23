@@ -48,6 +48,9 @@
   });
 </script>
 
+<!-- The page is the viewport: the map takes the height the rest leaves, the
+     table scrolls inside itself, and the page never scrolls. -->
+<div class="flex h-dvh flex-col overflow-hidden">
 <TopBar current="scenarios">
   {#snippet actions()}
     <label class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -65,7 +68,7 @@
   {/snippet}
 </TopBar>
 
-<main class="mx-auto flex max-w-[1600px] flex-col gap-4 p-4">
+<main class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
   <!-- Always in the DOM: a live region inserted with its text is not
        announced by every screen reader; one whose text changes is. -->
   <!-- min-h: an empty line still holds its height, or every message pushes
@@ -83,3 +86,4 @@
   <ScenarioMap />
   <ScenarioTable />
 </main>
+</div>

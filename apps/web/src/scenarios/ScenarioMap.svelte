@@ -501,7 +501,7 @@
   ];
 </script>
 
-<section class="flex min-w-0 flex-col gap-2">
+<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
   <div class="flex flex-wrap items-center gap-3 text-xs">
     <label class="flex items-center gap-2 text-muted-foreground">
       Indicator
@@ -550,7 +550,7 @@
     {/if}
   </div>
 
-  <div class="relative h-[60vh] min-h-[420px] overflow-hidden rounded-lg border border-line">
+  <div class="relative min-h-[240px] flex-1 overflow-hidden rounded-lg border border-line">
     <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
          relative }` to the element it mounts on, and that unlayered rule beats
          Tailwind's layered `absolute`, so a container that was itself

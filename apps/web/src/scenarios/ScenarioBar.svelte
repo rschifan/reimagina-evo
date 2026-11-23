@@ -1,6 +1,6 @@
 <script lang="ts">
   import { statusFor, statusLabel } from "./derive";
-  import { create, headline, recomputeSelected, removeScenario, select, ws } from "./store.svelte";
+  import { confirmRemoveScenario, create, headline, recomputeSelected, select, ws } from "./store.svelte";
 
   /**
    * Which scenario is on the map, what it changes, and whether that is
@@ -33,13 +33,6 @@
     event.preventDefault();
     await create(newName);
     if (ws.message?.tone !== "bad") newName = "";
-  }
-
-  function confirmDelete() {
-    const scenario = ws.scenarios.find((s) => s.id === ws.selectedId);
-    if (!scenario) return;
-    if (!window.confirm(`Delete ${scenario.name}, its rules and its results?`)) return;
-    void removeScenario();
   }
 
   const control = "rounded border border-line bg-surface px-2 py-1 text-xs text-foreground";
@@ -125,7 +118,7 @@
       type="button"
       class="rounded px-2 py-1 text-state-error disabled:opacity-50"
       disabled={ws.busy}
-      onclick={confirmDelete}
+      onclick={() => ws.selectedId && void confirmRemoveScenario(ws.selectedId)}
     >
       Delete scenario
     </button>

@@ -5,7 +5,7 @@
   import { cn } from "../lib/utils";
 
   import { formatCell, NO_BASELINE, statusFor, statusLabel, statusTone } from "./derive";
-  import { BASELINE, select, ws, type Cell } from "./store.svelte";
+  import { BASELINE, confirmRemoveScenario, select, ws, type Cell } from "./store.svelte";
 
   /**
    * Every scenario on the pilot, side by side, on the indicators a rule can
@@ -30,14 +30,14 @@
   }
 </script>
 
-<Card title={pilotName ? `Scenarios · ${pilotName}` : "Scenarios"}>
+<Card class="shrink-0" title={pilotName ? `Scenarios · ${pilotName}` : "Scenarios"}>
   {#if ws.aoiId === null}
     <p class="text-sm text-muted-foreground">Pick a pilot to see its scenarios.</p>
   {:else}
-    <div class="overflow-x-auto">
+    <div class="max-h-[26vh] overflow-auto">
       <table class="w-full border-collapse text-sm">
         <thead>
-          <tr class="border-b border-line text-left">
+          <tr class="sticky top-0 border-b border-line bg-surface text-left">
             <th scope="col" class="py-2 pr-4 font-medium">Scenario</th>
             {#each ws.indicators as indicator (indicator.slug)}
               <th
@@ -102,8 +102,17 @@
                   {cellText(cell, indicator.slug)}
                 </td>
               {/each}
-              <td class="py-2">
+              <td class="py-2 whitespace-nowrap">
                 <Badge tone={statusTone(status)}>{statusLabel(status)}</Badge>
+                <button
+                  type="button"
+                  class="ml-2 rounded px-1.5 py-0.5 text-xs text-state-error hover:bg-state-error/10 disabled:opacity-50"
+                  aria-label="Delete {row.name}"
+                  disabled={ws.busy}
+                  onclick={() => void confirmRemoveScenario(row.id)}
+                >
+                  Delete
+                </button>
               </td>
             </tr>
           {/each}

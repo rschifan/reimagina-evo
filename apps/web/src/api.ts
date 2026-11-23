@@ -409,6 +409,7 @@ export interface DeleteScenarioResponse {
   results_deleted: number;
   job_runs_deleted: number;
   materializations: number;
+  runs_deleted: number;
 }
 
 

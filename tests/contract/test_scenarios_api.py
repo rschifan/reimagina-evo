@@ -106,6 +106,7 @@ DELETED = DeleteResult(
     results_deleted=4,
     job_runs_deleted=1,
     materializations=1,
+    runs_deleted=2,
 )
 
 

@@ -401,19 +401,26 @@ export async function create(name: string): Promise<void> {
   }
 }
 
-/** Delete the selected scenario. The component asks for confirmation. */
-export async function removeScenario(): Promise<void> {
-  const scenarioId = ws.selectedId;
+/** Delete a scenario for good, with everything it wrote. Asks first. */
+export async function confirmRemoveScenario(scenarioId: string): Promise<void> {
+  const question =
+    `Delete ${scenarioName(scenarioId)} permanently? Its rules, results and ` +
+    "finished runs are removed from the database. This cannot be undone.";
+  if (window.confirm(question)) await removeScenario(scenarioId);
+}
+
+/** Delete a scenario — the selected one by default — without asking. */
+export async function removeScenario(scenarioId = ws.selectedId): Promise<void> {
   if (!scenarioId) return;
   const name = scenarioName(scenarioId);
   try {
     const removed = await deleteScenario(scenarioId);
-    select(null);
+    if (ws.selectedId === scenarioId) select(null);
     delete ws.cells[scenarioId];
     await loadScenarios();
     say(
       `Deleted ${name}: ${removed.overrides} overrides, ` +
-        `${removed.results_deleted} results deleted.`,
+        `${removed.results_deleted} results and ${removed.runs_deleted} runs.`,
     );
   } catch (err) {
     await refused(err, "delete");

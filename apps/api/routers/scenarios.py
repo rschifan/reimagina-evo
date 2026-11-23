@@ -352,6 +352,7 @@ class DeleteScenarioResponse(BaseModel):
     results_deleted: int = 0
     job_runs_deleted: int = 0
     materializations: int = 0
+    runs_deleted: int = 0
 
 
 class ComparisonSummary(BaseModel):
@@ -804,6 +805,7 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
         results_deleted=removed.results_deleted,
         job_runs_deleted=removed.job_runs_deleted,
         materializations=removed.materializations,
+        runs_deleted=removed.runs_deleted,
     )
 
 

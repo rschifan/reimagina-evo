@@ -233,6 +233,30 @@ describe("selection", () => {
 });
 
 
+describe("deleting a scenario", () => {
+  const DELETED = {
+    scenario_id: "B", overrides: 4, versions_deleted: 1, results_deleted: 9,
+    job_runs_deleted: 1, materializations: 1, runs_deleted: 2,
+  };
+
+  it("deletes the row it names, not only the selected one, and keeps the selection", async () => {
+    api.deleteScenario.mockResolvedValue(DELETED);
+    store.select("A");
+    api.listScenarios.mockResolvedValue([row("A")]);
+    await store.removeScenario("B");
+    expect(api.deleteScenario).toHaveBeenCalledWith("B");
+    expect(store.ws.selectedId).toBe("A");
+    expect(store.ws.scenarios.map((s) => s.id)).toEqual(["A"]);
+  });
+
+  it("deleting the selected scenario goes back to the baseline", async () => {
+    api.deleteScenario.mockResolvedValue({ ...DELETED, scenario_id: "A" });
+    store.select("A");
+    await store.removeScenario("A");
+    expect(store.ws.selectedId).toBeNull();
+  });
+});
+
 describe("the default view", () => {
   it("is the change when the scenario has rules, the values otherwise", async () => {
     api.getScenario.mockResolvedValueOnce({ rules: [RULE_ROW("r1", 1)] });
