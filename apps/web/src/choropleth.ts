@@ -136,7 +136,7 @@ export interface ChoroplethConfig {
  * destinations are missing, so every block reported the same cutoff. Saying
  * "no data yet" there sends the reader looking for a compute that already ran.
  */
-export type RampBasis = "percentile" | "min-max" | "uniform" | "empty";
+export type RampBasis = "percentile" | "min-max" | "shared" | "uniform" | "empty";
 
 
 export interface RampDomain {
@@ -150,6 +150,9 @@ export interface RampDomain {
   basis: RampBasis;
   /** Whether the domain came from observed stats (true) or catalog (false). */
   fromStats: boolean;
+  /** The largest observed value, when the stats gave one: values above
+   *  `max` paint in the darkest colour, and the legend says up to what. */
+  observedMax?: number | null;
 }
 
 
@@ -200,6 +203,25 @@ function spreads(low: number, high: number): boolean {
 }
 
 
+/**
+ * One scale for a scenario and the baseline city: from the lower of their
+ * low ends to the higher of their high ends. On the baseline's range alone a
+ * rule that raises blocks past its top paints every raised block in the
+ * darkest colour, whatever it raised them to. The scenario's own median and
+ * count stay. Without a baseline range, the scenario's own.
+ */
+export function sharedRampDomain(base: RampDomain, scenario: RampDomain): RampDomain {
+  if (!base.fromStats || !scenario.fromStats) return scenario;
+  const maxes = [base.observedMax, scenario.observedMax].filter((v): v is number => v != null);
+  return {
+    ...scenario,
+    min: Math.min(base.min, scenario.min),
+    max: Math.max(base.max, scenario.max),
+    basis: "shared",
+    observedMax: maxes.length ? Math.max(...maxes) : null,
+  };
+}
+
 export function rampDomainFromStats(
   stats: IndicatorValueStats | null,
   indicator: IndicatorSummary,
@@ -214,6 +236,7 @@ export function rampDomainFromStats(
       count,
       basis: "percentile",
       fromStats: true,
+      observedMax: stats.max,
     };
   }
   // Flat distribution (p05 == p95) — widen to min/max so we still see something.
@@ -225,6 +248,7 @@ export function rampDomainFromStats(
       count,
       basis: "min-max",
       fromStats: true,
+      observedMax: stats.max,
     };
   }
   // Nothing to derive a span from: either no rows at all, or rows that all
@@ -739,6 +763,8 @@ export function rampScopeText(
       return "Colours span the middle 90% of values";
     case "min-max":
       return "Colours span the lowest to the highest value";
+    case "shared":
+      return "Colours span the middle 90% of the baseline city and this scenario together";
     case "uniform":
       return (
         `One colour: all ${fmtNumber(domain.count)} values ` +
@@ -773,6 +799,11 @@ export function renderLegend(
     domain.fromStats && domain.p50 !== null
       ? `<div class="p50">median · ${escapeHtml(formatValue(domain.p50, indicator))}</div>`
       : "";
+  // Above the ramp's top every value is the darkest colour: say so, and how far it goes.
+  const over = domain.observedMax != null && domain.observedMax > domain.max;
+  const top = over
+    ? `≥ ${bound(domain.max)} (max ${bound(domain.observedMax as number)})`
+    : bound(domain.max);
   const scopeRow = `<div class="scope">${escapeHtml(rampScopeText(domain, indicator))}</div>`;
   // The distribution, drawn once; the hover handler only moves its cursor.
   //
@@ -789,7 +820,7 @@ export function renderLegend(
   container.innerHTML = `
     <div class="name">${escapeHtml(indicator.name)}</div>
     <div class="gradient" style="background: linear-gradient(to right, ${RAMP_STOPS.join(", ")})"></div>
-    <div class="bounds"><span>${bound(domain.min)}</span><span>${bound(domain.max)}</span></div>
+    <div class="bounds"><span>${bound(domain.min)}</span><span>${top}</span></div>
     ${capRows(indicator, countAtCap, total)}
     ${estimatedRow(indicator, estimated, total)}
     ${distBlock}

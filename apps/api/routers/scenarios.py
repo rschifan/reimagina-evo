@@ -197,6 +197,17 @@ class RuleBody(BaseModel):
         "people_per_household, lot_coverage (0 < c ≤ 1). Omitted or null: "
         "not set."
     )
+    mode: Literal["set", "change"] = Field(
+        "set",
+        description='"set": the numbers are the blocks\' new values. "change": '
+        "each number moves a block from its own baseline value (never from an "
+        "earlier rule's), by an amount or a percentage per ``units``.",
+    )
+    units: dict[str, Literal["abs", "pct"]] = Field(
+        default_factory=dict,
+        description='For a change rule: per number, "abs" (an amount; lot '
+        'coverage as a share, 0.05 = +5 points) or "pct". Missing: "abs".',
+    )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
 
@@ -240,6 +251,17 @@ class RuleUpdateBody(BaseModel):
         None, description="The moved or resized area; omitted keeps the area."
     )
     inputs: dict[str, Any]
+    mode: Literal["set", "change"] = Field(
+        "set",
+        description='"set": the numbers are the blocks\' new values. "change": '
+        "each number moves a block from its own baseline value (never from an "
+        "earlier rule's), by an amount or a percentage per ``units``.",
+    )
+    units: dict[str, Literal["abs", "pct"]] = Field(
+        default_factory=dict,
+        description='For a change rule: per number, "abs" (an amount; lot '
+        'coverage as a share, 0.05 = +5 points) or "pct". Missing: "abs".',
+    )
 
 
 class RuleRow(BaseModel):
@@ -248,6 +270,8 @@ class RuleRow(BaseModel):
     ordinal: int
     type_id: str
     inputs: dict[str, float]
+    mode: str = "set"
+    units: dict[str, str] = Field(default_factory=dict)
     geometry_wkt: str
     created_at: datetime
     updated_at: datetime
@@ -352,6 +376,7 @@ class DeleteScenarioResponse(BaseModel):
     results_deleted: int = 0
     job_runs_deleted: int = 0
     materializations: int = 0
+    runs_deleted: int = 0
 
 
 class ComparisonSummary(BaseModel):
@@ -684,6 +709,8 @@ def create_scenario_route(body: CreateScenarioBody) -> CreatedScenario:
                 geometry_wkt=polygon_wkt(first.area),
                 type_id=_feature_type_id(conn, first.type_context, first.type_slug),
                 inputs=first.inputs,
+                mode=first.mode,
+                units=first.units,
             )
         )
         created = get_scenario(conn, scenario_id)
@@ -804,6 +831,7 @@ def delete_scenario_route(scenario_id: str) -> DeleteScenarioResponse:
         results_deleted=removed.results_deleted,
         job_runs_deleted=removed.job_runs_deleted,
         materializations=removed.materializations,
+        runs_deleted=removed.runs_deleted,
     )
 
 
@@ -845,6 +873,8 @@ def add_rule_route(scenario_id: str, body: RuleBody) -> RuleChangeResponse:
                 geometry_wkt=geometry_wkt,
                 type_id=type_id,
                 inputs=body.inputs,
+                mode=body.mode,
+                units=body.units,
             )
     return RuleChangeResponse(**_enqueue(resolved, result), rule=RuleRow(**rule))
 
@@ -869,6 +899,8 @@ def update_rule_route(
                 rule_id=rule_id,
                 geometry_wkt=geometry_wkt,
                 inputs=body.inputs,
+                mode=body.mode,
+                units=body.units,
             )
     return RuleChangeResponse(**_enqueue(resolved, result), rule=RuleRow(**rule))
 

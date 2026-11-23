@@ -335,6 +335,46 @@ def test_delete_leaves_no_row_that_names_the_scenario(conn):
         assert cur.fetchone()[0] == 0
 
 
+def test_delete_removes_the_finished_recompute_runs(conn):
+    """A finished recompute run of the scenario, and its units, go with it.
+
+    A run still in flight stays: its units find the scenario gone and end
+    ``cancelled``, and the coordinator still writes to the run row.
+    """
+    t = _Territory(conn)
+    sid = t.scenario()
+    other = t.scenario(name="Other")
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs_runtime.orchestration_run (scenario_id, status, code_version) "
+            "VALUES (%s,'succeeded','t'), (%s,'failed','t'), (%s,'running','t'), "
+            "(%s,'succeeded','t') RETURNING id",
+            (sid, sid, sid, other),
+        )
+        finished = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO jobs_runtime.job_unit (run_id, indicator_slug, status) "
+            "VALUES (%s, %s, 'succeeded')",
+            (finished, _DENSITY),
+        )
+
+    result = delete_scenario(conn, scenario_id=sid)
+
+    assert result.runs_deleted == 2
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT scenario_id::text, status FROM jobs_runtime.orchestration_run "
+            "WHERE scenario_id IN (%s, %s) ORDER BY 1, 2",
+            (sid, other),
+        )
+        left = cur.fetchall()
+        cur.execute(
+            "SELECT count(*) FROM jobs_runtime.job_unit WHERE run_id = %s", (finished,)
+        )
+        assert cur.fetchone()[0] == 0
+    assert sorted(left) == sorted([(sid, "running"), (other, "succeeded")])
+
+
 def test_delete_leaves_the_baseline_alone(conn):
     """Scoped by scenario id: the baseline's results and runs share both tables."""
     t = _Territory(conn)

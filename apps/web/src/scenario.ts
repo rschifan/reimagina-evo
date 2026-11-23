@@ -33,7 +33,7 @@
  * refuses, with the numbers.
  */
 
-import type { IndicatorSummary, RuleInputs, RuleRow } from "./api";
+import type { IndicatorSummary, RuleInputs, RuleMode, RuleRow, RuleUnits } from "./api";
 import { ApiError } from "./http";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
@@ -508,6 +508,9 @@ export interface Rule {
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
   inputs: RuleInputs;
+  /** Set to (default) or change by, with each changed number's unit. */
+  mode?: RuleMode;
+  units?: RuleUnits;
 }
 
 
@@ -528,6 +531,8 @@ export function rulesFromRows(rows: RuleRow[]): Rule[] {
     ordinal: row.ordinal,
     areaWkt: row.geometry_wkt,
     inputs: row.inputs,
+    mode: row.mode ?? "set",
+    units: row.units ?? {},
   }));
 }
 
@@ -550,10 +555,22 @@ export function sharedNumbers(rule: Rule, later: Rule): string[] {
 export function describeRule(rule: Rule, position: number): string {
   // Only what the rule sets; everything else is each block's own value.
   const parts = [`Rule ${position}`];
+  const change = rule.mode === "change";
   for (const [key, , unit] of RULE_NUMBERS) {
     const value = rule.inputs[key];
     if (value === undefined) continue;
-    parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
+    if (!change) {
+      parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
+      continue;
+    }
+    // A change: signed, as a percentage or in the number's own unit;
+    // coverage as an amount is points of the block's area.
+    const pct = rule.units?.[key] === "pct";
+    const cover = key === "lot_coverage";
+    const amount = cover && !pct ? percentOf(value) : value;
+    const sign = amount < 0 ? "−" : "+";
+    const what = pct ? `% ${cover ? "cover" : unit}` : cover ? "pts cover" : unit;
+    parts.push(`${sign}${fmt(Math.abs(amount))} ${what}`);
   }
   return parts.join(" · ");
 }

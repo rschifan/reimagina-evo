@@ -26,7 +26,7 @@ however it needs to; ``apps/cli/scenario.py`` is the worked example.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -152,6 +152,9 @@ class RuleInput:
     at_most: float | None
     #: How a refusal states the range.
     must: str
+    #: Where a "change by" result is held, ``(lowest, highest or None)``: a
+    #: change is checked per block, so it is clamped there, not refused.
+    clamp: tuple[float, float | None] = (0.0, None)
 
 
 #: **The one registry of what a rule can set.** Its order is the order edits
@@ -169,17 +172,58 @@ class RuleInput:
 #: dwelling or 1,000 people per household were accepted and only failed later
 #: as per-block ceiling breaches with a block id, not a field, in the message.
 RULE_INPUTS: dict[str, RuleInput] = {
-    "levels": RuleInput(("floors", "num_levels"), 0.0, None, "be a positive number"),
+    "levels": RuleInput(
+        ("floors", "num_levels"), 0.0, None, "be a positive number", (1.0, None)
+    ),
     "unit_size": RuleInput(
-        ("unit_size",), 15.0, None, "be more than 15 m² per dwelling"
+        ("unit_size",), 15.0, None, "be more than 15 m² per dwelling", (15.0, None)
     ),
     "people_per_household": RuleInput(
-        ("people_per_household",), 0.0, 15.0, "be between 0 and 15"
+        ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
     ),
     "lot_coverage": RuleInput(
-        ("lot_coverage",), 0.0, 1.0, "be a share between 0 and 1"
+        ("lot_coverage",), 0.0, 1.0, "be a share between 0 and 1", (0.0, 1.0)
     ),
 }
+
+#: A rule sets its numbers as the blocks' values, or changes each block's
+#: baseline value by them.
+RULE_MODES = ("set", "change")
+#: A change is an amount in the number's own unit, or a percentage.
+CHANGE_UNITS = ("abs", "pct")
+
+
+def check_units(
+    mode: str, units: Mapping[str, Any] | None, names: Iterable[str]
+) -> dict[str, str]:
+    """A rule's units: none for a set rule; for a change rule one per number.
+
+    A number without a unit is an amount (``abs``). Unknown names and units
+    are a ``ProposalValueError`` naming the field.
+    """
+    if mode not in RULE_MODES:
+        raise ProposalValueError(
+            "mode", mode, must=f"be one of {', '.join(RULE_MODES)}"
+        )
+    if mode == "set":
+        return {}
+    given = dict(units or {})
+    names = list(names)
+    for name, unit in given.items():
+        if name not in names:
+            raise ProposalValueError(name, unit, must="be a number the rule changes")
+        if unit not in CHANGE_UNITS:
+            raise ProposalValueError(name, unit, must="be abs or pct")
+    return {name: given.get(name, "abs") for name in names}
+
+
+def changed_value(base: float, by: float, unit: str, spec: RuleInput) -> float:
+    """A block's value after a change: ``base + by`` or ``base × (1 + by/100)``,
+    held in ``spec.clamp`` and rounded to 4 decimals."""
+    value = base * (1 + by / 100) if unit == "pct" else base + by
+    low, high = spec.clamp
+    value = max(low, value if high is None else min(high, value))
+    return round(value, 4)
 
 
 def edits_for(**values: float | None) -> list[dict[str, Any]]:
@@ -208,7 +252,12 @@ def edits_for(**values: float | None) -> list[dict[str, Any]]:
     return edits
 
 
-def check_inputs(inputs: Mapping[str, Any]) -> dict[str, float]:
+def check_inputs(
+    inputs: Mapping[str, Any],
+    *,
+    mode: str = "set",
+    units: Mapping[str, Any] | None = None,
+) -> dict[str, float]:
     """A rule's numbers, refused or returned as floats in registry order.
 
     Unknown names, non-numbers, non-finite values and values outside each
@@ -216,6 +265,10 @@ def check_inputs(inputs: Mapping[str, Any]) -> dict[str, float]:
     field; no number at all is an ``EmptyProposal``; then the area-independent
     ceilings (``precheck_ceilings``). Every surface that writes a rule goes
     through this, so they refuse the same things for the same reasons.
+
+    A change rule (``mode="change"``) takes signed, non-zero amounts; a
+    percentage must be above −100. Its range and ceilings are checked per
+    block when the scenario is materialised, so neither is checked here.
     """
     for name, value in inputs.items():
         if name not in RULE_INPUTS:
@@ -230,6 +283,22 @@ def check_inputs(inputs: Mapping[str, Any]) -> dict[str, float]:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ProposalValueError(name, value, must="be a number")
         number = float(value)
+        if mode == "change":
+            pct = (units or {}).get(name) == "pct"
+            if not math.isfinite(number) or number == 0 or (pct and number <= -100):
+                raise ProposalValueError(
+                    name,
+                    number,
+                    must="be a change above -100 %" if pct else "be a non-zero change",
+                )
+            # Coverage as an amount is a share: +5 meant as points would
+            # push every block to the clamp at 100 % without a word.
+            if name == "lot_coverage" and not pct and abs(number) > 1:
+                raise ProposalValueError(
+                    name, number, must="be a share change between -1 and 1"
+                )
+            checked[name] = number
+            continue
         if (
             not math.isfinite(number)
             or number <= spec.above
@@ -239,6 +308,8 @@ def check_inputs(inputs: Mapping[str, Any]) -> dict[str, float]:
         checked[name] = number
     if not checked:
         raise EmptyProposal()
+    if mode == "change":
+        return checked
     precheck_ceilings(
         checked.get("levels"),
         checked.get("unit_size"),

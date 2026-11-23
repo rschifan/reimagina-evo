@@ -11,6 +11,8 @@
     listTileSources,
     type IndicatorValueStats,
     type RuleInputs,
+    type RuleMode,
+    type RuleUnits,
   } from "../api";
   import {
     activateIndicator,
@@ -19,6 +21,7 @@
     defaultGrain,
     deltaDomainFromComparison,
     rampDomainFromStats,
+    sharedRampDomain,
     removeIndicator,
     renderDeltaLegend,
     renderLegend,
@@ -333,21 +336,23 @@
     if (clearShape) selection?.clear();
   }
 
-  async function apply(values: RuleInputs, scenarioName?: string): Promise<void> {
+  async function apply(
+    values: RuleInputs, scenarioName?: string, mode: RuleMode = "set", units: RuleUnits = {},
+  ): Promise<void> {
     const area = ws.drawn;
     if (!area) return;
     const pilotAtStart = ws.aoiId;
     // A pilot switch mid-gesture clears the selection while busy, when the
     // effect above stands down; close here or the box outlives its city.
-    if ((await applyNewRule(area, values, scenarioName)) || ws.aoiId !== pilotAtStart) closeBox(true);
+    if ((await applyNewRule(area, values, scenarioName, mode, units)) || ws.aoiId !== pilotAtStart) closeBox(true);
   }
 
-  async function save(values: RuleInputs): Promise<void> {
+  async function save(values: RuleInputs, mode: RuleMode = "set", units: RuleUnits = {}): Promise<void> {
     const current = editing;
     if (current?.kind !== "rule") return;
     const area: Feature<Polygon> | null = moved ? ws.drawn : null;
     const scenarioAtStart = ws.selectedId;
-    if ((await saveRule(current.rule, area, values)) || ws.selectedId !== scenarioAtStart) closeBox(true);
+    if ((await saveRule(current.rule, area, values, mode, units)) || ws.selectedId !== scenarioAtStart) closeBox(true);
   }
 
   async function remove(): Promise<void> {
@@ -438,9 +443,10 @@
       setMode("value");
       return;
     }
-    // A scenario is coloured on the baseline city's scale, so a colour means
-    // the same value on every scenario: a dense rule shows as the darkest
-    // colour instead of turning every block it did not touch the palest one.
+    // A scenario is coloured on one scale with the baseline city: the
+    // baseline's range widened to the scenario's, so a block the rule raised
+    // shows how high, not just the darkest colour, and a block it did not
+    // touch is not turned the palest by a rule's outliers.
     const statsFor = async (scenario: string | null): Promise<IndicatorValueStats | null> => {
       try {
         return await getIndicatorStats(current.slug, {
@@ -464,23 +470,22 @@
     // the real pilots), when its "range" would be the catalog's safety
     // bounds and every block would paint in the palest colour.
     const baseUsable = scenarioId !== null && base !== null && base.count > 0;
-    const shown = scenarioId ? (baseUsable ? base : stats) : stats;
-    const domain = rampDomainFromStats(shown, current);
+    const domain = baseUsable
+      ? sharedRampDomain(rampDomainFromStats(base, current), rampDomainFromStats(stats, current))
+      : rampDomainFromStats(stats, current);
     // No `selection`: on the explore page it clips the layer to the drawn
     // area; here the planner edits a rule against the whole city.
     activateIndicator(map, config, current, domain, { tooltips, aoiId, grain, scenarioId });
     renderLegend(
-      legend, current, domain, shown?.histogram ?? null, shown?.count_at_cap ?? null, shown?.count ?? 0,
-      shown?.count_estimated ?? 0,
+      legend, current, domain, stats?.histogram ?? null, stats?.count_at_cap ?? null, stats?.count ?? 0,
+      stats?.count_estimated ?? 0,
     );
     mapNote =
       stats && stats.count === 0
         ? noValuesNote(current.name, scenarioId !== null)
-        : scenarioId && baseUsable
-          ? "Colours use the baseline city's range; values above it show in the darkest colour."
-          : scenarioId
-            ? "Colours use this scenario's own range: the baseline city has no values here."
-            : "";
+        : scenarioId && !baseUsable
+          ? "Colours use this scenario's own range: the baseline city has no values here."
+          : "";
   }
 
   function draw(next: SelectionShape) {
@@ -501,10 +506,12 @@
   ];
 </script>
 
-<section class="flex min-w-0 flex-col gap-2">
-  <div class="flex flex-wrap items-center gap-3 text-xs">
+<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+  <div
+    class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
+  >
     <label class="flex items-center gap-2 text-muted-foreground">
-      Indicator
+      <span class="sr-only">Indicator</span>
       <select
         class="rounded border border-line bg-surface px-2 py-1 text-xs text-foreground"
         value={ws.slug ?? ""}
@@ -535,22 +542,27 @@
       {/each}
     </div>
     {#if indicator}
-      <span class="ml-auto flex items-center gap-2 text-muted-foreground">
-        Download
-        {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
-          <a
-            class="rounded border border-line px-2 py-0.5 hover:text-foreground"
-            href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
-            rel="noopener"
-          >
-            {label}
-          </a>
-        {/each}
-      </span>
+      <details class="relative ml-auto">
+        <summary class="cursor-pointer list-none rounded border border-line px-2 py-1 text-muted-foreground hover:text-foreground">
+          Download ▾
+        </summary>
+        <div class="absolute right-0 z-20 mt-1 flex flex-col rounded border border-line bg-surface p-1 shadow">
+          {#each [["csv", "CSV"], ["geojson", "GeoJSON"], ["parquet", "GeoParquet"]] as const as [format, label] (format)}
+            <a
+              class="rounded px-3 py-1 whitespace-nowrap hover:bg-accent/10 hover:text-foreground"
+              href={downloadUrl(indicator.slug, format, { aoiId: ws.aoiId, grain: defaultGrain(indicator), scenarioId: ws.selectedId })}
+              rel="noopener"
+            >
+              {label}
+            </a>
+          {/each}
+        </div>
+      </details>
     {/if}
   </div>
 
-  <div class="relative h-[60vh] min-h-[420px] overflow-hidden rounded-lg border border-line">
+  <div class="flex min-h-0 flex-1 gap-2">
+  <div class="relative min-h-[240px] min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
     <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
          relative }` to the element it mounts on, and that unlayered rule beats
          Tailwind's layered `absolute`, so a container that was itself
@@ -592,6 +604,24 @@
         ×
       </button>
     </div>
+    <!-- The page's messages and the map's own note, over the map: a line above
+         it would push the map down under the planner's cursor. Always in the
+         DOM, so a screen reader announces each new text. -->
+    <div class="pointer-events-none absolute top-3 left-1/2 z-10 flex max-w-[60%] -translate-x-1/2 flex-col items-center gap-1 text-center text-xs">
+      <p
+        role="status"
+        class={cn(
+          "rounded border px-2 py-1",
+          ws.message ? "border-line bg-surface/95" : "border-0 p-0",
+          ws.message?.tone === "bad" ? "text-state-error" : "text-foreground",
+        )}
+      >
+        {ws.message?.text ?? ""}
+      </p>
+      <p role="status" class={cn("rounded text-muted-foreground", mapNote && "border border-line bg-surface/95 px-2 py-1")}>
+        {mapNote}
+      </p>
+    </div>
     <div
       class="map-loading"
       data-loading={ws.busy || tilesLoading ? "true" : "false"}
@@ -622,8 +652,10 @@
             busy={ws.busy}
             error={ws.boxError}
             draggable={current.kind === "rule" ? current.draggable : true}
-            onapply={(values, name) => void apply(values, name)}
-            onsave={(values) => void save(values)}
+            ruleMode={current.kind === "rule" ? (current.rule.mode ?? "set") : "set"}
+            ruleUnits={current.kind === "rule" ? (current.rule.units ?? {}) : {}}
+            onapply={(values, name, mode, units) => void apply(values, name, mode, units)}
+            onsave={(values, mode, units) => void save(values, mode, units)}
             ondelete={() => void remove()}
             oncancel={() => closeBox(true)}
           />
@@ -631,23 +663,29 @@
       </div>
     {/if}
   </div>
-  <p class="text-xs text-muted-foreground" role="status">{mapNote}</p>
-  {#if ws.rules.length > 0}
-    <!-- The rules, reachable without a pointer: a rule is otherwise opened
-         only by clicking its outline on the canvas. -->
-    <ol aria-label="Rules" class="flex flex-wrap gap-2 text-xs">
-      {#each [...ws.rules].sort((a, b) => a.ordinal - b.ordinal) as rule, i (rule.id)}
-        <li>
-          <button
-            type="button"
-            class="rounded border border-line px-2 py-0.5 hover:text-foreground disabled:opacity-50"
-            disabled={!ready || ws.busy || editing !== null}
-            onclick={() => openRule(i + 1)}
-          >
-            {describeRule(rule, i + 1)}
-          </button>
-        </li>
-      {/each}
-    </ol>
+  {#if ws.selectedId !== null}
+    <!-- The rules, reachable without a pointer (a rule is otherwise opened
+         only by clicking its outline), and how to add one. -->
+    <aside aria-label="Rules" class="flex w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-lg border border-line bg-surface p-2 text-xs">
+      <h3 class="font-medium text-foreground">
+        Rules · {ws.scenarios.find((s) => s.id === ws.selectedId)?.name ?? ""}
+      </h3>
+      <p class="text-muted-foreground">Draw an area on the map to add a rule. Later rules win where they overlap.</p>
+      <ol class="flex flex-col gap-1.5">
+        {#each [...ws.rules].sort((a, b) => a.ordinal - b.ordinal) as rule, i (rule.id)}
+          <li>
+            <button
+              type="button"
+              class="w-full rounded border border-line px-2 py-1 text-left hover:text-foreground disabled:opacity-50"
+              disabled={!ready || ws.busy || editing !== null}
+              onclick={() => openRule(i + 1)}
+            >
+              {describeRule(rule, i + 1)}
+            </button>
+          </li>
+        {/each}
+      </ol>
+    </aside>
   {/if}
+  </div>
 </section>

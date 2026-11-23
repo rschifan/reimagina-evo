@@ -107,7 +107,7 @@ async function run(page) {
   const created = (await (await fetch(`${API}/scenarios`)).json()).find((s) => s.name === NAME);
   report.scenarioId = created ? created.id : null;
   const centre1 = await rendered(page, ...blk(0, 1));
-  const bar = await page.locator('section[aria-label="Scenario"]').innerText();
+  const bar = await page.locator('tr[aria-current="true"]').innerText();
   step('apply on the baseline creates the scenario and shows the change', created && centre1 && centre1.state === 'changed' && spun, {
     spinnerShown: spun, prefilledName: named, created: Boolean(created), centre: centre1, bar,
     changePressed: await page.getByRole('button', { name: 'Change' }).getAttribute('aria-pressed'),

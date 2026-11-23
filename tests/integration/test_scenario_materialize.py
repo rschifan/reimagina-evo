@@ -888,3 +888,82 @@ def test_concurrent_materialisation_does_not_revive_a_removed_rule(
                 c.close()
             except Exception as exc:  # noqa: BLE001 - warned about, never fatal
                 warnings.warn(f"close failed: {exc}", stacklevel=2)
+
+
+# ── "Change by" rules ───────────────────────────────────────────────────────
+
+
+def _change_rule(t, sid, wkt, units=None, **inputs):
+    rule, _ = add_rule(
+        t.conn,
+        scenario_id=sid,
+        geometry_wkt=wkt,
+        type_id=t.type_id,
+        inputs=inputs,
+        mode="change",
+        units=units or {},
+    )
+    return rule
+
+
+def _set_base(conn, feature_id, **attributes):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes || %s::jsonb "
+            "WHERE id = %s",
+            (json.dumps(attributes), feature_id),
+        )
+
+
+def test_change_rule_raises_each_block_from_its_own_baseline(conn):
+    t = _Territory(conn, attributes={"floors": 1, "num_levels": 1})
+    _set_base(conn, t.blocks[1], floors=2, num_levels=2)
+    sid = t.scenario()
+    rule = _change_rule(t, sid, _AREA_0_3, levels=1)
+
+    assert (rule["mode"], rule["units"]) == ("change", {"levels": "abs"})
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 2
+    assert _override_value(conn, sid, t.blocks[1], "floors") == 3
+    assert _override_value(conn, sid, t.blocks[1], "num_levels") == 3
+
+
+def test_change_rule_overlapping_an_earlier_set_rule_uses_the_baseline(conn):
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2})
+    sid = t.scenario()
+    t.rule(sid, _AREA_0_3, levels=5)
+    _change_rule(t, sid, _AREA_ALL, units={"levels": "pct"}, levels=50)
+
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 3
+    assert _override_value(conn, sid, t.blocks[5], "floors") == 3
+
+
+def test_change_rule_skips_a_block_without_a_baseline(conn):
+    t = _Territory(conn, attributes={"unit_size": 100})
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE curated_geo.feature SET attributes = attributes - 'unit_size' "
+            "WHERE id = %s",
+            (t.blocks[1],),
+        )
+    sid = t.scenario()
+    _change_rule(t, sid, _AREA_0_3, units={"unit_size": "pct"}, unit_size=-10)
+
+    assert _override_value(conn, sid, t.blocks[0], "unit_size") == 90
+    assert _override_value(conn, sid, t.blocks[1], "unit_size") is None
+
+
+def test_update_rule_from_change_to_set_drops_units(conn):
+    t = _Territory(conn, attributes={"floors": 1, "num_levels": 1})
+    sid = t.scenario()
+    rule = _change_rule(t, sid, _AREA_0_3, levels=1)
+
+    updated, _ = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rule["id"],
+        geometry_wkt=None,
+        inputs={"levels": 4},
+    )
+
+    assert (updated["mode"], updated["units"]) == ("set", {})
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 4

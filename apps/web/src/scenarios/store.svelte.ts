@@ -26,7 +26,10 @@ import {
   type ReachableIndicator,
   type RecomputeResponse,
   type RuleChangeResponse,
+  type RuleChange,
   type RuleInputs,
+  type RuleMode,
+  type RuleUnits,
   type RuleRow,
   type ScenarioListRow,
 } from "../api";
@@ -375,45 +378,26 @@ export function setMode(mode: "value" | "delta"): void {
   ws.mode = ws.selectedId === null ? "value" : mode;
 }
 
-export async function create(name: string): Promise<void> {
-  const trimmed = name.trim();
-  if (!trimmed) {
-    say("Give the scenario a name.", "bad");
-    return;
-  }
-  if (!ws.projectId) {
-    say("No pilot is active, so there is no project to create a scenario in.", "bad");
-    return;
-  }
-  try {
-    if (!ws.aoiId) return;
-    const created = await createScenario({
-      project_id: ws.projectId,
-      name: trimmed,
-      aoi_id: ws.aoiId,
-    });
-    await loadScenarios();
-    select(created.id);
-    say(`Created ${created.name}. Draw an area on the map and apply the numbers.`);
-    void refreshRow(created.id);
-  } catch (err) {
-    await refused(err, "create");
-  }
+/** Delete a scenario for good, with everything it wrote. Asks first. */
+export async function confirmRemoveScenario(scenarioId: string): Promise<void> {
+  const question =
+    `Delete ${scenarioName(scenarioId)} permanently? Its rules, results and ` +
+    "finished runs are removed from the database. This cannot be undone.";
+  if (window.confirm(question)) await removeScenario(scenarioId);
 }
 
-/** Delete the selected scenario. The component asks for confirmation. */
-export async function removeScenario(): Promise<void> {
-  const scenarioId = ws.selectedId;
+/** Delete a scenario — the selected one by default — without asking. */
+export async function removeScenario(scenarioId = ws.selectedId): Promise<void> {
   if (!scenarioId) return;
   const name = scenarioName(scenarioId);
   try {
     const removed = await deleteScenario(scenarioId);
-    select(null);
+    if (ws.selectedId === scenarioId) select(null);
     delete ws.cells[scenarioId];
     await loadScenarios();
     say(
       `Deleted ${name}: ${removed.overrides} overrides, ` +
-        `${removed.results_deleted} results deleted.`,
+        `${removed.results_deleted} results and ${removed.runs_deleted} runs.`,
     );
   } catch (err) {
     await refused(err, "delete");
@@ -429,9 +413,6 @@ export async function removeScenario(): Promise<void> {
 // so there is nothing to undo: the box says why and keeps what was typed.
 // Anything else (the recompute not queued, a lost response) may have stored
 // the rule, so the page re-reads the rules and says what happened instead.
-
-const HOUSING_UNITS = "edificability_block_housing_units";
-const POPULATION = "edificability_block_population";
 
 type Landing =
   | { outcome: "landed"; status: string }
@@ -520,7 +501,20 @@ const boxRefusal = async (err: unknown, operation: ScenarioOperation): Promise<v
   };
 };
 
-function precheck(inputs: RuleInputs): boolean {
+/** A rule request's numbers: a set rule sends only them (the server's
+ *  default mode), a change rule its mode and units too. */
+function ruleChange(inputs: RuleInputs, mode: RuleMode, units: RuleUnits): RuleChange {
+  return mode === "change" ? { inputs, mode, units } : { inputs };
+}
+
+/** The local refusals a set rule's numbers get before any request. A change
+ *  rule's numbers are signed amounts: only the server, per block, can judge
+ *  them. */
+function precheck(inputs: RuleInputs, mode: RuleMode = "set"): boolean {
+  if (mode === "change") {
+    ws.boxError = null;
+    return true;
+  }
   const refusal = validateEdit({
     ...inputs,
     densityValidMax: ws.densityValidMax,
@@ -595,12 +589,15 @@ export async function applyNewRule(
   area: Feature<Polygon>,
   inputs: RuleInputs,
   scenarioName?: string,
+  mode: RuleMode = "set",
+  units: RuleUnits = {},
 ): Promise<boolean> {
   ws.boxError = null;
-  if (!precheck(inputs)) return false;
+  if (!precheck(inputs, mode)) return false;
+  const change = ruleChange(inputs, mode, units);
   const scenarioId = ws.selectedId;
   if (scenarioId !== null) {
-    return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, inputs }), "Rule added.");
+    return gesture(scenarioId, "rule", () => addRule(scenarioId, { area, ...change }), "Rule added.");
   }
   const name = (scenarioName ?? "").trim();
   if (!name) {
@@ -620,7 +617,7 @@ export async function applyNewRule(
         project_id: projectId,
         name,
         aoi_id: aoiId,
-        rule: { area, inputs },
+        rule: { area, ...change },
       });
       // Sent with a rule, so the change is there.
       return created.first_rule as RuleChangeResponse;
@@ -638,12 +635,14 @@ export async function saveRule(
   rule: Rule,
   area: Feature<Polygon> | null,
   inputs: RuleInputs,
+  mode: RuleMode = "set",
+  units: RuleUnits = {},
 ): Promise<boolean> {
   const scenarioId = ws.selectedId;
   if (scenarioId === null) return false;
   ws.boxError = null;
-  if (!precheck(inputs)) return false;
-  const body = { ...(area ? { area } : {}), inputs };
+  if (!precheck(inputs, mode)) return false;
+  const body = { ...(area ? { area } : {}), ...ruleChange(inputs, mode, units) };
   return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 
@@ -683,15 +682,3 @@ export async function recomputeSelected(): Promise<void> {
   }
 }
 
-/** Total homes and people, baseline and now, for the top bar. */
-export function headline(scenarioId: string | null): {
-  homes: { base: number | null; now: number | null };
-  people: { base: number | null; now: number | null };
-} {
-  const cell = (row: string, slug: string): number | null => ws.cells[row]?.[slug]?.value ?? null;
-  const now = scenarioId ?? BASELINE;
-  return {
-    homes: { base: cell(BASELINE, HOUSING_UNITS), now: cell(now, HOUSING_UNITS) },
-    people: { base: cell(BASELINE, POPULATION), now: cell(now, POPULATION) },
-  };
-}

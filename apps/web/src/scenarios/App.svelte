@@ -5,7 +5,6 @@
   import TopBar from "../lib/TopBar.svelte";
 
   import { formatHash, parseHash } from "./derive";
-  import ScenarioBar from "./ScenarioBar.svelte";
   import ScenarioMap from "./ScenarioMap.svelte";
   import ScenarioTable from "./ScenarioTable.svelte";
   import { applyRoute, boot, ws } from "./store.svelte";
@@ -48,6 +47,9 @@
   });
 </script>
 
+<!-- The page is the viewport: the map takes the height the rest leaves, the
+     table scrolls inside itself, and the page never scrolls. -->
+<div class="flex h-dvh flex-col overflow-hidden">
 <TopBar current="scenarios">
   {#snippet actions()}
     <label class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -65,21 +67,10 @@
   {/snippet}
 </TopBar>
 
-<main class="mx-auto flex max-w-[1600px] flex-col gap-4 p-4">
-  <!-- Always in the DOM: a live region inserted with its text is not
-       announced by every screen reader; one whose text changes is. -->
-  <!-- min-h: an empty line still holds its height, or every message pushes
-       the map down under the planner's cursor mid-gesture. -->
-  <p
-    role="status"
-    class={ws.message?.tone === "bad"
-      ? "min-h-5 text-sm text-state-error"
-      : "min-h-5 text-sm text-muted-foreground"}
-  >
-    {ws.message?.text ?? ""}
-  </p>
-  <ScenarioBar />
-  <!-- Rules are drawn, edited and deleted on the map itself. -->
+<main class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
+  <!-- Rules are drawn, edited and deleted on the map; scenarios are picked,
+       recomputed and deleted in the table. -->
   <ScenarioMap />
   <ScenarioTable />
 </main>
+</div>

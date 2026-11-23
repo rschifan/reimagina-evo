@@ -233,6 +233,30 @@ describe("selection", () => {
 });
 
 
+describe("deleting a scenario", () => {
+  const DELETED = {
+    scenario_id: "B", overrides: 4, versions_deleted: 1, results_deleted: 9,
+    job_runs_deleted: 1, materializations: 1, runs_deleted: 2,
+  };
+
+  it("deletes the row it names, not only the selected one, and keeps the selection", async () => {
+    api.deleteScenario.mockResolvedValue(DELETED);
+    store.select("A");
+    api.listScenarios.mockResolvedValue([row("A")]);
+    await store.removeScenario("B");
+    expect(api.deleteScenario).toHaveBeenCalledWith("B");
+    expect(store.ws.selectedId).toBe("A");
+    expect(store.ws.scenarios.map((s) => s.id)).toEqual(["A"]);
+  });
+
+  it("deleting the selected scenario goes back to the baseline", async () => {
+    api.deleteScenario.mockResolvedValue({ ...DELETED, scenario_id: "A" });
+    store.select("A");
+    await store.removeScenario("A");
+    expect(store.ws.selectedId).toBeNull();
+  });
+});
+
 describe("the default view", () => {
   it("is the change when the scenario has rules, the values otherwise", async () => {
     api.getScenario.mockResolvedValueOnce({ rules: [RULE_ROW("r1", 1)] });
@@ -407,6 +431,19 @@ describe("editing on the map", () => {
     expect(api.listScenarios).toHaveBeenCalledTimes(3);
   });
 
+  it("a change rule is sent with its mode and units, and its negative numbers are not refused locally", async () => {
+    store.select("A");
+    await settleRun(
+      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, "change", { unit_size: "pct" }),
+    );
+    expect(api.addRule.mock.calls[0][1]).toEqual({
+      area: AREA,
+      inputs: { levels: -1, unit_size: -10 },
+      mode: "change",
+      units: { unit_size: "pct" },
+    });
+  });
+
   it("save sends the rule's id and its whole set of numbers", async () => {
     store.select("A");
     const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
@@ -525,17 +562,5 @@ describe("editing on the map", () => {
       area: AREA,
       inputs: { people_per_household: 5 },
     });
-  });
-
-  it("the headline reads homes and people from the table's cells", () => {
-    store.ws.cells = {
-      baseline: { edificability_block_housing_units: { value: 100, error: null }, edificability_block_population: { value: 300, error: null } },
-      A: { edificability_block_housing_units: { value: 150, error: null } },
-    };
-    expect(store.headline("A")).toEqual({
-      homes: { base: 100, now: 150 },
-      people: { base: 300, now: null },
-    });
-    expect(store.headline(null).homes).toEqual({ base: 100, now: 100 });
   });
 });

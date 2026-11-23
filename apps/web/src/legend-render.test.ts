@@ -213,3 +213,27 @@ describe("renderGrainToggle", () => {
     expect(el.querySelectorAll("button").length).toBe(2);
   });
 });
+
+describe("the legend's top bound", () => {
+  const FLOORS = { ...LIVABILITY, slug: "urban_form_block_planned_floors", name: "Planned Floors", unit: "floors", valid_min: 0, valid_max: 60 } as IndicatorSummary;
+
+  it("says the darkest colour includes everything above it, and the real maximum", () => {
+    const el = document.createElement("div");
+    const s = { count: 19058, min: 1, p05: 1, p50: 1, p95: 1.72, max: 8.99, sum: null, histogram: null } as IndicatorValueStats;
+    renderLegend(el, FLOORS, rampDomainFromStats(s, FLOORS), null, null, 19058);
+    const top = el.querySelector(".bounds span:last-child")!.textContent!;
+    expect(top).toContain("1.72");
+    expect(top).toContain("≥");
+    expect(top).toContain("max 8.99");
+  });
+
+  it("prints a plain top when the ramp already reaches the maximum", () => {
+    const el = document.createElement("div");
+    const s = { count: 3, min: 0, p05: 0, p50: 0.5, p95: 1, max: 1, sum: null, histogram: null } as IndicatorValueStats;
+    renderLegend(el, LIVABILITY, rampDomainFromStats(s, LIVABILITY), null, null, 3);
+    const top = el.querySelector(".bounds span:last-child")!.textContent!;
+    expect(top).not.toContain("≥");
+    expect(top).not.toContain("max");
+  });
+});
+

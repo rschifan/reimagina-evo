@@ -362,6 +362,15 @@ export interface RuleInputs {
 }
 
 
+/** A rule sets its numbers as the blocks' values, or changes each block's
+ *  baseline value by them. */
+export type RuleMode = "set" | "change";
+/** For a change rule, per number: an amount (`abs`; coverage as a share) or
+ *  a percentage (`pct`). Missing: `abs`. */
+export type RuleUnits = Partial<Record<keyof RuleInputs, "abs" | "pct">>;
+/** What a rule request carries besides its area. A set rule sends no mode. */
+export type RuleChange = { inputs: RuleInputs; mode?: RuleMode; units?: RuleUnits };
+
 /** One rule as the server stores it: a row with its own id. */
 export interface RuleRow {
   id: string;
@@ -369,6 +378,9 @@ export interface RuleRow {
   ordinal: number;
   type_id: string;
   inputs: RuleInputs;
+  /** Absent on rows from servers before r058: a set rule. */
+  mode?: RuleMode;
+  units?: RuleUnits;
   geometry_wkt: string;
   created_at: string;
   updated_at: string;
@@ -409,6 +421,7 @@ export interface DeleteScenarioResponse {
   results_deleted: number;
   job_runs_deleted: number;
   materializations: number;
+  runs_deleted: number;
 }
 
 
@@ -485,7 +498,7 @@ export function createScenario(body: {
   name: string;
   aoi_id: string;
   description?: string | null;
-  rule?: { area: Area; inputs: RuleInputs };
+  rule?: { area: Area } & RuleChange;
 }): Promise<CreatedScenario> {
   return jsonRequest<CreatedScenario>("/scenarios", { body });
 }
@@ -508,7 +521,7 @@ export function deleteScenario(scenarioId: string): Promise<DeleteScenarioRespon
  *  (4xx) stores nothing; then its recompute is enqueued. */
 export function addRule(
   scenarioId: string,
-  body: { area: Area; inputs: RuleInputs },
+  body: { area: Area } & RuleChange,
 ): Promise<RuleChangeResponse> {
   return jsonRequest<RuleChangeResponse>(
     `/scenarios/${encodeURIComponent(scenarioId)}/rules`,
@@ -522,7 +535,7 @@ export function addRule(
 export function updateRule(
   scenarioId: string,
   ruleId: string,
-  body: { area?: Area; inputs: RuleInputs },
+  body: { area?: Area } & RuleChange,
 ): Promise<RuleChangeResponse> {
   return jsonRequest<RuleChangeResponse>(
     `/scenarios/${encodeURIComponent(scenarioId)}/rules/${encodeURIComponent(ruleId)}`,
