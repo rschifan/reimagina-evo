@@ -378,7 +378,7 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
 
 #: A rule as every surface shows it, read straight off ``RETURNING`` or a list.
 _RULE_COLUMNS = (
-    "id, ordinal, type_id, inputs, ST_AsText(geometry) AS geometry_wkt, "
+    "id, ordinal, type_id, inputs, mode, units, ST_AsText(geometry) AS geometry_wkt, "
     "created_at, updated_at"
 )
 
@@ -478,12 +478,17 @@ def add_rule(
     geometry_wkt: str,
     type_id: str,
     inputs: Mapping[str, Any],
+    mode: str = "set",
+    units: Mapping[str, Any] | None = None,
 ) -> tuple[dict, MaterializeResult]:
     """Append one rule, materialise the scenario, and return both.
 
     * ``inputs`` are the planner's numbers, checked by ``proposal.check_inputs``
       (the one place every surface's refusals come from); a number left out is
       not set, and each block keeps its own value for it.
+    * ``mode`` is ``"set"`` (the numbers are the blocks' values) or
+      ``"change"`` (each moves a block from its own baseline, by an amount or
+      a percentage per ``units``) — see ``_resolve_rules``.
     * The geometry is repaired on write — see ``_repair_geometry``.
     * ``ordinal`` is ``max + 1`` under the scenario's row lock, and never
       changes after. ``ordinal`` rather than ``created_at`` orders rules
@@ -494,11 +499,12 @@ def add_rule(
 
     Returns the rule as stored and what the materialisation did.
     """
-    from reimagina.scenarios.proposal import check_inputs
+    from reimagina.scenarios.proposal import check_inputs, check_units
 
     # Before any SQL: a refused id or number costs no lock.
     scenario_id = _canonical_id(scenario_id)
-    checked = check_inputs(inputs)
+    checked = check_inputs(inputs, mode=mode, units=units)
+    checked_units = check_units(mode, units, checked)
     _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = _repair_geometry(cur, geometry_wkt)
@@ -506,14 +512,21 @@ def add_rule(
         cur.execute(
             f"""
             INSERT INTO curated_geo.scenario_rule
-              (scenario_id, ordinal, type_id, geometry, inputs)
+              (scenario_id, ordinal, type_id, geometry, inputs, mode, units)
             SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
-                   ST_GeomFromEWKB(%(g)s), %(i)s::jsonb
+                   ST_GeomFromEWKB(%(g)s), %(i)s::jsonb, %(m)s, %(u)s::jsonb
             FROM curated_geo.scenario_rule
             WHERE scenario_id = %(s)s
             RETURNING {_RULE_COLUMNS}
             """,
-            {"s": scenario_id, "t": type_id, "g": repaired, "i": json.dumps(checked)},
+            {
+                "s": scenario_id,
+                "t": type_id,
+                "g": repaired,
+                "i": json.dumps(checked),
+                "m": mode,
+                "u": json.dumps(checked_units),
+            },
         )
         rule = _rule_row(cur)
         _touch(cur, scenario_id)
@@ -529,6 +542,8 @@ def update_rule(
     inputs: Mapping[str, Any],
     unset: Sequence[str] = (),
     merge: bool = False,
+    mode: str | None = None,
+    units: Mapping[str, Any] | None = None,
 ) -> tuple[dict, MaterializeResult]:
     """Change one rule in place, materialise, and return both.
 
@@ -542,44 +557,72 @@ def update_rule(
     In place is the point: the rule keeps its id and its ordinal, so it keeps
     its position in "later wins" — re-adding a number it had dropped does not
     move it ahead of a later rule.
+
+    ``mode`` and ``units`` travel with the numbers: a whole set without a
+    ``mode`` is a set rule (its units are dropped); a merge without one keeps
+    the rule's own mode and units.
     """
-    from reimagina.scenarios.proposal import check_inputs
+    from reimagina.scenarios.proposal import check_inputs, check_units
 
     scenario_id = _canonical_id(scenario_id)
     rule_id = _rule_id(rule_id)
     missing = RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
 
-    def _checked(current: dict[str, Any]) -> dict[str, float]:
+    def _checked(
+        current: dict[str, Any], rule_mode: str, rule_units: Mapping[str, Any]
+    ) -> tuple[str, dict[str, float], dict[str, str]]:
         given = {k: v for k, v in inputs.items() if v is not None or not merge}
         merged = {**current, **given}
-        return check_inputs({k: v for k, v in merged.items() if k not in unset})
+        numbers = check_inputs(
+            {k: v for k, v in merged.items() if k not in unset},
+            mode=rule_mode,
+            units=rule_units,
+        )
+        # A kept unit of a number the merge removed goes with the number.
+        kept = {k: v for k, v in rule_units.items() if k in numbers}
+        return rule_mode, numbers, check_units(rule_mode, kept, numbers)
 
     # A whole set is checked before any SQL; a merge needs the rule first.
-    checked = None if merge else _checked({})
+    checked = None if merge else _checked({}, mode or "set", units or {})
     _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
         if checked is None:
             cur.execute(
-                "SELECT inputs FROM curated_geo.scenario_rule "
+                "SELECT inputs, mode, units FROM curated_geo.scenario_rule "
                 "WHERE id = %s AND scenario_id = %s",
                 (rule_id, scenario_id),
             )
             found = cur.fetchone()
             if found is None:
                 raise missing
-            checked = _checked(found[0])
+            current, rule_mode, rule_units = found
+            checked = (
+                _checked(current, rule_mode, {**rule_units, **(units or {})})
+                if mode is None
+                else _checked(current, mode, units or {})
+            )
+        new_mode, numbers, new_units = checked
         cur.execute(
             f"""
             UPDATE curated_geo.scenario_rule
                SET inputs = %(i)s::jsonb,
+                   mode = %(m)s,
+                   units = %(u)s::jsonb,
                    geometry = COALESCE(ST_GeomFromEWKB(%(g)s), geometry),
                    updated_at = now()
              WHERE id = %(r)s AND scenario_id = %(s)s
             RETURNING {_RULE_COLUMNS}
             """,
-            {"i": json.dumps(checked), "g": repaired, "r": rule_id, "s": scenario_id},
+            {
+                "i": json.dumps(numbers),
+                "m": new_mode,
+                "u": json.dumps(new_units),
+                "g": repaired,
+                "r": rule_id,
+                "s": scenario_id,
+            },
         )
         if cur.rowcount == 0:
             raise missing
@@ -839,13 +882,18 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     later rule that sets only household size leaves an earlier rule's storeys
     standing on the blocks they share. Iterating in ordinal order and letting
     a later write overwrite is the whole of that rule.
+
+    A ``change`` rule's value is the block's **baseline** moved by the rule
+    (``proposal.changed_value``), never an earlier rule's value: rules do not
+    stack, the later one still replaces. A block with no baseline for an
+    attribute gets no value for it from a change rule.
     """
-    from reimagina.scenarios.proposal import edits_for
+    from reimagina.scenarios.proposal import RULE_INPUTS, changed_value, edits_for
 
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT r.id::text, r.inputs, f.id::text
+            SELECT r.id::text, r.inputs, r.mode, r.units, f.id::text
             FROM curated_geo.scenario_rule r
             LEFT JOIN curated_geo.feature f
                    ON f.type_id = r.type_id
@@ -860,23 +908,79 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
             {"s": scenario_id, "aoi": aoi_id},
         )
         rows = cur.fetchall()
+        change_features = sorted(
+            {f for _, _, mode, _, f in rows if mode == "change" and f is not None}
+        )
+        change_keys = sorted(
+            {
+                attribute
+                for _, inputs, mode, _, _ in rows
+                if mode == "change"
+                for name in inputs
+                for attribute in RULE_INPUTS[name].attributes
+            }
+        )
+        base = (
+            _baseline_values(cur, change_features, change_keys)
+            if change_features
+            else {}
+        )
 
     matched: dict[str, int] = {}
     values: dict[tuple[str, str], float] = {}
     owner: dict[tuple[str, str], str] = {}
     edits: dict[str, list[dict[str, Any]]] = {}
-    for rule_id, inputs, feature_id in rows:
+    for rule_id, inputs, mode, units, feature_id in rows:
         if rule_id not in matched:
             matched[rule_id] = 0
             edits[rule_id] = edits_for(**inputs)
         if feature_id is None:
             continue
         matched[rule_id] += 1
+        if mode == "change":
+            for name, by in inputs.items():
+                spec = RULE_INPUTS[name]
+                for attribute in spec.attributes:
+                    start = base.get(attribute, {}).get(feature_id)
+                    if start is None:
+                        continue
+                    key = (feature_id, attribute)
+                    values[key] = changed_value(start, by, units.get(name, "abs"), spec)
+                    owner[key] = rule_id
+            continue
         for edit in edits[rule_id]:
             key = (feature_id, edit["attribute_key"])
             values[key] = float(edit["value_numeric"])
             owner[key] = rule_id
     return _Resolution(matched, values, owner)
+
+
+def _baseline_values(
+    cur: Any, feature_ids: list[str], keys: Sequence[str]
+) -> dict[str, dict[str, float]]:
+    """``effective_numeric`` at ``scenario_id=None`` (observation ⊕ base) for
+    every key at once, as ``{key: {feature_id: value}}``; absent values are
+    left out. One statement, not one per key and type."""
+    found: dict[str, dict[str, float]] = {k: {} for k in keys}
+    cur.execute(
+        """
+        SELECT f.id::text, k.key,
+               COALESCE(obs.value_numeric,
+                        NULLIF(f.attributes->>k.key, '')::double precision)
+        FROM curated_geo.feature f
+        CROSS JOIN unnest(%s::text[]) AS k(key)
+        LEFT JOIN curated_geo.observation obs
+               ON obs.feature_id = f.id
+              AND obs.attribute_key = k.key
+              AND obs.is_current
+        WHERE f.id = ANY(%s::uuid[])
+        """,
+        (list(keys), feature_ids),
+    )
+    for feature_id, key, value in cur.fetchall():
+        if value is not None:
+            found[key][feature_id] = value
+    return found
 
 
 def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
@@ -909,28 +1013,8 @@ def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
         return
 
     checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
-    baseline: dict[str, dict[str, float]] = {k: {} for k in checked}
     with conn.cursor() as cur:
-        # ``effective_numeric`` at ``scenario_id=None`` (observation ⊕ base),
-        # for every key at once: one statement, not one per key and type.
-        cur.execute(
-            """
-            SELECT f.id::text, k.key,
-                   COALESCE(obs.value_numeric,
-                            NULLIF(f.attributes->>k.key, '')::double precision)
-            FROM curated_geo.feature f
-            CROSS JOIN unnest(%s::text[]) AS k(key)
-            LEFT JOIN curated_geo.observation obs
-                   ON obs.feature_id = f.id
-                  AND obs.attribute_key = k.key
-                  AND obs.is_current
-            WHERE f.id = ANY(%s::uuid[])
-            """,
-            (list(checked), feature_ids),
-        )
-        for feature_id, key, value in cur.fetchall():
-            if value is not None:
-                baseline[key][feature_id] = value
+        baseline = _baseline_values(cur, feature_ids, checked)
         cur.execute(
             "SELECT id::text, ST_Area(geometry::geography) "
             "FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
