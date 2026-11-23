@@ -75,7 +75,7 @@ from reimagina.perf.workload_report import (  # noqa: E402
 # honest.
 #
 # ⚠ This was `{"geometry", "floors"}` — correct when the catalog was four
-# indicators, silently wrong afterwards. Against today's 13 it dirties 4
+# indicators, silently wrong afterwards. Against today's 12 it dirties 4
 # indicators, skipping all nine edificability and accessibility indicators. The
 # benchmark kept reporting, so nothing looked broken.
 CHANGED_ATTRIBUTES = frozenset(key for spec in SHIPPED_INDICATORS for key in spec.reads)

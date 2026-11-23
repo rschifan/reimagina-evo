@@ -56,9 +56,10 @@ def _inject_speedup(doc: dict, slots: int) -> None:
     parametrisation order. Ratio of medians rather than median of ratios — one
     slow repetition then moves neither number.
 
-    `partial_failure` is skipped on purpose: this track retries a failing unit
-    and `sync` does not, so a speedup there would compare retry policies while
-    looking like it compared schedulers.
+    `partial_failure` is skipped on purpose: this track does not retry a
+    failing unit (`s_compute` has retries off) but Track B retries it twice
+    with backoff, so a speedup there would compare retry policies across the
+    tracks while looking like it compared schedulers.
     """
     for wid, entry in doc["workloads"].items():
         baseline = entry.get("modes", {}).get("sync", {}).get("makespan_ms")

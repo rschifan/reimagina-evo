@@ -165,7 +165,7 @@ def retire_version(
 def backfill_versions(conn: Any) -> list[dict[str, Any]]:
     """Publish a version for every source asset that has data but no version.
 
-    The ingest path publishes on completion (``data.catalog.finish_run``), so
+    The ingest path publishes on completion (``data.catalog.complete_ingestion_run``), so
     this is only for layers loaded *before* the asset graph existed. Without it
     those leaves stay unversioned, ``asset_component_v`` hashes them as the
     literal ``'missing'``, and every indicator downstream reads stale forever —

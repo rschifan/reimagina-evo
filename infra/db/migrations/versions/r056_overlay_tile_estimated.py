@@ -15,6 +15,10 @@ package) rather than copied, so the anti-join and the delta classification
 cannot drift from the definition r049 tested. Downgrade reinstalls r049's
 function exactly.
 
+Also corrects ``serving_geo.get_tile``'s comment, which r010 wrote and no
+later migration updated: it listed ``type_slug, role`` and not r039's
+``aoi_id``. Downgrade puts r010's text back.
+
 Revision ID: r056
 Revises: r055
 Create Date: 2026-11-22
@@ -58,10 +62,24 @@ def _body_with_estimated() -> str:
     return body
 
 
+_GET_TILE_SIGNATURE = "serving_geo.get_tile(integer, integer, integer, json)"
+
+_GET_TILE_COMMENT = """'Martin function source — returns a Mapbox Vector Tile for the requested z/x/y.
+Optional query params: type_slug, role, aoi_id (a uuid; blank means unscoped, anything else matches nothing).
+Geometry is simplified at z < 14, buildings appear from z 14, and attributes are omitted below z 12 to keep tiles small.'"""
+
+# r010's text, verbatim, for the downgrade.
+_R010_GET_TILE_COMMENT = """'Martin function source — returns a Mapbox Vector Tile for the requested z/x/y.
+Optional query params: type_slug, role.
+Geometry is simplified at z < 14 and attributes are omitted below z 12 to keep tiles small.'"""
+
+
 def upgrade() -> None:
     op.execute(_body_with_estimated())
+    op.execute(f"COMMENT ON FUNCTION {_GET_TILE_SIGNATURE} IS {_GET_TILE_COMMENT}")
 
 
 def downgrade() -> None:
+    op.execute(f"COMMENT ON FUNCTION {_GET_TILE_SIGNATURE} IS {_R010_GET_TILE_COMMENT}")
     r049 = _r049()
     op.execute(r049._body(r049._OVERLAY, delta=True))
