@@ -342,6 +342,7 @@ describe("editing on the map", () => {
         rule: {
           area: AREA,
           inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+          units: { levels: "set", unit_size: "set", people_per_household: "set", lot_coverage: "set" },
         },
       }),
     );
@@ -431,16 +432,15 @@ describe("editing on the map", () => {
     expect(api.listScenarios).toHaveBeenCalledTimes(3);
   });
 
-  it("a change rule is sent with its mode and units, and its negative numbers are not refused locally", async () => {
+  it("a change rule is sent with each number's unit, and its negative numbers are not refused locally", async () => {
     store.select("A");
     await settleRun(
-      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, "change", { unit_size: "pct" }),
+      store.applyNewRule(AREA, { levels: -1, unit_size: -10 }, undefined, { levels: "abs", unit_size: "pct" }),
     );
     expect(api.addRule.mock.calls[0][1]).toEqual({
       area: AREA,
       inputs: { levels: -1, unit_size: -10 },
-      mode: "change",
-      units: { unit_size: "pct" },
+      units: { levels: "abs", unit_size: "pct" },
     });
   });
 
@@ -448,12 +448,11 @@ describe("editing on the map", () => {
     store.select("A");
     const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
     expect(ok).toBe(true);
-    // The mode always travels with an edit: "set" turns a change rule back.
+    // Every number's unit travels with an edit: "set" turns a change back.
     expect(api.updateRule).toHaveBeenCalledWith("A", "r1", {
       area: AREA,
       inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
-      mode: "set",
-      units: {},
+      units: { levels: "set", unit_size: "set", people_per_household: "set", lot_coverage: "set" },
     });
   });
 
@@ -564,6 +563,7 @@ describe("editing on the map", () => {
     expect(api.addRule.mock.calls[0][1]).toEqual({
       area: AREA,
       inputs: { people_per_household: 5 },
+      units: { people_per_household: "set" },
     });
   });
 });

@@ -1220,7 +1220,7 @@ def test_a_change_rule_is_stored_with_its_mode_and_units(
 
     assert response.status_code == 201, response.text
     [rule] = _rules(client, scenario_id)
-    assert (rule["mode"], rule["units"]) == ("change", {"lot_coverage": "abs"})
+    assert rule["units"] == {"lot_coverage": "abs"}
 
 
 def test_a_change_rule_whose_blocks_have_nothing_to_change_is_not_stored(

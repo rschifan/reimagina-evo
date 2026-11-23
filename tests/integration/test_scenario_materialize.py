@@ -901,8 +901,8 @@ def _change_rule(t, sid, wkt, units=None, **inputs):
         geometry_wkt=wkt,
         type_id=t.type_id,
         inputs=inputs,
-        mode="change",
-        units=units or {},
+        # A change rule: every number an amount unless its unit says otherwise.
+        units={**dict.fromkeys(inputs, "abs"), **(units or {})},
     )
     return rule
 
@@ -922,7 +922,7 @@ def test_change_rule_raises_each_block_from_its_own_baseline(conn):
     sid = t.scenario()
     rule = _change_rule(t, sid, _AREA_0_3, levels=1)
 
-    assert (rule["mode"], rule["units"]) == ("change", {"levels": "abs"})
+    assert rule["units"] == {"levels": "abs"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 2
     assert _override_value(conn, sid, t.blocks[1], "floors") == 3
     assert _override_value(conn, sid, t.blocks[1], "num_levels") == 3
@@ -986,10 +986,10 @@ def test_update_rule_from_change_to_set_drops_units(conn):
         rule_id=rule["id"],
         geometry_wkt=None,
         inputs={"levels": 4},
-        mode="set",
+        units={"levels": "set"},
     )
 
-    assert (updated["mode"], updated["units"]) == ("set", {})
+    assert updated["units"] == {"levels": "set"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 4
 
 
@@ -1008,7 +1008,7 @@ def test_an_update_naming_no_mode_keeps_a_change_rule_a_change_rule(conn):
         inputs={"levels": 100},
     )
 
-    assert (updated["mode"], updated["units"]) == ("change", {"levels": "pct"})
+    assert updated["units"] == {"levels": "pct"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 4
 
 
@@ -1022,14 +1022,14 @@ def test_a_merge_keeps_a_change_rule_and_its_units(conn):
         scenario_id=sid,
         rule_id=rule["id"],
         geometry_wkt=None,
-        inputs={"unit_size": -10},
+        inputs={"unit_size": 80},
         merge=True,
     )
 
-    assert updated["mode"] == "change"
-    assert updated["units"] == {"levels": "pct", "unit_size": "abs"}
+    # The kept number keeps its unit; a number the CLI adds is a value.
+    assert updated["units"] == {"levels": "pct", "unit_size": "set"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 3
-    assert _override_value(conn, sid, t.blocks[0], "unit_size") == 90
+    assert _override_value(conn, sid, t.blocks[0], "unit_size") == 80
 
 
 def test_one_rule_sets_one_number_and_changes_another(conn):
@@ -1083,7 +1083,6 @@ def test_units_sent_without_a_mode_make_a_set_rule_a_change_rule(conn):
     )
 
     # The numbers given no unit stay what they were in the set rule: values.
-    assert updated["mode"] == "change"
     assert updated["units"] == {"levels": "pct", "lot_coverage": "set"}
     assert _override_value(conn, sid, t.blocks[0], "floors") == 3
     assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.4
@@ -1103,7 +1102,7 @@ def test_units_that_all_say_set_keep_a_set_rule_a_set_rule(conn):
         units={"levels": "set"},
     )
 
-    assert (updated["mode"], updated["units"]) == ("set", {})
+    assert updated["units"] == {"levels": "set"}
 
 
 def test_a_change_that_moves_no_block_is_refused(conn):

@@ -409,6 +409,19 @@ describe("refusalText", () => {
     await expect(refusalText(err, "rule")).resolves.toBe(message);
   });
 
+  it("shows a refused number in the planner's own words when the server gives them", async () => {
+    const plain = "Lot coverage must be more than 0 and at most 100 %, got 120 %.";
+    const err = apiError(400, {
+      detail: { error: "invalid_value", field: "lot_coverage", message: "lot_coverage must be …", plain },
+    });
+    await expect(refusalText(err, "rule")).resolves.toBe(plain);
+  });
+
+  it("asks for a number when a rule has none", async () => {
+    const err = apiError(400, { detail: { error: "empty_proposal", field: null, message: "…" } });
+    await expect(refusalText(err, "rule")).resolves.toMatch(/^Set at least one number/);
+  });
+
   it("names the field a 400 was about", async () => {
     const err = apiError(400, {
       detail: {
@@ -595,16 +608,15 @@ describe("describeRule", () => {
   });
 
   it("labels a change rule by its signed changes and their units", () => {
-    const change = { ...rule({ levels: 1, unit_size: -10, lot_coverage: 0.05 }), mode: "change" as const, units: { unit_size: "pct" as const } };
+    const change = { ...rule({ levels: 1, unit_size: -10, lot_coverage: 0.05 }), units: { levels: "abs" as const, unit_size: "pct" as const, lot_coverage: "abs" as const } };
     expect(describeRule(change, 2)).toBe("Rule 2 · +1 st · −10 % m² · +5 pts cover");
-    const pct = { ...rule({ lot_coverage: 5, people_per_household: 0.5 }), mode: "change" as const, units: { lot_coverage: "pct" as const } };
+    const pct = { ...rule({ lot_coverage: 5, people_per_household: 0.5 }), units: { lot_coverage: "pct" as const, people_per_household: "abs" as const } };
     expect(describeRule(pct, 1)).toBe("Rule 1 · +0.5 people · +5 % cover");
   });
 
   it("labels a mixed rule's set numbers as values and its changes as signed", () => {
     const mixed = {
       ...rule({ levels: 20, lot_coverage: 0.4 }),
-      mode: "change" as const,
       units: { levels: "pct" as const, lot_coverage: "set" as const },
     };
     expect(describeRule(mixed, 1)).toBe("Rule 1 · +20 % st · 40 %");

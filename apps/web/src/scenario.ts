@@ -33,7 +33,7 @@
  * refuses, with the numbers.
  */
 
-import type { IndicatorSummary, RuleInputs, RuleMode, RuleRow, RuleUnits } from "./api";
+import type { IndicatorSummary, RuleInputs, RuleRow, RuleUnit, RuleUnits } from "./api";
 import { ApiError } from "./http";
 
 /** The indicator whose `valid_max` *is* the density ceiling (`ceilings.py`). */
@@ -341,6 +341,12 @@ export async function refusalText(
     if (code === "invalid_geometry") {
       return `The drawn area is not a polygon in longitude and latitude.${suffix(served)}`;
     }
+    // The server words a refused number in the rule box's units (percent,
+    // points), so the box does not repeat its checks.
+    if (typeof d?.plain === "string") return d.plain;
+    if (code === "empty_proposal") {
+      return "Set at least one number: a rule changes only what you type.";
+    }
     const field = typeof d?.field === "string" ? d.field : null;
     return field
       ? `${field} was refused.${suffix(served)}`
@@ -508,22 +514,44 @@ export interface Rule {
   /** The drawn area as the server stored it (`ST_MakeValid`'d WKT). */
   areaWkt: string;
   inputs: RuleInputs;
-  /** "set" (default): every number is a value. "change": each number's
-   *  choice is in `units` — an amount, a % or "set" — so one rule can set
-   *  one number and change another. */
-  mode?: RuleMode;
+  /** Per number: "set" (a value, and what a number without one is), an
+   *  amount or a %; one rule can set one number and change another. */
   units?: RuleUnits;
 }
 
 
 /** Every number a rule can set (`proposal.RULE_INPUTS`): its API name, what
- *  the page calls it, and its unit in a rule's one-line summary. */
-export const RULE_NUMBERS: ReadonlyArray<readonly [keyof RuleInputs, string, string]> = [
-  ["levels", "Storeys", "st"],
-  ["unit_size", "m² per home", "m²"],
-  ["people_per_household", "People per home", "people"],
-  ["lot_coverage", "Lot coverage", "%"],
+ *  the page calls it, its unit in a rule's one-line summary, and the unit of
+ *  a change by an amount (coverage: points of the block's area). */
+export const RULE_NUMBERS: ReadonlyArray<readonly [keyof RuleInputs, string, string, string]> = [
+  ["levels", "Storeys", "st", "storeys"],
+  ["unit_size", "m² per home", "m²", "m²"],
+  ["people_per_household", "People per home", "people", "people"],
+  ["lot_coverage", "Lot coverage", "%", "points"],
 ];
+
+/**
+ * One number of a rule in words, as the page shows it (`shown`: coverage in
+ * percent or points, a % change as typed). `short` is the rules list's
+ * ("+20 % st", "40 %"), `long` the rule box's read-back ("+20 %", "= 40 %").
+ * The one formatter both use, so the two cannot word a rule differently.
+ */
+export function numberText(
+  key: keyof RuleInputs,
+  shown: number,
+  unit: RuleUnit,
+  style: "short" | "long",
+): string {
+  const [, , short, amount] = RULE_NUMBERS.find(([k]) => k === key)!;
+  const cover = key === "lot_coverage";
+  if (unit === "set") {
+    return style === "short" ? `${fmt(shown)} ${short}` : `= ${fmt(shown)}${cover ? " %" : ""}`;
+  }
+  const signed = `${shown < 0 ? "−" : "+"}${fmt(Math.abs(shown))}`;
+  if (style === "long") return `${signed} ${unit === "pct" ? "%" : amount}`;
+  if (unit === "pct") return `${signed} % ${cover ? "cover" : short}`;
+  return `${signed} ${cover ? "pts cover" : short}`;
+}
 
 
 /** The server's rules, already in "later wins" order. */
@@ -533,7 +561,6 @@ export function rulesFromRows(rows: RuleRow[]): Rule[] {
     ordinal: row.ordinal,
     areaWkt: row.geometry_wkt,
     inputs: row.inputs,
-    mode: row.mode ?? "set",
     units: row.units ?? {},
   }));
 }
@@ -557,23 +584,13 @@ export function sharedNumbers(rule: Rule, later: Rule): string[] {
 export function describeRule(rule: Rule, position: number): string {
   // Only what the rule sets; everything else is each block's own value.
   const parts = [`Rule ${position}`];
-  const change = rule.mode === "change";
-  for (const [key, , unit] of RULE_NUMBERS) {
+  for (const [key] of RULE_NUMBERS) {
     const value = rule.inputs[key];
     if (value === undefined) continue;
-    // A set number, in a set rule or in a mixed one, is shown as its value.
-    if (!change || rule.units?.[key] === "set") {
-      parts.push(`${fmt(key === "lot_coverage" ? percentOf(value) : value)} ${unit}`);
-      continue;
-    }
-    // A change: signed, as a percentage or in the number's own unit;
-    // coverage as an amount is points of the block's area.
-    const pct = rule.units?.[key] === "pct";
-    const cover = key === "lot_coverage";
-    const amount = cover && !pct ? percentOf(value) : value;
-    const sign = amount < 0 ? "−" : "+";
-    const what = pct ? `% ${cover ? "cover" : unit}` : cover ? "pts cover" : unit;
-    parts.push(`${sign}${fmt(Math.abs(amount))} ${what}`);
+    const unit = rule.units?.[key] ?? "set";
+    // Coverage set or changed by points is a share; a % change is as typed.
+    const shown = key === "lot_coverage" && unit !== "pct" ? percentOf(value) : value;
+    parts.push(numberText(key, shown, unit, "short"));
   }
   return parts.join(" · ");
 }

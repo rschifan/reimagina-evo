@@ -200,18 +200,18 @@ class RuleBody(BaseModel):
         "people_per_household, lot_coverage (0 < c ≤ 1). Omitted or null: "
         "not set."
     )
-    mode: Literal["set", "change"] = Field(
-        "set",
-        description='"set": the numbers are the blocks\' new values. "change": '
-        "each number moves a block from its own baseline value (never from an "
-        "earlier rule's), by an amount or a percentage per ``units``.",
-    )
-    units: dict[str, Literal["abs", "pct", "set"]] = Field(
+    units: dict[str, Literal["set", "abs", "pct"]] = Field(
         default_factory=dict,
-        description='For a change rule: per number, "abs" (an amount; lot '
-        'coverage as a share, 0.05 = +5 points), "pct", or "set" (the '
-        "block's new value, as in a set rule: one rule can set one number and "
-        'change another). Missing: "abs".',
+        description='Per number, how it applies: "set" (the blocks\' new value; '
+        'a number given none is set), "abs" (an amount added to each block\'s '
+        "own baseline, never an earlier rule's value; lot coverage as a share, "
+        '0.05 = +5 points) or "pct". One rule can set one number and change '
+        "another.",
+    )
+    mode: Literal["set", "change"] | None = Field(
+        None,
+        description='Deprecated (r058): "change" makes a number given no unit '
+        '"abs"; "set" makes every number "set". Omit it and use ``units``.',
     )
     type_context: str = DEFAULT_TYPE_CONTEXT
     type_slug: str = DEFAULT_TYPE_SLUG
@@ -256,18 +256,16 @@ class RuleUpdateBody(BaseModel):
         None, description="The moved or resized area; omitted keeps the area."
     )
     inputs: dict[str, Any]
+    units: dict[str, Literal["set", "abs", "pct"]] = Field(
+        default_factory=dict,
+        description="Per number, as for a new rule. A number given none keeps "
+        'its own (a client that does not know about units cannot turn "+1" '
+        'into "1"); a new number is "set".',
+    )
     mode: Literal["set", "change"] | None = Field(
         None,
-        description='"set" or "change", as for a new rule. Omitted: the rule '
-        "keeps its own mode (and its units for numbers given none), so a "
-        "client that does not know about modes cannot turn a change into a "
-        'set. Send "set" to make a change rule a set rule.',
-    )
-    units: dict[str, Literal["abs", "pct", "set"]] = Field(
-        default_factory=dict,
-        description='For a change rule: per number, "abs" (an amount; lot '
-        'coverage as a share, 0.05 = +5 points), "pct" or "set". Missing: '
-        'the rule\'s own unit, else "abs".',
+        description='Deprecated (r058): "set" makes every number "set"; '
+        '"change" makes a number with no unit, given or kept, "abs".',
     )
 
 
@@ -277,7 +275,6 @@ class RuleRow(BaseModel):
     ordinal: int
     type_id: str
     inputs: dict[str, float]
-    mode: str = "set"
     units: dict[str, str] = Field(default_factory=dict)
     geometry_wkt: str
     created_at: datetime
@@ -487,6 +484,8 @@ def _refusals() -> Iterator[None]:
                 "error": "invalid_value",
                 "field": exc.field,
                 "message": str(exc),
+                # The same refusal in the rule box's words and units.
+                "plain": exc.plain,
             },
         ) from exc
     except InvalidGeometry as exc:

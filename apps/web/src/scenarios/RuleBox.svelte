@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { RuleInputs, RuleMode, RuleUnit, RuleUnits } from "../api";
-  import { percentOf, RULE_NUMBERS } from "../scenario";
+  import type { RuleInputs, RuleUnit, RuleUnits } from "../api";
+  import { numberText, percentOf, RULE_NUMBERS } from "../scenario";
 
   /**
    * The numbers of one rule, next to its shape on the map.
@@ -38,13 +38,11 @@
     busy: boolean;
     error: { field: string | null; text: string } | null;
     draggable: boolean;
-    /** How the saved rule applies its numbers; a new rule starts at "set". */
-    ruleMode?: RuleMode;
+    /** How the saved rule applies each number; a number without one is "=". */
     ruleUnits?: RuleUnits;
-    /** A rule of "=" numbers only is applied with two arguments; any other
-     *  adds "change" and each number's unit. */
-    onapply: (values: RuleInputs, scenarioName?: string, ruleMode?: RuleMode, units?: RuleUnits) => void;
-    onsave: (values: RuleInputs, ruleMode?: RuleMode, units?: RuleUnits) => void;
+    /** The numbers, each with its unit ("set", "abs" or "pct"). */
+    onapply: (values: RuleInputs, scenarioName: string | undefined, units: RuleUnits) => void;
+    onsave: (values: RuleInputs, units: RuleUnits) => void;
     ondelete: () => void;
     oncancel: () => void;
   }
@@ -58,7 +56,6 @@
     busy,
     error,
     draggable,
-    ruleMode: savedMode = "set",
     ruleUnits = {},
     onapply,
     onsave,
@@ -69,12 +66,9 @@
   // Seeded once from the props: the box is remounted for every shape, and
   // a prop change mid-typing must not overwrite what is being typed.
   const initial = (() => values)();
-  const startMode = (() => savedMode)();
   const startUnits = (() => ruleUnits)();
-  /** A saved number's choice: all "=" in a set rule; in a change rule its
-   *  unit, an amount when it has none (as the server reads it). */
-  const savedUnit = (key: keyof RuleInputs): RuleUnit =>
-    startMode === "set" ? "set" : (startUnits[key] ?? "abs");
+  /** A saved number's choice; one saved without a unit is "=". */
+  const savedUnit = (key: keyof RuleInputs): RuleUnit => startUnits[key] ?? "set";
   // Coverage is shown in percent (or points); a % change is shown as typed.
   // Unrounded: 0.625 shows as 62.5 and is saved as 0.625.
   const shown = (key: keyof RuleInputs): number | null => {
@@ -91,14 +85,13 @@
   let units = $state<RuleUnits>(
     Object.fromEntries(Object.keys(initial).map((k) => [k, savedUnit(k as keyof RuleInputs)])),
   );
-  // An empty number starts at "+ %" in a new box, and at "=" in a saved set
-  // rule, where every other number is "=" too.
-  const emptyUnit: RuleUnit = (() => (mode === "rule" && startMode === "set" ? "set" : "pct"))();
+  // An empty number starts at "+ %" in a new box, and at "=" in a saved rule
+  // whose numbers are all "=".
+  const emptyUnit: RuleUnit = (() =>
+    mode === "rule" && Object.keys(initial).every((k) => savedUnit(k as keyof RuleInputs) === "set")
+      ? "set"
+      : "pct")();
   const unitOf = (key: keyof RuleInputs): RuleUnit => units[key] ?? emptyUnit;
-  /** Each number's amount unit. */
-  const AMOUNT: Record<keyof RuleInputs, string> = {
-    levels: "storeys", unit_size: "m²", people_per_household: "people", lot_coverage: "points",
-  };
 
   const inputs: Record<string, HTMLInputElement | undefined> = $state({});
   const LABELS = Object.fromEntries(RULE_NUMBERS.map(([key, label]) => [key, label]));
@@ -121,12 +114,10 @@
   const readBack = $derived(
     RULE_NUMBERS.flatMap(([key, label]) => {
       const v = set(numbers[key]);
-      if (v === null) return [];
       const unit = unitOf(key);
-      if (unit === "set") return [`${label} = ${v}${key === "lot_coverage" ? " %" : ""}`];
-      if (v === 0) return [];
-      const sign = v < 0 ? "−" : "+";
-      return [`${label} ${sign}${Math.abs(v)} ${unit === "pct" ? "%" : AMOUNT[key]}`];
+      // A zero change does nothing; the server says so if it is sent.
+      if (v === null || (v === 0 && unit !== "set")) return [];
+      return [`${label} ${numberText(key, v, unit, "long")}`];
     }),
   );
 
@@ -145,29 +136,9 @@
     for (const [key] of RULE_NUMBERS) {
       const v = set(numbers[key]);
       if (v === null) continue;
-      const unit = unitOf(key);
-      if (key === "lot_coverage" && unit === "set" && (v <= 0 || v > 100)) {
-        localField = key;
-        localError = "Lot coverage must be more than 0 and at most 100 %.";
-        return null;
-      }
-      if (unit !== "set" && v === 0) {
-        localField = key;
-        localError = `${LABELS[key]} change cannot be 0: leave it empty to keep each block's own value.`;
-        return null;
-      }
-      if (key === "lot_coverage" && unit === "abs" && Math.abs(v) > 100) {
-        localField = key;
-        localError = "Lot coverage change must be between −100 and +100 points.";
-        return null;
-      }
       // Coverage set or changed by points is a share; a % change is as typed.
-      next[key] = key === "lot_coverage" && unit !== "pct" ? v / 100 : v;
-    }
-    if (Object.keys(next).length === 0) {
-      localField = null;
-      localError = "Set at least one number: a rule changes only what you type.";
-      return null;
+      // Ranges are the server's to judge: its refusal says them in these units.
+      next[key] = key === "lot_coverage" && unitOf(key) !== "pct" ? v / 100 : v;
     }
     localError = null;
     return next;
@@ -180,15 +151,8 @@
     const sent: RuleUnits = Object.fromEntries(
       Object.keys(next).map((k) => [k, unitOf(k as keyof RuleInputs)]),
     );
-    // All "=": a plain set rule, sent as before. Anything else is a change
-    // rule whose units carry each number's choice, "set" included.
-    if (Object.values(sent).every((u) => u === "set")) {
-      if (mode === "new") onapply(next, needsScenarioName ? name : undefined);
-      else onsave(next);
-      return;
-    }
-    if (mode === "new") onapply(next, needsScenarioName ? name : undefined, "change", sent);
-    else onsave(next, "change", sent);
+    if (mode === "new") onapply(next, needsScenarioName ? name : undefined, sent);
+    else onsave(next, sent);
   }
 
   const row = "flex items-center justify-between gap-2 text-xs text-muted-foreground";
@@ -217,13 +181,13 @@
   {/if}
   <p class="mb-2 text-muted-foreground">Per number: = sets it, + changes each block from its baseline. Empty keeps each block's own value.</p>
   <div class="flex flex-col gap-1.5">
-    {#each RULE_NUMBERS as [key, label] (key)}
+    {#each RULE_NUMBERS as [key, label, , amount] (key)}
       <div class={row}>
         <span>{label}</span>
         <span class="flex items-center gap-1">
           <input class="w-14 rounded border border-line bg-surface px-1.5 py-0.5 text-right text-xs tabular-nums" type="number" step="any" aria-label={label} placeholder="as is" aria-invalid={badField === key} aria-describedby={badField === key ? "rule-box-error" : undefined} bind:this={inputs[key]} bind:value={numbers[key]} />
           <span role="group" aria-label="{label} unit" class="flex overflow-hidden rounded border border-line">
-            {#each [["set", "="], ["abs", `+ ${AMOUNT[key]}`], ["pct", "+ %"]] as const as [u, text] (u)}
+            {#each [["set", "="], ["abs", `+ ${amount}`], ["pct", "+ %"]] as const as [u, text] (u)}
               <button
                 type="button"
                 class="px-1 py-0.5 text-[10px] {unitOf(key) === u ? 'bg-accent-strong text-white' : 'text-muted-foreground'}"

@@ -389,7 +389,7 @@ def get_scenario(conn: Any, scenario_id: str) -> dict | None:
 
 #: A rule as every surface shows it, read straight off ``RETURNING`` or a list.
 _RULE_COLUMNS = (
-    "id, ordinal, type_id, inputs, mode, units, ST_AsText(geometry) AS geometry_wkt, "
+    "id, ordinal, type_id, inputs, units, ST_AsText(geometry) AS geometry_wkt, "
     "created_at, updated_at"
 )
 
@@ -478,7 +478,9 @@ class ChangeHasNoBaseline(Exception):
         self.names = tuple(names)
         from reimagina.scenarios.proposal import RULE_INPUTS
 
-        what = ", ".join(RULE_INPUTS[n].label if n in RULE_INPUTS else n for n in names)
+        what = ", ".join(
+            RULE_INPUTS[n].label.lower() if n in RULE_INPUTS else n for n in names
+        )
         super().__init__(
             f"This change moves no block's {what}: the blocks have no value for "
             "it, or are already past its limit. Nothing was saved. Choose = to "
@@ -522,17 +524,18 @@ def add_rule(
     geometry_wkt: str,
     type_id: str,
     inputs: Mapping[str, Any],
-    mode: str = "set",
     units: Mapping[str, Any] | None = None,
+    mode: str | None = None,
 ) -> tuple[dict, MaterializeResult]:
     """Append one rule, materialise the scenario, and return both.
 
     * ``inputs`` are the planner's numbers, checked by ``proposal.check_inputs``
       (the one place every surface's refusals come from); a number left out is
       not set, and each block keeps its own value for it.
-    * ``mode`` is ``"set"`` (the numbers are the blocks' values) or
-      ``"change"`` (each moves a block from its own baseline, by an amount or
-      a percentage per ``units``) — see ``_resolve_rules``.
+    * ``units`` says per number how it applies — ``set`` (the blocks' value,
+      and what a number given none is), ``abs`` or ``pct`` (a change from
+      each block's own baseline) — see ``_resolve_rules``. ``mode`` is r058's,
+      from a client that still sends it (``proposal.rule_units``).
     * The geometry is repaired on write — see ``_repair_geometry``.
     * ``ordinal`` is ``max + 1`` under the scenario's row lock, and never
       changes after. ``ordinal`` rather than ``created_at`` orders rules
@@ -543,12 +546,14 @@ def add_rule(
 
     Returns the rule as stored and what the materialisation did.
     """
-    from reimagina.scenarios.proposal import check_inputs, check_units
+    from reimagina.scenarios.proposal import check_inputs, rule_units
 
     # Before any SQL: a refused id or number costs no lock.
     scenario_id = _canonical_id(scenario_id)
-    checked = check_inputs(inputs, mode=mode, units=units)
-    checked_units = check_units(mode, units, checked)
+    given = {k: v for k, v in inputs.items() if v is not None}
+    checked_units = rule_units(units, given, mode=mode)
+    checked = check_inputs(inputs, units=checked_units)
+    checked_units = {k: checked_units[k] for k in checked}
     _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = _repair_geometry(cur, geometry_wkt)
@@ -556,9 +561,9 @@ def add_rule(
         cur.execute(
             f"""
             INSERT INTO curated_geo.scenario_rule
-              (scenario_id, ordinal, type_id, geometry, inputs, mode, units)
+              (scenario_id, ordinal, type_id, geometry, inputs, units)
             SELECT %(s)s, COALESCE(max(ordinal), 0) + 1, %(t)s,
-                   ST_GeomFromEWKB(%(g)s), %(i)s::jsonb, %(m)s, %(u)s::jsonb
+                   ST_GeomFromEWKB(%(g)s), %(i)s::jsonb, %(u)s::jsonb
             FROM curated_geo.scenario_rule
             WHERE scenario_id = %(s)s
             RETURNING {_RULE_COLUMNS}
@@ -568,7 +573,6 @@ def add_rule(
                 "t": type_id,
                 "g": repaired,
                 "i": json.dumps(checked),
-                "m": mode,
                 "u": json.dumps(checked_units),
             },
         )
@@ -602,72 +606,47 @@ def update_rule(
     its position in "later wins" — re-adding a number it had dropped does not
     move it ahead of a later rule.
 
-    ``mode`` and ``units`` travel with the numbers. Without a ``mode`` the
-    rule keeps its own, and its own units for the numbers given no unit —
-    whole set or merge alike: a client that names no mode (an old cached
-    page) must not turn "+1 storey" into "1 storey". Naming ``"set"`` is how
-    a change rule becomes a set rule.
+    ``units`` travel with the numbers: a number given none keeps its own (a
+    client that does not know about units, such as an old cached page, must
+    not turn "+1 storey" into "1 storey"), and a new number is ``set``.
+    ``mode`` is r058's: ``"set"`` makes every number a value, ``"change"``
+    makes a number given no unit an amount (``proposal.rule_units``).
     """
-    from reimagina.scenarios.proposal import check_inputs, check_units
+    from reimagina.scenarios.proposal import check_inputs, rule_units
 
     scenario_id = _canonical_id(scenario_id)
     rule_id = _rule_id(rule_id)
     missing = RuleNotFound(f"scenario {scenario_id} has no rule {rule_id}")
-
-    def _checked(
-        current: dict[str, Any], rule_mode: str, rule_units: Mapping[str, Any]
-    ) -> tuple[str, dict[str, float], dict[str, str]]:
-        given = {k: v for k, v in inputs.items() if v is not None or not merge}
-        merged = {**current, **given}
-        numbers = check_inputs(
-            {k: v for k, v in merged.items() if k not in unset},
-            mode=rule_mode,
-            units=rule_units,
-        )
-        # A kept unit of a number the merge removed goes with the number.
-        kept = {k: v for k, v in rule_units.items() if k in numbers}
-        return rule_mode, numbers, check_units(rule_mode, kept, numbers)
-
-    # A whole set with its mode is checked before any SQL; anything else
-    # needs the rule first.
-    checked = None if merge or mode is None else _checked({}, mode, units or {})
     _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
         _lock_scenario(cur, scenario_id)
-        if checked is None:
-            cur.execute(
-                "SELECT inputs, mode, units FROM curated_geo.scenario_rule "
-                "WHERE id = %s AND scenario_id = %s",
-                (rule_id, scenario_id),
-            )
-            found = cur.fetchone()
-            if found is None:
-                raise missing
-            current, rule_mode, rule_units = found
-            if not merge:
-                current = {}
-            # Units only mean something in a change rule: sent without a mode,
-            # they make one rather than being dropped ("+20 %" is not "20").
-            # The set rule's other numbers stay values ("set").
-            if (
-                mode is None
-                and rule_mode == "set"
-                and any(u != "set" for u in (units or {}).values())
-            ):
-                rule_mode = "change"
-                rule_units = dict.fromkeys({**current, **inputs}, "set")
-            checked = (
-                _checked(current, rule_mode, {**rule_units, **(units or {})})
-                if mode is None
-                else _checked(current, mode, units or {})
-            )
-        new_mode, numbers, new_units = checked
+        cur.execute(
+            "SELECT inputs, units FROM curated_geo.scenario_rule "
+            "WHERE id = %s AND scenario_id = %s",
+            (rule_id, scenario_id),
+        )
+        found = cur.fetchone()
+        if found is None:
+            raise missing
+        current, own_units = found
+        given = {k: v for k, v in inputs.items() if v is not None or not merge}
+        merged = {**(current if merge else {}), **given}
+        names = [k for k, v in merged.items() if v is not None and k not in unset]
+        # A number given no unit keeps its own; r058's "change" made it an
+        # amount, which rule_units applies only to numbers with neither.
+        kept = {k: u for k, u in own_units.items() if k in names}
+        new_units = rule_units(
+            {**({} if mode == "set" else kept), **(units or {})}, names, mode=mode
+        )
+        numbers = check_inputs(
+            {k: v for k, v in merged.items() if k not in unset}, units=new_units
+        )
+        new_units = {k: new_units[k] for k in numbers}
         cur.execute(
             f"""
             UPDATE curated_geo.scenario_rule
                SET inputs = %(i)s::jsonb,
-                   mode = %(m)s,
                    units = %(u)s::jsonb,
                    geometry = COALESCE(ST_GeomFromEWKB(%(g)s), geometry),
                    updated_at = now()
@@ -676,7 +655,6 @@ def update_rule(
             """,
             {
                 "i": json.dumps(numbers),
-                "m": new_mode,
                 "u": json.dumps(new_units),
                 "g": repaired,
                 "r": rule_id,
@@ -790,6 +768,9 @@ def materialize_for_rule(
 #: exist somewhere and a tuple that silently reorders itself would be worse
 #: than one that is written down.
 _CEILING_ATTRIBUTES = ("num_levels", "unit_size", "people_per_household")
+#: Every baseline attribute the ceiling check reads, which resolution fetches
+#: with the ones its changes need, in one read (``_Resolution.base``).
+_CHECKED = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
 
 
 def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
@@ -919,10 +900,13 @@ class _Resolution:
     values: dict[tuple[str, str], float]
     #: (feature, attribute) -> the rule that supplied the value.
     owner: dict[tuple[str, str], str]
-    #: Rule id -> (mode, units), for a refusal to speak in the rule's terms.
-    modes: dict[str, tuple[str, dict[str, str]]] = field(default_factory=dict)
+    #: Rule id -> its unit per number, for a refusal to speak in its terms.
+    units: dict[str, dict[str, str]] = field(default_factory=dict)
     #: Change rules that caught blocks and changed none: id -> their numbers.
     unchanged: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The baseline (observation ⊕ base) of every caught block, for every
+    #: attribute a change or the ceiling check reads: ``{key: {feature: v}}``.
+    base: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
@@ -964,7 +948,7 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT r.id::text, r.inputs, r.mode, r.units, f.id::text
+            SELECT r.id::text, r.inputs, r.units, f.id::text
             FROM curated_geo.scenario_rule r
             LEFT JOIN curated_geo.feature f
                    ON f.type_id = r.type_id
@@ -981,37 +965,30 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
         rows = cur.fetchall()
         # Each rule once: the numbers it sets (as edits, the same for every
         # block) and the numbers it changes from each block's baseline. A set
-        # rule, and a change rule's "set" numbers, are all edits.
-        rules: dict[str, tuple[str, dict[str, str], dict[str, Any]]] = {}
+        # number (and so a set rule) is an edit; a number given no unit is set.
+        rules: dict[str, tuple[dict[str, str], dict[str, Any]]] = {}
         plan: dict[
             str, tuple[list[tuple[str, float]], list[tuple[str, float, str]]]
         ] = {}
-        for rule_id, inputs, mode, units, _ in rows:
+        for rule_id, inputs, units, _ in rows:
             if rule_id in rules:
                 continue
-            units = dict(units or {}) if mode == "change" else {}
-            rules[rule_id] = (mode, units, inputs)
-            sets = {
-                n: v
-                for n, v in inputs.items()
-                if mode != "change" or units.get(n) == "set"
-            }
+            units = {n: (units or {}).get(n, "set") for n in inputs}
+            rules[rule_id] = (units, inputs)
+            sets = {n: v for n, v in inputs.items() if units[n] == "set"}
             plan[rule_id] = (
                 [
                     (e["attribute_key"], float(e["value_numeric"]))
                     for e in (edits_for(**sets) if sets else [])
                 ],
-                [
-                    (n, v, units.get(n, "abs"))
-                    for n, v in inputs.items()
-                    if n not in sets
-                ],
+                [(n, v, units[n]) for n, v in inputs.items() if n not in sets],
             )
-        change_features = sorted(
-            {f for rule_id, *_, f in rows if plan[rule_id][1] and f is not None}
-        )
-        change_keys = sorted(
-            {
+        # One baseline read for every caught block: what the changes move
+        # from, and what the ceiling check (step 3) reads for every block.
+        caught = sorted({f for *_, f in rows if f is not None})
+        keys = sorted(
+            set(_CHECKED)
+            | {
                 attribute
                 for _, changes in plan.values()
                 for name, _, _ in changes
@@ -1019,16 +996,14 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
             }
         )
         base = (
-            _baseline_values(cur, change_features, change_keys)
-            if change_features
-            else {}
+            _baseline_values(cur, caught, keys) if caught else {key: {} for key in keys}
         )
 
     matched: dict[str, int] = dict.fromkeys(rules, 0)
     values: dict[tuple[str, str], float] = {}
     owner: dict[tuple[str, str], str] = {}
     moved: set[str] = set()
-    for rule_id, _, _, _, feature_id in rows:
+    for rule_id, _, _, feature_id in rows:
         if feature_id is None:
             continue
         matched[rule_id] += 1
@@ -1051,13 +1026,13 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
                 # only a real move counts against "changed nothing".
                 if values[key] != start:
                     moved.add(rule_id)
-    modes = {rule_id: (mode, units) for rule_id, (mode, units, _) in rules.items()}
     unchanged = {
         rule_id: tuple(inputs)
-        for rule_id, (mode, _, inputs) in rules.items()
-        if mode == "change" and matched[rule_id] and rule_id not in moved
+        for rule_id, (_, inputs) in rules.items()
+        if plan[rule_id][1] and matched[rule_id] and rule_id not in moved
     }
-    return _Resolution(matched, values, owner, modes, unchanged)
+    units_of = {rule_id: units for rule_id, (units, _) in rules.items()}
+    return _Resolution(matched, values, owner, units_of, unchanged, base)
 
 
 def _baseline_values(
@@ -1119,9 +1094,8 @@ def _refuse_ceiling_breaches(conn: Any, resolution: _Resolution) -> None:
     if not feature_ids:
         return
 
-    checked = (*_CEILING_ATTRIBUTES, "floors", "lot_coverage")
+    baseline = {key: resolution.base.get(key, {}) for key in _CHECKED}
     with conn.cursor() as cur:
-        baseline = _baseline_values(cur, feature_ids, checked)
         cur.execute(
             "SELECT id::text, ST_Area(geometry::geography) "
             "FROM curated_geo.feature WHERE id = ANY(%s::uuid[])",
@@ -1232,8 +1206,7 @@ def _ceiling_advice(
 
 def _storeys_kind(resolution: _Resolution, rule_id: str) -> str:
     """How a rule writes storeys: "set", "abs" (an amount) or "pct"."""
-    mode, units = resolution.modes.get(rule_id, ("set", {}))
-    return "set" if mode != "change" else units.get("levels", "abs")
+    return resolution.units.get(rule_id, {}).get("levels", "set")
 
 
 def _delete_unimplied_overrides(

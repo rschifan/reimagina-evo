@@ -163,9 +163,7 @@ def add_rule(
         "scenario_id": scenario_id,
         "rule_id": rule["id"],
         "inputs": rule["inputs"],
-        # "set" or "change" (and its units): "1" means 1 storey in one, +1 in
-        # the other, so the output says which.
-        "mode": rule["mode"],
+        # How each number applies (set, abs, pct): "1" is 1 storey or +1.
         "units": rule["units"],
         "feature_type": f"{type_context}:{type_slug}",
         "geojson": str(geojson),
@@ -217,9 +215,7 @@ def update_rule(
         "scenario_id": scenario_id,
         "rule_id": rule["id"],
         "inputs": rule["inputs"],
-        # "set" or "change" (and its units): "1" means 1 storey in one, +1 in
-        # the other, so the output says which.
-        "mode": rule["mode"],
+        # How each number applies (set, abs, pct): "1" is 1 storey or +1.
         "units": rule["units"],
         "materialized": asdict(result),
     }

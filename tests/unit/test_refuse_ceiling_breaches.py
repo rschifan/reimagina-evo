@@ -26,10 +26,10 @@ class _Cursor:
         return False
 
     def execute(self, sql, *_a):
-        if "observation" in sql:
-            self._rows = [("block-x", k, v) for k, v in self._baseline.items()]
-        else:
-            self._rows = [("block-x", 10_000.0)]
+        # The baseline comes with the resolution: reading it again here was
+        # a second round trip over the same blocks.
+        assert "observation" not in sql, "the ceiling check re-read the baseline"
+        self._rows = [("block-x", 10_000.0)]
 
     def fetchall(self):
         return self._rows
@@ -43,11 +43,18 @@ class _Conn:
         return _Cursor(self._baseline)
 
 
-def _resolution(resolved: dict[tuple[str, str], float]) -> authoring._Resolution:
+def _base(baseline: dict[str, float]) -> dict[str, dict[str, float]]:
+    return {k: {"block-x": v} for k, v in baseline.items()}
+
+
+def _resolution(
+    resolved: dict[tuple[str, str], float], baseline: dict[str, float]
+) -> authoring._Resolution:
     return authoring._Resolution(
         matched={"rule-1": 1},
         values=resolved,
         owner=dict.fromkeys(resolved, "rule-1"),
+        base=_base(baseline),
     )
 
 
@@ -55,17 +62,21 @@ def test_a_block_the_compute_skips_is_not_refused_on_density():
     # 12 storeys at 50 m² is 2,400/ha > 2,000, but without people_per_household
     # the compute writes no density for this block.
     authoring._refuse_ceiling_breaches(
-        _Conn({"unit_size": 50.0}),
-        _resolution({("block-x", "num_levels"): 12.0, ("block-x", "floors"): 12.0}),
+        _Conn({}),
+        _resolution(
+            {("block-x", "num_levels"): 12.0, ("block-x", "floors"): 12.0},
+            {"unit_size": 50.0},
+        ),
     )
 
 
 def test_the_floors_bound_still_applies_to_such_a_block():
     with pytest.raises(authoring.CeilingExceeded) as caught:
         authoring._refuse_ceiling_breaches(
-            _Conn({"unit_size": 50.0}),
+            _Conn({}),
             _resolution(
-                {("block-x", "num_levels"): 500.0, ("block-x", "floors"): 500.0}
+                {("block-x", "num_levels"): 500.0, ("block-x", "floors"): 500.0},
+                {"unit_size": 50.0},
             ),
         )
     # The refusal names the rule and the storeys the block would allow.
@@ -94,7 +105,8 @@ def _change_refusal(units: dict[str, str], levels: float) -> authoring.CeilingEx
         matched={"rule-1": 1},
         values={("block-x", "num_levels"): levels, ("block-x", "floors"): levels},
         owner={("block-x", "num_levels"): "rule-1", ("block-x", "floors"): "rule-1"},
-        modes={"rule-1": ("change", units)},
+        units={"rule-1": units},
+        base=_base(baseline),
     )
     with pytest.raises(authoring.CeilingExceeded) as caught:
         authoring._refuse_ceiling_breaches(_Conn(baseline), resolution)

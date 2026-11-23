@@ -63,15 +63,13 @@ describe("the rule box", () => {
     const { type, button, handlers, target } = open();
     type("Lot coverage", "45");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined);
-    for (const bad of ["0", "120"]) {
-      handlers.onapply.mockClear();
-      type("Lot coverage", bad);
-      button("Apply").click();
-      flushSync();
-      expect(handlers.onapply).not.toHaveBeenCalled();
-      expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
-    }
+    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 0.45 }, undefined, allSet(VALUES));
+    // Out of range is the server's to refuse, in these units; the box sends it.
+    handlers.onapply.mockClear();
+    type("Lot coverage", "120");
+    button("Apply").click();
+    expect(handlers.onapply).toHaveBeenCalledWith({ ...VALUES, lot_coverage: 1.2 }, undefined, allSet(VALUES));
+    expect(target.textContent).not.toMatch(/must be/);
   });
 
   // B18: a coverage of 0.625 showed as 63 and Save wrote 0.63 back, though
@@ -81,7 +79,7 @@ describe("the rule box", () => {
     expect(input("Lot coverage").value).toBe("62.5");
     type("Storeys", "4");
     button("Save").click();
-    expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lot_coverage: 0.625 });
+    expect(handlers.onsave).toHaveBeenCalledWith({ ...VALUES, levels: 4, lot_coverage: 0.625 }, allSet(VALUES));
   });
 
   // B19: "3,5" in a dot-decimal browser binds as empty, which read as "not
@@ -111,14 +109,14 @@ describe("the rule box", () => {
     const { input, button, handlers } = open({ needsScenarioName: true });
     expect(input("Scenario name").value).toBe("Scenario 1");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith(VALUES, "Scenario 1");
+    expect(handlers.onapply).toHaveBeenCalledWith(VALUES, "Scenario 1", allSet(VALUES));
   });
 
   it("a rule box offers Save, Delete and Cancel", () => {
     const { button, handlers } = open({ mode: "rule" });
     expect(button("Apply")).toBeUndefined();
     button("Save").click();
-    expect(handlers.onsave).toHaveBeenCalledWith(VALUES);
+    expect(handlers.onsave).toHaveBeenCalledWith(VALUES, allSet(VALUES));
     button("Delete rule").click();
     expect(handlers.ondelete).toHaveBeenCalled();
     button("Cancel").click();
@@ -176,15 +174,13 @@ describe("numbers left empty", () => {
     type("People per home", "5");
     choose(target, "People per home unit", "=");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ people_per_household: 5 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ people_per_household: 5 }, undefined, { people_per_household: "set" });
   });
 
-  it("refuses a rule with no number", () => {
-    const { button, handlers, target } = open({ values: EMPTY });
+  it("leaves a rule with no number for the server to refuse", () => {
+    const { button, handlers } = open({ values: EMPTY });
     button("Apply").click();
-    flushSync();
-    expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Set at least one number/);
+    expect(handlers.onapply).toHaveBeenCalledWith({}, undefined, {});
   });
 });
 
@@ -205,7 +201,6 @@ describe("a choice per number", () => {
     expect(handlers.onapply).toHaveBeenCalledWith(
       { levels: 20, lot_coverage: 0.4 },
       undefined,
-      "change",
       { levels: "pct", lot_coverage: "set" },
     );
   });
@@ -221,7 +216,6 @@ describe("a choice per number", () => {
     expect(handlers.onapply).toHaveBeenCalledWith(
       { levels: 1, unit_size: -10, lot_coverage: 0.05 },
       undefined,
-      "change",
       { levels: "abs", unit_size: "pct", lot_coverage: "abs" },
     );
   });
@@ -231,7 +225,7 @@ describe("a choice per number", () => {
     type("Lot coverage", "5");
     button("Apply").click();
     expect(handlers.onapply).toHaveBeenCalledWith(
-      { lot_coverage: 5 }, undefined, "change", { lot_coverage: "pct" },
+      { lot_coverage: 5 }, undefined, { lot_coverage: "pct" },
     );
   });
 
@@ -239,14 +233,12 @@ describe("a choice per number", () => {
     const { input, target } = open({
       mode: "rule",
       values: { unit_size: -10, lot_coverage: 0.05, levels: 4 },
-      ruleMode: "change",
-      ruleUnits: { unit_size: "pct", levels: "set" },
+      ruleUnits: { unit_size: "pct", levels: "set", lot_coverage: "abs" },
     });
     expect(input("m² per home").value).toBe("-10");
     expect(input("Lot coverage").value).toBe("5");
     expect(pressed(target, "m² per home unit", "+ %").getAttribute("aria-pressed")).toBe("true");
     expect(pressed(target, "Storeys unit", "=").getAttribute("aria-pressed")).toBe("true");
-    // A saved number with no unit is an amount, as the server reads it.
     expect(pressed(target, "Lot coverage unit", "+ points").getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -254,7 +246,6 @@ describe("a choice per number", () => {
     const { input } = open({
       mode: "rule",
       values: { levels: 20 },
-      ruleMode: "change",
       ruleUnits: { levels: "pct" },
     });
     expect(document.activeElement).toBe(input("Storeys"));
@@ -267,27 +258,22 @@ describe("a choice per number", () => {
     expect(pressed(target, "Storeys unit", "=").getAttribute("aria-pressed")).toBe("true");
     type("Storeys", "4");
     button("Save").click();
-    expect(handlers.onsave).toHaveBeenCalledWith({ levels: 4, lot_coverage: 0.4 });
+    expect(handlers.onsave).toHaveBeenCalledWith({ levels: 4, lot_coverage: 0.4 }, { levels: "set", lot_coverage: "set" });
   });
 
-  it("a zero change is not read back and is refused before sending", () => {
-    const { type, button, handlers, target } = open({ values: {} });
+  it("a zero change is not read back", () => {
+    const { type, target } = open({ values: {} });
     type("Storeys", "0");
     expect(target.querySelector('[aria-label="This rule"]')).toBeNull();
-    button("Apply").click();
-    flushSync();
-    expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Storeys change cannot be 0/);
   });
 
-  it("a coverage change in points beyond 100 is refused in points", () => {
+  it("a coverage change in points is sent as a share", () => {
+    // Range refusals come from the server, worded in points.
     const { type, button, handlers, target } = open({ values: {} });
     type("Lot coverage", "150");
     choose(target, "Lot coverage unit", "+ points");
     button("Apply").click();
-    flushSync();
-    expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Lot coverage change must be between −100 and \+100 points/);
+    expect(handlers.onapply).toHaveBeenCalledWith({ lot_coverage: 1.5 }, undefined, { lot_coverage: "abs" });
   });
 
   it("an empty number starts at + %", () => {
@@ -316,18 +302,14 @@ describe("a choice per number", () => {
     type("Lot coverage", "0.5");
     choose(target, "Lot coverage unit", "=");
     button("Apply").click();
-    expect(handlers.onapply).toHaveBeenCalledWith({ lot_coverage: 0.005 }, undefined);
+    expect(handlers.onapply).toHaveBeenCalledWith({ lot_coverage: 0.005 }, undefined, { lot_coverage: "set" });
   });
 
-  it("a set coverage outside 0–100 % is refused in a mixed rule too", () => {
-    const { button, type, handlers, target } = open({ values: {} });
-    type("Storeys", "10");
-    type("Lot coverage", "120");
-    choose(target, "Lot coverage unit", "=");
-    button("Apply").click();
-    flushSync();
-    expect(handlers.onapply).not.toHaveBeenCalled();
-    expect(target.textContent).toMatch(/Lot coverage must be more than 0 and at most 100 %/);
+  it("shows the server's refusal of a number, worded in the box's units", () => {
+    const plain = "Lot coverage must be more than 0 and at most 100 %, got 120 %.";
+    const { input, target } = open({ error: { field: "lot_coverage", text: plain } });
+    expect(target.textContent).toContain(plain);
+    expect(input("Lot coverage").getAttribute("aria-invalid")).toBe("true");
   });
 });
 
@@ -340,4 +322,9 @@ function pressed(target: Element, group: string, text: string): HTMLButtonElemen
 function choose(target: Element, group: string, text: string) {
   pressed(target, group, text).click();
   flushSync();
+}
+
+/** Every number of `values` as "=". */
+function allSet(values: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.keys(values).map((k) => [k, "set"]));
 }
