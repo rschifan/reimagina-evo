@@ -132,11 +132,11 @@ def test_a_set_storeys_number_in_a_mixed_rule_is_told_storeys_not_a_change():
     assert "at most 10 storeys fit" in message
 
 
-def test_a_change_with_nothing_to_change_points_at_the_equals_choice():
-    # The rule box has a per-number "=", not a "Set to" switch.
+def test_a_change_with_nothing_to_change_says_to_set_a_value_on_any_surface():
+    # The CLI prints this too, so it names no control of the page.
     message = str(authoring.ChangeHasNoBaseline("rule-1", ["unit_size"]))
-    assert "m² per home" in message and "choose =" in message.lower()
-    assert "Set to" not in message
+    assert "m² per home" in message and "set it as a value instead" in message
+    assert "Set to" not in message and "Choose =" not in message
 
 
 def test_several_rules_in_the_fallback_are_plural():

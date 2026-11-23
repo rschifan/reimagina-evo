@@ -357,7 +357,8 @@ export interface RuleInputs {
   levels?: number;
   unit_size?: number;
   people_per_household?: number;
-  /** Share of the block built on, `0 < c ≤ 1`. */
+  /** Share of the block built on, `0 < c ≤ 1`, when set; with `abs` a signed
+   *  share change (0.05 = +5 points), with `pct` a percent of the block's own. */
   lot_coverage?: number;
 }
 

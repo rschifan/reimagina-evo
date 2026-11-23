@@ -16,16 +16,19 @@
    * Each number chooses how it applies: "=" (the blocks' new value), "+" an
    * amount in its own unit (coverage in points), or "+ %" of each block's
    * baseline. So one rule can set coverage and raise storeys over the same
-   * area. A rule whose numbers are all "=" is sent as a plain set rule; any
-   * other is a change rule whose `units` carry each number's choice. An empty
-   * number starts at "+ %", the way planners first asked ("+15 %"); the line
-   * under the numbers reads the rule back in words, so "+30" cannot be
-   * applied as 30 storeys by someone who meant 30 %.
+   * area. Each number is sent with its unit ("set", "abs", "pct"). An empty
+   * number starts at "+ %" in a new box, the way planners first asked
+   * ("+15 %"), and at "=" in a saved rule whose numbers are all "="; the line
+   * under the numbers reads the rule back in words (`numberText`, which the
+   * rules list uses too), so "+30" cannot be applied as 30 storeys by
+   * someone who meant 30 %.
    *
    * Coverage is typed in percent (or points), as planners say it, and handed
-   * on as a share. `novalidate`: the checks below name the field and the
-   * range; the browser's own would pre-empt them with a tooltip that says
-   * neither.
+   * on as a share. Ranges are the server's: its refusal (`plain`) is worded
+   * in these units and shown here, marking the field. The box checks only
+   * what the browser cannot send, a number it could not read. `novalidate`:
+   * the browser's own checks would pre-empt the server's with a tooltip that
+   * names neither the field nor the range.
    */
   interface Props {
     mode: "new" | "rule";

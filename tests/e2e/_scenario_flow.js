@@ -174,7 +174,7 @@ async function run(page) {
   await click(blk(2, 2));
   await ruleBox.waitFor({ timeout: 10_000 });
   const says = await ruleBox.innerText();
-  step('an earlier rule says which rule overrides it', /Rule 2 also sets storeys/.test(says), { box: says });
+  step('an earlier rule says which rule overrides it', /Rule 2 also gives storeys/.test(says), { box: says });
   await page.keyboard.press('Escape');
   await ruleBox.waitFor({ state: 'detached', timeout: 5_000 });
 

@@ -317,12 +317,19 @@ describe("editing on the map", () => {
     return p;
   };
 
-  it("apply refuses locally with validateEdit's text before any request", async () => {
+  it("apply refuses a density-ceiling breach locally, with validateEdit's text, before any request", async () => {
     store.select("A");
-    const ok = await store.applyNewRule(AREA, { ...VALUES, levels: -1 });
+    store.ws.densityValidMax = 2000;
+    const ok = await store.applyNewRule(AREA, { ...VALUES, levels: 40, lot_coverage: 1 });
     expect(ok).toBe(false);
     expect(api.addRule).not.toHaveBeenCalled();
-    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/levels/) });
+    expect(store.ws.boxError).toEqual({ field: "levels", text: expect.stringMatching(/density ceiling/) });
+  });
+
+  it("apply leaves an out-of-range number to the server, whose refusal is worded for planners", async () => {
+    store.select("A");
+    await settleRun(store.applyNewRule(AREA, { ...VALUES, levels: -1 }));
+    expect(api.addRule).toHaveBeenCalledTimes(1);
   });
 
   it("apply on the baseline creates the scenario with its rule in one request, then follows its run", async () => {

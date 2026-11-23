@@ -320,7 +320,7 @@
       const [[c0, d0], [c1, d1]] = other;
       if (!(a0 <= c1 && c0 <= a1 && b0 <= d1 && d0 <= b1)) continue;
       const shared = sharedNumbers(ordered[index - 1], ordered[i]);
-      if (shared.length) notes.push(`Rule ${i + 1} also sets ${shared.join(", ")}`);
+      if (shared.length) notes.push(`Rule ${i + 1} also gives ${shared.join(", ")}`);
     }
     return notes.length ? `${notes.join("; ")}: where they overlap, the later rule wins.` : null;
   }

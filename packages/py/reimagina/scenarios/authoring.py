@@ -121,7 +121,7 @@ class CeilingExceeded(Exception):
         # block ids, slugs and bounds travel in the structured fields.
         if advice is None:
             # No rule-aware advice: the first breach's rules and the storeys
-            # that fit it, as a set rule would be told.
+            # that fit it, as a set number is told.
             worst = breaches[0]
             numbers = [n for _, n in self.rules_of(worst)]
             most = self.allowed_levels.get((worst.feature_id, worst.indicator_slug))
@@ -175,8 +175,9 @@ class MaterializeResult:
     footprint_features: tuple[str, ...] = ()
     footprint_attributes: tuple[str, ...] = ()
     aoi_id: str | None = None
-    #: Change rules whose caught blocks have no baseline for any number the
-    #: rule changes, so it changed nothing; id -> the numbers' names.
+    #: Rules whose numbers all change (``abs``/``pct``) and that caught
+    #: blocks but moved none — no baseline value, or every block already past
+    #: the number's limit; id -> the numbers' names.
     unchanged_rules: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
@@ -465,7 +466,7 @@ def _too_much(numbers: Sequence[int | str], blocks: int, what: str) -> str:
 
 
 class ChangeHasNoBaseline(Exception):
-    """A change rule caught blocks, but moves none of them.
+    """A rule whose numbers all change caught blocks, but moves none of them.
 
     "-10 % m² per home" over blocks with no unit size writes nothing, and
     "+10 % people per home" over blocks already past the 15 ceiling holds
@@ -483,8 +484,8 @@ class ChangeHasNoBaseline(Exception):
         )
         super().__init__(
             f"This change moves no block's {what}: the blocks have no value for "
-            "it, or are already past its limit. Nothing was saved. Choose = to "
-            f"set {'them' if len(self.names) > 1 else 'it'} instead."
+            "it, or are already past its limit. Nothing was saved; set "
+            f"{'them' if len(self.names) > 1 else 'it'} as a value instead."
         )
 
 
@@ -933,10 +934,15 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     standing on the blocks they share. Iterating in ordinal order and letting
     a later write overwrite is the whole of that rule.
 
-    A ``change`` rule's value is the block's **baseline** moved by the rule
-    (``proposal.changed_value``), never an earlier rule's value: rules do not
-    stack, the later one still replaces. A block with no baseline for an
-    attribute gets no value for it from a change rule.
+    A changed number's (unit ``abs`` or ``pct``) value is the block's
+    **baseline** moved by it (``proposal.changed_value``), never an earlier
+    rule's value: rules do not stack, the later one still replaces. A block
+    with no baseline for an attribute gets no value for it (coverage: the
+    whole block, ``proposal.ABSENT``), and a rule whose numbers are all
+    changes and move no block is reported in ``unchanged``
+    (``ChangeHasNoBaseline``). The baseline of
+    every caught block is read once, here, and kept on the resolution for the
+    ceiling check.
     """
     from reimagina.scenarios.proposal import (
         ABSENT,
@@ -965,7 +971,8 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
         rows = cur.fetchall()
         # Each rule once: the numbers it sets (as edits, the same for every
         # block) and the numbers it changes from each block's baseline. A set
-        # number (and so a set rule) is an edit; a number given no unit is set.
+        # number (so every number of a rule of values) is an edit; a number
+        # given no unit is set.
         rules: dict[str, tuple[dict[str, str], dict[str, Any]]] = {}
         plan: dict[
             str, tuple[list[tuple[str, float]], list[tuple[str, float, str]]]
@@ -1164,9 +1171,9 @@ def _ceiling_advice(
     allowed: dict[tuple[str, str], int],
     number: dict[str, int],
 ) -> str | None:
-    """ "Rule 2 is too much for 40 blocks: at most +24 % storeys fits all of
-    them." — per rule that sets the breaching blocks' storeys, the largest
-    value every one of them takes, in the rule's own terms. A change rule is
+    """ "Rule 2 is too much for 40 blocks: at most +24 % storeys fits." — per
+    rule that writes the breaching blocks' storeys, the largest value every
+    one of them takes, in the rule's own terms. A rule that changes storeys is
     told a change (``+24 %``, ``+8 storeys``), never the total it implies."""
     fits: dict[str, float] = {}
     blocks: dict[str, set[str]] = {}

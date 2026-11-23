@@ -509,9 +509,10 @@ function fullUnits(inputs: RuleInputs, units: RuleUnits): RuleUnits {
   );
 }
 
-/** The local refusals a set rule's numbers get before any request. A change
- *  rule's numbers are signed amounts: only the server, per block, can judge
- *  them. */
+/** The local refusals a rule of "=" numbers gets before any request
+ *  (`validateEdit`: the density and storey ceilings, a saved round trip). A
+ *  number that changes each block's baseline can only be judged by the
+ *  server, per block. */
 function precheck(inputs: RuleInputs, units: RuleUnits): boolean {
   if (Object.keys(inputs).some((k) => (units[k as keyof RuleInputs] ?? "set") !== "set")) {
     ws.boxError = null;

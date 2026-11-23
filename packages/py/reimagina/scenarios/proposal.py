@@ -215,7 +215,7 @@ RULE_INPUTS: dict[str, RuleInput] = {
         says="be more than 0 and at most 15",
     ),
     "lot_coverage": RuleInput(
-        # A change stops just above 0, which a set rule refuses (no building
+        # A change stops just above 0, which a set value refuses (no building
         # at all); real blocks go well under 1 %, so the floor stays tiny.
         ("lot_coverage",),
         0.0,
@@ -336,7 +336,7 @@ def check_inputs(
 
     Each number is checked as its unit says (``units``; none is ``set``). A
     changed number (``abs``, ``pct``) is signed and non-zero, a percentage
-    above −100; its range and ceilings are checked per block when the
+    above −100, a coverage amount a share within ±1 (±100 points); its range and ceilings are checked per block when the
     scenario is materialised, so neither is checked here, and the
     area-independent ceilings run only when every number is set.
     """

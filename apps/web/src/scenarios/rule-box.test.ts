@@ -124,7 +124,7 @@ describe("the rule box", () => {
   });
 
   it("says which later rules win, and for which numbers", () => {
-    const note = "Rule 3 also sets storeys: where they overlap, the later rule wins.";
+    const note = "Rule 3 also gives storeys: where they overlap, the later rule wins.";
     const { target } = open({ mode: "rule", overlapNote: note });
     expect(target.textContent).toContain(note);
   });

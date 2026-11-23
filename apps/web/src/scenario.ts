@@ -20,7 +20,7 @@
  * and floors (`max_floors`). It is **a saved round trip, not a guarantee**:
  * the housing-unit and population bounds scale with each block's own area, so
  * a proposal that passes here can still be refused per block at
- * materialisation. {@link CLIENT_PRECHECK_NOTE} is what the form says so, and
+ * materialisation, and that refusal reaches the form as the server words it;
  * the 422 path is wired and exercised rather than assumed unreachable.
  *
  * ⚠ **The bound is never compiled in.** It is read from the catalog the API
@@ -45,19 +45,6 @@ export const FLOORS_INDICATOR_SLUG = "urban_form_block_planned_floors";
 
 /** `ceilings._M2_PER_HECTARE`, and the reason the bound is per hectare. */
 const M2_PER_HECTARE = 10_000;
-
-/**
- * What the form says about its own check, printed next to the inputs.
- *
- * The wording is the whole of the guarantee, so it is asserted in the tests:
- * a planner who gets past this must not read it as "this proposal is safe".
- */
-export const CLIENT_PRECHECK_NOTE =
-  "Checked here: the density ceiling, which does not depend on block area, " +
-  "and the storey ceiling, which holds whatever the unit size. " +
-  "The housing-unit and population ceilings do, so the server checks those " +
-  "block by block when the scenario is recomputed.";
-
 
 // ── the tile URL ────────────────────────────────────────────────────────
 
@@ -152,54 +139,29 @@ export interface EditRefusal {
 /**
  * Why this proposal cannot be stored, or null when nothing here can tell.
  *
- * Two refusals, both `reimagina.scenarios.proposal`'s:
+ * Only the two ceilings independent of block area, against the catalog
+ * bounds — `precheck_ceilings` in `reimagina.scenarios.proposal`: storeys
+ * over the planned-floors ceiling, and density (coverage × storeys × 10 000 ÷
+ * m² per dwelling) over the density ceiling. An empty rule, a degenerate or
+ * out-of-range number is the server's to refuse, worded in the rule box's
+ * units (`plain`); a copy here spoke API names and shares instead. A number
+ * that is not a positive, finite value is therefore left to the server, not
+ * fed to the arithmetic.
  *
- * * `require_positive` — zero, negative and non-finite. Nothing downstream
- *   would refuse them (`value_numeric` is a bare `double precision`), so they
- *   reach the compute as `NaN` and the indicators silently skip the block.
- * * `precheck_ceilings` — the density ceiling, against the catalog bound.
- *
- * The text names the **field**, never the control, so the panel can
- * highlight an input and the CLI could print the same sentence; and it never
- * says a proposal is safe, only that this check found nothing. `field` is
- * the API's name for it — the name the server's 400 carries — and the
- * storey and density ceilings are about `levels`.
+ * It never says a proposal is safe, only that this check found nothing.
+ * `field` is the API's name, `levels` for both ceilings.
  */
 export function validateEdit(values: ProposalValues): EditRefusal | null {
   const set = (value: number | null | undefined): value is number =>
-    value !== null && value !== undefined;
-  const fields: Array<[string, keyof RuleInputs]> = [
-    ["Storeys", "levels"],
-    ["m² per dwelling", "unit_size"],
-    ["People per household", "people_per_household"],
-  ];
-  if (RULE_NUMBERS.every(([key]) => !set(values[key]))) {
-    return {
-      field: null,
-      text:
-        "Set at least one number (levels, unit_size, people_per_household or " +
-        "lot_coverage): a rule with none changes nothing.",
-    };
-  }
-  for (const [label, field] of fields) {
-    const value = values[field];
-    if (set(value) && (!Number.isFinite(value) || value <= 0)) {
-      return { field, text: `${label} (${field}) must be a positive number, got ${value}.` };
-    }
-  }
+    value !== null && value !== undefined && Number.isFinite(value) && value > 0;
   const coverage = values.lot_coverage ?? 1;
-  if (!Number.isFinite(coverage) || coverage <= 0 || coverage > 1) {
-    return {
-      field: "lot_coverage",
-      text: `Lot coverage (lot_coverage) must be a share between 0 and 1, got ${coverage}.`,
-    };
-  }
+  if (!set(coverage) || coverage > 1) return null;
   // The rest needs storeys: without them each block keeps its own, which
   // only the server can see.
   const levels = values.levels;
   if (!set(levels)) return null;
   const floorsBound = values.floorsValidMax;
-  if (set(floorsBound) && Number.isFinite(floorsBound) && floorsBound > 0 && levels > floorsBound) {
+  if (set(floorsBound) && levels > floorsBound) {
     return {
       field: "levels",
       text:
@@ -211,7 +173,7 @@ export function validateEdit(values: ProposalValues): EditRefusal | null {
   // ⚠ Unknown bound = no opinion. Guessing the catalog's value would make
   // this frontend the second place a ceiling lives, which is the failure the
   // module docstring describes; the server refuses with 422 either way.
-  if (!set(bound) || !Number.isFinite(bound) || bound <= 0) return null;
+  if (!set(bound)) return null;
   const unitSize = values.unit_size;
   if (!set(unitSize)) return null;
   const density = (M2_PER_HECTARE * levels * coverage) / unitSize;
@@ -573,7 +535,8 @@ export function percentOf(share: number): number {
 }
 
 
-/** The numbers both rules set: where they overlap, the later one's win. */
+/** The numbers both rules give (set or change): where they overlap, the
+ *  later one's win. */
 export function sharedNumbers(rule: Rule, later: Rule): string[] {
   return RULE_NUMBERS.filter(
     ([key]) => rule.inputs[key] !== undefined && later.inputs[key] !== undefined,

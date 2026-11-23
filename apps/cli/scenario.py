@@ -17,8 +17,10 @@ question the engineer can also answer in DBeaver with the same statement.
 **The same rules as the API, and the same refusals.** A rule writes only the
 numbers given (no default coverage), is checked by ``proposal.check_inputs``
 and materialised in the transaction that writes it, so a rule the server would
-refuse — a ceiling breach on any block, or an area that catches no block — is
-never stored, from either surface. ``recompute`` submits the materialisation's
+refuse — a ceiling breach on any block, an area that catches no block, or
+numbers that are all changes and move no block — is never stored, from either surface. The CLI
+writes numbers as values only (it has no unit flags); ``update-rule`` keeps
+each number's own unit, set in the page, and both print the rule's units. ``recompute`` submits the materialisation's
 footprint, exactly as ``POST /scenarios/{id}/recompute`` does, scoped to the
 AOI the materialisation read under its lock.
 
@@ -180,8 +182,10 @@ def update_rule(
     unset: Sequence[str] = (),
     geojson: str | None = None,
 ) -> dict[str, Any]:
-    """Change one rule: the numbers given replace its own, those named in
-    ``unset`` are removed, the rest are kept; its area changes if given.
+    """Change one rule: the numbers given replace its own, each keeping the
+    rule's choice for it (=, + amount, + %; a new number is a value), those
+    named in ``unset`` are removed, the rest are kept; its area changes if
+    given.
 
     ``merge=True``: a typed command names only what changes, so ``--levels 8``
     alone must not drop the rule's other numbers, and ``--geojson`` alone

@@ -251,7 +251,8 @@ measurements; the second is recorded as measurements only.
 ### Materialisation: plan contract
 
 `tests/performance/test_scenario_materialize_plan.py` runs `EXPLAIN` on the
-statement `scenarios.authoring._resolve_rules` executes (captured as it runs, not copied) against a
+selection `scenarios.authoring._resolve_rules` executes (captured as it runs, not copied; its
+other statement is the one baseline read of the caught blocks, which the ceiling check reuses) against a
 10,000-block fixture with a selective drawn area, and requires:
 
 - the access path is `feature_centroid_gist`, with

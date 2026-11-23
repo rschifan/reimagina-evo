@@ -45,14 +45,17 @@ raised                           status  why
                                         addressed; the clash is with state
 ``ScenarioHasNoAOI``             409     the request is faultless and the
                                         resource's state is not
+``EmptyProposal``                400     the rule sets no number, so it
+                                        could change nothing
 ``ProposalValueError``           400     a number no indicator could be
                                         computed from, whatever is stored
 ``InvalidGeometry``              400     a point is not an area, ever; nor
                                         is one outside lon/lat degrees
 ``RuleCatchesNothing``           422     the area parses and catches no block
                                         of the AOI; nothing is stored
-``ChangeHasNoBaseline``          422     a change rule's blocks have no value
-                                        to change; nothing is stored
+``ChangeHasNoBaseline``          422     the rule's numbers are all changes
+                                        and move no block (no value, or past
+                                        its limit); nothing is stored
 ``CeilingPrecheckFailed``        422     every field parses and is plausible;
                                         the *combination* cannot be processed
 ``CeilingExceeded``              422     same, per block, with the blocks,
@@ -101,8 +104,10 @@ catch is available.
 (``--levels``), and never tell the reader to run a command: a 400 describing a
 command line is written for someone this API does not have. So the refusals
 here carry the JSON field the client sent — ``field``, for a form to
-highlight — and ``allowed_levels``, so the form can clamp its own input
-rather than re-derive a catalog bound. ``apps/cli/scenario.py`` is the same
+highlight — ``plain``, the same refusal of a number in the rule box's words
+and units (percent, points), which the form shows instead of checking ranges
+itself, and ``allowed_levels``, so the form can clamp its own input rather
+than re-derive a catalog bound. ``apps/cli/scenario.py`` is the same
 translation into the other dialect.
 
 **No credential in any response.** The CLI once printed ``recompute``'s DSN
@@ -196,9 +201,9 @@ class RuleBody(BaseModel):
         "area, because a selection made with two strokes is one rule."
     )
     inputs: dict[str, Any] = Field(
-        description="The numbers the rule sets, by name: levels, unit_size, "
-        "people_per_household, lot_coverage (0 < c ≤ 1). Omitted or null: "
-        "not set."
+        description="The rule's numbers, by name: levels, unit_size, "
+        "people_per_household, lot_coverage (a share: 0 < c ≤ 1 when set). "
+        "Each applies as its unit in ``units`` says. Omitted or null: not set."
     )
     units: dict[str, Literal["set", "abs", "pct"]] = Field(
         default_factory=dict,
@@ -870,8 +875,10 @@ def add_rule_route(scenario_id: str, body: RuleBody) -> RuleChangeResponse:
     """Draw one rule, materialise the scenario, and enqueue its recompute.
 
     **The rule and the materialisation are one transaction** (``add_rule``
-    does both). A rule that breaches a ceiling on any block, or catches no
-    block of the scenario's AOI, is refused (422) and nothing is stored — the
+    does both). A rule that breaches a ceiling on any block, catches no block
+    of the scenario's AOI, or is all changes that move no block
+    (``ChangeHasNoBaseline``) is
+    refused (422) and nothing is stored — the
     server never keeps a rule it would not materialise, so no client has to
     undo one. The recompute is enqueued after the commit, for the reason
     ``recompute`` gives; if only the enqueue fails, the rule stands (500

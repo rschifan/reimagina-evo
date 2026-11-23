@@ -18,6 +18,7 @@ import pytest
 import apps.cli.scenario as scenario_cli
 from apps.cli.app import main
 from reimagina.scenarios.authoring import (
+    ChangeHasNoBaseline,
     DuplicateScenarioName,
     MaterializeResult,
     ScenarioNotFound,
@@ -880,3 +881,35 @@ def test_compare_refuses_an_unknown_indicator(monkeypatch, fake_conn, capsys):
 
     assert code == 2
     assert "nope" in capsys.readouterr().err
+
+
+def test_a_rule_that_changes_no_block_is_an_error_not_a_traceback(
+    monkeypatch, fake_conn, capsys
+):
+    """Moving a rule whose numbers change each block's baseline (set in the
+    page) onto blocks with no value for them is refused, and the refusal
+    reaches the person as ``error: …`` like every other on this sub-app."""
+    fake_conn([])
+
+    def _raise(conn, **kw):
+        raise ChangeHasNoBaseline("rule-1", ["unit_size"])
+
+    monkeypatch.setattr(scenario_cli, "update_rule_row", _raise)
+
+    code = main(
+        [
+            "scenario",
+            "update-rule",
+            "--scenario-id",
+            SCENARIO_ID,
+            "--rule-id",
+            "11111111-1111-1111-1111-111111111111",
+            "--levels",
+            "3",
+        ]
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "Traceback" not in err
+    assert "m² per home" in err

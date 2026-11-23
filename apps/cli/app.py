@@ -194,6 +194,7 @@ from .scenario import (  # noqa: E402
 )
 from reimagina.scenarios.authoring import (  # noqa: E402
     CeilingExceeded,
+    ChangeHasNoBaseline,
     DuplicateScenarioName,
     InvalidGeometry,
     RuleCatchesNothing,
@@ -1593,6 +1594,7 @@ app.add_typer(scenario_app, name="scenario")
 #: to raise a traceback.
 _SCENARIO_USER_ERRORS = (
     CeilingExceeded,
+    ChangeHasNoBaseline,
     DuplicateScenarioName,
     InvalidGeometry,
     RuleCatchesNothing,
@@ -1741,9 +1743,11 @@ def scenario_add_rule(
 
 @scenario_app.command(
     "update-rule",
-    help="Change one rule: the numbers given replace its own, --unset removes "
-    "one, the rest are kept; --geojson moves it. It keeps its place in 'later "
-    "wins'. (The API's PATCH, by contrast, takes the rule's whole set.)",
+    help="Change one rule: the numbers given replace its own, each keeping its "
+    "unit (=, + amount or + %, as set in the page; a new number is a value), "
+    "--unset removes one, the rest are kept; --geojson moves it. It keeps its "
+    "place in 'later wins'. (The API's PATCH, by contrast, takes the rule's "
+    "whole set.)",
 )
 def scenario_update_rule(
     scenario_id: str = typer.Option(..., "--scenario-id"),
