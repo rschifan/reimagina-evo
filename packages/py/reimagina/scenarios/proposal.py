@@ -182,7 +182,13 @@ RULE_INPUTS: dict[str, RuleInput] = {
         ("people_per_household",), 0.0, 15.0, "be between 0 and 15", (0.5, 15.0)
     ),
     "lot_coverage": RuleInput(
-        ("lot_coverage",), 0.0, 1.0, "be a share between 0 and 1", (0.0, 1.0)
+        # A change floors at 1 %: a set rule refuses 0 (no building at all),
+        # and a change must not reach what a set rule refuses.
+        ("lot_coverage",),
+        0.0,
+        1.0,
+        "be a share between 0 and 1",
+        (0.01, 1.0),
     ),
 }
 

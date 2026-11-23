@@ -31,6 +31,7 @@ from reimagina.assets.registry import seed_assets
 from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import (
     CeilingExceeded,
+    ChangeHasNoBaseline,
     RuleCatchesNothing,
     ScenarioHasNoAOI,
     add_rule,
@@ -952,6 +953,28 @@ def test_change_rule_skips_a_block_without_a_baseline(conn):
     assert _override_value(conn, sid, t.blocks[1], "unit_size") is None
 
 
+def test_a_change_rule_that_changes_no_block_is_refused(conn):
+    # No block has a unit size: "-10 %" of nothing changes nothing, and
+    # "Rule added" over an unchanged map would be a lie.
+    t = _Territory(conn, attributes={"floors": 1})
+    sid = t.scenario()
+    with pytest.raises(ChangeHasNoBaseline) as caught:
+        _change_rule(t, sid, _AREA_0_3, units={"unit_size": "pct"}, unit_size=-10)
+
+    # The caller's transaction rolls the rule back, as for RuleCatchesNothing.
+    assert "m² per home" in str(caught.value)
+    assert caught.value.names == ("unit_size",)
+
+
+def test_a_coverage_change_starts_a_block_without_coverage_at_the_whole_block(conn):
+    # The compute and the ceilings read a block with no coverage as 1.0.
+    t = _Territory(conn, attributes={"floors": 1})
+    sid = t.scenario()
+    _change_rule(t, sid, _AREA_0_3, lot_coverage=-0.1)
+
+    assert _override_value(conn, sid, t.blocks[0], "lot_coverage") == 0.9
+
+
 def test_update_rule_from_change_to_set_drops_units(conn):
     t = _Territory(conn, attributes={"floors": 1, "num_levels": 1})
     sid = t.scenario()
@@ -963,7 +986,47 @@ def test_update_rule_from_change_to_set_drops_units(conn):
         rule_id=rule["id"],
         geometry_wkt=None,
         inputs={"levels": 4},
+        mode="set",
     )
 
     assert (updated["mode"], updated["units"]) == ("set", {})
     assert _override_value(conn, sid, t.blocks[0], "floors") == 4
+
+
+def test_an_update_naming_no_mode_keeps_a_change_rule_a_change_rule(conn):
+    # A client that sends no mode (an old cached page) must not silently turn
+    # "+1 storey" into "1 storey".
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2})
+    sid = t.scenario()
+    rule = _change_rule(t, sid, _AREA_0_3, units={"levels": "pct"}, levels=50)
+
+    updated, _ = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rule["id"],
+        geometry_wkt=None,
+        inputs={"levels": 100},
+    )
+
+    assert (updated["mode"], updated["units"]) == ("change", {"levels": "pct"})
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 4
+
+
+def test_a_merge_keeps_a_change_rule_and_its_units(conn):
+    t = _Territory(conn, attributes={"floors": 2, "num_levels": 2, "unit_size": 100})
+    sid = t.scenario()
+    rule = _change_rule(t, sid, _AREA_0_3, units={"levels": "pct"}, levels=50)
+
+    updated, _ = update_rule(
+        conn,
+        scenario_id=sid,
+        rule_id=rule["id"],
+        geometry_wkt=None,
+        inputs={"unit_size": -10},
+        merge=True,
+    )
+
+    assert updated["mode"] == "change"
+    assert updated["units"] == {"levels": "pct", "unit_size": "abs"}
+    assert _override_value(conn, sid, t.blocks[0], "floors") == 3
+    assert _override_value(conn, sid, t.blocks[0], "unit_size") == 90

@@ -360,6 +360,10 @@ export async function refusalText(
       // counts (block, indicator) pairs, not blocks, so it is not echoed.
       return `Not saved: too dense for the indicators to store.${suffix(served)}`;
     }
+    if (code === "change_has_no_baseline" && served) {
+      // The server's sentence names the number and what to do instead.
+      return served;
+    }
     if (code === "rule_catches_nothing") {
       return "No block of this pilot falls inside this area, so the rule was not stored. Draw it over the city's blocks.";
     }

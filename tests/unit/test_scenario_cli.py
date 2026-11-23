@@ -139,7 +139,12 @@ def _writes(monkeypatch, calls: list[dict] | None = None, conn=None):
         if calls is not None:
             calls.append(kw)
         conn.events.append("add_rule")
-        return {"id": "rule-1", "inputs": checked}, MATERIALIZED
+        return {
+            "id": "rule-1",
+            "inputs": checked,
+            "mode": "set",
+            "units": {},
+        }, MATERIALIZED
 
     monkeypatch.setattr(scenario_cli, "add_rule_row", _add_rule)
     return conn
@@ -182,6 +187,8 @@ def test_add_rule_sets_only_the_numbers_given(monkeypatch, tmp_path, capsys):
     assert code == 0
     out = _out(capsys)
     assert out["inputs"] == {"levels": 6.0, "people_per_household": 3.6}
+    # How the numbers apply is part of the rule, so the output says it.
+    assert (out["mode"], out["units"]) == ("set", {})
     assert calls[0]["geometry_wkt"] == "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"
     assert calls[0]["type_id"] == TYPE_ID
     assert out["rule_id"] == "rule-1"

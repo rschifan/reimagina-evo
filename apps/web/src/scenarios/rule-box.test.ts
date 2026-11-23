@@ -247,6 +247,16 @@ describe("set to or change by", () => {
     expect(pressed(target, "Lot coverage unit", "points").getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("an existing change rule opens with the keyboard in its first number", () => {
+    const { input } = open({
+      mode: "rule",
+      values: { levels: 20 },
+      ruleMode: "change",
+      ruleUnits: { levels: "pct" },
+    });
+    expect(document.activeElement).toBe(input("Storeys change"));
+  });
+
   it("a new change starts in percent for every number", () => {
     // "+30" read as 30 storeys when a planner meant 30 % was the bug.
     const { button, type, handlers, target } = open({ values: {} });

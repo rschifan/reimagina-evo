@@ -173,6 +173,9 @@ class MaterializeResult:
     footprint_features: tuple[str, ...] = ()
     footprint_attributes: tuple[str, ...] = ()
     aoi_id: str | None = None
+    #: Change rules whose caught blocks have no baseline for any number the
+    #: rule changes, so it changed nothing; id -> the numbers' names.
+    unchanged_rules: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def create_scenario(
@@ -448,6 +451,32 @@ class RuleNotFound(ScenarioNotFound):
     """
 
 
+#: How a refusal names a rule's numbers: the words on the rule box.
+_LABELS = {
+    "levels": "storeys",
+    "unit_size": "m² per home",
+    "people_per_household": "people per home",
+    "lot_coverage": "lot coverage",
+}
+
+
+class ChangeHasNoBaseline(Exception):
+    """A change rule caught blocks, but none has a value to change.
+
+    "-10 % m² per home" over blocks with no unit size writes nothing; stored,
+    it would answer "Rule added" over a map that did not move.
+    """
+
+    def __init__(self, rule_id: str, names: Sequence[str]) -> None:
+        self.rule_id = rule_id
+        self.names = tuple(names)
+        what = ", ".join(_LABELS.get(n, n) for n in names)
+        super().__init__(
+            f"No block in this area has a value for {what} to change, so nothing was "
+            "saved. Use Set to for these blocks."
+        )
+
+
 class RuleCatchesNothing(Exception):
     """The rule's area catches no block of the scenario's area of interest.
 
@@ -564,9 +593,11 @@ def update_rule(
     its position in "later wins" — re-adding a number it had dropped does not
     move it ahead of a later rule.
 
-    ``mode`` and ``units`` travel with the numbers: a whole set without a
-    ``mode`` is a set rule (its units are dropped); a merge without one keeps
-    the rule's own mode and units.
+    ``mode`` and ``units`` travel with the numbers. Without a ``mode`` the
+    rule keeps its own, and its own units for the numbers given no unit —
+    whole set or merge alike: a client that names no mode (an old cached
+    page) must not turn "+1 storey" into "1 storey". Naming ``"set"`` is how
+    a change rule becomes a set rule.
     """
     from reimagina.scenarios.proposal import check_inputs, check_units
 
@@ -588,8 +619,9 @@ def update_rule(
         kept = {k: v for k, v in rule_units.items() if k in numbers}
         return rule_mode, numbers, check_units(rule_mode, kept, numbers)
 
-    # A whole set is checked before any SQL; a merge needs the rule first.
-    checked = None if merge else _checked({}, mode or "set", units or {})
+    # A whole set with its mode is checked before any SQL; anything else
+    # needs the rule first.
+    checked = None if merge or mode is None else _checked({}, mode, units or {})
     _require_postgres(conn)
     with conn.cursor() as cur:
         repaired = None if geometry_wkt is None else _repair_geometry(cur, geometry_wkt)
@@ -604,6 +636,8 @@ def update_rule(
             if found is None:
                 raise missing
             current, rule_mode, rule_units = found
+            if not merge:
+                current = {}
             checked = (
                 _checked(current, rule_mode, {**rule_units, **(units or {})})
                 if mode is None
@@ -723,6 +757,8 @@ def materialize_for_rule(
     result = materialize_scenario(conn, scenario_id=scenario_id)
     if rule_id is not None and result.matched_per_rule.get(rule_id, 0) == 0:
         raise RuleCatchesNothing(rule_id)
+    if rule_id is not None and rule_id in result.unchanged_rules:
+        raise ChangeHasNoBaseline(rule_id, result.unchanged_rules[rule_id])
     return result
 
 
@@ -808,6 +844,7 @@ def materialize_scenario(conn: Any, *, scenario_id: str) -> MaterializeResult:
             sorted({key for _, key in resolved} | {key for _, key in removed})
         ),
         aoi_id=aoi_id,
+        unchanged_rules=resolution.unchanged,
     )
 
 
@@ -865,6 +902,8 @@ class _Resolution:
     owner: dict[tuple[str, str], str]
     #: Rule id -> (mode, units), for a refusal to speak in the rule's terms.
     modes: dict[str, tuple[str, dict[str, str]]] = field(default_factory=dict)
+    #: Change rules that caught blocks and changed none: id -> their numbers.
+    unchanged: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
@@ -939,10 +978,13 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
     owner: dict[tuple[str, str], str] = {}
     edits: dict[str, list[dict[str, Any]]] = {}
     modes: dict[str, tuple[str, dict[str, str]]] = {}
+    rows_inputs: dict[str, dict[str, Any]] = {}
+    changed: dict[str, int] = {}
     for rule_id, inputs, mode, units, feature_id in rows:
         if rule_id not in matched:
             matched[rule_id] = 0
             modes[rule_id] = (mode, dict(units or {}))
+            rows_inputs[rule_id] = inputs
             edits[rule_id] = edits_for(**inputs)
         if feature_id is None:
             continue
@@ -952,8 +994,13 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
                 spec = RULE_INPUTS[name]
                 for attribute in spec.attributes:
                     start = base.get(attribute, {}).get(feature_id)
+                    # No coverage is the whole block, as the compute and the
+                    # ceilings read it.
+                    if start is None and attribute == "lot_coverage":
+                        start = 1.0
                     if start is None:
                         continue
+                    changed[rule_id] = changed.get(rule_id, 0) + 1
                     key = (feature_id, attribute)
                     values[key] = changed_value(start, by, units.get(name, "abs"), spec)
                     owner[key] = rule_id
@@ -962,7 +1009,12 @@ def _resolve_rules(conn: Any, scenario_id: str, aoi_id: str) -> _Resolution:
             key = (feature_id, edit["attribute_key"])
             values[key] = float(edit["value_numeric"])
             owner[key] = rule_id
-    return _Resolution(matched, values, owner, modes)
+    unchanged = {
+        rule_id: tuple(rows_inputs[rule_id])
+        for rule_id, (mode, _) in modes.items()
+        if mode == "change" and matched[rule_id] and not changed.get(rule_id)
+    }
+    return _Resolution(matched, values, owner, modes, unchanged)
 
 
 def _baseline_values(

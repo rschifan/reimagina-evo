@@ -400,6 +400,14 @@ describe("refusalText", () => {
     expect(text).not.toMatch(/7 block/);
   });
 
+  it("passes on why a change rule changed nothing", async () => {
+    const message = "No block in this area has a m² per home to change, so nothing was saved. Use Set to for these blocks.";
+    const err = apiError(422, {
+      detail: { error: "change_has_no_baseline", field: "unit_size", message },
+    });
+    await expect(refusalText(err, "rule")).resolves.toBe(message);
+  });
+
   it("names the field a 400 was about", async () => {
     const err = apiError(400, {
       detail: {

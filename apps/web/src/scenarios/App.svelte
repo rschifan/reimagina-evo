@@ -47,9 +47,10 @@
   });
 </script>
 
-<!-- The page is the viewport: the map takes the height the rest leaves, the
-     table scrolls inside itself, and the page never scrolls. -->
-<div class="flex h-dvh flex-col overflow-hidden">
+<!-- The page is the viewport: the map takes the height the rest leaves and
+     the table scrolls inside itself. Only a window too short for a 240 px
+     map scrolls the page, rather than clipping the map or the table. -->
+<div class="flex h-dvh flex-col overflow-y-auto">
 <TopBar current="scenarios">
   {#snippet actions()}
     <label class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -67,7 +68,7 @@
   {/snippet}
 </TopBar>
 
-<main class="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
+<main class="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-3 p-4">
   <!-- Rules are drawn, edited and deleted on the map; scenarios are picked,
        recomputed and deleted in the table. -->
   <ScenarioMap />

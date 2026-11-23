@@ -448,9 +448,12 @@ describe("editing on the map", () => {
     store.select("A");
     const ok = await settleRun(store.saveRule(RULE, AREA, VALUES));
     expect(ok).toBe(true);
+    // The mode always travels with an edit: "set" turns a change rule back.
     expect(api.updateRule).toHaveBeenCalledWith("A", "r1", {
       area: AREA,
       inputs: { levels: 3, unit_size: 66, people_per_household: 3.6, lot_coverage: 0.6 },
+      mode: "set",
+      units: {},
     });
   });
 

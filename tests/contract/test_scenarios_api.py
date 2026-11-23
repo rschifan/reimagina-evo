@@ -43,6 +43,7 @@ from reimagina.scenarios.authoring import (
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
+    ChangeHasNoBaseline,
     RuleCatchesNothing,
     RuleNotFound,
     ScenarioHasNoAOI,
@@ -1014,6 +1015,25 @@ def test_a_rule_catching_no_block_is_named_as_such(client, events, monkeypatch):
     assert detail["field"] == "area"
 
 
+def test_a_change_rule_changing_no_block_is_refused_and_rolled_back(
+    client, events, monkeypatch
+):
+    def _raise(conn, **kwargs):
+        raise ChangeHasNoBaseline(RULE_ID, ["unit_size"])
+
+    _patch(monkeypatch, add_rule=_raise)
+    _type_id(monkeypatch)
+
+    response = client.post(f"/scenarios/{SCENARIO_ID}/rules", json=PROPOSAL)
+    detail = response.json()["detail"]
+
+    assert response.status_code == 422, response.text
+    assert detail["error"] == "change_has_no_baseline"
+    assert detail["field"] == "unit_size"
+    assert "m² per home" in detail["message"]
+    assert "rollback" in events and "commit" not in events
+
+
 def test_a_rule_whose_enqueue_fails_stands_and_says_so(client, events, monkeypatch):
     """The rule and its overrides are committed before the enqueue; a failed
     enqueue is a 500 naming that phase, never a refusal of the rule."""
@@ -1060,7 +1080,8 @@ def test_updating_a_rule_keeps_its_id_and_passes_no_area_when_none_is_sent(
             "rule_id": RULE_ID,
             "geometry_wkt": None,
             "inputs": {"levels": 4},
-            "mode": "set",
+            # No mode sent: the rule keeps its own (the domain reads None).
+            "mode": None,
             "units": {},
         }
     ]

@@ -51,6 +51,8 @@ raised                           status  why
                                         is one outside lon/lat degrees
 ``RuleCatchesNothing``           422     the area parses and catches no block
                                         of the AOI; nothing is stored
+``ChangeHasNoBaseline``          422     a change rule's blocks have no value
+                                        to change; nothing is stored
 ``CeilingPrecheckFailed``        422     every field parses and is plausible;
                                         the *combination* cannot be processed
 ``CeilingExceeded``              422     same, per block, with the blocks,
@@ -130,6 +132,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from reimagina.db import connect
 from reimagina.scenarios.authoring import (
     CeilingExceeded,
+    ChangeHasNoBaseline,
     DuplicateScenarioName,
     InvalidGeometry,
     MaterializeResult,
@@ -251,16 +254,18 @@ class RuleUpdateBody(BaseModel):
         None, description="The moved or resized area; omitted keeps the area."
     )
     inputs: dict[str, Any]
-    mode: Literal["set", "change"] = Field(
-        "set",
-        description='"set": the numbers are the blocks\' new values. "change": '
-        "each number moves a block from its own baseline value (never from an "
-        "earlier rule's), by an amount or a percentage per ``units``.",
+    mode: Literal["set", "change"] | None = Field(
+        None,
+        description='"set" or "change", as for a new rule. Omitted: the rule '
+        "keeps its own mode (and its units for numbers given none), so a "
+        "client that does not know about modes cannot turn a change into a "
+        'set. Send "set" to make a change rule a set rule.',
     )
     units: dict[str, Literal["abs", "pct"]] = Field(
         default_factory=dict,
         description='For a change rule: per number, "abs" (an amount; lot '
-        'coverage as a share, 0.05 = +5 points) or "pct". Missing: "abs".',
+        'coverage as a share, 0.05 = +5 points) or "pct". Missing: the '
+        'rule\'s own unit, else "abs".',
     )
 
 
@@ -445,6 +450,15 @@ def _refusals() -> Iterator[None]:
         yield
     except ScenarioNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ChangeHasNoBaseline as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "change_has_no_baseline",
+                "field": exc.names[0] if exc.names else None,
+                "message": str(exc),
+            },
+        ) from exc
     except RuleCatchesNothing as exc:
         raise HTTPException(
             status_code=422,

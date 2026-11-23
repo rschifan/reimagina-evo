@@ -642,7 +642,9 @@ export async function saveRule(
   if (scenarioId === null) return false;
   ws.boxError = null;
   if (!precheck(inputs, mode)) return false;
-  const body = { ...(area ? { area } : {}), ...ruleChange(inputs, mode, units) };
+  // An edit always names its mode: the server keeps a rule's own mode when
+  // none is sent, so "set" is what turns a change rule back.
+  const body = { ...(area ? { area } : {}), inputs, mode, units: mode === "change" ? units : {} };
   return gesture(scenarioId, "rule", () => updateRule(scenarioId, rule.id, body), "Rule saved.");
 }
 

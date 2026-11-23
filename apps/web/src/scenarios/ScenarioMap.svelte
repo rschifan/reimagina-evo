@@ -506,7 +506,7 @@
   ];
 </script>
 
-<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+<section class="flex min-w-0 flex-1 flex-col gap-2">
   <div
     class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs"
   >
@@ -561,8 +561,9 @@
     {/if}
   </div>
 
-  <div class="flex min-h-0 flex-1 gap-2">
-  <div class="relative min-h-[240px] min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
+  <!-- The row, not the map, holds the 240 px floor: the map fills the row. -->
+  <div class="flex min-h-[240px] flex-1 gap-2">
+  <div class="relative min-w-0 flex-1 overflow-hidden rounded-lg border border-line">
     <!-- Two divs on purpose. MapLibre adds `.maplibregl-map { position:
          relative }` to the element it mounts on, and that unlayered rule beats
          Tailwind's layered `absolute`, so a container that was itself

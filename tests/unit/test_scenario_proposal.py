@@ -375,6 +375,13 @@ def test_change_is_clamped_to_the_range():
     assert changed_value(20.0, -50, "pct", RULE_INPUTS["unit_size"]) == 15.0
 
 
+def test_a_coverage_change_never_leaves_a_block_unbuilt():
+    # A set rule refuses 0 % coverage; a change must not reach it either.
+    cov = RULE_INPUTS["lot_coverage"]
+    assert changed_value(0.40, -0.5, "abs", cov) == 0.01
+    assert changed_value(0.40, -99, "pct", cov) == 0.01
+
+
 def test_change_inputs_refusals():
     with pytest.raises(ProposalValueError):
         check_inputs({"levels": 0}, mode="change", units={})

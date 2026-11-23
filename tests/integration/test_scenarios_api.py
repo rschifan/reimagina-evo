@@ -1215,12 +1215,29 @@ def test_a_change_rule_is_stored_with_its_mode_and_units(
 
     response = client.post(
         f"/scenarios/{scenario_id}/rules",
-        json={**PROPOSAL, "inputs": {"levels": 1}, "mode": "change"},
+        json={**PROPOSAL, "inputs": {"lot_coverage": -0.1}, "mode": "change"},
     )
 
     assert response.status_code == 201, response.text
     [rule] = _rules(client, scenario_id)
-    assert (rule["mode"], rule["units"]) == ("change", {"levels": "abs"})
+    assert (rule["mode"], rule["units"]) == ("change", {"lot_coverage": "abs"})
+
+
+def test_a_change_rule_whose_blocks_have_nothing_to_change_is_not_stored(
+    client, territory, orchestrator
+):
+    # These blocks carry no storeys: "+1" of nothing would change nothing.
+    scenario_id = _scenario(client, territory)
+
+    response = client.post(
+        f"/scenarios/{scenario_id}/rules",
+        json={**PROPOSAL, "inputs": {"levels": 1}, "mode": "change"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error"] == "change_has_no_baseline"
+    assert _rules(client, scenario_id) == []
+    assert orchestrator == []
 
 
 def test_a_change_of_minus_100_percent_is_refused_naming_its_field(
