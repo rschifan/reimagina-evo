@@ -26,6 +26,13 @@ from reimagina.assets.keys import partition_key, scenario_override_asset_key
 from reimagina.assets.registry import seed_assets
 from reimagina.data import aoi as aoi_mod, feature as feat
 from reimagina.indicators.catalog import EDIFICABILITY_BLOCK_DENSITY, seed_catalog
+from reimagina.indicators.catalog import SHIPPED_INDICATORS
+from reimagina.orchestration.coordinator import (
+    SCENARIO_DELETED,
+    UnitStatus,
+    run_dirty_set,
+)
+from reimagina.orchestration.impact import DirtyUnit
 from reimagina.orchestration.runners import default_runners
 from reimagina.scenarios import authoring
 from reimagina.scenarios.authoring import (
@@ -820,9 +827,21 @@ def test_a_unit_of_a_deleted_scenario_writes_nothing(migrated_db):
         result = runner(
             worker, features=frozenset(), scenario_id=sid, code_version="t", aoi_id=None
         )
+        report = run_dirty_set(
+            worker,
+            [DirtyUnit(_DENSITY, frozenset())],
+            SHIPPED_INDICATORS,
+            {_DENSITY: runner},
+            scenario_id=sid,
+            code_version="t",
+        )
         worker.commit()
 
-        assert result is None
+        assert result is SCENARIO_DELETED
+        # Reported as the delete's cancel reports the run's other units — not
+        # `succeeded`, which claimed results the unit rolled back.
+        assert report.by_indicator()[_DENSITY].status is UnitStatus.CANCELLED
+        assert report.status == "cancelled"
         assert _orphans(setup, sid) == (0, 0)
         assert _materialization_rows(setup, sid) == []
     finally:
@@ -944,7 +963,7 @@ def test_a_delete_does_not_wait_for_a_unit_still_computing(migrated_db):
 
         assert returned, "the delete waited for the unit's compute"
         assert deleted and not isinstance(deleted[0], BaseException), deleted
-        assert outcome == [None], outcome
+        assert outcome == [SCENARIO_DELETED], outcome
         assert _orphans(setup, sid) == (0, 0)
         assert _materialization_rows(setup, sid) == []
         assert _partition_version_count(setup, sid) == 0

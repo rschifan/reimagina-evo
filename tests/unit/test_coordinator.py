@@ -255,3 +255,23 @@ def test_an_autocommit_connection_runs_without_savepoints():
     by = run_dirty_set(_AutocommitConn(), dirty, registry, {"a": _write}).by_indicator()
 
     assert by["a"].status is UnitStatus.SUCCEEDED
+
+
+def test_a_unit_whose_scenario_was_deleted_is_cancelled_not_succeeded():
+    """``runners._fenced`` rolls such a unit back and writes nothing.
+
+    Reporting it ``succeeded`` claimed results that were never written; the
+    scenario delete cancels the run's other units, and this one is the same.
+    """
+    from reimagina.orchestration.coordinator import SCENARIO_DELETED
+
+    a = _spec("a", reads=("x",))
+    dirty = compute_dirty_set({"x"}, {"f1"}, (a,))
+
+    def gone(conn, **kwargs):
+        return SCENARIO_DELETED
+
+    report = run_dirty_set(None, dirty, (a,), {"a": gone})
+
+    assert report.by_indicator()["a"].status is UnitStatus.CANCELLED
+    assert report.status == "cancelled"

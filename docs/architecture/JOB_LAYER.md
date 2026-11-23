@@ -212,7 +212,8 @@ The readiness rule is stated twice on purpose, in two shapes: `plan_wave` answer
 
 - any *dirty* input that did not succeed → **skipped** (non-dirty inputs keep their current value and do not block) — `coordinator.run_dirty_set`;
 - no runner registered → **skipped** — `coordinator.run_dirty_set`;
-- otherwise run it; an exception isolates to that unit → **failed**, and its dependents skip on later iterations — `coordinator.run_dirty_set`.
+- otherwise run it; an exception isolates to that unit → **failed**, and its dependents skip on later iterations — `coordinator.run_dirty_set`;
+- a runner that returns `SCENARIO_DELETED` (its scenario was deleted, so it wrote nothing — see *Per-scenario fencing*) → **cancelled** — `coordinator.run_dirty_set`.
 
 Fault isolation is the point: independent units do not block each other, and a failure stops only what depends on it. The result is a `RunReport`, whose `status` rolls up through the shared `overall_status` — except for the empty case, which is `noop` (`coordinator.RunReport.status`).
 
@@ -225,11 +226,11 @@ Runners are injected, never defined here. `orchestration/runners.py` (`default_r
 Every runner `default_runners` builds goes through `runners._scoped`, which wraps the compute in `runners._fenced`. A baseline unit (no `scenario_id`) runs unfenced. A scenario unit, on the unit's own transaction:
 
 1. takes `pg_advisory_xact_lock(hashtext('scenario:<id>'), hashtext(<slug>))` — two runs of one scenario that overlap (a second rule saved before the first recompute ends, two tabs, the CLI beside the page) serialise **per indicator**, so the second reads the overrides as the first left them and the two never collide on `ir_one_current_scenario`; one run's independent units still run side by side;
-2. returns at once, writing nothing, if the scenario row no longer exists;
+2. returns `SCENARIO_DELETED` at once, writing nothing, if the scenario row no longer exists;
 3. defers `job_run_scenario_id_fkey` and `indicator_result_scenario_id_fkey` (`SET CONSTRAINTS … DEFERRED`, possible because r055 made them `DEFERRABLE`) and takes a savepoint, so computing holds **no** lock on the scenario row and `DELETE /scenarios/{id}` is not held behind a city-wide compute;
-4. after the compute, takes `KEY SHARE` on the scenario row (`scenarios.authoring._lock_scenario`); if the scenario was deleted meanwhile it rolls back to the savepoint — job run, results, materialisation, versions — and returns `None`, so no orphan rows and no `ForeignKeyViolation` at commit.
+4. after the compute, takes `KEY SHARE` on the scenario row (`scenarios.authoring._lock_scenario`); if the scenario was deleted meanwhile it rolls back to the savepoint — job run, results, materialisation, versions — and returns `SCENARIO_DELETED`, so no orphan rows and no `ForeignKeyViolation` at commit.
 
-A unit whose scenario vanished therefore writes nothing but is not reported as failed: the runner returned normally. The scenario delete itself cancels the scenario's unfinished runs (`apps/api/routers/scenarios.py`).
+A unit whose scenario vanished therefore writes nothing and is reported **cancelled**, not failed and not succeeded: `coordinator.run_dirty_set` maps the sentinel to `cancelled`, and on DBOS `s_compute` returns `"cancelled"`, which `unit_workflow` writes and returns to the parent (`dbos_app.unit_workflow`). That matches the scenario delete itself, which cancels the scenario's unfinished runs (`apps/api/routers/scenarios.py`).
 
 `orchestration/intake.py` (`evaluate_scenario`) is `plan_run` + `run_dirty_set` in one call. Its only caller is the CLI's `evaluate-scenario --sync`, which wants the coordinator's per-unit `RunReport` rather than the port's `RunStatus`.
 

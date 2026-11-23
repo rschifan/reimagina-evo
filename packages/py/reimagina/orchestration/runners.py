@@ -34,7 +34,7 @@ from reimagina.indicators.edificability import (
     compute_block_population,
 )
 from reimagina.indicators.planned_floors import compute_planned_floors
-from reimagina.orchestration.coordinator import Runner
+from reimagina.orchestration.coordinator import SCENARIO_DELETED, Runner
 
 # A compute fn: (conn, *, aoi_id, feature_ids, scenario_id, code_version) -> result.
 IndicatorCompute = Callable[..., object]
@@ -139,7 +139,7 @@ def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], obje
     moment, not the compute) and then removes what the unit wrote. If the
     scenario is already gone, everything since the savepoint — job run,
     results, materialisation, versions — is rolled back and the unit returns
-    None, skipped: no orphan rows under an id nothing can read or delete, and
+    ``SCENARIO_DELETED``, which its caller reports ``cancelled``: no orphan rows under an id nothing can read or delete, and
     no ForeignKeyViolation at commit. The baseline (no scenario) passes.
     """
     if scenario_id is None:
@@ -151,7 +151,7 @@ def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], obje
         )
         cur.execute("SELECT 1 FROM app_core.scenario WHERE id = %s", (scenario_id,))
         if cur.fetchone() is None:
-            return None
+            return SCENARIO_DELETED
         cur.execute(f"SET CONSTRAINTS {_UNIT_SCENARIO_FKS} DEFERRED")
         cur.execute("SAVEPOINT reimagina_scenario_unit")
     from reimagina.scenarios.authoring import ScenarioNotFound, _lock_scenario
@@ -162,7 +162,7 @@ def _fenced(conn, scenario_id: str | None, slug: str, compute: Callable[[], obje
             _lock_scenario(cur, scenario_id, mode="KEY SHARE")
         except ScenarioNotFound:
             cur.execute("ROLLBACK TO SAVEPOINT reimagina_scenario_unit")
-            return None
+            return SCENARIO_DELETED
         cur.execute("RELEASE SAVEPOINT reimagina_scenario_unit")
     return result
 

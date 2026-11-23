@@ -1195,7 +1195,7 @@ def delete_scenario(conn: Any, *, scenario_id: str) -> DeleteResult:
     its compute is done, until it commits (``runners._fenced``): a delete
     arriving then waits a moment and removes what the unit wrote; one arriving
     earlier does not wait, and the unit, finding no scenario, rolls its writes
-    back and skips. Taking the lock
+    back and ends ``cancelled``. Taking the lock
     is also the existence check — an unknown id raises ``ScenarioNotFound``
     rather than reporting zeros for a typo.
 

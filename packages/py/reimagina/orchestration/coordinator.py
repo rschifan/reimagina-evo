@@ -39,6 +39,13 @@ class UnitStatus(str, enum.Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+#: What a scenario runner returns when its scenario was deleted before the unit
+#: could commit: ``runners._fenced`` rolled its writes back, so nothing was
+#: computed. Reported ``cancelled`` — the delete cancels the run's other units.
+SCENARIO_DELETED = "scenario-deleted"
 
 
 class Runner(Protocol):
@@ -173,7 +180,7 @@ def run_dirty_set(
         try:
             # Ambient, not a runner argument — see jobs._lifecycle.current_run.
             with current_run(run_id):
-                runner(
+                result = runner(
                     conn,
                     features=unit.features,
                     scenario_id=scenario_id,
@@ -185,7 +192,11 @@ def run_dirty_set(
             _execute(conn, "ROLLBACK TO SAVEPOINT reimagina_unit")
             outcomes[slug] = UnitOutcome(slug, UnitStatus.FAILED, str(exc))
         else:
-            outcomes[slug] = UnitOutcome(slug, UnitStatus.SUCCEEDED)
+            outcomes[slug] = (
+                UnitOutcome(slug, UnitStatus.CANCELLED, "scenario deleted")
+                if result == SCENARIO_DELETED
+                else UnitOutcome(slug, UnitStatus.SUCCEEDED)
+            )
         _execute(conn, "RELEASE SAVEPOINT reimagina_unit")
 
     return RunReport(tuple(outcomes[u.indicator] for u in dirty_units))

@@ -41,6 +41,7 @@ from dbos import DBOS, DBOSConfig, Queue, SetWorkflowID
 from reimagina import settings
 from reimagina.jobs._lifecycle import current_run, record_failed_job_run
 from reimagina.orchestration import runstore
+from reimagina.orchestration.coordinator import SCENARIO_DELETED
 from reimagina.orchestration.graph import topological_order
 from reimagina.orchestration.port import (
     RUN_TERMINAL_STATES,
@@ -790,7 +791,7 @@ def compute_connection(dsn: str, run_id: str):
 
 
 @DBOS.step(retries_allowed=False)
-def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None:
+def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> str | None:
     """Run one indicator's real compute. Minutes of blocking PostGIS.
 
     Not retried: a runner exception is deterministic, so a retry would burn the
@@ -818,6 +819,9 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
     would run its full compute and commit results for a run already reported
     terminal. A narrowing, not a closing: a cancel arriving after this check
     still has only ``pg_cancel_backend``, aimed by the connection's name.
+
+    Returns ``"cancelled"`` when the unit's scenario was deleted mid-compute
+    (``runners._fenced`` wrote nothing), else None.
     """
     runner = default_runners().get(slug)
     if runner is None:
@@ -835,7 +839,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 run_id,
                 row["status"],
             )
-            return
+            return None
         # ⚠ Read from `jobs_runtime.run_plan`, not from the workflow input. The
         # ids used to travel inside that input, one per feature per indicator,
         # which made the payload scale with the size of the city; `plan_id` is a
@@ -851,7 +855,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
             else features
         )
         with current_run(run_id):
-            runner(
+            result = runner(
                 conn,
                 features=frozenset(resolved),
                 scenario_id=params.get("scenario_id"),
@@ -859,6 +863,7 @@ def s_compute(run_id: str, slug: str, features: list[str], params: dict) -> None
                 aoi_id=params.get("aoi_id"),
             )
         conn.commit()
+        return "cancelled" if result == SCENARIO_DELETED else None
     except BaseException as exc:
         conn.rollback()
         # That rollback just erased the `failed` job_run the runner opened — it
@@ -902,12 +907,13 @@ def unit_workflow(run_id: str, slug: str, features: list[str], params: dict) -> 
     """
     s_set_status(run_id, slug, "running")
     try:
-        s_compute(run_id, slug, features, params)
+        outcome = s_compute(run_id, slug, features, params) or "succeeded"
     except Exception as exc:
         s_set_status(run_id, slug, "failed", _safe_detail(exc))
         raise
-    s_set_status(run_id, slug, "succeeded")
-    return "succeeded"
+    detail = "scenario deleted" if outcome == "cancelled" else None
+    s_set_status(run_id, slug, outcome, detail)
+    return outcome
 
 
 def _safe_detail(exc: BaseException) -> str:
@@ -1036,8 +1042,9 @@ def run_workflow(run_id: str, units: list[UnitInput], params: dict) -> str:
         winner = DBOS.wait_first(handles, polling_interval_sec=POLL_INTERVAL_SEC)
         slug = outstanding.pop(winner.workflow_id)
         try:
-            winner.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
-            outcome = "succeeded"
+            # A child returns its own terminal status: `succeeded`, or
+            # `cancelled` when its scenario was deleted mid-compute.
+            outcome = winner.get_result(polling_interval_sec=POLL_INTERVAL_SEC)
         except Exception:  # noqa: BLE001 — fault isolation is the point
             outcome = "failed"
         statuses[slug] = s_settle_unit(run_id, slug, outcome)
